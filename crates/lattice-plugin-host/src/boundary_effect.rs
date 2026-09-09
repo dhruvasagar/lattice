@@ -726,6 +726,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             placement: match placement {
                 NativePopupPlacement::Centered => WitPopupPlacement::Centered,
                 NativePopupPlacement::CursorAnchored => WitPopupPlacement::CursorAnchored,
+                NativePopupPlacement::PaneBottom => WitPopupPlacement::PaneBottom,
             },
             focus: match focus {
                 NativePopupFocus::Steal => WitPopupFocus::Steal,
@@ -1106,6 +1107,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             placement: match p.placement {
                 WitPopupPlacement::Centered => NativePopupPlacement::Centered,
                 WitPopupPlacement::CursorAnchored => NativePopupPlacement::CursorAnchored,
+                WitPopupPlacement::PaneBottom => NativePopupPlacement::PaneBottom,
             },
             focus: match p.focus {
                 WitPopupFocus::Steal => NativePopupFocus::Steal,

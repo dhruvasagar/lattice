@@ -126,6 +126,27 @@ pub(crate) fn popup_outer_dims_px(viewport_w_px: f32, viewport_h_px: f32) -> (f3
     (w, h)
 }
 
+/// WK.5: pixel dimensions for a `PaneBottom` popup — which-key's
+/// placement. The peer of the TUI's `position_help_popup` branch, landing
+/// in the same patch per the cross-renderer rule.
+///
+/// Full viewport width, and height sized to the content it will paint
+/// rather than to a window ratio: this is a hint whose row count is known
+/// (the grid was laid out to the pane before the popup opened). Capped at
+/// half the viewport so it can never swallow the buffer.
+pub(crate) fn popup_pane_bottom_dims_px(
+    viewport_w_px: f32,
+    viewport_h_px: f32,
+    content_rows: u32,
+    rem: f32,
+    row_px: f32,
+) -> (f32, f32) {
+    let chrome = popup_chrome_v_px(rem, row_px);
+    let wanted = chrome + content_rows.max(1) as f32 * row_px;
+    let h = wanted.min(viewport_h_px * 0.5).max(row_px + chrome);
+    (viewport_w_px, h)
+}
+
 /// Pixel cost of the popup's vertical chrome (border + .p_4 padding
 /// top+bottom + the bold/larger title row + .pb_2 header gap).
 /// Subtract from the popup's outer height to get the inner body area.
@@ -3296,8 +3317,36 @@ impl Render for EditorView {
         //   3. The popup container's `.min_w()/.max_w()` +
         //      `.min_h()/.max_h()` lock so width never jumps when
         //      a long line scrolls into view.
-        let (popup_w_px, popup_h_px) =
-            popup_outer_dims_px(f32::from(viewport_px.width), f32::from(viewport_px.height));
+        // WK.5: a `PaneBottom` popup (which-key) sizes to its content and
+        // spans the viewport; every other placement keeps the window-ratio
+        // box. Computed here rather than in the placement match below
+        // because `popup_inner_rows` feeds the motion clamp and the paint's
+        // row cap, and those must agree with whatever box is drawn.
+        let popup_rs = self.app.render_state.load();
+        let pane_bottom = matches!(
+            popup_rs.popup.placement,
+            lattice_core::ui::popup::PopupPlacement::PaneBottom
+        );
+        let (popup_w_px, popup_h_px) = if pane_bottom {
+            // Content rows from the popup's registry Document — the same
+            // single source the overlay paint reads its body from, so the
+            // box drawn and the rows painted cannot disagree.
+            let rows = popup_rs
+                .popup
+                .buffer_id
+                .and_then(|id| popup_rs.buffers.registry.document_handle(id))
+                .map(|h| h.snapshot().buffer.content_line_count().max(1))
+                .unwrap_or(1);
+            popup_pane_bottom_dims_px(
+                f32::from(viewport_px.width),
+                f32::from(viewport_px.height),
+                rows,
+                rem,
+                estimated_row_px,
+            )
+        } else {
+            popup_outer_dims_px(f32::from(viewport_px.width), f32::from(viewport_px.height))
+        };
         let popup_inner_rows = popup_inner_height_rows(popup_h_px, rem, estimated_row_px);
         // 2026-05-27: lock the body div's height too. With only the
         // outer popup container size locked, the body's flex-grown
@@ -4997,6 +5046,19 @@ impl Render for EditorView {
             let placement = popup_substate.placement;
             use lattice_core::ui::popup::PopupPlacement;
             root = match placement {
+                // WK.5: flush to the bottom edge, full width. Bottom-anchored
+                // full-width is what emacs `which-key` and `which-key.nvim`
+                // both do; the TUI's `position_help_popup` branch is the peer
+                // of this arm.
+                PopupPlacement::PaneBottom => root.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .flex_col()
+                        .justify_end()
+                        .child(overlay),
+                ),
                 PopupPlacement::Centered => root.child(
                     div()
                         .absolute()
@@ -5567,7 +5629,35 @@ fn build_transient_minibuffer_gpui(
 
 #[cfg(test)]
 mod popup_geometry_tests {
-    use super::{default_ui_row_px, popup_body_h_px, popup_chrome_v_px, popup_inner_height_rows};
+    use super::{
+        default_ui_row_px, popup_body_h_px, popup_chrome_v_px, popup_inner_height_rows,
+        popup_pane_bottom_dims_px,
+    };
+
+    /// WK.5: a `PaneBottom` popup spans the viewport and sizes to its
+    /// content — the GPUI peer of the TUI's bottom-edge anchor.
+    #[test]
+    fn pane_bottom_popup_spans_the_width_and_fits_its_rows() {
+        let (rem, row_px) = (16.0_f32, 18.0_f32);
+        let (w, h) = popup_pane_bottom_dims_px(1200.0, 800.0, 6, rem, row_px);
+        assert_eq!(w, 1200.0, "full viewport width");
+        assert!(
+            popup_inner_height_rows(h, rem, row_px) >= 6,
+            "the box must hold the 6 rows the grid laid out"
+        );
+    }
+
+    /// …and never more than half the viewport, however many
+    /// continuations a prefix has.
+    #[test]
+    fn pane_bottom_popup_is_capped_at_half_the_viewport() {
+        let (rem, row_px) = (16.0_f32, 18.0_f32);
+        let (_w, h) = popup_pane_bottom_dims_px(1200.0, 800.0, 500, rem, row_px);
+        assert!(
+            h <= 400.0,
+            "a hint that covers the buffer it describes has defeated itself: {h}"
+        );
+    }
 
     /// The popup body div must hold every inner row WITH slack, and never
     /// overflow the popup. Regression guard for the "last line partially

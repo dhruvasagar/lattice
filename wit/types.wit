@@ -398,7 +398,13 @@ interface types {
     // Payload records for the multi-field `effect` arms. Paths cross as
     // `option<string>` / `string` (a non-UTF-8 path is a typed error, §4.4).
     /// Mirrors `lattice_core::ui::popup::PopupPlacement`.
-    enum popup-placement { centered, cursor-anchored }
+    ///
+    /// WK.5 added `pane-bottom` (full pane width, flush to its bottom
+    /// edge — which-key's placement). Mirrored here rather than collapsed
+    /// to `centered` at the boundary because this enum's contract is that
+    /// it IS the mirror: a placement reachable natively but not from a
+    /// plugin is an arbitrary gap in the canonical API (paramount #2).
+    enum popup-placement { centered, cursor-anchored, pane-bottom }
     /// Mirrors `lattice_core::ui::popup::PopupFocus`.
     enum popup-focus { steal, passive }
     /// Payload for the `open-popup` effect (popup-api.md §4.3). Name-based:

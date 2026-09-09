@@ -2714,6 +2714,21 @@ fn position_help_popup(
         Some(r) => r,
         None => return centered(),
     };
+    // WK.5: which-key's placement — the active pane's full width, flush to
+    // its bottom edge. `height` already carries the half-pane cap from
+    // `popup_outer_size`, so the only work here is the anchor.
+    if matches!(
+        app.popup().placement,
+        crate::popup::PopupPlacement::PaneBottom
+    ) {
+        let h = height.min(pane_area.height);
+        return Rect {
+            x: pane_area.x,
+            y: pane_area.y + pane_area.height.saturating_sub(h),
+            width: pane_area.width,
+            height: h,
+        };
+    }
     // Active pane must be a Document for the anchor to make sense
     // (the popup is only painted when active_pane.buffer != Help,
     // so this is the State A / B case where the active pane shows

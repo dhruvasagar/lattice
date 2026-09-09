@@ -25,6 +25,18 @@ pub enum PopupPlacement {
     /// Centre over the buffer area.
     #[default]
     Centered,
+    /// WK.5: full width of the active pane, anchored to its bottom
+    /// edge. Which-key's placement.
+    ///
+    /// Bottom-anchored full-width is what emacs `which-key` and
+    /// `which-key.nvim` both do, and per the UX-convention rule that
+    /// muscle memory is the default worth keeping. It is also the only
+    /// placement where the column count is predictable, which is what
+    /// lets the grid be laid out ahead of the renderer.
+    ///
+    /// Height is content + border, hard-capped at half the pane so the
+    /// hint can never swallow the buffer it is describing.
+    PaneBottom,
 }
 
 /// Whether opening a popup moves focus into it. Names the distinction
@@ -89,14 +101,57 @@ pub fn popup_outer_size(
             let max_w = (buffer_width.saturating_sub(4)).clamp(30, 80);
             (max_h, max_w)
         }
+        // WK.5: full pane width, and never more than half its height.
+        // The half-pane cap is the hard one: a hint that covers the code
+        // it describes has defeated itself, and a prefix with a hundred
+        // continuations would otherwise ask for exactly that.
+        PopupPlacement::PaneBottom => {
+            let max_h = (buffer_height / 2).max(1);
+            (max_h, buffer_width.max(1))
+        }
     };
-    let height = (line_count.saturating_add(2)).clamp(5, max_h);
+    // A pane-bottom popup sizes to its content and has no floor: a
+    // two-row hint is two rows. The 5-row floor is for reading surfaces,
+    // where a box smaller than that reads as broken rather than terse.
+    let height = if matches!(placement, PopupPlacement::PaneBottom) {
+        (line_count.saturating_add(2)).min(max_h)
+    } else {
+        (line_count.saturating_add(2)).clamp(5, max_h)
+    };
     (max_w, height)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_bottom_is_full_width_and_sizes_to_its_content() {
+        // 8 content rows in a 100x40 pane → full width, 10 rows.
+        let (w, h) = popup_outer_size(100, 40, 8, PopupPlacement::PaneBottom);
+        assert_eq!(w, 100, "full pane width — the grid was laid out to it");
+        assert_eq!(h, 10, "content + border, no 5-row floor padding it out");
+    }
+
+    #[test]
+    fn pane_bottom_never_takes_more_than_half_the_pane() {
+        // 100 rows of continuations in a 40-row pane.
+        let (_w, h) = popup_outer_size(100, 40, 100, PopupPlacement::PaneBottom);
+        assert_eq!(
+            h, 20,
+            "a hint that covers the code it describes has defeated itself"
+        );
+    }
+
+    #[test]
+    fn a_two_row_pane_bottom_popup_stays_two_rows() {
+        let (_w, h) = popup_outer_size(100, 40, 1, PopupPlacement::PaneBottom);
+        assert_eq!(
+            h, 3,
+            "one row plus border — the 5-row floor is for reading surfaces, \
+             where a smaller box reads as broken rather than terse"
+        );
+    }
 
     #[test]
     fn centered_popup_uses_three_quarters_height_and_120_width_cap() {

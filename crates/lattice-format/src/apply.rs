@@ -81,7 +81,8 @@ pub fn minimal_edits(old: &str, new: &str) -> Vec<Edit> {
 
 /// Whether `new` differs from `old` in more than leading whitespace.
 ///
-/// Used to tell an *indent* filter (`equalprg`, which is specified to
+/// Used to tell an *indent* filter (an `external:` rung of
+/// `format.indent`, which is specified to
 /// adjust leading whitespace only) from a *reformatter* that was
 /// pointed at the wrong option. A tool that rewrites content is not an
 /// indent filter, and running it from `=` would break the operator's

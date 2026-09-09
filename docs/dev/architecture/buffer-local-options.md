@@ -201,9 +201,24 @@ with effective, global, local, and origin for every registered option.
 
 ## 8. Interaction with modes
 
-Mode contributions (layers 3/4) win over `:setlocal` (layer 2). A
-mode contributing `ReadOnly = true` with `OverridePriority::High`
-cannot be overridden by `:setlocal read-only=false`. For non-critical
-`Normal`-priority contributions, a future high-priority buffer-local
-override could force through; BL.1 does not expose priority in
-`:setlocal` — all writes use `Normal`.
+**Corrected 2026-09-09 (RF.4).** This section previously said "mode
+contributions (layers 3/4) win over `:setlocal` (layer 2)", which
+contradicts §3's own priority table and is not what the resolver does.
+Verified empirically while wiring `autowrap`'s prose-major defaults:
+`:setlocal autowrap=off` DOES override a major mode's
+`options()` contribution. §3's table is authoritative — `:setlocal` is
+layer 2 and wins.
+
+A mode contributing `ReadOnly = true` with `OverridePriority::High`
+still cannot be overridden, but that is the *priority* doing the work,
+not the layer. `OverridePriority` is a tie-break **among override
+layers only**; it does not change how any of them rank against global
+config, so a `Low`-priority mode contribution still beats `:set`.
+
+The consequence worth knowing, because it surprises people: a **global**
+`:set foo=bar` does NOT reach a buffer whose major mode contributes
+`foo`. That is vim's ftplugin behaviour exactly — and unlike vim,
+`:setlocal` here really does win, so there is always a per-buffer escape
+hatch. `autowrap` is the first option where this is likely to be hit in
+practice (`markdown-mode` / `text-mode` / `magit-commit-mode` set
+`autowrap=all`), so it is the worked example.

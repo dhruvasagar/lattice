@@ -623,6 +623,13 @@ pub struct Editor {
     /// first content typed into the line, consumed by
     /// `strip_pending_auto_indent` on leaving Insert.
     pub auto_indent_line: Option<u32>,
+    /// RF.5: whether the `formatprg` deprecation note has been emitted
+    /// this session.
+    ///
+    /// Once, not per format: a note repeated on every `:w` with
+    /// `formatonsave` on is noise the user learns to scroll past, which
+    /// is the opposite of what a deprecation notice is for.
+    pub formatprg_deprecation_noted: bool,
     /// Text inserted during the most recently completed
     /// Insert session. Captured on Esc out of Insert;
     /// replayed by dot-repeat after the operator part. `None`

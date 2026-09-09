@@ -338,18 +338,6 @@ crate::options! {
     #[name("electricindent")]
     pub ElectricIndent: bool = true;
 
-    /// External *indent* filter for `=` (vim's `equalprg`). Empty
-    /// (the default) uses the tree-sitter indent engine. An indent
-    /// filter adjusts leading whitespace only -- a reformatter
-    /// belongs on `formatprg`, not here. Honoured from IN.9.
-    ///
-    /// **Deprecated at RF.0, deleted at RF.5.** It was never honoured
-    /// (⛔ deferred at IN.9, zero consumers), and an external
-    /// indent-only filter is now one rung of `format.indent`:
-    /// `:set format.indent=external:my-indenter`.
-    #[name("equalprg")]
-    pub EqualPrg: String = String::new();
-
     /// External formatter for `:format` (vim's `formatprg`). Empty
     /// (the default) falls back to the built-in per-language table.
     /// Honoured from IN.9.
@@ -382,7 +370,7 @@ crate::options! {
     /// at the window edge while hard-wrapping here. Honoured from RF.2.
     #[aliases("tw")]
     // `textwidth`, not the derived `text-width`: its neighbours in this
-    // block are `shiftwidth`, `expandtab`, `foldmethod` and `equalprg`,
+    // block are `shiftwidth`, `expandtab` and `foldmethod`,
     // and a lone hyphen among them would be the odd one out for no gain.
     #[name("textwidth")]
     #[validate(validate_textwidth)]

@@ -340,6 +340,20 @@ Emacs' `auto-fill-mode` is the same feature under a name that describes a
 all — it is `formatoptions` letters, which is why nobody remembers them.
 `autowrap` says what it does.
 
+### Turning it off
+
+`:setlocal autowrap=off` in the buffer, or `autowrap=off` globally for
+languages whose major does not contribute the option.
+
+A **global** `:set autowrap=off` does not reach a markdown, text or
+commit buffer, because a major mode's `options()` sits above global
+config in the resolution stack (`buffer-local-options.md` §3) and those
+three set `all`. That is vim's ftplugin behaviour exactly, and the
+per-buffer escape hatch works here where vim needs an autocmd. It is a
+real trade and it is made deliberately: the alternative is prose majors
+NOT setting a default, which means auto-wrap does nothing out of the box
+in the file types most likely to want it.
+
 ### Why an option and not a minor mode
 
 It owns no keymap, no lifecycle subscription, no decoration provider, and no

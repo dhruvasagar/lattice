@@ -127,7 +127,7 @@ pub(crate) fn indents_source(name: &str) -> Option<&'static str> {
         //   convention varies more between houses than between
         //   dialects (leading vs trailing commas, `AND` alignment,
         //   river style). There is no default worth imposing; `=`
-        //   plus an `equalprg` formatter is the honest answer.
+        //   plus an external rung on `format.indent` is the honest answer.
         //
         // Both degrade to the lexical bridge, which is the cascade
         // working as designed rather than a gap.

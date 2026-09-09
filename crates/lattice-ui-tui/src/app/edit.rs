@@ -423,10 +423,53 @@ mod tests {
         );
     }
 
+    /// `autowrap=off` turns it off — through `:setlocal`, which is the
+    /// escape hatch that has to exist.
+    ///
+    /// A GLOBAL `:set autowrap=off` does not reach a prose buffer,
+    /// because a major mode's `options()` sits above global config in
+    /// the resolution stack (`buffer-local-options.md` §3) and
+    /// markdown / text / commit majors set `all`. That is vim's
+    /// ftplugin behaviour exactly — and unlike vim, `:setlocal` here
+    /// really does win, which is what makes the trade acceptable rather
+    /// than a dead end. Verified empirically; §8 of that fragment
+    /// claimed the reverse and has been corrected.
     #[test]
-    fn autowrap_off_never_wraps() {
-        let a = type_into("aaa bbb ccc", &["textwidth=7", "autowrap=off"]);
+    fn setlocal_autowrap_off_turns_wrapping_off() {
+        use crate::app::test_helpers::press_chars;
+        let mut a = app_with("", 10);
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            let _ = e.config.parse_and_set_command("textwidth=7");
+        });
+        let signals = a.mutate_editor_with(|e: &mut lattice_host::editor::Editor| {
+            e.do_set_local("autowrap=off")
+        });
+        for s in signals {
+            a.handle_renderer_signal(s);
+        }
+        a.apply(Action::EnterMode(ModalState::Insert));
+        press_chars(&mut a, "aaa bbb ccc");
         assert_eq!(a.editor.document.text(), "aaa bbb ccc");
+    }
+
+    /// The prose majors' override is what makes auto-wrap work out of
+    /// the box in the buffers that want it. Pinned here rather than only
+    /// in `lattice-syntax`, because this is the level where "typing in a
+    /// text buffer wraps" is observable.
+    #[test]
+    fn a_prose_buffer_wraps_without_any_configuration() {
+        use crate::app::test_helpers::press_chars;
+        let mut a = app_with("", 10);
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            let _ = e.config.parse_and_set_command("textwidth=7");
+        });
+        a.apply(Action::EnterMode(ModalState::Insert));
+        press_chars(&mut a, "aaa bbb ccc");
+        assert_eq!(
+            a.editor.document.text(),
+            "aaa bbb\nccc",
+            "text-mode sets `autowrap=all`, so prose wraps with no `:set`"
+        );
     }
 
     /// The point of `autowrap=comments` being the default for code: a

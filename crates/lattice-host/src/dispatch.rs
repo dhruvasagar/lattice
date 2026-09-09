@@ -409,6 +409,21 @@ pub struct DisplayBufferRequest {
     pub category: lattice_core::ui::display::BufferDisplayCategory,
 }
 
+/// RF.5: which rung of a `format.reformat` chain actually applies.
+///
+/// The resolver returns this rather than running anything, so the
+/// synchronous (`:format`, on-save) and asynchronous (`g=`) callers
+/// share one decision and cannot drift about which formatter "wins".
+#[derive(Debug, Clone)]
+pub(crate) enum ReformatRung {
+    /// An attached server advertising formatting.
+    Lsp,
+    /// A concrete external program.
+    External(lattice_format::FormatterSpec),
+    /// The built-in reflow engine as a tail rung.
+    NativeReflow,
+}
+
 impl Editor {
     /// Renderer-neutral dispatch entry point.
     ///
@@ -28334,26 +28349,44 @@ impl Editor {
         let buffer = self.active_buffer_id();
         let lang = self.active_lang();
 
-        // Rung 1: an attached server that advertises formatting.
-        if self.lsp_supports_formatting() {
-            self.do_lsp_format_request(false);
-            return;
-        }
-
-        // Rung 2: `formatprg`, else the built-in table.
-        let formatprg = self.resolved_option::<lattice_config::core_options::FormatPrg>(buffer);
-        let spec = lattice_format::FormatterSpec::parse(&formatprg)
-            .or_else(|| lattice_format::FormatterSpec::for_lang(lang));
-        let Some(spec) = spec else {
-            self.set_message(
-                EchoLevel::Info,
-                format!(
-                    "no formatter for {}: no LSP formatting provider, no formatprg, \
-                     and no default for this language",
-                    lang.name()
-                ),
-            );
-            return;
+        // RF.5: the `format.reformat` chain, not a hardcoded cascade.
+        // Its default IS the old order (`lsp,lang-default`), so an
+        // unconfigured editor behaves exactly as it did — what changed
+        // is that the order is now data a user or a theme-like config
+        // can reorder without a host patch.
+        self.note_formatprg_deprecation(buffer);
+        let chain = self.reformat_chain(buffer);
+        let spec = match self.resolve_reformat(&chain, lang) {
+            Ok(ReformatRung::Lsp) => {
+                self.do_lsp_format_request(false);
+                return;
+            }
+            Ok(ReformatRung::External(spec)) => spec,
+            Ok(ReformatRung::NativeReflow) => {
+                self.reflow_whole_buffer();
+                return;
+            }
+            Err(tried) => {
+                // Name every rung that was considered. "No formatter"
+                // without saying what was tried is the message that
+                // sends people to the source.
+                self.set_message(
+                    EchoLevel::Info,
+                    if tried.is_empty() {
+                        format!(
+                            "no formatter for {}: `format.reformat` is empty",
+                            lang.name()
+                        )
+                    } else {
+                        format!(
+                            "no formatter for {}: tried {}",
+                            lang.name(),
+                            tried.join(", ")
+                        )
+                    },
+                );
+                return;
+            }
         };
 
         let text = self.active_text().as_string();
@@ -28423,11 +28456,32 @@ impl Editor {
         if !*self.resolved_option::<lattice_config::core_options::FormatOnSave>(buffer) {
             return;
         }
-        let formatprg = self.resolved_option::<lattice_config::core_options::FormatPrg>(buffer);
-        let Some(spec) = lattice_format::FormatterSpec::parse(&formatprg)
-            .or_else(|| lattice_format::FormatterSpec::for_lang(self.active_lang()))
-        else {
-            return;
+        // RF.5: the same chain `:format` resolves, minus the LSP rung —
+        // servers already get their chance through
+        // `textDocument/willSaveWaitUntil`, which `save_blocking` fires
+        // and waits on. Running `textDocument/formatting` here as well
+        // would apply two servers' opinions to one save.
+        self.note_formatprg_deprecation(buffer);
+        let chain = self.reformat_chain(buffer);
+        let lang = self.active_lang();
+        let spec = match self.resolve_reformat(&chain, lang) {
+            Ok(ReformatRung::External(spec)) => spec,
+            // An `lsp`-first chain on save falls through to whatever
+            // comes after it rather than firing a second formatter.
+            Ok(ReformatRung::Lsp) => {
+                let rest = lattice_core::ProviderChain::new(
+                    chain
+                        .iter()
+                        .filter(|p| !matches!(p, lattice_core::FormatProvider::Lsp))
+                        .cloned()
+                        .collect(),
+                );
+                match self.resolve_reformat(&rest, lang) {
+                    Ok(ReformatRung::External(spec)) => spec,
+                    _ => return,
+                }
+            }
+            _ => return,
         };
 
         let text = self.active_text().as_string();
@@ -35241,6 +35295,137 @@ impl Editor {
         let tabstop = (*self.resolved_option::<Tabstop>(buffer)).clamp(1, 32) as u8;
         let expand_tabs = *self.resolved_option::<ExpandTab>(buffer);
         lattice_core::IndentUnit::new(width, expand_tabs, tabstop)
+    }
+
+    /// RF.5: the `native` rung of a reformat chain — the reflow engine
+    /// over the whole buffer.
+    ///
+    /// Its point is prose: `format.reformat=external:prettier,native`
+    /// formats markdown with prettier when it is installed and reflows
+    /// it when it is not, which is a materially better answer than
+    /// "nothing happened". For code it is a rung nobody should put
+    /// there, and putting it there reflows rather than reformats —
+    /// documented at the option, not policed here.
+    fn reflow_whole_buffer(&mut self) {
+        let buffer = self.active_buffer_id();
+        let text = self.active_text().as_string();
+        let lines: Vec<&str> = text.split('\n').collect();
+        let cs = self.active_lang().comment_syntax();
+        let out = lattice_grammar::reflow::reflow_range(
+            &lines,
+            lattice_grammar::reflow::ReflowConfig {
+                textwidth: self.wrap_width(buffer).columns(),
+                line_comment: cs.line.as_deref(),
+            },
+        );
+        let joined = out.join("\n");
+        if joined == text {
+            return;
+        }
+        // A minimal edit set, like every other formatter path: splicing
+        // the whole buffer would destroy cursor, marks and folds and
+        // repaint the viewport.
+        let edits = lattice_format::minimal_edits(&text, &joined);
+        if edits.is_empty() {
+            return;
+        }
+        self.document.begin_undo_group();
+        for edit in edits {
+            if self.apply_edit_blocking(edit).is_err() {
+                break;
+            }
+        }
+    }
+
+    /// RF.5: the `format.reformat` chain for `buffer`, with the
+    /// `formatprg` deprecation shim folded in.
+    ///
+    /// `formatprg` is retired into the chain rather than deleted
+    /// outright: an existing config that sets it keeps working for one
+    /// release, as an `external:` rung ahead of whatever the chain says.
+    /// Dropping a config key without saying so is indistinguishable from
+    /// a bug, so [`Self::note_formatprg_deprecation`] says it once.
+    fn reformat_chain(&self, buffer: BufferId) -> lattice_core::ProviderChain {
+        use lattice_config::core_options::{FormatPrg, FormatReformatChain};
+        let chain = (*self.resolved_option::<FormatReformatChain>(buffer)).clone();
+        let formatprg = self.resolved_option::<FormatPrg>(buffer);
+        if formatprg.trim().is_empty() {
+            return chain;
+        }
+        let mut rungs = vec![lattice_core::FormatProvider::External(
+            formatprg.trim().to_string(),
+        )];
+        rungs.extend(chain.0);
+        lattice_core::ProviderChain::new(rungs)
+    }
+
+    /// Say once, per session, that `formatprg` has moved.
+    fn note_formatprg_deprecation(&mut self, buffer: BufferId) {
+        if self.formatprg_deprecation_noted {
+            return;
+        }
+        let formatprg = self.resolved_option::<lattice_config::core_options::FormatPrg>(buffer);
+        if formatprg.trim().is_empty() {
+            return;
+        }
+        let cmd = formatprg.trim().to_string();
+        self.formatprg_deprecation_noted = true;
+        tracing::info!(
+            "`formatprg` is deprecated and will be removed; it is being used as \
+             the first rung of `format.reformat`. Replace it with \
+             `:set format.reformat=external:{cmd},lsp,lang-default`"
+        );
+    }
+
+    /// RF.5: the first rung of `chain` that can actually run, as a
+    /// concrete external [`lattice_format::FormatterSpec`], plus whether
+    /// an `lsp` rung came first.
+    ///
+    /// Returns `Err(tried)` naming every rung that was considered when
+    /// none applies, so the message the user gets is "no formatter: lsp
+    /// (no server), lang-default (rustfmt not on PATH)" rather than a
+    /// bare failure. An exhausted chain that does not say what it tried
+    /// is the failure mode this shape exists to avoid.
+    fn resolve_reformat(
+        &self,
+        chain: &lattice_core::ProviderChain,
+        lang: lattice_syntax::Lang,
+    ) -> Result<ReformatRung, Vec<String>> {
+        use lattice_core::FormatProvider as P;
+        let mut tried: Vec<String> = Vec::new();
+        for rung in chain.iter() {
+            match rung {
+                P::Lsp => {
+                    if self.lsp_supports_formatting() {
+                        return Ok(ReformatRung::Lsp);
+                    }
+                    tried.push("lsp (no server with formatting support)".to_string());
+                }
+                P::LangDefault => match lattice_format::FormatterSpec::for_lang(lang) {
+                    Some(spec) => return Ok(ReformatRung::External(spec)),
+                    None => tried.push(format!("lang-default (none for {})", lang.name())),
+                },
+                P::External(cmd) => match lattice_format::FormatterSpec::parse(cmd) {
+                    Some(spec) => return Ok(ReformatRung::External(spec)),
+                    None => tried.push(format!("external:{cmd} (unparseable)")),
+                },
+                P::Native => {
+                    // The reflow engine as a last resort. Useful for
+                    // prose (`external:prettier,native` formats markdown
+                    // with prettier when installed and reflows it when
+                    // not); meaningless for code, where it is simply
+                    // skipped rather than mangling the buffer.
+                    return Ok(ReformatRung::NativeReflow);
+                }
+                P::Plugin(id) => {
+                    // RF.5 declares the rung; the guest side is §13's
+                    // named deferral. Skipped with a reason rather than
+                    // silently, so a user who writes it learns why.
+                    tried.push(format!("plugin:{id} (plugin formatters not yet wired)"));
+                }
+            }
+        }
+        Err(tried)
     }
 
     /// RF.2: the buffer's `textwidth`, resolved through the same
@@ -42324,6 +42509,112 @@ mod tests {
             lattice_grammar::Effect::Many(vec![xf0_doomed(), xf0_doomed()]),
         );
         assert_eq!(xf0_text(&editor), before);
+    }
+
+    // ── RF.5: the reformat chain ──
+
+    /// The default chain reproduces `:format`'s pre-RF.5 cascade
+    /// exactly. If this drifts, the refactor changed behaviour rather
+    /// than relocating it.
+    #[test]
+    fn the_default_reformat_chain_is_the_old_cascade_in_order() {
+        let editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let chain = editor.reformat_chain(editor.active_buffer_id());
+        assert_eq!(
+            chain,
+            lattice_core::ProviderChain::new(vec![
+                lattice_core::FormatProvider::Lsp,
+                lattice_core::FormatProvider::LangDefault,
+            ])
+        );
+    }
+
+    /// A `formatprg` in an existing config keeps working — as the FIRST
+    /// rung, which is where it sat in the old cascade relative to the
+    /// language table.
+    #[test]
+    fn formatprg_is_retired_into_the_chain_rather_than_dropped() {
+        let editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        editor
+            .config
+            .parse_and_set_command("formatprg=myfmt --stdin")
+            .expect("formatprg still parses");
+        let chain = editor.reformat_chain(editor.active_buffer_id());
+        assert_eq!(
+            chain.0.first(),
+            Some(&lattice_core::FormatProvider::External(
+                "myfmt --stdin".to_string()
+            )),
+            "a deprecated key must keep working, not silently stop"
+        );
+        assert!(
+            chain.0.contains(&lattice_core::FormatProvider::LangDefault),
+            "and must not replace the rest of the chain"
+        );
+    }
+
+    /// An exhausted chain names every rung it considered. "No
+    /// formatter" that does not say what was tried is the message that
+    /// sends people to read the source.
+    #[test]
+    fn an_exhausted_chain_reports_what_it_tried() {
+        let editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let chain = lattice_core::ProviderChain::new(vec![
+            lattice_core::FormatProvider::Lsp,
+            lattice_core::FormatProvider::LangDefault,
+            lattice_core::FormatProvider::Plugin("nope".to_string()),
+        ]);
+        // `Lang::Plain` has no table entry, and a bare Editor has no LSP.
+        let err = editor
+            .resolve_reformat(&chain, lattice_syntax::Lang::Plain)
+            .expect_err("nothing should apply");
+        assert_eq!(err.len(), 3, "every rung is accounted for: {err:?}");
+        assert!(err[0].contains("lsp"), "{err:?}");
+        assert!(err[1].contains("lang-default"), "{err:?}");
+        assert!(err[2].contains("plugin:nope"), "{err:?}");
+    }
+
+    /// `native` is a legitimate tail rung, and resolving it must not
+    /// depend on a language having a formatter.
+    #[test]
+    fn a_native_tail_rung_resolves_when_everything_before_it_misses() {
+        let editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let chain = lattice_core::ProviderChain::new(vec![
+            lattice_core::FormatProvider::LangDefault,
+            lattice_core::FormatProvider::Native,
+        ]);
+        assert!(matches!(
+            editor.resolve_reformat(&chain, lattice_syntax::Lang::Plain),
+            Ok(ReformatRung::NativeReflow)
+        ));
+    }
+
+    /// The order is DATA: putting an external rung first beats the
+    /// language table without a host change, which is the whole reason
+    /// the cascade stopped being an `if`.
+    #[test]
+    fn reordering_the_chain_changes_which_formatter_wins() {
+        let editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let chain = lattice_core::ProviderChain::new(vec![
+            lattice_core::FormatProvider::External("myfmt".to_string()),
+            lattice_core::FormatProvider::LangDefault,
+        ]);
+        match editor.resolve_reformat(&chain, lattice_syntax::Lang::Rust) {
+            Ok(ReformatRung::External(spec)) => assert_eq!(
+                spec.program, "myfmt",
+                "the external rung is first, so it wins over rustfmt"
+            ),
+            other => panic!("expected the external rung, got {other:?}"),
+        }
+        // …and with the order reversed, the table wins.
+        let flipped = lattice_core::ProviderChain::new(vec![
+            lattice_core::FormatProvider::LangDefault,
+            lattice_core::FormatProvider::External("myfmt".to_string()),
+        ]);
+        match editor.resolve_reformat(&flipped, lattice_syntax::Lang::Rust) {
+            Ok(ReformatRung::External(spec)) => assert_eq!(spec.program, "rustfmt"),
+            other => panic!("expected rustfmt, got {other:?}"),
+        }
     }
 
     // ── DL.6 regression: listing icons must resolve their theme element ──

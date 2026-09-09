@@ -73,7 +73,8 @@ impl FormatterSpec {
         })
     }
 
-    /// Parse a user-supplied `formatprg` / `equalprg` string.
+    /// Parse a user-supplied formatter command line — an `external:` rung
+    /// of a `format.*` chain (RF.5), or the deprecated `formatprg`.
     ///
     /// Whitespace-split, first word is the program. Leaked to
     /// `'static` because [`FormatterSpec`] holds `&'static str` for the

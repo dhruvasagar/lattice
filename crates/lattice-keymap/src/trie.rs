@@ -173,6 +173,52 @@ pub enum LookupResult {
     Unbound,
 }
 
+/// WK.1: one immediate child of a trie node, as which-key sees it.
+///
+/// **Owned, not borrowed.** The composite trie
+/// `KeymapHandle::continuations_with_context` folds is a local temporary
+/// (`lookup_with_context` builds one per call), so a view holding
+/// `&TrieNode` could not outlive the fold. Owning also keeps `TrieNode`
+/// private, which it is today.
+#[derive(Debug, Clone)]
+pub struct ChildView {
+    /// The chord that descends to this child. For the wildcard slot this
+    /// is meaningless and the caller reads `NodeView::wildcard` instead.
+    pub chord: KeyChord,
+    /// The binding sitting AT the child, if it is a terminal node.
+    pub binding: Option<Arc<BoundCommand>>,
+    /// How many bindings live strictly BELOW the child. Non-zero means
+    /// the child is itself a prefix; which-key renders `+N`.
+    pub descendants: usize,
+}
+
+/// WK.1: the immediate children of the node a prefix names — which-key's
+/// view of the trie, as distinct from `:describe-key`'s
+/// [`KeymapTrie::walk_continuations`], which wants the whole subtree with
+/// provenance. Same trie, different questions.
+#[derive(Debug, Clone, Default)]
+pub struct NodeView {
+    /// Exact-match descents, in unspecified order — the caller sorts
+    /// (`children` is a `HashMap`, so an explicit total order is
+    /// required or the grid reshuffles between openings of the same
+    /// prefix).
+    pub children: Vec<ChildView>,
+    /// The `{char}` wildcard descent, if this node has one.
+    pub wildcard: Option<ChildView>,
+    /// A binding at the node ITSELF: the prefix is also bound, vim's
+    /// `d`-is-an-operator-and-a-prefix case. Reported in the popup's
+    /// footer rather than as a row.
+    pub terminal: Option<Arc<BoundCommand>>,
+}
+
+impl NodeView {
+    /// Nothing to show: no children and no wildcard. A node like this
+    /// suppresses the popup rather than rendering an empty box.
+    pub fn is_empty(&self) -> bool {
+        self.children.is_empty() && self.wildcard.is_none()
+    }
+}
+
 #[derive(Debug, Default)]
 struct TrieNode {
     children: HashMap<KeyChord, TrieNode>,
@@ -338,6 +384,43 @@ impl KeymapTrie {
             walk_node(wild, &mut path, &mut f);
             path.pop();
         }
+    }
+
+    /// WK.1: the immediate children of the node `prefix` names, as a
+    /// [`NodeView`]. `None` when the prefix leaves the trie — which-key
+    /// shows nothing for a chord the keymap does not know.
+    ///
+    /// Distinct from [`Self::walk_continuations`], which flattens the
+    /// whole subtree for `:describe-key`. Which-key wants one row per
+    /// next keystroke, so it needs depth one plus a count of what hangs
+    /// off each child.
+    ///
+    /// O(children + subtree) — the descendant counts walk each child's
+    /// subtree once. Runs on the actor thread after the idle delay,
+    /// never on the keystroke path.
+    pub fn node_view(&self, prefix: &[KeyChord]) -> Option<NodeView> {
+        let node = self.descend(prefix)?;
+        let children = node
+            .children
+            .iter()
+            .map(|(chord, child)| ChildView {
+                chord: *chord,
+                binding: child.binding.clone(),
+                descendants: count_node(child) - usize::from(child.binding.is_some()),
+            })
+            .collect();
+        let wildcard = node.char_wildcard.as_deref().map(|wild| ChildView {
+            // The wildcard has no chord of its own; callers render it as
+            // `{char}` and read this slot rather than the field.
+            chord: KeyChord::char('\0'),
+            binding: wild.binding.clone(),
+            descendants: count_node(wild) - usize::from(wild.binding.is_some()),
+        });
+        Some(NodeView {
+            children,
+            wildcard,
+            terminal: node.binding.clone(),
+        })
     }
 
     /// Overlay `other` on top of `self`. `other`'s bindings win

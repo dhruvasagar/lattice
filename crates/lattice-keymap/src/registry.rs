@@ -758,6 +758,56 @@ impl KeymapHandle {
         composite.lookup(chords)
     }
 
+    /// WK.1: the immediate continuations of `chords` in the **same
+    /// composite** [`Self::lookup_with_context`] resolves against.
+    ///
+    /// This is which-key's source of truth, and design §2 makes it the
+    /// feature's one correctness property: the popup is derived from the
+    /// trie the dispatcher walks, never from the static catalog. Both
+    /// halves of this function mirror `lookup_with_context` exactly —
+    /// the same always-on fast path, the same overlay order — and differ
+    /// only in the terminal step, where that one resolves a binding and
+    /// this one reports a node's children. Any other construction
+    /// reintroduces the `:describe-bindings` bug (a mode that shadows a
+    /// builtin chord not reflected, so the view advertises a binding
+    /// that will not fire) in a more visible place.
+    ///
+    /// **Not** [`Self::continuations`], which is `:describe-key`'s query:
+    /// activation-agnostic, all-layers, one row per registration. That
+    /// one answers "does this chord exist anywhere"; this one answers
+    /// "what can I press next, here". Same trie, opposite contexts.
+    ///
+    /// `None` when the prefix leaves the trie. Telemetry path — runs on
+    /// the actor thread after the idle delay, never per keystroke.
+    pub fn continuations_with_context(
+        &self,
+        mode: BindingMode,
+        chords: &[KeyChord],
+        active_modes: &[ModeId],
+    ) -> Option<crate::trie::NodeView> {
+        self.registry.ensure_derived_fresh();
+        let always_on = self.registry.merged.load();
+        if active_modes.is_empty() {
+            return always_on
+                .by_mode
+                .get(&mode)
+                .and_then(|trie| trie.node_view(chords));
+        }
+        let gated = self.registry.gated_mode_tries.load();
+        let mut composite = KeymapTrie::new();
+        if let Some(base) = always_on.by_mode.get(&mode) {
+            composite.merge_over(base);
+        }
+        for mode_id in active_modes {
+            if let Some(per_mode) = gated.get(mode_id)
+                && let Some(trie) = per_mode.get(&mode)
+            {
+                composite.merge_over(trie);
+            }
+        }
+        composite.node_view(chords)
+    }
+
     /// Register a binding at `(layer, mode, path)`. Replaces
     /// any prior binding at the exact same triple within the
     /// same layer (last-bind-wins per layer); higher-priority

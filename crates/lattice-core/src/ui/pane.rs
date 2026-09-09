@@ -346,6 +346,27 @@ pub struct PaneTree {
     root: PaneNode,
     /// Index into `leaves` of the currently active pane.
     active: usize,
+    /// ZP.1: the zoomed pane, if any (`<C-w>z` — tmux's `prefix z`).
+    /// While set, [`Self::compute_rects`] hands that one pane the
+    /// whole area and every other leaf goes unpainted; the tree
+    /// itself is untouched, so the second toggle restores the layout
+    /// verbatim. That non-destructiveness is the whole point —
+    /// `<C-w>o` already exists for the destructive form.
+    ///
+    /// A [`PaneId`], not a leaf index, because `close_active`
+    /// renumbers every index above the removed one
+    /// (`rewrite_indices_after_remove`) — an index here would
+    /// silently re-target a different pane.
+    ///
+    /// **Invariant: when `Some`, this is the ACTIVE pane.** Every
+    /// mutation that could break it clears zoom instead (see
+    /// `set_active` / `split_active` / `close_active` /
+    /// `collapse_to_active`). The invariant is what lets the ~6
+    /// existing `compute_rects` consumers that look up the active
+    /// pane's rect keep working unchanged: under zoom the returned
+    /// list has exactly one entry and it is theirs. See
+    /// `docs/dev/architecture/pane-zoom.md` §4.
+    zoomed: Option<PaneId>,
 }
 
 /// `Default` builds a single-pane tree with a placeholder
@@ -365,7 +386,55 @@ impl PaneTree {
             leaves: vec![state],
             root: PaneNode::leaf(0),
             active: 0,
+            zoomed: None,
         }
+    }
+
+    /// ZP.1: the zoomed pane's id, or `None` when the full split
+    /// layout is showing.
+    pub fn zoomed(&self) -> Option<PaneId> {
+        self.zoomed
+    }
+
+    /// ZP.1: whether a pane is currently zoomed. Read by the
+    /// modeline's `core.zoom` element and the tabline marker.
+    pub fn is_zoomed(&self) -> bool {
+        self.zoomed.is_some()
+    }
+
+    /// ZP.1: the zoomed pane's *leaf index*, resolved through
+    /// [`Self::index_of`]. `None` when nothing is zoomed, and also
+    /// when the recorded id no longer names a live leaf — a state
+    /// the enforcement below is meant to prevent, but resolving
+    /// rather than trusting means a stale id degrades to "not
+    /// zoomed" instead of to a panic on the render path.
+    pub fn zoomed_index(&self) -> Option<usize> {
+        self.zoomed.and_then(|id| self.index_of(id))
+    }
+
+    /// ZP.1: toggle zoom on the active pane (`<C-w>z`). Returns
+    /// `true` if the zoom state changed.
+    ///
+    /// A single-leaf tree is a no-op: there is nothing to hide, and
+    /// marking it zoomed would light the indicator for a state the
+    /// user cannot see.
+    pub fn toggle_zoom(&mut self) -> bool {
+        if self.zoomed.is_some() {
+            self.zoomed = None;
+            return true;
+        }
+        if self.leaves.len() <= 1 {
+            return false;
+        }
+        self.zoomed = Some(self.leaves[self.active].id);
+        true
+    }
+
+    /// ZP.1: drop zoom unconditionally. Returns `true` if it was
+    /// set. Called by every mutation that would otherwise break the
+    /// zoomed-is-active invariant.
+    pub fn clear_zoom(&mut self) -> bool {
+        self.zoomed.take().is_some()
     }
 
     pub fn root(&self) -> &PaneNode {
@@ -406,6 +475,13 @@ impl PaneTree {
         if idx >= self.leaves.len() || idx == self.active {
             return false;
         }
+        // ZP.1: focus leaves the zoomed pane, so the zoom goes with
+        // it. This is the enforcement point for the zoomed-is-active
+        // invariant on every focus path — `<C-w>hjkl`, `<C-w>w`, a
+        // mouse click, a picker landing in another pane. tmux's
+        // `select-pane` and Zed's toggle-zoom both unzoom here, and
+        // it makes the navigation keys the escape hatch out of zoom.
+        self.zoomed = None;
         self.active = idx;
         true
     }
@@ -422,6 +498,10 @@ impl PaneTree {
     /// Returns the new pane's index. The active pane stays the
     /// original leaf -- the new sibling becomes inactive.
     pub fn split_active(&mut self, orientation: SplitOrientation) -> usize {
+        // ZP.1: splitting a zoomed pane un-zooms first — the new
+        // sibling is created to be looked at, and leaving zoom on
+        // would hide it the instant it appeared. tmux does the same.
+        self.zoomed = None;
         let active_idx = self.active;
         let new_state = self.leaves[active_idx];
         let new_state = PaneState {
@@ -457,6 +537,11 @@ impl PaneTree {
         if self.leaves.len() <= 1 {
             return false;
         }
+        // ZP.1: the zoomed pane IS the active pane (invariant), so
+        // closing it destroys the zoom target. Clear before the
+        // index rewrite below, which would otherwise leave `zoomed`
+        // naming a pane that has been renumbered out from under it.
+        self.zoomed = None;
         let active_idx = self.active;
         // Remove from the tree.
         let removed = self.root.remove_leaf(active_idx);
@@ -482,6 +567,11 @@ impl PaneTree {
         if self.leaves.len() <= 1 {
             return false;
         }
+        // ZP.1: `:only` makes the zoom permanent by actually
+        // dropping the siblings, so the temporary form retires.
+        // Leaving it set would zoom a one-leaf tree, which
+        // `toggle_zoom` refuses to create in the first place.
+        self.zoomed = None;
         let survivor = self.leaves[self.active];
         self.leaves = vec![survivor];
         self.root = PaneNode::leaf(0);
@@ -495,6 +585,14 @@ impl PaneTree {
     /// so the renderer can skip the publish when there's
     /// nothing to do.
     pub fn equalize_ratios(&mut self) -> bool {
+        // ZP.1: ratios describe a layout that is not on screen while
+        // zoomed. Silently rewriting it would surprise the user on
+        // unzoom — they would get their layout back reshaped by a
+        // key they pressed against a full-screen pane. Refuse
+        // instead, matching tmux's resize-pane-while-zoomed.
+        if self.zoomed.is_some() {
+            return false;
+        }
         equalize_recursive(&mut self.root)
     }
 
@@ -511,6 +609,11 @@ impl PaneTree {
     /// ratio (top/left gets bigger). If active is in `bottom`
     /// (or `right`), growing means DECREASING the ratio.
     pub fn resize_active_split(&mut self, orientation: SplitOrientation, delta: f32) -> bool {
+        // ZP.1: same reasoning as `equalize_ratios` — no silent
+        // reshaping of a layout the user cannot see.
+        if self.zoomed.is_some() {
+            return false;
+        }
         let active = self.active;
         resize_active_recursive(&mut self.root, active, orientation, delta).is_some()
     }
@@ -535,7 +638,11 @@ impl PaneTree {
     /// position — you go down into the pane under your cursor — and that is
     /// the behaviour muscle memory expects.
     pub fn navigate(&self, direction: PaneDirection, area: PaneRect) -> Option<usize> {
-        let rects = self.compute_rects(area);
+        // ZP.1: deliberately the unzoomed layout — see
+        // `compute_rects_layout`. The caller's `set_active` clears
+        // the zoom, so the user sees zoom drop and focus move one
+        // pane in the direction they pressed.
+        let rects = self.compute_rects_layout(area);
         let from = rects.iter().find(|(idx, _)| *idx == self.active)?.1;
         let vertical = matches!(direction, PaneDirection::Up | PaneDirection::Down);
         // The perpendicular span of a rect: the horizontal one when travelling
@@ -646,6 +753,31 @@ impl PaneTree {
     /// neighbours. Splits are evenly divided -- arbitrary ratios
     /// are post-1.0.
     pub fn compute_rects(&self, area: PaneRect) -> Vec<(usize, PaneRect)> {
+        // ZP.1: zoom is one branch at the head of the single
+        // canonical layout function, so every consumer inherits it
+        // without knowing it exists — the TUI draw path, per-pane
+        // viewport sizing (which resizes terminal PTYs), mouse
+        // hit-testing and the pane-height motions all route here.
+        //
+        // It also makes zoom cheaper than not zooming: hidden panes
+        // get no rect, so no element fan-out and no per-pane content
+        // resolution happens for them at all (paramount goal #1).
+        if let Some(idx) = self.zoomed_index() {
+            return vec![(idx, area)];
+        }
+        self.compute_rects_layout(area)
+    }
+
+    /// ZP.1: the always-unzoomed peer of [`Self::compute_rects`] —
+    /// the full split layout, whatever the zoom state.
+    ///
+    /// One caller: [`Self::navigate`]. Cardinal navigation has to
+    /// ask where a pane sits in the REAL layout, because the answer
+    /// decides where focus lands after the zoom drops. Reading the
+    /// zoom-aware view instead would hand it a one-entry list, no
+    /// neighbour would be found in any direction, and `<C-w>j` while
+    /// zoomed would silently do nothing.
+    pub fn compute_rects_layout(&self, area: PaneRect) -> Vec<(usize, PaneRect)> {
         let mut out = Vec::with_capacity(self.leaves.len());
         compute_rects_recursive(&self.root, area, &mut out);
         out
@@ -1196,5 +1328,172 @@ mod tests {
         t.split_active(SplitOrientation::Vertical);
         let new_id = t.leaves()[1].id;
         assert_ne!(original_id, new_id);
+    }
+
+    // ---- ZP.1: pane zoom -------------------------------------------
+    // `docs/dev/architecture/pane-zoom.md`.
+
+    /// A 2-pane tree, split vertically, with the SECOND pane active —
+    /// so "the zoomed pane" is not index 0 and an off-by-one in
+    /// `zoomed_index` cannot pass by accident.
+    fn two_pane_tree() -> PaneTree {
+        let mut t = PaneTree::single(doc_state());
+        let new_idx = t.split_active(SplitOrientation::Vertical);
+        t.set_active(new_idx);
+        t
+    }
+
+    /// The core promise: zoom hands the active pane the whole area,
+    /// and the toggle back restores the rects VERBATIM. Comparing the
+    /// full rect list before and after is what makes this a test of
+    /// non-destructiveness rather than of "something got restored".
+    #[test]
+    fn zoom_gives_the_active_pane_the_whole_area_and_restores_on_toggle() {
+        let mut t = two_pane_tree();
+        let before = t.compute_rects(area());
+        assert_eq!(before.len(), 2, "unzoomed: both panes get a rect");
+
+        assert!(t.toggle_zoom());
+        let zoomed = t.compute_rects(area());
+        assert_eq!(
+            zoomed,
+            vec![(t.active_index(), area())],
+            "zoomed: one entry, the active pane, the full area"
+        );
+
+        assert!(t.toggle_zoom());
+        assert_eq!(t.compute_rects(area()), before, "layout restored verbatim");
+    }
+
+    /// Nothing to hide, and marking it zoomed would light the
+    /// indicator for a state the user cannot see.
+    #[test]
+    fn zoom_is_a_no_op_on_a_single_pane_tree() {
+        let mut t = PaneTree::single(doc_state());
+        assert!(!t.toggle_zoom());
+        assert!(!t.is_zoomed());
+        assert_eq!(t.compute_rects(area()).len(), 1);
+    }
+
+    /// The invariant every `compute_rects` consumer leans on: if a
+    /// pane is zoomed, it is the active one. Enforced on each mutation
+    /// that could break it, so a call site cannot forget.
+    #[test]
+    fn focus_change_clears_zoom() {
+        let mut t = two_pane_tree();
+        t.toggle_zoom();
+        assert!(t.set_active(0), "moved focus to the other pane");
+        assert!(!t.is_zoomed(), "focus left the zoomed pane, zoom went too");
+    }
+
+    #[test]
+    fn splitting_while_zoomed_clears_zoom() {
+        let mut t = two_pane_tree();
+        t.toggle_zoom();
+        t.split_active(SplitOrientation::Horizontal);
+        assert!(!t.is_zoomed(), "the new sibling must be visible");
+        assert_eq!(t.compute_rects(area()).len(), 3);
+    }
+
+    #[test]
+    fn closing_the_zoomed_pane_clears_zoom() {
+        let mut t = two_pane_tree();
+        t.toggle_zoom();
+        assert!(t.close_active());
+        assert!(!t.is_zoomed());
+        assert_eq!(t.compute_rects(area()).len(), 1);
+    }
+
+    #[test]
+    fn only_clears_zoom() {
+        let mut t = two_pane_tree();
+        t.toggle_zoom();
+        assert!(t.collapse_to_active());
+        assert!(
+            !t.is_zoomed(),
+            "`:only` made the zoom permanent; the temporary form retires"
+        );
+    }
+
+    /// Resize + equalize describe a layout that is not on screen.
+    /// Refusing beats silently reshaping it, which would hand the user
+    /// back a layout they never asked to change.
+    #[test]
+    fn resize_and_equalize_are_refused_while_zoomed() {
+        let mut t = two_pane_tree();
+        // Nudge one ratio off 0.5 first, so `equalize_ratios` has real
+        // work to do and returning `false` cannot be a false pass.
+        assert!(t.resize_active_split(SplitOrientation::Vertical, 0.1));
+        let shape = t.compute_rects(area());
+
+        t.toggle_zoom();
+        assert!(!t.equalize_ratios(), "equalize refused while zoomed");
+        assert!(
+            !t.resize_active_split(SplitOrientation::Vertical, 0.2),
+            "resize refused while zoomed"
+        );
+        t.toggle_zoom();
+
+        assert_eq!(shape, t.compute_rects(area()), "layout untouched");
+    }
+
+    /// `<C-w>j` while zoomed must find the pane that is spatially
+    /// below in the REAL layout — the zoom-aware view has one entry
+    /// and would report no neighbour in any direction, making the
+    /// navigation keys silently dead.
+    #[test]
+    fn navigation_while_zoomed_reads_the_unzoomed_layout() {
+        let mut t = PaneTree::single(doc_state());
+        let below = t.split_active(SplitOrientation::Horizontal);
+        t.toggle_zoom();
+        assert!(t.is_zoomed());
+
+        let target = t.navigate(PaneDirection::Down, area());
+        assert_eq!(target, Some(below), "found the real spatial neighbour");
+
+        t.set_active(target.unwrap());
+        assert!(!t.is_zoomed(), "navigating out drops the zoom");
+    }
+
+    /// Zoom rides on `PaneTree`, and `TabSlot` stashes a whole tree
+    /// (`ui/tab.rs` swaps them on tab switch). So zoom is per-tab with
+    /// no extra stash/restore step — this pins that.
+    #[test]
+    fn zoom_travels_with_the_tab_across_a_swap() {
+        let mut live = two_pane_tree();
+        live.toggle_zoom();
+        let mut stashed = two_pane_tree();
+
+        std::mem::swap(&mut live, &mut stashed);
+        assert!(!live.is_zoomed(), "switched to the unzoomed tab");
+        assert!(stashed.is_zoomed(), "the zoomed tab kept its zoom");
+
+        std::mem::swap(&mut live, &mut stashed);
+        assert!(live.is_zoomed(), "and gets it back on return");
+    }
+
+    /// `close_active` renumbers every leaf index above the removed
+    /// one. Keying zoom on `PaneId` is what stops that renumbering
+    /// re-pointing the zoom at a different pane; this is the
+    /// regression test for using an index instead.
+    #[test]
+    fn zoom_is_keyed_on_pane_id_not_leaf_index() {
+        let mut t = PaneTree::single(doc_state());
+        t.split_active(SplitOrientation::Vertical);
+        let third = t.split_active(SplitOrientation::Vertical);
+        t.set_active(third);
+        t.toggle_zoom();
+        let zoomed_id = t.zoomed().unwrap();
+
+        // Close a LOWER-indexed pane: every index above it shifts.
+        t.set_active(0);
+        t.close_active();
+
+        // Re-zoom the same pane by id and confirm the id still names it.
+        let idx = t.index_of(zoomed_id).expect("pane survived the close");
+        t.set_active(idx);
+        t.toggle_zoom();
+        assert_eq!(t.zoomed(), Some(zoomed_id));
+        assert_eq!(t.zoomed_index(), Some(idx));
     }
 }

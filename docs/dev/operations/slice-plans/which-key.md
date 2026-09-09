@@ -18,6 +18,7 @@ Design fragment: `docs/dev/architecture/which-key.md` (committed
 | WK.6 | The subsystem — options, mode, arming, model, `Effect::OpenPopup`, dismissal | §3, §5.3, §8 | ✅ |
 | WK.7 | Lifecycle tests — asserted without a further keystroke | §11 | ✅ |
 | WK.8 | Docs + benches — user page, nav, `BENCHMARKS.md` rows, ledger | §12 | ✅ |
+| WK.9 | Key emphasis — `RenderedGrid` spans → `ExtraHighlights` | §6 | ✅ |
 
 ## Note on `continuations` (DK.4)
 
@@ -134,6 +135,23 @@ dispatching another key**.
 User page + `nav.toml` + sync; `BENCHMARKS.md` rows including the
 keystroke-path `partial_chord_publish_unchanged`; ledger entry in
 `implementation.md`; flip this table's icons.
+
+### WK.9 — Key emphasis ✅
+
+Follow-up after using it: the grid read flat. `layout_grid` now returns
+`RenderedGrid { lines, spans }`; `WhichKeyMode::on_activate` maps the
+spans onto `Style::HelpKey` / `Style::Markup` and publishes them through
+`PendingSyntheticHighlights`, the same path magit's buffers use. No
+renderer change — both peers already paint `ExtraHighlights`.
+
+Design §6's two new theme elements were not added; see the design
+fragment for why reusing `HelpKey` is the better answer.
+
+Tests: spans cover the key and not its alignment padding; the header
+prefix is spanned; `+N` is a distinct kind; no span points past its line
+at any width; and — host-side — the spans actually reach the popup
+buffer's `ExtraHighlights`, which is the only assertion that would have
+caught the `ServiceRegistry` `T`-mismatch this slice nearly shipped.
 
 ## As-built deviations
 

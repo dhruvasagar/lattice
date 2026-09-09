@@ -42,7 +42,7 @@ use lattice_core::ui::popup::{PopupFocus, PopupPlacement};
 use lattice_grammar::CommandRegistryHandle;
 use lattice_grammar::effect::Effect;
 use lattice_keymap::PartialChordPending;
-use lattice_keymap::which_key::{GridOpts, Sort, layout_grid};
+use lattice_keymap::which_key::{GridOpts, GridSpanKind, RenderedGrid, Sort, layout_grid};
 
 use crate::{
     BufferStoreHandle, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
@@ -94,7 +94,11 @@ type Stash = Arc<Mutex<Option<PartialChordPending>>>;
 /// to write into the popup buffer. A mode cannot create the buffer it is
 /// activating on, and the handler cannot write a buffer that does not
 /// exist yet, so the content crosses between them here.
-type PendingGrid = Arc<Mutex<Vec<String>>>;
+///
+/// Carries the SPANS as well as the lines (WK.9). They are produced by
+/// the layout, which knows the byte offset it wrote each key at;
+/// recovering them by re-scanning padded rows would be a guess.
+type PendingGrid = Arc<Mutex<RenderedGrid>>;
 
 /// Major mode for `*which-key*`.
 pub struct WhichKeyMode {
@@ -143,9 +147,9 @@ impl Mode for WhichKeyMode {
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         let grid = Arc::clone(&self.grid);
         Box::pin(async move {
-            let text = {
+            let (text, spans) = {
                 let g = grid.lock().unwrap_or_else(|e| e.into_inner());
-                g.join("\n")
+                (g.lines.join("\n"), g.spans.clone())
             };
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
@@ -169,6 +173,42 @@ impl Mode for WhichKeyMode {
             let _ = handle
                 .apply_edit_batch(vec![lattice_protocol::edit::Edit::replace(range, text)])
                 .await;
+
+            // WK.9: emphasise the keys. Written through the same
+            // `PendingSyntheticHighlights` path magit's buffers use, so it
+            // lands in the buffer's `ExtraHighlights` local and both
+            // renderers paint it with no peer-side change.
+            //
+            // `Style::HelpKey` rather than a which-key-specific element:
+            // it already means "a key or chord you press" and is already
+            // themed everywhere, so a chord looks the same in `:help` as
+            // it does in the hint. A second name for one concept is a
+            // second thing to keep in sync.
+            // `PendingSyntheticHighlights`, NOT the `…Handle` alias: boot
+            // registers the bare type, and the ServiceRegistry keys on the
+            // exact `T`. Asking for the alias compiles, returns `None`, and
+            // leaves the popup permanently unstyled with nothing to show for
+            // it — the Arc/TypeId trap, which is why this names the same type
+            // magit's producers name.
+            if let Some(ph) = ctx.service::<crate::PendingSyntheticHighlights>() {
+                let styled: Vec<Vec<lattice_cells::StyledSpan>> = spans
+                    .iter()
+                    .map(|row| {
+                        row.iter()
+                            .map(|s| lattice_cells::StyledSpan {
+                                start: s.start,
+                                end: s.end,
+                                style: match s.kind {
+                                    GridSpanKind::Key => lattice_cells::Style::HelpKey,
+                                    // Structure, not something to press.
+                                    GridSpanKind::Group => lattice_cells::Style::Markup,
+                                },
+                            })
+                            .collect()
+                    })
+                    .collect();
+                ph.store_and_wake(buffer_id, styled);
+            }
             Ok(())
         })
     }
@@ -194,7 +234,7 @@ impl Mode for WhichKeyMode {
 /// and no host `Action` variant — the part of the acid test that is
 /// actually about ownership still holds.
 pub fn install(boot: &mut impl SubsystemBoot) -> WhichKeyGrid {
-    let grid: PendingGrid = Arc::new(Mutex::new(Vec::new()));
+    let grid: PendingGrid = Arc::new(Mutex::new(RenderedGrid::default()));
     // A duplicate registration is a boot-order bug, not a runtime
     // condition — log it and carry on rather than unwrapping.
     if let Err(e) = boot.modes_mut().register(WhichKeyMode {
@@ -265,7 +305,7 @@ pub fn wire(boot: &mut impl SubsystemBoot, grid: WhichKeyGrid) {
                     &commands.load(),
                     opts.sort,
                 );
-                let lines = layout_grid(
+                let rendered = layout_grid(
                     &model,
                     pending.pane_width as usize,
                     GridOpts {
@@ -273,12 +313,12 @@ pub fn wire(boot: &mut impl SubsystemBoot, grid: WhichKeyGrid) {
                         max_height: opts.max_height,
                     },
                 );
-                if lines.is_empty() {
+                if rendered.is_empty() {
                     // Pane too narrow (§8): a single column of truncated
                     // labels is worse than nothing.
                     return Vec::new();
                 }
-                *grid.lock().unwrap_or_else(|e| e.into_inner()) = lines;
+                *grid.lock().unwrap_or_else(|e| e.into_inner()) = rendered;
                 vec![Effect::OpenPopup {
                     name: WHICH_KEY_BUFFER_NAME.to_string(),
                     mode_id: WhichKeyMode::mode_id().as_str().to_string(),
@@ -385,7 +425,7 @@ mod tests {
 
     fn mode() -> WhichKeyMode {
         WhichKeyMode {
-            grid: Arc::new(Mutex::new(Vec::new())),
+            grid: Arc::new(Mutex::new(RenderedGrid::default())),
         }
     }
 

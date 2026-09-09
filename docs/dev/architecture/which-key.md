@@ -253,13 +253,28 @@ popup-geometry branch in `render.rs`, and GPUI's `popup_outer_dims_px`
 `grep -rn "PopupPlacement::PaneBottom" crates/lattice-ui-gpui/ --include="*.rs"`
 — an empty grep means GPUI was missed.
 
-Keys and labels want distinct faces or the grid reads flat: two theme
-elements (`which-key.key`, `which-key.label`) applied as spans by a
-`which-key-mode` major on the popup buffer, falling back to the
-existing popup faces when unregistered. **Unverified:** that the span
-mechanism reused here is the one help-mode uses for links. Confirm
-during the slice; if it is not, monochrome v1 is acceptable and
-per-cell styling becomes a follow-up.
+Keys and labels want distinct faces or the grid reads flat.
+
+**Resolved in WK.9, and not as sketched here.** The span mechanism is
+`PendingSyntheticHighlights` — the service magit's buffers publish
+through, drained into each buffer's `ExtraHighlights` local — rather
+than help-mode's link path. Both peers already paint that local, so the
+styling reached the screen with no renderer change at all.
+
+The two proposed theme elements (`which-key.key`, `which-key.label`)
+were **not** added. `Style::HelpKey` already means *a key or chord you
+press* and is already themed in every colorscheme; a second name for one
+concept is a second thing to keep in sync, and it would let a chord look
+one way in `:help` and another in the hint. So: keys and the header
+prefix take `HelpKey`, `+N` group markers take `Markup` (structure, not
+something pressable), and labels stay unstyled — which is what gives the
+key its emphasis.
+
+Spans are emitted by `layout_grid`, which returns a `RenderedGrid`
+(lines + per-line byte ranges), because the layout knows the offset it
+wrote each key at. Recovering them by scanning padded rows would be a
+guess — `magit/highlight.rs` carries a note about that exact hazard for
+refs rows.
 
 ## 7. Key routing, and why the popup is passive
 

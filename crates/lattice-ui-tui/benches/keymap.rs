@@ -728,8 +728,8 @@ fn which_key_layout_grid_40(c: &mut Criterion) {
     };
     c.bench_function("which_key_layout_grid_40", |b| {
         b.iter(|| {
-            let lines = layout_grid(black_box(&model), 120, GridOpts::default());
-            black_box(lines);
+            let grid = layout_grid(black_box(&model), 120, GridOpts::default());
+            black_box(grid);
         });
     });
 }

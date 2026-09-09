@@ -195,3 +195,65 @@ async fn a_prefix_with_no_continuations_opens_nothing() {
         "no continuations ⇒ no popup, rather than an empty grid"
     );
 }
+
+/// WK.9: the keys are emphasised, and the emphasis reaches the buffer's
+/// highlights rather than stopping at the producer.
+///
+/// The failure this pins is a silent one: the spans are stored through a
+/// service, and asking the registry for the wrong `T` (the `…Handle`
+/// alias rather than the bare type) compiles, returns `None`, and leaves
+/// the popup permanently unstyled. Only reading the buffer's own
+/// `ExtraHighlights` proves the chain ran end to end.
+#[tokio::test]
+async fn the_keys_in_the_popup_are_highlighted() {
+    let mut editor = booted();
+    quiesce(&editor).await;
+
+    let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
+    settle_arming(&mut editor).await;
+    fire_gate(&mut editor).await;
+    let popup = editor.popup_buffer.expect("popup open");
+
+    // The drain that moves stored spans into the buffer local runs on the
+    // tick, exactly as it does for magit's buffers.
+    let _ = editor.run_tick_pending();
+
+    let highlights = editor
+        .buffer_locals
+        .get(&popup)
+        .and_then(|l| l.get::<lattice_host::modes::ExtraHighlights>())
+        .map(|h| h.0.clone())
+        .expect("the popup buffer carries extra highlights");
+
+    let key_spans: Vec<_> = highlights
+        .iter()
+        .flatten()
+        .filter(|s| s.style == lattice_syntax::Style::HelpKey)
+        .collect();
+    assert!(
+        !key_spans.is_empty(),
+        "every key in the grid is emphasised — without this the popup is a \
+         wall of undifferentiated text: {highlights:?}"
+    );
+
+    // And the spans point at real keys, not at padding: slice the rendered
+    // text back with them.
+    let text = editor
+        .buffers
+        .document_handle(popup)
+        .expect("popup buffer live")
+        .snapshot()
+        .buffer
+        .as_string();
+    let lines: Vec<&str> = text.lines().collect();
+    for (row, spans) in highlights.iter().enumerate() {
+        let Some(line) = lines.get(row) else { continue };
+        for s in spans {
+            let slice = &line[s.start..s.end];
+            assert!(
+                !slice.trim().is_empty(),
+                "a span must cover a key, not whitespace: {slice:?} in {line:?}"
+            );
+        }
+    }
+}

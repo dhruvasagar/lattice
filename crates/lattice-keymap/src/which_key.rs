@@ -310,19 +310,64 @@ const MIN_LABEL: usize = 4;
 /// single column of truncated labels is worse than nothing.
 pub const MIN_USABLE_WIDTH: usize = 20;
 
-/// Lay the model out as plain text lines (§6). Pure: no renderer type
-/// crosses in, so the column algorithm is unit-testable with no
+/// What a [`GridSpan`] covers. Deliberately semantic rather than a
+/// colour: this crate has no styling dependency, and the consumer maps
+/// these onto the editor's existing style vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridSpanKind {
+    /// A key you would press — the emphasised column, and the header's
+    /// pending prefix.
+    Key,
+    /// A `+N` group marker: structure, not a key.
+    Group,
+}
+
+/// A styled byte range within one rendered line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridSpan {
+    pub start: usize,
+    pub end: usize,
+    pub kind: GridSpanKind,
+}
+
+/// The laid-out popup: lines to write, and where the keys are.
+///
+/// The spans come from the LAYOUT rather than from re-scanning the
+/// rendered text, and that is the point: this function knows the byte
+/// offset it wrote each key at, while a scanner would have to guess
+/// which run of a padded row was a key. `magit/highlight.rs` carries a
+/// note about exactly that hazard — a refs row cannot be scanned back
+/// unambiguously, so its producer emits spans directly. Same rule here,
+/// applied before the ambiguity can arise.
+#[derive(Debug, Clone, Default)]
+pub struct RenderedGrid {
+    pub lines: Vec<String>,
+    /// One entry per line in `lines`, same order. Empty vectors for
+    /// lines with nothing to emphasise.
+    pub spans: Vec<Vec<GridSpan>>,
+}
+
+impl RenderedGrid {
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
+
+/// Lay the model out (§6). Pure: no renderer type crosses in, so both
+/// the column algorithm and the span placement are unit-testable with no
 /// renderer at all.
 ///
-/// Returns header, grid rows, then any footer lines. The caller writes
-/// these into the popup buffer verbatim — everything-is-a-buffer holds,
-/// and no new render model reaches either peer.
+/// Returns header, grid rows, then any footer lines — plus the byte
+/// ranges of every key. The caller writes the lines into the popup
+/// buffer verbatim and hands the spans to the highlight path, so
+/// everything-is-a-buffer holds and no new render model reaches either
+/// peer.
 ///
 /// Returns empty when the model has no rows or the pane is too narrow;
 /// the caller suppresses the popup rather than opening an empty box.
-pub fn layout_grid(model: &WhichKeyModel, width: usize, opts: GridOpts) -> Vec<String> {
+pub fn layout_grid(model: &WhichKeyModel, width: usize, opts: GridOpts) -> RenderedGrid {
     if model.is_empty() || width < MIN_USABLE_WIDTH {
-        return Vec::new();
+        return RenderedGrid::default();
     }
     let cells: Vec<(String, String)> = model
         .rows()
@@ -370,10 +415,20 @@ pub fn layout_grid(model: &WhichKeyModel, width: usize, opts: GridOpts) -> Vec<S
     let shown = &cells[..cells.len().min(capacity)];
 
     let mut out = Vec::with_capacity(rows + 3);
-    out.push(model.header());
+    let mut spans: Vec<Vec<GridSpan>> = Vec::with_capacity(rows + 3);
+    // The header IS the pending prefix — the keys you have already
+    // pressed — so it is emphasised for the same reason the key column is.
+    let header = model.header();
+    spans.push(vec![GridSpan {
+        start: 0,
+        end: header.len(),
+        kind: GridSpanKind::Key,
+    }]);
+    out.push(header);
 
     for r in 0..rows {
         let mut line = String::new();
+        let mut row_spans: Vec<GridSpan> = Vec::new();
         // COLUMN-MAJOR fill: down, then across. Row-major would place
         // `a b c` across the top and `d e f` on row two, defeating a
         // scan for a letter in a sorted list — `ls` and emacs
@@ -386,22 +441,52 @@ pub fn layout_grid(model: &WhichKeyModel, width: usize, opts: GridOpts) -> Vec<S
                 line.push_str(&" ".repeat(COLUMN_GAP));
             }
             let label = truncate_to(label, label_w);
+            // Byte offsets, captured as the row is built — `key` may be
+            // multi-byte (`{char}`, a special-key name) and the padding
+            // that follows must not be inside the span.
+            let key_start = line.len();
             line.push_str(&pad_to(key, key_w));
+            row_spans.push(GridSpan {
+                start: key_start,
+                end: key_start + key.len(),
+                kind: GridSpanKind::Key,
+            });
             line.push_str(&" ".repeat(KEY_LABEL_GAP));
+            let label_start = line.len();
             line.push_str(&pad_to(&label, label_w));
+            // `+N` is a group marker, not a command name: dim structure
+            // rather than another key.
+            if label.starts_with('+') {
+                row_spans.push(GridSpan {
+                    start: label_start,
+                    end: label_start + label.len(),
+                    kind: GridSpanKind::Group,
+                });
+            }
         }
+        // Trailing padding is trimmed; no span can point past the line
+        // because every span ends at content, never at padding.
         out.push(line.trim_end().to_string());
+        spans.push(row_spans);
     }
 
     if truncated > 0 {
         out.push(format!("+{truncated} more"));
+        spans.push(Vec::new());
     }
     if let Some(label) = &model.terminal_label {
         // The prefix is bound on its own (vim's `d`). A footer note, not
         // a row: pressing nothing more is not a "next key".
-        out.push(format!("{} alone: {label}", model.header()));
+        let header = model.header();
+        out.push(format!("{header} alone: {label}"));
+        spans.push(vec![GridSpan {
+            start: 0,
+            end: header.len(),
+            kind: GridSpanKind::Key,
+        }]);
     }
-    out
+    debug_assert_eq!(out.len(), spans.len(), "one span row per rendered line");
+    RenderedGrid { lines: out, spans }
 }
 
 fn display_width(s: &str) -> usize {
@@ -803,8 +888,8 @@ mod tests {
     }
 
     /// Grid rows only — header and footers stripped.
-    fn grid_rows(lines: &[String]) -> Vec<String> {
-        lines
+    fn grid_rows(grid: &RenderedGrid) -> Vec<String> {
+        grid.lines
             .iter()
             .skip(1)
             .filter(|l| !l.starts_with('+') && !l.contains(" alone: "))
@@ -816,8 +901,8 @@ mod tests {
     fn column_count_scales_with_width() {
         let model = model_of(24, "cmd");
         let cols_at = |w: usize| {
-            let lines = layout_grid(&model, w, GridOpts::default());
-            let rows = grid_rows(&lines);
+            let grid = layout_grid(&model, w, GridOpts::default());
+            let rows = grid_rows(&grid);
             // Columns = ceil(n / rows) given every row is full but the last.
             24_usize.div_ceil(rows.len())
         };
@@ -837,8 +922,8 @@ mod tests {
             max_columns: 2,
             max_height: 12,
         };
-        let lines = layout_grid(&model, 40, opts);
-        let rows = grid_rows(&lines);
+        let grid = layout_grid(&model, 40, opts);
+        let rows = grid_rows(&grid);
         assert_eq!(rows.len(), 3, "6 entries / 2 columns");
         // Column-major: a b c fill column ONE (rows 0,1,2); d e f fill
         // column two. Row-major would put `a b` on the first row.
@@ -858,8 +943,8 @@ mod tests {
         for (i, e) in model.entries.iter_mut().enumerate() {
             e.label = format!("an extremely long description number {i}");
         }
-        let lines = layout_grid(&model, 60, GridOpts::default());
-        let rows = grid_rows(&lines);
+        let grid = layout_grid(&model, 60, GridOpts::default());
+        let rows = grid_rows(&grid);
         assert!(
             rows.iter().any(|r| r.contains('…')),
             "labels shrink so a second column fits: {rows:?}"
@@ -884,8 +969,8 @@ mod tests {
             e.chord = KeyChord::ctrl((b'x' + i as u8) as char);
             e.label = "a very long label indeed".to_string();
         }
-        let lines = layout_grid(&model, MIN_USABLE_WIDTH, GridOpts::default());
-        let rows = grid_rows(&lines);
+        let grid = layout_grid(&model, MIN_USABLE_WIDTH, GridOpts::default());
+        let rows = grid_rows(&grid);
         assert_eq!(
             rows.len(),
             2,
@@ -905,13 +990,14 @@ mod tests {
             max_columns: 2,
             max_height: 4,
         };
-        let lines = layout_grid(&model, 80, opts);
-        let rows = grid_rows(&lines);
+        let grid = layout_grid(&model, 80, opts);
+        let rows = grid_rows(&grid);
         assert_eq!(rows.len(), 4, "capped at max_height");
-        let tail = lines.last().expect("a tail line");
+        let tail = grid.lines.last().expect("a tail line");
         assert_eq!(
             tail, "+32 more",
-            "40 entries, 4 rows × 2 columns shown: {lines:?}"
+            "40 entries, 4 rows × 2 columns shown: {:?}",
+            grid.lines
         );
     }
 
@@ -919,20 +1005,105 @@ mod tests {
     fn a_bound_prefix_is_a_footer_note_not_a_row() {
         let mut model = model_of(3, "cmd");
         model.terminal_label = Some("delete (operator)".to_string());
-        let lines = layout_grid(&model, 80, GridOpts::default());
+        let grid = layout_grid(&model, 80, GridOpts::default());
         assert_eq!(
-            lines.last().map(String::as_str),
+            grid.lines.last().map(String::as_str),
             Some("g alone: delete (operator)"),
-            "pressing nothing more is not a 'next key': {lines:?}"
+            "pressing nothing more is not a 'next key': {:?}",
+            grid.lines
         );
-        assert_eq!(grid_rows(&lines).len(), 1, "3 entries still fit one row");
+        assert_eq!(grid_rows(&grid).len(), 1, "3 entries still fit one row");
     }
 
     #[test]
     fn the_header_names_the_pending_prefix() {
         let model = model_of(2, "cmd");
-        let lines = layout_grid(&model, 80, GridOpts::default());
-        assert_eq!(lines[0], "g", "the prefix, in vim notation");
+        let grid = layout_grid(&model, 80, GridOpts::default());
+        assert_eq!(grid.lines[0], "g", "the prefix, in vim notation");
+    }
+
+    // ---- WK.9: the spans that make the keys legible -----------------
+
+    /// Every key gets a span, and the span covers the KEY only — not the
+    /// padding that aligns the column. A span that ran to the column
+    /// width would paint the gap between key and label.
+    #[test]
+    fn every_key_is_spanned_and_the_padding_is_not() {
+        let mut model = model_of(3, "cmd");
+        model.entries[0].chord = KeyChord::ctrl('x'); // a WIDE key
+        let grid = layout_grid(&model, 100, GridOpts::default());
+
+        // Row 1 is the first grid row (row 0 is the header).
+        let row = &grid.lines[1];
+        let row_spans = &grid.spans[1];
+        assert_eq!(row_spans.len(), 3, "one span per cell in the row");
+        for span in row_spans {
+            assert_eq!(span.kind, GridSpanKind::Key);
+            let text = &row[span.start..span.end];
+            assert!(
+                !text.starts_with(' ') && !text.ends_with(' '),
+                "a key span must cover the key, not its alignment padding: \
+                 {text:?} in {row:?}"
+            );
+        }
+        assert_eq!(&row[row_spans[0].start..row_spans[0].end], "<C-x>");
+    }
+
+    /// The header is the keys you have already pressed, so it is
+    /// emphasised the same way.
+    #[test]
+    fn the_header_prefix_is_spanned_as_a_key() {
+        let grid = layout_grid(&model_of(2, "cmd"), 80, GridOpts::default());
+        assert_eq!(
+            grid.spans[0],
+            vec![GridSpan {
+                start: 0,
+                end: 1,
+                kind: GridSpanKind::Key
+            }],
+        );
+    }
+
+    /// `+N` is structure, not a key — a distinct kind so a theme can dim
+    /// it rather than making a group look pressable.
+    #[test]
+    fn a_group_marker_is_spanned_as_a_group() {
+        let mut model = model_of(1, "");
+        model.entries[0].label = "+4".to_string();
+        model.entries[0].kind = EntryKind::Prefix(4);
+        let grid = layout_grid(&model, 80, GridOpts::default());
+        let kinds: Vec<_> = grid.spans[1].iter().map(|s| s.kind).collect();
+        assert_eq!(kinds, vec![GridSpanKind::Key, GridSpanKind::Group]);
+    }
+
+    /// A label that merely BEGINS with a plus is not a group marker's
+    /// business, but it is indistinguishable from one by text alone —
+    /// which is why the kind is decided at layout time from the entry,
+    /// not recovered by scanning. Pinning the invariant that matters:
+    /// spans never point past their line.
+    #[test]
+    fn no_span_points_past_its_line() {
+        for width in [20, 40, 80, 120, 200] {
+            let mut model = model_of(12, "a longer command label");
+            model.wildcard = Some(Entry {
+                chord: KeyChord::char('\0'),
+                label: "find char".to_string(),
+                kind: EntryKind::Terminal,
+                layer: None,
+            });
+            model.terminal_label = Some("operator".to_string());
+            let grid = layout_grid(&model, width, GridOpts::default());
+            for (line, spans) in grid.lines.iter().zip(&grid.spans) {
+                for s in spans {
+                    assert!(
+                        s.end <= line.len()
+                            && line.is_char_boundary(s.start)
+                            && line.is_char_boundary(s.end),
+                        "span {s:?} out of range for {line:?} at width {width}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -959,10 +1130,11 @@ mod tests {
             kind: EntryKind::Terminal,
             layer: Some(KeymapLayer::Builtin),
         });
-        let lines = layout_grid(&model, 80, GridOpts::default());
+        let grid = layout_grid(&model, 80, GridOpts::default());
         assert!(
-            lines.iter().any(|l| l.contains("{char}")),
-            "the wildcard renders as a `{{char}}` row: {lines:?}"
+            grid.lines.iter().any(|l| l.contains("{char}")),
+            "the wildcard renders as a `{{char}}` row: {:?}",
+            grid.lines
         );
     }
 }

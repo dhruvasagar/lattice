@@ -278,6 +278,158 @@ fn key_order(chord: &KeyChord) -> (u8, String) {
     (class, text)
 }
 
+/// Grid geometry knobs, supplied by which-key's options (§8).
+#[derive(Debug, Clone, Copy)]
+pub struct GridOpts {
+    /// `which-key.max-columns`.
+    pub max_columns: usize,
+    /// `which-key.max-height`, in content rows (the caller has already
+    /// applied the half-pane hard cap).
+    pub max_height: usize,
+}
+
+impl Default for GridOpts {
+    fn default() -> Self {
+        Self {
+            max_columns: 6,
+            max_height: 12,
+        }
+    }
+}
+
+/// Cells within a row: `{key}  {label}`.
+const KEY_LABEL_GAP: usize = 2;
+/// Between one cell and the next.
+const COLUMN_GAP: usize = 2;
+/// One cell of breathing room at each edge.
+const MARGIN: usize = 2;
+/// A label truncated below this is noise; stop shrinking and accept
+/// fewer columns instead.
+const MIN_LABEL: usize = 4;
+/// Below this pane width the popup is suppressed entirely (§8) — a
+/// single column of truncated labels is worse than nothing.
+pub const MIN_USABLE_WIDTH: usize = 20;
+
+/// Lay the model out as plain text lines (§6). Pure: no renderer type
+/// crosses in, so the column algorithm is unit-testable with no
+/// renderer at all.
+///
+/// Returns header, grid rows, then any footer lines. The caller writes
+/// these into the popup buffer verbatim — everything-is-a-buffer holds,
+/// and no new render model reaches either peer.
+///
+/// Returns empty when the model has no rows or the pane is too narrow;
+/// the caller suppresses the popup rather than opening an empty box.
+pub fn layout_grid(model: &WhichKeyModel, width: usize, opts: GridOpts) -> Vec<String> {
+    if model.is_empty() || width < MIN_USABLE_WIDTH {
+        return Vec::new();
+    }
+    let cells: Vec<(String, String)> = model
+        .rows()
+        .map(|(entry, wild)| (entry.key_text(wild), entry.label.clone()))
+        .collect();
+
+    let usable = width.saturating_sub(MARGIN);
+    let key_w = cells
+        .iter()
+        .map(|(k, _)| display_width(k))
+        .max()
+        .unwrap_or(0);
+    let natural_label_w = cells
+        .iter()
+        .map(|(_, l)| display_width(l))
+        .max()
+        .unwrap_or(0);
+
+    // How many columns fit at a given label width.
+    let columns_at = |label_w: usize| -> usize {
+        let cell = key_w + KEY_LABEL_GAP + label_w;
+        ((usable + COLUMN_GAP) / (cell + COLUMN_GAP)).clamp(1, opts.max_columns.max(1))
+    };
+
+    // Elastic truncation (§6): when the natural width yields fewer than
+    // two columns, shrink LABELS until two fit — then stop. A key is
+    // never truncated: a wrong key is worse than a missing label.
+    let mut label_w = natural_label_w;
+    if cells.len() > 1 && columns_at(label_w) < 2 {
+        // Width available to one label when two cells share the row.
+        let per_cell = (usable + COLUMN_GAP) / 2;
+        let shrunk = per_cell
+            .saturating_sub(COLUMN_GAP)
+            .saturating_sub(key_w + KEY_LABEL_GAP);
+        if shrunk >= MIN_LABEL {
+            label_w = shrunk;
+        }
+    }
+
+    let columns = columns_at(label_w);
+    let rows_needed = cells.len().div_ceil(columns);
+    let rows = rows_needed.min(opts.max_height.max(1));
+    let capacity = rows * columns;
+    let truncated = cells.len().saturating_sub(capacity);
+    let shown = &cells[..cells.len().min(capacity)];
+
+    let mut out = Vec::with_capacity(rows + 3);
+    out.push(model.header());
+
+    for r in 0..rows {
+        let mut line = String::new();
+        // COLUMN-MAJOR fill: down, then across. Row-major would place
+        // `a b c` across the top and `d e f` on row two, defeating a
+        // scan for a letter in a sorted list — `ls` and emacs
+        // `which-key` fill column-major for the same reason.
+        for c in 0..columns {
+            let Some((key, label)) = shown.get(c * rows + r) else {
+                continue;
+            };
+            if !line.is_empty() {
+                line.push_str(&" ".repeat(COLUMN_GAP));
+            }
+            let label = truncate_to(label, label_w);
+            line.push_str(&pad_to(key, key_w));
+            line.push_str(&" ".repeat(KEY_LABEL_GAP));
+            line.push_str(&pad_to(&label, label_w));
+        }
+        out.push(line.trim_end().to_string());
+    }
+
+    if truncated > 0 {
+        out.push(format!("+{truncated} more"));
+    }
+    if let Some(label) = &model.terminal_label {
+        // The prefix is bound on its own (vim's `d`). A footer note, not
+        // a row: pressing nothing more is not a "next key".
+        out.push(format!("{} alone: {label}", model.header()));
+    }
+    out
+}
+
+fn display_width(s: &str) -> usize {
+    // Keys and labels are chord notation and docstrings; the codebase
+    // has no unicode-width dependency at this layer, and a chars count
+    // is exact for both. Revisit if labels ever carry CJK.
+    s.chars().count()
+}
+
+fn pad_to(s: &str, w: usize) -> String {
+    let mut out = s.to_string();
+    for _ in display_width(s)..w {
+        out.push(' ');
+    }
+    out
+}
+
+/// Truncate with an ellipsis, never past the ellipsis itself.
+fn truncate_to(s: &str, w: usize) -> String {
+    if display_width(s) <= w || w == 0 {
+        return s.to_string();
+    }
+    let keep = w.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,6 +778,191 @@ mod tests {
         assert!(
             h.continuations_with_context(BindingMode::Normal, &[press('q')], &[mode])
                 .is_none()
+        );
+    }
+
+    // ---- WK.2: the grid (design §6) ---------------------------------
+
+    /// A model of `n` rows with predictable keys and labels.
+    fn model_of(n: usize, label: &str) -> WhichKeyModel {
+        let entries = (0..n)
+            .map(|i| Entry {
+                chord: KeyChord::char((b'a' + (i as u8 % 26)) as char),
+                label: format!("{label}{i}"),
+                kind: EntryKind::Terminal,
+                layer: Some(KeymapLayer::Builtin),
+            })
+            .collect();
+        WhichKeyModel {
+            prefix: vec![press('g')],
+            mode: BindingMode::Normal,
+            entries,
+            wildcard: None,
+            terminal_label: None,
+        }
+    }
+
+    /// Grid rows only — header and footers stripped.
+    fn grid_rows(lines: &[String]) -> Vec<String> {
+        lines
+            .iter()
+            .skip(1)
+            .filter(|l| !l.starts_with('+') && !l.contains(" alone: "))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn column_count_scales_with_width() {
+        let model = model_of(24, "cmd");
+        let cols_at = |w: usize| {
+            let lines = layout_grid(&model, w, GridOpts::default());
+            let rows = grid_rows(&lines);
+            // Columns = ceil(n / rows) given every row is full but the last.
+            24_usize.div_ceil(rows.len())
+        };
+        let (c40, c80, c120, c200) = (cols_at(40), cols_at(80), cols_at(120), cols_at(200));
+        assert!(
+            c40 <= c80 && c80 <= c120 && c120 <= c200,
+            "columns must be monotonic in width: {c40} {c80} {c120} {c200}"
+        );
+        assert!(c40 >= 1 && c200 <= GridOpts::default().max_columns);
+    }
+
+    #[test]
+    fn fill_is_column_major_so_a_sorted_scan_reads_down() {
+        // 6 entries, a width that yields exactly 2 columns → 3 rows.
+        let model = model_of(6, "x");
+        let opts = GridOpts {
+            max_columns: 2,
+            max_height: 12,
+        };
+        let lines = layout_grid(&model, 40, opts);
+        let rows = grid_rows(&lines);
+        assert_eq!(rows.len(), 3, "6 entries / 2 columns");
+        // Column-major: a b c fill column ONE (rows 0,1,2); d e f fill
+        // column two. Row-major would put `a b` on the first row.
+        assert!(rows[0].starts_with('a'), "row 0 col 0 is the first entry");
+        assert!(rows[1].starts_with('b'), "row 1 col 0 is the SECOND entry");
+        assert!(rows[2].starts_with('c'));
+        assert!(
+            rows[0].contains('d'),
+            "the second column starts at the 4th entry, not the 2nd: {:?}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn labels_truncate_to_reach_two_columns_but_keys_never_do() {
+        let mut model = model_of(4, "");
+        for (i, e) in model.entries.iter_mut().enumerate() {
+            e.label = format!("an extremely long description number {i}");
+        }
+        let lines = layout_grid(&model, 60, GridOpts::default());
+        let rows = grid_rows(&lines);
+        assert!(
+            rows.iter().any(|r| r.contains('…')),
+            "labels shrink so a second column fits: {rows:?}"
+        );
+        assert_eq!(rows.len(), 2, "4 entries in 2 columns");
+        for (i, row) in rows.iter().enumerate() {
+            let key = (b'a' + i as u8) as char;
+            assert!(
+                row.starts_with(key),
+                "the key column is never truncated — a wrong key is worse \
+                 than a missing label: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_label_is_not_shrunk_below_the_floor() {
+        let mut model = model_of(2, "");
+        // Wide keys plus a narrow pane: two columns would leave ~1 char
+        // for each label, which is the case the floor exists for.
+        for (i, e) in model.entries.iter_mut().enumerate() {
+            e.chord = KeyChord::ctrl((b'x' + i as u8) as char);
+            e.label = "a very long label indeed".to_string();
+        }
+        let lines = layout_grid(&model, MIN_USABLE_WIDTH, GridOpts::default());
+        let rows = grid_rows(&lines);
+        assert_eq!(
+            rows.len(),
+            2,
+            "one column, readable labels — better than two columns of \
+             unreadable stubs: {rows:?}"
+        );
+        assert!(
+            rows[0].starts_with("<C-x>"),
+            "the key survives intact: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn overflow_becomes_a_plus_n_more_tail_not_a_scrollbar() {
+        let model = model_of(40, "cmd");
+        let opts = GridOpts {
+            max_columns: 2,
+            max_height: 4,
+        };
+        let lines = layout_grid(&model, 80, opts);
+        let rows = grid_rows(&lines);
+        assert_eq!(rows.len(), 4, "capped at max_height");
+        let tail = lines.last().expect("a tail line");
+        assert_eq!(
+            tail, "+32 more",
+            "40 entries, 4 rows × 2 columns shown: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_bound_prefix_is_a_footer_note_not_a_row() {
+        let mut model = model_of(3, "cmd");
+        model.terminal_label = Some("delete (operator)".to_string());
+        let lines = layout_grid(&model, 80, GridOpts::default());
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("g alone: delete (operator)"),
+            "pressing nothing more is not a 'next key': {lines:?}"
+        );
+        assert_eq!(grid_rows(&lines).len(), 1, "3 entries still fit one row");
+    }
+
+    #[test]
+    fn the_header_names_the_pending_prefix() {
+        let model = model_of(2, "cmd");
+        let lines = layout_grid(&model, 80, GridOpts::default());
+        assert_eq!(lines[0], "g", "the prefix, in vim notation");
+    }
+
+    #[test]
+    fn a_pane_too_narrow_suppresses_the_grid_entirely() {
+        let model = model_of(6, "cmd");
+        assert!(
+            layout_grid(&model, MIN_USABLE_WIDTH - 1, GridOpts::default()).is_empty(),
+            "a single column of truncated labels is worse than nothing"
+        );
+    }
+
+    #[test]
+    fn an_empty_model_renders_nothing() {
+        let model = model_of(0, "cmd");
+        assert!(layout_grid(&model, 80, GridOpts::default()).is_empty());
+    }
+
+    #[test]
+    fn the_wildcard_row_appears_in_the_grid() {
+        let mut model = model_of(1, "cmd");
+        model.wildcard = Some(Entry {
+            chord: KeyChord::char('\0'),
+            label: "find char forward".to_string(),
+            kind: EntryKind::Terminal,
+            layer: Some(KeymapLayer::Builtin),
+        });
+        let lines = layout_grid(&model, 80, GridOpts::default());
+        assert!(
+            lines.iter().any(|l| l.contains("{char}")),
+            "the wildcard renders as a `{{char}}` row: {lines:?}"
         );
     }
 }

@@ -50,6 +50,7 @@ docs = [
   "tutor-mode",
   "dashboard-mode",
   "help",
+  "which-key-mode",
 ]
 
 [[section]]
@@ -343,6 +344,7 @@ docs = [
 "tutor-mode"           = "Interactive tutor"
 "dashboard-mode"       = "The launch dashboard"
 "help"                 = "Looking things up"
+"which-key-mode"       = "The pending-chord hint"
 "command-line-mode"    = "The command line"
 "surround-mode"        = "Surround"
 "file-tree-mode"       = "File tree"

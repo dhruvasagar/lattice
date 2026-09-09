@@ -666,8 +666,101 @@ fn keymap_handle_lookup_empty_minors_with_layers_registered(c: &mut Criterion) {
     );
 }
 
+// ---- WK.8: which-key ------------------------------------------------
+//
+// Two of these track the resolver against the `keymap_handle_lookup_*`
+// rows above (same composite fold, different terminal step); the third
+// is the only row on the KEYSTROKE path, and the one that must stay in
+// the low-ns range.
+
+/// The resolver with no modes active — the always-on fast path.
+fn which_key_continuations_no_modes(c: &mut Criterion) {
+    let h = populated_handle();
+    let empty: Vec<ModeId> = Vec::new();
+    let path = vec![KeyChord::char('g')];
+    c.bench_function("which_key_continuations_no_modes", |b| {
+        b.iter(|| {
+            let r = h.continuations_with_context(
+                BindingMode::Normal,
+                black_box(&path),
+                black_box(&empty),
+            );
+            black_box(r);
+        });
+    });
+}
+
+/// …and with three active minors, which is the normal case once magit /
+/// diff / snippet / emacs-keys are in play. Pays the same composite fold
+/// `lookup_with_context` does, so it should track that row.
+fn which_key_continuations_three_minors(c: &mut Criterion) {
+    let h = populated_handle();
+    let active = push_synthetic_minor_layers(&h, 3);
+    let path = vec![KeyChord::char('g')];
+    c.bench_function("which_key_continuations_three_minors", |b| {
+        b.iter(|| {
+            let r = h.continuations_with_context(
+                BindingMode::Normal,
+                black_box(&path),
+                black_box(&active),
+            );
+            black_box(r);
+        });
+    });
+}
+
+/// Grid layout at a realistic prefix size, 120 columns.
+fn which_key_layout_grid_40(c: &mut Criterion) {
+    use lattice_keymap::which_key::{GridOpts, WhichKeyModel, layout_grid};
+    let model = WhichKeyModel {
+        prefix: vec![KeyChord::char('g')],
+        mode: BindingMode::Normal,
+        entries: (0..40)
+            .map(|i| lattice_keymap::which_key::Entry {
+                chord: KeyChord::char((b'a' + (i as u8 % 26)) as char),
+                label: format!("some command number {i}"),
+                kind: lattice_keymap::which_key::EntryKind::Terminal,
+                layer: None,
+            })
+            .collect(),
+        wildcard: None,
+        terminal_label: None,
+    };
+    c.bench_function("which_key_layout_grid_40", |b| {
+        b.iter(|| {
+            let lines = layout_grid(black_box(&model), 120, GridOpts::default());
+            black_box(lines);
+        });
+    });
+}
+
+/// **The keystroke-path row.** Every ordinary keystroke runs the
+/// pending-chord publisher's change check; with nothing pending before
+/// or after it short-circuits on two empty slices and publishes nothing.
+/// This must stay in the low-ns range — it is the entire cost which-key
+/// adds to a keystroke that is not a prefix.
+fn which_key_partial_chord_publish_unchanged(c: &mut Criterion) {
+    let a = lattice_keymap::PartialChordPending {
+        chords: Vec::new(),
+        binding_mode: BindingMode::Normal,
+        active_modes: Vec::new(),
+        pane_width: 100,
+    };
+    let b_ev = a.clone();
+    c.bench_function("which_key_partial_chord_publish_unchanged", |b| {
+        b.iter(|| {
+            let unchanged = black_box(&a) == black_box(&b_ev);
+            black_box(unchanged);
+        });
+    });
+}
+
 criterion_group!(
     benches,
+    which_key_continuations_no_modes,
+    which_key_continuations_three_minors,
+    which_key_layout_grid_40,
+    which_key_partial_chord_publish_unchanged,
     keychord_from_event_plain_letter,
     keychord_from_event_ctrl_letter,
     keychord_from_event_back_tab,

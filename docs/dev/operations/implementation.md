@@ -7238,6 +7238,42 @@ Slice plan:
 
 ---
 
+## Which-key — pending-chord discoverability (WK, 2026-09-09) ✅
+
+Hold a chord prefix; after `which-key.delay` (300 ms) a panel along the
+bottom of the pane lists what can follow it. Eight slices, all landed.
+
+The load-bearing property is where the list comes from: the **same
+composite trie the dispatcher walks**, folded by
+`KeymapHandle::continuations_with_context` exactly as
+`lookup_with_context` folds it, differing only in the terminal step.
+`:describe-bindings` composes its answer from the static catalog plus
+each mode's declared contributions and can therefore advertise a chord
+that will not fire; this cannot, and the regression test activates a
+mode that shadows a builtin chord and asserts the builtin does not also
+appear.
+
+Two shapes worth knowing about elsewhere:
+
+- **`SubsystemBoot::idle_gate`** (WK.3) — a generic armed-deadline
+  registry, the time-domain peer of `inbound`. `Editor::inline_diag_deadline`
+  is the bespoke instance it exists to replace; that migration is deferred
+  (it needs a `CursorSettled` event that does not exist), so the actor
+  currently carries both arms.
+- **`PopupPlacement::PaneBottom`** (WK.5) — full pane width, bottom-anchored,
+  capped at half the pane. Available to plugins too: the WIT mirror gained
+  `pane-bottom` rather than collapsing it at the boundary.
+
+The popup is `PopupFocus::Passive`, so no chord's meaning changes while
+it is up — the property that makes it safe under paramount #3. Design
+§7 records why a transient-style takeover was rejected.
+
+Design: [`../architecture/which-key.md`](../architecture/which-key.md).
+Slice plan: [`slice-plans/which-key.md`](slice-plans/which-key.md),
+which also records three as-built deviations from the design.
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

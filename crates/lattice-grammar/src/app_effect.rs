@@ -180,6 +180,24 @@ pub enum AppEffect {
     /// alone, which is why it is safe as a universal binding.
     /// See `docs/dev/architecture/cancellation.md`.
     Cancel,
+    /// RF.5b: an operator resolved its range and the buffer's chain for
+    /// that intent says a **non-native** provider owns it.
+    ///
+    /// The operator cannot run one itself — an LSP round-trip and a
+    /// process spawn are both asynchronous, and the grammar layer has
+    /// neither client nor runtime. So it returns the range and the host
+    /// resolves the chain, exactly as `SearchTrigger` hands back a query
+    /// rather than running a search.
+    ///
+    /// Emitted only when the winning rung is not `native`, so the
+    /// default configuration never produces one and the common path is
+    /// unchanged.
+    FormatRange {
+        intent: lattice_core::FormatIntent,
+        /// Inclusive 0-based line span.
+        start_line: u32,
+        end_line: u32,
+    },
     /// Vim's `%`. Jumps to the bracket / brace / paren matching
     /// the one at-or-after the cursor on the current line.
     /// Promoted from `Action::MatchBracket` in slice 8.i.1.a.

@@ -10054,6 +10054,17 @@ impl Editor {
                     delta,
                 );
             }
+            // RF.5b: an operator resolved its range and the buffer's
+            // chain names a non-native provider. Same shape as
+            // `SearchTrigger` below — the operator hands back what it
+            // computed, the host runs the asynchronous part.
+            AppEffect::FormatRange {
+                intent,
+                start_line,
+                end_line,
+            } => {
+                self.do_format_range(intent, start_line, end_line);
+            }
             AppEffect::SearchTrigger { query } => {
                 // M.10.6 (2026-06-03): the host hop is gone.
                 // Pre-fix: this pushed `Action::SearchTrigger`
@@ -20235,6 +20246,9 @@ impl Editor {
                 // RF.2: resolved through the same buffer-local stack, so
                 // `:setlocal textwidth=100` moves `gq` in that buffer only.
                 textwidth: self.wrap_width(self.active_buffer_id()),
+                // RF.5b: resolved here because the host owns the LSP
+                // client and the PATH probe; the operator gets one bit.
+                native_format: self.native_format_intents(self.active_buffer_id()),
                 // IN.7: `=` reads this. Only supplied when the
                 // published snapshot actually reflects the buffer --
                 // reindenting an existing range against a stale tree
@@ -28596,13 +28610,9 @@ impl Editor {
         ) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
-            self.set_message(
-                EchoLevel::Info,
-                "no LSP server attached to current buffer".to_string(),
-            );
-            return;
-        };
+        // The URI check lives in `lsp_format_with_lines` below, which
+        // both entry points share; checking it twice would report "no
+        // server attached" from two places with one cause.
         let snapshot = self.document.snapshot();
         let last_line = last_addressable_line(&snapshot.buffer);
         let range_lines: Option<(u32, u32)> = if is_range {
@@ -28621,6 +28631,47 @@ impl Editor {
         } else {
             None
         };
+        self.lsp_format_with_lines(range_lines);
+    }
+
+    /// RF.5b: `textDocument/rangeFormatting` over an explicit inclusive
+    /// line span.
+    ///
+    /// The seam `g=` and a delegating `=` / `gq` need:
+    /// [`Self::do_lsp_format_request`] derives its range from the visual
+    /// selection, which an operator's `{motion}` range is not.
+    pub fn do_lsp_format_line_range(&mut self, start_line: u32, end_line: u32) {
+        if let Some(token) = self.pending_format_token.take() {
+            token.cancel();
+        }
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspFormatMode::mode_id(),
+            "lsp-format-mode",
+        ) {
+            return;
+        }
+        let snapshot = self.document.snapshot();
+        let last = last_addressable_line(&snapshot.buffer);
+        if start_line > last {
+            return;
+        }
+        self.lsp_format_with_lines(Some((start_line, end_line.min(last))));
+    }
+
+    /// The shared body: fire `formatting` (`None`) or `rangeFormatting`
+    /// (`Some`) and stash the receiver.
+    ///
+    /// Extracted so the visual-range and explicit-range callers cannot
+    /// drift about options, capability selection or the wake.
+    fn lsp_format_with_lines(&mut self, range_lines: Option<(u32, u32)>) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_format_rx = Some(rx);
@@ -35295,6 +35346,145 @@ impl Editor {
         let tabstop = (*self.resolved_option::<Tabstop>(buffer)).clamp(1, 32) as u8;
         let expand_tabs = *self.resolved_option::<ExpandTab>(buffer);
         lattice_core::IndentUnit::new(width, expand_tabs, tabstop)
+    }
+
+    /// RF.5b: the chain option for `intent`, with `formatprg`'s
+    /// deprecation shim folded into the `reformat` one.
+    fn chain_for_intent(
+        &self,
+        buffer: BufferId,
+        intent: lattice_core::FormatIntent,
+    ) -> lattice_core::ProviderChain {
+        use lattice_config::core_options::{FormatIndentChain, FormatReflowChain};
+        match intent {
+            lattice_core::FormatIntent::Indent => {
+                (*self.resolved_option::<FormatIndentChain>(buffer)).clone()
+            }
+            lattice_core::FormatIntent::Reflow => {
+                (*self.resolved_option::<FormatReflowChain>(buffer)).clone()
+            }
+            lattice_core::FormatIntent::Reformat => self.reformat_chain(buffer),
+        }
+    }
+
+    /// RF.5b: which intents this buffer handles natively, for
+    /// [`lattice_grammar::registry::NativeFormatIntents`].
+    ///
+    /// Resolved rather than read off the chain's first rung: a chain of
+    /// `lsp,native` on a buffer with no server attached is native, and
+    /// telling the operator to delegate there would make `gq` do nothing
+    /// — the exact silent failure §5 exists to avoid.
+    pub fn native_format_intents(
+        &self,
+        buffer: BufferId,
+    ) -> lattice_grammar::registry::NativeFormatIntents {
+        let lang = self.active_lang();
+        let native = |intent| {
+            let chain = self.chain_for_intent(buffer, intent);
+            match self.resolve_reformat(&chain, lang) {
+                Ok(ReformatRung::NativeReflow) => true,
+                // Nothing in the chain applies. Falling back to native
+                // beats doing nothing: the user asked for a reflow.
+                Err(_) => true,
+                _ => false,
+            }
+        };
+        lattice_grammar::registry::NativeFormatIntents {
+            indent: native(lattice_core::FormatIntent::Indent),
+            reflow: native(lattice_core::FormatIntent::Reflow),
+        }
+    }
+
+    /// RF.5b: run `intent`'s chain over an inclusive line range.
+    ///
+    /// The landing point for `AppEffect::FormatRange`. Both async paths
+    /// (LSP, external process) already exist for `:format`; this gives
+    /// them a range.
+    pub fn do_format_range(
+        &mut self,
+        intent: lattice_core::FormatIntent,
+        start_line: u32,
+        end_line: u32,
+    ) {
+        let buffer = self.active_buffer_id();
+        let lang = self.active_lang();
+        let chain = self.chain_for_intent(buffer, intent);
+        match self.resolve_reformat(&chain, lang) {
+            Ok(ReformatRung::Lsp) => self.do_lsp_format_line_range(start_line, end_line),
+            Ok(ReformatRung::External(spec)) => {
+                self.run_external_over_range(spec, start_line, end_line)
+            }
+            // The operator would not have delegated if this were the
+            // answer, but resolving twice can race a `:set` between the
+            // dispatch and the effect. Doing nothing here is safe: the
+            // next press gets it right.
+            Ok(ReformatRung::NativeReflow) => {}
+            Err(tried) => {
+                self.set_message(
+                    EchoLevel::Info,
+                    format!(
+                        "no {} provider for {}: tried {}",
+                        intent.label(),
+                        lang.name(),
+                        tried.join(", ")
+                    ),
+                );
+            }
+        }
+    }
+
+    /// RF.5b: feed a line range through an external filter and splice the
+    /// result back.
+    ///
+    /// Only the range's own lines are sent, so a filter sees exactly what
+    /// the user selected — which is what an indent filter needs and what
+    /// `:format`'s whole-buffer path cannot express.
+    ///
+    /// Runs on `spawn_blocking`; the result lands through the same
+    /// external-format channel `:format` uses, so it reaches the screen
+    /// without a further keystroke.
+    fn run_external_over_range(
+        &mut self,
+        spec: lattice_format::FormatterSpec,
+        start_line: u32,
+        end_line: u32,
+    ) {
+        let text = self.active_text().as_string();
+        let lines: Vec<&str> = text.split('\n').collect();
+        let end_line = end_line.min(lines.len().saturating_sub(1) as u32);
+        if start_line > end_line {
+            return;
+        }
+        let slice = lines[start_line as usize..=end_line as usize].join("\n");
+        let path = self.document.path();
+        let formatted = match lattice_format::run(&spec, &slice, path.as_deref()) {
+            Ok(f) => f,
+            Err(e) => {
+                if e.is_noteworthy() {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        format!("{}: {}", spec.program, e.message()),
+                    );
+                } else {
+                    tracing::debug!(msg = %e.message(), "range format skipped");
+                }
+                return;
+            }
+        };
+        let formatted = formatted.trim_end_matches('\n').to_string();
+        if formatted == slice {
+            return;
+        }
+        let end_col = lines
+            .get(end_line as usize)
+            .map(|l| l.len() as u32)
+            .unwrap_or(0);
+        let range = lattice_protocol::position::Range::new(
+            lattice_protocol::position::Position::new(start_line, 0),
+            lattice_protocol::position::Position::new(end_line, end_col),
+        );
+        self.document.begin_undo_group();
+        let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(range, formatted));
     }
 
     /// RF.5: the `native` rung of a reformat chain — the reflow engine
@@ -42509,6 +42699,56 @@ mod tests {
             lattice_grammar::Effect::Many(vec![xf0_doomed(), xf0_doomed()]),
         );
         assert_eq!(xf0_text(&editor), before);
+    }
+
+    // ── RF.5b / RF.6: delegation ──
+
+    /// The flexibility claim from the design, asserted end to end: `:set
+    /// format.reflow=lsp,native` on a buffer with a server changes what
+    /// the OPERATOR does, not just what the option says.
+    ///
+    /// With no server attached the chain falls through to `native`, and
+    /// that is the assertion that matters — a chain naming a provider
+    /// that is not there must NOT make `gq` do nothing, which is the
+    /// silent failure §5 exists to avoid.
+    #[test]
+    fn a_chain_naming_an_absent_provider_still_reflows_natively() {
+        let editor = Editor::boot(lattice_core::Document::from_text("aaa bbb\n"));
+        let buffer = editor.active_buffer_id();
+        editor
+            .config
+            .parse_and_set_command("format.reflow=lsp,native")
+            .expect("chain parses");
+        let native = editor.native_format_intents(buffer);
+        assert!(
+            native.reflow,
+            "no server is attached, so the chain resolves to `native` and the \
+             operator must still edit — delegating to an absent provider is how \
+             `gq` silently does nothing"
+        );
+    }
+
+    /// …and a chain with no fallback still resolves native rather than
+    /// dead. `gq` doing nothing because a formatter is missing is worse
+    /// than `gq` doing its own job.
+    #[test]
+    fn an_unsatisfiable_chain_falls_back_to_native_rather_than_nothing() {
+        let editor = Editor::boot(lattice_core::Document::from_text("aaa\n"));
+        let buffer = editor.active_buffer_id();
+        editor
+            .config
+            .parse_and_set_command("format.indent=lsp")
+            .expect("chain parses");
+        assert!(editor.native_format_intents(buffer).indent);
+    }
+
+    /// The default configuration must never delegate — that is what
+    /// keeps the common path exactly as it was.
+    #[test]
+    fn the_default_chains_are_native_for_both_operator_intents() {
+        let editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let n = editor.native_format_intents(editor.active_buffer_id());
+        assert!(n.indent && n.reflow);
     }
 
     // ── RF.5: the reformat chain ──

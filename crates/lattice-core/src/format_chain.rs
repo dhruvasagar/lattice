@@ -21,6 +21,35 @@
 
 use std::fmt;
 
+crate::labeled_enum! {
+    // Serde because `FormatIntent` rides `AppEffect::FormatRange`, which
+    // is serialised across the plugin boundary like every other effect.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    /// Which of the three formatting jobs a range wants done.
+    ///
+    /// Separate values rather than one "format", because they are not
+    /// substitutable and the failure directions differ: an indent that
+    /// reflows is destructive, a reformatter asked to reflow prose
+    /// mostly does nothing at all. `docs/dev/architecture/text-reflow.md`
+    /// §2 has the table.
+    ///
+    /// Each intent names one [`ProviderChain`] option
+    /// (`format.indent` / `format.reflow` / `format.reformat`) and one
+    /// or more verbs.
+    pub enum FormatIntent {
+        /// Leading whitespace only — `=`.
+        #[default]
+        Indent = "indent"
+            => "Re-indent: leading whitespace only",
+        /// Line breaks within a paragraph — `gq` / `gw`.
+        Reflow = "reflow"
+            => "Reflow: line breaks within a paragraph",
+        /// Anything the formatter likes — `:format`, `g=`, format-on-save.
+        Reformat = "reformat"
+            => "Reformat: whatever the formatter decides",
+    }
+}
+
 /// One rung of a [`ProviderChain`].
 ///
 /// The set is open at the edges (`External`, `Plugin`) and closed in the

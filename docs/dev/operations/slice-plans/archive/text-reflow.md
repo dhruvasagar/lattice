@@ -1,5 +1,9 @@
 # `text-reflow` — slice plan (RF.0–RF.7)
 
+> **ARCHIVED 2026-09-09.** RF.0–RF.7 complete. Verified against source,
+> not status icons, before filing. The design fragment stays in
+> `docs/dev/architecture/` — only the slice plan moved.
+
 > Sequencing for [`docs/dev/architecture/text-reflow.md`](../../architecture/text-reflow.md).
 > That fragment owns the *what* and *why*; this file owns the *when* and *in
 > what order*. Opened 2026-09-09 out of `auto-indent.md` §13, which deferred
@@ -17,12 +21,13 @@
 | RF.3 | Auto-wrap on the insert path | ✅ |
 | RF.4 | Lists, hanging indent, fenced blocks; per-major defaults | ✅ |
 | RF.5a | `format.reformat` chain replaces `:format`'s cascade | ✅ |
-| RF.5b | `=` / `gq` route through `format.indent` / `format.reflow` | ⛔ |
-| RF.6 | `operator:reformat` on `g=` | ⛔ |
+| RF.5b | `=` / `gq` route through `format.indent` / `format.reflow` | ✅ |
+| RF.6 | `operator:reformat` on `g=` | ✅ |
 | RF.7 | Docs, site sync, benches, parity audit | ✅ |
 
-**NOT ARCHIVABLE.** RF.5b and RF.6 are ⛔ deferred, not dropped — both are
-still wanted, and §12 below names what unblocks them.
+**ARCHIVABLE.** Every slice is ✅. RF.5b and RF.6 were briefly deferred on
+the WIT-boundary cost and then landed together, since they share one
+channel.
 
 ## Shape of the sequence
 
@@ -173,34 +178,39 @@ actually routes `gq` to the server (the flexibility claim, asserted rather
 than asserted-about); a `formatprg` in an existing config still works and says
 so once.
 
-## RF.5b — `=` / `gq` route through their own chains ⛔
+## RF.5b — `=` / `gq` route through their own chains ✅
 
-**Deferred 2026-09-09, and this is what unblocks it.** The chains are
-declared, default to `[native]`, and are honoured in the sense that the
-native path is what runs. What is missing is delegation: a chain whose
-first rung is `lsp` / `external` / `plugin` still runs the native engine.
+The channel is `AppEffect::FormatRange { intent, start_line, end_line }` —
+the operator resolves its range and hands it back, exactly as `g/` hands
+back a query rather than running a search. It cannot run the provider
+itself: an LSP round-trip and a process spawn are both asynchronous, and
+the grammar layer has neither client nor runtime.
 
-The obstacle is structural rather than incidental. The operator computes
-its range inside the grammar layer and applies its edit there; a
-non-native rung needs that range to reach the host, and every route to it
-crosses a boundary:
+`AppEffect` over `LspRequest` because `LspRequest` covers only the `lsp`
+rung, and `external:` needs the same range. The cost was `wit/types.wit`
+(one variant plus a `format-intent` enum, mirroring the `narrow-lines`
+payload that already crosses), two mapping arms, and one host arm — **no
+renderer changes**, because no renderer matches `AppEffect` exhaustively.
 
-- a new `AppEffect` variant — costs `wit/types.wit`, the
-  `boundary_app_effect.rs` mapping, and both renderers' classifiers;
-- a new `LspRequest` arm — the cheaper and in-grain option
-  (`effect.rs`'s own comment on `ReferencesView` says "a further LSP
-  surface adds an arm here, not a host `Action`, not a renderer
-  classifier entry"), but still `wit/types.wit` plus the boundary map,
-  and it only covers the `lsp` rung.
+`GrammarEnv` carries `NativeFormatIntents { indent, reflow }`: the host
+resolves the chain (it owns the LSP client and the `PATH` probe) and the
+operator gets one bit. A struct rather than two loose bools so a third
+intent cannot be added at one call site and forgotten at the other.
 
-Neither is hard; both are a different review surface from the rest of
-this plan, which is why they were split out rather than folded in. Do
-them together with RF.6, which needs the same channel.
+**Resolved, not read off the first rung.** A chain of `lsp,native` on a
+buffer with no server is *native*, and telling the operator to delegate
+there would make `gq` do nothing — the exact silent failure §5 exists to
+avoid. An unsatisfiable chain also falls back to native rather than dead.
 
-Until then the user docs say so plainly rather than implying the chains
-are live for all three intents.
+`do_lsp_format_request` split: the shared body became
+`lsp_format_with_lines(Option<(u32, u32)>)`, with the visual-range and
+explicit-range callers as thin wrappers, so they cannot drift about
+options, capability selection or the wake. External rungs get
+`run_external_over_range`, which feeds the filter only the range's lines
+— what an indent filter needs, and what the whole-buffer path could not
+express.
 
-## RF.6 — `operator:reformat` on `g=` ⛔
+## RF.6 — `operator:reformat` on `g=` ✅
 
 The operator form of `:format` over a range. LSP path uses
 `do_lsp_format_request(is_range: true)`, which already exists; the external
@@ -212,11 +222,12 @@ path feeds the range to the filter. Result lands through
 presses a key first passes on the broken version too); cursor and folds
 survive; no unedited line is re-emitted.
 
-**Deferred with RF.5b**, and blocked on the same thing: `g=` IS the
-`format.reformat` chain with an operator range, so it needs the same
-range→host channel. `do_lsp_format_request(is_range: true)` already
-exists but takes its range from the visual anchor, so `g=` works in
-Visual mode by construction and `g={motion}` is what needs the channel.
+`g=` **always** delegates — every rung of a reformat chain is
+asynchronous, so it has no native branch where `=` and `gq` do.
+
+`[g, =]` stays an internal node for the same reason `[g, q]` does, with
+its own test. `g=` and `=` are asserted to be different operators:
+collapsing them is what `auto-indent.md` §7 spends its length refusing.
 
 ## RF.7 — docs, site sync, benches, parity audit ✅
 

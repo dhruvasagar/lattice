@@ -2,13 +2,10 @@
 
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
 > paramount-goal alignment. Sequencing lives in the slice plan
-> ([`../operations/slice-plans/text-reflow.md`](../operations/slice-plans/text-reflow.md),
-> RF.0–RF.7).
+> ([`../operations/slice-plans/archive/text-reflow.md`](../operations/slice-plans/archive/text-reflow.md),
+> RF.0–RF.7, archived complete).
 >
-> **Status: implemented, with two slices deferred.** Opened and built
-> 2026-09-09 (RF.0–RF.5a, RF.7). `format.indent` / `format.reflow`
-> delegation to a non-native rung (RF.5b) and the `g=` operator (RF.6)
-> are ⛔ deferred on a WIT-boundary change — see the slice plan's §RF.5b.
+> **Status: implemented.** Opened and built 2026-09-09, RF.0–RF.7.
 >
 > Sibling fragments: [`auto-indent.md`](auto-indent.md) (`=`, the indent
 > engine, and the `:format` cascade this generalises — §7 and §8 there are

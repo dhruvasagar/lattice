@@ -119,6 +119,10 @@ pub struct DispatchEnv {
     /// `WrapWidth`, not `usize`, so this struct keeps its derived
     /// `Default` and still means 80 rather than 0.
     pub textwidth: lattice_core::WrapWidth,
+    /// RF.5b: which formatting intents this buffer handles natively.
+    /// Carried for the reason `textwidth` is: `=` and `gq` reach the
+    /// grammar through the ACTOR path on every real keystroke.
+    pub native_format: lattice_grammar::registry::NativeFormatIntents,
     /// OS.2: the active region — the Visual/Select selection extent, or `None`
     /// outside Visual/Select.
     ///

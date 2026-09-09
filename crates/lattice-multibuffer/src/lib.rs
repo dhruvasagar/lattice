@@ -2448,6 +2448,11 @@ impl MultibufferDocumentHandle {
                 // resolving that per excerpt is the same deferred mapping,
                 // and a wrong-by-a-column reflow beats no reflow.
                 textwidth: lattice_core::WrapWidth::default(),
+                // RF.5b: a composed view formats natively or not at all —
+                // delegating would send an LSP a range in COMPOSED
+                // coordinates, which is the wrong-not-merely-absent
+                // failure the `indent_resolver` deferral above avoids.
+                native_format: Default::default(),
                 // OS.2: a composed view's region would need the same
                 // composed->source mapping the resolver above is deferred for
                 // -- a selection in composed coordinates handed to an action

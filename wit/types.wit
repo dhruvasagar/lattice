@@ -874,6 +874,29 @@ interface types {
         end-line: u32,
     }
 
+    /// RF.5b: which of the three formatting jobs a range wants done.
+    ///
+    /// Mirrors `lattice_core::FormatIntent`. Separate values rather than
+    /// one "format" because they are not substitutable: an indent that
+    /// reflows is destructive, and a reformatter asked to reflow prose
+    /// mostly does nothing. See `docs/dev/architecture/text-reflow.md` §2.
+    enum format-intent {
+        /// Leading whitespace only (`=`).
+        indent,
+        /// Line breaks within a paragraph (`gq` / `gw`).
+        reflow,
+        /// Anything the formatter likes (`:format`, `g=`).
+        reformat,
+    }
+
+    /// Mirrors `AppEffect::FormatRange` — an operator has resolved its
+    /// range and the buffer's chain says a non-native provider owns it.
+    record format-range-payload {
+        intent: format-intent,
+        start-line: u32,
+        end-line: u32,
+    }
+
     /// AG.1: what `app-effect::open-provider-view` carries.
     ///
     /// `provider` is the name a provider registered on the generic
@@ -1030,6 +1053,11 @@ interface types {
         multibuffer-expand(s32),
         narrow-widen,
         narrow-lines(narrow-lines-payload),
+        /// RF.5b: hand a resolved line range to the buffer's
+        /// `format.{indent,reflow,reformat}` chain. Emitted by `=`, `gq`
+        /// and `g=` when the winning rung is not `native`; the host runs
+        /// the provider asynchronously and applies a minimal edit set.
+        format-range(format-range-payload),
         search-trigger(string),
         search-refresh,
         /// AG.1: open a registered provider's multibuffer view by name.

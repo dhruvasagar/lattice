@@ -276,6 +276,7 @@ mod tests {
             indent_resolver: None,
             textwidth: Default::default(),
             comment_syntax: None,
+            native_format: Default::default(),
         };
         let wit = project_operator_context(&ctx).unwrap();
         assert_eq!(wit.range.start.byte, 0);

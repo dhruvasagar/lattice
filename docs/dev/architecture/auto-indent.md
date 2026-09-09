@@ -599,7 +599,8 @@ out of scope for v1 — see §13.
 - **`gq` / `formatexpr`** — text reflow is a separate verb and a separate
   feature. ✅ **Taken up 2026-09-09** as
   [`text-reflow.md`](text-reflow.md) / slice plan
-  [`text-reflow.md`](../operations/slice-plans/text-reflow.md) (RF.0–RF.7).
+  [`text-reflow.md`](../operations/slice-plans/archive/text-reflow.md)
+  (RF.0–RF.7, archived complete).
   `gq` and `gw` collapse to one operator there, and the fragment also carries
   `textwidth` / `autowrap` and the provider-chain generalisation that amends
   §7 and §8 above.

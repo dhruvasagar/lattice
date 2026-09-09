@@ -17,8 +17,9 @@
 
 use crate::WitBoundary;
 use crate::lattice::plugin_host::types::{
-    AppEffect as WitAppEffect, Hscroll as WitHscroll, InsertLineEdit as WitInsertLineEdit,
-    NarrowLinesPayload as WitNarrowLinesPayload,
+    AppEffect as WitAppEffect, FormatIntent as WitFormatIntent,
+    FormatRangePayload as WitFormatRangePayload, Hscroll as WitHscroll,
+    InsertLineEdit as WitInsertLineEdit, NarrowLinesPayload as WitNarrowLinesPayload,
     OpenProviderViewPayload as WitOpenProviderViewPayload, PaneDirection as WitPaneDirection,
     ScrollPos as WitScrollPos, ViewportPos as WitViewportPos,
 };
@@ -34,6 +35,27 @@ use lattice_grammar::modal::{
 use lattice_grammar::register::Register as NativeRegister;
 use lattice_grammar::registry::OperatorId;
 use lattice_protocol::ids::CommandId;
+
+/// RF.5b: `FormatIntent` ↔ its WIT mirror.
+///
+/// Two total functions rather than a derive: the WIT enum is generated,
+/// so an exhaustive `match` here is what makes adding an intent on either
+/// side a compile error instead of a silent mistranslation.
+fn wit_format_intent(intent: lattice_core::FormatIntent) -> WitFormatIntent {
+    match intent {
+        lattice_core::FormatIntent::Indent => WitFormatIntent::Indent,
+        lattice_core::FormatIntent::Reflow => WitFormatIntent::Reflow,
+        lattice_core::FormatIntent::Reformat => WitFormatIntent::Reformat,
+    }
+}
+
+fn native_format_intent(intent: WitFormatIntent) -> lattice_core::FormatIntent {
+    match intent {
+        WitFormatIntent::Indent => lattice_core::FormatIntent::Indent,
+        WitFormatIntent::Reflow => lattice_core::FormatIntent::Reflow,
+        WitFormatIntent::Reformat => lattice_core::FormatIntent::Reformat,
+    }
+}
 
 impl WitBoundary for NativeViewportPos {
     type Wit = WitViewportPos;
@@ -360,6 +382,19 @@ impl WitBoundary for NativeAppEffect {
                 start_line,
                 end_line,
             } => WitAppEffect::NarrowLines(WitNarrowLinesPayload {
+                start_line: *start_line,
+                end_line: *end_line,
+            }),
+            // RF.5b: a resolved line range plus which chain owns it.
+            // Mirrors `NarrowLines` above — same shape, same reason it
+            // crosses cleanly: the range is already resolved to absolute
+            // 0-based lines, so nothing recursive rides along.
+            NativeAppEffect::FormatRange {
+                intent,
+                start_line,
+                end_line,
+            } => WitAppEffect::FormatRange(WitFormatRangePayload {
+                intent: wit_format_intent(*intent),
                 start_line: *start_line,
                 end_line: *end_line,
             }),
@@ -707,6 +742,11 @@ impl WitBoundary for NativeAppEffect {
             WitAppEffect::MultibufferExpand(delta) => NativeAppEffect::MultibufferExpand { delta },
             WitAppEffect::NarrowWiden => NativeAppEffect::NarrowWiden,
             WitAppEffect::NarrowLines(p) => NativeAppEffect::NarrowLines {
+                start_line: p.start_line,
+                end_line: p.end_line,
+            },
+            WitAppEffect::FormatRange(p) => NativeAppEffect::FormatRange {
+                intent: native_format_intent(p.intent),
                 start_line: p.start_line,
                 end_line: p.end_line,
             },

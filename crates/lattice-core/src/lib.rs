@@ -54,7 +54,7 @@ pub use crate::folding::{
     Fold, FoldMethod, FoldOverlayService, FoldOverlayServiceHandle, FoldSource, ProviderId,
     ProviderKind,
 };
-pub use crate::format_chain::{FormatProvider, ProviderChain};
+pub use crate::format_chain::{FormatIntent, FormatProvider, ProviderChain};
 pub use crate::indent::{IndentMethod, IndentUnit};
 pub use crate::indent_blocks::LineShape;
 pub use crate::project::{

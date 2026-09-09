@@ -379,6 +379,7 @@ fn execute_operator(
         indent_resolver: env.indent_resolver,
         textwidth: env.textwidth,
         comment_syntax: env.comment_syntax,
+        native_format: env.native_format,
     };
     (operator.apply)(&mut ctx)
 }
@@ -469,6 +470,7 @@ fn execute_operator_blockwise(
             indent_resolver: env.indent_resolver,
             textwidth: env.textwidth,
             comment_syntax: env.comment_syntax,
+            native_format: env.native_format,
         };
         let eff = (operator.apply)(&mut ctx)?;
         per_row_effects.push(eff);

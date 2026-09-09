@@ -980,6 +980,23 @@ pub fn register_normal_bindings(
             false,
         );
     }
+    // RF.6: `g=` — the operator form of `:format`. Not a vim chord; it
+    // exists because `:format` had no operator shape, which is why
+    // people reach for `gq` and are disappointed. Doubled form `g==`.
+    //
+    // Like `gq` / `gw` above, `[g, =]` gets NO depth-2 terminal — a
+    // terminal there would resolve before the walk descends and kill
+    // `g==`, `g=ap`, `g=i{` silently.
+    register_operator_bindings(
+        handle,
+        &[lit_char('g'), lit_char('=')],
+        builtins.reformat,
+        ChordPattern::Literal(KeyChord::char('=')),
+        builtins,
+        syntax_textobjects,
+        syntax_motions,
+        false,
+    );
     // Case operators -- prefix is the two-key sequence registered
     // at slice 8.g.ii. Their doubled forms (`gUU` / `guu` / `g~~`)
     // operate on the current line.
@@ -2563,6 +2580,54 @@ mod syntax_motion_tests {
                 "`g{prefix}{prefix}` must be bound"
             );
         }
+    }
+
+    /// RF.6: `g=` is bound, and `[g, =]` is an internal node for the
+    /// same reason `[g, q]` is — a depth-2 terminal there would kill
+    /// `g==`, `g=ap` and `g=i{` silently.
+    #[test]
+    fn g_equals_is_bound_and_keeps_its_longer_chords() {
+        let (h, _) = populated_handle();
+        assert!(
+            matches!(
+                h.lookup(
+                    BindingMode::Normal,
+                    &[KeyChord::char('g'), KeyChord::char('=')]
+                ),
+                LookupResult::Partial
+            ),
+            "`g=` must be PARTIAL, not a terminal"
+        );
+        assert!(matches!(
+            h.lookup(
+                BindingMode::Normal,
+                &[
+                    KeyChord::char('g'),
+                    KeyChord::char('='),
+                    KeyChord::char('=')
+                ]
+            ),
+            LookupResult::Bound { .. }
+        ));
+    }
+
+    /// `g=` and `=` are DIFFERENT operators. `=` re-indents; `g=` runs a
+    /// formatter. Collapsing them is the thing auto-indent.md §7 spends
+    /// its length refusing.
+    #[test]
+    fn g_equals_is_not_the_same_operator_as_equals() {
+        let (h, _) = populated_handle();
+        let id = |chords: &[KeyChord]| match h.lookup(BindingMode::Normal, chords) {
+            LookupResult::Bound { command, .. } => command.command.command,
+            other => panic!("must be bound, got {other:?}"),
+        };
+        let reindent = id(&[KeyChord::char('='), KeyChord::char('=')]);
+        let reformat = id(&[
+            KeyChord::char('g'),
+            KeyChord::char('='),
+            KeyChord::char('='),
+        ]);
+        assert_ne!(reindent, reformat);
     }
 
     /// `gq` and `gw` resolve to the SAME operator — one verb, two

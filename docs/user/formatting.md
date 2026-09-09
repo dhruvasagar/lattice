@@ -6,7 +6,7 @@ Lattice keeps three jobs separate, because they are three different jobs:
 |---|---|---|
 | fix this code's indentation | `=` | leading whitespace only |
 | re-wrap this paragraph to my margin | `gq` / `gw` | line breaks inside a paragraph |
-| run rustfmt / prettier / the language server | `:format` | anything it likes |
+| run rustfmt / prettier / the language server | `g=` or `:format` | anything it likes |
 
 Pressing the wrong one is safe. `=` will never move a line break, and `gq`
 will never re-indent your code.
@@ -123,7 +123,16 @@ indent *is*; `:describe-option shiftwidth` has the details.
 ```
 :format              format the whole buffer
 :'<,'>format         format a line range
+g==                  format the current line
+g=ap                 format the paragraph
+g=i{                 format the enclosing block
+g=G                  format from here to the end
 ```
+
+`g=` is the operator form of `:format` — it takes a motion or text object
+like any other operator. It is **not** a vim chord; vim has no reformat
+operator, which is exactly why people reach for `gq` and are disappointed
+when a reformatter declines to re-wrap their prose.
 
 `:format` walks a **chain** of formatters and uses the first one that is
 actually available:
@@ -195,8 +204,10 @@ If you know your server does what you want, say so:
 
 The same applies to `=` via `format.indent`. Both default to `native`.
 
-> These two chains are declared and default to `native`; routing them to a
-> non-native rung is not wired yet. `format.reformat` above is fully live.
+A chain naming something that is not there — `lsp` with no server attached,
+an `external:` program not on your `PATH` — falls back to the native engine
+rather than doing nothing. `gq` that silently does nothing because a
+formatter is missing is worse than `gq` doing its own job.
 
 ## Replaced settings
 

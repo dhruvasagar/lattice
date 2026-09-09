@@ -333,6 +333,20 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             post_motion_char: false,
         },
     );
+    let reformat = registry.register_operator(
+        "operator:reformat",
+        "Run the buffer's `format.reformat` chain (language server, or an external \
+         formatter) over the range — the operator form of `:format` (`g=`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Arc::new(operator_reformat),
+            args_schema: vec![],
+            // Linewise, like `=` and `gq`: every formatter this can
+            // reach works in whole lines.
+            blockwise_per_row: false,
+            post_motion_char: false,
+        },
+    );
     let reflow = registry.register_operator(
         "operator:reflow",
         "Reflow each paragraph in the range to `textwidth`, keeping indentation \
@@ -665,6 +679,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         indent_left,
         reindent,
         reflow,
+        reformat,
         indent_right,
         upper,
         lower,
@@ -736,6 +751,9 @@ pub struct Builtins {
     /// behind both chords; they differ only in cursor placement in vim,
     /// and this preserves the cursor (`gw`'s behaviour).
     pub reflow: OperatorId,
+    /// RF.6: `g=` — the operator form of `:format`. Not a vim chord;
+    /// see `operator_reformat` for why it exists.
+    pub reformat: OperatorId,
     pub upper: OperatorId,
     pub lower: OperatorId,
     pub toggle_case: OperatorId,
@@ -2402,6 +2420,19 @@ fn operator_reindent(ctx: &mut OperatorContext) -> Result<Effect, CommandError> 
     if ctx.range.is_empty() {
         return Ok(Effect::None);
     }
+    // RF.5b: `format.indent` names a non-native provider. Checked BEFORE
+    // the resolver, because a chain pointing at an external indenter must
+    // work on a buffer with no tree — that is most of why someone would
+    // configure one.
+    if !ctx.native_format.indent {
+        return Ok(Effect::AppAction(
+            crate::app_effect::AppEffect::FormatRange {
+                intent: lattice_core::FormatIntent::Indent,
+                start_line: ctx.range.start.line,
+                end_line: ctx.range.end.line,
+            },
+        ));
+    }
     let Some(resolver) = ctx.indent_resolver else {
         // No structural source: `=` is a no-op rather than a guess.
         // Falling back to the lexical bridge here would be wrong --
@@ -2489,6 +2520,21 @@ fn operator_reflow(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     }
     ctx.cancel.check()?;
 
+    // RF.5b: the buffer's `format.reflow` chain says someone else owns
+    // this. Hand the resolved range back rather than editing — an LSP
+    // round-trip and a process spawn are both asynchronous, and the
+    // grammar layer has neither client nor runtime. Same shape `g/`
+    // uses to hand back a query instead of running a search.
+    if !ctx.native_format.reflow {
+        return Ok(Effect::AppAction(
+            crate::app_effect::AppEffect::FormatRange {
+                intent: lattice_core::FormatIntent::Reflow,
+                start_line: first_line,
+                end_line: last_line,
+            },
+        ));
+    }
+
     let slice: Vec<&str> = all[first_line as usize..=last_line as usize].to_vec();
     let cfg = crate::reflow::ReflowConfig {
         textwidth: ctx.textwidth.columns(),
@@ -2520,6 +2566,32 @@ fn operator_reflow(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
         .document
         .apply_edit_batch(vec![Edit::replace(range, out.join("\n"))])?;
     Ok(Effect::Edits(applied))
+}
+
+/// `g=` — run the buffer's `format.reformat` chain over the range.
+///
+/// **Not a vim chord**, and it does not pretend to be. It exists because
+/// `:format` had no operator form, so vim users reach for `gq` — the
+/// only operator-shaped formatting verb available — and are then
+/// disappointed when a reformatter declines to re-wrap their prose
+/// (`text-reflow.md` §5). Giving the reformatter its own verb is the fix;
+/// overloading `gq` is not.
+///
+/// Always delegates: every rung of a reformat chain is asynchronous (an
+/// LSP round-trip, a process spawn), so there is nothing for the grammar
+/// layer to do but hand back the range. That is why this has no native
+/// branch where `=` and `gq` do.
+fn operator_reformat(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    if ctx.range.is_empty() {
+        return Ok(Effect::None);
+    }
+    Ok(Effect::AppAction(
+        crate::app_effect::AppEffect::FormatRange {
+            intent: lattice_core::FormatIntent::Reformat,
+            start_line: ctx.range.start.line,
+            end_line: ctx.range.end.line,
+        },
+    ))
 }
 
 // ---- Case operators (gU, gu, g~) ----
@@ -2724,6 +2796,153 @@ mod tests {
         // grammar half: nothing here distinguishes a `gq` reflow from a
         // `gw` one, so `gqq`, `gww`, `gqw` and `gwq` cannot drift.
         assert_ne!(b.reflow.0, b.reindent.0, "reflow is not reindent");
+    }
+
+    // ---- RF.5b / RF.6: delegation to a non-native provider ----
+
+    /// The operator id MUST come from the same registry the dispatch
+    /// runs against — command ids are process-global counters, so an id
+    /// minted by one `fixture()` is simply absent from another's
+    /// registry and resolves as `UnknownCommand`.
+    fn run_whole(
+        text: &str,
+        pick: impl Fn(&Builtins) -> crate::registry::OperatorId,
+        native: crate::registry::NativeFormatIntents,
+    ) -> Effect {
+        let (registry, b, mut doc) = fixture(text);
+        let op = pick(&b);
+        let cancel = CancellationToken::never();
+        let env = crate::registry::GrammarEnv {
+            textwidth: lattice_core::WrapWidth(11),
+            native_format: native,
+            ..Default::default()
+        };
+        let inv = CommandInvocation::of(op.0).with_range(crate::Range::Whole);
+        crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 0),
+            inv,
+            &cancel,
+            env,
+        )
+        .unwrap()
+    }
+
+    /// The default env is native for everything, so the ~40 hand-built
+    /// call sites — and the shipped configuration — never delegate.
+    #[test]
+    fn the_default_env_formats_natively() {
+        assert_eq!(
+            crate::registry::NativeFormatIntents::default(),
+            crate::registry::NativeFormatIntents {
+                indent: true,
+                reflow: true
+            }
+        );
+    }
+
+    /// `format.reflow` naming a non-native provider makes `gq` hand back
+    /// its RANGE instead of editing — the operator cannot run an LSP
+    /// round-trip or a process spawn itself.
+    #[test]
+    fn a_non_native_reflow_chain_hands_the_range_to_the_host() {
+        let eff = run_whole(
+            "aaa bbb ccc ddd\n",
+            |b| b.reflow,
+            crate::registry::NativeFormatIntents {
+                indent: true,
+                reflow: false,
+            },
+        );
+        match eff {
+            Effect::AppAction(crate::app_effect::AppEffect::FormatRange {
+                intent,
+                start_line,
+                end_line,
+            }) => {
+                assert_eq!(intent, lattice_core::FormatIntent::Reflow);
+                // One content line: a trailing newline is not an
+                // addressable line, so `Range::Whole` is 0..=0 here.
+                assert_eq!((start_line, end_line), (0, 0));
+            }
+            other => panic!("expected FormatRange, got {other:?}"),
+        }
+    }
+
+    /// …and a native chain still edits, so delegation is opt-in rather
+    /// than the new default. Asserting only the delegating case would
+    /// pass with the operator ALWAYS delegating.
+    #[test]
+    fn a_native_reflow_chain_still_edits_in_place() {
+        let eff = run_whole(
+            "aaa bbb ccc ddd\n",
+            |b| b.reflow,
+            crate::registry::NativeFormatIntents::default(),
+        );
+        assert!(
+            matches!(eff, Effect::Edits(_)),
+            "a native chain must edit, got {eff:?}"
+        );
+    }
+
+    /// `=` delegates on the SAME check, and does it before consulting
+    /// the indent resolver — an external indenter is most of the reason
+    /// to configure one, and it has to work on a buffer with no tree.
+    #[test]
+    fn a_non_native_indent_chain_delegates_without_a_tree() {
+        let eff = run_whole(
+            "    aaa\n",
+            |b| b.reindent,
+            crate::registry::NativeFormatIntents {
+                indent: false,
+                reflow: true,
+            },
+        );
+        match eff {
+            Effect::AppAction(crate::app_effect::AppEffect::FormatRange { intent, .. }) => {
+                assert_eq!(intent, lattice_core::FormatIntent::Indent);
+            }
+            other => panic!("expected FormatRange, got {other:?}"),
+        }
+        // The env above carries NO `indent_resolver`, which is the
+        // point: native `=` would no-op here, and delegation must not.
+    }
+
+    /// `g=` always delegates — every rung of a reformat chain is
+    /// asynchronous, so there is no native branch for it to take.
+    #[test]
+    fn g_equals_always_hands_the_range_to_the_host() {
+        let eff = run_whole(
+            "let x=1;\n",
+            |b| b.reformat,
+            crate::registry::NativeFormatIntents::default(),
+        );
+        match eff {
+            Effect::AppAction(crate::app_effect::AppEffect::FormatRange { intent, .. }) => {
+                assert_eq!(intent, lattice_core::FormatIntent::Reformat);
+            }
+            other => panic!("expected FormatRange even with a native env, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g_equals_over_an_empty_range_is_a_noop() {
+        let (registry, b, mut doc) = fixture("");
+        let cancel = CancellationToken::never();
+        let inv = CommandInvocation::of(b.reformat.0)
+            .with_target(Target::TextObject(b.inner_word, crate::args::Args::None));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 0),
+            inv,
+            &cancel,
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::None), "got {eff:?}");
     }
 
     #[test]

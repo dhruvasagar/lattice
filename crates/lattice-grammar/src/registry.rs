@@ -179,6 +179,35 @@ pub struct OperatorContext<'a> {
     /// for any language whose comment syntax is undeclared -- reflow
     /// then uses indentation alone, which is the right answer there.
     pub comment_syntax: Option<&'a CommentSyntax>,
+    /// RF.5b: for each intent, whether the buffer's chain resolves to the
+    /// **native** engine.
+    ///
+    /// The host resolves the chain — it owns the LSP client and the
+    /// `PATH` probe — and hands down the one bit the operator needs:
+    /// "do it yourself, or hand me the range". `true` (the default) is
+    /// the shipped configuration, so the common path never delegates.
+    pub native_format: NativeFormatIntents,
+}
+
+/// RF.5b: which formatting intents the buffer handles natively.
+///
+/// A struct rather than two loose bools so a third intent cannot be added
+/// to one call site and forgotten at the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeFormatIntents {
+    pub indent: bool,
+    pub reflow: bool,
+}
+
+impl Default for NativeFormatIntents {
+    /// Native for everything — the shipped chains, and the answer a
+    /// hand-built env should get.
+    fn default() -> Self {
+        NativeFormatIntents {
+            indent: true,
+            reflow: true,
+        }
+    }
 }
 
 /// An operator's evaluator returns the full `Effect` it produced. Most
@@ -354,6 +383,9 @@ pub struct GrammarEnv<'a> {
     /// which is not a column anything wraps at, and all ~40 hand-built
     /// `default()` envs would silently get a reflow that does nothing.
     pub textwidth: lattice_core::WrapWidth,
+    /// RF.5b: which intents this buffer handles natively. See
+    /// [`NativeFormatIntents`].
+    pub native_format: NativeFormatIntents,
     /// OS.2: the **active region** — the Visual/Select selection extent,
     /// normalised so `start <= end`. `None` in Normal mode and on every
     /// non-chord firing path.

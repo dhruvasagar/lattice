@@ -3634,13 +3634,19 @@ hardware.
 | --- | --- | --- |
 | `reflow_paragraph/10_lines` | ~18.8 µs | A `gqap`-sized fill of a doc comment. |
 | `reflow_paragraph/200_lines` | ~365 µs | **The assertion is the ratio.** 20× the lines for 19.4× the time — the fill is linear, and a later change that makes it quadratic shows up here rather than on a large file. |
-| `reflow_break_point/one_line` | ~2.17 µs | **This one has a budget.** It is the work auto-wrap does per character typed past `textwidth` (RF.3) — one line, find the break. 2.17 µs is ~0.026% of a 120 Hz frame. |
+| `reflow_break_point/no_break` | **~35.8 ns** | **The number paramount #1 actually constrains.** Every keystroke on a line that has not reached the margin pays exactly this — one width measure, no allocation, no break. 0.0004% of a 120 Hz frame. |
+| `reflow_break_point/breaking` | ~1.26 µs | The rare frame where the line does wrap: scan for the break point and build the continuation. ~0.015% of a frame. |
+| `reflow_break_point/reflow_one_line` | ~2.21 µs | The operator's per-line cost, for comparison — auto-wrap is cheaper than running the full fill on one line, which is why it is a separate entry point rather than `gq` on the current line. |
 
 The paragraph numbers are user-initiated and have no frame budget; they exist
-so the linearity claim is measured rather than assumed. The break-point number
-is the one paramount #1 constrains, and it is the reason §9 of
+so the linearity claim is measured rather than assumed.
+
+The break-point numbers are the ones with a budget, and the split matters:
+`no_break` is the case that runs on essentially every keystroke in Insert
+mode, and at 35.8 ns it is noise against everything else on that path.
+`breaking` fires once per wrapped line. Together they are the reason §9 of
 `text-reflow.md` rules out a tree-sitter query for the "is this a comment"
-test: the whole operation has to stay in this range, and a parse does not.
+test — the whole operation has to stay in this range, and a parse does not.
 
 ## What's NOT here
 

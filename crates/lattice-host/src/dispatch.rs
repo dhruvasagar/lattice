@@ -11615,6 +11615,13 @@ impl Editor {
         // whitespace fixup -- replaying `}` should re-derive the indent
         // for wherever it lands, not paste the old one.
         self.maybe_electric_reindent(s);
+        // RF.3: auto-wrap. After electric reindent, because reindenting
+        // changes the line's width and the break has to be measured
+        // against what the line actually is; and before the dot-repeat
+        // capture below for the same reason electric reindent is —
+        // replaying the typed text should re-derive the wrap for wherever
+        // it lands, not paste yesterday's line break.
+        self.maybe_auto_wrap(s);
         // Capture into the in-flight Insert recording for dot-repeat.
         if let Some(rec) = self.recording_insert.as_mut() {
             rec.push_str(s);
@@ -35541,6 +35548,86 @@ impl Editor {
         {
             let delta = rendered.len() as i64 - old_len as i64;
             self.cursor.byte = (cursor_byte as i64 + delta).max(0) as u32;
+        }
+    }
+
+    /// RF.3: break the line being typed on when it passes `textwidth`.
+    ///
+    /// Vim's `formatoptions+=t` / `+=c`, as one named option. Runs once
+    /// per inserted character, on the **keystroke path**, so the whole
+    /// operation is a single scan of the current line —
+    /// `reflow::auto_wrap_break` does no allocation on the overwhelmingly
+    /// common frame where nothing breaks, and touches no tree.
+    ///
+    /// The comment test is `reflow::line_is_comment`, a prefix compare.
+    /// A tree-sitter query would also know a `//` inside a string is not
+    /// a comment, and would put a parse on the typing path; paramount #1
+    /// does not bend for accuracy that costs a frame (`text-reflow.md`
+    /// §9).
+    ///
+    /// The edit is applied in the same `do_insert_text` call as the
+    /// character that triggered it, so both land in one undo unit —
+    /// undoing a typed character must not leave the break behind.
+    fn maybe_auto_wrap(&mut self, typed: &str) {
+        if !matches!(self.modal, ModalState::Insert) {
+            return;
+        }
+        // Single typed characters only, like electric reindent: a paste
+        // or a completion insert is not someone typing past the margin,
+        // and re-breaking the landing line of a multi-char insert would
+        // be surprising.
+        let mut chars = typed.chars();
+        if chars.next().is_none() || chars.next().is_some() {
+            return;
+        }
+
+        let buffer = self.active_buffer_id();
+        let mode = *self.resolved_option::<lattice_config::core_options::AutoWrapOption>(buffer);
+        if matches!(mode, lattice_core::AutoWrap::Off) {
+            return;
+        }
+
+        let row = self.cursor.line;
+        let line = self
+            .active_text()
+            .line(row)
+            .unwrap_or_default()
+            .trim_end_matches('\n')
+            .to_string();
+        let cs = lattice_syntax::Lang::detect_from_path(self.document.path().as_deref())
+            .comment_syntax();
+        let cfg = lattice_grammar::reflow::ReflowConfig {
+            textwidth: self.wrap_width(buffer).columns(),
+            line_comment: cs.line.as_deref(),
+        };
+        if matches!(mode, lattice_core::AutoWrap::Comments)
+            && !lattice_grammar::reflow::line_is_comment(&line, cfg)
+        {
+            return;
+        }
+
+        let cursor_byte = (self.cursor.byte as usize).min(line.len());
+        let Some(brk) = lattice_grammar::reflow::auto_wrap_break(&line, cursor_byte, cfg) else {
+            return;
+        };
+        // The cursor is past the break by construction (the break point
+        // is chosen at or before it), so it lands on the new line at the
+        // continuation's width plus however far it was past the run.
+        let tail = cursor_byte.saturating_sub(brk.end);
+        let cont_len = brk.replacement.len().saturating_sub(1); // minus the '\n'
+        let range = lattice_protocol::position::Range::new(
+            lattice_protocol::position::Position::new(row, brk.start as u32),
+            lattice_protocol::position::Position::new(row, brk.end as u32),
+        );
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::replace(
+                range,
+                brk.replacement,
+            ))
+            .is_ok()
+        {
+            self.cursor =
+                lattice_protocol::position::Position::new(row + 1, (cont_len + tail) as u32);
         }
     }
 

@@ -394,6 +394,120 @@ mod tests {
         );
     }
 
+    // ---- RF.3: auto-wrap while typing ----
+
+    /// Type `text` into a fresh buffer with the given options, from
+    /// Insert mode at the start.
+    fn type_into(text: &str, opts: &[&str]) -> App {
+        use crate::app::test_helpers::press_chars;
+        let mut a = app_with("", 10);
+        let owned: Vec<String> = opts.iter().map(|s| s.to_string()).collect();
+        a.mutate_editor(move |e: &mut lattice_host::editor::Editor| {
+            for o in &owned {
+                let _ = e.config.parse_and_set_command(o);
+            }
+        });
+        a.apply(Action::EnterMode(ModalState::Insert));
+        press_chars(&mut a, text);
+        a
+    }
+
+    #[test]
+    fn typing_past_textwidth_wraps_the_line() {
+        let a = type_into("aaa bbb ccc", &["textwidth=7", "autowrap=all"]);
+        assert_eq!(a.editor.document.text(), "aaa bbb\nccc");
+        assert_eq!(
+            a.editor.cursor,
+            Position::new(1, 3),
+            "the cursor follows the carried word"
+        );
+    }
+
+    #[test]
+    fn autowrap_off_never_wraps() {
+        let a = type_into("aaa bbb ccc", &["textwidth=7", "autowrap=off"]);
+        assert_eq!(a.editor.document.text(), "aaa bbb ccc");
+    }
+
+    /// The point of `autowrap=comments` being the default for code: a
+    /// long comment wraps, a long string literal does not. The comment
+    /// test is lexical, so what it keys off is the line's leading
+    /// marker.
+    #[test]
+    fn autowrap_comments_wraps_a_comment_and_leaves_code_alone() {
+        use crate::app::test_helpers::{app_with_path, press_chars};
+        // A REAL language, so `//` is a leader and the positive half of
+        // this option is actually exercised. Asserting only the
+        // no-leader case would pass whether or not `comments` works —
+        // see `none-paths-are-not-coverage`.
+        let typed = |text: &str| -> String {
+            let mut a = app_with_path("", 10, std::path::PathBuf::from("/tmp/rf3.rs"));
+            a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+                let _ = e.config.parse_and_set_command("textwidth=11");
+                let _ = e.config.parse_and_set_command("autowrap=comments");
+            });
+            a.apply(Action::EnterMode(ModalState::Insert));
+            press_chars(&mut a, text);
+            a.editor.document.text().to_string()
+        };
+
+        assert_eq!(
+            typed("// aaa bbb ccc"),
+            "// aaa bbb\n// ccc",
+            "a long comment wraps, and the carried remainder keeps `//`"
+        );
+        assert_eq!(
+            typed("let s = \"aaa bbb ccc\";"),
+            "let s = \"aaa bbb ccc\";",
+            "a long line of code does NOT wrap under `autowrap=comments` — \
+             breaking a string literal mid-expression is destructive in a way \
+             breaking prose is not, which is why this is the default for code"
+        );
+    }
+
+    /// A word longer than the margin overflows rather than being split
+    /// — the same rule `gq` follows, so typing and reflowing cannot
+    /// disagree about the same line.
+    #[test]
+    fn one_long_word_is_not_split_while_typing() {
+        let a = type_into("aaaaaaaaaaaa", &["textwidth=5", "autowrap=all"]);
+        assert_eq!(a.editor.document.text(), "aaaaaaaaaaaa");
+    }
+
+    /// The carried remainder keeps the line's indentation, or a wrapped
+    /// paragraph walks left one line at a time.
+    #[test]
+    fn the_wrapped_remainder_keeps_the_indent() {
+        use crate::app::test_helpers::press_chars;
+        let mut a = app_with("    ", 10);
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            let _ = e.config.parse_and_set_command("textwidth=11");
+            let _ = e.config.parse_and_set_command("autowrap=all");
+        });
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.editor.cursor = Position::new(0, 4);
+        press_chars(&mut a, "aaa bbb ccc");
+        assert_eq!(a.editor.document.text(), "    aaa bbb\n    ccc");
+    }
+
+    /// **One undo unit with the keystroke.** Undoing the character that
+    /// pushed the line past the margin must take the break with it —
+    /// otherwise `u` leaves a line the user never asked for and they
+    /// press it again.
+    #[test]
+    fn undoing_the_triggering_keystroke_takes_the_wrap_with_it() {
+        use crate::app::test_helpers::press_chars;
+        let mut a = type_into("aaa bbb cc", &["textwidth=7", "autowrap=all"]);
+        assert_eq!(a.editor.document.text(), "aaa bbb\ncc", "precondition");
+        a.apply(Action::EnterMode(ModalState::Normal));
+        press_chars(&mut a, "u");
+        assert!(
+            !a.editor.document.text().contains('\n'),
+            "one `u` must remove the auto-inserted break, got {:?}",
+            a.editor.document.text()
+        );
+    }
+
     #[test]
     fn undo_redo_accumulate_inverse_deltas() {
         // Forward edit + undo + redo each push a delta. The

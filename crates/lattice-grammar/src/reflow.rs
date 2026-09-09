@@ -201,6 +201,110 @@ pub fn reflow_range(lines: &[&str], cfg: ReflowConfig<'_>) -> Vec<String> {
     out
 }
 
+/// Where auto-wrap should break the line being typed on, and what the
+/// carried remainder needs in front of it.
+///
+/// Byte offsets into the line, not the buffer — the host adds the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoWrapBreak {
+    /// Start of the whitespace run being replaced by the newline.
+    pub start: usize,
+    /// End of that run — the first byte of the word moving down.
+    pub end: usize,
+    /// Text to splice in: a newline plus the continuation prefix.
+    pub replacement: String,
+}
+
+/// Decide whether the line the cursor sits on should break, and where
+/// (§9).
+///
+/// Called on the **keystroke path**, once per inserted character, so it
+/// is a single scan of the current line and nothing else. No tree, no
+/// buffer walk, no allocation beyond the replacement string on the rare
+/// frame that actually breaks.
+///
+/// Returns `None` — leave the line alone — when:
+///
+/// - the cursor has not passed `textwidth` yet;
+/// - there is no whitespace to break at after the prefix, i.e. the
+///   overlong thing is one word. Vim, Emacs and Rewrap all agree that a
+///   long URL overflows rather than being split;
+/// - the only break points are past the margin, so breaking would not
+///   help.
+pub fn auto_wrap_break(
+    line: &str,
+    cursor_byte: usize,
+    cfg: ReflowConfig<'_>,
+) -> Option<AutoWrapBreak> {
+    let cursor_byte = cursor_byte.min(line.len());
+    if display_width(&line[..cursor_byte]) <= cfg.textwidth {
+        return None;
+    }
+    // Everything up to and including the comment marker is structure and
+    // is never a break point — breaking inside `///` would produce `//`
+    // and a stray `/`.
+    let indent = indent_of(line);
+    let marker = marker_of(&line[indent.len()..], cfg.line_comment);
+    let head_len = indent.len() + marker.len();
+
+    // The continuation the carried words land after. Same rule the
+    // operator uses, so a line broken by typing and the same line broken
+    // by `gq` agree.
+    let continuation = paragraph_prefix(&[line], cfg).rest;
+
+    // Candidate break points: the start of each whitespace run that has
+    // real content before it on this line. Scanning forward and keeping
+    // the LAST one that still fits is the greedy fill, one line at a
+    // time.
+    let mut best: Option<(usize, usize)> = None;
+    let mut seen_word = false;
+    let mut i = head_len;
+    let bytes = line.as_bytes();
+    while i < cursor_byte {
+        let c = bytes[i];
+        if c == b' ' || c == b'\t' {
+            if seen_word {
+                let run_start = i;
+                let mut j = i;
+                while j < line.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                    j += 1;
+                }
+                if display_width(&line[..run_start]) <= cfg.textwidth {
+                    best = Some((run_start, j));
+                } else {
+                    // Past the margin already; later runs are worse.
+                    break;
+                }
+                i = j;
+                continue;
+            }
+        } else {
+            seen_word = true;
+        }
+        i += 1;
+    }
+
+    let (start, end) = best?;
+    Some(AutoWrapBreak {
+        start,
+        end,
+        replacement: format!("\n{continuation}"),
+    })
+}
+
+/// Whether `line` reads as a comment, by its leading marker alone.
+///
+/// **Lexical on purpose** (§9). A tree-sitter query would also know that
+/// a `//` inside a string literal is not a comment, and would put a
+/// parse on the typing path — which paramount #1 does not allow for
+/// accuracy that costs a frame. The inaccuracy is a comment marker
+/// inside a string, which is rare, and its consequence is one wrapped
+/// line the user can undo.
+pub fn line_is_comment(line: &str, cfg: ReflowConfig<'_>) -> bool {
+    let indent = indent_of(line);
+    !marker_of(&line[indent.len()..], cfg.line_comment).is_empty()
+}
+
 // ---- prefix analysis (§4.2) ----
 
 /// The leading whitespace of `line`.
@@ -494,6 +598,78 @@ mod tests {
         // Every word survives, in order.
         let words: Vec<&str> = out.iter().flat_map(|l| l.split_whitespace()).collect();
         assert_eq!(words, vec!["let", "x", "=", "1;", "let", "y", "=", "2;"]);
+    }
+
+    // ---- RF.3: the auto-wrap break point ----
+
+    fn brk(line: &str, width: usize, leader: Option<&str>) -> Option<AutoWrapBreak> {
+        auto_wrap_break(line, line.len(), cfg(width, leader))
+    }
+
+    /// The break replaces the whitespace run, so the space does not
+    /// become trailing whitespace on the line above.
+    #[test]
+    fn auto_wrap_breaks_at_the_last_space_that_fits() {
+        let b = brk("aaa bbb ccc", 7, None).expect("must break");
+        assert_eq!(&"aaa bbb ccc"[b.start..b.end], " ");
+        assert_eq!(b.start, 7, "the space after `bbb` is the last that fits");
+        assert_eq!(b.replacement, "\n");
+    }
+
+    #[test]
+    fn no_break_until_the_cursor_passes_the_margin() {
+        assert!(brk("aaa bbb", 80, None).is_none());
+        assert!(brk("", 80, None).is_none());
+    }
+
+    /// One long word overflows rather than being split — the same rule
+    /// the operator follows, so typing and `gq` cannot disagree.
+    #[test]
+    fn a_single_long_word_does_not_break() {
+        assert!(brk("aaaaaaaaaaaaaaaaaaaa", 5, None).is_none());
+        // …and neither does a leader followed by one long word.
+        assert!(brk("// aaaaaaaaaaaaaaaaaaaa", 5, Some("//")).is_none());
+    }
+
+    /// The carried remainder gets the comment leader, or a doc comment
+    /// silently turns into code on the next line.
+    #[test]
+    fn the_continuation_carries_the_comment_leader() {
+        let line = "/// aaa bbb ccc";
+        let b = brk(line, 11, Some("//")).expect("must break");
+        assert_eq!(b.replacement, "\n/// ");
+        assert_eq!(&line[b.start..b.end], " ");
+    }
+
+    #[test]
+    fn the_continuation_carries_indentation() {
+        let line = "    aaa bbb ccc";
+        let b = brk(line, 11, None).expect("must break");
+        assert_eq!(b.replacement, "\n    ");
+    }
+
+    /// Never break inside the marker itself — `///` split across a
+    /// newline would leave `//` and a stray `/`.
+    #[test]
+    fn the_marker_is_never_a_break_point() {
+        let line = "///aaa bbb";
+        let b = brk(line, 6, Some("//")).expect("must break");
+        assert!(
+            b.start >= 3,
+            "break at {} is inside the `///` marker",
+            b.start
+        );
+    }
+
+    #[test]
+    fn line_is_comment_reads_the_leading_marker_only() {
+        let c = cfg(80, Some("//"));
+        assert!(line_is_comment("  // hi", c));
+        assert!(line_is_comment("/// hi", c));
+        assert!(!line_is_comment("let x = 1; // hi", c));
+        assert!(!line_is_comment("plain", c));
+        // No leader declared (markdown, plain text): nothing is a comment.
+        assert!(!line_is_comment("// hi", cfg(80, None)));
     }
 
     #[test]

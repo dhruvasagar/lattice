@@ -50,7 +50,7 @@ moved out of `examples/org-plugin` by 7ba51c7. Slices from here land as
 commits THERE and touch lattice only when a seam has to change — OM.6 did
 not.
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 ## Where this sits
 

@@ -14,7 +14,7 @@
 > Its `wit/` is generated from `lattice-wit` (WT.2), so the three
 > `host-services` additions here reach it by regeneration.
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 **Status:** ✅ complete (2026-09-08). **OR.7c landed**, which was the last
 open row — the condition it was deferred under ("revisit only if completion

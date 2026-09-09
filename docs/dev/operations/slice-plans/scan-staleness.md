@@ -4,7 +4,7 @@
 > Builds on [`archive/wit-ownership.md`](archive/wit-ownership.md) (WT.3 put the
 > ABI fingerprint in the stamp; this teaches a third caller to read it).
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 **Status:** 📝 planned (2026-08-27). Specced, not started — parked behind org
 work by choice, not blocked.

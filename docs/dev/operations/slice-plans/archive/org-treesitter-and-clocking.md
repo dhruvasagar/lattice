@@ -14,7 +14,7 @@
 > Its `wit/` is generated from `lattice-wit` (WT.2), so every WIT change here
 > reaches it by regeneration rather than by hand-vendoring.
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 **Status:** ✅ complete (2026-08-29). Phase 1 (OT.1–OT.8) and Phase 2
 (OC.1–OC.11) both landed. Phase 2 grew three slices it did not start with —

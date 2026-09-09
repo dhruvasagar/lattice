@@ -5,7 +5,7 @@
 > Implements the design fragment `docs/dev/architecture/release-pipeline.md`
 > (read it first for the "what" and "why"). This file owns sequencing only.
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 **Status:** 🚧 in progress (audited 2026-08-27). Tasks 1–4 ✅ landed
 (`233dc3d1`, `036b9dd3`, `ef9523fa`, `d1cf810c`, plus `d9dd6d01` /

@@ -26,7 +26,7 @@ the shared minor). Catalogue entry: the agenda in
 | **Phase 1 — correctness before cosmetics** | | |
 | OA.1 | Agenda rows are one line **(plugin)** | ✅ |
 | OA.2 | Title-run header grouping; the `[untitled]` rows go | ✅ |
-| OA.3 | ~~Refresh repopulates the view~~ — **not a defect**, see below | ⛔ |
+| OA.3 | ~~Refresh repopulates the view~~ — **not a defect**, see below | ❌ |
 | OA.4 | `<Tab>` / `<S-Tab>` cycle agenda blocks **(plugin)** | ✅ |
 | OA.4b | `<Tab>` is declared once, on a shared `foldable-view-mode` | ✅ |
 | OA.4c | A one-line excerpt is not a fold | ✅ |
@@ -47,12 +47,12 @@ the shared minor). Catalogue entry: the agenda in
 | **Phase 5 — layered display modes** | | |
 | OA.14 | A second virtual-row provider on one view (spike) | ✅ |
 | OA.14b | `scan` reports a file's clocked time **(cross-repo)** | ✅ |
-| OA.14c | ~~Typed configuration~~ — **graduated** to its own plan, see below | ⛔ |
+| OA.14c | ~~Typed configuration~~ — **graduated** to its own plan, see below | ❌ |
 | OA.14d | `pre-plugin-loaded`, so config can reach a load-time option | ✅ |
 | OA.15a | A guest can refresh its own view — `refresh-view` **(cross-repo)** | ✅ |
 | OA.15b | `org-agenda-log-mode` **(plugin)** | ✅ |
 | OA.16 | `scan-view-clockreport-mode` + `cr` | ✅ |
-| OA.17 | ~~`org-agenda-timeline-mode`~~ — **dropped**, org removed it in 9.1 | ⛔ |
+| OA.17 | ~~`org-agenda-timeline-mode`~~ — **dropped**, org removed it in 9.1 | ❌ |
 | OA.18 | The `gD` view-mode dispatch transient **(plugin)** | ✅ |
 | **Phase 6 — the agenda is navigable** | | |
 | OA.19 | `scan_args` becomes a typed view-argument list **(plugin)** | ✅ |
@@ -347,7 +347,7 @@ rule that are easy to get wrong — equal titles CONTINUE a run (search's shape,
 without which `HeaderRuns` would be agenda-only), and a leading empty title
 emits nothing rather than `[untitled]`.
 
-### OA.3 — Refresh repopulates the view ⛔ not a defect
+### OA.3 — Refresh repopulates the view ❌ not a defect
 
 Diagnosed and closed. **The refresh mechanism is correct.** Four end-to-end
 tests drive the real plugin, open the agenda, press `gr` and get their rows
@@ -827,7 +827,7 @@ its time. An earlier draft collected clock inside the `!entries.is_empty()`
 branch — which passes every row test and loses exactly the case the seam exists
 for.
 
-### OA.14c — Typed configuration ⛔ **graduated**
+### OA.14c — Typed configuration ❌ **graduated**
 
 Never an agenda slice. It was recorded here because org's five hand-rolled
 option encodings are what motivate it and because the question arose mid-phase;
@@ -954,7 +954,7 @@ rule: immediate config for what exists, `PrePluginLoaded` for a plugin's
 options, `PluginLoaded` for what needs it fully loaded (`enable-mode` above
 all — the mode is not registered at pre-load time).
 
-### OA.17 — ~~`org-agenda-timeline-mode`~~ — **dropped** ⛔
+### OA.17 — ~~`org-agenda-timeline-mode`~~ — **dropped** ❌
 
 Not deferred: **removed, and it will not come back in this form.** Three
 findings, recorded so nobody re-plans it blind.

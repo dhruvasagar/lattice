@@ -5,7 +5,7 @@
 > the bug was reported from a real terminal, every automated fix before this
 > one passed while the terminal stayed broken, and archiving on green tests
 > alone would be repeating exactly that mistake. Implements
-> [`mode-architecture.md`](../../architecture/mode-architecture.md) §7.4,
+> [`mode-architecture.md`](../../../architecture/mode-architecture.md) §7.4,
 > "Major mode, second trigger — `LanguagesRegistered`".
 
 Design owns *what* and *why*; this file owns *when*, *in what order*, and

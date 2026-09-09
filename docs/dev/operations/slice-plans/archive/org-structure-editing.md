@@ -1,7 +1,7 @@
 # Org structure editing — headlines, lists and checkboxes — slice plan
 
 > **Status: COMPLETE.** Opened 2026-09-06, landed 2026-09-07. Implements
-> [`org-mode.md`](../../architecture/org-mode.md) §5.6.
+> [`org-mode.md`](../../../architecture/org-mode.md) §5.6.
 
 > **For agentic workers:** REQUIRED SUB-SKILL — use
 > `superpowers:subagent-driven-development` (recommended) or
@@ -256,7 +256,7 @@ rather than the part this feature happens to touch.
 
 ## OS.0 — An Insert-mode plugin chord reaches a grammar action **(host)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.2.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.2.
 
 **A test slice, deliberately, and it may become a fix.**
 
@@ -478,7 +478,7 @@ and then silently never fires.
 
 ## OS.1 — The keyboard protocol, so Shift+Enter exists at all **(host)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.1.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.1.
 
 `runtime.rs:141-152` sets up raw mode, the alternate screen, bracketed paste
 and mouse capture, and never pushes `KeyboardEnhancementFlags`. Without them a
@@ -669,7 +669,7 @@ asymmetry is the whole slice.
 
 ## OS.2 — A Visual-mode plugin action can see its region **(host)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.5.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.5.
 
 `lattice-mode`'s `ActionContext` has carried `selection: Option<Range>` since
 MG.18e (magit region staging); `lattice-grammar`'s — the one a *plugin* action
@@ -851,7 +851,7 @@ record rather than an oversight.
 
 ## OS.3 — `Lists` — the model, and `Checkboxes` rebuilt on it **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.3.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.3.
 
 The gate for the whole plugin half.
 
@@ -1167,7 +1167,7 @@ grammar bump, surfacing as a cookie that quietly stops updating.
 
 ## OS.4 — `<M-CR>` — meta-return dispatches on what is at point **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.4.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.4.
 Needs OS.0, OS.3.
 
 **Files**
@@ -1304,7 +1304,7 @@ git commit
 
 ## OS.5 — `<M-S-CR>` — the variant, and the headline insert family **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.4.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.4.
 Needs OS.4. Reads better after OS.1, does not need it.
 
 **Files**
@@ -1384,7 +1384,7 @@ git add src/lib.rs tests/org_structure.rs && git commit
 
 ## OS.6 — The Meta-arrows: promote/demote *is* indent/outdent **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.4, §5.6.6.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.4, §5.6.6.
 Needs OS.3.
 
 **Files**
@@ -1498,7 +1498,7 @@ implementation and nothing to drift.
 
 ## OS.7 — `<M-Up>` / `<M-Down>` — move an item or a subtree **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.4, §5.6.6.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.4, §5.6.6.
 Needs OS.3.
 
 **Files**
@@ -1587,7 +1587,7 @@ splicing an item into a neighbouring list.
 
 ## OS.8 — `<C-t>` / `<C-d>` in Insert, declining off a list **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.2.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.2.
 Needs OS.0, OS.6.
 
 Pure binding work over OS.6's bodies plus one new arm: the decline.
@@ -1670,7 +1670,7 @@ vim's own indent underneath, the `<C-a>` / `<C-x>` argument moved into Insert.
 
 ## OS.9 — Bullet cycling, and line ↔ item ↔ headline **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.
 Needs OS.3.
 
 **Files**
@@ -1765,7 +1765,7 @@ bullets is not something org produces, and cycling one item would create one.
 
 ## OS.10 — The Visual peers **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.5.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.6.5.
 Needs OS.2, and the verb slices whose ActionIds it binds (OS.6, OS.7, OS.9).
 
 **Files**

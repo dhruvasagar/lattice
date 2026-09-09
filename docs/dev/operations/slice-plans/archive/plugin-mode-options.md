@@ -2,7 +2,7 @@
 
 > Design: [`../../../../architecture/plugin-mode-options.md`](../../../../architecture/plugin-mode-options.md).
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 **Status:** ✅ complete (2026-08-27). MO.1 + MO.2 landed together in this repo;
 MO.3 landed in `lattice-org-plugin` (`2363ed4`).

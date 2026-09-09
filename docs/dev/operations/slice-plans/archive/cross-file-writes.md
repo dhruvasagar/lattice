@@ -14,7 +14,7 @@ they were the only
 reason this exists, and they are now ordinary plugin work in the plugin
 repo rather than blocked on a missing host mechanism.
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 ## Where this sits
 

@@ -198,7 +198,7 @@ Every reference site as an editable multibuffer (±2 lines of context per
 excerpt), for cross-callsite refactors.
 
 - Design: [`lsp-architecture.md`](../../architecture/lsp-architecture.md) §17.
-  Slice plan: [`lsp-references-view.md`](lsp-references-view.md) (LR series).
+  Slice plan: [`archive/lsp-references-view.md`](archive/lsp-references-view.md) (LR series).
 - **Lives in `lattice-lsp`**, not here — see the provider-home reversal at the
   top of this file.
 - **`gr` does not open it.** `gr` keeps its two existing meanings: the

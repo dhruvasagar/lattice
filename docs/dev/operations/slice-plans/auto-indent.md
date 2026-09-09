@@ -24,7 +24,7 @@
 | IN.8a | `lattice-format` crate — spec table, runner, minimal-edit application | ✅ |
 | IN.8b | `:format` cascade + async landing | ✅ |
 | IN.9 | Format-on-save; `formatprg` (`equalprg` ⛔ deferred) | ✅ |
-| IN.10 | LSP `onTypeFormatting` — the additive layer | ⛔ dropped |
+| IN.10 | LSP `onTypeFormatting` — the additive layer | ❌ |
 | IN.11 | Per-language mode defaults; GPUI parity audit; docs | ✅ |
 
 ## Shape of the sequence
@@ -643,7 +643,7 @@ all.
 
 ---
 
-## IN.10 — LSP `onTypeFormatting`, additive ⛔ DROPPED
+## IN.10 — LSP `onTypeFormatting`, additive ❌ DROPPED
 
 **Dropped 2026-08-16 (Dhruva).** The plan already marked it optional; the
 evidence gathered since turned "optional" into "not worth it".

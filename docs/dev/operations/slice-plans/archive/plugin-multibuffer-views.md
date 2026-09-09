@@ -1,6 +1,6 @@
 # Plugin-owned multibuffer views — slice plan
 
-Design: [`architecture/plugin-multibuffer-views.md`](../../architecture/plugin-multibuffer-views.md).
+Design: [`architecture/plugin-multibuffer-views.md`](../../../architecture/plugin-multibuffer-views.md).
 
 ## Why this phase exists
 
@@ -148,7 +148,7 @@ drives a view's excerpts all the way into a buffer (the drain tests stop at
 registration + the gate). Carried to MV.2, where org's real view makes that
 assertion natural rather than synthetic.
 
-### MV.2 — org registers a view ⛔ dropped
+### MV.2 — org registers a view ❌ dropped
 
 **Dropped 2026-08-30, by Dhruva's decision.** The slice existed to prove the
 seam with a lower-risk consumer before the agenda migrated. By the time it came

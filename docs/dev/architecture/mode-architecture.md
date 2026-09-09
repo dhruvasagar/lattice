@@ -1901,7 +1901,7 @@ language (`lang_for_major`), so re-deriving one from the path would clobber it â
 *and* its grammar intact.
 
 Sequencing:
-[`slice-plans/late-language-activation.md`](../operations/slice-plans/late-language-activation.md).
+[`slice-plans/archive/late-language-activation.md`](../operations/slice-plans/archive/late-language-activation.md).
 
 **Only a buffer still on the FALLBACK major is re-resolved.** A major the user
 set explicitly (`:org-mode`, a modeline directive) outranks a late-arriving

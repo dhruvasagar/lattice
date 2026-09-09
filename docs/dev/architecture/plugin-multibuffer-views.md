@@ -1,6 +1,6 @@
 # Plugin-owned multibuffer views
 
-**Status:** design. Slice plan: [`slice-plans/plugin-multibuffer-views.md`](../operations/slice-plans/plugin-multibuffer-views.md).
+**Status:** design. Slice plan: [`slice-plans/archive/plugin-multibuffer-views.md`](../operations/slice-plans/archive/plugin-multibuffer-views.md).
 
 A plugin can put rows into the one multibuffer the host built for it. It cannot
 build one. This fragment closes that gap and, in doing so, stops the agenda from

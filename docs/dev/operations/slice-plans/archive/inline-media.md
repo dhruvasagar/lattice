@@ -30,7 +30,7 @@ Path 4 was pulled back from post-1.0 on 2026-08-24; the design fragment
 §2 records why the deferral no longer holds (Thread F already built the
 per-row variable-height paint path).
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 ## Sequencing
 

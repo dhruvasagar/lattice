@@ -2,7 +2,7 @@
 
 > Design: [`../../../../architecture/wit-ownership.md`](../../../../architecture/wit-ownership.md).
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 **Status:** ✅ complete (2026-08-27). WT.1–WT.4 all landed; nothing deferred.
 

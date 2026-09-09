@@ -11,7 +11,7 @@
 > Its `wit/` is generated from `lattice-wit` (WT.2), so the `conceal-rule` record
 > H.2 adds reaches it by regeneration rather than by hand-vendoring.
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 **Status:** ✅ complete (2026-08-29). Phase H (H.1–H.4) and phase OL
 (OL.1–OL.4) both landed. Two design claims died during the build — the signed

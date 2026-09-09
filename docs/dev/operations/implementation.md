@@ -105,7 +105,7 @@ gutter's mark cell with diagnostics and `priority` resolves the contention
 column would have cost every buffer a column of content forever for a
 mechanism most buffers never use. Design:
 [`../architecture/gutter-signs.md`](../architecture/gutter-signs.md); slice
-plan [`slice-plans/gutter-signs.md`](slice-plans/gutter-signs.md).
+plan [`slice-plans/archive/gutter-signs.md`](slice-plans/archive/gutter-signs.md).
 
 A plugin both **declares** its signs (`wit/signs.wit`, the `theme.wit` shape:
 auto-namespaced by plugin id, drained once at load, reversed on unload) and
@@ -289,7 +289,7 @@ provider, because the gaps turned out to be mostly substrate.
 |---|---|---|
 | [`refreshable-views.md`](slice-plans/archive/refreshable-views.md) | RV.1–3 ✅ | `gr` is ONE shared chord over `Mode::refresh_action()`. Five modes had copied it; `*problems*` and narrow had none. |
 | [`error-list-producers.md`](slice-plans/archive/error-list-producers.md) | EP.1–6 ✅ | Per-source slices; the language server and references both feed the error list, each opt-in-gated. |
-| [`lsp-references-view.md`](slice-plans/lsp-references-view.md) | LR.1–3, LR.5 ✅ | `:lsp-references` opens an **editable** references multibuffer (catalogue A.3); `<C-q>` sends any picker's filtered results to the error list. |
+| [`lsp-references-view.md`](slice-plans/archive/lsp-references-view.md) | LR.1–3, LR.5 ✅ | `:lsp-references` opens an **editable** references multibuffer (catalogue A.3); `<C-q>` sends any picker's filtered results to the error list. |
 | [`multibuffer-stale-sources.md`](slice-plans/archive/multibuffer-stale-sources.md) | SS.1–3 ✅ | **Data-loss fix:** `:w` on a multibuffer silently overwrote source files that had changed on disk. |
 | [`diff-refinement.md`](slice-plans/archive/diff-refinement.md) | DR.1–4 ✅ | Word-level intra-line diff highlighting — which *part* of a changed line changed. |
 
@@ -6746,7 +6746,7 @@ Both renderer peers' `Effect::OpenTransient` bodies collapsed onto
 `Editor::open_named_transient` on the way, so the async path exists once.
 
 Design: [`../architecture/plugin-transients.md`](../architecture/plugin-transients.md).
-Slice plan: [`slice-plans/org-capture.md`](slice-plans/org-capture.md),
+Slice plan: [`slice-plans/archive/org-capture.md`](slice-plans/archive/org-capture.md),
 which sequences it with the org capture overhaul that motivated it.
 
 **OC.9 / OC.10 (2026-09-08) reopened this plan.** `Effect::WriteToFile` grew
@@ -6931,7 +6931,7 @@ directory that is part of the layout it owns; see
 | MV.4 | docs | ✅ |
 
 Design: [`../architecture/plugin-multibuffer-views.md`](../architecture/plugin-multibuffer-views.md).
-Slice plan: [`slice-plans/plugin-multibuffer-views.md`](slice-plans/plugin-multibuffer-views.md).
+Slice plan: [`slice-plans/archive/plugin-multibuffer-views.md`](slice-plans/archive/plugin-multibuffer-views.md).
 
 Came out of OR.9. A plugin can feed rows to the one multibuffer the host built
 for it, and can own that view's chords through the `view-mode` export — but it
@@ -7192,7 +7192,7 @@ the grammar gives.
 
 Design: [`../architecture/org-mode.md`](../architecture/org-mode.md) §5.4–§5.5.
 Slice plan:
-[`slice-plans/org-entry-editing.md`](slice-plans/org-entry-editing.md).
+[`slice-plans/archive/org-entry-editing.md`](slice-plans/archive/org-entry-editing.md).
 
 ---
 
@@ -7234,7 +7234,7 @@ in the design rather than put in front of eleven slices.
 
 Design: [`../architecture/org-mode.md`](../architecture/org-mode.md) §5.6.
 Slice plan:
-[`slice-plans/org-structure-editing.md`](slice-plans/org-structure-editing.md).
+[`slice-plans/archive/org-structure-editing.md`](slice-plans/archive/org-structure-editing.md).
 
 ---
 

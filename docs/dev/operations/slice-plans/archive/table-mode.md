@@ -2,7 +2,7 @@
 
 Design: [`table-mode.md`](../../architecture/table-mode.md).
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 | Slice | Description | Status |
 |---|---|---|

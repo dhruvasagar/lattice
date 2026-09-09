@@ -12,7 +12,7 @@ other. What makes this a *mechanism* rather than a feature is that adding a new
 kind of mark requires no host change at all.
 
 Slice sequencing lives in
-[`slice-plans/gutter-signs.md`](../operations/slice-plans/gutter-signs.md).
+[`slice-plans/archive/gutter-signs.md`](../operations/slice-plans/archive/gutter-signs.md).
 
 ## 1. Definitions and placements are separate, and the split is load-bearing
 

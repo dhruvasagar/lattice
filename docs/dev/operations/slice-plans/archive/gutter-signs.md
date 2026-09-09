@@ -1,6 +1,6 @@
 # Gutter signs — slice plan
 
-Design: [`architecture/gutter-signs.md`](../../architecture/gutter-signs.md).
+Design: [`architecture/gutter-signs.md`](../../../architecture/gutter-signs.md).
 
 A generic sign mechanism for the gutter: vim's `:sign define` / `:sign place`,
 with the host owning what a sign *is* and no built-in opinion about what any

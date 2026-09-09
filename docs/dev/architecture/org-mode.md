@@ -391,7 +391,7 @@ it.
 Every *individual* verb it reaches is already here — `<C-c><C-q>` tags,
 `<C-c><C-c>` checkbox, `<leader>t|` align — so what is missing is the
 dispatch, not the work. Sequencing is in
-[`org-entry-editing.md`](../operations/slice-plans/org-entry-editing.md).
+[`org-entry-editing.md`](../operations/slice-plans/archive/org-entry-editing.md).
 
 **The arms do not all belong to org, and that is the design.** A guest
 cannot invoke a registered command: there is no `Effect::Invoke`, and the
@@ -830,7 +830,7 @@ coverage. If the round-trip ratchet moves when this lands, that is the
 signal, and it is already wired.
 
 Sequencing is in
-[`org-structure-editing.md`](../operations/slice-plans/org-structure-editing.md).
+[`org-structure-editing.md`](../operations/slice-plans/archive/org-structure-editing.md).
 
 ## 6. The agenda
 

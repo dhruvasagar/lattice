@@ -13,7 +13,7 @@ language.** LG.4 ✅ (2026-08-23) — org headlines, per level. LG.5 ✅ (2026-0
 org folds. LG.6 ✅ (2026-08-23) — docs, and org's `:help` page
 ships after all. **The whole track is complete.**
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 ## Sequencing
 

@@ -1,20 +1,19 @@
 # Org capture overhaul — slice plan
 
 > Design:
-> [`../../../../architecture/org-capture.md`](../../../../architecture/org-capture.md)
+> [`../../../architecture/org-capture.md`](../../../architecture/org-capture.md)
 > (the capture system) and
-> [`../../../../architecture/plugin-transients.md`](../../../../architecture/plugin-transients.md)
+> [`../../../architecture/plugin-transients.md`](../../../architecture/plugin-transients.md)
 > (the seam the menu needs).
 >
 > Sequences both, because the menu is what makes many templates usable and
 > the seam is what makes the menu possible.
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
-**Status:** 🚧 reopened (2026-09-08). Every slice of the original plan
-landed; OC.9 and OC.10 were added afterwards and one gap they exposed is open,
-so the plan is active again rather than archived — a plan with open work is not
-a finished one.
+**Status:** ✅ complete (2026-09-09). The original plan landed; OC.9–OC.11d
+were added afterwards and every one of them is done, including OC.11c, which
+was filed as deferred and then built. Ready to archive.
 
 Two host slices fell out of this plan that were not in it: `default_modes`
 (plural), and `host-services.read-file` — the second because a grammar action
@@ -142,8 +141,9 @@ the guest's id. `PluginSeam::TransientSource`, `spawn_transient_source` +
 
 v1 mirrors `Action` (crossing as a command **name plus its args**, the name
 resolved host-side — a plugin cannot forge a `CommandId`) and `Dismiss`.
-`Submenu` / `Flag` / `Argument` / `Variable` are 📝 with reasons in the design
-fragment; `TransientSpec::preview` is a closure and cannot cross at all.
+`Submenu` / `Flag` / `Argument` / `Variable` are listed as planned in the
+design fragment, with reasons there; `TransientSpec::preview` is a closure and
+cannot cross at all.
 
 Also completed the `plugin_seam_as_str_round_trips_from_str_for_every_variant`
 list, which had drifted to eleven of eighteen while claiming all of them.
@@ -563,60 +563,6 @@ failed `WriteToFile`'s message.
 A CONFIGURED set stays silent, which is the half that keeps this from being
 noise.
 
-### OC.11d — an unset set is emacs's default template, not an error ✅
-
-**Found while testing OC.11b.** `<leader>oc` opens OC.3's template menu, and
-the menu did `capture_templates::read().map_err(…)?` — so with no templates it
-refused with *"no capture templates — set `org.capture-templates`"* and never
-reached the OM.11 fallback. A user whose only capture config is
-`org.capture-file` **could not capture from the shipped chord at all**.
-
-It was filed with two readings pointing opposite ways (refusing is safer for
-the mid-migration user; refusing breaks a documented configuration) and
-resolved by the instruction to keep capture close to emacs. Emacs settles it,
-in `org-capture-select-template`:
-
-```elisp
-(let ((org-capture-templates
-       (or (org-contextualize-keys …)
-           '(("t" "Task" entry (file+headline "" "Tasks")
-              "* TODO %?\n  %u\n  %a")))))
-```
-
-With `org-capture-templates` nil emacs **substitutes a built-in row** and opens
-the menu anyway; it never reports "no capture templates". The `""` file in that
-target is `org-default-notes-file`, which is precisely what `org.capture-file`
-is here. So refusing was the divergence, and the menu now shows one row keyed
-`t` labelled `Task` — emacs's own key and description — targeting
-`org.capture-file`.
-
-**a and b are what make d safe.** The user this could hurt is mid-migration: a
-malformed set is refused at `:set`, leaves the option at its empty default, and
-reaches the guest as `Unset` rather than `Malformed`. They now get the rejection
-durably in `*messages*` (a) and an echo naming the file the capture used (b), so
-the fallback announces itself twice instead of being a silent write to the old
-file. Landing d first would have been the bad version of this.
-
-**A malformed or empty set still refuses.** Emacs substitutes only when the
-variable is nil; a value that exists and does not work is a thing to fix, and
-there is no reading under which the user meant the legacy path.
-
-**Still divergent, deliberately:** with no `org.capture-file` either, emacs
-falls back to `~/.notes` and this refuses. `DEFAULT_CAPTURE_FILE`'s reasoning
-stands — a path nobody named scatters notes somewhere they will not think to
-look — and the refusal message already names both options.
-
-Two placement details the tests pin, because both were wrong first:
-
-- **The note goes LAST on the buffer path and FIRST on the filing path.**
-  Opening the draft sets its own `switched to buffer …` chrome, which
-  overwrote a leading note; filing can FAIL and say so, and that must be what
-  is left standing. The rule is the same in both — the last message is the most
-  important thing that happened.
-- **The test harness swallowed `Effect::Echo`** (`_ => {}`), so the note landed
-  in production and was invisible to tests — the same dropped-effect trap each
-  of the other arms in `apply_renderer_effects` was added for.
-
 ### OC.11c — ask why an option is at its default ✅
 
 **Filed under a name that was wrong, and the wrongness mattered.** It said "a
@@ -732,41 +678,3 @@ Two placement details the tests pin, because both were wrong first:
 - **The test harness swallowed `Effect::Echo`** (`_ => {}`), so the note landed
   in production and was invisible to tests — the same dropped-effect trap each
   of the other arms in `apply_renderer_effects` was added for.
-
-### OC.11c — a rejected option is not an unset one ⛔
-
-**Open, and the reason a test changed its name rather than its assertion.**
-
-`:set org.capture-templates=<malformed>` is refused at set time with a clear
-echo, and the option is never stored. From inside the guest
-`capture_templates::read()` then returns `Unset` — identical to "never
-configured" — so capture takes the OM.11 legacy `capture-file` /
-`capture-template` path and files the note there.
-
-That is the outcome
-`a_malformed_template_set_captures_nothing_and_echoes` was written to forbid.
-It passed anyway, for two reasons OC.9 exposed:
-
-1. the echo it asserted was **stale**, emitted by `:set` rather than by capture;
-2. `!notes.exists()` was **vacuous** — before `save`, capture could not create
-   a file whatever it did.
-
-The test is now `a_malformed_template_set_is_refused_at_set_time`: it asserts
-the half that is true (the value is refused where it was typed) and pins the
-fallback as the KNOWN-CURRENT behaviour, so a fix fails there and gets to
-rewrite the story deliberately.
-
-**What closing it needs:** the host must be able to say "this option was set
-and refused", which no seam expresses today — `config` carries values, not
-validation history. Not carved here because it is an option-system design
-question rather than a capture one, and guessing at its shape from capture's
-end is how a seam gets built for one caller.
-
-**Re-judge it against OC.11a/b before building it.** With the diagnostics
-durable and the fallback announcing itself, the remaining gap is narrow: the
-guest still cannot REFUSE on a rejected set, but the user can now find out what
-was refused and can see which path capture took. Whether that residue is worth
-guest-visible option state — with its lifetime questions (cleared on the next
-successful set? on reload? per source?) and a divergence from vim's "a failed
-`:set` is a no-op" — is the question to answer, and it is a smaller one than it
-was when this was filed.

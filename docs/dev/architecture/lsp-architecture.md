@@ -1408,7 +1408,7 @@ So the view's triggers are `:lsp-references` and `gr` inside an open
 view (refresh). Discoverability rests on the ex-command and its
 `:describe-command` entry.
 
-Sequencing: [`../operations/slice-plans/lsp-references-view.md`](../operations/slice-plans/lsp-references-view.md).
+Sequencing: [`../operations/slice-plans/archive/lsp-references-view.md`](../operations/slice-plans/archive/lsp-references-view.md).
 
 ---
 

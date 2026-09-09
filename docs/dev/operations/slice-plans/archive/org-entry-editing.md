@@ -1,7 +1,7 @@
 # `C-c C-c` and entry properties — slice plan
 
 > **Status: Active.** Opened 2026-09-04. Implements
-> [`org-mode.md`](../../architecture/org-mode.md) §5.4–§5.5.
+> [`org-mode.md`](../../../architecture/org-mode.md) §5.4–§5.5.
 
 Design owns *what* and *why*; this file owns *when* and *in what order*.
 
@@ -31,7 +31,7 @@ already-correct answer.
 
 ## OE.0 — Where a `:PROPERTIES:` drawer goes **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.5.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.5.
 
 **Planned as a question, landed as a bug fix.** The plan said the answer would
 ride OE.1; it does not, because the answer turned out to be that
@@ -92,7 +92,7 @@ warnings.
 
 ## OE.1 — A property writer that can create a drawer **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.5.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.5.
 
 Generalise `roam_index::id_drawer_insert` into `properties::set_entry_property`
 — given a line accessor, a headline line, a key and a value, answer the edit
@@ -188,7 +188,7 @@ displacing its planning line.
 
 ## OE.3 — `org-ctrl-c-ctrl-c`, org's own arms **(plugin)** ✅
 
-Design: [`org-mode.md`](../../architecture/org-mode.md) §5.4.
+Design: [`org-mode.md`](../../../architecture/org-mode.md) §5.4.
 
 `<C-c><C-c>` on the org major, dispatching on the cursor's context:
 

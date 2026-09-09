@@ -1,7 +1,7 @@
 # LSP references view — slice plan
 
 > **Status: Active.** Opened 2026-08-10. Implements
-> [`lsp-architecture.md`](../../architecture/lsp-architecture.md) §17:
+> [`lsp-architecture.md`](../../../architecture/lsp-architecture.md) §17:
 > references as an editable multibuffer alongside the existing picker.
 
 Design owns *what* and *why*; this file owns *when* and *in what order*.
@@ -9,7 +9,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 Depends on [`refreshable-views.md`](refreshable-views.md) RV.1 (LR.3's
 `gr` comes from the shared minor, not a fourth copied keymap entry).
 Catalogue entry: A.3 in
-[`multibuffer-providers.md`](multibuffer-providers.md).
+[`multibuffer-providers.md`](../multibuffer-providers.md).
 
 ## Status
 
@@ -18,7 +18,7 @@ Catalogue entry: A.3 in
 | LR.1 | `lattice-lsp` → `lattice-multibuffer` dep + provider skeleton | ✅ |
 | LR.2 | `:lsp-references` — second terminus on the existing drain | ✅ |
 | LR.3 | Refresh — origin-anchored re-query | ✅ |
-| LR.4 | ~~Version-skew guard~~ — **superseded**, see below | ⛔ |
+| LR.4 | ~~Version-skew guard~~ — **superseded**, see below | ❌ |
 | LR.5 | `<C-q>` sends picker results to the error list | ✅ |
 
 LR.5 is separable and generalises past references — it can slip without
@@ -89,7 +89,7 @@ excerpt appears; refresh re-queries the origin symbol, not whatever is
 under the multibuffer cursor (the bug this slice is shaped to prevent);
 refresh with the origin file deleted → warn, leave the view intact.
 
-## LR.4 — Superseded ⛔
+## LR.4 — Superseded ❌
 
 **Not built here.** Specifying it surfaced that the slice was wrong in
 two ways, both discovered by reading the save path rather than the

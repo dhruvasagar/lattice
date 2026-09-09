@@ -8,7 +8,7 @@
 
 Design owns *what* and *why*; this file owns *when* and *in what order*.
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 ## Status
 

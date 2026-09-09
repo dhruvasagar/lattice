@@ -1341,7 +1341,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.23c2 | `I` init, `m` merge (`Q` dropped — see below) | MG.23c1 | ✅ |
 | MG.23d | File ops: untrack, delete, rename | MG.23a, IX.2 | ✅ |
 | MG.23d2 | `,c` checkout a file from a revision | MG.23d | ✅ |
-| MG.23e | Surface-mapping rows — **dropped**, see below | — | ⛔ |
+| MG.23e | Surface-mapping rows — **dropped**, see below | — | ❌ |
 | MG.23f | Blob navigation (blame variants evaluated out, one deferred) | — | ✅ |
 | MG.23f2 | Reverse blame (`git blame --reverse`) from a blob buffer | MG.23f | ✅ |
 | MG.23g | `a` apply / `-` reverse on a hunk of a commit | MG.18 | ✅ |

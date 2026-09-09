@@ -3589,6 +3589,38 @@ with the *listing* instead of the *viewport* looks perfectly fast at any one
 size. Only the comparison across sizes can catch it, so the sweep is the test
 and either number alone would be decoration.
 
+### DL.8b re-measure (2026-09-09) — name spans are free
+
+DL.8b adds a second per-row product at the same chokepoint: alongside the
+5,000 icons, one `StyledSpan` per row published through
+`PendingSyntheticHighlights` and merged by `merge_extra_spans` at row build.
+That is O(rows) more work in the open path and one more span to walk per line
+in the build, so it had to be measured rather than argued.
+
+Measured **against a same-machine baseline** (`git stash -u`, re-run, pop) —
+the absolute numbers above are from a different developer box and are not a
+baseline anything can be compared against:
+
+| Workload | Clean HEAD | With DL.8b |
+| --- | --- | --- |
+| `listing_open_oil` | 7.50 ms | 7.51 ms |
+| `listing_open_file_tree` | 9.39 ms | 9.81 ms |
+| `listing_scroll_publish/500` | 24.0 µs | 19.9 µs |
+| `listing_scroll_publish/5000` | 11.9 µs | 18.3 µs |
+
+Oil's open cost is unchanged. The tree's is +4% with confidence intervals that
+touch ([9.15, 9.63] vs [9.54, 10.11]) — at or below the resolution of this
+bench on this box, and consistent with one extra `Vec` per row against a cost
+already dominated by the filesystem read.
+
+**The scroll numbers say nothing either way and should not be read as a
+result.** Both sides swing by 2× with overlapping intervals on this machine,
+including the direction that would look like an *improvement* — which is the
+tell that it is noise, not a measurement. What survives is the property the
+sweep exists for: per-frame cost is still flat in directory size, 5,000
+entries costing no more than 500. Re-run on the §8.2 reference hardware before
+quoting any per-frame figure from this row.
+
 ## What's NOT here
 
 Benches we'd want before claiming §8.2 coverage but haven't built

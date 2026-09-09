@@ -319,6 +319,10 @@ pub fn listing_entries(entries: &[FileTreeEntry]) -> Vec<crate::listing_mode::Li
             path: e.path.clone(),
             is_dir: matches!(e.kind, FileTreeEntryKind::Directory { .. }),
             icon_byte: row_prefix(e).len() as u32,
+            // `row_name`, not `path.file_name()` — the root row's text is
+            // the whole path, so deriving the name from the path would
+            // under-span exactly one row and leave the root half-coloured.
+            name_byte_len: row_name(e).len() as u32,
         })
         .collect()
 }

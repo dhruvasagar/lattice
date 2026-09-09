@@ -23537,7 +23537,7 @@ impl Editor {
                 .map(|v| *v)
                 .unwrap_or(false)
         });
-        let rows = self
+        let published = self
             .services
             .get::<lattice_theme::ThemeRegistryHandle>()
             .map(|theme| {
@@ -23563,15 +23563,37 @@ impl Editor {
                             .into(),
                     ),
                 );
-                lattice_listing::listing_mode::listing_inlays(&listing, &**theme, nerd_fonts)
+                // DL.8b: the icons and the name spans are resolved from the
+                // SAME entries in the SAME pass, so a row's glyph and its
+                // name can never disagree about which element they are.
+                // Two passes over one list would be two chances to drift.
+                (
+                    lattice_listing::listing_mode::listing_inlays(&listing, &**theme, nerd_fonts),
+                    lattice_listing::listing_mode::listing_name_spans(&listing, &**theme),
+                )
             })
             .unwrap_or_default();
+        let (rows, name_spans) = published;
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
             .insert(lattice_listing::listing_mode::ListingEntries(listing));
         if let Some(pending) = self.services.get::<lattice_mode::PendingInlays>() {
             pending.store_and_wake(buffer_id, rows);
+        }
+        // DL.8b: names go through the generic synthetic-highlight channel,
+        // the same one magit and help publish on — so both renderers pick
+        // them up through the cells / `DisplayMatrix` build with no
+        // per-kind renderer code, which is the acid test in the design's
+        // §8. `Replace` (not a splice) because a listing republishes its
+        // whole entry list on every refresh; an empty vector therefore
+        // clears the previous colours rather than stranding them over
+        // rows that have moved.
+        if let Some(pending) = self
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>()
+        {
+            pending.store_and_wake(buffer_id, name_spans);
         }
     }
 
@@ -42241,11 +42263,13 @@ mod tests {
                     path: "src/main.rs".into(),
                     is_dir: false,
                     icon_byte: 0,
+                    name_byte_len: "main.rs".len() as u32,
                 },
                 ListingEntry {
                     path: "tool/build.py".into(),
                     is_dir: false,
                     icon_byte: 0,
+                    name_byte_len: "build.py".len() as u32,
                 },
             ],
         );

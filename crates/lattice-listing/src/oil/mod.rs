@@ -208,6 +208,9 @@ pub fn listing_entries(
             path: dir.join(&e.name),
             is_dir: e.is_dir,
             icon_byte: 0,
+            // Oil's row IS the bare name (`render_to_text`), so the name
+            // spans the whole line.
+            name_byte_len: e.name.len() as u32,
         })
         .collect()
 }

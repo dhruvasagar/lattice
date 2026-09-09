@@ -1,8 +1,15 @@
 # `directory-listing-mode` — slice plan (CV.6)
 
-> **ARCHIVED 2026-08-15.** DL.0–DL.7 complete. Verified against source, not
-> status icons, before filing. The design fragment (if any) stays in
-> `docs/dev/architecture/` — only the slice plan moved.
+> **ARCHIVED 2026-08-15; reopened and re-closed 2026-09-09 for DL.8.**
+> DL.0–DL.8b complete. Verified against source, not status icons, before
+> filing. The design fragment stays in `docs/dev/architecture/` — only
+> the slice plan moved.
+>
+> DL.8 was added after archiving because a user report — "oil and the
+> file tree lost their colour coding" — showed the *entry colour* half of
+> the design had never reached the screen. Filed here rather than as a
+> new plan: it is the same design fragment's §4, finishing what DL.3b
+> started. Every slice is ✅, so the plan stays archived.
 
 > Sequencing for `docs/dev/architecture/directory-listing-mode.md`.
 > That fragment owns the *what* and *why*; this file owns the *when* and
@@ -22,6 +29,55 @@
 | DL.5 | Oil → `DocumentEntry`, both bespoke renderers deleted | ✅ |
 | DL.6 | Retire `ext_color`'s runtime lookup; benches + parity audit | ✅ |
 | DL.7 | One directory read for both listings (DL.0's debt) | ✅ |
+| DL.8a | TUI: an inlay paints in its own element, not one blanket grey | ✅ |
+| DL.8b | Row NAMES take the row's element, at lowest precedence | ✅ |
+
+## DL.8 — entry colour actually reaches the screen ✅
+
+Added 2026-09-09 from a user report: "oil and the file tree had icons
+and colour coding; now the icons are bland and there is no colour
+coding." Two independent causes, one per slice — which is why they are
+two slices and two commits rather than one "fix the colours" change.
+
+**DL.8a — the TUI discarded a published style.** ✅
+`directory-listing-mode` emits one icon per row carrying
+`Style::Element(listing.file.rust)` etc., the theme resolves those to
+distinct colours, and DL.6's
+`listing_icons_resolve_their_element_before_the_mode_cascade_runs`
+asserts it host-side — and passed throughout. The TUI threw it away at
+paint: `display_line_to_source_spans` drops INLAY runs so overlays can
+address source bytes, and the splice that re-inserts the text re-styled
+*every* inlay in the editor with `inlay_hint_style`. So a `.rs`, a `.py`
+and a directory all painted `#7f849c`.
+
+DL.3a existed precisely to stop this and fixed the two paths it could
+see — the cells worker and GPUI's `display_run_to_synthetic_cell`. This
+third path round-trips the inlay and was missed, and no test looked at a
+painted cell, so a green host-side suite coexisted with a uniformly grey
+screen for four weeks. `inlay_row_style` resolves the row's own style;
+italic stays exclusive to `Style::InlayHint`.
+
+**DL.8b — names had no colour at all.** ✅ §2 of the design has the mode
+owning "the per-row spans **and** icons"; only the icon half shipped, so
+every filename — directories included — painted plain `text`. The
+painters DL.4/DL.5 deleted *had* styled directory and dotfile names
+(`file_tree_dir_style` / `file_tree_hidden_style`); nothing replaced
+them.
+
+`ListingEntry` grows `name_byte_len`, `listing_name_spans` builds one
+span per row from `icon_byte` for that length, and it publishes through
+the generic `PendingSyntheticHighlights` channel. Design §4.1 carries
+the cross-editor comparison and the precedence contract that makes the
+choice reversible; `listing.dir` gains bold there too.
+
+**GPUI needed no patch for either slice**, and the reason is structural
+rather than lucky: it holds zero references to `lattice_listing`, and
+both halves of the colour are resolved host-side into the cells /
+`DisplayMatrix` it consumes. That is §8's acid test coming due —
+recorded here because "no GPUI change" otherwise reads as the parity
+rule having been skipped. Verified by `cargo build -p lattice-ui-gpui`
+plus inspection of `display_run_to_synthetic_cell`; the frame-level
+assertions are the two TUI tests, per the harness note under Risks.
 
 ## Shape of the sequence
 

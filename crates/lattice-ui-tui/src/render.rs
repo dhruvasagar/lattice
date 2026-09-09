@@ -8548,6 +8548,187 @@ mod tests {
         );
     }
 
+    /// **DL.8b: a listing row's NAME paints in the row's element too, and
+    /// the tree's indent + expand marker do not.**
+    ///
+    /// The icon alone carried colour until DL.8b, so every filename —
+    /// directories included — painted plain `text`, which is what the
+    /// report "no colour coding" was mostly about. Names publish through
+    /// the generic `PendingSyntheticHighlights` channel, so this asserts
+    /// the whole path end to end: entries → spans → `ExtraHighlights` →
+    /// the cells build → painted cells.
+    ///
+    /// The marker assertion is the other half and is the one that can
+    /// regress quietly: spanning from byte 0 instead of `icon_byte`
+    /// would tint a directory's `▾` with the directory colour and make
+    /// the tree's structure read as content. It looks fine on an oil
+    /// buffer (`icon_byte == 0`), which is why the tree is what is
+    /// checked here.
+    #[tokio::test]
+    async fn a_listing_row_name_paints_its_element_and_the_tree_marker_does_not() {
+        use lattice_host::ui::theme::{ElementName, ThemeRegistryHandle};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let dir = {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static N: AtomicU64 = AtomicU64::new(0);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let d = std::env::temp_dir().join(format!(
+                "lattice-listing-name-colour-{nanos}-{}",
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        };
+        std::fs::create_dir_all(dir.join("subdir")).unwrap();
+        std::fs::write(dir.join("main.rs"), "x").unwrap();
+        std::fs::write(dir.join("script.py"), "x").unwrap();
+
+        let (tw, th): (u16, u16) = (60, 24);
+        let mut a = app_with("scratch\n", 20);
+        let target = dir.clone();
+        let signals = a.mutate_editor_with(move |e: &mut lattice_host::editor::Editor| {
+            e.do_open_file_tree(Some(target))
+        });
+        for s in signals {
+            a.handle_renderer_signal(s);
+        }
+        {
+            let mode = lattice_listing::listing_mode::DirectoryListingMode::mode_id();
+            let bid = a.editor.active_pane_buffer_id();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if a.editor
+                    .active_modes
+                    .get(&bid)
+                    .map(|m| m.is_active(mode))
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                let signals = a.editor.run_tick_pending();
+                for sig in signals {
+                    a.handle_renderer_signal(sig);
+                }
+            }
+        }
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            e.publish_render_state();
+        });
+
+        let theme = a
+            .editor
+            .services
+            .get::<ThemeRegistryHandle>()
+            .expect("the theme registry is a boot service");
+        let resolved = theme.resolved();
+        let want = |name: &'static str| -> Color {
+            let id = theme
+                .id(&ElementName::from_static(name))
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            crate::theme::host_color_to_ratatui(
+                resolved.get(id).fg.expect("element resolves a foreground"),
+            )
+        };
+        let want_dir = want(lattice_listing::listing_mode::ELEM_LISTING_DIR);
+        let want_rust = want("listing.file.rust");
+        let want_python = want("listing.file.python");
+        let plain = want(lattice_listing::listing_mode::ELEM_LISTING_FILE);
+
+        let mut terminal = Terminal::new(TestBackend::new(tw, th)).unwrap();
+
+        // `(fg of the name's first cell, fg of the expand marker on that
+        // row)`. Located per column, not per byte — the icon glyph is
+        // multi-byte.
+        let row_colours = |buf: &ratatui::buffer::Buffer, name: &str| -> (Color, Option<Color>) {
+            for y in 0..th {
+                let cols: Vec<String> = (0..tw).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                for c in 0..cols.len() {
+                    if cols[c..].concat().starts_with(name) {
+                        let marker = (0..c)
+                            .find(|&x| cols[x] == "▾" || cols[x] == "▸")
+                            .map(|x| buf[(x as u16, y)].fg);
+                        return (buf[(c as u16, y)].fg, marker);
+                    }
+                }
+            }
+            panic!("no painted row contains {name:?}");
+        };
+
+        // Names, unlike icons, need the cells / `DisplayMatrix` REBUILD:
+        // they colour source spans that the matrix bakes in, where an icon
+        // is spliced post-hoc onto whatever body exists. That build is the
+        // async worker's, so the colour lands a frame or two after the
+        // publish — the eventual consistency the keystroke UX contract
+        // allows for syntax colour, and the same window `display_stale`
+        // paints plain text through.
+        //
+        // So this settles on the PAINTED result rather than on the mode. A
+        // single draw passes on an idle machine and fails under a loaded
+        // one, which is a flake that would get argued with instead of
+        // obeyed; and if the colour never arrives, this still fails — on
+        // the assertions below, with the deadline spent.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let buf = loop {
+            let snap = a.ad().snapshot.clone();
+            terminal
+                .draw(|f| {
+                    let _ = draw_frame(f, &a, &snap);
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            if row_colours(&buf, "main.rs").0 == want_rust || std::time::Instant::now() >= deadline
+            {
+                break buf;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let signals = a.editor.run_tick_pending();
+            for sig in signals {
+                a.handle_renderer_signal(sig);
+            }
+            a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+                e.publish_render_state();
+            });
+        };
+
+        let (rust_name, _) = row_colours(&buf, "main.rs");
+        let (python_name, _) = row_colours(&buf, "script.py");
+        let (dir_name, dir_marker) = row_colours(&buf, "subdir");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            rust_name, want_rust,
+            "a .rs row's NAME must paint `listing.file.rust` — painting it \
+             {plain:?} (plain text) is the state DL.8b fixes"
+        );
+        assert_eq!(
+            python_name, want_python,
+            "a .py row's name must paint `listing.file.python`"
+        );
+        assert_eq!(
+            dir_name, want_dir,
+            "a directory's name must paint `listing.dir`"
+        );
+        assert_ne!(
+            rust_name, python_name,
+            "two languages must not collapse to one colour — that is what \
+             'the colour coding is gone' looks like from the user's side"
+        );
+        assert_eq!(
+            dir_marker,
+            Some(plain),
+            "the tree's expand marker is STRUCTURE and must keep the default \
+             text colour — a span anchored at byte 0 instead of `icon_byte` \
+             would tint it with the directory's colour and make the tree's \
+             shape read as content"
+        );
+    }
+
     /// **CV.2: a file that ends in a newline must not paint an extra
     /// empty row.**
     ///

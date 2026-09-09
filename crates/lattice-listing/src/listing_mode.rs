@@ -62,6 +62,17 @@ pub struct ListingEntry {
     /// icon anchors *after* those — at byte 0 the glyph would land to
     /// the left of the indent and the tree's shape would collapse.
     pub icon_byte: u32,
+    /// Byte length of the entry NAME, which begins at [`Self::icon_byte`]
+    /// (the icon is virtual text and occupies no source byte).
+    ///
+    /// Carried rather than re-derived, because neither the path nor the
+    /// icon anchor is enough to recover it. `path.file_name()` is wrong
+    /// for the tree's root row, whose text is the whole path; and
+    /// "`icon_byte` to end of line" needs the rope, which would put a
+    /// per-publish `as_string()` of the entire listing on the actor
+    /// thread to learn something both majors already computed when they
+    /// rendered the row.
+    pub name_byte_len: u32,
 }
 
 /// Per-row entry data for a listing buffer, written by whichever major
@@ -156,7 +167,14 @@ pub fn register_listing_theme_elements(
     reg.register(
         ElementName::from_static(ELEM_LISTING_DIR),
         owner.clone(),
-        StyleSpec::new().fg(ColorRef::Palette("blue".into())),
+        // Bold as well as blue. Directories are the one row kind whose
+        // colour also has to survive a listing where every OTHER row is
+        // coloured too (DL.8b paints names, not just icons), and blue
+        // alone against a wall of accents is weaker than it was against
+        // plain text. It is also what the painters DL.4/DL.5 deleted
+        // used (`file_tree_dir_style`: blue + bold) and what `Directory`
+        // resolves to in most colourschemes.
+        StyleSpec::new().fg(ColorRef::Palette("blue".into())).bold(),
         "Listing row: a directory.",
     );
     reg.register(
@@ -282,6 +300,60 @@ pub fn listing_inlays(
                 text: glyph.to_string(),
                 style,
             }
+        })
+        .collect()
+}
+
+/// Build one span per listing row covering the entry NAME, painted with
+/// the same element [`listing_element_for`] gives that row's icon.
+///
+/// DL.8b. The icon alone carried the colour until now, which left every
+/// name — including directories — painting as plain text. That was not
+/// the design (§2 has the mode owning "the per-row spans **and** icons");
+/// only the icon half had shipped, and the bespoke painters DL.4/DL.5
+/// deleted did style directory and dotfile names before that.
+///
+/// ## Why the whole name, and what that spends
+///
+/// Editor file trees are unanimous the other way: nvim-tree, neo-tree,
+/// oil.nvim, Zed and VS Code all paint the ICON by file type and reserve
+/// the NAME's colour for *state* — git status, hidden, symlink,
+/// executable, opened. Colouring the name by type is the terminal-lister
+/// convention (`ls --color` / eza / lf) and Emacs `diredfl`.
+///
+/// The louder one is the deliberate choice here, with one constraint:
+/// **the language colour is the lowest-precedence layer on a row.** Each
+/// line's span goes LAST in its vector, and `style_at_byte` is
+/// first-match-wins, so any state span a later slice prepends — git
+/// status, symlink, executable — wins over the language colour without
+/// re-plumbing this. Spending the name channel on type is reversible;
+/// spending it in a way that BLOCKS state would not be.
+///
+/// Rows whose name is empty produce an empty span list rather than a
+/// zero-width span, so a degenerate entry cannot leave a stray run.
+pub fn listing_name_spans(
+    entries: &[ListingEntry],
+    reg: &dyn lattice_theme::ThemeRegistry,
+) -> Vec<Vec<lattice_cells::StyledSpan>> {
+    entries
+        .iter()
+        .map(|e| {
+            if e.name_byte_len == 0 {
+                return Vec::new();
+            }
+            let name = ElementName::from_static(listing_element_for(&e.path, e.is_dir));
+            // No registered element ⇒ no span, rather than a span in some
+            // stand-in style. The row then paints as ordinary text, which
+            // is what it did before this function existed; inventing a
+            // colour here would be worse than the absence.
+            let Some(id) = reg.id(&name) else {
+                return Vec::new();
+            };
+            vec![lattice_cells::StyledSpan {
+                start: e.icon_byte as usize,
+                end: (e.icon_byte + e.name_byte_len) as usize,
+                style: lattice_cells::Style::Element(id),
+            }]
         })
         .collect()
 }
@@ -499,16 +571,19 @@ mod tests {
                 path: PathBuf::from("src"),
                 is_dir: true,
                 icon_byte: 0,
+                name_byte_len: 3,
             },
             ListingEntry {
                 path: PathBuf::from("main.rs"),
                 is_dir: false,
                 icon_byte: 0,
+                name_byte_len: 7,
             },
             ListingEntry {
                 path: PathBuf::from("notes.md"),
                 is_dir: false,
                 icon_byte: 4,
+                name_byte_len: 8,
             },
         ];
         let rows = listing_inlays(&entries, &reg, true);
@@ -535,6 +610,164 @@ mod tests {
         let ids: Vec<_> = rows.iter().map(|r| r.style).collect();
         assert_ne!(ids[0], ids[1], "a directory differs from a Rust file");
         assert_ne!(ids[1], ids[2], "a Rust file differs from markup");
+    }
+
+    /// DL.8b: a row's NAME carries the same element as its icon, spanning
+    /// exactly the name — from the icon anchor, for the name's length.
+    ///
+    /// Before this the icon alone was coloured, so every filename —
+    /// directories included — painted as plain text. The tree's indent
+    /// and expand marker must stay OUT of the span: colouring them too
+    /// would tint the structural glyphs a directory's own colour and make
+    /// the tree's shape read as content.
+    #[test]
+    fn listing_name_spans_cover_the_name_with_the_rows_own_element() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        register_listing_theme_elements(&reg, owner());
+
+        let entries = vec![
+            // A tree row: indent + marker occupy the first 4 bytes.
+            ListingEntry {
+                path: PathBuf::from("/p/src"),
+                is_dir: true,
+                icon_byte: 4,
+                name_byte_len: 3,
+            },
+            // An oil row: the whole line is the name.
+            ListingEntry {
+                path: PathBuf::from("/p/main.rs"),
+                is_dir: false,
+                icon_byte: 0,
+                name_byte_len: 7,
+            },
+            ListingEntry {
+                path: PathBuf::from("/p/app.py"),
+                is_dir: false,
+                icon_byte: 0,
+                name_byte_len: 6,
+            },
+        ];
+        let spans = listing_name_spans(&entries, &reg);
+        assert_eq!(spans.len(), entries.len(), "one entry per row, in order");
+
+        assert_eq!(
+            (spans[0][0].start, spans[0][0].end),
+            (4, 7),
+            "the span starts at the icon anchor and covers only the name — \
+             a tree's indent and expand marker are structure, not content, \
+             and must not take the directory's colour"
+        );
+        assert_eq!(
+            (spans[1][0].start, spans[1][0].end),
+            (0, 7),
+            "an oil row's name is the whole line"
+        );
+
+        // The icon and the name of one row must name the SAME element —
+        // that is the property that keeps a glyph from disagreeing with
+        // the text beside it.
+        let icons = listing_inlays(&entries, &reg, true);
+        for (i, (icon, name)) in icons.iter().zip(spans.iter()).enumerate() {
+            assert_eq!(
+                icon.style, name[0].style,
+                "row {i}: the icon and the name must resolve one element"
+            );
+        }
+        // …and different rows must differ, or the colouring is uniform in
+        // all but name.
+        assert_ne!(
+            spans[0][0].style, spans[1][0].style,
+            "a dir differs from Rust"
+        );
+        assert_ne!(
+            spans[1][0].style, spans[2][0].style,
+            "Rust differs from Python"
+        );
+    }
+
+    /// The name span is the LOWEST-precedence layer on a row.
+    ///
+    /// `merge_extra_spans` prepends the published list to the syntax
+    /// spans and `style_at_byte` is first-match-wins, so position within
+    /// the line's vector IS precedence. Keeping the language colour last
+    /// is what leaves the name's colour available to a later state layer
+    /// — git status, symlink, executable — which is the channel every
+    /// other editor's file tree spends the name on. One span per row is
+    /// how that stays true: a producer prepends, it never has to reorder.
+    #[test]
+    fn the_name_span_is_last_so_a_state_layer_can_win() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        register_listing_theme_elements(&reg, owner());
+        let spans = listing_name_spans(
+            &[ListingEntry {
+                path: PathBuf::from("/p/main.rs"),
+                is_dir: false,
+                icon_byte: 0,
+                name_byte_len: 7,
+            }],
+            &reg,
+        );
+        assert_eq!(
+            spans[0].len(),
+            1,
+            "exactly one span per row — a later state layer prepends to \
+             win, and cannot if it has to interleave with several"
+        );
+    }
+
+    /// A row with no name, and a registry that never saw the vocabulary,
+    /// both produce NO span rather than a zero-width one or a stand-in
+    /// colour. A row painting as ordinary text is what it did before
+    /// DL.8b; inventing a colour would be worse than the absence.
+    #[test]
+    fn a_nameless_row_or_an_unregistered_theme_yields_no_span() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        register_listing_theme_elements(&reg, owner());
+        let nameless = listing_name_spans(
+            &[ListingEntry {
+                path: PathBuf::from("/p"),
+                is_dir: false,
+                icon_byte: 0,
+                name_byte_len: 0,
+            }],
+            &reg,
+        );
+        assert!(nameless[0].is_empty(), "no name, no span");
+
+        let bare = InMemoryThemeRegistry::with_defaults();
+        let unregistered = listing_name_spans(
+            &[ListingEntry {
+                path: PathBuf::from("/p/main.rs"),
+                is_dir: false,
+                icon_byte: 0,
+                name_byte_len: 7,
+            }],
+            &bare,
+        );
+        assert!(
+            unregistered[0].is_empty(),
+            "an unregistered vocabulary paints plain text, never a stand-in"
+        );
+    }
+
+    /// A directory is bold as well as blue — the weight the painters
+    /// DL.4/DL.5 deleted carried (`file_tree_dir_style`), restored now
+    /// that every OTHER row is coloured too and blue alone has more to
+    /// compete with than it did against plain text.
+    #[test]
+    fn a_directory_resolves_bold_blue() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        register_listing_theme_elements(&reg, owner());
+        let id = reg
+            .id(&ElementName::from_static(ELEM_LISTING_DIR))
+            .expect("registered");
+        let style = reg.resolved().get(id);
+        assert!(style.modifiers.bold, "a directory row must read as bold");
+        assert_eq!(
+            style.fg,
+            lattice_theme::default_palette().get(&"blue".into()),
+            "and blue — from the palette, so a colourscheme moves it"
+        );
     }
 
     #[test]

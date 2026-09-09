@@ -1,7 +1,9 @@
 # `directory-listing-mode` — one minor mode owning entry icons and highlighting
 
-> **Status: design, not yet implemented.** Sequencing lives in the slice
-> plan (`docs/dev/operations/slice-plans/archive/cursor-visibility.md`, CV.6).
+> **Status: implemented.** DL.0–DL.7 landed 2026-08-15; DL.8a/DL.8b
+> (entry colour reaching the screen, §4.1) 2026-09-09. Sequencing lives
+> in the slice plan
+> (`docs/dev/operations/slice-plans/archive/directory-listing-mode.md`).
 >
 > Opened 2026-08-13 out of CV.5, where the same off-by-`scroll` bug was
 > found in four hand-written paint paths — oil and the file tree, in each
@@ -184,6 +186,78 @@ data a theme owns, not a table in `lattice-core`.**
 `ext_color`'s table survives as the mode's default-registration source.
 It stops being the runtime lookup.
 
+`listing.dir` carries **bold** as well as blue — the weight the painters
+DL.4/DL.5 deleted had (`file_tree_dir_style`), and what `Directory`
+resolves to in most colourschemes. It matters more now than it did then:
+§4.1 colours every other row too, so blue alone competes against a wall
+of accents rather than against plain text.
+
+## 4.1 Where the colour lands: icon *and* name
+
+An entry's element paints **two** things — the leading icon glyph and
+the entry name — and both resolve from one `listing_element_for` call on
+one entry, in one pass, so a glyph can never disagree with the text
+beside it.
+
+That is a deliberate departure from every editor file tree, and the
+trade it makes should be explicit:
+
+| tool | icon colour | name colour |
+|---|---|---|
+| nvim-tree | per-filetype (devicons) | `Normal`; exceptions are *state* — exec, image, special, symlink, hidden, 7 git groups |
+| neo-tree | devicons | `NeoTreeFileName` = `NONE`; opened → bold; git status tints |
+| oil.nvim | devicons | `OilFile` for all normal files; variants by kind (`OilDir`, `OilLink`, `OilSocket`) and hidden |
+| Zed | icon theme | plain; `project_panel.git_status` tints by git state |
+| VS Code | icon theme | `list.foreground`; git decorations recolour |
+| eza / lf / `ls --color` | per-filetype | **per-extension category** — archives, images, media, exec |
+| Emacs `diredfl` | — | base name and suffix coloured separately, by category |
+
+The editors are unanimous: the icon says *what the file is*, and the
+name's colour is reserved for *what state it is in*. Colouring the name
+by type is the terminal-lister convention, not the editor one.
+
+Lattice takes the louder option — but only under one constraint, which
+is what makes it reversible:
+
+**The language colour is the lowest-precedence layer on a row.** Each
+line's span goes LAST in its vector; `merge_extra_spans` prepends the
+published list to the syntax spans and `style_at_byte` is
+first-match-wins, so position in the vector *is* precedence. A later
+state layer — git status, symlink, executable — prepends and wins,
+without re-plumbing anything here. Exactly one span per row is what
+keeps that true: a state producer prepends, it never has to interleave.
+
+Spending the name channel on type is a taste call that a theme can undo
+with one `listing.file` retune. Spending it in a way that *blocked*
+state would not be, and lattice already has `lattice-vcs` and magit.
+
+**The tree's indent and expand marker stay out of the span.** The span
+anchors at `icon_byte`, not at byte 0. Tinting `▾` with the directory's
+colour would make the tree's structure read as content — and the bug
+would be invisible in oil, whose `icon_byte` is 0, so the tree is what
+the test checks.
+
+### How it reaches the screen
+
+Names publish through the generic `PendingSyntheticHighlights` channel —
+the one magit and help already use — into `ExtraHighlights`, which the
+cells / `DisplayMatrix` build merges for any buffer that has it. So both
+renderers pick the colour up with **no per-kind renderer code**, which is
+the §8 acid test: `lattice-ui-gpui` contains zero references to
+`lattice_listing` and needed no patch for either half of DL.8.
+
+Icons resolve their element in the worker
+(`display_line_to_cell_row`, DL.3a) and in GPUI's
+`display_run_to_synthetic_cell`. The TUI needed DL.8a because it is the
+one path that *round-trips* an inlay: `display_line_to_source_spans`
+drops INLAY runs so overlays can address source bytes, and the splice
+that puts the text back was re-styling every inlay in the editor as
+`inlay.hint`. The published data was correct throughout — only that
+paint discarded it, which is why a host-side test could pass while the
+screen showed one grey. Italic stays exclusive to `Style::InlayHint`: it
+is the "annotation, not buffer content" cue for an LSP hint, and a
+listing's icon *is* the row's content.
+
 ## 5. The span → element gap (the one thing that does not exist yet)
 
 A `StyledSpan` carries `Style`, a closed enum, and
@@ -281,6 +355,17 @@ should need **zero** renderer additions. After this, it needs none.
 - Theme override: registering a theme that retunes `listing.file.rust`
   changes the painted colour, and retuning the `listing.file` parent
   changes every language that does not override.
+- **Entry colour asserted on the painted frame, against the resolved
+  elements** — not against literals, and not merely "the rows differ".
+  DL.8 is the reason this is spelled out: the host-side publish test
+  passed for a month while the TUI painted one grey, because nothing
+  looked at a rendered cell. "The icons differ from each other" would
+  pass on any palette, and hardcoded RGB would re-break the moment a
+  theme retunes `listing.*`, which is the whole point of having rooted
+  them in the theme.
+- The tree's expand marker keeps the default text colour while its name
+  does not — the guard that the name span anchors at `icon_byte` rather
+  than byte 0.
 - Oil round-trip: `:w` still derives the right renames after the icon
   becomes virtual text — the guard that the rope stayed bare.
 

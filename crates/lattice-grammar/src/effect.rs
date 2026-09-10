@@ -697,6 +697,29 @@ pub enum Effect {
         /// `None` is the ordinary case: resolve from the active buffer, exactly
         /// as before.
         root: Option<std::path::PathBuf>,
+        /// PC.11: this picker is being opened **to answer a question**, and
+        /// the answer goes to the named command as its first argument.
+        ///
+        /// The picker's `FillCaller` outcome already means "hand this value
+        /// to whoever opened me"; what it lacked was a destination a *plugin*
+        /// can own. A guest owns none of the surfaces
+        /// [`lattice_picker::FillTarget`] could name — not the document, not
+        /// the `:` line, not a prompt — but it does own an ex-command, so
+        /// that becomes the destination. [`Effect::OpenPrompt`]'s
+        /// `on_submit_action` is the same shape for the same reason, and the
+        /// asymmetry between the two (a guest could be handed a prompt's
+        /// answer but not a picker's) is what this closes.
+        ///
+        /// **Not a flag that overrides the source's accept.** The source
+        /// decides what accepting one of ITS candidates means; `file-pick`
+        /// and `dir-pick` exist as separate sources precisely so that "supply
+        /// a value" is a source's own decision rather than a caller's
+        /// override. This names where a `FillCaller` lands, which is a
+        /// question `FillTarget` already owns.
+        ///
+        /// `None` leaves the existing behaviour untouched: the target is
+        /// whatever surface was captured at open.
+        fill_action: Option<String>,
     },
     /// `:bd[elete][!]` -- close the active document buffer.
     /// `force = true` discards unsaved changes.

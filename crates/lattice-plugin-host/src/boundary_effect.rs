@@ -686,13 +686,17 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::BufferPrev => WitEffect::BufferPrev,
         NativeEffect::ListBuffers => WitEffect::ListBuffers,
         NativeEffect::OpenBufferPicker => WitEffect::OpenBufferPicker,
-        NativeEffect::OpenPicker { source, args, root } => {
-            WitEffect::OpenPicker(WitOpenPickerPayload {
-                source: source.clone(),
-                args: args.clone(),
-                root: opt_path_to_wit(root)?,
-            })
-        }
+        NativeEffect::OpenPicker {
+            source,
+            args,
+            root,
+            fill_action,
+        } => WitEffect::OpenPicker(WitOpenPickerPayload {
+            source: source.clone(),
+            args: args.clone(),
+            root: opt_path_to_wit(root)?,
+            fill_action: fill_action.clone(),
+        }),
         NativeEffect::BufferDelete { force } => WitEffect::BufferDelete(*force),
         NativeEffect::OpenFileTree { root } => WitEffect::OpenFileTree(opt_path_to_wit(root)?),
         NativeEffect::CloseFileTree => WitEffect::CloseFileTree,
@@ -1088,6 +1092,13 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             source: p.source,
             args: p.args,
             root: opt_path_from_wit(p.root),
+            // PC.11: carried, not dropped. This is the guest→host direction,
+            // so this field IS the feature — a `None` here would leave the
+            // guest naming an action that never receives anything, which is
+            // the shape `InvokeCommand`'s `args` had for two releases
+            // (declared, populated, destructured away) and which two comments
+            // recorded as "a dead end" rather than fixing.
+            fill_action: p.fill_action,
         },
         WitEffect::BufferDelete(force) => NativeEffect::BufferDelete { force },
         WitEffect::OpenFileTree(root) => NativeEffect::OpenFileTree {
@@ -1739,6 +1750,7 @@ mod tests {
                 source: "files".into(),
                 args: vec!["src".into(), "*.rs".into()],
                 root: None,
+                fill_action: None,
             },
             // PC.1: a POPULATED root, for the reason above — the `None` case
             // alone cannot tell a carried field from a dropped one.
@@ -1746,6 +1758,22 @@ mod tests {
                 source: "grep".into(),
                 args: vec!["needle".into()],
                 root: Some("/work/api".into()),
+                fill_action: None,
+            },
+            // PC.11: a POPULATED fill action, for the same reason one line up
+            // — and it is not hypothetical here. The mechanical pass that
+            // added this field to every construction site put `None` on the
+            // wit→native arm too, which is the direction where this field IS
+            // the feature: the guest names an action, and a `None` there
+            // would leave it naming one that never receives anything. That is
+            // the shape `InvokeCommand`'s `args` had for two releases —
+            // declared, populated, destructured away — with two comments
+            // recording it as "a dead end" rather than fixing it.
+            NativeEffect::OpenPicker {
+                source: "dir-pick".into(),
+                args: vec!["~".into()],
+                root: None,
+                fill_action: Some("project-remember-and-switch".into()),
             },
             NativeEffect::BufferDelete { force: true },
             NativeEffect::OpenFileTree {

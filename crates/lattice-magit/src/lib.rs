@@ -1473,6 +1473,7 @@ fn register_ex_commands(
                                     source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
                                     args: vec![op.ex_command.to_string()],
                                     root: None,
+                                    fill_action: None,
                                 });
                             }
                         };
@@ -1564,6 +1565,7 @@ fn register_ex_commands(
                                         source: picker_sources::STASH_PICK_SOURCE.to_string(),
                                         args: vec![name.to_string()],
                                         root: None,
+                                        fill_action: None,
                                     });
                                 }
                             };
@@ -1629,6 +1631,7 @@ fn register_ex_commands(
                                     source: picker_sources::STASH_PICK_SOURCE.to_string(),
                                     args: vec!["magit-stash-show".to_string()],
                                     root: None,
+                                    fill_action: None,
                                 });
                             }
                         };
@@ -1694,6 +1697,7 @@ fn register_ex_commands(
                                         source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
                                         args: vec![name.to_string()],
                                         root: None,
+                                        fill_action: None,
                                     });
                                 }
                             };
@@ -1737,6 +1741,7 @@ fn register_ex_commands(
                                     source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
                                     args: vec!["magit-rebase-reword-commit".to_string()],
                                     root: None,
+                                    fill_action: None,
                                 });
                             }
                         };
@@ -1789,6 +1794,7 @@ fn register_ex_commands(
                                     source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
                                     args: vec!["magit-augment".to_string()],
                                     root: None,
+                                    fill_action: None,
                                 });
                             }
                         };

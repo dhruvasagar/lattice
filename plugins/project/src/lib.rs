@@ -260,6 +260,7 @@ fn cmd_switch() -> Vec<Effect> {
         source: picker::PROJECTS_PICKER.to_string(),
         args: Vec::new(),
         root: None,
+        fill_action: None,
     })]
 }
 
@@ -281,6 +282,7 @@ fn cmd_find_file(ctx: &ExCommandContext) -> Vec<Effect> {
                 // root-sensitive source beats a per-source convention.
                 args: Vec::new(),
                 root: Some(root),
+                fill_action: None,
             })]
         }
         Err(effects) => effects,
@@ -343,6 +345,7 @@ fn cmd_grep(ctx: &ExCommandContext) -> Vec<Effect> {
                 // of inventing a second argument convention.
                 args: Vec::new(),
                 root: Some(root),
+                fill_action: None,
             })]
         }
         Err(effects) => effects,

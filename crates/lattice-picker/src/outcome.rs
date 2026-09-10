@@ -43,6 +43,22 @@ pub enum FillTarget {
     /// mechanism: "which argument" is already recorded in the parked
     /// `PendingTransientArgument`, so this variant carries nothing.
     TransientArgument,
+    /// PC.11: an ex-command, which receives the value as its first
+    /// argument.
+    ///
+    /// **The variant a plugin can name.** Every target above is a host
+    /// surface — a buffer, a line, a prompt, a menu, another picker — and a
+    /// guest owns none of them. It owns an ex-command, so that is what it
+    /// gets to point at. `Effect::OpenPrompt`'s `on_submit_action` is the
+    /// same idea for prompts, and this closes the gap where a guest could be
+    /// handed a prompt's answer but not a picker's.
+    ///
+    /// Carries the command NAME rather than a resolved `CommandId`: the
+    /// target is captured at open (see this type's own doc), and resolving
+    /// then would pin an id the registry could have re-issued by accept
+    /// time. Resolution happens where the value is delivered, which is also
+    /// where "no such command" can be reported to someone who can act on it.
+    Action { command: String },
 }
 
 /// Issue #32 (2026-05-22): where a picker's file-opening

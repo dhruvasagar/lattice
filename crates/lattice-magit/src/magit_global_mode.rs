@@ -779,6 +779,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 source: crate::picker_sources::REVISION_PICK_SOURCE.to_string(),
                 args: vec![format!("magit-file-checkout {{}} {path}")],
                 root: None,
+                fill_action: None,
             })
         }),
     });
@@ -866,6 +867,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
                 args: vec!["magit-merge".to_string()],
                 root: None,
+                fill_action: None,
             })
         }),
     });
@@ -915,6 +917,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         source: $source.to_string(),
                         args: vec![$ex_command.to_string()],
                         root: None,
+                        fill_action: None,
                     })
                 }),
             });
@@ -929,6 +932,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
                         args: vec![$ex_command.to_string()],
                         root: None,
+                        fill_action: None,
                     })
                 }),
             });
@@ -1362,6 +1366,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
                 args: vec!["magit-branch-reset".to_string()],
                 root: None,
+                fill_action: None,
             })
         }),
     });
@@ -1562,6 +1567,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 source: crate::picker_sources::BRANCH_CHECKOUT_SOURCE.to_string(),
                 args: Vec::new(),
                 root: None,
+                fill_action: None,
             })
         }),
     });
@@ -1576,6 +1582,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 source: "magit-branch-pick-base".to_string(),
                 args: Vec::new(),
                 root: None,
+                fill_action: None,
             })
         }),
     });
@@ -1610,6 +1617,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 source: crate::picker_sources::REVISION_PICK_SOURCE.to_string(),
                 args: vec![format!("magit-find-file {{}} {path}")],
                 root: None,
+                fill_action: None,
             })
         }),
     });
@@ -1984,6 +1992,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec!["magit-note-edit".to_string()],
                     root: None,
+                    fill_action: None,
                 },
             })
         }),
@@ -2003,6 +2012,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec!["magit-note-remove".to_string()],
                     root: None,
+                    fill_action: None,
                 },
             })
         }),
@@ -2161,6 +2171,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec!["magit-log-merged".to_string()],
                     root: None,
+                    fill_action: None,
                 },
             })
         }),
@@ -2270,6 +2281,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 source: crate::picker_sources::REVISION_PICK_SOURCE.to_string(),
                 args: vec!["magit-checkout".to_string()],
                 root: None,
+                fill_action: None,
             })
         }),
     });
@@ -2311,6 +2323,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 source: crate::picker_sources::BRANCH_CREATE_NO_CHECKOUT_SOURCE.to_string(),
                 args: Vec::new(),
                 root: None,
+                fill_action: None,
             })
         }),
     });
@@ -2361,6 +2374,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 source: crate::picker_sources::BRANCH_RENAME_SOURCE.to_string(),
                 args: Vec::new(),
                 root: None,
+                fill_action: None,
             })
         }),
     });
@@ -2418,6 +2432,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 source: crate::picker_sources::BRANCH_DELETE_SOURCE.to_string(),
                 args: Vec::new(),
                 root: None,
+                fill_action: None,
             })
         }),
     });

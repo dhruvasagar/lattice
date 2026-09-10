@@ -1158,7 +1158,7 @@ mod tests {
         app.editor.picker_registry.store(Arc::new(reg));
         // Fire the picker. Init returns Future; the picker
         // should NOT seat synchronously.
-        app.open_picker("delayed-test".into(), Vec::new(), None);
+        app.open_picker("delayed-test".into(), Vec::new(), None, None);
         assert!(
             app.editor.picker.is_none(),
             "picker shouldn't seat sync on Future"
@@ -1207,7 +1207,7 @@ mod tests {
         reg.register_generator(source);
         app.editor.picker_registry.store(Arc::new(reg));
 
-        app.open_picker("delayed-test".into(), Vec::new(), None);
+        app.open_picker("delayed-test".into(), Vec::new(), None, None);
         assert!(app.editor.picker.is_none(), "parked, not seated");
         assert!(app.editor.pending_picker_init.is_some(), "future in flight");
         // The picker owns the keyboard from the moment it is asked for,

@@ -80,6 +80,7 @@ fn stash_target(ctx: &ActionContext<'_>, ex_command: &str) -> StashTarget {
             source: crate::picker_sources::STASH_PICK_SOURCE.to_string(),
             args: vec![ex_command.to_string()],
             root: None,
+            fill_action: None,
         }),
     }
 }

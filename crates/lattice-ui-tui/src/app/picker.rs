@@ -149,12 +149,13 @@ impl App {
         source: String,
         args: Vec<String>,
         root: Option<std::path::PathBuf>,
+        fill_action: Option<String>,
     ) {
         // Slice 3c.final.E.3: route through `mutate_editor_with`.
-        let signals = self.mutate_editor_with(move |e| {
-            e.picker_root = root;
-            e.open_picker(source, args)
-        });
+        // PC.11: the body lives on `Editor` so this peer and the GPUI one
+        // cannot drift on the root write or the fill-target rollback.
+        let signals = self
+            .mutate_editor_with(move |e| e.open_picker_for_effect(source, args, root, fill_action));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -701,7 +702,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("a.rs"), "").unwrap();
         let mut app = app_with("hi\n", 5);
-        app.open_picker("files".into(), vec![tmp.display().to_string()], None);
+        app.open_picker("files".into(), vec![tmp.display().to_string()], None, None);
         let p = app.editor.picker.as_ref().expect("picker open");
         assert!(!p.candidates.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
@@ -712,7 +713,7 @@ mod tests {
     #[test]
     fn open_picker_buffers_opens_buffer_switcher() {
         let mut app = app_with("hi\n", 5);
-        app.open_picker("buffers".into(), Vec::new(), None);
+        app.open_picker("buffers".into(), Vec::new(), None, None);
         let p = app.editor.picker.as_ref().expect("picker open");
         assert!(!p.candidates.is_empty());
     }
@@ -726,7 +727,7 @@ mod tests {
     #[test]
     fn lines_picker_preview_moves_cursor_to_selected_line() {
         let mut app = app_with("alpha\nbeta\ngamma\ndelta\nepsilon\n", 5);
-        app.open_picker("lines".into(), Vec::new(), None);
+        app.open_picker("lines".into(), Vec::new(), None, None);
         let p = app.editor.picker.as_ref().expect("picker open");
         assert!(p.candidates.len() >= 4);
 
@@ -764,7 +765,7 @@ mod tests {
     fn lines_picker_preview_centers_the_selected_line() {
         let text: String = (0..20).map(|i| format!("line{i}\n")).collect();
         let mut app = app_with(&text, 5);
-        app.open_picker("lines".into(), Vec::new(), None);
+        app.open_picker("lines".into(), Vec::new(), None, None);
         {
             let picker = app.editor.picker.as_mut().expect("picker open");
             picker.selected = 15;
@@ -825,7 +826,7 @@ mod tests {
         app.editor.completion_registry.register_source(reg);
 
         // Open via the unified picker path.
-        app.open_picker("test:engine-shape".into(), Vec::new(), None);
+        app.open_picker("test:engine-shape".into(), Vec::new(), None, None);
 
         let p = app
             .editor
@@ -858,7 +859,7 @@ mod tests {
     #[test]
     fn buffers_picker_candidates_preserve_accept_action_after_seat() {
         let mut app = app_with("hi\n", 5);
-        app.open_picker("buffers".into(), Vec::new(), None);
+        app.open_picker("buffers".into(), Vec::new(), None, None);
         let p = app.editor.picker.as_ref().expect("picker open");
         assert!(!p.candidates.is_empty());
         for cand in &p.candidates {
@@ -879,7 +880,7 @@ mod tests {
     #[test]
     fn open_picker_recent_with_empty_mru_echoes() {
         let mut app = app_with("hi\n", 5);
-        app.open_picker("recent".into(), Vec::new(), None);
+        app.open_picker("recent".into(), Vec::new(), None, None);
         assert!(app.editor.picker.is_none());
         let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no recent files"));
@@ -1123,7 +1124,7 @@ mod tests {
     #[test]
     fn open_picker_lines_seeds_one_row_per_line() {
         let mut app = app_with("alpha\nbeta\ngamma\n", 10);
-        app.open_picker("lines".into(), Vec::new(), None);
+        app.open_picker("lines".into(), Vec::new(), None, None);
         let p = app.editor.picker.as_ref().expect("picker open");
         assert_eq!(p.candidates.len(), 3);
         assert_eq!(p.source_id.as_deref(), Some("lines"));
@@ -1136,7 +1137,7 @@ mod tests {
     #[test]
     fn open_picker_lines_accept_jumps_cursor() {
         let mut app = app_with("alpha\nbeta\ngamma\n", 10);
-        app.open_picker("lines".into(), Vec::new(), None);
+        app.open_picker("lines".into(), Vec::new(), None, None);
         // Move selection to the second row (beta, line index 1)
         // and accept.
         app.apply(Action::PickerSelectNext);
@@ -1224,7 +1225,7 @@ mod tests {
     #[test]
     fn open_picker_snippets_empty_registry_echoes() {
         let mut app = app_with("hi\n", 5);
-        app.open_picker("snippets".into(), Vec::new(), None);
+        app.open_picker("snippets".into(), Vec::new(), None, None);
         assert!(app.editor.picker.is_none());
         let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(
@@ -1257,7 +1258,7 @@ mod tests {
         // first candidate (alpha.rs sorts before beta.rs in
         // walker output, but order depends on read_dir so use
         // whichever the picker surfaces).
-        app.open_picker("files".into(), vec![tmp.display().to_string()], None);
+        app.open_picker("files".into(), vec![tmp.display().to_string()], None, None);
         let first_id = {
             let p = app.editor.picker.as_ref().expect("picker open");
             let c = p.selected_candidate().expect("first selected");
@@ -1276,7 +1277,7 @@ mod tests {
         );
         // Re-open the picker. The accepted file should now
         // float to the top (MRU bonus > 0 vs 0 for the other).
-        app.open_picker("files".into(), vec![tmp.display().to_string()], None);
+        app.open_picker("files".into(), vec![tmp.display().to_string()], None, None);
         let top = {
             let p = app.editor.picker.as_ref().expect("picker open");
             let c = p.selected_candidate().expect("top selected");
@@ -1309,7 +1310,7 @@ mod tests {
         let (tx, mut rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_picker::events::PickerAccepted>();
         app.editor.event_bus.subscribe_typed(tx);
-        app.open_picker("files".into(), vec![tmp.display().to_string()], None);
+        app.open_picker("files".into(), vec![tmp.display().to_string()], None, None);
         let _ = app.editor.picker.as_ref().expect("picker open");
         app.apply(Action::PickerAccept);
         // The event lands synchronously through the bus's
@@ -1333,7 +1334,7 @@ mod tests {
         app.editor.event_bus.subscribe_typed(tx);
         // `:picker buffers` always seats (the App's
         // BufferRegistry has at least the active doc).
-        app.open_picker("buffers".into(), Vec::new(), None);
+        app.open_picker("buffers".into(), Vec::new(), None, None);
         let evt = rx.try_recv().expect("PickerOpened should fire");
         assert_eq!(evt.source_id, "buffers");
     }
@@ -1360,7 +1361,7 @@ mod tests {
             .config
             .parse_and_set_command("picker.mru.enabled=false")
             .unwrap();
-        app.open_picker("files".into(), vec![tmp.display().to_string()], None);
+        app.open_picker("files".into(), vec![tmp.display().to_string()], None, None);
         let _ = app.editor.picker.as_ref().expect("picker open");
         app.apply(Action::PickerAccept);
         // With MRU off, the accept must not add a record.
@@ -1388,7 +1389,7 @@ mod tests {
         std::fs::write(tmp.join("alpha/refilter.rs"), "").unwrap();
         std::fs::write(tmp.join("alpha/unrelated.rs"), "").unwrap();
         let mut app = app_with("hi\n", 5);
-        app.open_picker("files".into(), vec![tmp.display().to_string()], None);
+        app.open_picker("files".into(), vec![tmp.display().to_string()], None, None);
         for c in "alph refil".chars() {
             app.apply(Action::PickerAppend(c));
         }
@@ -1418,7 +1419,7 @@ mod tests {
             .config
             .parse_and_set_command("picker.orderless=false")
             .unwrap();
-        app.open_picker("files".into(), vec![tmp.display().to_string()], None);
+        app.open_picker("files".into(), vec![tmp.display().to_string()], None, None);
         for c in "alph refil".chars() {
             app.apply(Action::PickerAppend(c));
         }
@@ -1642,7 +1643,7 @@ mod tests {
     #[test]
     fn open_picker_grep_no_args_installs_live_state() {
         let mut app = app_with("hi\n", 5);
-        app.open_picker("grep".into(), Vec::new(), None);
+        app.open_picker("grep".into(), Vec::new(), None, None);
         // Picker open, empty candidates (init returned Inline(empty)).
         let picker = app.editor.picker.as_ref().expect("picker open");
         assert_eq!(picker.title, "grep");
@@ -1682,7 +1683,7 @@ mod tests {
         // Open grep with NO pattern: installs live state, no initial
         // grep future (so the only paint wake comes from the debounce
         // timer, not a result).
-        app.open_picker("grep".into(), Vec::new(), None);
+        app.open_picker("grep".into(), Vec::new(), None, None);
         let paint = app.editor.paint_request.clone();
         app.editor.bump_live_picker_debounce();
         assert!(
@@ -1722,7 +1723,7 @@ mod tests {
         // results arrive (the old "command consumed, nothing
         // happens" feel). The future's result re-seats via
         // `drain_pending_picker_init`, clearing `loading`.
-        app.open_picker("grep".into(), vec!["needle".to_string()], None);
+        app.open_picker("grep".into(), vec!["needle".to_string()], None, None);
         let picker = app
             .editor
             .picker
@@ -1758,7 +1759,7 @@ mod tests {
         // then re-seat as `drain_pending_picker_init` would when
         // results land — the query carries across and loading clears.
         let mut app = app_with("hi\n", 5);
-        app.open_picker("grep".into(), vec!["TODO".to_string()], None);
+        app.open_picker("grep".into(), vec!["TODO".to_string()], None, None);
         assert!(app.editor.picker.as_ref().unwrap().loading);
         // Results arrive: re-seat with (empty) pairs.
         app.seat_picker_from_pairs("grep".to_string(), Vec::new());
@@ -1782,7 +1783,7 @@ mod tests {
         // by hand (as `drain_pending_picker_init` would) should
         // seed `picker.query = "TODO"` and clear the stash.
         let mut app = app_with("hi\n", 5);
-        app.open_picker("grep".into(), vec!["TODO".to_string()], None);
+        app.open_picker("grep".into(), vec!["TODO".to_string()], None, None);
         // Synthesise the future's would-be result: empty pairs.
         // The seed-on-seat behaviour fires regardless of the
         // batch contents.
@@ -1805,7 +1806,7 @@ mod tests {
     #[test]
     fn open_picker_unknown_source_echoes_with_known_ids() {
         let mut app = app_with("hi\n", 5);
-        app.open_picker("nope".into(), Vec::new(), None);
+        app.open_picker("nope".into(), Vec::new(), None, None);
         assert!(app.editor.picker.is_none());
         let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(

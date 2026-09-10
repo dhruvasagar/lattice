@@ -231,6 +231,7 @@ impl Mode for MagitBranchMode {
                         source: "magit-branch-pick-base".to_string(),
                         args: Vec::new(),
                         root: None,
+                        fill_action: None,
                     })
                 }),
             },

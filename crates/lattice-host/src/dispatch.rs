@@ -9188,6 +9188,44 @@ impl Editor {
             FillTarget::Document => {
                 self.insert_at_cursor(text);
             }
+            // PC.11: the value goes to an ex-command as its first argument.
+            // The destination a guest can own — see `FillTarget::Action`.
+            FillTarget::Action { command } => {
+                let Some(cmd_reg) = self
+                    .services
+                    .get::<lattice_grammar::CommandRegistryHandle>()
+                else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        "picker: command registry unavailable".to_string(),
+                    );
+                    return;
+                };
+                let Some(cmd_id) = cmd_reg.load().id_by_name(&command) else {
+                    // Named, not silent. A picked value that vanishes with no
+                    // message is indistinguishable from a picker that did
+                    // nothing, and the fix — a command that is not registered
+                    // — is one only this message can point at.
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: unknown action `{command}`"),
+                    );
+                    return;
+                };
+                let mut out = DispatchOutcome::default();
+                self.dispatch_invocation(
+                    lattice_grammar::CommandInvocation::of(cmd_id)
+                        .with_args(lattice_grammar::Args::String(text.to_string())),
+                    &mut out,
+                );
+                // The effects a plugin's handler returns are applied by
+                // `apply_effect_host` inside `dispatch_invocation`; what is
+                // left here are renderer signals and follow-up actions, which
+                // this path has nowhere to hand back. Queued onto the editor
+                // so the peers' existing drains pick them up — the same seam
+                // `activate_buffer`'s cascade uses for exactly this reason.
+                self.enqueue_renderer_signals(out.renderer_signals);
+            }
             FillTarget::PickerQuery => match self.stashed_picker.take() {
                 Some(mut picker) => {
                     picker.query.push_str(text);
@@ -9324,6 +9362,49 @@ impl Editor {
                 byte: (start + text.len()) as u32,
             };
         }
+    }
+
+    /// PC.11: the whole of `Effect::OpenPicker`, host-side.
+    ///
+    /// Both peers used to inline this — set `picker_root`, call
+    /// `open_picker` — and PC.11 would have added a third and fourth line to
+    /// each, in two files, with the rollback below easy to get right in one
+    /// and forget in the other. One method is what makes that
+    /// unrepresentable rather than a discipline.
+    ///
+    /// `picker_root` is written unconditionally, including the `None`: that
+    /// write is what clears a previous picker's override (PC.1).
+    ///
+    /// The fill target is captured HERE, at open, for YR.3's reason — by
+    /// accept time the picker is dismissed and "who asked for this" has a
+    /// different answer.
+    #[must_use]
+    pub fn open_picker_for_effect(
+        &mut self,
+        source: String,
+        args: Vec<String>,
+        root: Option<std::path::PathBuf>,
+        fill_action: Option<String>,
+    ) -> Vec<RendererSignal> {
+        use lattice_picker::FillTarget;
+        self.picker_root = root;
+        let capturing = fill_action.is_some();
+        if let Some(command) = fill_action {
+            self.picker_fill_target = Some(FillTarget::Action { command });
+        }
+        let signals = self.open_picker(source, args);
+        // `open_picker` reports a refusal by echoing and leaving `self.picker`
+        // as it found it. Roll the capture back, or the next unrelated
+        // `FillCaller` consumes a target belonging to a picker that never
+        // opened — the exact hole YR.6 closed on the argument-picker path,
+        // reproduced here rather than rediscovered.
+        //
+        // `pending_picker_init` is the async-seat case: the picker has not
+        // appeared yet but IS coming, so the capture must survive.
+        if capturing && self.picker.is_none() && self.pending_picker_init.is_none() {
+            self.picker_fill_target = None;
+        }
+        signals
     }
 
     /// PC.10: `<C-l>` — go INTO the selected candidate.

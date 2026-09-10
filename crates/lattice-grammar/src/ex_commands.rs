@@ -922,6 +922,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                     source: "files".into(),
                     args,
                     root: None,
+                    fill_action: None,
                 })
             }),
             args_schema: vec![ArgSpec {
@@ -949,6 +950,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                     source: "recent".into(),
                     args: Vec::new(),
                     root: None,
+                    fill_action: None,
                 })
             }),
             args_schema: vec![],
@@ -987,6 +989,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                     source: source.into(),
                     args: Vec::new(),
                     root: None,
+                    fill_action: None,
                 })
             }),
             args_schema: vec![ArgSpec {
@@ -1035,6 +1038,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                     source,
                     args,
                     root: None,
+                    fill_action: None,
                 })
             }),
             args_schema: vec![ArgSpec {

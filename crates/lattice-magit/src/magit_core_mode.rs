@@ -254,6 +254,7 @@ fn commit_op(
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec![op.ex_command.to_string()],
                     root: None,
+                    fill_action: None,
                 });
             };
             match op.confirm_action {
@@ -304,6 +305,7 @@ fn rebase_verb_op(
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec![ex_command.to_string()],
                     root: None,
+                    fill_action: None,
                 });
             };
             Some(crate::magit_global_mode::spawn_rebase_verb(
@@ -338,6 +340,7 @@ fn cherry_move_entry(
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec![ex_command.to_string()],
                     root: None,
+                    fill_action: None,
                 });
             };
             crate::magit_global_mode::stash_pending_commit(commit);
@@ -367,6 +370,7 @@ fn commit_sequence_op(
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec![ex_command.to_string()],
                     root: None,
+                    fill_action: None,
                 });
             };
             Some(crate::magit_global_mode::spawn_git_sequence(
@@ -1481,6 +1485,7 @@ impl Mode for MagitCoreMode {
                             source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                             args: vec!["magit-rebase-reword-commit".to_string()],
                             root: None,
+                            fill_action: None,
                         });
                     };
                     Some(crate::magit_global_mode::open_repo_view_from_action_with(
@@ -1551,6 +1556,7 @@ impl Mode for MagitCoreMode {
                             source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                             args: vec!["magit-augment".to_string()],
                             root: None,
+                            fill_action: None,
                         });
                     };
                     Some(crate::magit_global_mode::open_repo_view_from_action_with(

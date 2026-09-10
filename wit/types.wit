@@ -690,6 +690,28 @@ interface types {
         ///
         /// `none` resolves from the active buffer, exactly as before.
         root: option<string>,
+        /// PC.11: this picker is being opened **to answer a question**, and
+        /// the answer goes to the named ex-command as its first argument.
+        ///
+        /// `picker-accept-outcome`'s `fill-caller` already means "hand this
+        /// value to whoever opened me". What it lacked was a destination a
+        /// GUEST can own: the host's fill targets are the document, the `:`
+        /// line, a prompt, a transient argument and another picker's query,
+        /// and a plugin owns none of them. It does own an ex-command.
+        ///
+        /// `open-prompt-payload.on-submit-action` is this shape already, for
+        /// this reason — the asymmetry between the two, where a guest could
+        /// be handed a prompt's answer but not a picker's, is what this
+        /// closes.
+        ///
+        /// **Not an override of the source's own accept.** A source decides
+        /// what accepting one of its candidates means; `file-pick` and
+        /// `dir-pick` exist as separate sources precisely so "supply a value"
+        /// is the source's decision rather than the caller's. This names
+        /// where such a value lands.
+        ///
+        /// `none` leaves the target as whatever surface was captured at open.
+        fill-action: option<string>,
     }
     record set-lsp-log-level-payload {
         server-id: option<string>,

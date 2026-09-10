@@ -7,6 +7,12 @@
 > method for any of it. What lives in *this* tree is the seams the plugin
 > contributes through — see [`plugin-host.md`](plugin-host.md).
 
+> **§8's two "known gaps" are being closed**, and the fix changes the capture
+> buffer's substrate from synthetic to file-backed. See
+> [`org-capture-drafts.md`](org-capture-drafts.md): concurrent captures, savable
+> drafts, and stacked `org-roam-node-insert`. Where §8 and that page disagree,
+> that page is newer.
+
 **Status:** built (OC.1–OC.7). **OC.7 replaced the capture SURFACE** — where
 this page says "prompt", read §8: a capture now opens a real editable buffer
 holding the expanded template, and `C-c C-c` / `C-c C-k` file or discard it.

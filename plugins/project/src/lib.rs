@@ -86,6 +86,11 @@ const CB_DIRED: u32 = 5;
 const CB_SWITCH_TO: u32 = 6;
 const CB_GREP: u32 = 7;
 const CB_SHELL: u32 = 8;
+/// PC.12. `9` was free; `10` is `ON_DOCUMENT_OPENED`, a handler id in a
+/// different namespace that happens to sit next door — kept apart on purpose
+/// rather than renumbered, since the event id crosses a different seam.
+const CB_CHOOSE_DIR: u32 = 9;
+const CB_REMEMBER_AND_SWITCH: u32 = 11;
 
 /// The native live-grep picker. Rooted through the OPEN's root (PC.1), not
 /// through an argument: `grep` re-queries on every keystroke via
@@ -106,6 +111,12 @@ const SWITCH_TRANSIENT: &str = "project-switch";
 /// that is the user saying 'not that project, this one'." That sentence is this
 /// whole feature, already built; the plugin's job is only to decide WHICH root.
 const FILES_PICKER: &str = "files";
+
+/// PC.9's native directory picker — `file-pick`'s peer, browsing one level at
+/// a time. Native and not plugin-local because this plugin holds `state:write`
+/// and no `fs:` grant: it cannot list a directory at all, which is the same
+/// constraint that makes §4's no-auto-pruning honest.
+const DIR_PICKER: &str = "dir-pick";
 
 /// The `document-opened` subscription's handler id.
 const ON_DOCUMENT_OPENED: u32 = 10;
@@ -264,6 +275,59 @@ fn cmd_switch() -> Vec<Effect> {
     })]
 }
 
+/// PC.12: `:project-choose-dir` — the second surface of `project.el`'s
+/// `… (choose a dir)`.
+///
+/// Opens the native `dir-pick` sub-picker over the projects picker and names
+/// this plugin's own command as where the answer goes (PC.11's
+/// `fill-action`). A guest cannot receive a picked value any other way: every
+/// other fill target is a host surface — the document, the `:` line, a prompt,
+/// a transient argument — and a plugin owns none of them.
+///
+/// No `root`: `dir-pick` browses from the HOME directory by default, which is
+/// the right start for "find a project I have not opened". Rooting it at the
+/// current project would begin the search in the one place it is not.
+fn cmd_choose_dir() -> Vec<Effect> {
+    vec![Effect::OpenPicker(OpenPickerPayload {
+        source: DIR_PICKER.to_string(),
+        args: Vec::new(),
+        root: None,
+        fill_action: Some(picker::REMEMBER_AND_SWITCH_COMMAND.to_string()),
+    })]
+}
+
+/// PC.12: `:project-remember-and-switch <path>` — a path becomes a project,
+/// and you carry straight on to the switch-commands menu.
+///
+/// **One hop, which is `project.el`'s shape.** `project-switch-project` does
+/// not hand you back to the project list to confirm a directory you just
+/// chose; the choice IS the answer. So this remembers and opens the menu in
+/// the same breath.
+///
+/// Resolved through `project_of_path` rather than stored verbatim, which is
+/// the difference between this and [`cmd_switch_to`]. That one is fed by the
+/// picker with a root the list already holds; this one is fed a path a human
+/// (or a directory walk) named, so `~/src/lattice/crates` has to become
+/// `~/src/lattice`. Storing what was typed would put a subdirectory in the
+/// project list and every later switch would root one level too deep.
+fn cmd_remember_and_switch(ctx: &ExCommandContext) -> Vec<Effect> {
+    let Some(path) = arg_path(&ctx.args) else {
+        return warn("project: choose a directory first".to_string());
+    };
+    let Some(root) = project_of_path(&path) else {
+        return warn(format!(
+            "project: `{path}` is not inside a project — no root marker above it"
+        ));
+    };
+    if let Some(message) = remember_root(&root) {
+        return warn(message);
+    }
+    vec![Effect::OpenTransient(OpenTransientPayload {
+        source: SWITCH_TRANSIENT.to_string(),
+        args: Args::String(root),
+    })]
+}
+
 /// `:project-find-file [root]` — the native file picker, rooted at a project.
 fn cmd_find_file(ctx: &ExCommandContext) -> Vec<Effect> {
     match target_root(ctx) {
@@ -386,6 +450,18 @@ fn arg_path(args: &Args) -> Option<String> {
 ///
 /// `Reflex` because none of these touches the filesystem or waits on anything —
 /// they read and write one small store value.
+/// PC.12: no arguments at all. `:project-choose-dir` takes none — the picker
+/// it opens is the argument.
+fn no_arg_spec() -> ExCommandSpec {
+    ExCommandSpec {
+        latency_class: LatencyClass::Reflex,
+        accepts_bang: false,
+        accepts_range: false,
+        args_schema: Vec::new(),
+        surface_form: SurfaceForm::Keyword,
+    }
+}
+
 fn path_arg_spec(doc: &str, prompt: &str) -> ExCommandSpec {
     ExCommandSpec {
         latency_class: LatencyClass::Reflex,
@@ -505,6 +581,36 @@ impl Guest for Component {
             ),
             CB_PARSE,
             CB_SHELL,
+        );
+        // PC.12: the two hops of `… (choose a dir)`. Registered rather than
+        // kept private because a plugin's picker rows route through the
+        // command registry — `PickerAcceptOutcome::InvokeCommand` names a
+        // command, and an unregistered name is a row that does nothing.
+        //
+        // Both take no argument from the USER — the first takes none at all,
+        // the second is handed a path by the picker — so neither declares a
+        // prompt. A `:project-choose-dir` typed by hand is a perfectly good
+        // way in, which is why it is documented rather than hidden.
+        lattice::plugin_host::grammar::register_ex_command(
+            picker::CHOOSE_DIR_COMMAND,
+            "Browse the filesystem for a project directory. `<C-l>` descends \
+             into the selected directory, `<C-h>` goes back up, `<CR>` chooses \
+             — and the chosen one is remembered and opened.",
+            &no_arg_spec(),
+            CB_PARSE,
+            CB_CHOOSE_DIR,
+        );
+        lattice::plugin_host::grammar::register_ex_command(
+            picker::REMEMBER_AND_SWITCH_COMMAND,
+            "Remember the project containing a path and open its \
+             switch-commands menu. The second hop of `project-choose-dir`; \
+             takes a path rather than a project root, and resolves it.",
+            &path_arg_spec(
+                "a directory or file inside the project to remember and switch to",
+                "Project directory: ",
+            ),
+            CB_PARSE,
+            CB_REMEMBER_AND_SWITCH,
         );
     }
 
@@ -673,6 +779,8 @@ impl GrammarCallbacks for Component {
             CB_SWITCH_TO => cmd_switch_to(&ctx),
             CB_GREP => cmd_grep(&ctx),
             CB_SHELL => cmd_shell(&ctx),
+            CB_CHOOSE_DIR => cmd_choose_dir(),
+            CB_REMEMBER_AND_SWITCH => cmd_remember_and_switch(&ctx),
             other => return Err(format!("project: unknown ex-command callback {other}")),
         })
     }

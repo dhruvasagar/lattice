@@ -76,6 +76,11 @@
 - [ ] project detection should work from synthetic buffers too like oil, file-tree, magit, etc.
 - [ ] in-built agent harness tooling that can be used to build agents for specific use cases (could be similar to gptel)
 - [ ] multicursor
+- [ ] api I can use within `init.rs` to enable settings in specific modes. eg.) Enable `autowrap` in org-mode, essentially user local overrides for specific modes
+- [ ] we have mouse support (ui.mouse), however, I don't see any mouse interactions within the terminal
+  - [ ] Should be able to scroll
+  - [ ] Should be able to position the cursor
+  - [ ] Should be able to select text
 
 * Plugins
 - [X] plugin manager
@@ -229,7 +234,10 @@
 - [X] `:describe-key` does not allow <CR>, <BS>, etc. We should see if we can either add these manually or support a way to allow user to input these without breaking <BS>, <CR> functionality (can consider <S-CR> for add <CR> within `:describe-key`)
 - [X] hlsearch bleeds across tabs
       - [X] It still bleeds when I open a synthetic buffer like magit, the hlsearch highlight remains and highlights the exact spot where it did in the previous buffer
-- [X] window motions C-w left|up|right|down should work better with splits, for instance when there are 4 splits open, C-w down should go to the down split from the buffer above it, right now from either above it goes down to the left window, not based on the cursor position 
+- [X] window motions C-w left|up|right|down should work better with splits, for instance when there are 4 splits open, C-w down should go to the down split from the buffer above it, right now from either above it goes down to the left window, not based on the cursor position
+- [ ] Issues with folding, sometimes folds get folded while making changes (especially in lists in org mode)
+      eg.) `o` on a headline instantly folds the headline
+- [ ] `C`, `D` also removes the training newline character hence ends of bring the next line to this line like a join
 
 * Documentation
 - [X] lattice-tutor

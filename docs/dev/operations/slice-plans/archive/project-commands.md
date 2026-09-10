@@ -1,7 +1,7 @@
 # Slice plan — project commands
 
-Design: [`../../architecture/project-commands.md`](../../architecture/project-commands.md).
-Builds on [`../../architecture/project-resolution.md`](../../architecture/project-resolution.md)
+Design: [`../../../architecture/project-commands.md`](../../../architecture/project-commands.md).
+Builds on [`../../../architecture/project-resolution.md`](../../../architecture/project-resolution.md)
 (PR.6's `wit/project.wit`), which is already shipped.
 
 PC.1–PC.3 are host seams in **this** tree, each unblocking exactly one menu row.

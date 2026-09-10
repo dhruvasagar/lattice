@@ -6,10 +6,10 @@
 > variant, and no host concept of "a project command". What lives in the tree
 > besides the plugin is three small generic seams (§9).
 
-**Status:** 📝 planned. Builds on
+**Status:** ✅ built (PC.1–PC.8). Builds on
 [`project-resolution.md`](project-resolution.md), which already answers *where
 is the project* and explicitly leaves the rest to a plugin. Slice plan:
-[`../operations/slice-plans/project-commands.md`](../operations/slice-plans/project-commands.md).
+[`../operations/slice-plans/archive/project-commands.md`](../operations/slice-plans/archive/project-commands.md).
 
 ## 1. The gap
 
@@ -183,7 +183,7 @@ switch-commands = [
   { key = "d", label = "Dired",       command = "project-dired" },
   { key = "g", label = "Find regexp", command = "project-grep" },
   { key = "s", label = "Shell",       command = "project-shell" },
-  { key = "v", label = "Magit",       command = "project-magit" },
+  { key = "v", label = "Magit",       command = "magit-status" },
 ]
 ```
 
@@ -199,18 +199,29 @@ and fell back to a TOML blob inside a string. TC.4/TC.5's `ConfigShape` /
 That one sentence is the whole extension contract. The menu invokes
 `:<command> <root>`; anything registered under that convention can be a row.
 
-This is why the built-in verbs are **thin wrappers owned by the plugin**
-(`:project-find-file`, `:project-dired`, `:project-grep`, `:project-shell`,
-`:project-magit`) rather than the menu pointing at `:files` / `:oil` /
-`:magit-status` directly. Two reasons:
+Most built-in verbs are **thin wrappers owned by the plugin**
+(`:project-find-file`, `:project-dired`, `:project-grep`, `:project-shell`),
+because the underlying commands do not share an argument shape: `files` takes a
+root, `grep`'s first argument is its *pattern*, and a terminal takes a cwd
+rather than any argument at all. A menu that had to know each one's signature
+would be a switch statement over the editor's command surface.
 
-- the underlying commands do not share an argument shape — `files` takes a root,
-  `grep` takes a pattern, `magit-status` takes nothing — and a menu that had to
-  know each one's signature would be a switch statement over the editor's
-  command surface;
-- a wrapper is where "remember that I visited this project" belongs, so
-  switching to a project through the menu updates the ordering even when no file
-  is opened.
+**Magit is the exception, and it is the contract proving itself.** A
+`:project-magit` wrapper was specified here and then deleted: PC.3 gave
+`:magit-status` an optional path, so it now *is* "an ex-command whose first
+argument is a project root" and the row names it directly. Magit keeps owning
+what a status buffer is, which repository it acts on, and how two checkouts
+sharing a basename are told apart — including its own "Not a git repository."
+for a project that is not one, rather than a second opinion from here. A wrapper
+could only have re-described that; it also could not have forwarded at all,
+since `Effect` has no `invoke-command` arm.
+
+The lesson generalises: **if a command already takes a root, do not wrap it.**
+A wrapper is for translating a root into whatever shape the underlying effect
+needs, not for putting this plugin's name on someone else's verb.
+
+Recency is refreshed once by `:project-switch-to` when the menu opens, so
+individual rows do not each need to remember the project.
 
 ### Extensibility: configuration, deliberately not a registry
 
@@ -362,7 +373,7 @@ All echo, none panic, and none loses the user's place.
   is not a project.
 - A `switch-commands` row naming a command that is not registered → the row is
   **shown greyed with the reason**, not silently dropped. A missing row is
-  invisible; a row that says *"project-magit: no such command"* tells you the
+  invisible; a row that says *"magit-status: no such command"* tells you the
   plugin providing it did not load.
 - An empty or malformed `switch-commands` option → fall back to the built-in
   defaults rather than an empty menu. A menu with no rows is

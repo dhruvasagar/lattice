@@ -251,6 +251,31 @@ YAGNI says do not parameterise it until a popup wants a different one.
 
 **`prev_pane_for_help`** is renamed `prev_pane_for_popup`. (PU-A)
 
+**A dismiss restored a pane no popup had displaced.** (fixed 2026-09-10) The
+stash was one slot serving two mechanisms with different lifetimes:
+`activate_help_in_pane` wrote it for `dismiss_popup` to restore, and
+`open_synthetic_buffer_seeded` wrote it for `Effect::BuryBuffer` (magit's `q`)
+to return to. `dismiss_popup` consumes whatever is in the slot and cannot tell
+whose it is, so a synthetic buffer opened *underneath* a State-A popup had its
+bury address applied by that popup's teardown — hand-restoring `pane.buffer_id`
+to the origin without going through `activate_buffer`. Silent, because only
+`activate_buffer` echoes, and `document_buffer_id` was left disagreeing.
+
+Reported against org-capture: with a transient menu still up, the
+`*org-capture*` draft opened, the menu's dismiss put the pane back on the
+pre-capture buffer, and `C-c C-c`'s `Effect::BufferDelete` — which resolves its
+target from `active_pane_buffer_id()` — deleted *that* buffer. The note filed
+correctly; the draft stayed alive, unsaved and unreachable, and `:q` then
+refused to quit citing a buffer the user could not see.
+
+MG.47 had patched one call site (`:` in a magit buffer) by guarding the
+dismiss, reasoning that a State-A popup "leaves `prev_pane_for_popup` as `None`
+— so this guard cannot move the pane". True only until something opens a
+synthetic buffer under the popup. The fix gives the bury mechanism its own
+field (`Editor::bury_target`), cleared by `do_buffer_delete` once the buffer it
+would return from is gone. Pinned by
+`crates/lattice-host/tests/a_popup_dismiss_must_not_move_the_pane.rs`.
+
 The next three were found while scoping PU-A and fixed ahead of it (slice plan
 `../operations/slice-plans/archive/popup-input-caret.md`). Each is the same half-migration
 seen from a different axis: the popup is "active" for `active_buffer` /

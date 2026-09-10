@@ -7855,7 +7855,7 @@ impl Editor {
     /// with magit's `Number = false` still cached, so the line numbers
     /// vanished) is fixed at that seam rather than here.
     pub fn bury_buffer(&mut self) -> bool {
-        let Some(prev) = self.prev_pane_for_popup.take() else {
+        let Some(prev) = self.bury_target.take() else {
             return false;
         };
         // Full swap first — this is what moves `Editor::document`.
@@ -7908,17 +7908,17 @@ impl Editor {
             // A search line unwound with the popup leaves no pattern behind.
             self.search_line = None;
             // DROP any stash rather than applying it. A focus-stealing popup
-            // no longer writes one, so anything here is a leftover from an
-            // in-pane open (`Effect::OpenSyntheticBuffer` sets it only when
-            // empty, and documents itself as sitting unused until a dismiss
-            // GCs it). Applying it would clobber the pane with an unrelated
-            // buffer's cursor. Clearing matches what the old code did by
+            // no longer writes one, so anything here is a leftover. Applying
+            // it would clobber the pane with an unrelated buffer's cursor.
+            // Clearing matches what the old code did by
             // overwriting-then-taking.
             self.prev_pane_for_popup = None;
         }
-        // The in-pane paths — `activate_help_in_pane`, `:lsp-log` and peers —
-        // genuinely MOVE the pane and push no frame, so the stash is still
-        // the only thing that can put it back.
+        // `activate_help_in_pane` genuinely MOVES the pane and pushes no
+        // frame, so its stash is the only thing that can put it back. It is
+        // also the ONLY writer of this field: an in-pane synthetic open
+        // writes `bury_target` instead, precisely so this branch cannot
+        // restore over a buffer no popup ever displaced.
         else if let Some(prev) = self.prev_pane_for_popup.take() {
             self.cursor = prev.cursor;
             self.scroll = prev.scroll;
@@ -32336,24 +32336,31 @@ impl Editor {
             crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
         );
         // Bug fix: stash the pane's pre-open state so a later
-        // `Effect::DismissPopup` (magit's `q`, bound in
+        // `Effect::BuryBuffer` (magit's `q`, bound in
         // `magit-core-mode` and inherited by every magit buffer) can
         // bury this buffer back to whatever was showing before,
         // instead of magit's `q` having nothing to fall back to and
         // reaching for `Effect::QuitEditor` (which, with one pane
         // open, quit the whole editor — the exact live-reported bug
-        // this fixes). Mirrors `activate_help_in_pane`'s stash
-        // (`dispatch.rs` ~31105-31123): only set when not already
-        // populated, so chained synthetic-buffer opens (magit-status
-        // -> magit-log -> back) restore the TRUE origin buffer, not
-        // the intermediate one. A no-op for callers that never
-        // trigger `DismissPopup` afterward (every other
-        // `Effect::OpenSyntheticBuffer` consumer today) — the stash
-        // just sits unused until GC'd by the next successful
-        // `dismiss_popup`/`activate_help_in_pane` stash-and-clear.
-        if self.prev_pane_for_popup.is_none() && self.active_pane_buffer_id() != id {
+        // this fixes). Only set when not already populated, so
+        // chained synthetic-buffer opens (magit-status -> magit-log
+        // -> back) restore the TRUE origin buffer, not the
+        // intermediate one.
+        //
+        // `bury_target`, NOT `prev_pane_for_popup`. This used to
+        // write the popup's slot, on the reasoning that it "just sits
+        // unused until GC'd by the next dismiss" — but a dismiss does
+        // not GC a stash, it APPLIES it, and it cannot tell whose it
+        // is. A synthetic buffer opened while any State-A popup was
+        // up therefore had its bury address consumed by that popup's
+        // teardown, which hand-restored the pane to the origin
+        // without going through `activate_buffer`. Everything reading
+        // `active_pane_buffer_id()` afterwards then addressed the
+        // wrong buffer, `Effect::BufferDelete` included. See the
+        // field's own doc comment for the org-capture report.
+        if self.bury_target.is_none() && self.active_pane_buffer_id() != id {
             let active = self.pane_tree.active();
-            self.prev_pane_for_popup = Some(crate::state::PrevPaneState {
+            self.bury_target = Some(crate::state::PrevPaneState {
                 buffer: active.buffer,
                 buffer_id: active.buffer_id,
                 cursor: self.cursor,
@@ -38998,6 +39005,14 @@ impl Editor {
         // BufferId is still mapped.
         self.lsp_close_buffer(to_remove);
         self.buffers.remove(to_remove);
+        // The bury address is spent once the buffer it would have returned
+        // FROM is gone — this delete has already chosen a successor and
+        // re-pointed the panes. Left set, it would both block the next
+        // synthetic open from recording its own origin and, if the origin is
+        // what was deleted here, let a later `q` hand-point the pane at a
+        // buffer that no longer exists (`bury_buffer` assigns the id whether
+        // or not the activation took).
+        self.bury_target = None;
         // AR.0: drop the autoread fingerprint for the closed buffer so the
         // map tracks only live file-backed buffers.
         self.on_disk_fingerprints.remove(&to_remove);

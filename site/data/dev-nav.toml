@@ -156,6 +156,7 @@ docs = [
   "architecture/compilation-mode",
   "architecture/ide-protocol",
   "architecture/project-resolution",
+  "architecture/project-commands",
 ]
 
 [[section]]
@@ -226,6 +227,7 @@ docs = [
   "architecture/org-mode",
   "architecture/org-todo-keywords",
   "architecture/org-capture",
+  "architecture/org-capture-drafts",
   "architecture/org-agenda",
   "architecture/org-habits",
   "architecture/org-roam",

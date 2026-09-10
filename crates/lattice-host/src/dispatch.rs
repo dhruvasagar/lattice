@@ -23097,6 +23097,36 @@ impl Editor {
                 .build()
         };
 
+        // The language and its parse, BEFORE the document is moved into the
+        // actor — `build_open_syntax` takes `&self`, and this is the last point
+        // the text is in hand without a round-trip through the handle.
+        //
+        // This is not decoration. A buffer created here is an ordinary listed
+        // `Document` that the user can `:e`, `:b` and edit, and `do_edit` finds
+        // it by path and takes its "already open, switch to it" branch — so a
+        // buffer that never got a language is one the user can never get a
+        // highlighted, correctly-moded view of, however they open the file
+        // afterwards. Reported live against org capture: commit a note, open the
+        // file it filed into, and it has no org-mode and no colour.
+        //
+        // `build_open_syntax` rather than `install_inmemory_syntax`, for two
+        // reasons that both matter:
+        //
+        //   * it reads the **live** language registry. `install_inmemory_syntax`
+        //     uses `self.lang_registry`, a boot snapshot, and a plugin language
+        //     RCUs its grammar in after boot — so for org, the language this bug
+        //     was reported against, the snapshot answers `None` and the fix
+        //     would appear to work on native languages only.
+        //   * it chooses sync vs async parse by `SYNC_PARSE_MAX_BYTES`.
+        //     `install_inmemory_syntax` always parses inline, and a capture
+        //     target is exactly the kind of file that grows large — filing one
+        //     note into a big org file must not pay the ~118 ms freeze
+        //     `do_edit` added that threshold to avoid (paramount #1).
+        let lang = lattice_syntax::Lang::detect_from_path(document.path());
+        let initial_text = document.text();
+        let initial_version = document.text_version();
+        let (syntax, parsed_sync) = self.build_open_syntax(lang, &initial_text, initial_version);
+
         let id = BufferId::next();
         let handle = lattice_runtime::spawn_document(id, document, self.registry.clone());
         let handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(handle);
@@ -23111,6 +23141,23 @@ impl Editor {
             None,
         );
         self.seed_empty_document_locals(id);
+        // AFTER the seed, which installs an EMPTY `DocumentSyntax` local —
+        // this overrides it, the `install_inmemory_syntax` precedent.
+        //
+        // The version stamp mirrors `open_fresh_into_active_slot`'s and carries
+        // its reasoning: a sync parse stamps the current version so a later
+        // `maybe_reparse_syntax` no-ops, while a deferred one leaves a
+        // deliberate mismatch so activating the buffer kicks the full parse off
+        // the actor thread.
+        self.install_document_syntax(
+            id,
+            syntax,
+            if parsed_sync {
+                initial_version
+            } else {
+                initial_version.wrapping_sub(1)
+            },
+        );
         Ok(id)
     }
 

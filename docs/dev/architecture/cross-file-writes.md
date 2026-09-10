@@ -235,6 +235,33 @@ in `:ls`, `:w` saves it, `:bd` closes it, and the active pane does not move.
 That last part matters. A plugin's write must not steal focus — the user
 pressed `<leader>o$` to archive a subtree, not to navigate somewhere.
 
+**"An ordinary listed document buffer" has to be literally true, and for a
+while it was not.** `resolve_path_to_buffer_creating` spawned the document,
+registered it and stopped — no `Lang::detect_from_path`, no syntax handle. So
+the buffer it produced was ordinary in `:ls` and nowhere else: no highlighting,
+and — because the major is resolved *from* the language — `text-mode` instead
+of the language's own major.
+
+The damage stuck rather than being repaired on next open, and that is the part
+worth remembering. `do_edit` finds the buffer by path and takes its "already
+open, switch to it" branch, so opening the file afterwards handed the user back
+the same defective buffer. It presented as org capture committing a note into a
+file that then had no `org-mode` and no colour, however you opened it.
+
+The buffer now gets its syntax through **`build_open_syntax`**, the same
+chooser `do_edit` uses, and not through `install_inmemory_syntax`. Two reasons,
+both load-bearing:
+
+- `build_open_syntax` reads the **live** language registry.
+  `install_inmemory_syntax` reads `self.lang_registry`, a boot snapshot, and a
+  plugin language RCUs its grammar in after boot — so for org, the very
+  language this was reported against, the snapshot answers `None`. That fix
+  would have worked for every native language and for none of the plugin ones.
+- It picks a synchronous or deferred parse by `SYNC_PARSE_MAX_BYTES`.
+  `install_inmemory_syntax` always parses inline, and a capture target is
+  exactly the file that grows: filing one note into a large org file must not
+  pay the freeze that threshold exists to prevent (paramount #1).
+
 **Not saved by default**, and this is convention-following rather than
 laziness: emacs's `org-refile` and `org-archive-subtree` both leave the target
 buffer modified, with saving behind a separate option. The user reviews and

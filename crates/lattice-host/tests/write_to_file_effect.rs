@@ -620,3 +620,108 @@ fn save_runs_after_the_cut_so_the_persisted_target_is_complete() {
     assert_eq!(on_disk(&target), "* Archive\n* Move me\n");
     assert_eq!(source_text(&editor), "* Keep\n", "the cut still ran");
 }
+
+// ── The target is a REAL buffer, not a text sink ─────────────────────────────
+//
+// Reported live: "when a note is captured and committed, it does not get
+// processed by org. If I switch to the file, it doesn't even have org-mode
+// applied, no syntax highlighting."
+//
+// `resolve_path_to_buffer_creating` is a second file-open door, and it does
+// less than `do_edit` does. `do_edit` runs `Lang::detect_from_path` and
+// `build_open_syntax` (`dispatch.rs` ~15225); this path spawns the document,
+// registers it, calls `seed_empty_document_locals` and stops — so the buffer
+// carries an EMPTY `DocumentSyntax` handle.
+//
+// That empty handle is why the damage sticks. `activate_buffer` promotes it
+// into `self.syntax`, and nothing rebuilds it: the repair
+// (`rebuild_syntax_for_mode`) runs for synthetic buffers at OC.7c and on this
+// path never. Worse, `do_edit` finds the buffer already registered and takes
+// the "already open, switch to it" branch — so opening the file afterwards
+// hands the user back exactly the broken buffer rather than a fresh one.
+//
+// Markdown rather than org on purpose: org is a plugin language, and this
+// defect is in the host and reproduces with any language the host resolves
+// natively. Fixing it for Markdown fixes it for org.
+
+/// The language the target's own path implies — not `Plain`, and not the
+/// language of whatever the user happened to be looking at.
+#[test]
+fn a_written_target_gets_the_language_its_path_implies() {
+    let dir = tmp("lang");
+    let note = dir.join("note.md");
+
+    // The SOURCE is a Rust buffer, deliberately: the major resolver reads
+    // `self.document` rather than the target's document (`dispatch.rs` ~19203),
+    // so a source of a different language is what makes that confusion visible
+    // instead of accidentally agreeing.
+    let mut editor = Editor::boot(CoreDocument::from_text("fn main() {}\n"));
+    editor.handle_effect(Effect::WriteToFile {
+        path: note.clone(),
+        anchor: FileAnchor::End,
+        text: "# Captured\n".to_string(),
+        cut: None,
+        create_parents: false,
+        save: true,
+    });
+
+    let id = editor
+        .find_document_by_path(&note)
+        .expect("the target was opened");
+
+    assert_eq!(
+        editor.document_syntax_for(id).map(|h| h.lang()),
+        Some(lattice_syntax::Lang::Markdown),
+        "a buffer created by WriteToFile must carry its path's language, or it \
+         can never highlight — and the empty handle it gets instead is never rebuilt"
+    );
+}
+
+/// And switching to it afterwards must not hand back the broken buffer.
+#[test]
+fn switching_to_a_written_target_gives_it_its_major() {
+    let dir = tmp("major");
+    let note = dir.join("note.md");
+
+    let mut editor = Editor::boot(CoreDocument::from_text("fn main() {}\n"));
+    editor.handle_effect(Effect::WriteToFile {
+        path: note.clone(),
+        anchor: FileAnchor::End,
+        text: "# Captured\n".to_string(),
+        cut: None,
+        create_parents: false,
+        save: true,
+    });
+
+    // What the user does next: open the file they just captured into.
+    editor.do_edit(Some(note.clone()), false);
+
+    let id = editor
+        .find_document_by_path(&note)
+        .expect("the target was opened");
+    assert_eq!(
+        editor.document_buffer_id, id,
+        "`:e` on the written path must land on that buffer"
+    );
+    assert_eq!(
+        editor.document_syntax_for(id).map(|h| h.lang()),
+        Some(lattice_syntax::Lang::Markdown),
+        "opening the file must not hand back the language-less buffer the \
+         write created"
+    );
+    // The half actually reported — "it doesn't even have org-mode applied".
+    // The major is resolved FROM the language, so a buffer stuck on `Plain`
+    // lands on `text-mode`; asserting only the language would leave the
+    // user-visible symptom uncovered.
+    //
+    // This also pins `dispatch.rs`'s major resolver reading `self.document`
+    // rather than `buffer_id`'s document: it is correct here only because
+    // activation runs after the swap, and a test that asserted the language
+    // alone would not notice the day that ordering changes.
+    assert_eq!(
+        editor.active_modes.get(&id).and_then(|m| m.major()),
+        Some(lattice_syntax::MarkdownMode::mode_id()),
+        "the major follows the language; `text-mode` here means the buffer \
+         never learned what it was"
+    );
+}

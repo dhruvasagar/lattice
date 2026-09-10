@@ -219,6 +219,49 @@ feature crate that knows the state. Adding a new
 context slice does not require editing `lattice-picker` —
 just the App-side assembler in `lattice-ui-tui`.
 
+### 4.2bis Depth: `descend` / `ascend` (PC.10)
+
+Two optional hooks, both defaulting to `None`:
+
+```rust
+fn descend(&self, ctx: &PickerContext, candidate: &RawCandidate) -> Option<String>;
+fn ascend(&self, query: &str) -> Option<String>;
+```
+
+`<C-l>` and `<C-h>`. For a source whose candidates are **containers**, "go
+into this" and "choose this" are different questions, and a picker with only
+`<CR>` can ask one of them. Returning `Some(query)` replaces the query and
+re-lists; the picker stays open and nothing is accepted.
+
+**`None` is the answer for every source but `dir-pick` today**, and that is
+the safety argument rather than an omission: `<C-l>` in the buffers picker
+does nothing at all instead of something approximate. A key that means
+"descend" in one picker and "almost descend" in another is worse than one that
+means nothing in the second.
+
+Both are additionally gated host-side on the source being `live`. A static
+source's rows come from `init` and are fuzzy-refiltered, so rewriting its query
+would filter the rows it already has rather than fetch the ones inside the
+candidate.
+
+`ascend` takes the QUERY, not the selection: going up is a statement about
+where you are, and the row you happen to be on has nothing to do with it. It
+is a hook rather than a generic "delete back through the last `/`" because
+*live* is not *path-shaped* — `grep` is live, and a generic `<C-h>` would have
+silently truncated a grep pattern at a slash.
+
+**Not `<Tab>`.** `<Tab>` is `PickerSelectNext` in every picker and `<S-Tab>`
+its peer. Giving one picker a `<Tab>` that means something different from all
+the others is the inconsistency the UX-convention rule exists to prevent;
+`<C-l>` / `<C-h>` were unbound, and are what ranger / lf / nnn / vifm use for
+this exact surface.
+
+The first consumer is **`dir-pick`** (PC.9), `file-pick`'s directory peer:
+`live`, listing the children of the directory its query names, one `read_dir`
+per keystroke rather than a walk. See
+[`project-commands.md`](project-commands.md) §9 H5 for why incremental beats
+the recursive alternative, and `benchmarks.md` PC.9 for what a keystroke costs.
+
 ### 4.3 `PickerSourceGenerator` (the trait)
 
 ```rust
@@ -291,6 +334,17 @@ A **bounded** enum, smaller than `Effect`, scoped to "things
 a picker can ask the host to do." The host translates each
 variant into the appropriate `Effect` / App mutation. WIT
 mirrors this as a `variant` record with the same arms.
+
+`FillCaller { text }` is the arm that says "hand this value back to whoever
+opened me" — where *whoever* is a `FillTarget` captured **at open**, never
+resolved at accept, because by accept time the picker is dismissed and the
+question has a different answer. The targets are host surfaces (the document,
+the `:` line, a prompt, a transient argument, another picker's query) plus
+**`Action { command }`** (PC.11), which is the one a *guest* can name: a plugin
+owns none of the surfaces, but it owns an ex-command, and the value arrives as
+that command's first argument. `Effect::OpenPicker`'s `fill_action` field is
+how it asks. See [`project-commands.md`](project-commands.md) §9 H4 for why
+this is a fill target rather than a flag overriding the source's own accept.
 
 Why not emit `Effect` directly:
 

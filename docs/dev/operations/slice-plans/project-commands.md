@@ -23,11 +23,11 @@ feature is useful at PC.6.
 | PC.3 | lattice | `:magit-status <path>` | ✅ |
 | PC.7 | plugin | `:project-grep` / `:project-shell` rows (magit needs no wrapper) | ✅ |
 | PC.8 | both | `:help project`, core-plugins row, hot-path fix | ✅ |
-| PC.9 | lattice | `dir-pick` — the incremental directory source | 📝 |
-| PC.10 | lattice | `descend` hook + `<C-l>` / `<C-h>` | 📝 |
-| PC.11 | lattice | `FillTarget::Action` + the `open-picker` field | 📝 |
-| PC.12 | plugin | The `… (choose a dir)` row, end to end | 📝 |
-| PC.13 | both | Docs, and `:project-remember`'s missing completion | 📝 |
+| PC.9 | lattice | `dir-pick` — the incremental directory source | ✅ |
+| PC.10 | lattice | `descend` hook + `<C-l>` / `<C-h>` | ✅ |
+| PC.11 | lattice | `FillTarget::Action` + the `open-picker` field | ✅ |
+| PC.12 | plugin | The `… (choose a dir)` row, end to end | ✅ |
+| PC.13 | both | Docs, and `:project-remember`'s missing completion | ✅ |
 
 **Deliberate ordering.** The plugin leads. PC.4–PC.6 prove the whole shape —
 list, picker, menu, keymap — against the two verbs that need nothing from the
@@ -135,9 +135,11 @@ The realistic shape — one host, one resolver, a buffer store mapping distinct
 ids to distinct files — is both simpler and what the editor actually does.
 
 **Tests.**
-- an empty list yields a picker that **says** it is empty rather than rendering
-  as an empty list (the `roam_find` rule: "no notes" and "not configured" look
-  identical and have different fixes);
+- ~~an empty list yields a picker that **says** it is empty rather than
+  rendering as an empty list (the `roam_find` rule)~~ — **reversed by PC.12.**
+  The rule is about a picker with nothing to OFFER; once `… (choose a dir)` is
+  always present, refusing to open put the escape hatch behind the wall it
+  exists to get through. The test now asserts the picker opens on that one row;
 - accepting a row opens the files picker rooted at **that** project while the
   active buffer belongs to a **different** one — the whole feature in one
   assertion, and the one a same-project test would pass without proving;
@@ -295,7 +297,7 @@ never going to be the interesting number; the unconditional write was.
 
 ---
 
-## PC.9 📝 — `dir-pick`, the incremental directory source
+## PC.9 ✅ — `dir-pick`, the incremental directory source
 
 Design: [`project-commands.md` §9 H5](../../architecture/project-commands.md).
 
@@ -326,7 +328,7 @@ the keystrokes); `~` expands; accept yields `FillCaller` and never
 number that matters is that it is a single `read_dir` and not a walk — a
 regression to a recursive shape would show here and nowhere else.
 
-## PC.10 📝 — `descend`, and the two keys
+## PC.10 ✅ — `descend`, and the two keys
 
 `PickerSourceGenerator::descend(&self, ctx, routing) -> SourceResult<Option<String>>`,
 defaulting to `None`. `Action::PickerDescend` calls it: `Some(query)` replaces
@@ -350,7 +352,7 @@ the one that could silently break every other picker); `<C-h>` walks up one
 component and stops at the root rather than emptying the query; `<C-h>` on a
 query with no `/` clears it.
 
-## PC.11 📝 — `FillTarget::Action` and the boundary field
+## PC.11 ✅ — `FillTarget::Action` and the boundary field
 
 Design: [`project-commands.md` §9 H4](../../architecture/project-commands.md).
 
@@ -377,7 +379,7 @@ drops; a dismissed fill-picker leaves no target behind (the YR.6 hole, in its
 new variant); a picker opened with no action still `FillCaller`s to the
 surface targets exactly as before.
 
-## PC.12 📝 — The row, end to end
+## PC.12 ✅ — The row, end to end
 
 `plugins/project/src/picker.rs`:
 
@@ -406,7 +408,7 @@ remembering without the menu and the menu without remembering are each half the
 feature and each looks fine alone. A directory with no root marker above it
 echoes the existing refusal and remembers nothing.
 
-## PC.13 📝 — Docs, and the completion that was never wired
+## PC.13 ✅ — Docs, and the completion that was never wired
 
 - `:project-remember`'s `dir` argument declares `completion: Some("gen:directories")`
   and `picker: Some("dir-pick")`. It has carried `completion: None` since PC.4,
@@ -418,3 +420,38 @@ echoes the existing refusal and remembers nothing.
   next person looks for "is there a source that does X".
 - Site sync (`site/scripts/sync-docs.sh`); no `nav.toml` work, both pages are
   already routed.
+
+**What each of PC.9–PC.13 actually did, where it differed from the plan.**
+
+- **PC.9** landed `dir-pick` and `path_entries` (the shared listing, extracted
+  from `gen:directories` rather than copied). The bench found a `stat` per
+  entry — `metadata()` on every entry to answer `is_dir` and read a size only a
+  file listing shows — on a path that runs SYNCHRONOUSLY on the actor thread
+  inside a keystroke. `file_type()` answers `is_dir` out of the `read_dir`
+  buffer; symlinks still pay the stat because `file_type()` reports the link.
+  50 subdirs 182 µs → 117 µs, 5000 → 15.2 ms → 7.4 ms, and `gen:files` /
+  `gen:directories` took the same halving for free. The first measurement of
+  this was taken beside a `cargo check` and reported the two small cases as
+  90% and 24% REGRESSIONS — recorded in `benchmarks.md` because a number that
+  moves the wrong way has to be re-run alone before it is believed.
+
+- **PC.10** added `ascend` as a HOOK, which the plan said would not be needed.
+  The plan reasoned that "delete back through the previous `/`" is generic over
+  any path-shaped query. True — but *live* is not *path-shaped*, and `grep` is
+  live, so a generic `<C-h>` would have truncated a grep pattern at a slash.
+
+- **PC.11** collapsed both peers' inlined `Effect::OpenPicker` bodies into
+  `Editor::open_picker_for_effect` rather than adding the capture and its
+  rollback twice. **The mechanical pass that added `fill_action` to 37
+  construction sites put `None` on the wit→native arm** — the one direction
+  where the field IS the feature. Caught by review, not by a test; the boundary
+  round-trip now carries a populated value, which the test list's own note
+  already said was the only way to tell a carried field from a dropped one.
+
+- **PC.12** reversed two recorded decisions and both reversals are argued in
+  place: the create row (which remembers rather than creates, so the original
+  objection does not reach it) and the empty-list `err`.
+
+- **PC.13** found `:project-remember`'s `completion` and `picker` both `None`
+  since PC.4 — a command whose entire argument is a directory, offering nothing
+  when asked for one. Nothing justified it; they were simply never wired.

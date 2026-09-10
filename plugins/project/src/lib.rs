@@ -476,8 +476,19 @@ fn path_arg_spec(doc: &str, prompt: &str) -> ExCommandSpec {
             // the common call and must not prompt for a path the editor can
             // already work out.
             default: ArgDefault::None,
-            completion: None,
-            picker: None,
+            // PC.13. These were both `None` from PC.4, so `:project-remember
+            // <Tab>` has never completed a path — a command whose whole
+            // argument is a directory, offering nothing when you ask it for
+            // one. Nothing justified it; the generator and the picker simply
+            // were not wired.
+            //
+            // `gen:directories` for `<Tab>` (inline, one component at a time)
+            // and `dir-pick` for `<C-x><C-o>` (the richer surface, PC.9). An
+            // argument may legitimately declare both — they answer the same
+            // question at different weights, which is what `ArgSpec`'s own
+            // doc says the split is for.
+            completion: Some("gen:directories".to_string()),
+            picker: Some(DIR_PICKER.to_string()),
         }],
         surface_form: SurfaceForm::Keyword,
     }

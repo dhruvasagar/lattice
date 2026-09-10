@@ -36,18 +36,48 @@ first is the everyday verb and the second is what the plugin exists for.
 | `:project-shell [dir]` | A shell in a project |
 | `:project-remember [dir]` | Add a project to the picker |
 | `:project-forget [dir]` | Remove one |
+| `:project-choose-dir` | Browse the filesystem for a project |
 
 With no argument each acts on the current buffer's project.
+
+`:project-remember <Tab>` completes directory names, and `<C-x><C-o>` on the
+argument opens the same directory browser `:project-choose-dir` does.
 
 ## Where the list comes from
 
 Projects are **remembered as you visit them** — open a file in one and it joins
 the list, most-recently-visited first. That is `project.el`'s own model.
 
-It has one hole, and `:project-remember` fills it: a project you have *never*
-opened a file in cannot be remembered by visiting it, which is precisely the
-case "open a file in project B" describes. `:project-remember ~/src/thing` seeds
-it without opening anything.
+It has one hole: a project you have *never* opened a file in cannot be
+remembered by visiting it — which is precisely the case "open a file in project
+B" describes. Two things fill it.
+
+**`… (choose a dir)`**, the last row of the project picker. It is always there,
+including on a fresh install where it is the only row, and it opens a directory
+browser:
+
+```
+:project-switch
+  lattice
+  lattice-org-plugin
+▸ … (choose a dir)                     <CR>
+      ↓
+  Choose a directory:  ~/src/dh▊
+▸ ~/src/dhruvasagar/                   <C-l> go in
+  ~/src/dharma/                        <C-h> go back up
+                                       <CR>  choose this one
+```
+
+Typing filters as you go, `<C-l>` descends into the highlighted directory and
+`<C-h>` climbs back out. `<CR>` takes the one you are on: it is remembered, and
+its switch menu opens straight away — the same place you would have landed had
+it been in the list all along.
+
+Choosing anywhere *inside* a project picks the project, so you can stop at
+`~/src/thing/src` and still get `~/src/thing`.
+
+**`:project-remember ~/src/thing`** does the same seeding from the command
+line, without opening anything.
 
 Nothing is pruned automatically. The plugin holds no filesystem capability, so
 it cannot tell a deleted checkout from one on an unmounted volume — a project

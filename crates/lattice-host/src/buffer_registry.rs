@@ -895,6 +895,14 @@ impl lattice_mode::BufferStore for BufferRegistry {
         self.name_of(id)
     }
 
+    /// Answered exactly rather than through the trait's best-effort default:
+    /// this registry holds the map, so it can see a registered buffer that has
+    /// no name, no path and no document handle — which the default reports as
+    /// absent.
+    fn contains_buffer(&self, id: lattice_core::BufferId) -> bool {
+        self.contains(id)
+    }
+
     fn path_for(&self, id: lattice_core::BufferId) -> Option<std::path::PathBuf> {
         self.document_path(id)
     }

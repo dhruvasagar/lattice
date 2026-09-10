@@ -1713,10 +1713,21 @@ impl crate::lattice::plugin_host::project::Host for PluginState {
         let ctx = self.project.as_ref()?;
         // A guest-supplied id is untrusted: `path_for` returning `None` is
         // ambiguous between "no such buffer" and "buffer has no path", so ask
-        // the store whether it knows the buffer at all first. `name_for`
-        // answers for every registered buffer, pathless ones included.
+        // the store whether it knows the buffer at all first.
+        //
+        // `contains_buffer`, NOT `name_for`. This used to ask `name_for(id)?`
+        // on the belief that it "answers for every registered buffer, pathless
+        // ones included" — the opposite of what it does. `name` is the
+        // synthetic-name slot, so it is `None` for every buffer opened from a
+        // file, and this seam therefore refused to resolve exactly the buffers
+        // a user edits. The `project` plugin's `document-opened` handler got
+        // `none` for every real file, remembered nothing, and
+        // `:project-switch` reported "no projects remembered yet" no matter how
+        // long the editor had been running.
         let id = lattice_core::BufferId(buffer as u32);
-        ctx.buffers.name_for(id)?;
+        if !ctx.buffers.contains_buffer(id) {
+            return None;
+        }
         let path = ctx.buffers.path_for(id);
         Some(to_wire(match path {
             Some(path) => ctx.resolver.for_path(&path),

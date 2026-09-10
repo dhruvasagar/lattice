@@ -236,6 +236,25 @@ that *exists* always resolves: one with no path reports the working
 directory with `kind = pwd`. So a guest can tell "no such buffer" from
 "not in a project", which are different questions.
 
+**The existence check is `BufferStore::contains_buffer`, and it has to
+be its own method.** Each of `name_for` / `path_for` / `handle_for`
+returns `None` for two different reasons — "no such buffer" and "that
+buffer has no name / path / handle" — so none of them can answer "does
+this id exist", and a caller that picks one is asking a different
+question than it thinks. `name_for` is the trap: it is the *synthetic*
+name slot, `None` for every buffer opened from a file, so using it as
+the oracle refuses exactly the buffers a user edits.
+
+That was the shape of a live defect. `root_for_buffer` asked
+`name_for(id)?`, so every `document-opened` for a real file resolved to
+`none`, the `project` plugin remembered nothing, and `:project-switch`
+answered "no projects remembered yet" however long the editor had been
+running. The seam tests passed throughout, because their `BufferStore`
+stub returned `Some("the-buffer")` for a file-backed buffer — a stub
+that cannot occur in production carrying the whole suite. The stub now
+answers `None`, as a real file buffer does, and asserts through
+`contains_buffer` instead.
+
 Sync, and imported by every **async** world — the eleven that already
 import `logging`, wired into the same linker beside it.
 

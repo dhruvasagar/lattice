@@ -69,14 +69,26 @@ impl lattice_mode::BufferStore for OneBuffer {
     ) -> Option<Arc<dyn lattice_runtime::Document>> {
         None
     }
-    /// **The host's existence oracle, not decoration.**
-    /// `project::root_for_buffer` calls `name_for(id)?` FIRST and short-circuits
-    /// on `None`, because `path_for` returning `None` is ambiguous between "no
-    /// such buffer" and "buffer has no path". A stub answering `None` here makes
-    /// every resolution return `none` and the plugin silently remember nothing —
-    /// which is exactly how this test failed before the stub was corrected.
+    /// **`None`, because that is what a file-backed buffer answers.**
+    ///
+    /// `name` is the SYNTHETIC-name slot — `*magit:status*`, `*messages*` — and
+    /// the trait says so: "`None` when the buffer is unnamed (the default for
+    /// path-less scratch documents)". A buffer opened from a file is identified
+    /// by its path and carries no name at all.
+    ///
+    /// This stub used to answer `Some("the-buffer")` so that
+    /// `root_for_buffer`'s `name_for(id)?` existence check would pass. That made
+    /// the whole suite green against a production path where it can never pass,
+    /// and the feature was dead in the real editor: every `document-opened` for
+    /// a real file resolved to `none`, nothing was ever remembered, and
+    /// `:project-switch` said "no projects remembered yet" forever.
     fn name_for(&self, _id: lattice_core::BufferId) -> Option<String> {
-        Some("the-buffer".to_string())
+        None
+    }
+    /// The existence oracle the resolver actually asks. One buffer, so every id
+    /// is this one — the revisit test opens ids 1, 2 and 3 in one project.
+    fn contains_buffer(&self, _id: lattice_core::BufferId) -> bool {
+        true
     }
     /// Every id answers the same path — the revisit test opens ids 1, 2 and 3
     /// in ONE project on purpose, so gating on a single id would make it assert

@@ -95,6 +95,32 @@ pub trait BufferStore: Send + Sync {
         None
     }
 
+    /// Is `id` a buffer this store knows about at all?
+    ///
+    /// **The existence oracle**, and the reason it is a method rather than a
+    /// composition of the three above: every one of them returns `None` for
+    /// *two* different reasons — "no such buffer" and "that buffer has no
+    /// name / no path / no document handle" — so none of them can answer this
+    /// question, and a caller that picks one is really asking something else.
+    ///
+    /// `name_for` is the specific trap. It is the SYNTHETIC-name slot, so it
+    /// answers `None` for every ordinary file-backed buffer; a caller using it
+    /// as an existence check refuses exactly the buffers a user actually edits.
+    /// The plugin `project` seam did that, and the `project` plugin was dead in
+    /// the real editor as a result — every `document-opened` resolved to `none`
+    /// and `:project-switch` reported "no projects remembered yet" forever,
+    /// while its tests passed against a stub that answered `Some` for a
+    /// file-backed buffer.
+    ///
+    /// The default composes what the trait already offers, so no implementor
+    /// breaks; it is best-effort and a store that can answer exactly — the host
+    /// registry can, it has the map — should override. What the default cannot
+    /// see is a registered buffer with no name, no path and no document handle,
+    /// which it reports as absent.
+    fn contains_buffer(&self, id: BufferId) -> bool {
+        self.name_for(id).is_some() || self.path_for(id).is_some() || self.handle_for(id).is_some()
+    }
+
     /// **H.1 (2026-05-31): generic Document-shaped buffer
     /// insertion.** Used by extension crates (`lattice-multibuffer`
     /// today; future plugin-defined Document-shaped kinds) to
@@ -168,6 +194,12 @@ impl BufferStoreHandle {
 
     pub fn path_for(&self, id: BufferId) -> Option<std::path::PathBuf> {
         self.inner.path_for(id)
+    }
+
+    /// The existence oracle. See [`BufferStore::contains_buffer`] for why this
+    /// is not `name_for(id).is_some()`.
+    pub fn contains_buffer(&self, id: BufferId) -> bool {
+        self.inner.contains_buffer(id)
     }
 
     /// H.1 pass-through wrapper. See

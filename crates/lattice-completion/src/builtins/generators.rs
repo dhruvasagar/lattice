@@ -179,9 +179,27 @@ impl CandidateGenerator for FilesGenerator {
 /// Shared helper: list filesystem entries matching the prefix.
 /// When `include_files` is false, only directories are emitted.
 fn fs_entries(ctx: &GenerateContext<'_>, include_files: bool) -> Vec<RawCandidate> {
-    let (dir_str, basename) = match ctx.prefix.rfind('/') {
-        Some(i) => (&ctx.prefix[..=i], &ctx.prefix[i + 1..]),
-        None => ("", ctx.prefix),
+    path_entries(ctx.prefix, ctx.case_sensitive, include_files)
+}
+
+/// PC.9: [`fs_entries`] without the completion engine's context.
+///
+/// The `prefix` split, the `~` expansion, the case rule, the trailing `/` on a
+/// directory and the sort are all one behaviour, and the picker's `dir-pick`
+/// source needs exactly it — a *picker* source cannot build a
+/// [`GenerateContext`], which is shaped for the completion engine (buffer,
+/// command registry, cursor). Extracted rather than copied so the two surfaces
+/// cannot drift on what "list this path's children" means: a `dir-pick` that
+/// expanded `~` differently from `<Tab>` on the `:` line would be a bug nobody
+/// would think to look for.
+///
+/// An unreadable directory yields an empty list rather than an error. Half a
+/// typed path names nothing yet, and that is the state the caller is in for
+/// most of the keystrokes.
+pub fn path_entries(prefix: &str, case_sensitive: bool, include_files: bool) -> Vec<RawCandidate> {
+    let (dir_str, basename) = match prefix.rfind('/') {
+        Some(i) => (&prefix[..=i], &prefix[i + 1..]),
+        None => ("", prefix),
     };
     let dir_path = expand_tilde(dir_str);
 
@@ -195,18 +213,41 @@ fn fs_entries(ctx: &GenerateContext<'_>, include_files: bool) -> Vec<RawCandidat
     for entry in read_dir.flatten() {
         let name_os = entry.file_name();
         let name = name_os.to_string_lossy();
-        if !ctx.case_sensitive && !name.to_ascii_lowercase().starts_with(&basename_lower) {
+        if !case_sensitive && !name.to_ascii_lowercase().starts_with(&basename_lower) {
             continue;
         }
-        if ctx.case_sensitive && !name.starts_with(basename) {
+        if case_sensitive && !name.starts_with(basename) {
             continue;
         }
-        let metadata = entry.metadata();
-        let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        // `file_type()` before `metadata()`, and `metadata()` only when the
+        // answer is actually needed. `read_dir` already carries the type for
+        // most entries (`d_type` on Linux/macOS), so `file_type()` is free
+        // where `metadata()` is a `stat` syscall each — 5000 entries cost
+        // ~15ms of pure syscall that way, and this runs SYNCHRONOUSLY on the
+        // actor thread from `on_query_changed`, i.e. inside a keystroke.
+        //
+        // A symlink is the one case `file_type()` cannot answer: it reports
+        // the LINK, never its target, so a symlinked directory would stop
+        // being listed. Those fall back to `metadata()`, which follows — the
+        // stat is paid only for the entries that need it, and `~/src -> …`
+        // is common enough that losing them would be a real regression.
+        let file_type = entry.file_type();
+        let is_symlink = file_type.as_ref().map(|t| t.is_symlink()).unwrap_or(true);
+        let is_dir = if is_symlink {
+            entry.metadata().map(|m| m.is_dir()).unwrap_or(false)
+        } else {
+            file_type.as_ref().map(|t| t.is_dir()).unwrap_or(false)
+        };
         if !include_files && !is_dir {
             continue;
         }
-        let size = metadata.as_ref().ok().map(|m| m.len());
+        // Only files carry a size, and only a file listing shows one — so a
+        // directory listing never pays for it at all.
+        let size = if include_files && !is_dir {
+            entry.metadata().ok().map(|m| m.len())
+        } else {
+            None
+        };
         let mut text = String::with_capacity(dir_str.len() + name.len() + 1);
         text.push_str(dir_str);
         text.push_str(&name);

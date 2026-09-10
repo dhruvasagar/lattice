@@ -49,6 +49,9 @@ futures = { workspace = true }
 # crate stays free of syntax/cells in its dependency graph (the
 # structural off-thread guarantee).
 lattice-cells = { path = "../lattice-cells" }
+# PC.9: `dir-pick`'s tests need a real directory tree to list — the source's
+# whole job is `read_dir`, so a fake would test nothing.
+tempfile = { workspace = true }
 
 [[bench]]
 name = "picker"

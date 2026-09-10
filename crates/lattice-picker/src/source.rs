@@ -444,6 +444,29 @@ pub trait PickerSourceGenerator: Send + Sync {
         None
     }
 
+    /// PC.10: `<C-l>` — refine the query from the selected candidate instead
+    /// of accepting it.
+    ///
+    /// For a source whose candidates are *containers* — a directory, and later
+    /// perhaps a namespace or a tree node — "go into this" and "choose this"
+    /// are different questions, and a picker with only `<CR>` can ask one of
+    /// them. Returning `Some(query)` replaces the picker's query and re-lists;
+    /// the picker stays open and nothing is accepted.
+    ///
+    /// **`None` is the default and means "this source has no notion of going
+    /// deeper"**, which is every source but `dir-pick` today. `<C-l>` in those
+    /// pickers does nothing at all rather than doing something approximate —
+    /// a key that means "descend" in one picker and "almost descend" in
+    /// another is worse than one that means nothing in the second.
+    ///
+    /// Only meaningful for a `live` source: a static source's candidate set
+    /// comes from `init` and is fuzzy-refiltered, so rewriting the query
+    /// filters the same rows rather than fetching new ones. The default
+    /// keeps every such source out of this path entirely.
+    fn descend(&self, _ctx: &PickerContext<'_>, _candidate: &RawCandidate) -> Option<String> {
+        None
+    }
+
     /// T.12: live-preview hook — invoked as the picker SELECTION moves to
     /// a candidate (before accept). Default None = no preview. A source
     /// returns an outcome the host applies immediately for a live preview;

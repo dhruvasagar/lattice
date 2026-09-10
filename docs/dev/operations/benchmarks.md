@@ -71,6 +71,51 @@ target rather than just a slower number.
 
 ---
 
+## PC.9 — listing a directory, per keystroke (2026-09-10)
+
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** `cargo bench -p
+lattice-picker --bench picker -- dir_listing`.
+
+`dir-pick` re-lists on every keystroke through `on_query_changed`, and that
+hook runs **synchronously on the actor thread** (`dispatch.rs`
+`fire_live_picker_query_changed`) — so this is inside a keystroke, not beside
+one. Design:
+[`../architecture/project-commands.md`](../architecture/project-commands.md)
+§9 H5.
+
+| Subdirectories | before | after |
+|---|---|---|
+| 1 | 54.1 µs | 55.2 µs |
+| 50 | 182.0 µs | 116.7 µs |
+| 5000 | 15.2 ms | 7.4 ms |
+
+**The bench found a `stat` per entry.** `path_entries` called
+`entry.metadata()` on every entry to answer `is_dir` and to read a size — one
+syscall each, and the size is only ever shown for files. `file_type()` answers
+`is_dir` from the `read_dir` buffer for free, and the size is now read only
+when a file listing will show it. Symlinks still pay a `metadata()`, because
+`file_type()` reports the link rather than its target and a symlinked
+directory that stopped being listed would be a real regression (`~/src -> …`
+is common).
+
+This is shared code: `gen:files` and `gen:directories` take the same halving,
+so `<Tab>` path completion on the `:` line got faster without being touched.
+
+**5000 is a deliberately pathological top end** — 5000 *subdirectories* in one
+directory, not 5000 files. Real directories a user browses to sit in the tens,
+where the cost is ~100 µs and invisible. The row is here to pin the SHAPE: one
+`read_dir` of one directory, scaling with that directory alone. The rejected
+alternative (`walk_files_for_picker` with directories) would scale with the
+whole tree, and would show up here as growth that tracks depth.
+
+**Bench under no other load.** The first run of this was taken beside my own
+`cargo check` and reported the 1- and 50-entry cases as 90% and 24%
+*regressions* — the opposite of the truth. Same trap as
+`scripts/precommit.sh`'s concurrency refusal, and worth the same reflex: if a
+number moves the wrong way, re-run it alone before believing it.
+
+---
+
 ## ZP.5 — pane layout, zoomed vs. unzoomed (2026-09-09)
 
 ⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** `cargo bench -p

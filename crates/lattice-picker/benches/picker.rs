@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime};
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
+use lattice_completion::builtins::generators::path_entries;
 use lattice_completion::{CandidateKind, RawCandidate};
 use lattice_picker::{
     DEFAULT_HALF_LIFE, Picker, PickerAction, PickerMruIndex, PickerSource, RoutingPayload,
@@ -214,12 +215,42 @@ fn bonus_math(c: &mut Criterion) {
     });
 }
 
+/// PC.9 — `dir-pick`'s per-keystroke cost.
+///
+/// The number that matters is not the absolute time; it is the SHAPE. This is
+/// one `read_dir` of one directory, so it scales with that directory's own
+/// entry count and with nothing else — a regression to a recursive walk (the
+/// `walk_files_for_picker` shape the design rejected) would show up here as
+/// growth that tracks the tree rather than the directory, and nowhere else in
+/// the suite.
+///
+/// 5000 is the deliberate top end: it is `FILE_PICKER_MAX_ENTRIES`, the
+/// ceiling the walk-based alternative would have truncated at.
+fn dir_listing(c: &mut Criterion) {
+    let mut group = c.benchmark_group("picker::dir_listing");
+    for n in [1usize, 50, 5000] {
+        let dir = tempfile::TempDir::new().unwrap();
+        for i in 0..n {
+            std::fs::create_dir(dir.path().join(format!("child{i:05}"))).unwrap();
+        }
+        let prefix = format!("{}/", dir.path().to_string_lossy());
+        group.bench_with_input(BenchmarkId::from_parameter(n), &prefix, |b, prefix| {
+            b.iter(|| {
+                let rows = path_entries(black_box(prefix), false, false);
+                black_box(rows);
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     open_inline,
     refilter,
     mru_snapshot,
     mru_record,
-    bonus_math
+    bonus_math,
+    dir_listing
 );
 criterion_main!(benches);

@@ -605,6 +605,205 @@ impl Default for FilePickSource {
     }
 }
 
+/// PC.9: `dir-pick` — [`FilePickSource`]'s directory peer. Browse to a
+/// directory and supply its path as a value.
+///
+/// ## Incremental, not a walk
+///
+/// The candidates are the children of the directory the query names, filtered
+/// by the basename it ends with — `gen:directories`' model, which is what
+/// emacs's `read-directory-name` does. It shares the implementation with that
+/// generator ([`lattice_completion::builtins::generators::path_entries`])
+/// rather than copying it, so `<Tab>` on the `:` line and this picker cannot
+/// disagree about what listing a path means.
+///
+/// [`walk_files_for_picker`] with directories instead of files was the obvious
+/// alternative and is the wrong one here: it has no depth cap and a flat
+/// [`FILE_PICKER_MAX_ENTRIES`] ceiling, so pointed anywhere near a home
+/// directory it stops somewhere arbitrary and the directory you wanted may
+/// simply not be in the list. Incremental has no ceiling, reaches any depth,
+/// and opens in one `read_dir`.
+///
+/// ## It starts at HOME, where `file-pick` starts at the workspace root
+///
+/// Not an inconsistency. Picking a *file* is nearly always picking one in the
+/// project you are in, so the workspace root is the useful default. Picking a
+/// *directory* is nearly always about going somewhere you are **not** — the
+/// motivating case is choosing a project you have never opened — and rooting
+/// that at the project you are already in would make the common case start in
+/// the one place it does not want.
+///
+/// An explicit `start` argument still wins, and `:picker dir-pick .` is the
+/// spelling for "here".
+///
+/// ## Tilde survives into the rows on purpose
+///
+/// A row's `text` keeps whatever spelling the query used (`~/src/…`), because
+/// that is what the user is reading and typing against, and descending
+/// re-lists from it unchanged. The value handed back on accept is the
+/// **expanded** absolute path off `CandidateData::File`, because a consumer
+/// resolving it has no obligation to know about `~`.
+pub struct DirPickSource {
+    pub spec: PickerSourceSpec,
+}
+
+/// The source id, shared by the generator and every declaration that names it.
+pub const DIR_PICK_SOURCE: &str = "dir-pick";
+
+impl DirPickSource {
+    pub fn new() -> Self {
+        use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
+        Self {
+            spec: PickerSourceSpec {
+                create_label: None,
+                id: DIR_PICK_SOURCE.into(),
+                doc: "Browse to a directory and supply its path as a value (for a transient \
+                      argument, a command argument, or other caller awaiting one). Lists one \
+                      level at a time: `<C-l>` descends into the selected directory, `<C-h>` \
+                      goes up, `<CR>` chooses."
+                    .into(),
+                args_hint: "[start]".into(),
+                args_schema: vec![ArgSpec {
+                    name: "start".into(),
+                    kind: ArgKind::String,
+                    doc: "Directory to start browsing from. Absent = the home directory, \
+                          because choosing a directory is usually about going somewhere you \
+                          are not."
+                        .into(),
+                    prompt: "start:".into(),
+                    default: ArgDefault::None,
+                    completion: Some("gen:directories".into()),
+                    picker: None,
+                }],
+                // The source owns its filtering: the query is a PATH, and fuzzy
+                // matching a path prefix against bare child names would rank
+                // `~/src/dh` against `dhruvasagar` rather than listing what is
+                // under `~/src/`.
+                live: true,
+            },
+        }
+    }
+
+    /// The prefix `path_entries` should list for `query`.
+    ///
+    /// An empty query means "show me `start`", and it is spelled as a prefix
+    /// ending in `/` so the rows come back carrying their full path rather
+    /// than bare names — which is what makes the first `<C-l>` work like every
+    /// later one.
+    fn prefix_for(start: &str, query: &str) -> String {
+        if query.is_empty() {
+            let trimmed = start.trim_end_matches('/');
+            format!("{trimmed}/")
+        } else {
+            query.to_string()
+        }
+    }
+
+    /// Rows for `prefix`. Directories only, each carrying its expanded
+    /// absolute path as the value it supplies.
+    fn rows(prefix: &str) -> Vec<(RawCandidate, RoutingPayload)> {
+        lattice_completion::builtins::generators::path_entries(prefix, false, false)
+            .into_iter()
+            .map(|cand| {
+                // The expanded path off the entry, not `cand.text` — the text
+                // may be spelled with `~` and a consumer resolving it should
+                // not have to know that.
+                let value = match &cand.data {
+                    lattice_completion::CandidateData::File { path, .. } => {
+                        path.to_string_lossy().to_string()
+                    }
+                    // `path_entries` only ever emits `File`; if that changes,
+                    // the row's own text is the honest fallback rather than a
+                    // panic on a picker keystroke.
+                    _ => cand.text.clone(),
+                };
+                (cand, RoutingPayload::SuppliedValue { value })
+            })
+            .collect()
+    }
+
+    /// Where browsing begins: the explicit argument, else home.
+    fn start_dir(args: &[String]) -> String {
+        match args.first() {
+            Some(p) if !p.is_empty() => p.clone(),
+            _ => "~".to_string(),
+        }
+    }
+}
+
+impl Default for DirPickSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for DirPickSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        let start = Self::start_dir(args);
+        // An unreadable start IS an error, unlike an unreadable query: the
+        // caller named this one, and opening an empty picker over a directory
+        // that does not exist would report nothing at all.
+        let rows = Self::rows(&Self::prefix_for(&start, ""));
+        if rows.is_empty()
+            && !std::path::Path::new(&lattice_core::home::expand_tilde(&start)).is_dir()
+        {
+            return Err(format!("{DIR_PICK_SOURCE}: cannot read {start}"));
+        }
+        Ok(PickerInitResult::Inline(rows))
+    }
+
+    /// Re-list on every keystroke. An unreadable query yields an EMPTY list,
+    /// not an error: half a typed path names nothing yet, and that is the
+    /// state the user is in for most of the keystrokes — erroring on it would
+    /// mean the picker spends its life reporting failure.
+    fn on_query_changed(
+        &self,
+        _ctx: &PickerContext<'_>,
+        query: &str,
+    ) -> Option<SourceResult<PickerInitResult>> {
+        // No args here — a live source is a shared generator with no per-open
+        // state, so `start` is unavailable once the query is non-empty. It
+        // does not need to be: a non-empty query is itself an absolute or
+        // tilde-spelled path, because that is what the rows carry.
+        let prefix = if query.is_empty() {
+            Self::prefix_for("~", "")
+        } else {
+            query.to_string()
+        };
+        Some(Ok(PickerInitResult::Inline(Self::rows(&prefix))))
+    }
+
+    /// `<C-l>`: the selected row's own text becomes the query, so the next
+    /// listing is of its children. It already ends in `/` — `path_entries`
+    /// puts one on every directory — which is exactly the prefix that lists a
+    /// directory's contents rather than its siblings.
+    fn descend(&self, _ctx: &PickerContext<'_>, candidate: &RawCandidate) -> Option<String> {
+        candidate
+            .text
+            .ends_with('/')
+            .then(|| candidate.text.clone())
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::SuppliedValue { value } => Ok(PickerAcceptOutcome::FillCaller {
+                text: value.clone(),
+            }),
+            other => Err(format!(
+                "{DIR_PICK_SOURCE}: unexpected routing payload {other:?}"
+            )),
+        }
+    }
+}
+
 impl PickerSourceGenerator for FilePickSource {
     fn spec(&self) -> &PickerSourceSpec {
         &self.spec
@@ -2366,6 +2565,7 @@ pub fn first_party_generators(
     vec![
         Arc::new(FilesSource::new()),
         Arc::new(FilePickSource::new()),
+        Arc::new(DirPickSource::new()),
         Arc::new(YankRingSource::new()),
         Arc::new(RecentFilesSource::new()),
         Arc::new(BuffersSource::new()),
@@ -2736,5 +2936,184 @@ mod tests {
         assert!(!names.iter().any(|n| n == ".secret"));
         assert!(!names.iter().any(|n| n == "d.rs"));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+/// PC.9 — `dir-pick`'s pure halves: what it lists, and where it starts.
+///
+/// The hooks that need a real [`PickerContext`] (`descend` through a
+/// keystroke, `init` through a seated picker) are exercised in
+/// `lattice-ui-tui::picker_sources`, which is where this module's own doc
+/// comment says context-needing tests live.
+#[cfg(test)]
+mod dir_pick_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+
+    /// A tree with two subdirectories and a file, so "directories only" is
+    /// falsifiable rather than vacuous.
+    fn tree() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("alpha")).unwrap();
+        std::fs::create_dir_all(dir.path().join("beta")).unwrap();
+        std::fs::write(dir.path().join("gamma.txt"), "not a directory\n").unwrap();
+        dir
+    }
+
+    fn texts(rows: &[(RawCandidate, RoutingPayload)]) -> Vec<String> {
+        rows.iter().map(|(c, _)| c.text.clone()).collect()
+    }
+
+    /// The empty query lists the start directory — and the rows carry their
+    /// full path, not bare names. That is what makes the first `<C-l>` behave
+    /// like every later one.
+    #[test]
+    fn an_empty_query_lists_the_start_directory_with_full_paths() {
+        let dir = tree();
+        let start = dir.path().to_string_lossy().to_string();
+        let rows = DirPickSource::rows(&DirPickSource::prefix_for(&start, ""));
+
+        assert_eq!(
+            texts(&rows),
+            vec![format!("{start}/alpha/"), format!("{start}/beta/")],
+            "both subdirectories, each spelled from the start directory"
+        );
+    }
+
+    /// Files are not directories. A source that listed them would hand back a
+    /// path its caller cannot use as one.
+    #[test]
+    fn a_regular_file_is_never_a_row() {
+        let dir = tree();
+        let start = dir.path().to_string_lossy().to_string();
+        let rows = DirPickSource::rows(&DirPickSource::prefix_for(&start, ""));
+
+        assert!(
+            !texts(&rows).iter().any(|t| t.contains("gamma")),
+            "`gamma.txt` exists in the tree and must not be offered: {:?}",
+            texts(&rows)
+        );
+    }
+
+    /// The basename after the last `/` filters, which is what makes typing
+    /// narrow rather than restart.
+    #[test]
+    fn a_partial_basename_filters_the_listing() {
+        let dir = tree();
+        let start = dir.path().to_string_lossy().to_string();
+        let rows = DirPickSource::rows(&format!("{start}/al"));
+
+        assert_eq!(texts(&rows), vec![format!("{start}/alpha/")]);
+    }
+
+    /// **An unreadable query is an empty list, not an error.** Half a typed
+    /// path names nothing yet, and that is the state the user is in for most
+    /// of the keystrokes — erroring on it would mean the picker spends its
+    /// life reporting failure.
+    #[test]
+    fn a_query_naming_nothing_yields_an_empty_list() {
+        let dir = tree();
+        let start = dir.path().to_string_lossy().to_string();
+
+        assert!(DirPickSource::rows(&format!("{start}/no-such-dir/")).is_empty());
+        assert!(DirPickSource::rows("/definitely/not/a/real/path/").is_empty());
+    }
+
+    /// The row's TEXT keeps the query's spelling (what the user reads and
+    /// descends from); the VALUE it supplies is the expanded absolute path
+    /// (what a consumer resolves). A consumer should not have to know about
+    /// `~`.
+    #[test]
+    fn the_supplied_value_is_the_expanded_path_even_when_the_text_is_not() {
+        let home = lattice_core::home::expand_tilde("~");
+        if !std::path::Path::new(&home).is_dir() {
+            eprintln!("SKIP: no home directory to expand against");
+            return;
+        }
+        let rows = DirPickSource::rows("~/");
+        let Some((cand, routing)) = rows.first() else {
+            eprintln!("SKIP: the home directory has no subdirectories");
+            return;
+        };
+        let RoutingPayload::SuppliedValue { value } = routing else {
+            panic!("dir-pick supplies values: {routing:?}");
+        };
+
+        assert!(
+            cand.text.starts_with("~/"),
+            "the row keeps the spelling the user typed: {}",
+            cand.text
+        );
+        assert!(
+            value.starts_with(&home) && !value.starts_with('~'),
+            "the value is expanded: {value}"
+        );
+    }
+
+    /// Every directory row ends in `/`, which is both what `descend` keys off
+    /// and the prefix that lists a directory's CONTENTS rather than its
+    /// siblings.
+    #[test]
+    fn every_row_ends_in_a_slash_so_descending_lists_its_children() {
+        let dir = tree();
+        let start = dir.path().to_string_lossy().to_string();
+        let rows = DirPickSource::rows(&DirPickSource::prefix_for(&start, ""));
+
+        assert!(
+            !rows.is_empty(),
+            "precondition: the tree has subdirectories"
+        );
+        for (cand, _) in &rows {
+            assert!(
+                cand.text.ends_with('/'),
+                "row without a slash: {}",
+                cand.text
+            );
+            // The round trip descend relies on: this row's own text, used as
+            // the next query, lists what is inside it.
+            assert!(
+                DirPickSource::rows(&cand.text).is_empty()
+                    || DirPickSource::rows(&cand.text)
+                        .iter()
+                        .all(|(c, _)| c.text.starts_with(&cand.text)),
+                "descending into {} must list its children",
+                cand.text
+            );
+        }
+    }
+
+    /// A start already ending in `/` must not become `//`.
+    #[test]
+    fn the_start_prefix_carries_exactly_one_slash() {
+        assert_eq!(DirPickSource::prefix_for("/tmp", ""), "/tmp/");
+        assert_eq!(DirPickSource::prefix_for("/tmp/", ""), "/tmp/");
+        assert_eq!(DirPickSource::prefix_for("~", ""), "~/");
+    }
+
+    /// A non-empty query IS the prefix — the start is only ever a seed.
+    #[test]
+    fn a_non_empty_query_replaces_the_start_entirely() {
+        assert_eq!(DirPickSource::prefix_for("/tmp", "/etc/x"), "/etc/x");
+    }
+
+    /// Home, not the workspace root — see the type's own doc for why the
+    /// asymmetry with `file-pick` is deliberate. Pinned because "make it
+    /// consistent with `file-pick`" is exactly the tidy-looking change that
+    /// would break the motivating case.
+    #[test]
+    fn browsing_starts_at_home_unless_told_otherwise() {
+        assert_eq!(DirPickSource::start_dir(&[]), "~");
+        assert_eq!(DirPickSource::start_dir(&[String::new()]), "~");
+        assert_eq!(DirPickSource::start_dir(&["/srv".to_string()]), "/srv");
+    }
+
+    /// The source declares `live`, and it must: the query is a PATH, so the
+    /// picker's fuzzy refilter would rank `~/src/dh` against bare child names
+    /// instead of listing what is under `~/src/`. The two declarations are
+    /// paired by the trait's contract.
+    #[test]
+    fn the_source_is_live_because_its_query_is_a_path() {
+        assert!(DirPickSource::new().spec().live);
     }
 }

@@ -12,7 +12,7 @@ feature is useful at PC.6.
 | Slice | Where | What | Status |
 |---|---|---|---|
 | PC.4 | plugin | Scaffold, remembered-projects list, `:project-remember` / `-forget` | ✅ |
-| PC.5 | plugin | The `projects` picker + `:project-find-file` / `:project-dired` | 📝 |
+| PC.5 | plugin | The `projects` picker + `:project-find-file` / `:project-dired` | ✅ |
 | PC.6 | plugin | `project-switch-commands` menu + keymap on both prefixes | 📝 |
 | PC.1 | lattice | `grep` picker source accepts a root (`args[1]`) | 📝 |
 | PC.2 | lattice | `spawn-terminal-payload` gains `cwd` | 📝 |
@@ -73,7 +73,7 @@ forces §4's honest no-auto-pruning).
 - `:project-forget` removes it;
 - the list survives a plugin reload (it is in the store, not in guest memory).
 
-## PC.5 — The picker and the two free verbs
+## PC.5 ✅ — The picker and the two free verbs
 
 `picker-source` `id = "projects"`, `live = false`. Basename as display, full
 path as annotation (`magit-repo-scoping.md` §3.1's rule).
@@ -85,6 +85,22 @@ invented.
 - `:project-find-file <root>` → `Effect::OpenPicker { source: "files", args: [root] }`.
   Free because the native source already reads `args[0]` as its root.
 - `:project-dired <root>` → `Effect::OpenOil(Some(root))`.
+
+**Landed.** `picker.rs` (the `projects` source), plus `:project-switch`,
+`:project-find-file [root]` and `:project-dired [root]`. `provides` gained
+`picker-source`.
+
+**The sharpest test is cross-seam.** The list is written on the EVENTS seam and
+read on the PICKER seam — two guest instances of one component, where a
+`thread_local` written in one is invisible in the other. It survives only
+because the list lives in the host-side store, which is why the design put it
+there; a test that populated and read on one seam would pass against a
+guest-memory implementation.
+
+**A harness trap worth recording:** re-spawning the event seam per file and
+re-pointing `set_project_context` each time remembered only the FIRST project.
+The realistic shape — one host, one resolver, a buffer store mapping distinct
+ids to distinct files — is both simpler and what the editor actually does.
 
 **Tests.**
 - an empty list yields a picker that **says** it is empty rather than rendering

@@ -14,5 +14,5 @@
 # `provides` grows with the slices: PC.5 adds `picker-source`, PC.6 adds
 # `modes`, `config` and `transient-source`, PC.8 adds `help`.
 id = "project"
-provides = ["grammar", "events"]
+provides = ["grammar", "events", "picker-source"]
 capabilities = ["state:write"]

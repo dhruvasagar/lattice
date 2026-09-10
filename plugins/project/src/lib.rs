@@ -51,7 +51,12 @@ use lattice::plugin_host::types::{
 // world-level `use` and an explicit import of the same name collide.
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
+use exports::lattice::plugin_host::picker_source::{CandidatePair, Guest as PickerSource};
+use lattice::plugin_host::types::{
+    OpenPickerPayload, PickerAcceptOutcome, PickerContext, RoutingPayload,
+};
 
+mod picker;
 mod projects;
 
 /// The store key holding the whole list.
@@ -67,6 +72,17 @@ const STORE_KEY: &str = "projects";
 const CB_PARSE: u32 = 0;
 const CB_REMEMBER: u32 = 1;
 const CB_FORGET: u32 = 2;
+const CB_SWITCH: u32 = 3;
+const CB_FIND_FILE: u32 = 4;
+const CB_DIRED: u32 = 5;
+
+/// The native file picker, driven at an explicit root.
+///
+/// **Not re-implemented**, deliberately: its source already reads `args[0]` as
+/// its root, with the comment "an explicit `:picker files <path>` still wins —
+/// that is the user saying 'not that project, this one'." That sentence is this
+/// whole feature, already built; the plugin's job is only to decide WHICH root.
+const FILES_PICKER: &str = "files";
 
 /// The `document-opened` subscription's handler id.
 const ON_DOCUMENT_OPENED: u32 = 10;
@@ -196,6 +212,57 @@ fn cmd_forget(ctx: &ExCommandContext) -> Vec<Effect> {
     }
 }
 
+/// The project a command should act on: the argument if given, else the one
+/// this buffer is in.
+///
+/// Shared by every verb so they cannot disagree about what "no argument" means.
+/// The bare form is `project.el`'s `C-x p f` — act on the project I am already
+/// in — and the argument form is what the picker's accept supplies.
+fn target_root(ctx: &ExCommandContext) -> Result<String, Vec<Effect>> {
+    match arg_path(&ctx.args) {
+        Some(path) => Ok(projects::normalize(&path)),
+        None => project_of_buffer(ctx.buffer_id as u64)
+            .ok_or_else(|| warn("project: this buffer is not inside a project".to_string())),
+    }
+}
+
+/// `:project-switch` — open the projects picker.
+fn cmd_switch() -> Vec<Effect> {
+    vec![Effect::OpenPicker(OpenPickerPayload {
+        source: picker::PROJECTS_PICKER.to_string(),
+        args: Vec::new(),
+    })]
+}
+
+/// `:project-find-file [root]` — the native file picker, rooted at a project.
+fn cmd_find_file(ctx: &ExCommandContext) -> Vec<Effect> {
+    match target_root(ctx) {
+        Ok(root) => {
+            // Remembered on the way through, so switching to a project through
+            // the picker refreshes its recency even when you open nothing. The
+            // `document-opened` subscription would only fire if you went on to
+            // pick a file.
+            let _ = remember_root(&root);
+            vec![Effect::OpenPicker(OpenPickerPayload {
+                source: FILES_PICKER.to_string(),
+                args: vec![root],
+            })]
+        }
+        Err(effects) => effects,
+    }
+}
+
+/// `:project-dired [root]` — the directory browser, rooted at a project.
+fn cmd_dired(ctx: &ExCommandContext) -> Vec<Effect> {
+    match target_root(ctx) {
+        Ok(root) => {
+            let _ = remember_root(&root);
+            vec![Effect::OpenOil(Some(root))]
+        }
+        Err(effects) => effects,
+    }
+}
+
 /// The single optional path argument every command here takes.
 fn arg_path(args: &Args) -> Option<String> {
     match args {
@@ -256,6 +323,51 @@ impl Guest for Component {
             CB_PARSE,
             CB_FORGET,
         );
+        lattice::plugin_host::grammar::register_ex_command(
+            "project-switch",
+            "Choose a project, then act on it. The verb this whole plugin \
+             exists for: every other project-aware surface roots itself at the \
+             buffer you are standing in, which is right until you want the one \
+             you are not.",
+            &ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                args_schema: Vec::new(),
+                surface_form: SurfaceForm::Keyword,
+            },
+            CB_PARSE,
+            CB_SWITCH,
+        );
+        lattice::plugin_host::grammar::register_ex_command(
+            "project-find-file",
+            "Open a file in a project. With no argument, this buffer's project; \
+             with a path, that one — which is what the project picker passes.",
+            &path_arg_spec(
+                "the project to search; defaults to this buffer's project",
+                "Find file in project: ",
+            ),
+            CB_PARSE,
+            CB_FIND_FILE,
+        );
+        lattice::plugin_host::grammar::register_ex_command(
+            "project-dired",
+            "Browse a project's directory tree. With no argument, this buffer's \
+             project; with a path, that one.",
+            &path_arg_spec(
+                "the project to browse; defaults to this buffer's project",
+                "Browse project: ",
+            ),
+            CB_PARSE,
+            CB_DIRED,
+        );
+    }
+
+    /// PC.5: declare the `projects` picker through the registry import — the
+    /// OR.5b shape, where the host calls this once and the guest registers each
+    /// source it provides.
+    fn register_picker_sources() {
+        lattice::plugin_host::picker_registry::register_picker_source(&picker::spec());
     }
 
     /// Subscribe to `document-opened` — how a project comes to be remembered at
@@ -330,6 +442,9 @@ impl GrammarCallbacks for Component {
         Ok(match c {
             CB_REMEMBER => cmd_remember(&ctx),
             CB_FORGET => cmd_forget(&ctx),
+            CB_SWITCH => cmd_switch(),
+            CB_FIND_FILE => cmd_find_file(&ctx),
+            CB_DIRED => cmd_dired(&ctx),
             other => return Err(format!("project: unknown ex-command callback {other}")),
         })
     }
@@ -360,6 +475,36 @@ impl GrammarCallbacks for Component {
         _tree: Option<&TreeSnapshot>,
     ) -> Result<Range, String> {
         Err("project: no text objects".into())
+    }
+}
+
+impl PickerSource for Component {
+    /// `source` is checked rather than assumed: one component may register
+    /// several sources and they share one actor, so a source id this plugin
+    /// never registered is untrusted input, not a case to fall through.
+    fn init(
+        source: String,
+        _ctx: PickerContext,
+        _args: Vec<String>,
+    ) -> Result<Vec<CandidatePair>, String> {
+        if source != picker::PROJECTS_PICKER {
+            return Err(format!("project: no picker source `{source}`"));
+        }
+        Ok(picker::init(load())?
+            .into_iter()
+            .map(|(candidate, routing)| CandidatePair { candidate, routing })
+            .collect())
+    }
+
+    fn accept(
+        source: String,
+        _ctx: PickerContext,
+        routing: RoutingPayload,
+    ) -> Result<PickerAcceptOutcome, String> {
+        if source != picker::PROJECTS_PICKER {
+            return Err(format!("project: no picker source `{source}`"));
+        }
+        picker::accept(routing)
     }
 }
 

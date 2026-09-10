@@ -127,6 +127,17 @@ pub fn encode(list: &[String]) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// The name shown in the picker — the last path component.
+///
+/// The full path rides alongside as the annotation rather than replacing this:
+/// `magit-repo-scoping.md` §3.1's rule, and its reasoning — names are read far
+/// more often than they are parsed, and two checkouts can share a basename
+/// (`~/work/api` and `~/oss/api`), so the basename is for humans and the path
+/// is the identity.
+pub fn basename(root: &str) -> &str {
+    root.rsplit('/').find(|s| !s.is_empty()).unwrap_or(root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +212,14 @@ mod tests {
             !l.contains(&oldest),
             "the LEAST recently visited is the one dropped"
         );
+    }
+
+    #[test]
+    fn a_basename_is_the_last_component() {
+        assert_eq!(basename("/src/lattice"), "lattice");
+        assert_eq!(basename("/src/lattice/"), "lattice");
+        assert_eq!(basename("lattice"), "lattice");
+        assert_eq!(basename("/"), "/");
     }
 
     #[test]

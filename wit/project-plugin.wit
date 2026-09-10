@@ -21,6 +21,9 @@ package lattice:plugin-host@0.1.0;
 ///     walk.
 ///   - **events** — `document-opened`, which is how a project comes to be
 ///     remembered at all (project.el's `project-remember-project`).
+///   - **picker-source** (PC.5) — the `projects` picker. Registered through the
+///     `picker-registry` IMPORT rather than by the component being one source,
+///     which is the shape OR.5b moved every picker plugin to.
 ///
 /// `logging` is intentionally NOT imported, the `auto-pair` rule: keeping it out
 /// of the combined world keeps `log` off the sync grammar linker. A guest that
@@ -36,9 +39,13 @@ world project-plugin {
     import project;
     import host-services;
     import events;
+    import picker-registry;
 
     export register-grammar: func();
     export grammar-callbacks;
+
+    export register-picker-sources: func();
+    export picker-source;
 
     export register-events: func();
     export on-event: func(handler: u32, ev: event);

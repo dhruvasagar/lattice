@@ -1,8 +1,12 @@
 # Slice plan — project commands
 
-Design: [`../../../architecture/project-commands.md`](../../../architecture/project-commands.md).
-Builds on [`../../../architecture/project-resolution.md`](../../../architecture/project-resolution.md)
+Design: [`../../architecture/project-commands.md`](../../architecture/project-commands.md).
+Builds on [`../../architecture/project-resolution.md`](../../architecture/project-resolution.md)
 (PR.6's `wit/project.wit`), which is already shipped.
+
+**Un-archived 2026-09-10.** PC.1–PC.8 are complete and stay so; PC.9–PC.13 are
+new work on the same feature (design §5's `… (choose a dir)` row), so the plan
+comes back to active rather than a second plan being started beside it.
 
 PC.1–PC.3 are host seams in **this** tree, each unblocking exactly one menu row.
 PC.4–PC.8 are the bundled plugin at `plugins/project/`. The plugin's first three
@@ -19,12 +23,28 @@ feature is useful at PC.6.
 | PC.3 | lattice | `:magit-status <path>` | ✅ |
 | PC.7 | plugin | `:project-grep` / `:project-shell` rows (magit needs no wrapper) | ✅ |
 | PC.8 | both | `:help project`, core-plugins row, hot-path fix | ✅ |
+| PC.9 | lattice | `dir-pick` — the incremental directory source | 📝 |
+| PC.10 | lattice | `descend` hook + `<C-l>` / `<C-h>` | 📝 |
+| PC.11 | lattice | `FillTarget::Action` + the `open-picker` field | 📝 |
+| PC.12 | plugin | The `… (choose a dir)` row, end to end | 📝 |
+| PC.13 | both | Docs, and `:project-remember`'s missing completion | 📝 |
 
 **Deliberate ordering.** The plugin leads. PC.4–PC.6 prove the whole shape —
 list, picker, menu, keymap — against the two verbs that need nothing from the
 host, so the host seams are cut against a working consumer rather than
 speculatively. That is the opposite of the usual "seams first" order and it is
 chosen for that reason.
+
+**PC.9–PC.13 reverse that order, and for a matching reason.** The `…
+(choose a dir)` row (design §5) is *only* the composition of three host pieces
+— none of them has a plugin-side half worth landing first, and the plugin slice
+is a handful of rows once they exist. Cutting the seams first here is not a
+change of principle; it is the same principle reading the other way, because
+this time the consumer is trivial and the mechanism is not.
+
+PC.9 and PC.10 are independently useful and independently landable: `dir-pick`
+alone gives `:project-remember <C-x><C-o>` a real directory picker on the `:`
+line. PC.11 is the only one that touches the boundary.
 
 ---
 
@@ -56,11 +76,23 @@ forces §4's honest no-auto-pruning).
 - the store format dropped msgpack and the `last_visited_seq` counter for a
   line-oriented one — the counter re-encoded an ordering the list already has,
   and a bundled guest should not pull serde+rmp to persist paths (design §4);
-- `root-for-buffer` uses the buffer store's **`name_for` as its existence
+- ~~`root-for-buffer` uses the buffer store's **`name_for` as its existence
   oracle** and short-circuits on `None` before ever consulting `path_for`. A
   test stub answering `None` there makes every resolution return `none` and the
   plugin silently remember nothing — which is how the integration test first
-  failed, and why the stub now carries a comment saying so.
+  failed, and why the stub now carries a comment saying so.~~
+
+  **This "correction" was the bug, and it was recorded here as a lesson for
+  ten weeks.** `name_for` is the *synthetic*-name slot: it is `None` for every
+  buffer opened from a file, so the oracle refused exactly the buffers a user
+  edits and the plugin remembered nothing in the real editor —
+  `:project-switch` answered "no projects remembered yet" however long lattice
+  had been running. The integration test failing with an honest `None` was the
+  bug reporting itself; making the stub answer `Some("the-buffer")`, a state
+  production cannot produce, silenced it. Fixed 2026-09-10:
+  `BufferStore::contains_buffer` is the oracle, the host registry answers it
+  from its map, and the stub answers `None` like a real file buffer. See
+  `project-resolution.md` §6.
 
 **Tests.**
 - opening a file in a project remembers its root exactly once, and re-opening
@@ -260,3 +292,129 @@ wrote the store every time — once per file opened, storing bytes the store
 already held. `remember` now reports whether the list actually changed and the
 caller writes only then. Measuring an O(n) decode over a list bounded at 256 was
 never going to be the interesting number; the unconditional write was.
+
+---
+
+## PC.9 📝 — `dir-pick`, the incremental directory source
+
+Design: [`project-commands.md` §9 H5](../../architecture/project-commands.md).
+
+`DirPickSource` in `crates/lattice-picker/src/picker_sources.rs`, beside
+`FilePickSource` and modelled on it: `live = true`, accept yields
+`RoutingPayload::SuppliedValue` → `PickerAcceptOutcome::FillCaller`.
+
+`on_query_changed` splits the query at its last `/` into a directory and a
+basename prefix, expands `~`, and lists that directory's subdirectories
+matching the prefix. **Not `walk_files_for_picker`** — that walk has no depth
+cap and a flat 5000-entry ceiling, so pointed at `~` it truncates somewhere
+arbitrary. The logic wanted is `gen:directories`' `fs_entries(ctx, false)`;
+factor it out of `lattice-completion/src/builtins/generators.rs` if it can be
+shared without dragging the completion engine's `GenerateContext` into
+`lattice-picker`, and copy the ~20 lines with a pointer if it cannot. Do not
+take a dependency between the two crates to save the duplication.
+
+Rows carry the absolute path with a trailing `/`, so what the source shows is
+what descending would produce.
+
+**Tests.** An empty query lists `~`'s children; a partial basename filters; a
+query naming an unreadable directory yields an empty list rather than an
+error (design §10 — half a typed path names nothing yet, and that is most of
+the keystrokes); `~` expands; accept yields `FillCaller` and never
+`OpenFile`, which is the mistake `file-pick`'s own comment warns about.
+
+**Bench.** `on_query_changed` against a directory with 1/50/5000 entries. The
+number that matters is that it is a single `read_dir` and not a walk — a
+regression to a recursive shape would show here and nowhere else.
+
+## PC.10 📝 — `descend`, and the two keys
+
+`PickerSourceGenerator::descend(&self, ctx, routing) -> SourceResult<Option<String>>`,
+defaulting to `None`. `Action::PickerDescend` calls it: `Some(query)` replaces
+the picker's query and re-runs `on_query_changed`; `None` is a no-op, which is
+what every existing source inherits by taking the default.
+
+`Action::PickerQueryUpOneComponent` needs no hook — it deletes back to the
+character before the previous `/`. Generic over any path-shaped query, so it
+lives entirely in the picker.
+
+Bound in `translate_picker` (`crates/lattice-host/src/input.rs`): `<C-l>`
+descend, `<C-h>` up. Both are currently unbound there; the ctrl arm holds
+`c n p u s v t q r` and neither `l` nor `h`.
+
+**`<Tab>` is not touched.** It is `PickerSelectNext` in every picker and
+`<S-Tab>` its peer — see design §5 for why that decides the key.
+
+**Tests.** `<C-l>` on a `dir-pick` row replaces the query and re-lists; `<C-l>`
+in the `files` picker does nothing at all (the default-`None` path, which is
+the one that could silently break every other picker); `<C-h>` walks up one
+component and stops at the root rather than emptying the query; `<C-h>` on a
+query with no `/` clears it.
+
+## PC.11 📝 — `FillTarget::Action` and the boundary field
+
+Design: [`project-commands.md` §9 H4](../../architecture/project-commands.md).
+
+`FillTarget::Action { id: CommandId }` in `lattice-picker/src/outcome.rs`, and
+its arm in `Editor::fill_captured_target` — dispatch the command with the
+value as its first argument. A command that is not registered reports through
+`report_vanished_caller`, not silence (design §10).
+
+`open-picker-payload` in `wit/types.wit` gains the field naming the action,
+mirrored in `boundary_effect.rs` and `Effect::OpenPicker`. Capture the target
+at open, in the `Effect::OpenPicker` arm, and roll it back if the picker does
+not open — the exact shape `do_open_arg_picker` already uses, including the
+rollback, which exists there because a refused open would otherwise leave a
+target for the next unrelated `FillCaller` to consume.
+
+**This is a boundary change.** WIT records have no field defaults, so every
+guest needs `wit-sync` + rebuild before it will instantiate: `plugins/*` via
+`cargo xtask build-core-plugins`, and out-of-tree guests (the org plugin) by
+hand. Say so in the commit message.
+
+**Tests.** A guest-opened picker whose accept routes to its own ex-command with
+the picked value as `Args::String`; an unregistered action reports rather than
+drops; a dismissed fill-picker leaves no target behind (the YR.6 hole, in its
+new variant); a picker opened with no action still `FillCaller`s to the
+surface targets exactly as before.
+
+## PC.12 📝 — The row, end to end
+
+`plugins/project/src/picker.rs`:
+
+- `init` appends the `… (choose a dir)` sentinel row, pinned last and present
+  even when the query is empty — that is what the create-row mechanism cannot
+  do, and why this is a plain candidate rather than `create_label`.
+- The empty-list `Err` goes. The picker opens with the sentinel alone (design
+  §5): refusing to open put the escape hatch behind the wall it exists to get
+  through.
+- The row routes `InvokeCommand("project-choose-dir")`.
+
+`plugins/project/src/lib.rs`:
+
+- `project-choose-dir` → `Effect::OpenPicker { source: "dir-pick", … }` naming
+  `project-remember-and-switch` as its fill action.
+- `project-remember-and-switch <dir>` → `project_of_path`, `remember_root`,
+  then `InvokeCommand("project-switch-to", root)`. **One hop** — design §5:
+  `project.el` does not return you to the project list to confirm a directory
+  you just chose.
+
+**Tests.** Guest-side: the sentinel row is present with an empty query and
+still present with a query that matches nothing; its routing names the command.
+Host-side integration through the real component: choosing a directory
+remembers it AND opens the switch-commands menu — assert both, because
+remembering without the menu and the menu without remembering are each half the
+feature and each looks fine alone. A directory with no root marker above it
+echoes the existing refusal and remembers nothing.
+
+## PC.13 📝 — Docs, and the completion that was never wired
+
+- `:project-remember`'s `dir` argument declares `completion: Some("gen:directories")`
+  and `picker: Some("dir-pick")`. It has carried `completion: None` since PC.4,
+  so `:project-remember <Tab>` has never completed a path — a gap PC.9 makes
+  free to close, and `<C-x><C-o>` comes with it.
+- `:help project` gains the row and the two keys.
+- `docs/dev/architecture/picker.md` gains `dir-pick`, the `descend` hook and
+  `FillTarget::Action` — the picker crate's own reference, which is where the
+  next person looks for "is there a source that does X".
+- Site sync (`site/scripts/sync-docs.sh`); no `nav.toml` work, both pages are
+  already routed.

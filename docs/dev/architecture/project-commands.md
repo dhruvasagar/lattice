@@ -9,7 +9,7 @@
 **Status:** ✅ built (PC.1–PC.8). Builds on
 [`project-resolution.md`](project-resolution.md), which already answers *where
 is the project* and explicitly leaves the rest to a plugin. Slice plan:
-[`../operations/slice-plans/archive/project-commands.md`](../operations/slice-plans/archive/project-commands.md).
+[`../operations/slice-plans/project-commands.md`](../operations/slice-plans/project-commands.md).
 
 ## 1. The gap
 
@@ -152,10 +152,67 @@ parsed"* and two checkouts can share a basename.
 
 Ordered most-recently-visited first.
 
-An **empty list says so** rather than rendering as an empty picker:
-`project: no projects remembered yet — open a file in one, or :project-remember <dir>`.
-The `roam_find` precedent — *"'no notes' and 'roam is not configured' look
-identical in an empty picker and have entirely different fixes."*
+An **empty list no longer refuses to open.** It used to answer
+`project: no projects remembered yet — open a file in one, or :project-remember <dir>`
+on the `roam_find` precedent, that *"'no notes' and 'roam is not configured'
+look identical in an empty picker and have entirely different fixes."* That
+reasoning holds only for a picker with nothing to offer. This one has the
+`… (choose a dir)` row below, and a fresh install is exactly when you need it —
+refusing to open put the escape hatch behind the wall it exists to get through.
+The picker opens with the row alone, which says "nothing remembered" by showing
+nothing remembered, and hands you the fix in the same breath.
+
+### The `… (choose a dir)` row
+
+`project.el`'s own escape hatch, and the same label. Pinned last, always
+present — not gated on the query, because the empty list is the case it serves.
+
+```
+:project-switch  →  projects picker
+                      lattice
+                      lattice-org-plugin
+                    ▸ … (choose a dir)
+                          │ <CR>
+                          ▼
+                    dir-pick                      ← native source, §9 H5
+                      Choose a directory: ~/src/dh▊
+                    ▸ ~/src/dhruvasagar/
+                      ~/src/dharma/
+                          <C-l> descend · <C-h> up · <CR> choose
+                          │
+                          ▼
+                    remembered, then the switch-commands menu (§7)
+```
+
+**One hop, not two.** The chosen directory is remembered and goes straight on
+to §7's menu — `project.el`'s `project-switch-project` does not return you to
+the project list to confirm a directory you just chose, and neither does this.
+The row is a way *into* the same flow, not a detour beside it.
+
+**The listing is incremental, not a walk.** `dir-pick` lists the children of
+the directory the query names, filtered by the basename it ends with — the
+`gen:directories` model, which is what `read-directory-name` does. The
+alternative considered and rejected was `walk_files_for_picker` with
+directories instead of files: it has no depth cap and a flat 5000-entry
+ceiling, so pointed at `~` it stops somewhere arbitrary inside `~/Library` and
+the project you wanted may simply not be in the list. Incremental has no
+ceiling, reaches any depth, and opens instantly.
+
+**`<C-l>` descends, not `<Tab>`.** `<Tab>` is `PickerSelectNext` in every
+picker (`input.rs`), and `<S-Tab>` its peer. Giving one picker a `<Tab>` that
+means something different from all the others is the inconsistency the
+convention rule exists to prevent, and changing it everywhere to suit a
+directory browser is worse. `<C-l>` / `<C-h>` are free, and are what ranger,
+lf, nnn and vifm use for descend / ascend — the tools this surface most
+resembles. `<CR>` keeps the meaning it has in every other picker: take the
+selected row.
+
+**Choosing a non-project is not refused here.** `project_of_path` resolves the
+*containing* project, so choosing `~/src/lattice/crates` remembers `lattice`.
+A directory with no root marker above it is the one real refusal, and it is
+reported by the existing `project: `…` is not inside a project` path rather
+than by the picker declining to show the row — the plugin holds no `fs:` grant
+and cannot know what is a project until it asks the host.
 
 ## 6. Two entry points, and the difference matters
 
@@ -362,6 +419,62 @@ This is that explicit form, and it stays complementary: the implicit resolution
 in §2 of that document is untouched, and an argument-less `:magit-status`
 behaves exactly as it does now.
 
+### H4 · `FillTarget::Action`, and the `open-picker` field that names it
+
+A guest opening a picker **to answer a question** needs the answer back. Today
+`FillCaller` puts it into a surface captured at open — the document, the `:`
+line, a prompt, a transient argument, another picker's query. A plugin owns
+none of those; what it owns is an action.
+
+So `FillTarget` gains `Action { id }`, and `open-picker-payload` gains the
+field that names it. The picked value arrives as that ex-command's first
+argument, exactly as `open-prompt-payload`'s `on-submit-action` already works
+for prompts. The asymmetry between the two — a guest can be handed a prompt's
+answer but not a picker's — is the gap this closes.
+
+**Not an `on-accept-action` that overrides the source.** That was the first
+shape considered and it is the wrong one: a source's accept outcome is the
+*source's* decision, and a flag on the open that overrode it would be a second
+answer to the question `file-pick` already answers by existing — a separate
+source whose accept means "supply a value" rather than "act". `FillTarget` is
+where "who gets the value" already lives, and it is captured at open for
+YR.3's reason, which applies here unchanged: by accept time the picker is
+dismissed and the question has a different answer.
+
+**Cost, stated rather than buried.** WIT records have no field defaults, so
+this is a boundary change: every guest needs `wit-sync` and a rebuild before it
+will instantiate, in-tree and out. That is the price of the field, and it is
+paid once.
+
+### H5 · `dir-pick` — a directory peer for `file-pick`
+
+`live = true`, listing the children of the directory the query names, filtered
+by the basename it ends with, tilde-expanded. Accept yields
+`RoutingPayload::SuppliedValue` → `PickerAcceptOutcome::FillCaller`, which is
+`file-pick`'s shape verbatim and for its reason: this source supplies a value
+and must not decide what happens to it.
+
+It lands in `lattice-picker`'s `picker_sources.rs` beside `file-pick` rather
+than in the plugin, for a reason that is not tidiness: **the project plugin
+holds `state:write` and nothing else.** With no `fs:` grant it cannot list a
+directory at all, and that constraint is deliberate (§3). A guest-side
+directory picker is not a design choice that was passed over; it is
+unimplementable.
+
+Two keys come with it. `<C-l>` calls a new
+`PickerSourceGenerator::descend(ctx, routing) -> Option<String>` that defaults
+to `None`, so every existing picker is unaffected by taking the default;
+`Some(query)` replaces the query and re-lists. `<C-h>` needs no hook — it
+deletes back to the previous `/`, a pure query edit that is generic over any
+path-shaped query.
+
+Both are free in `translate_picker`. `<Tab>` is not: it is `PickerSelectNext`
+in every picker, and that is why it is not the descend key (§5).
+
+Being native rather than plugin-local also makes it reachable from the `:`
+line for free — an `ArgSpec` declaring `picker: Some("dir-pick")` gets it under
+`<C-x><C-o>`, which is what `:project-remember` should declare.
+
 ## 10. Failure behaviour
 
 All echo, none panic, and none loses the user's place.
@@ -369,6 +482,14 @@ All echo, none panic, and none loses the user's place.
 - A remembered root that no longer exists → the native picker's own
   `files: no files under <path>`, plus `:project-forget` to remove it. Not
   auto-pruned (§4).
+- A `dir-pick` query naming a directory that cannot be read → an empty list,
+  not an error. Half a typed path names nothing yet, and that is the state the
+  user is in for most of the keystrokes; erroring on it would mean the picker
+  spends its life reporting failure.
+- `FillTarget::Action` naming a command that is not registered → the existing
+  `report_vanished_caller` shape: say which caller went away rather than
+  dropping the value silently. A picked directory that vanishes with no
+  message is indistinguishable from a picker that did nothing.
 - `root-for-buffer` answering `kind = pwd` → not remembered. "Not in a project"
   is not a project.
 - A `switch-commands` row naming a command that is not registered → the row is

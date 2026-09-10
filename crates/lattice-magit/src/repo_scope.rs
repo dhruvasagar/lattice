@@ -223,8 +223,32 @@ pub fn open_repo_view(
     scopes: &RepoScopes,
     active: lattice_core::BufferId,
 ) -> lattice_grammar::Effect {
+    open_repo_view_at(view, mode_id, store, scopes, active, None)
+}
+
+/// PC.3: [`open_repo_view`] for a repository named EXPLICITLY.
+///
+/// The form `magit-repo-scoping.md` deferred rather than rejected —
+/// "Rejected as the *primary* mechanism … **Worth having later as an explicit
+/// form.**" The implicit resolution in that document's §2 is untouched: `at =
+/// None` is `open_repo_view` exactly, and an argument-less `:magit-status`
+/// still resolves from the buffer.
+///
+/// This is complementary, not a replacement, and the distinction is the whole
+/// reason the original rejection stands: making the COMMON case (working
+/// across two checkouts) the one that needs an argument would be backwards.
+/// What needs an argument is the uncommon case — a project chosen from a
+/// picker, where the caller already knows which repository it means.
+pub fn open_repo_view_at(
+    view: &str,
+    mode_id: &str,
+    store: &lattice_mode::BufferStoreHandle,
+    scopes: &RepoScopes,
+    active: lattice_core::BufferId,
+    at: Option<&std::path::Path>,
+) -> lattice_grammar::Effect {
     lattice_grammar::Effect::OpenSyntheticBuffer {
-        name: repo_view_name(view, store, scopes, active),
+        name: repo_view_name_at(view, store, scopes, active, at),
         mode_id: mode_id.to_string(),
         content: None,
         cursor: None,
@@ -415,6 +439,38 @@ pub fn repo_view_name(
     repo_view_name_with(view, None, store, scopes, active)
 }
 
+/// PC.3: [`repo_view_name`] for an explicitly-named repository.
+///
+/// `at` is resolved to a repository the same way every other path is —
+/// through `workdir_for_file`, so naming a file INSIDE a checkout works as
+/// well as naming its root. A path that is not in a repository falls back to
+/// the ordinary resolution rather than composing a name for a repo that is not
+/// there: the view then says "Not a git repository." exactly as it does when
+/// you trigger it from a non-repo buffer, which is one behaviour instead of
+/// two.
+pub fn repo_view_name_at(
+    view: &str,
+    store: &lattice_mode::BufferStoreHandle,
+    scopes: &RepoScopes,
+    active: lattice_core::BufferId,
+    at: Option<&std::path::Path>,
+) -> String {
+    let explicit = at.and_then(|p| {
+        // Discovery must START at a directory: `workdir_for_file` exists
+        // separately precisely because it takes the file's PARENT before
+        // discovering (see `workdir.rs`'s note), so handing it a directory
+        // would discover from that directory's parent and answer the wrong
+        // repository — or none. A file argument therefore goes through
+        // `workdir_for_file`, a directory straight to `magit_workdir_from`.
+        if p.is_file() {
+            crate::workdir::workdir_for_file(p).map(|(workdir, _rel)| workdir)
+        } else {
+            crate::workdir::magit_workdir_from(p)
+        }
+    });
+    repo_view_name_resolved(view, None, store, scopes, active, explicit)
+}
+
 /// Resolve the repository, compose the name, record what the buffer acts
 /// on. The single body under every magit trigger.
 pub fn repo_view_name_with(
@@ -424,6 +480,25 @@ pub fn repo_view_name_with(
     scopes: &RepoScopes,
     active: lattice_core::BufferId,
 ) -> String {
+    repo_view_name_resolved(view, rest, store, scopes, active, None)
+}
+
+/// The one body under every magit trigger, with PC.3's explicit repository
+/// threaded in rather than copied.
+///
+/// `explicit` short-circuits the resolution chain and nothing else: the naming,
+/// the basename-collision qualifier and the scope record are all the same code
+/// they were, which is the point. A second copy of the collision rule would be
+/// the kind of duplication that goes wrong silently — one caller qualifying two
+/// same-named checkouts and the other not.
+fn repo_view_name_resolved(
+    view: &str,
+    rest: Option<&str>,
+    store: &lattice_mode::BufferStoreHandle,
+    scopes: &RepoScopes,
+    active: lattice_core::BufferId,
+    explicit: Option<std::path::PathBuf>,
+) -> String {
     use crate::workdir;
 
     let compose = |label: &str| match rest {
@@ -431,7 +506,7 @@ pub fn repo_view_name_with(
         None => workdir::magit_buffer_name(view, label),
     };
 
-    let Some(repo) = active_workdir(store, scopes, active) else {
+    let Some(repo) = explicit.or_else(|| active_workdir(store, scopes, active)) else {
         // Not in a repository from any of the three directions. The
         // unqualified name is what magit always used, and the view says
         // "Not a git repository." exactly as it did before.
@@ -615,6 +690,80 @@ mod tests {
                 .and_then(|w| w.canonicalize().ok()),
             repo.canonicalize().ok(),
             "the buffer must be recorded against the file's repo, not the cwd"
+        );
+    }
+
+    /// PC.3: an EXPLICIT path opens that repository's status buffer while the
+    /// active buffer belongs to a different one — the whole point of the
+    /// explicit form, and the assertion a same-repo test would pass without
+    /// proving.
+    #[test]
+    fn an_explicit_path_opens_that_repositorys_buffer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let here = dir.path().join("here");
+        let there = dir.path().join("there");
+        for r in [&here, &there] {
+            std::fs::create_dir_all(r.join("src")).unwrap();
+            git_init(r);
+        }
+        let here_file = here.join("src").join("main.rs");
+        std::fs::write(&here_file, "fn main() {}\n").unwrap();
+
+        let scopes = RepoScopes::default();
+        // The active buffer is in `here`; the argument names `there`.
+        let store = store_showing(Some("src/main.rs"), Some(here_file));
+        let name = repo_view_name_at("status", &store, &scopes, active(), Some(&there));
+
+        assert_eq!(name, "*magit:status:there*");
+        assert_eq!(
+            scopes
+                .workdir_for(&name)
+                .and_then(|w| w.canonicalize().ok()),
+            there.canonicalize().ok(),
+            "recorded against the NAMED repo — a name over the wrong workdir is \
+             a buffer that lies"
+        );
+    }
+
+    /// **And the bare form is untouched**, which is what keeps PC.3
+    /// complementary rather than a reversal of `magit-repo-scoping.md` §2.
+    /// That document rejected an argument as the PRIMARY mechanism because it
+    /// would make working across two checkouts the case that needs one; this
+    /// asserts it still does not.
+    #[test]
+    fn no_path_resolves_from_the_buffer_exactly_as_before() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("api");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        git_init(&repo);
+        let file = repo.join("src").join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+
+        let scopes = RepoScopes::default();
+        let store = store_showing(Some("src/main.rs"), Some(file));
+        assert_eq!(
+            repo_view_name_at("status", &store, &scopes, active(), None),
+            repo_view_name("status", &store, &scopes, active()),
+        );
+    }
+
+    /// A path INSIDE a checkout resolves to the checkout — `gix::discover`
+    /// fails silently on a file path, so the file case is walked from its
+    /// parent rather than quietly answering the wrong repository.
+    #[test]
+    fn a_file_argument_resolves_to_its_repository() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("api");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        git_init(&repo);
+        let file = repo.join("src").join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+
+        let scopes = RepoScopes::default();
+        let store = empty_store();
+        assert_eq!(
+            repo_view_name_at("status", &store, &scopes, active(), Some(&file)),
+            "*magit:status:api*"
         );
     }
 

@@ -900,28 +900,59 @@ fn register_ex_commands(
     // Registered before `mk` is built, not for style: `mk` borrows
     // `registry` mutably for its whole life, so anything else touching
     // the registry has to happen first.
+    // PC.3: an optional PATH argument — the explicit form
+    // `magit-repo-scoping.md` deferred rather than rejected ("Rejected as the
+    // *primary* mechanism … Worth having later as an explicit form"). Bare
+    // `:magit-status` is unchanged and still resolves from the buffer, which is
+    // what keeps this complementary: making the common case (working across two
+    // checkouts) the one that needs an argument would be backwards. What needs
+    // an argument is a repository chosen from somewhere else — a project
+    // picker, which already knows which one it means.
     registry.register_ex_command(
         "magit-status",
-        "Open the Magit status buffer for the repository of the current buffer.",
+        "Open the Magit status buffer. With no argument, for the repository of \
+         the current buffer; with a path, for the repository containing it.",
         ExCommandSpec {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
+            parse_args: Arc::new(|line: &str, _bang: bool| {
+                let rest = line.trim();
+                Ok(if rest.is_empty() {
+                    Args::None
+                } else {
+                    Args::String(rest.to_string())
+                })
+            }),
             apply: {
                 let store = store.clone();
                 let scopes = scopes.clone();
                 Arc::new(move |ctx| {
-                    Ok(repo_scope::open_repo_view(
+                    let at = match &ctx.args {
+                        Args::String(p) if !p.trim().is_empty() => Some(std::path::PathBuf::from(
+                            lattice_core::home::expand_tilde(p.trim()),
+                        )),
+                        _ => None,
+                    };
+                    Ok(repo_scope::open_repo_view_at(
                         "status",
                         "magit-status-mode",
                         &store,
                         &scopes,
                         ctx.buffer_id,
+                        at.as_deref(),
                     ))
                 })
             },
-            args_schema: Vec::new(),
+            args_schema: vec![lattice_grammar::ArgSpec {
+                name: "path".into(),
+                kind: lattice_grammar::ArgKind::String,
+                doc: "a path inside the repository; defaults to the current buffer's".into(),
+                prompt: "Repository: ".into(),
+                default: lattice_grammar::ArgDefault::None,
+                completion: None,
+                picker: None,
+            }],
             surface_form: SurfaceForm::Keyword,
         },
     );

@@ -169,7 +169,12 @@ fn warn(text: String) -> Vec<Effect> {
 fn remember_root(root: &str) -> Option<String> {
     let mut list = load();
     match projects::remember(&mut list, root) {
-        Ok(()) => match save(&list) {
+        // Nothing moved — skip the write. This is the common case on the
+        // `document-opened` path, and writing bytes the store already holds
+        // once per file opened is the one place this plugin could have been
+        // needlessly hot.
+        Ok(false) => None,
+        Ok(true) => match save(&list) {
             Ok(()) => None,
             Err(e) => Some(format!("project: could not save the project list: {e}")),
         },
@@ -561,6 +566,22 @@ impl Guest for Component {
             "Rows of the project-switch menu. Each names an ex-command that \
              takes a project root as its first argument — which is the whole \
              contract for adding your own.",
+        );
+    }
+
+    /// PC.8: this plugin's own `:help project` page.
+    ///
+    /// The markdown is `include_str!`'d from this plugin's `doc/`, so the manual
+    /// travels with the plugin, is removed when the plugin is, and never enters
+    /// lattice's own embedded-doc budget. An empty topic name registers at the
+    /// bare plugin id, so the page answers to `:help project`.
+    fn register_help_topics() {
+        let _ = lattice::plugin_host::help::register_topic(
+            "",
+            "Choose a project, then the verb — find a file, grep, or open a \
+             shell somewhere other than the buffer you are standing in.",
+            include_str!("../doc/project.md"),
+            &["project".to_string()],
         );
     }
 

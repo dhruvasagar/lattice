@@ -16,6 +16,7 @@ local directory and which the editor builds on first boot — see
 |---|---|---|---|
 | **auto-pair** | `auto-pair-mode` | `auto-pair.enabled` (default `true`) | Auto-closes brackets/quotes; a `manual` style closes the nearest unmatched opener on one key. Run `:help auto-pair`. |
 | **treesitter-context** | `treesitter-context-mode` | `treesitter-context.enabled` (default `true`) | Pins the enclosing `impl` / `fn` / `if` above the text once their headers scroll away. Run `:help treesitter-context`. |
+| **project** | `project-mode` | `project.enabled` (default `true`) | Choose the project *first*, then the verb — `<leader>pp` (or `<C-x>pp`) picks a project and offers find-file, grep, a shell or Magit in it. Every other project-aware surface roots itself at the buffer you are standing in; this is for the one you are not. Run `:help project`. |
 
 More core plugins land over time (a git-gutter, a file-tree, …); each appears here
 with its mode, its `<id>.enabled` option, and its own options.

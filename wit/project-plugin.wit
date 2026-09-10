@@ -47,6 +47,7 @@ world project-plugin {
     import picker-registry;
     import modes;
     import config;
+    import help;
 
     export register-grammar: func();
     export grammar-callbacks;
@@ -56,6 +57,7 @@ world project-plugin {
 
     export register-modes: func();
     export register-options: func();
+    export register-help-topics: func();
     export transient-source;
 
     export register-events: func();

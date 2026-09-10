@@ -18,7 +18,7 @@ feature is useful at PC.6.
 | PC.2 | lattice | `spawn-terminal-payload` gains `cwd` | ✅ |
 | PC.3 | lattice | `:magit-status <path>` | ✅ |
 | PC.7 | plugin | `:project-grep` / `:project-shell` rows (magit needs no wrapper) | ✅ |
-| PC.8 | both | User page, `:help project`, bench | 📝 |
+| PC.8 | both | `:help project`, core-plugins row, hot-path fix | ✅ |
 
 **Deliberate ordering.** The plugin leads. PC.4–PC.6 prove the whole shape —
 list, picker, menu, keymap — against the two verbs that need nothing from the
@@ -242,18 +242,21 @@ could not have forwarded to magit anyway without one.
 Recency is refreshed by `:project-switch-to` when the menu opens, so the
 individual rows do not each need to remember.
 
-## PC.8 — Docs and bench
+## PC.8 ✅ — Docs, and the one hot path
 
-- A **user page** in `docs/user/`, plus its `site/data/nav.toml` entry, the
-  `docs/user/README.md` index line, and `sync-docs.sh` — the sync fails on a
-  `docs/user/` doc missing from nav. (The design fragment and this plan live
+- `:help project` via the plugin's own embedded `doc/project.md`, so the manual
+  travels with the plugin and never enters lattice's embedded-doc budget.
+- A row in `docs/user/core-plugins.md` — **not** a new `docs/user/` page. That
+  file is the core-plugin index and both existing core plugins are a row there
+  pointing at their own `:help`; a second full page would duplicate the plugin's
+  manual and the two would drift. No `nav.toml` work follows, because
+  `core-plugins.md` is already routed. (The design fragment and this plan live
   under `docs/dev/` and are correctly absent from nav.)
-- `:help project` via the plugin's embedded docs.
-- Cross-references into `project-resolution.md` §7 (consumers) and
-  `magit-repo-scoping.md`'s rejected-alternatives entry, which PC.3 resolves.
 
-**Bench.** The remembered list is read on every picker open and written on every
-document-open in a new project. Bench the read at 1 / 50 / 500 remembered
-projects. The document-open write is the one thing on a semi-hot path — it fires
-per file opened — so assert it is a no-op (no store write) when the root is
-already the most recent, which is the overwhelmingly common case.
+**The bench became a fix.** The plan said to bench the list read at 1/50/500 and
+to "assert it is a no-op when the root is already the most recent". It was not a
+no-op: `remember` moved the root to the front unconditionally and the caller
+wrote the store every time — once per file opened, storing bytes the store
+already held. `remember` now reports whether the list actually changed and the
+caller writes only then. Measuring an O(n) decode over a list bounded at 256 was
+never going to be the interesting number; the unconditional write was.

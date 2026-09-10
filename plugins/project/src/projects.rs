@@ -76,13 +76,29 @@ fn storable(root: &str) -> bool {
 
 /// Put `root` at the front, removing any earlier occurrence.
 ///
+/// `Ok(true)` when the list actually changed — the caller writes the store only
+/// then. `Ok(false)` is the already-at-the-front case, which is the
+/// overwhelmingly common one: every file you open in the project you are
+/// already working in. It matters because this is on the `document-opened`
+/// path, so an unconditional write would touch the store once per file opened
+/// to store bytes it already held.
+///
 /// Returns `Err` rather than silently doing nothing, so a caller can echo why —
 /// a `:project-remember` that appears to succeed and stores nothing is the
 /// failure this signature exists to prevent.
-pub fn remember(list: &mut Vec<String>, root: &str) -> Result<(), Refused> {
+pub fn remember(list: &mut Vec<String>, root: &str) -> Result<bool, Refused> {
     let root = normalize(root);
     if !storable(&root) {
         return Err(Refused::Unstorable);
+    }
+    // Already at the front: nothing to reorder, and the caller skips the store
+    // write. This is the overwhelmingly common case — every file you open in
+    // the project you are already working in — and it is on the
+    // `document-opened` path, which fires per file opened. Reported through
+    // `Changed` rather than by comparing lists at the call site, because only
+    // this function knows whether the move mattered.
+    if list.first().is_some_and(|first| first == &root) {
+        return Ok(false);
     }
     // Remove-then-push-front rather than "skip if present": re-visiting a
     // project must MOVE it, or the ordering stops meaning most-recent and the
@@ -90,7 +106,7 @@ pub fn remember(list: &mut Vec<String>, root: &str) -> Result<(), Refused> {
     list.retain(|p| p != &root);
     list.insert(0, root);
     list.truncate(MAX_REMEMBERED);
-    Ok(())
+    Ok(true)
 }
 
 /// Drop `root`. Returns whether it was there — `:project-forget` on a path that
@@ -183,6 +199,17 @@ mod tests {
         assert_eq!(normalize("/"), "/");
         let mut l = Vec::new();
         assert!(remember(&mut l, "/").is_ok());
+    }
+
+    /// The already-first case reports "nothing changed", which is what lets the
+    /// caller skip the store write on the hot path — every file opened in the
+    /// project you are already in.
+    #[test]
+    fn remembering_the_current_front_reports_no_change() {
+        let mut l = list(&["/a", "/b"]);
+        assert_eq!(remember(&mut l, "/a"), Ok(false));
+        assert_eq!(l, list(&["/a", "/b"]), "and leaves the order alone");
+        assert_eq!(remember(&mut l, "/b"), Ok(true), "a real move still reports");
     }
 
     #[test]

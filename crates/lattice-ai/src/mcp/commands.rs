@@ -85,6 +85,9 @@ pub fn register_claude_code_ex_commands(
                     });
                 };
                 Ok(Effect::SpawnTerminal {
+                    // PC.2: no override — spawn at the active buffer's
+                    // project root, which is what this always did.
+                    cwd: None,
                     cmd_line: Some("claude".to_string()),
                     env: vec![
                         ("CLAUDE_CODE_SSE_PORT".to_string(), port.to_string()),
@@ -253,6 +256,8 @@ mod tests {
                 cmd_line,
                 env,
                 activate_minor,
+                // PC.2: this arm does not act on the cwd.
+                cwd: _,
             } => {
                 assert_eq!(cmd_line.as_deref(), Some("claude"));
                 let port = env

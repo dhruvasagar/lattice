@@ -2857,7 +2857,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::GoToTab(n) => editor.do_goto_tab(n),
         Action::NewTab => editor.do_new_tab(),
         Action::NewTabAt(path) => editor.do_new_tab_at(std::path::PathBuf::from(path)),
-        Action::TerminalSpawn(cmd) => editor.do_terminal_spawn(cmd, Vec::new()),
+        Action::TerminalSpawn(cmd) => editor.do_terminal_spawn(cmd, Vec::new(), None),
         Action::TerminalInput(bytes) => editor.do_terminal_input(&bytes),
         Action::EnterTerminalInsert => editor.do_enter_terminal_insert(),
         Action::ExitTerminalInsert => editor.do_exit_terminal_insert(),
@@ -4401,8 +4401,9 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             cmd_line,
             env,
             activate_minor,
+            cwd,
         } => {
-            editor.do_terminal_spawn(cmd_line, env);
+            editor.do_terminal_spawn(cmd_line, env, cwd);
             if let Some(name) = activate_minor {
                 let buf = editor.active_pane_buffer_id();
                 let signals = editor.activate_mode_by_id(buf, lattice_mode::ModeId::new(&name));
@@ -27490,7 +27491,14 @@ impl Editor {
     /// - Activate the new buffer in the active pane (T4
     ///   may honor `terminal.display`).
     /// - On spawn failure: echo an error; no buffer created.
-    pub fn do_terminal_spawn(&mut self, cmd_line: Option<String>, env: Vec<(String, String)>) {
+    /// `cwd` overrides PR.3's project-root default for this spawn only — PC.2.
+    /// `None` is the ordinary `:terminal`, unchanged.
+    pub fn do_terminal_spawn(
+        &mut self,
+        cmd_line: Option<String>,
+        env: Vec<(String, String)>,
+        cwd: Option<std::path::PathBuf>,
+    ) {
         // Resolve program + args.
         let (program, args) = match cmd_line.as_deref().map(str::trim) {
             Some(s) if !s.is_empty() => {
@@ -27520,7 +27528,11 @@ impl Editor {
         // `:terminal` gets its own buffer, and `Command::cwd` applies at
         // spawn, so a shell already running is the OS's business and
         // nothing we later resolve can move it.
-        let cwd = Some(self.active_buffer_project().root);
+        // PC.2: an explicit cwd wins. Checked here rather than at the call
+        // site so every producer -- `:terminal`, `:claude`, a plugin -- gets
+        // the same rule, and so the PR.3 default below stays the one place
+        // that decides what "no opinion" means.
+        let cwd = cwd.or_else(|| Some(self.active_buffer_project().root));
 
         // Spawn size: prefer per-pane viewport (populated by
         // renderers that fire `SetPaneViewport` — GPUI does, TUI

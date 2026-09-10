@@ -627,10 +627,12 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             force: *force,
         }),
         NativeEffect::SpawnTerminal {
+            cwd,
             cmd_line,
             env,
             activate_minor,
         } => WitEffect::SpawnTerminal(WitSpawnTerminalPayload {
+            cwd: opt_path_to_wit(cwd)?,
             cmd_line: cmd_line.clone(),
             env: env.clone(),
             activate_minor: activate_minor.clone(),
@@ -1047,6 +1049,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             cmd_line: p.cmd_line,
             env: p.env,
             activate_minor: p.activate_minor,
+            cwd: opt_path_from_wit(p.cwd),
         },
         WitEffect::TerminalInput(bytes) => NativeEffect::TerminalInput(bytes),
         WitEffect::SetOption(spec) => NativeEffect::SetOption { spec },
@@ -1687,6 +1690,16 @@ mod tests {
                 cmd_line: Some("claude".into()),
                 env: vec![("CLAUDE_CODE_SSE_PORT".into(), "9000".into())],
                 activate_minor: Some("claude-code-mode".into()),
+                cwd: None,
+            },
+            // PC.2: a POPULATED cwd, not only the `None` above. A field that is
+            // only ever round-tripped empty round-trips fine even when the
+            // boundary drops it.
+            NativeEffect::SpawnTerminal {
+                cmd_line: None,
+                env: Vec::new(),
+                activate_minor: None,
+                cwd: Some("/work/api".into()),
             },
             NativeEffect::TerminalInput(vec![0x1b]),
             NativeEffect::SetOption {
@@ -1726,6 +1739,13 @@ mod tests {
                 source: "files".into(),
                 args: vec!["src".into(), "*.rs".into()],
                 root: None,
+            },
+            // PC.1: a POPULATED root, for the reason above — the `None` case
+            // alone cannot tell a carried field from a dropped one.
+            NativeEffect::OpenPicker {
+                source: "grep".into(),
+                args: vec!["needle".into()],
+                root: Some("/work/api".into()),
             },
             NativeEffect::BufferDelete { force: true },
             NativeEffect::OpenFileTree {

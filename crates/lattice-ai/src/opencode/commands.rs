@@ -30,6 +30,9 @@ pub fn register_opencode_ex_commands(registry: &mut CommandRegistry) {
             parse_args: Arc::new(parse_no_args),
             apply: Arc::new(|_ctx| {
                 Ok(Effect::SpawnTerminal {
+                    // PC.2: no override — spawn at the active buffer's
+                    // project root, which is what this always did.
+                    cwd: None,
                     cmd_line: Some("opencode".to_string()),
                     env: vec![],
                     activate_minor: Some(OpencodeMode::mode_id().as_str().to_string()),

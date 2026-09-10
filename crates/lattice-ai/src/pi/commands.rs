@@ -28,6 +28,9 @@ pub fn register_pi_ex_commands(registry: &mut CommandRegistry) {
             parse_args: Arc::new(parse_no_args),
             apply: Arc::new(|_ctx| {
                 Ok(Effect::SpawnTerminal {
+                    // PC.2: no override — spawn at the active buffer's
+                    // project root, which is what this always did.
+                    cwd: None,
                     cmd_line: Some("pi".to_string()),
                     env: vec![],
                     activate_minor: Some(PiMode::mode_id().as_str().to_string()),

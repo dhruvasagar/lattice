@@ -503,6 +503,19 @@ pub enum Effect {
     SpawnTerminal {
         /// Command line (`program [args...]`); `None` spawns `$SHELL`.
         cmd_line: Option<String>,
+        /// PC.2: working directory to spawn in, overriding the active buffer's
+        /// project root for this spawn only.
+        ///
+        /// `lattice_terminal::SpawnConfig` has carried a `cwd` since the
+        /// terminal shipped ("`None` = inherit parent's cwd"); this is the
+        /// boundary catching up, so a producer that knows WHICH project it
+        /// means can say so. `None` keeps PR.3's behaviour exactly: spawn at
+        /// the active buffer's project root.
+        ///
+        /// Binding at spawn is what lets several projects coexist —
+        /// `Command::cwd` applies once, so a shell already running is the OS's
+        /// business and nothing resolved later can move it.
+        cwd: Option<std::path::PathBuf>,
         /// Extra environment injected on top of the inherited parent env.
         env: Vec<(String, String)>,
         /// Minor mode to activate on the spawned buffer, by mode-id name (e.g.

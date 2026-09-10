@@ -251,13 +251,36 @@ layer is optional:
   (which binds `b`, `k`, `o`, `0`–`3` and the `<C-f>`/`<C-s>`/`<C-b>`/`<C-c>`
   pairs — no `p`).
 
-**The `<C-x>p` half is gated on the `emacs-keys` option**, pushed and popped on
-`Event::OptionChanged`. `emacs-keys.md` promises that *":set noemacs-keys
-reclaims `<C-x>`, so a vim purist can have it back"*, and a plugin binding
-`<C-x>p` unconditionally would quietly break that promise — `<C-x>` would stay
-half-alive with one working sub-chord. The gate keeps mode-ownership whole: the
-plugin owns both chords and both handler bodies, and simply declines to register
-one of them when the layer it belongs to is off.
+**`<C-x>p` is bound unconditionally, and that is a knowing trade.**
+
+This section first specified gating it on the `emacs-keys` option — "pushed and
+popped on `Event::OptionChanged`" — so that `:set noemacs-keys` fully reclaimed
+`<C-x>`. **That is not buildable.** Both keymap surfaces a plugin has are
+registration-only at load: `keymap.register-binding`, called from
+`register-keymap`, and `mode-keymap-binding`, declared statically in
+`register-modes`. Neither has an unregister, and there is no runtime push/pop.
+
+So the choice was between three real options and the cost is named rather than
+smuggled: **`:set noemacs-keys` no longer fully reclaims `<C-x>`.** It stays
+half-alive with one working sub-chord, `p`, which is exactly the promise
+`emacs-keys.md` makes and exactly what the gate existed to protect.
+
+Rejected, with reasons:
+
+- **Putting the `p` rows in the host's emacs-keys table.** That layer is already
+  host-owned and already option-gated, so the gating would have been correct by
+  construction, and it is not a mode-ownership violation — `emacs-keys.md`
+  governs that table as host chrome. Declined because it is a host change to buy
+  a property the trade above accepts losing.
+- **A dynamic keymap seam** (unregister / re-register for plugin keymaps). The
+  general fix, and a genuinely new host mechanism with its own lifetime and
+  layering questions. Nothing else currently needs it, which is precisely when a
+  new mechanism is hardest to design well.
+- **Shipping `<leader>p` alone.** Honest, but it drops the `project.el` muscle
+  memory that is half the point, and "defer" here had no date attached.
+
+If a dynamic keymap seam ever lands for its own reasons, this is its first
+consumer and the gate should come back.
 
 > Every chord here must be **driven in a test**, not read off the keymap.
 > `org-capture.md` §6 records `<C-x>o` shipping in a design doc despite being

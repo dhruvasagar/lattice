@@ -52,12 +52,20 @@ use lattice::plugin_host::types::{
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
 use exports::lattice::plugin_host::picker_source::{CandidatePair, Guest as PickerSource};
+use exports::lattice::plugin_host::transient_source::Guest as TransientSource;
+use lattice::plugin_host::modes::{
+    self, ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding,
+    ModeKind,
+};
 use lattice::plugin_host::types::{
-    OpenPickerPayload, PickerAcceptOutcome, PickerContext, RoutingPayload,
+    OpenPickerPayload, OpenTransientPayload, PickerAcceptOutcome, PickerContext, RoutingPayload,
+    TransientAction, TransientContext, TransientGroup, TransientItem, TransientItemKind,
+    TransientSpec,
 };
 
 mod picker;
 mod projects;
+mod switch;
 
 /// The store key holding the whole list.
 ///
@@ -75,6 +83,14 @@ const CB_FORGET: u32 = 2;
 const CB_SWITCH: u32 = 3;
 const CB_FIND_FILE: u32 = 4;
 const CB_DIRED: u32 = 5;
+const CB_SWITCH_TO: u32 = 6;
+
+/// The mode owning both prefixes' chords.
+const MODE_ID: &str = "project-mode";
+
+/// The transient this plugin registers. One source per component (the seam is
+/// shaped that way), so it dispatches on `transient-context.args`.
+const SWITCH_TRANSIENT: &str = "project-switch";
 
 /// The native file picker, driven at an explicit root.
 ///
@@ -263,6 +279,35 @@ fn cmd_dired(ctx: &ExCommandContext) -> Vec<Effect> {
     }
 }
 
+/// `:project-switch-to <root>` — the second hop of the project picker.
+///
+/// Two hops because `picker-accept-outcome` has no "open a transient" arm and
+/// should not grow one: an accept resolves to a typed outcome, and opening a
+/// menu is an effect. `invoke-command` is the arm that bridges them, which is
+/// the route `roam_insert`'s create row already takes.
+fn cmd_switch_to(ctx: &ExCommandContext) -> Vec<Effect> {
+    match target_root(ctx) {
+        Ok(root) => {
+            let _ = remember_root(&root);
+            vec![Effect::OpenTransient(OpenTransientPayload {
+                source: SWITCH_TRANSIENT.to_string(),
+                args: Args::String(root),
+            })]
+        }
+        Err(effects) => effects,
+    }
+}
+
+/// The configured rows, or the defaults.
+fn switch_commands() -> Vec<switch::SwitchCommand> {
+    match lattice::plugin_host::config::get_option_value(switch::OPTION) {
+        Some(value) => switch::from_value(&value),
+        // Unregistered or unreadable — the same answer either way, and it is
+        // the useful one: a menu with no rows looks exactly like a broken chord.
+        None => switch::defaults(),
+    }
+}
+
 /// The single optional path argument every command here takes.
 fn arg_path(args: &Args) -> Option<String> {
     match args {
@@ -361,6 +406,82 @@ impl Guest for Component {
             CB_PARSE,
             CB_DIRED,
         );
+        lattice::plugin_host::grammar::register_ex_command(
+            "project-switch-to",
+            "Open the project-switch menu for a project. The second hop of the \
+             project picker — `picker-accept-outcome` has no arm for opening a \
+             menu, so the accept routes here and this returns the effect.",
+            &path_arg_spec(
+                "the project the menu acts on; defaults to this buffer's project",
+                "Switch to project: ",
+            ),
+            CB_PARSE,
+            CB_SWITCH_TO,
+        );
+    }
+
+    /// PC.6: `project-mode`, a `universal` minor owning BOTH prefixes.
+    ///
+    /// Universal — the `org-global-mode` / `magit-global-mode` precedent, and
+    /// for their reason: the verbs are global, and a project picker that only
+    /// worked inside a project would be useless for the case it exists for.
+    ///
+    /// The chords live at `MinorMode(project-mode)`, never the builtin layer,
+    /// which is reserved for universal vim grammar.
+    ///
+    /// **`<C-x>p` is bound unconditionally, and the cost is real:**
+    /// `:set noemacs-keys` no longer fully reclaims `<C-x>` — it stays
+    /// half-alive with this one sub-chord. The design wanted it gated on the
+    /// option, and that is not buildable: a plugin registers keymaps at LOAD
+    /// (`register-modes` / `keymap.register-binding`) and there is no
+    /// unregister and no runtime push/pop. See `project-commands.md` §8, which
+    /// records the three rejected alternatives.
+    fn register_modes() {
+        let bind = |chord: &str, command: &str| ModeKeymapBinding {
+            binding_mode: BindingMode::Normal,
+            chord: chord.to_string(),
+            command: command.to_string(),
+        };
+        // `project.el`'s own letters, under both prefixes, so the muscle
+        // memory transfers whichever one a user reaches for.
+        let verbs = [
+            ("p", "project-switch"),
+            ("f", "project-find-file"),
+            ("d", "project-dired"),
+        ];
+        let mut keymap = Vec::with_capacity(verbs.len() * 2);
+        for (suffix, command) in verbs {
+            keymap.push(bind(&format!("<leader>p{suffix}"), command));
+            keymap.push(bind(&format!("<C-x>p{suffix}"), command));
+        }
+        modes::register_mode(&ModeDeclaration {
+            id: MODE_ID.to_string(),
+            kind: ModeKind::Minor,
+            activation_policy: ActivationPolicy::Universal,
+            capabilities: ModeCapabilities::empty(),
+            keymap,
+            // A minor claims no language.
+            target_language: None,
+            options: vec![],
+        });
+    }
+
+    /// PC.6: `project.switch-commands`, a real `list<record>`.
+    ///
+    /// `register-structured-option`, not a string carrying TOML.
+    /// `org-capture.md` §2's "no option can hold a record" was true when it was
+    /// written and stopped being true at TC.4/TC.5; `:describe-option` shows a
+    /// schema here rather than a blob.
+    fn register_options() {
+        let rows = switch::defaults();
+        let _ = lattice::plugin_host::config::register_structured_option(
+            switch::OPTION,
+            &switch::schema(),
+            &switch::to_value(&rows),
+            "Rows of the project-switch menu. Each names an ex-command that \
+             takes a project root as its first argument — which is the whole \
+             contract for adding your own.",
+        );
     }
 
     /// PC.5: declare the `projects` picker through the registry import — the
@@ -445,6 +566,7 @@ impl GrammarCallbacks for Component {
             CB_SWITCH => cmd_switch(),
             CB_FIND_FILE => cmd_find_file(&ctx),
             CB_DIRED => cmd_dired(&ctx),
+            CB_SWITCH_TO => cmd_switch_to(&ctx),
             other => return Err(format!("project: unknown ex-command callback {other}")),
         })
     }
@@ -505,6 +627,60 @@ impl PickerSource for Component {
             return Err(format!("project: no picker source `{source}`"));
         }
         picker::accept(routing)
+    }
+}
+
+impl TransientSource for Component {
+    fn id() -> String {
+        SWITCH_TRANSIENT.to_string()
+    }
+
+    /// One row per configured command, each carrying the chosen root.
+    ///
+    /// The root rides `ctx.args` (TR.3a) rather than guest memory, and that is
+    /// the whole reason TR.3a exists: guest state is never cleared by `<Esc>`,
+    /// so a remembered subject would leak into the next open — the menu would
+    /// act on the project you looked at last rather than the one in front of
+    /// you.
+    fn build(ctx: TransientContext) -> Result<TransientSpec, String> {
+        let Args::String(root) = &ctx.args else {
+            return Err("project: the switch menu was opened without a project".to_string());
+        };
+        let root = root.trim();
+        if root.is_empty() {
+            return Err("project: the switch menu was opened without a project".to_string());
+        }
+        let mut items: Vec<TransientItem> = switch_commands()
+            .into_iter()
+            .map(|row| TransientItem {
+                key: vec![row.key],
+                label: row.label,
+                description: String::new(),
+                kind: TransientItemKind::Action(TransientAction {
+                    command: row.command,
+                    args: Args::String(root.to_string()),
+                }),
+            })
+            .collect();
+        // A menu with no way out is a trap.
+        items.push(TransientItem {
+            key: vec!["q".to_string()],
+            label: "quit".to_string(),
+            description: String::new(),
+            kind: TransientItemKind::Dismiss,
+        });
+        Ok(TransientSpec {
+            // The project is NAMED in the title. The whole point of this menu
+            // is that you are acting on somewhere you are not standing, so a
+            // title that did not say which project would be the one piece of
+            // information the user most needs.
+            title: format!("Project: {}", projects::basename(root)),
+            groups: vec![TransientGroup {
+                label: String::new(),
+                items,
+            }],
+            footer: Some(root.to_string()),
+        })
     }
 }
 

@@ -32,13 +32,13 @@ use crate::projects;
 /// The registered picker id.
 pub const PROJECTS_PICKER: &str = "projects";
 
-/// What an accepted row routes into **today**.
+/// What an accepted row routes into: the switch-commands menu (PC.6).
 ///
-/// PC.6 replaces this with the `project-switch-commands` transient, which is
-/// what `project.el`'s `C-x p p` actually shows. Until the menu exists, going
-/// straight to find-file is the useful default rather than a dead accept —
-/// and it is the verb the picker would open the menu ON anyway.
-pub const ACCEPT_COMMAND: &str = "project-find-file";
+/// Two hops, because `picker-accept-outcome` has no "open a transient" arm and
+/// should not grow one — an accept resolves to a typed outcome, and opening a
+/// menu is an effect. `invoke-command` bridges them, which is the route
+/// `roam_insert`'s create row already takes.
+pub const ACCEPT_COMMAND: &str = "project-switch-to";
 
 pub fn spec() -> PickerSourceSpec {
     PickerSourceSpec {

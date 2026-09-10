@@ -13,7 +13,7 @@ feature is useful at PC.6.
 |---|---|---|---|
 | PC.4 | plugin | Scaffold, remembered-projects list, `:project-remember` / `-forget` | ✅ |
 | PC.5 | plugin | The `projects` picker + `:project-find-file` / `:project-dired` | ✅ |
-| PC.6 | plugin | `project-switch-commands` menu + keymap on both prefixes | 📝 |
+| PC.6 | plugin | `project-switch-commands` menu + keymap on both prefixes | ✅ |
 | PC.1 | lattice | `grep` picker source accepts a root (`args[1]`) | 📝 |
 | PC.2 | lattice | `spawn-terminal-payload` gains `cwd` | 📝 |
 | PC.3 | lattice | `:magit-status <path>` | 📝 |
@@ -111,7 +111,7 @@ ids to distinct files — is both simpler and what the editor actually does.
   assertion, and the one a same-project test would pass without proving;
 - two remembered projects sharing a basename are distinguishable in the picker.
 
-## PC.6 — The switch-commands menu and the keymap
+## PC.6 ✅ — The switch-commands menu and the keymap
 
 Structured option `project.switch-commands` as a list of
 `{ key, label, command }` records via TC.4/TC.5 `ConfigShape` — the typed form,
@@ -124,6 +124,28 @@ an argument (TR.3a).
 Keymap on `project-mode`, a `Universal` minor, in `default_modes`.
 `<leader>p` always; `<C-x>p` **only while `emacs-keys` is on**, pushed and
 popped on `Event::OptionChanged`.
+
+**Landed.** `switch.rs` (the structured option + menu rows), `project-mode` as
+a `universal` minor in `default_modes`, `:project-switch-to` as the picker's
+second hop, and the transient itself.
+
+**A host change this forced, and it is a latent gap rather than a local fix.**
+The plugin would not load at all: `root-for-buffer has the wrong type /
+function implementation is missing`. The `project` seam was never wired into the
+**sync grammar linker**, so ANY component that both provides `grammar` and
+imports `project` fails instantiation entirely. PC.4/PC.5 passed only because
+they spawn async seams. Wired alongside the existing TC.6 / CR.3 / LG.3c entries
+that exist for exactly this reason — and `project.wit` already promised it:
+"Sync, and available in every world."
+
+**`reverse_entries` is the wrong oracle for a multi-prefix binding** — it holds
+ONE path per command, so a command bound under two prefixes looks singly-bound.
+`layer_bindings` answers "what did THIS layer bind", which is the question. The
+first version of this test failed against correct code for that reason.
+
+**Deliberately gating on stale state:** the option decision (`<C-x>p` bound
+unconditionally) is asserted here, so if a dynamic keymap seam ever lands this
+test fails and points at the gate that should come back.
 
 **Tests.**
 - **Press every chord.** `<leader>pf`, `<leader>pp`, `<C-x>pf`, `<C-x>pp` are

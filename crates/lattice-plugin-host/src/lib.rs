@@ -3489,6 +3489,25 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // PC.4, for the same TC.6 reason: the `project` plugin provides BOTH
+        // `grammar` (its `:project-*` ex-commands) and imports `project` (it
+        // READS roots and never supplies one), so its component is instantiated
+        // against this sync linker for the grammar seam and instantiation must
+        // satisfy EVERY import the world declares — not only the ones that seam
+        // uses. Without this the WHOLE component fails to load with
+        // "`root-for-buffer` has the wrong type / function implementation is
+        // missing", which is how it was found.
+        //
+        // Safe here, and `project.wit` already promises it: "Sync, and available
+        // in every world. It may walk the filesystem on a cache miss, but it
+        // runs on the plugin's own store and task — never the UI or actor
+        // thread." The host impl is a sync `fn` over a cached resolver, so there
+        // is nothing to suspend on.
+        crate::lattice::plugin_host::project::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // OM.11, for the same TC.6 reason: org provides BOTH `grammar` and
         // `picker-source` (refile's target list), and a picker source needs
         // `walk`. Instantiation must satisfy every import the world declares,

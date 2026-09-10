@@ -24,6 +24,11 @@ package lattice:plugin-host@0.1.0;
 ///   - **picker-source** (PC.5) — the `projects` picker. Registered through the
 ///     `picker-registry` IMPORT rather than by the component being one source,
 ///     which is the shape OR.5b moved every picker plugin to.
+///   - **modes / config / transient-source** (PC.6) — `project-mode` (a
+///     `universal` minor owning both prefixes' chords), the
+///     `project.switch-commands` option, and the menu those chords open.
+///     `transient-source` is a ONE-per-component export, so the single source
+///     dispatches on `transient-context.args` — org's shape.
 ///
 /// `logging` is intentionally NOT imported, the `auto-pair` rule: keeping it out
 /// of the combined world keeps `log` off the sync grammar linker. A guest that
@@ -40,12 +45,18 @@ world project-plugin {
     import host-services;
     import events;
     import picker-registry;
+    import modes;
+    import config;
 
     export register-grammar: func();
     export grammar-callbacks;
 
     export register-picker-sources: func();
     export picker-source;
+
+    export register-modes: func();
+    export register-options: func();
+    export transient-source;
 
     export register-events: func();
     export on-event: func(handler: u32, ev: event);

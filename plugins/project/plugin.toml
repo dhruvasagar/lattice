@@ -14,5 +14,11 @@
 # `provides` grows with the slices: PC.5 adds `picker-source`, PC.6 adds
 # `modes`, `config` and `transient-source`, PC.8 adds `help`.
 id = "project"
-provides = ["grammar", "events", "picker-source"]
+provides = ["grammar", "events", "picker-source", "modes", "config", "transient-source"]
 capabilities = ["state:write"]
+
+# PC.6: `project-mode` must be ENABLED out of the box, or it registers
+# correctly and stays permanently inert — a plugin minor is filtered on
+# enablement, and `default_modes` is what triggers it. The loader auto-registers
+# `project.enabled` (default true) as the gate.
+default_modes = ["project-mode"]

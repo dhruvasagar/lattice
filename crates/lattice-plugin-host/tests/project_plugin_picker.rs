@@ -250,11 +250,17 @@ async fn remembered_projects_become_picker_rows() {
     assert!(batch[1].0.text.contains(alpha.to_str().unwrap()));
 }
 
-/// An accepted row routes into `:project-find-file <root>` carrying the root the
+/// An accepted row routes into `:project-switch-to <root>` carrying the root the
 /// picker already resolved — the ex-command must not have to re-read the store
 /// to learn a path the row was built from.
+///
+/// **PC.6 changed what it routes INTO**, and this test is what caught it: the
+/// accept opened find-file directly until the switch-commands menu existed, and
+/// now opens the menu. Two hops either way, because `picker-accept-outcome` has
+/// no arm for opening a transient and should not grow one — an accept resolves
+/// to a typed outcome, and opening a menu is an effect.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn accepting_a_row_routes_to_find_file_with_the_root() {
+async fn accepting_a_row_routes_to_the_switch_menu_with_the_root() {
     let Some(_) = plugin_wasm() else {
         return;
     };
@@ -274,7 +280,7 @@ async fn accepting_a_row_routes_to_find_file_with_the_root() {
     let routing = batch[0].1.clone();
     match &routing {
         RoutingPayload::InvokeCommand { id, .. } => {
-            assert_eq!(id, "project-find-file");
+            assert_eq!(id, "project-switch-to");
         }
         other => panic!("expected an invoke-command routing, got {other:?}"),
     }
@@ -283,7 +289,7 @@ async fn accepting_a_row_routes_to_find_file_with_the_root() {
     let outcome = fut.await.expect("the guest resolved the routing");
     match outcome {
         PickerAcceptOutcome::InvokeCommand { id, args } => {
-            assert_eq!(id, "project-find-file");
+            assert_eq!(id, "project-switch-to");
             let args = format!("{args:?}");
             assert!(
                 args.contains(alpha.to_str().unwrap()),

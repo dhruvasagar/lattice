@@ -15,9 +15,9 @@ feature is useful at PC.6.
 | PC.5 | plugin | The `projects` picker + `:project-find-file` / `:project-dired` | ✅ |
 | PC.6 | plugin | `project-switch-commands` menu + keymap on both prefixes | ✅ |
 | PC.1 | lattice | `Effect::OpenPicker` gains a `root` | ✅ |
-| PC.2 | lattice | `spawn-terminal-payload` gains `cwd` | 📝 |
-| PC.3 | lattice | `:magit-status <path>` | 📝 |
-| PC.7 | plugin | `:project-grep` / `:project-shell` / `:project-magit` rows | 📝 |
+| PC.2 | lattice | `spawn-terminal-payload` gains `cwd` | ✅ |
+| PC.3 | lattice | `:magit-status <path>` | ✅ |
+| PC.7 | plugin | `:project-grep` / `:project-shell` rows (magit needs no wrapper) | ✅ |
 | PC.8 | both | User page, `:help project`, bench | 📝 |
 
 **Deliberate ordering.** The plugin leads. PC.4–PC.6 prove the whole shape —
@@ -196,7 +196,7 @@ CLEARS a previous override (the assertion that pins the unconditional write).
 `q_on_magit_status_buries_it_and_never_quits_the_editor` fails identically on
 clean HEAD.
 
-## PC.2 — `spawn-terminal-payload` gains `cwd`
+## PC.2 ✅ — `spawn-terminal-payload` gains `cwd`
 
 `lattice-terminal`'s `SpawnConfig.cwd: Option<PathBuf>` **already exists** and
 is documented as "`None` = inherit parent's cwd". This threads it through the
@@ -209,7 +209,7 @@ spawn-terminal arm — an empty grep means GPUI was missed.
 **Tests.** A terminal spawned with an explicit cwd starts there; `None` is
 unchanged.
 
-## PC.3 — `:magit-status <path>`
+## PC.3 ✅ — `:magit-status <path>`
 
 The **explicit form** `magit-repo-scoping.md` deferred rather than rejected:
 "Worth having later as an explicit form." Per-repository status buffers already
@@ -221,15 +221,26 @@ the active buffer is in a different repo, and the two buffers coexist;
 argument-less `:magit-status` resolves from the buffer exactly as before — the
 assertion that keeps this complementary rather than a reversal.
 
-## PC.7 — The remaining rows
+## PC.7 ✅ — The remaining rows
 
-`:project-grep <root>`, `:project-shell <root>`, `:project-magit <root>` as thin
-wrappers (design §7 — wrappers, not direct pointers, because the underlying
-commands do not share an argument shape and because "remember this project" (§4)
-belongs in the wrapper).
+`:project-grep <root>` and `:project-shell <root>` as thin wrappers — the
+underlying commands do not share an argument shape (`grep`'s `args[0]` is its
+PATTERN, and a terminal takes a cwd rather than any argument at all).
 
-**Tests.** Each row acts on the chosen project while the active buffer is in
-another; invoking a row updates the recency order even when no file is opened.
+**`:project-magit` was dropped, and that is the extension contract working.**
+The plan specified it as a third wrapper, and it existed only because
+`:magit-status` ignored its arguments. PC.3 gave it an optional path, so it now
+IS "an ex-command whose first argument is a project root" and the default menu
+row names `magit-status` directly. Magit keeps owning what a status buffer is
+and how two checkouts sharing a basename are told apart — including its own
+"Not a git repository." rather than a second opinion from the project plugin. A
+test pins the row so a tidy-looking wrapper is not reintroduced.
+
+`Effect` has no `invoke-command` arm, which is what surfaced this: a wrapper
+could not have forwarded to magit anyway without one.
+
+Recency is refreshed by `:project-switch-to` when the menu opens, so the
+individual rows do not each need to remember.
 
 ## PC.8 — Docs and bench
 

@@ -47,19 +47,28 @@ pub struct SwitchCommand {
 
 /// The rows a user gets without configuring anything.
 ///
-/// `f` and `d` work today; `g`, `s` and `v` name commands PC.7 registers, and
-/// until it does they render greyed with the reason rather than vanishing — a
-/// missing row is invisible, a labelled one tells you what did not load.
-///
 /// Keys follow `project.el`'s own map so the muscle memory transfers: `f`
 /// find-file, `d` dired, `g` find-regexp, `s` shell, `v` vc-dir.
+///
+/// **`v` names `magit-status`, not a wrapper**, and that is the extension
+/// contract demonstrating itself. A wrapper existed in the plan only because
+/// `:magit-status` ignored its arguments; PC.3 gave it an optional path, so it
+/// now IS "an ex-command whose first argument is a project root" and needs
+/// nothing from this plugin. Magit keeps owning what a status buffer is, which
+/// repository it acts on, and how two checkouts sharing a basename are told
+/// apart — including its own "Not a git repository." for a project that is not
+/// one, rather than a second opinion from here.
+///
+/// A row naming a command that is not registered (magit absent) renders with
+/// the reason rather than vanishing: a missing row is invisible, a labelled one
+/// tells you what did not load.
 pub fn defaults() -> Vec<SwitchCommand> {
     [
         ("f", "Find file", "project-find-file"),
         ("d", "Browse tree", "project-dired"),
         ("g", "Find regexp", "project-grep"),
         ("s", "Shell", "project-shell"),
-        ("v", "Magit", "project-magit"),
+        ("v", "Magit", "magit-status"),
     ]
     .into_iter()
     .map(|(key, label, command)| SwitchCommand {
@@ -226,5 +235,16 @@ mod tests {
     fn the_default_keys_match_project_el() {
         let keys: Vec<String> = defaults().into_iter().map(|r| r.key).collect();
         assert_eq!(keys, vec!["f", "d", "g", "s", "v"]);
+    }
+
+    /// The magit row names magit's OWN command, not a wrapper — PC.3 made
+    /// `:magit-status <path>` satisfy the extension contract, so there is
+    /// nothing left for this plugin to add. Pinned because reintroducing a
+    /// `project-magit` wrapper would look tidy and would only re-describe what
+    /// magit already does.
+    #[test]
+    fn the_magit_row_names_magits_own_command() {
+        let row = defaults().into_iter().find(|r| r.key == "v").unwrap();
+        assert_eq!(row.command, "magit-status");
     }
 }

@@ -58,7 +58,7 @@ use lattice::plugin_host::modes::{
     ModeKind,
 };
 use lattice::plugin_host::types::{
-    OpenPickerPayload, OpenTransientPayload, PickerAcceptOutcome, PickerContext, RoutingPayload,
+    OpenPickerPayload, OpenTransientPayload, SpawnTerminalPayload, PickerAcceptOutcome, PickerContext, RoutingPayload,
     TransientAction, TransientContext, TransientGroup, TransientItem, TransientItemKind,
     TransientSpec,
 };
@@ -84,6 +84,13 @@ const CB_SWITCH: u32 = 3;
 const CB_FIND_FILE: u32 = 4;
 const CB_DIRED: u32 = 5;
 const CB_SWITCH_TO: u32 = 6;
+const CB_GREP: u32 = 7;
+const CB_SHELL: u32 = 8;
+
+/// The native live-grep picker. Rooted through the OPEN's root (PC.1), not
+/// through an argument: `grep` re-queries on every keystroke via
+/// `on-query-changed`, which sees the context and not the open's args.
+const GREP_PICKER: &str = "grep";
 
 /// The mode owning both prefixes' chords.
 const MODE_ID: &str = "project-mode";
@@ -315,6 +322,50 @@ fn switch_commands() -> Vec<switch::SwitchCommand> {
     }
 }
 
+/// `:project-grep [root]` — live grep, rooted at a project.
+///
+/// The pattern is NOT passed: `grep` opens empty and greps as you type, which
+/// is the surface the source was built for. Seeding a pattern would mean asking
+/// for one before showing the picker, and the picker is where you refine it.
+fn cmd_grep(ctx: &ExCommandContext) -> Vec<Effect> {
+    match target_root(ctx) {
+        Ok(root) => {
+            let _ = remember_root(&root);
+            vec![Effect::OpenPicker(OpenPickerPayload {
+                source: GREP_PICKER.to_string(),
+                // `args[0]` is grep's PATTERN, not its root — the asymmetry
+                // with `files` is why PC.1 put the root in the context instead
+                // of inventing a second argument convention.
+                args: Vec::new(),
+                root: Some(root),
+            })]
+        }
+        Err(effects) => effects,
+    }
+}
+
+/// `:project-shell [root]` — a terminal in a project.
+fn cmd_shell(ctx: &ExCommandContext) -> Vec<Effect> {
+    match target_root(ctx) {
+        Ok(root) => {
+            let _ = remember_root(&root);
+            vec![Effect::SpawnTerminal(SpawnTerminalPayload {
+                // PC.2. Binding the cwd at SPAWN is what lets several projects
+                // coexist: `Command::cwd` applies once, so a shell already
+                // running is the OS's business and nothing resolved later can
+                // move it.
+                cwd: Some(root),
+                // `None` spawns `$SHELL`, which is what `project.el`'s
+                // `project-shell` means.
+                cmd_line: None,
+                env: Vec::new(),
+                activate_minor: None,
+            })]
+        }
+        Err(effects) => effects,
+    }
+}
+
 /// The single optional path argument every command here takes.
 fn arg_path(args: &Args) -> Option<String> {
     match args {
@@ -424,6 +475,28 @@ impl Guest for Component {
             ),
             CB_PARSE,
             CB_SWITCH_TO,
+        );
+        lattice::plugin_host::grammar::register_ex_command(
+            "project-grep",
+            "Search a project with live grep. With no argument, this buffer's \
+             project; with a path, that one.",
+            &path_arg_spec(
+                "the project to search; defaults to this buffer's project",
+                "Grep project: ",
+            ),
+            CB_PARSE,
+            CB_GREP,
+        );
+        lattice::plugin_host::grammar::register_ex_command(
+            "project-shell",
+            "Open a shell in a project. With no argument, this buffer's \
+             project; with a path, that one.",
+            &path_arg_spec(
+                "the project to open a shell in; defaults to this buffer's project",
+                "Shell in project: ",
+            ),
+            CB_PARSE,
+            CB_SHELL,
         );
     }
 
@@ -574,6 +647,8 @@ impl GrammarCallbacks for Component {
             CB_FIND_FILE => cmd_find_file(&ctx),
             CB_DIRED => cmd_dired(&ctx),
             CB_SWITCH_TO => cmd_switch_to(&ctx),
+            CB_GREP => cmd_grep(&ctx),
+            CB_SHELL => cmd_shell(&ctx),
             other => return Err(format!("project: unknown ex-command callback {other}")),
         })
     }

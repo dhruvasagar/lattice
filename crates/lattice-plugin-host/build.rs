@@ -222,6 +222,19 @@ fn main() {
         "treesitter-context",
         "TREESITTER_CONTEXT_WASM",
     );
+    // PC.4: the third bundled plugin — a `project.el`-style command layer.
+    // Grammar + events from one component, the `auto-pair` shape. Built here so
+    // the loader integration test has the artifact without a prior
+    // `cargo xtask build-core-plugins`.
+    build_guest(
+        &manifest_dir
+            .join("..")
+            .join("..")
+            .join("plugins")
+            .join("project"),
+        "project",
+        "PROJECT_PLUGIN_WASM",
+    );
 }
 
 /// Build one standalone `wasm32-wasip2` guest crate at `guest_dir` to a

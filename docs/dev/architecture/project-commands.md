@@ -93,15 +93,35 @@ a key per project would buy nothing and cost a `store-keys` scan on every open.
 
 ```
 key    "projects"
-value  msgpack(Vec<Remembered { root, last_visited_seq }>)
+value  one absolute path per line, most-recently-visited FIRST
 ```
 
-`last_visited_seq` is a monotonic counter, not a timestamp: `Date`-shaped state
-is not available to a guest on every seam, and the only thing the ordering has
-to support is *most-recently-visited first*, for which a sequence is exactly
-enough. It is what makes the picker's default order useful rather than
-alphabetical — switching back and forth between two projects should not require
-typing.
+**The format is the ordering, and that replaced a counter.** This section
+originally specified `msgpack(Vec<Remembered { root, last_visited_seq }>)`. The
+counter existed for exactly one purpose — ordering the picker so that switching
+back and forth between two projects does not require typing — and a list is
+already ordered, so it was a second encoding of what the container encodes for
+free. Remembering a project *moves* it to the front rather than appending, which
+is the whole of the ordering rule.
+
+Dropping the counter drops the codec with it. A bundled guest should not pull
+serde and rmp into a wasm artifact to persist a list of paths, and a line format
+is inspectable in a hex dump when something is wrong. A format change can then
+only produce a line that does not parse — never a schema-skew failure.
+
+Two consequences, both deliberate:
+
+- **A path containing a newline is refused rather than escaped.** Legal on unix,
+  pathological in practice. Escaping would put a decoder in the one place this
+  is meant to stay simple; declining to remember that one project, and *saying
+  so*, is the honest failure.
+- **The list is bounded** (256). Not a policy — the picker is fuzzy-matched, so
+  length costs nothing to use — but an unbounded store value grows forever in a
+  long-lived config directory. Dropping happens at the back, so the entry lost is
+  always the least-recently-visited.
+
+A corrupt store decodes lossily to whatever survives. Refusing to load would
+turn one bad byte into "the feature is gone" with no way to see why.
 
 ### The cold-start hole, named
 

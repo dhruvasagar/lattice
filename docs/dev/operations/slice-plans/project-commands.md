@@ -11,7 +11,7 @@ feature is useful at PC.6.
 
 | Slice | Where | What | Status |
 |---|---|---|---|
-| PC.4 | plugin | Scaffold, remembered-projects list, `:project-remember` / `-forget` | 📝 |
+| PC.4 | plugin | Scaffold, remembered-projects list, `:project-remember` / `-forget` | ✅ |
 | PC.5 | plugin | The `projects` picker + `:project-find-file` / `:project-dired` | 📝 |
 | PC.6 | plugin | `project-switch-commands` menu + keymap on both prefixes | 📝 |
 | PC.1 | lattice | `grep` picker source accepts a root (`args[1]`) | 📝 |
@@ -28,22 +28,39 @@ chosen for that reason.
 
 ---
 
-## PC.4 — Scaffold and the remembered list
+## PC.4 ✅ — Scaffold and the remembered list
 
 `plugins/project/` in `auto-pair`'s shape: bundled ⇒ pre-granted, `plugin.toml`
 with `id = "project"`, `capabilities = ["state:write"]`, **no `fs:` grant**
 (design §3 — the plugin never touches the filesystem, and the absence is what
 forces §4's honest no-auto-pruning).
 
-`provides` covers events, commands, config, modes, picker-source, help.
+`provides = ["grammar", "events"]` — it grows with the slices: PC.5 adds
+`picker-source`, PC.6 adds `modes`, `config` and `transient-source`, PC.8 adds
+`help`.
 
 - Subscribe `Event::DocumentOpened` → `project::root-for-buffer(id)` → skip
-  `kind = pwd` → insert into the set → `store-put` under one key `"projects"`.
-- `Remembered { root, last_visited_seq }`, ordered most-recent-first by a
-  monotonic counter (design §4 — a counter, not a timestamp, because a guest
-  has no clock on every seam and ordering is all this needs).
+  `kind = pwd` → insert → `store-put` under one key, `"projects"`.
+- One absolute path per line, most-recently-visited first; remembering MOVES a
+  project to the front. See the corrections below — the counter this originally
+  specified is gone.
 - `:project-remember [dir]` (default: the current buffer's project) and
   `:project-forget [dir]`.
+
+**Landed.** `plugins/project/` (grammar + events, `state:write` only),
+`wit/project-plugin.wit`, registered in `xtask`'s `CORE_PLUGINS` and in
+`lattice-plugin-host/build.rs` as `PROJECT_PLUGIN_WASM`. 9 guest unit tests +
+3 host integration tests.
+
+**Two corrections the build forced, both recorded in the design:**
+- the store format dropped msgpack and the `last_visited_seq` counter for a
+  line-oriented one — the counter re-encoded an ordering the list already has,
+  and a bundled guest should not pull serde+rmp to persist paths (design §4);
+- `root-for-buffer` uses the buffer store's **`name_for` as its existence
+  oracle** and short-circuits on `None` before ever consulting `path_for`. A
+  test stub answering `None` there makes every resolution return `none` and the
+  plugin silently remember nothing — which is how the integration test first
+  failed, and why the stub now carries a comment saying so.
 
 **Tests.**
 - opening a file in a project remembers its root exactly once, and re-opening

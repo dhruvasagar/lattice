@@ -1,0 +1,46 @@
+package lattice:plugin-host@0.1.0;
+
+/// The `project` bundled plugin's world (PC.4).
+///
+/// A `project.el`-style command layer: choose the project FIRST, then the verb.
+/// Design: `docs/dev/architecture/project-commands.md`.
+///
+/// The seams, and why each is here:
+///   - **grammar** — the `:project-*` ex-commands. `apply-ex-command`'s
+///     signature takes a `borrow<document>` and an optional
+///     `borrow<tree-snapshot>`, so `buffer` and `tree-sitter` are imported for
+///     the SIGNATURE even though this plugin reads neither: it works on paths
+///     and roots, never on buffer text.
+///   - **project** — `root-for-buffer` / `root-for-path`. The plugin READS the
+///     root and never supplies one, which is the boundary `project.wit`'s own
+///     header draws: resolution is core and can never depend on a plugin being
+///     alive.
+///   - **host-services** — the persisted project list, via `store-*`. Gated on
+///     `state:write`, which is the plugin's ONLY capability: it holds no `fs:`
+///     grant because the host resolves roots and the native pickers do every
+///     walk.
+///   - **events** — `document-opened`, which is how a project comes to be
+///     remembered at all (project.el's `project-remember-project`).
+///
+/// `logging` is intentionally NOT imported, the `auto-pair` rule: keeping it out
+/// of the combined world keeps `log` off the sync grammar linker. A guest that
+/// calls it makes the component IMPORT it, and an unwired linker then fails the
+/// WHOLE component rather than that one call.
+world project-plugin {
+    use types.{event};
+    use events.{wake-id};
+
+    import grammar;
+    import buffer;
+    import tree-sitter;
+    import project;
+    import host-services;
+    import events;
+
+    export register-grammar: func();
+    export grammar-callbacks;
+
+    export register-events: func();
+    export on-event: func(handler: u32, ev: event);
+    export on-wake: func(id: wake-id);
+}

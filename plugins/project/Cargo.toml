@@ -1,0 +1,30 @@
+# PC.4 — the `project` bundled plugin. A `project.el`-style command layer:
+# choose the project first, then the verb.
+#
+# Standalone workspace (`[workspace]` below), the `auto-pair` shape: it targets
+# wasm32-wasip2, must not inherit the host toolchain's lints/target, and must not
+# be built by a plain `cargo build --workspace`. Staged into the dev runtime root
+# by `cargo xtask build-core-plugins`; also built to a component by
+# `crates/lattice-plugin-host/build.rs` so host-side loader tests have a path.
+#
+# `wit-bindgen` is the ONLY dependency, deliberately. The persisted project list
+# is a line-oriented text format (`projects.rs`) rather than msgpack, so no
+# serde/rmp lands in a wasm guest for a list of paths — see `projects.rs`'s
+# module note for why the format is also the ordering.
+[package]
+name = "project"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

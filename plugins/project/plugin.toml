@@ -1,0 +1,18 @@
+# PC.4 — the `project` bundled plugin manifest.
+#
+# A `project.el`-style command layer: choose the project first, then the verb.
+# Design: docs/dev/architecture/project-commands.md.
+#
+# `capabilities` is `state:write` and NOTHING else, which is a design constraint
+# rather than a minimal starting point. This plugin never reads the filesystem:
+# the host resolves project roots (`wit/project.wit`), the native pickers do
+# every walk, and the store holds the remembered list. The absent `fs:` grant is
+# why a remembered project whose directory has been deleted is not auto-pruned —
+# the plugin cannot tell a deleted tree from an unmounted volume, so it offers
+# `:project-forget` instead of guessing.
+#
+# `provides` grows with the slices: PC.5 adds `picker-source`, PC.6 adds
+# `modes`, `config` and `transient-source`, PC.8 adds `help`.
+id = "project"
+provides = ["grammar", "events"]
+capabilities = ["state:write"]

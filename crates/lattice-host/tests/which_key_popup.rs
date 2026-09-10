@@ -257,3 +257,33 @@ async fn the_keys_in_the_popup_are_highlighted() {
         }
     }
 }
+
+/// WK.10 repro: the popup is ALREADY OPEN and then the chord resolves.
+///
+/// Distinct from `a_chord_completed_before_the_delay_never_shows_a_popup`,
+/// which covers resolving while the gate is still counting down — there
+/// the popup never exists, so nothing has to be taken away.
+#[tokio::test]
+async fn resolving_a_chord_dismisses_an_open_popup() {
+    let mut editor = booted();
+    quiesce(&editor).await;
+
+    let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
+    settle_arming(&mut editor).await;
+    fire_gate(&mut editor).await;
+    assert!(
+        popup_text(&editor).is_some(),
+        "precondition: the popup is open"
+    );
+
+    // The chord resolves. Any non-absorbing action clears `partial_chord`,
+    // which republishes with an empty list — the same path a real second
+    // keystroke takes once the trie reaches a binding.
+    let _ = editor.dispatch(Action::ScrollLineDown);
+    settle_arming(&mut editor).await;
+
+    assert!(
+        editor.popup_buffer.is_none(),
+        "the popup describes a prefix that no longer exists"
+    );
+}

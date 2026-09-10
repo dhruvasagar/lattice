@@ -213,7 +213,19 @@ makes the feature safe — see §7.
 
 Dismissal: the chord resolves or aborts (the same event fires with
 empty `chords` → disarm + close), the buffer or focus changes, the pane
-resizes, or `<Esc>`. While the popup is already visible a *growing*
+resizes, or `<Esc>`.
+
+**Both halves are off-keystroke, and that is a delivery hazard.**
+`apply_effect_host` routes `OpenPopup` / `DismissPopup` to the renderer
+tail (`DispatchOutcome::effects`), which off a keystroke has no drainer
+— the TUI peer has no `signal_rx` consumer, and both peers only drain
+that tail after a dispatch. So the host absorbs the pair itself in
+`Editor::absorb_off_keystroke_popup_effects`, called by **both**
+`fire_idle_gates` (which opens) and `drain_tick_callbacks` (which
+dismisses). The open half was absorbed first and the dismiss half was
+not, so the popup arrived correctly and then never left — a dropped
+effect here is indistinguishable from a feature that was never
+implemented. While the popup is already visible a *growing*
 prefix re-renders immediately without re-arming — the delay is paid
 once per chord, not once per key, which is the difference between
 which-key and a stutter.

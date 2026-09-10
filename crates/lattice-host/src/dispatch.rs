@@ -17980,17 +17980,31 @@ impl Editor {
         for effect in effects {
             apply_effect_host(self, effect, &mut out);
         }
-        // A gate fires on an OFF-KEYSTROKE arm, so anything it emits that
-        // `apply_effect_host` deliberately routes to the renderer tail
-        // (`out.effects`) has no one to drain it: the TUI peer has no
-        // `signal_rx` consumer at all, and both peers only drain that tail
-        // after a dispatch. Absorb the popup pair here, host-side — the same
-        // reason and the same shape as `absorb_async_display_signals` (AW.4),
-        // which exists because an async-arriving popup hit this exact hole and
-        // never appeared.
-        //
-        // Dropping them instead is indistinguishable from a broken feature:
-        // the gate runs, the effect is produced, and nothing is on screen.
+        self.absorb_off_keystroke_popup_effects(&mut out);
+        out.renderer_signals
+    }
+
+    /// WK.10: absorb the popup pair from an OFF-KEYSTROKE drain's renderer
+    /// tail, host-side.
+    ///
+    /// `apply_effect_host` deliberately routes `OpenPopup` / `DismissPopup`
+    /// to `out.effects` for a renderer to drain. Off a keystroke there is no
+    /// such renderer: the TUI peer has no `signal_rx` consumer at all, and
+    /// both peers only drain that tail after a dispatch. So the effect is
+    /// produced, pushed, and dropped — indistinguishable from a broken
+    /// feature, because the subsystem ran and nothing changed on screen.
+    ///
+    /// Shared by [`Self::fire_idle_gates`] and [`Self::drain_tick_callbacks`]
+    /// rather than written out in each. It was inline in the gate drain only,
+    /// which is why which-key opened off its gate correctly but never closed:
+    /// the dismissal comes from the tick-callback side, whose tail was
+    /// discarded whole. Two drains with the same hazard and one fix between
+    /// them is how the second one got missed; a third off-keystroke drain
+    /// calls this and inherits the fix.
+    ///
+    /// Anything else keeps the old routing — back onto the tail, in case a
+    /// peer is in a position to drain it.
+    fn absorb_off_keystroke_popup_effects(&mut self, out: &mut DispatchOutcome) {
         let deferred = std::mem::take(&mut out.effects);
         for effect in deferred {
             match effect {
@@ -18004,12 +18018,9 @@ impl Editor {
                     out.renderer_signals.extend(signals);
                 }
                 lattice_grammar::Effect::DismissPopup => self.dismiss_popup(),
-                // Anything else a gate emits keeps the old routing: back onto
-                // the tail, in case a peer is in a position to drain it.
                 other => out.effects.push(other),
             }
         }
-        out.renderer_signals
     }
 
     fn drain_tick_callbacks(&mut self) -> Vec<RendererSignal> {
@@ -18027,6 +18038,12 @@ impl Editor {
         for effect in effects {
             apply_effect_host(self, effect, &mut out);
         }
+        // A tick callback runs off-keystroke, exactly like a fired gate —
+        // see `absorb_off_keystroke_popup_effects`. Without this, which-key's
+        // `DismissPopup` was produced on every chord resolution and thrown
+        // away with `out.effects`, leaving the popup describing a prefix that
+        // no longer existed.
+        self.absorb_off_keystroke_popup_effects(&mut out);
         out.renderer_signals
     }
 

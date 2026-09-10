@@ -451,6 +451,11 @@ impl App {
             | Action::PickerBackspace
             | Action::PickerSelectNext
             | Action::PickerSelectPrev
+            // PC.10: `<C-l>` / `<C-h>` — host-side, like every other picker
+            // navigation arm above. The source answers; the renderer has
+            // nothing to add.
+            | Action::PickerDescend
+            | Action::PickerAscend
             | Action::CloseHover
             // 5.5.G.12: HelpDismiss migrated to Editor::dispatch.
             | Action::HelpDismiss

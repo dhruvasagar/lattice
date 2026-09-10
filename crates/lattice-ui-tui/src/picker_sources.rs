@@ -618,6 +618,10 @@ mod tests {
             ids,
             vec![
                 "files",
+                // PC.9: `dir-pick` — `file-pick`'s directory peer, listing
+                // one level at a time instead of walking. Fourth entry to
+                // arrive by this test going red, which is the list doing
+                // its job.
                 // MG.53.e: `file-pick` — the same walk as `files`,
                 // accepting to a value instead of to an open buffer.
                 // Third time this list has needed updating for a new
@@ -625,6 +629,7 @@ mod tests {
                 // were noticed only when it went red. That is the list
                 // working.
                 "file-pick",
+                "dir-pick",
                 // YR.4: the yank ring + named registers in one list.
                 "yank-ring",
                 "recent",

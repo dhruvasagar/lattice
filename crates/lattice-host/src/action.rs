@@ -507,6 +507,17 @@ pub enum Action {
     PickerAcceptInVSplit,
     /// `<C-t>` — accept candidate in a new tab.
     PickerAcceptInTab,
+    /// PC.10: `<C-l>` — go INTO the selected candidate rather than
+    /// choosing it. The source answers through
+    /// `PickerSourceGenerator::descend`; a source with no notion of
+    /// going deeper (every one but `dir-pick` today) returns `None` and
+    /// this does nothing at all.
+    PickerDescend,
+    /// PC.10: `<C-h>` — the peer of [`Self::PickerDescend`], one level
+    /// up. Needs no source involvement: it deletes back through the
+    /// previous `/`, which is a pure query edit and generic over any
+    /// path-shaped query.
+    PickerAscend,
     /// LR.5 (2026-08-11): `<C-q>` — send every candidate that survived
     /// the current query to the picker's declared bulk outcome, and
     /// dismiss. Echoes when the opener declared none.

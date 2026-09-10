@@ -788,6 +788,26 @@ impl PickerSourceGenerator for DirPickSource {
             .then(|| candidate.text.clone())
     }
 
+    /// `<C-h>`: drop the last path component.
+    ///
+    /// The trailing `/` comes off first, or `~/src/` would resolve its own
+    /// last component and go nowhere. `/` is a fixed point — there is nothing
+    /// above the root, and emptying the query there would silently relocate
+    /// the user to somewhere they did not ask for.
+    fn ascend(&self, query: &str) -> Option<String> {
+        if query == "/" {
+            return Some("/".to_string());
+        }
+        let trimmed = query.strip_suffix('/').unwrap_or(query);
+        Some(match trimmed.rfind('/') {
+            Some(i) => trimmed[..=i].to_string(),
+            // No separator left: `~`, or a bare word. Clearing takes the
+            // picker back to its empty-query listing rather than leaving a
+            // half-word that names nothing.
+            None => String::new(),
+        })
+    }
+
     fn accept(
         &self,
         _ctx: &PickerContext<'_>,

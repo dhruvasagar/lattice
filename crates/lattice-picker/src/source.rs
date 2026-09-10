@@ -467,6 +467,24 @@ pub trait PickerSourceGenerator: Send + Sync {
         None
     }
 
+    /// PC.10: `<C-h>` — [`descend`](Self::descend)'s peer, one level out.
+    ///
+    /// Takes the QUERY rather than a candidate: going up is a statement about
+    /// where you are, and the row you happen to have selected has nothing to
+    /// do with it.
+    ///
+    /// **A hook rather than a generic query edit**, which is a deviation from
+    /// this slice's plan and the reason is `grep`. The plan reasoned that
+    /// "delete back through the previous `/`" needs no source involvement
+    /// because it is generic over any path-shaped query — true, but *live* is
+    /// not the same as *path-shaped*, and `grep` is live. A generic `<C-h>`
+    /// would silently truncate a grep pattern at a slash. Opting in keeps
+    /// `<C-h>` meaningless everywhere it has no meaning, which is the same
+    /// rule `descend` follows.
+    fn ascend(&self, _query: &str) -> Option<String> {
+        None
+    }
+
     /// T.12: live-preview hook — invoked as the picker SELECTION moves to
     /// a candidate (before accept). Default None = no preview. A source
     /// returns an outcome the host applies immediately for a live preview;

@@ -3034,6 +3034,14 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                     .extend(editor.preview_picker_selection());
             }
         }
+        Action::PickerDescend => {
+            let signals = editor.do_picker_descend();
+            _out.renderer_signals.extend(signals);
+        }
+        Action::PickerAscend => {
+            let signals = editor.do_picker_ascend();
+            _out.renderer_signals.extend(signals);
+        }
         Action::PickerSelectNext => {
             // PICK.1: in transient mode, walk the item selection —
             // wrapping, and bounded by the spec's own item count. It
@@ -9316,6 +9324,84 @@ impl Editor {
                 byte: (start + text.len()) as u32,
             };
         }
+    }
+
+    /// PC.10: `<C-l>` — go INTO the selected candidate.
+    ///
+    /// The source decides what that means and whether it means anything:
+    /// `PickerSourceGenerator::descend` defaults to `None`, so this is a
+    /// no-op in every picker but `dir-pick` today. Deliberately silent on
+    /// the `None` path — a key that echoed "this picker cannot descend" on
+    /// every stray press would be noise, and unlike a `FillCaller` with no
+    /// target there is no wiring bug to report.
+    ///
+    /// Gated on the source being LIVE, because only a live source refetches:
+    /// rewriting a static source's query would fuzzy-filter the rows `init`
+    /// already returned rather than fetching the ones inside the candidate.
+    #[must_use]
+    pub fn do_picker_descend(&mut self) -> Vec<RendererSignal> {
+        let Some(generator) = self.live_picker_query.as_ref().map(|s| s.generator.clone()) else {
+            return Vec::new();
+        };
+        let Some(candidate) = self
+            .picker
+            .as_ref()
+            .and_then(|p| p.selected_candidate())
+            .map(|c| c.raw.clone())
+        else {
+            return Vec::new();
+        };
+        let snap = self.document.snapshot();
+        let ctx = self.build_picker_context(&snap);
+        let next = generator.descend(&ctx, &candidate);
+        drop(ctx);
+        drop(snap);
+        let Some(next) = next else {
+            return Vec::new();
+        };
+        self.set_live_picker_query(next)
+    }
+
+    /// PC.10: `<C-h>` — the peer, one level out. Same gating and the same
+    /// silence; the source answers from the QUERY rather than the selection,
+    /// because going up says nothing about which row happens to be selected.
+    #[must_use]
+    pub fn do_picker_ascend(&mut self) -> Vec<RendererSignal> {
+        let Some(generator) = self.live_picker_query.as_ref().map(|s| s.generator.clone()) else {
+            return Vec::new();
+        };
+        let Some(query) = self.picker.as_ref().map(|p| p.query.clone()) else {
+            return Vec::new();
+        };
+        let Some(next) = generator.ascend(&query) else {
+            return Vec::new();
+        };
+        if next == query {
+            // Already at the fixed point (`/`). Re-seating would spend a
+            // re-query to redraw the same rows.
+            return Vec::new();
+        }
+        self.set_live_picker_query(next)
+    }
+
+    /// Shared tail of [`Self::do_picker_descend`] / [`Self::do_picker_ascend`]:
+    /// replace the query and let the live path refetch.
+    ///
+    /// **No `refilter()`.** For a live source the candidate set is replaced
+    /// wholesale by the re-query, and fuzzy-filtering the OLD rows against a
+    /// path prefix in the meantime would empty the list for one frame — a
+    /// flash of nothing on the way to the right answer, which the keystroke
+    /// UX contract vetoes. Leaving the previous listing up until the new one
+    /// lands is the eventual-consistency trade CLAUDE.md names as acceptable.
+    #[must_use]
+    fn set_live_picker_query(&mut self, query: String) -> Vec<RendererSignal> {
+        if let Some(p) = self.picker.as_mut() {
+            p.query_cursor = query.len();
+            p.query = query;
+            p.selected = 0;
+        }
+        self.bump_live_picker_debounce();
+        self.preview_picker_selection()
     }
 
     /// YR.6: open the picker registered for the argument under the

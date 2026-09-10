@@ -545,6 +545,19 @@ fn translate_picker(chord: KeyChord) -> Action {
             // one chord for "give me something I copied", wherever you
             // are. It was unbound here.
             KeyKind::Char('r') => Action::OpenYankPicker,
+            // PC.10: go INTO / back OUT of the selected candidate, for a live
+            // source that has a notion of depth (`dir-pick` today). Both are
+            // no-ops elsewhere — the source's `descend` / `ascend` default to
+            // `None`.
+            //
+            // `<C-l>` / `<C-h>` rather than `<Tab>`: `<Tab>` is
+            // `PickerSelectNext` in EVERY picker (below), and giving one
+            // picker a `<Tab>` that means something different from all the
+            // others is the inconsistency the UX-convention rule exists to
+            // prevent. These are the keys ranger / lf / nnn / vifm use for
+            // exactly this, and both were unbound here.
+            KeyKind::Char('l') => Action::PickerDescend,
+            KeyKind::Char('h') => Action::PickerAscend,
             _ => Action::None,
         };
     }

@@ -247,6 +247,7 @@ fn cmd_switch() -> Vec<Effect> {
     vec![Effect::OpenPicker(OpenPickerPayload {
         source: picker::PROJECTS_PICKER.to_string(),
         args: Vec::new(),
+        root: None,
     })]
 }
 
@@ -261,7 +262,13 @@ fn cmd_find_file(ctx: &ExCommandContext) -> Vec<Effect> {
             let _ = remember_root(&root);
             vec![Effect::OpenPicker(OpenPickerPayload {
                 source: FILES_PICKER.to_string(),
-                args: vec![root],
+                // PC.1: the root rides the CONTEXT, not the args. `files` would
+                // also accept `args[0]`, but `grep` would not survive its own
+                // first keystroke that way — `on-query-changed` sees the
+                // context and not the open's args. One mechanism for every
+                // root-sensitive source beats a per-source convention.
+                args: Vec::new(),
+                root: Some(root),
             })]
         }
         Err(effects) => effects,

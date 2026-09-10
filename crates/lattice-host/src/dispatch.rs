@@ -14101,6 +14101,14 @@ impl Editor {
         &self,
         snap: &lattice_runtime::DocumentSnapshot,
     ) -> std::path::PathBuf {
+        // PC.1: an explicit root wins over every resolution below. Checked
+        // FIRST and returned verbatim — it is a root the caller already
+        // resolved (org's project picker hands over what the host itself
+        // answered), so re-resolving it would walk up from a directory that is
+        // already a project root and could only move the answer.
+        if let Some(root) = self.picker_root.as_ref() {
+            return root.clone();
+        }
         let Some(resolver) = self.services.get::<lattice_core::ProjectResolverHandle>() else {
             return std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         };

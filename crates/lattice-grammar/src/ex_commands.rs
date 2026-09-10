@@ -921,6 +921,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::OpenPicker {
                     source: "files".into(),
                     args,
+                    root: None,
                 })
             }),
             args_schema: vec![ArgSpec {
@@ -947,6 +948,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::OpenPicker {
                     source: "recent".into(),
                     args: Vec::new(),
+                    root: None,
                 })
             }),
             args_schema: vec![],
@@ -984,6 +986,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::OpenPicker {
                     source: source.into(),
                     args: Vec::new(),
+                    root: None,
                 })
             }),
             args_schema: vec![ArgSpec {
@@ -1025,7 +1028,14 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                     .iter()
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect();
-                Ok(Effect::OpenPicker { source, args })
+                // `:picker <source> [args]` names no root: it is the user
+                // asking for a picker where they are. A source that wants a
+                // root from an argument (`files`) still reads one.
+                Ok(Effect::OpenPicker {
+                    source,
+                    args,
+                    root: None,
+                })
             }),
             args_schema: vec![ArgSpec {
                 name: "source".into(),
@@ -3624,7 +3634,7 @@ mod tests {
         )
         .unwrap();
         match eff {
-            Effect::OpenPicker { source, args } => {
+            Effect::OpenPicker { source, args, .. } => {
                 assert_eq!(source, "files");
                 assert_eq!(args, vec!["/tmp/a".to_string()]);
             }

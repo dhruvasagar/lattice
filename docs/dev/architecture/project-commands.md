@@ -291,17 +291,38 @@ consumer and the gate should come back.
 Three, all small, all generic, none naming a project. Each unblocks exactly one
 menu row; `f` and `d` need none.
 
-### H1 · the `grep` picker source accepts a root
+### H1 · `Effect::OpenPicker` gains a `root`
 
-`files` reads `args[0]` as its root, with the comment *"An explicit `:picker
-files <path>` still wins — that is the user saying 'not that project, this
-one'."* `grep` reads `args[0]` as its **pattern** and takes its root from
-`ctx.workspace_root` with no override.
+**This section first specified an `args[1]` root on the `grep` source, and that
+cannot work.** `grep` is `live: true`, so it re-queries through
+`on_query_changed(&self, ctx, query)` — which receives the query and the context
+and **not** the open's args — and a source is a shared `&self` generator with no
+per-open state. A root passed as an argument would apply to the first grep and
+then silently revert to the workspace root the moment the user typed a
+character. A feature that works until you type is worse than one that is absent.
 
-So `grep` grows an optional `args[1]` root. The asymmetry (root first for
-`files`, pattern first for `grep`) is deliberate and stays: each source's
-*primary* argument is first, and reordering `grep`'s would break every existing
-`:picker grep <pattern>`.
+So the root rides the **context**: `Effect::OpenPicker` (and its WIT payload)
+gains `root: option<string>`, and the host returns it from
+`picker_workspace_root_path` for that open.
+
+Three things follow, and they are why this is the better shape:
+
+- **`grep` needed no change at all.** It already reads `ctx.workspace_root` in
+  both `init` and `on_query_changed`, so the override survives every re-query.
+- **Every root-sensitive source gets it uniformly**, rather than each inventing
+  an argument convention. `files`' existing `args[0]` root stays for
+  `:picker files <path>`, but it stops being the mechanism.
+- **The precedent is `transient-context.args`** (TR.3a), which exists because
+  "a row that opens a second menu has no way to say what it opened it FOR".
+  Same problem, same answer: the thing the open was *for* belongs in the
+  context, not in a payload the next hop cannot see.
+
+The override is stored beside its picker-scoped peers on `Editor`
+(`picker_open_target`, `picker_fill_target`) and set **unconditionally at open,
+`None` included**. That is what makes a stale root impossible without a close
+hook: opening a picker is the one moment guaranteed to run, whereas every close
+path would have to remember to clear it — the discipline `PENDING_QUESTIONS`
+already uses for the same class of bug.
 
 ### H2 · `spawn-terminal-payload` gains `cwd`
 

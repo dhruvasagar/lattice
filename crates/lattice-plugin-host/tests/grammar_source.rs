@@ -764,7 +764,7 @@ fn a_plugin_can_open_a_picker_source_it_does_not_own() {
     .expect("the plugin action dispatches through the sync trampoline");
 
     match effect {
-        lattice_grammar::effect::Effect::OpenPicker { source, args } => {
+        lattice_grammar::effect::Effect::OpenPicker { source, args, .. } => {
             assert_eq!(source, "files", "the guest names a HOST-owned source");
             assert_eq!(
                 args,

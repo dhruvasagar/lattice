@@ -79,6 +79,7 @@ fn stash_target(ctx: &ActionContext<'_>, ex_command: &str) -> StashTarget {
         None => StashTarget::Ask(Effect::OpenPicker {
             source: crate::picker_sources::STASH_PICK_SOURCE.to_string(),
             args: vec![ex_command.to_string()],
+            root: None,
         }),
     }
 }

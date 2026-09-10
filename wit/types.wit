@@ -670,6 +670,18 @@ interface types {
     record open-picker-payload {
         source: string,
         args: list<string>,
+        /// PC.1: the root this picker resolves against, overriding the active
+        /// buffer's project for this open only.
+        ///
+        /// **Why the context and not an argument.** A `live` source (`grep`)
+        /// re-queries through `on-query-changed`, which sees the query and the
+        /// context and NOT the open's args — and a source is a shared generator
+        /// with no per-open state. A root passed as an argument would apply to
+        /// the first query and silently revert to the workspace root on the
+        /// next keystroke, which is worse than not having it.
+        ///
+        /// `none` resolves from the active buffer, exactly as before.
+        root: option<string>,
     }
     record set-lsp-log-level-payload {
         server-id: option<string>,

@@ -230,6 +230,7 @@ impl Mode for MagitBranchMode {
                     Some(Effect::OpenPicker {
                         source: "magit-branch-pick-base".to_string(),
                         args: Vec::new(),
+                        root: None,
                     })
                 }),
             },

@@ -218,6 +218,7 @@ impl Callbacks for Component {
             6 => Ok(vec![Effect::OpenPicker(OpenPickerPayload {
                 source: "files".to_string(),
                 args: vec!["src".to_string(), "*.rs".to_string()],
+                root: None,
             })]),
             // XF.5: the cross-file write. The target path comes from the
             // action's args so ONE fixture covers both the granted and the

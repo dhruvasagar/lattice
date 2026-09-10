@@ -778,6 +778,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(Effect::OpenPicker {
                 source: crate::picker_sources::REVISION_PICK_SOURCE.to_string(),
                 args: vec![format!("magit-file-checkout {{}} {path}")],
+                root: None,
             })
         }),
     });
@@ -864,6 +865,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(Effect::OpenPicker {
                 source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
                 args: vec!["magit-merge".to_string()],
+                root: None,
             })
         }),
     });
@@ -912,6 +914,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     Some(Effect::OpenPicker {
                         source: $source.to_string(),
                         args: vec![$ex_command.to_string()],
+                        root: None,
                     })
                 }),
             });
@@ -925,6 +928,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     Some(Effect::OpenPicker {
                         source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
                         args: vec![$ex_command.to_string()],
+                        root: None,
                     })
                 }),
             });
@@ -1357,6 +1361,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(Effect::OpenPicker {
                 source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
                 args: vec!["magit-branch-reset".to_string()],
+                root: None,
             })
         }),
     });
@@ -1556,6 +1561,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(Effect::OpenPicker {
                 source: crate::picker_sources::BRANCH_CHECKOUT_SOURCE.to_string(),
                 args: Vec::new(),
+                root: None,
             })
         }),
     });
@@ -1569,6 +1575,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(Effect::OpenPicker {
                 source: "magit-branch-pick-base".to_string(),
                 args: Vec::new(),
+                root: None,
             })
         }),
     });
@@ -1602,6 +1609,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(Effect::OpenPicker {
                 source: crate::picker_sources::REVISION_PICK_SOURCE.to_string(),
                 args: vec![format!("magit-find-file {{}} {path}")],
+                root: None,
             })
         }),
     });
@@ -1975,6 +1983,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 None => Effect::OpenPicker {
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec!["magit-note-edit".to_string()],
+                    root: None,
                 },
             })
         }),
@@ -1993,6 +2002,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 None => Effect::OpenPicker {
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec!["magit-note-remove".to_string()],
+                    root: None,
                 },
             })
         }),
@@ -2150,6 +2160,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 None => Effect::OpenPicker {
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec!["magit-log-merged".to_string()],
+                    root: None,
                 },
             })
         }),
@@ -2258,6 +2269,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(Effect::OpenPicker {
                 source: crate::picker_sources::REVISION_PICK_SOURCE.to_string(),
                 args: vec!["magit-checkout".to_string()],
+                root: None,
             })
         }),
     });
@@ -2298,6 +2310,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(Effect::OpenPicker {
                 source: crate::picker_sources::BRANCH_CREATE_NO_CHECKOUT_SOURCE.to_string(),
                 args: Vec::new(),
+                root: None,
             })
         }),
     });
@@ -2347,6 +2360,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(Effect::OpenPicker {
                 source: crate::picker_sources::BRANCH_RENAME_SOURCE.to_string(),
                 args: Vec::new(),
+                root: None,
             })
         }),
     });
@@ -2403,6 +2417,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(Effect::OpenPicker {
                 source: crate::picker_sources::BRANCH_DELETE_SOURCE.to_string(),
                 args: Vec::new(),
+                root: None,
             })
         }),
     });
@@ -5131,7 +5146,7 @@ mod tests {
                 args: lattice_grammar::Args::None,
             };
             match handler(&ctx) {
-                Some(Effect::OpenPicker { source, args }) => {
+                Some(Effect::OpenPicker { source, args, .. }) => {
                     assert_eq!(
                         source,
                         crate::picker_sources::BRANCH_PICK_SOURCE,
@@ -5260,7 +5275,7 @@ mod tests {
                 args: lattice_grammar::Args::None,
             };
             match handler(&ctx) {
-                Some(Effect::OpenPicker { source, args }) => {
+                Some(Effect::OpenPicker { source, args, .. }) => {
                     assert_eq!(
                         source, *expected_source,
                         "`{action}` must list the nouns it operates on"
@@ -5322,7 +5337,7 @@ mod tests {
                 args,
             };
             match handler(&ctx) {
-                Some(Effect::OpenPicker { source, args }) => {
+                Some(Effect::OpenPicker { source, args, .. }) => {
                     assert_eq!(
                         source,
                         crate::picker_sources::REVISION_PICK_SOURCE,

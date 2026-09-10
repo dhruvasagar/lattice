@@ -1084,7 +1084,7 @@ impl App {
             // the post-activation tail. Routed through the grouped
             // no-op above.
             Effect::OpenBufferPicker => self.open_buffer_picker(),
-            Effect::OpenPicker { source, args } => self.open_picker(source, args),
+            Effect::OpenPicker { source, args, root } => self.open_picker(source, args, root),
             Effect::Confirm {
                 prompt,
                 yes_action,

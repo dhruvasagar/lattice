@@ -1544,8 +1544,13 @@ impl GpuiApp {
                 }
             }
             // Phase 5.8.AF.3: `:picker <source>` host-side.
-            Effect::OpenPicker { source, args } => {
-                let signals = self.mutate_editor_with(move |e| e.open_picker(source, args));
+            Effect::OpenPicker { source, args, root } => {
+                // PC.1, and set unconditionally for the TUI peer's reason: the
+                // `None` write is what clears a previous picker's override.
+                let signals = self.mutate_editor_with(move |e| {
+                    e.picker_root = root;
+                    e.open_picker(source, args)
+                });
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }

@@ -947,6 +947,17 @@ pub struct Editor {
     /// `None` means the picker was opened to act, not to answer, and a
     /// `FillCaller` arriving against it is a wiring bug the host reports
     /// rather than swallows.
+    /// PC.1: the root the OPEN picker resolves against, overriding the active
+    /// buffer's project until it closes.
+    ///
+    /// Beside its picker-scoped peers rather than threaded through
+    /// `build_picker_context`, because a `live` source re-queries through
+    /// `on_query_changed` — which sees the context and NOT the open's args — so
+    /// the root has to outlive the single `init` call that carried it.
+    ///
+    /// `None` is the ordinary case: every picker before PC.1 resolved from the
+    /// active buffer and still does.
+    pub picker_root: Option<std::path::PathBuf>,
     pub picker_fill_target: Option<lattice_picker::FillTarget>,
     /// YR.6: the byte range on the `:` line a `FillCaller` should
     /// REPLACE rather than insert before.

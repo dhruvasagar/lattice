@@ -669,6 +669,21 @@ pub enum Effect {
     OpenPicker {
         source: String,
         args: Vec<String>,
+        /// PC.1: root this picker resolves against, overriding the active
+        /// buffer's project for this open only.
+        ///
+        /// **Why the CONTEXT and not an argument.** A `live` source
+        /// (`grep`) re-queries through `on_query_changed`, which receives the
+        /// query and the context and NOT the open's args — and the source is a
+        /// shared `&self` generator with no per-open state. A root passed as an
+        /// argument would therefore apply to the first query and silently
+        /// revert to the workspace root on the next keystroke, which is worse
+        /// than not having it. In the context it survives every re-query, and
+        /// every root-sensitive source gets it without a per-source convention.
+        ///
+        /// `None` is the ordinary case: resolve from the active buffer, exactly
+        /// as before.
+        root: Option<std::path::PathBuf>,
     },
     /// `:bd[elete][!]` -- close the active document buffer.
     /// `force = true` discards unsaved changes.

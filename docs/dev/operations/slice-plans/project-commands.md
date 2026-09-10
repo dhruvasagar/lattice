@@ -14,7 +14,7 @@ feature is useful at PC.6.
 | PC.4 | plugin | Scaffold, remembered-projects list, `:project-remember` / `-forget` | ✅ |
 | PC.5 | plugin | The `projects` picker + `:project-find-file` / `:project-dired` | ✅ |
 | PC.6 | plugin | `project-switch-commands` menu + keymap on both prefixes | ✅ |
-| PC.1 | lattice | `grep` picker source accepts a root (`args[1]`) | 📝 |
+| PC.1 | lattice | `Effect::OpenPicker` gains a `root` | ✅ |
 | PC.2 | lattice | `spawn-terminal-payload` gains `cwd` | 📝 |
 | PC.3 | lattice | `:magit-status <path>` | 📝 |
 | PC.7 | plugin | `:project-grep` / `:project-shell` / `:project-magit` rows | 📝 |
@@ -165,14 +165,36 @@ test fails and points at the gate that should come back.
 
 ---
 
-## PC.1 — `grep` accepts a root
+## PC.1 ✅ — `Effect::OpenPicker` gains a `root`
 
-Optional `args[1]`. `args[0]` stays the pattern: each source's *primary*
-argument is first, and reordering would break every existing
-`:picker grep <pattern>`.
+**Re-scoped during the build, and the original plan could not have worked.**
+It said "optional `args[1]` on the `grep` source". `grep` is `live: true`, so it
+re-queries through `on_query_changed(&self, ctx, query)` — which sees the query
+and the context and NOT the open's args — and a source is a shared `&self`
+generator with no per-open state. An argument-borne root would have applied to
+the first grep and silently reverted on the next keystroke: a feature that works
+until you type.
 
-**Tests.** grep at an explicit root while the active buffer is in another
-project; no argument behaves exactly as today (the regression that matters).
+So the root rides the **context** instead. `Effect::OpenPicker` and its WIT
+payload gain `root: option<string>`; the host returns it from
+`picker_workspace_root_path`. Consequences:
+
+- **`grep` needed no change at all** — it already reads `ctx.workspace_root` in
+  both `init` and `on_query_changed`.
+- Every root-sensitive source is served uniformly. `files`' `args[0]` root stays
+  for `:picker files <path>` but stops being the mechanism, and PC.5's
+  `:project-find-file` was switched over to the context root.
+- Stored beside its picker-scoped peers on `Editor` and set **unconditionally at
+  open, `None` included** — which is what makes a stale root impossible without
+  a close hook.
+
+**Tests.** `picker_root_override.rs`: an explicit root wins verbatim; no
+override resolves from the buffer exactly as before; and opening without a root
+CLEARS a previous override (the assertion that pins the unconditional write).
+
+**Pre-existing failures verified by stashing:** `lattice-ui-tui`'s
+`q_on_magit_status_buries_it_and_never_quits_the_editor` fails identically on
+clean HEAD.
 
 ## PC.2 — `spawn-terminal-payload` gains `cwd`
 

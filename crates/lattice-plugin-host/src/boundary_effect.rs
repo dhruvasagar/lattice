@@ -684,10 +684,13 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::BufferPrev => WitEffect::BufferPrev,
         NativeEffect::ListBuffers => WitEffect::ListBuffers,
         NativeEffect::OpenBufferPicker => WitEffect::OpenBufferPicker,
-        NativeEffect::OpenPicker { source, args } => WitEffect::OpenPicker(WitOpenPickerPayload {
-            source: source.clone(),
-            args: args.clone(),
-        }),
+        NativeEffect::OpenPicker { source, args, root } => {
+            WitEffect::OpenPicker(WitOpenPickerPayload {
+                source: source.clone(),
+                args: args.clone(),
+                root: opt_path_to_wit(root)?,
+            })
+        }
         NativeEffect::BufferDelete { force } => WitEffect::BufferDelete(*force),
         NativeEffect::OpenFileTree { root } => WitEffect::OpenFileTree(opt_path_to_wit(root)?),
         NativeEffect::CloseFileTree => WitEffect::CloseFileTree,
@@ -1081,6 +1084,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::OpenPicker(p) => NativeEffect::OpenPicker {
             source: p.source,
             args: p.args,
+            root: opt_path_from_wit(p.root),
         },
         WitEffect::BufferDelete(force) => NativeEffect::BufferDelete { force },
         WitEffect::OpenFileTree(root) => NativeEffect::OpenFileTree {
@@ -1721,6 +1725,7 @@ mod tests {
             NativeEffect::OpenPicker {
                 source: "files".into(),
                 args: vec!["src".into(), "*.rs".into()],
+                root: None,
             },
             NativeEffect::BufferDelete { force: true },
             NativeEffect::OpenFileTree {

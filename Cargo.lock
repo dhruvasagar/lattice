@@ -5736,6 +5736,7 @@ dependencies = [
  "lattice-protocol",
  "linkme",
  "serde",
+ "tempfile",
  "tokio",
 ]
 

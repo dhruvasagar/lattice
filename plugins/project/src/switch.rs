@@ -245,6 +245,37 @@ mod tests {
         assert_eq!(keys, vec!["f", "b", "d", "g", "s", "v"]);
     }
 
+    /// **PK.1: every menu row is also a direct chord, and the letter is the
+    /// same one.**
+    ///
+    /// §6's two entry points are the same verbs reached two ways — `<C-x>pf`
+    /// acts on the project you are in, and `<C-x>pp` picks a project first and
+    /// then offers the identical list. A row with no chord breaks that
+    /// symmetry silently: the verb exists, works, and is reachable only after
+    /// choosing a project you are already standing in. `g`, `s` and `v` were
+    /// in exactly that state until PK.1.
+    ///
+    /// Pinned HERE rather than only in the keymap test because this is the
+    /// list that grows — a new row is added to `defaults` and the chord is the
+    /// thing that gets forgotten.
+    #[test]
+    fn every_menu_row_has_a_chord() {
+        // Mirrors `register_modes`' `verbs`, minus `p` — the picker itself is
+        // a chord with no menu row, which is right: it is what OPENS the menu,
+        // and a row for it would be the menu offering itself.
+        let chorded = ["f", "b", "d", "g", "s", "v"];
+        for row in defaults() {
+            assert!(
+                chorded.contains(&row.key.as_str()),
+                "the `{}` row ({}) has no `<leader>p` / `<C-x>p` chord — add it \
+                 to `register_modes`' verbs, or this verb is reachable only \
+                 after choosing a project you are already in",
+                row.key,
+                row.command
+            );
+        }
+    }
+
     /// The magit row names magit's OWN command, not a wrapper — PC.3 made
     /// `:magit-status <path>` satisfy the extension contract, so there is
     /// nothing left for this plugin to add. Pinned because reintroducing a

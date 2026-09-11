@@ -711,15 +711,32 @@ impl Guest for Component {
         };
         // `project.el`'s own letters, under both prefixes, so the muscle
         // memory transfers whichever one a user reaches for.
+        //
+        // **PK.1: every menu row has a chord, and that is the invariant.**
+        // `g`, `s` and `v` were menu-only — the switch menu offered them on a
+        // chosen project while the keymap offered nothing for the project you
+        // were already in, so the everyday half of §6's two entry points was
+        // missing for exactly half the verbs. `project.el` binds all of them
+        // (`C-x p g` / `C-x p s` / `C-x p v`), and `switch.rs`'s defaults and
+        // this list are now the same set of letters on purpose;
+        // `every_menu_row_has_a_chord` holds them together.
         let verbs = [
             ("p", "project-switch"),
             ("f", "project-find-file"),
-            ("d", "project-dired"),
             // PB.1: `b`, `project.el`'s own letter for
-            // `project-switch-to-buffer`. Under both prefixes like its three
-            // neighbours, so the muscle memory transfers whichever one a user
-            // reaches for.
+            // `project-switch-to-buffer`.
             ("b", "project-buffers"),
+            ("d", "project-dired"),
+            ("g", "project-grep"),
+            ("s", "project-shell"),
+            // Magit's OWN command, not a wrapper — PC.3 made `:magit-status
+            // <path>` satisfy the extension contract, so there is nothing for
+            // this plugin to add, and the switch menu's `v` row already names
+            // it directly. Safe as a chord because `lattice_magit::install`
+            // runs unconditionally at boot; the row has a greyed-with-reason
+            // fallback for a missing command and a chord has none, so this
+            // binding is only correct while that stays true.
+            ("v", "magit-status"),
         ];
         let mut keymap = Vec::with_capacity(verbs.len() * 2);
         for (suffix, command) in verbs {

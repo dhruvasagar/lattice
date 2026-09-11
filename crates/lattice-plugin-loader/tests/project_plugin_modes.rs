@@ -89,8 +89,37 @@ fn rig(base: &std::path::Path) -> Rig {
         lattice_theme::default_palette(),
     ));
     let config = Arc::new(ConfigRegistry::default());
-    let commands: CommandRegistryHandle =
-        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
+    // PK.1: `magit-status` stands in the registry before the plugin loads,
+    // because `<C-x>pv` binds to MAGIT's command and a `mode-keymap-binding`
+    // resolves its command name against the `CommandRegistry` AT REGISTRATION
+    // — an unresolvable name is dropped, silently and by design.
+    //
+    // **Production correctness additionally depends on boot ORDER**, which
+    // this rig cannot assert and which is worth naming here:
+    // `lattice_magit::install` runs at `editor_boot.rs:720` and
+    // `lattice_plugin_loader::install` at `:2058`, so the command exists by
+    // the time the project plugin's modes drain. Reorder those two and this
+    // chord goes dead with no error anywhere — the menu row for the same verb
+    // has a greyed-with-reason fallback and a chord has none.
+    let commands: CommandRegistryHandle = Arc::new(arc_swap::ArcSwap::from_pointee({
+        let mut reg = CommandRegistry::new();
+        reg.register_ex_command(
+            "magit-status",
+            "test stand-in for magit's own command",
+            lattice_grammar::registry::ExCommandSpec {
+                latency_class: lattice_grammar::command::LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|rest: &str, _bang: bool| {
+                    Ok(lattice_grammar::Args::String(rest.to_string()))
+                }),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+                surface_form: lattice_grammar::registry::SurfaceForm::Keyword,
+            },
+        );
+        reg
+    }));
     let commands_for_rig = commands.clone();
     let pickers: PickerRegistryHandle =
         Arc::new(arc_swap::ArcSwap::from_pointee(PickerRegistry::new()));
@@ -215,13 +244,30 @@ async fn both_prefixes_are_bound_in_the_modes_own_layer() {
         })
         .collect();
 
-    let leader_rows = paths
-        .iter()
-        .filter(|p| p.starts_with("KeyChord { key: Char(' ')"))
-        .count();
+    // The SUFFIX SET, not a count.
+    //
+    // This asserted `== 3` until PK.1, and a count is the wrong assertion for a
+    // list that grows: PB.1 added `b` and turned it red with a message that
+    // said only `4 != 3`, naming neither the letter that appeared nor the
+    // letter that should have. A set says which verb arrived, and adding one
+    // means writing it down here — which is the review this list wants.
+    let suffix_after = |prefix: &str| -> Vec<String> {
+        let mut out: Vec<String> = paths
+            .iter()
+            .filter(|p| p.starts_with(prefix))
+            .filter_map(|p| p.rsplit_once("Char('").map(|(_, tail)| tail.to_string()))
+            .filter_map(|tail| tail.split_once('\'').map(|(c, _)| c.to_string()))
+            .collect();
+        out.sort();
+        out
+    };
+
+    let expected = vec!["b", "d", "f", "g", "p", "s", "v"];
     assert_eq!(
-        leader_rows, 3,
-        "<leader>p{{p,f,d}} — the always-live home: {paths:?}"
+        suffix_after("KeyChord { key: Char(' ')"),
+        expected,
+        "<leader>p{{…}} — the always-live home. PK.1: every switch-menu row has \
+         a chord, so this set and `switch.rs`'s defaults move together: {paths:?}"
     );
 
     // Design §8: `<C-x>p` is bound UNCONDITIONALLY. The design first wanted it
@@ -230,13 +276,11 @@ async fn both_prefixes_are_bound_in_the_modes_own_layer() {
     // and there is no unregister and no runtime push/pop. If a dynamic keymap
     // seam ever lands, this assertion is what should fail and point at the gate
     // that ought to come back.
-    let ctrl_x_rows = paths
-        .iter()
-        .filter(|p| p.starts_with("KeyChord { key: Char('x'), mods: KeyMods(1)"))
-        .count();
     assert_eq!(
-        ctrl_x_rows, 3,
-        "<C-x>p{{p,f,d}} — project.el's own prefix, bound unconditionally: {paths:?}"
+        suffix_after("KeyChord { key: Char('x'), mods: KeyMods(1)"),
+        expected,
+        "<C-x>p{{…}} — project.el's own prefix, bound unconditionally and to the \
+         same verbs as the leader prefix: {paths:?}"
     );
 }
 

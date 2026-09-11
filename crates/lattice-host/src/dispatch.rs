@@ -9863,6 +9863,44 @@ impl Editor {
             }
         }
 
+        // A chord that is BOTH a complete binding and a prefix — `y`, `d`,
+        // `g`, `z`, `c` — can never end on its own: the trie always says a
+        // longer sequence exists, so the capture waits forever and whatever
+        // the user presses next gets welded on. `:describe-key` then `y` then
+        // Enter answered "`y<CR>` is not bound", which is the report this
+        // fixes; `y` was undescribable, and so was every other operator.
+        //
+        // `<CR>` terminates, but ONLY once something has been captured. That
+        // proviso is the whole reason it can be a terminator at all: the
+        // design removed the reserved keys so `:describe-key` could answer
+        // "what does Enter do", and an empty sequence still reaches the
+        // capture below, so `<CR>` as the FIRST key still describes itself.
+        //
+        // What this gives up: Enter can no longer appear as a non-initial
+        // chord in a described sequence. Nothing in the tree binds one — a
+        // `<CR>` mid-sequence would be a chord you cannot type into a prompt
+        // anyway — and the alternative is that every vim operator stays
+        // undescribable, which is the worse trade by a distance.
+        let submit_now = self.chord_capture_seq.len() > 1
+            && matches!(
+                self.chord_capture_seq.last().map(|c| c.key),
+                Some(crate::chord::KeyKind::Special(
+                    lattice_protocol::chord::SpecialKey::Enter
+                ))
+            );
+        if submit_now {
+            // Drop the terminator itself — the user is describing what came
+            // before it, and leaving it on would ask about `y<CR>` again.
+            self.chord_capture_seq.pop();
+            let line = self.command_line();
+            if let Some(trimmed) = line.strip_suffix("<CR>") {
+                let trimmed = trimmed.to_string();
+                self.set_command_line_text(&trimmed);
+            }
+            self.do_command_line_submit(out);
+            return;
+        }
+
         // DK.4: ask the SHAPE question — can any registered binding, in any
         // layer, extend this sequence? Deliberately NOT the activation-gated
         // one: while this prompt is open the focused buffer is

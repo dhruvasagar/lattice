@@ -1312,6 +1312,81 @@ mod tests {
         assert!(matches!(a.editor.modal, ModalState::Command));
     }
 
+    // The three tests below press real keys, so they need crossterm's types
+    // in scope alongside the `Action`-level helpers this module uses.
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// **Reported 2026-09-11.** `:describe-key`, then `y`, then Enter
+    /// answered "`y<CR>` is not bound".
+    ///
+    /// `y` is both a complete binding and a prefix (`yy`, `yiw`), so the
+    /// trie's "can anything extend this?" question is `true` forever and the
+    /// capture never ended — whatever was pressed next got welded on. Every
+    /// vim operator was undescribable the same way.
+    #[test]
+    fn enter_terminates_a_chord_capture_that_is_also_a_prefix() {
+        let mut a = app_in_command_mode("describe-key");
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.editor.auto_submit_after_chord, "precondition: armed");
+
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            a.editor.command_line(),
+            "describe-key y",
+            "`y` alone does not submit — `yy` and `yiw` exist, so the capture \
+             is right to wait"
+        );
+
+        press(&mut a, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            !a.editor
+                .last_message
+                .as_ref()
+                .map(|m| m.text.contains("y<CR>"))
+                .unwrap_or(false),
+            "the terminator must not become part of the chord, got {:?}",
+            a.editor.last_message
+        );
+    }
+
+    /// The property the reserved-key removal was protecting, kept: with
+    /// NOTHING captured yet, Enter still describes itself. That proviso is
+    /// what lets `<CR>` be a terminator at all.
+    #[test]
+    fn enter_as_the_first_captured_key_still_describes_enter() {
+        let mut a = app_in_command_mode("describe-key");
+        a.apply(Action::CommandLineSubmit);
+        press(&mut a, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            !a.editor.auto_submit_after_chord,
+            "the capture completed rather than waiting"
+        );
+    }
+
+    /// A genuinely multi-key chord still auto-submits without a terminator —
+    /// `gg` is `Bound` and nothing extends it.
+    #[test]
+    fn a_complete_multi_key_chord_still_needs_no_terminator() {
+        let mut a = app_in_command_mode("describe-key");
+        a.apply(Action::CommandLineSubmit);
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
+        assert!(
+            !a.editor.command_line().contains("<CR>"),
+            "no terminator was needed: {:?}",
+            a.editor.command_line()
+        );
+    }
+
     #[test]
     fn empty_submit_of_canonical_describe_key_arms_chord_prompt() {
         // Same prompt path through the canonical name, not just

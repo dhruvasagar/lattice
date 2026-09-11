@@ -1962,4 +1962,56 @@ mod reported_vim_grammar_2026_09_11 {
         press_chars(&mut a, "dd");
         assert_eq!(a.editor.document.text(), before, "`dd` still refused");
     }
+
+    /// **Reported 2026-09-11:** files could not be deleted from an oil buffer
+    /// in Visual mode.
+    ///
+    /// oil binds no delete chord — it is an EDITABLE listing, so removing a
+    /// file means removing its line and saving. The reported failure was
+    /// therefore ordinary Visual `d` not working in that buffer, which is the
+    /// minor-mode shadowing bug — but it is NOT. Fixing that gating left this
+    /// failing, and the failure is precise: `ggVd` deletes exactly ONE
+    /// CHARACTER (`alpha.txt` → `lpha.txt`). The same keys in a plain buffer
+    /// delete the whole line (`visual_line_delete_in_a_plain_buffer`, which
+    /// passes), so `V` is entering CHARWISE Visual here instead of linewise.
+    /// oil registers no Visual binding of its own, so the interception is
+    /// somewhere between the listing mode and the visual-kind decision.
+    #[test]
+    #[ignore = "OPEN BUG (reported 2026-09-11): `V` yields a CHARWISE selection \
+                in an oil buffer, so `d` removes one character instead of the \
+                line. Narrowed, not yet fixed — see the note on this test."]
+    fn visual_delete_removes_lines_in_an_oil_buffer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("alpha.txt"), "").unwrap();
+        std::fs::write(dir.path().join("beta.txt"), "").unwrap();
+        std::fs::write(dir.path().join("gamma.txt"), "").unwrap();
+        let mut a = app_with("scratch\n", 20);
+        a.do_open_oil(Some(dir.path().to_path_buf()));
+
+        let before = a.editor.document.text();
+        assert!(
+            before.contains("alpha.txt"),
+            "precondition: oil listed the directory, got {before:?}"
+        );
+        let lines_before = before.lines().count();
+
+        // Select the first line and delete it, the way a file is removed in an
+        // editable listing.
+        press_chars(&mut a, "ggVd");
+
+        let after = a.editor.document.text();
+        assert!(
+            after.lines().count() < lines_before,
+            "a line must go: before {lines_before} lines {before:?}, after {after:?}"
+        );
+    }
+
+    /// Is the oil failure oil-specific, or is `V` linewise-delete broken
+    /// everywhere? Same keys, plain buffer.
+    #[test]
+    fn visual_line_delete_in_a_plain_buffer() {
+        let mut a = app_with("alpha\nbeta\ngamma\n", 20);
+        press_chars(&mut a, "ggVd");
+        assert_eq!(a.editor.document.text(), "beta\ngamma\n");
+    }
 }

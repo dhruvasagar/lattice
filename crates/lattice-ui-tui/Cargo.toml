@@ -91,6 +91,9 @@ criterion = { workspace = true }
 # `AiClientHandle` service. Test-only -- this crate has no other AI-aware
 # code (mode ownership stays entirely inside `lattice-ai`).
 lattice-ai = { path = "../lattice-ai" }
+# A real directory for the oil visual-delete regression — oil lists the
+# filesystem, so a fake would not exercise the listing at all.
+tempfile = { workspace = true }
 
 [features]
 default = []

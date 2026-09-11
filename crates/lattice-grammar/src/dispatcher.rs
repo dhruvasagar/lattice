@@ -841,16 +841,33 @@ fn motion_to_range(
 /// Byte position one UTF-8 character past `pos`, clamped to the buffer
 /// end. `pos` is assumed to be a char boundary (motion targets always
 /// are); a target at end-of-buffer returns `pos` unchanged.
+///
+/// **Never steps over a line break.** An inclusive motion covers "the
+/// character under the target", and a newline is not a character on that
+/// line — it is the line's boundary. vim agrees: no inclusive *charwise*
+/// operator swallows the line break, which is why `d$` empties a line and
+/// leaves it there while `dd` removes the line entirely. They are different
+/// operations and the newline is the whole difference.
+///
+/// Without this clamp `D` and `C` deleted the break and pulled the next line
+/// up into the current one — `motion:line-end` targets one byte PAST the last
+/// character, so the inclusive adjustment landed on the `\n` and took it. The
+/// bug was reachable from any inclusive motion whose target is the end of a
+/// line, not just `$`; fixing it here rather than in `motion_line_end` covers
+/// `e`, `f` and `t` on a line's last character by the same rule.
 fn advance_one_char(buffer: &lattice_core::Buffer, pos: Position) -> Position {
     let Ok(idx) = buffer.position_to_byte(pos) else {
         return pos;
     };
     let text = buffer.as_string();
-    let step = text
-        .get(idx..)
-        .and_then(|s| s.chars().next())
-        .map(|c| c.len_utf8())
-        .unwrap_or(0);
+    let next = text.get(idx..).and_then(|s| s.chars().next());
+    // The clamp. `\r` too: on a CRLF buffer the break is two characters and
+    // stepping onto the `\r` would split it, leaving a stray carriage return
+    // welded to the next line.
+    if matches!(next, Some('\n') | Some('\r') | None) {
+        return pos;
+    }
+    let step = next.map(|c| c.len_utf8()).unwrap_or(0);
     if step == 0 {
         return pos;
     }

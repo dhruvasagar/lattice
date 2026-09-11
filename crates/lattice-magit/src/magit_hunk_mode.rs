@@ -78,7 +78,28 @@ fn magit_hunk_keymap_entries() -> &'static [KeymapEntry] {
             // majors — so they were consumed dead keys in the six with
             // no diff content in them.
             keymap_entry! { mode: Normal, chord: "a", doc: "Apply the hunk at cursor to the working tree", cmd: "action:magit-apply-hunk" },
+            // The Visual peers of `s` / `u` / `x`. `region_of` has always
+            // restricted a hunk to the selected rows for EVERY `HunkOp`,
+            // `Apply` and `Reverse` included — but a selection only exists in
+            // Visual, and without a Visual binding these two could never be
+            // pressed with one. The region path was implemented and
+            // unreachable.
+            //
+            // **Visual `a` costs the `a`-flavoured text objects in magit
+            // buffers**, and that is not a detail: a bound prefix kills its
+            // longer chords — the trie stops at `a` and `vaw` / `vap` / `vab`
+            // die silently rather than being shadowed. Accepted because
+            // `evil-collection-magit` binds `a` in visual state and this
+            // repo's convention is to follow its remaps, and because the
+            // `i`-flavoured objects (`viw`, `vip`) are untouched, so
+            // selecting a word to yank still works. If that trade ever looks
+            // wrong, the fix is to move apply/reverse off `a`, not to
+            // half-bind it.
+            keymap_entry! { mode: Visual, chord: "a", doc: "Apply the selected lines to the working tree", cmd: "action:magit-apply-hunk" },
             keymap_entry! { mode: Normal, chord: "-", doc: "Reverse the hunk at cursor out of the working tree", cmd: "action:magit-reverse-hunk" },
+            // `-` is not a prefix of anything, so its Visual binding costs
+            // nothing.
+            keymap_entry! { mode: Visual, chord: "-", doc: "Reverse the selected lines out of the working tree", cmd: "action:magit-reverse-hunk" },
             // Hunk navigation, for the same reason: `]c` in a branch
             // list resolved an empty header set and returned `None`,
             // and a Normal-mode chord a mode binds is consumed
@@ -785,5 +806,113 @@ mod at_position_tests {
             text: "no working-tree copy".into(),
         };
         assert!(matches!(at_position(echo, POS), Effect::Echo { .. }));
+    }
+}
+
+/// **The selection audit.** Every chord this mode contributes that acts on
+/// CONTENT must be reachable in Visual, because a selection is the only way
+/// to name "these lines" and Visual is the only place a selection exists.
+///
+/// Written as a table over the whole keymap rather than a test per chord, so
+/// a chord added later is classified by its author or fails here — the
+/// failure mode this guards is a new content action that silently ignores a
+/// selection, which no per-chord test can notice because it does not exist
+/// yet.
+#[cfg(test)]
+mod selection_audit {
+    use super::*;
+    use lattice_keymap::BindingMode;
+
+    /// Chords that act on the content under the cursor, and so must offer a
+    /// Visual peer. The `region_of` / `*_rows` machinery already restricts
+    /// each of these to a selection; the binding is what makes it reachable.
+    const CONTENT_CHORDS: &[&str] = &["s", "u", "x", "a", "-"];
+
+    /// Chords that are deliberately single-target. Listed rather than merely
+    /// absent so the reason travels with them:
+    ///
+    /// - `<CR>` visits the file at cursor. A selection of five files would
+    ///   mean five buffers from one keypress; emacs magit opens one, and so
+    ///   does every other lattice view.
+    /// - `]c` / `[c` / `]f` / `[f` are motions. A motion that consumed a
+    ///   selection would be moving and selecting at once.
+    const SINGLE_TARGET_CHORDS: &[&str] = &["<CR>", "]c", "[c", "]f", "[f"];
+
+    fn chords_for(mode: BindingMode) -> Vec<String> {
+        magit_hunk_keymap_entries()
+            .iter()
+            .filter(|e| e.modes.contains(&mode))
+            .map(|e| e.chord.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn every_content_chord_has_a_visual_peer() {
+        let visual = chords_for(BindingMode::Visual);
+        for chord in CONTENT_CHORDS {
+            assert!(
+                visual.iter().any(|c| c == chord),
+                "`{chord}` acts on content but has no Visual binding, so it \
+                 can never be pressed with a selection — its region path is \
+                 unreachable. Visual chords present: {visual:?}"
+            );
+        }
+    }
+
+    /// And each of those is ALSO bound in Normal, because acting on the
+    /// cursor's hunk without selecting first is the common case.
+    #[test]
+    fn every_content_chord_still_works_from_normal() {
+        let normal = chords_for(BindingMode::Normal);
+        for chord in CONTENT_CHORDS {
+            assert!(
+                normal.iter().any(|c| c == chord),
+                "`{chord}` lost its Normal binding: {normal:?}"
+            );
+        }
+    }
+
+    /// The deliberate singles must NOT gain a Visual binding by accident —
+    /// a `<CR>` that opened one buffer per selected row would be a surprise
+    /// delivered by a keypress the user has pressed a thousand times.
+    #[test]
+    fn single_target_chords_stay_out_of_visual() {
+        let visual = chords_for(BindingMode::Visual);
+        for chord in SINGLE_TARGET_CHORDS {
+            assert!(
+                !visual.iter().any(|c| c == chord),
+                "`{chord}` is documented as single-target but is now bound in \
+                 Visual. If that is intended, move it to CONTENT_CHORDS and \
+                 say why here."
+            );
+        }
+    }
+
+    /// Nothing is bound in Visual that is not accounted for above. This is
+    /// the half that catches a NEW chord: adding one to Visual without
+    /// classifying it fails here rather than shipping unclassified.
+    #[test]
+    fn every_visual_chord_is_classified() {
+        for chord in chords_for(BindingMode::Visual) {
+            assert!(
+                CONTENT_CHORDS.contains(&chord.as_str()),
+                "`{chord}` is bound in Visual but is not in CONTENT_CHORDS — \
+                 add it there (and make sure its handler reads \
+                 `ctx.selection`), or do not bind it in Visual."
+            );
+        }
+    }
+
+    /// `v` / `V` / `<C-v>` are never bound in a magit buffer — they are how
+    /// the user MAKES a selection, and a mode that claimed them would take
+    /// away the thing every chord above depends on.
+    #[test]
+    fn the_keys_that_start_a_selection_are_never_claimed() {
+        for chord in magit_hunk_keymap_entries().iter().map(|e| e.chord) {
+            assert!(
+                !matches!(chord, "v" | "V" | "<C-v>"),
+                "`{chord}` starts a Visual selection and must stay unbound"
+            );
+        }
     }
 }

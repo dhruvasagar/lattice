@@ -262,6 +262,80 @@ per keystroke rather than a walk. See
 [`project-commands.md`](project-commands.md) §9 H5 for why incremental beats
 the recursive alternative, and `benchmarks.md` PC.9 for what a keystroke costs.
 
+### 4.2ter Where the picker is: the query, and the root (PP.1 / PP.2)
+
+Two separate answers to one complaint — *"which project is this list from?"* —
+because the honest answer is different for a path-shaped picker than for a
+project-shaped one.
+
+**A source whose query IS a position seeds it.** A third hook,
+`initial_query(&self, args) -> Option<String>`, defaulting to `None` (the
+host's existing rule: a live source's first argument seeds the query). For
+`dir-pick` the query is not a filter over a fixed list — it is the directory
+being listed, the thing `<C-l>` / `<C-h>` rewrite and the thing every row is
+spelled against. Opening empty left the prompt blank while every row carried a
+path, and left `<C-h>` with no last component to drop, so the first press did
+nothing and the second worked.
+
+The hook exists rather than the host reading `args[0]` because the default
+start belongs to the source (`dir-pick` starts at home, not at the workspace),
+and because the argument needs normalising into a *listing* prefix on the way
+in: `path_entries("/tmp")` lists `/`'s children whose names begin `tmp`, where
+`path_entries("/tmp/")` lists what is inside.
+
+`dir-pick` also grows a **`../` row**, first, whenever the query names a whole
+directory that exists. It is an ordinary row whose text is the parent's path,
+which is what makes it need no special-casing: `<C-l>` descends into it because
+the text ends in `/`, `<CR>` supplies the parent because that is what every row
+does with its own path. It shares `parent_of` with `ascend` so the row and the
+key cannot land somewhere different. It is suppressed once the query carries a
+basename (it would be the one row in a filtered set that is not a match) and
+for a path that resolves to nothing (a lone `../` there suggests the path
+resolved).
+
+**A source whose results are scoped to a root declares it.**
+`PickerSourceSpec.rooted: bool`; the host resolves the root at seat time and
+the prompt reads `files ~/src/lattice> `.
+
+A declaration rather than an inference, and that is the whole design decision.
+The host already resolves a root for every picker open —
+`build_picker_context` always fills `workspace_root` — so it *could* show one
+everywhere. It must not: `buffers` spans every project you have open,
+`commands` is registry-wide, `lines` is one buffer, and a path on those is
+noise on the one line the user reads to know what they are looking at. Only the
+source knows whether the root is part of what the list MEANS. The test is
+*"would these results be different in another project?"*
+
+Set today by `files`, `file-pick`, `grep` and every `lattice-magit` source
+(scoped to the buffer's repository — `magit-repo-scoping.md` §2 resolves which
+one from the buffer precisely so two checkouts can be open at once). Declined
+by `dir-pick`, whose query already names its directory: a root beside that
+would be a second answer to the same question and a staler one, naming where
+browsing started rather than where you are. Declined by the `projects` picker
+too, which reads backwards at first glance — its rows *are* project roots, but
+it lists all of them and the list is the same whichever project you are in.
+
+The **LSP pickers set `Picker::root_label` directly**, because they are seated
+by hand and have no spec to declare it on: definitions, references, document
+and workspace symbols, and the call / type hierarchies are one server's answer
+about one workspace, and a list of `src/foo.rs:12` rows says nothing about
+which checkout they are in. The cursor-local ones (`complete`, `code-actions`,
+`code-lens`, colour alternatives) do not, and neither do `:diagnostics` /
+`:clist`, which span every attached server by their own definition.
+
+The resolver is the same everywhere (`picker_workspace_root_path`), on purpose:
+the value of showing the root is that it reads identically wherever it appears,
+and a second notion of "the root" would let two pickers disagree about which
+project you are in. The label is home-contracted for display
+(`lattice_core::home::contract_tilde`) — the home prefix is the least
+informative part of a path and the part that squeezes out the rest of it.
+
+**Cost, stated rather than buried.** `picker-source-spec` crosses WIT, so
+`rooted` is a boundary change: every guest needs `wit-sync` and a rebuild
+before it will instantiate, in-tree and out. That is the price of letting a
+plugin source say it too, and it is paid once — the same trade PC.11's
+`fill-action` made.
+
 ### 4.3 `PickerSourceGenerator` (the trait)
 
 ```rust

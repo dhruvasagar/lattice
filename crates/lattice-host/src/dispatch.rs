@@ -12949,6 +12949,12 @@ impl Editor {
             lattice_picker::PickerSource::LspLocations,
             lattice_picker::PickerAction::JumpToLspLocation,
         );
+        // PP.2: definitions and references are ONE project's answer — the
+        // server that produced them is rooted at a workspace, and a list of
+        // `src/foo.rs:12` rows says nothing about which checkout they are in.
+        // Set here rather than declared, because these pickers are seated by
+        // hand and have no `PickerSourceSpec` to declare it on.
+        p.root_label = self.picker_root_label();
         p.set_lsp_locations(rows);
         self.set_active_picker(p);
     }
@@ -13382,6 +13388,12 @@ impl Editor {
                     lattice_picker::PickerSource::LspLocations,
                     lattice_picker::PickerAction::JumpToLspLocation,
                 );
+                // PP.2: document symbols, WORKSPACE symbols, call hierarchy and
+                // type hierarchy all come back from a server rooted at a
+                // workspace. `workspace-symbols foo (40)` with no root is the
+                // sharpest case for naming it — the query spans a project and
+                // the rows do not say which.
+                p.root_label = self.picker_root_label();
                 p.set_lsp_locations(picker_rows);
                 self.set_active_picker(p);
             }
@@ -13845,6 +13857,27 @@ impl Editor {
             .map(|e| e.spec.live)
             .unwrap_or(false);
         picker.set_live_source_mode(live);
+        // PP.2: a source that declared itself rooted gets its root named in
+        // the prompt. Resolved HERE rather than in the source, so every rooted
+        // source shows the same root its `init` was handed — a source that
+        // formatted its own would be free to name a different one, and a
+        // prompt that disagrees with the list is worse than no prompt at all.
+        //
+        // Read off the same `picker_workspace_root_path` that filled the
+        // context, which is why magit's repo-scoped sources land on the right
+        // answer without a second mechanism: it consults `buffer_scope_dir`
+        // first, so a magit buffer resolves to its own checkout.
+        let rooted = self
+            .picker_registry
+            .load()
+            .entry(&source)
+            .map(|e| e.spec.rooted)
+            .unwrap_or(false);
+        if rooted {
+            let snap = self.document.snapshot();
+            let root = self.picker_workspace_root_path(&snap);
+            picker.root_label = Some(lattice_core::home::contract_tilde(&root));
+        }
         let initial_query = self
             .live_picker_query
             .as_mut()
@@ -14323,6 +14356,26 @@ impl Editor {
             ),
         }
         signals
+    }
+
+    /// PP.2: the root to name in a picker prompt, ready to display.
+    ///
+    /// For the pickers that have no `PickerSourceSpec` to declare `rooted` on
+    /// — the LSP ones, which are seated by hand. Same resolver as every
+    /// spec-declared source ([`picker_workspace_root_path`]), deliberately:
+    /// the value of showing the root is that it reads the same wherever it
+    /// appears, and a second notion of "the root" would make two pickers
+    /// disagree about which project you are in.
+    ///
+    /// **Not the LSP server's own `workspace_root`**, which is the other
+    /// plausible answer here. Results can be merged across servers, so there
+    /// is not always one of those; and where there is, it is the same project
+    /// by a different route.
+    fn picker_root_label(&self) -> Option<String> {
+        let snap = self.document.snapshot();
+        Some(lattice_core::home::contract_tilde(
+            &self.picker_workspace_root_path(&snap),
+        ))
     }
 
     /// The project root picker sources scan from.

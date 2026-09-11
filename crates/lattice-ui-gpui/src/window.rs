@@ -4205,8 +4205,17 @@ impl Render for EditorView {
                                 .text_color(rgb(theme.popup_border))
                                 .pb_1()
                                 .child(format!(
-                                    " {} ({} / {}){} ",
+                                    " {}{} ({} / {}){} ",
                                     picker.title,
+                                    // PP.2: a rooted picker names the root it
+                                    // is operating on. This overlay puts the
+                                    // title on its own header row, so the root
+                                    // rides there rather than beside the `>`.
+                                    picker
+                                        .root_label
+                                        .as_deref()
+                                        .map(|r| format!(" {r}"))
+                                        .unwrap_or_default(),
                                     if total == 0 { 0 } else { picker.selected + 1 },
                                     total,
                                     if picker.loading { " searching…" } else { "" },
@@ -4328,8 +4337,19 @@ impl Render for EditorView {
                     .child(
                         div()
                             .text_color(rgb(theme.cursor_background))
-                            .child(format!("{}> ", picker.title)),
+                            .child(picker.title.clone()),
                     )
+                    // PP.2: the root between the source and the `>`, dimmer
+                    // than the title — context, read once on open, not the
+                    // thing you came to read. Emitted only when the picker has
+                    // one, so nothing about an unrooted prompt moves. Mirrors
+                    // the TUI's `draw_picker_prompt`.
+                    .children(picker.root_label.as_deref().map(|root| {
+                        div()
+                            .text_color(rgb(theme.popup_border))
+                            .child(format!(" {root}"))
+                    }))
+                    .child(div().text_color(rgb(theme.cursor_background)).child("> "))
                     .child(div().child(picker.query.clone()))
                     .child(
                         div()

@@ -49,6 +49,11 @@ impl Guest for Component {
             // OR.5: the source declares that it can create what the query
             // names. `%s` is replaced by the query when the row renders.
             create_label: Some("Create fixture: %s".to_string()),
+            // PP.2: `true` on purpose. The field's failure mode is a boundary
+            // arm that writes the default, which a fixture declaring `false`
+            // cannot tell apart from one that carries the value — the hole
+            // PC.11's `fill-action` shipped through.
+            rooted: true,
         });
         register_picker_source(&PickerSourceSpec {
             id: SECOND.to_string(),
@@ -57,6 +62,9 @@ impl Guest for Component {
             args_hint: String::new(),
             live: false,
             create_label: None,
+            // …and `false` here, so the pair proves the value TRAVELS rather
+            // than that the host defaults everything to the same answer.
+            rooted: false,
         });
     }
 }

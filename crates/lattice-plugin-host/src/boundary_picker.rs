@@ -325,6 +325,7 @@ impl WitBoundary for NativePickerSourceSpec {
             args_hint: self.args_hint.to_string(),
             live: self.live,
             create_label: self.create_label.as_ref().map(|l| l.to_string()),
+            rooted: self.rooted,
         })
     }
 
@@ -344,6 +345,13 @@ impl WitBoundary for NativePickerSourceSpec {
             // OR.5: `Cow::Owned`, like the id/doc/args_hint above — a plugin's
             // label frees on `PickerRegistry::unregister`.
             create_label: wit.create_label.map(Into::into),
+            // PP.2. This is the direction where the field IS the feature: a
+            // guest declaring `rooted` and arriving here as `false` is a
+            // picker that silently stops naming its root, which reads as the
+            // feature not existing. PC.11's `fill-action` shipped exactly that
+            // way — a mechanical field-add wrote the default on this arm — so
+            // the round-trip test carries a populated value.
+            rooted: wit.rooted,
         })
     }
 }
@@ -782,6 +790,12 @@ mod tests {
             // OR.5: a real label, so the round trip proves the field crosses
             // rather than proving `None == None`.
             create_label: Some("Create note: %s".into()),
+            // PP.2: `true`, for the same reason and against the same failure.
+            // `rooted: false` would round-trip through an arm that dropped the
+            // field entirely — the exact shape PC.11's `fill-action` shipped,
+            // where a mechanical field-add wrote the default on the one arm
+            // where the value IS the feature.
+            rooted: true,
         };
         let back = NativePickerSourceSpec::from_wit(native.to_wit().unwrap()).unwrap();
         assert_eq!(back.id, "files");
@@ -789,6 +803,11 @@ mod tests {
         assert_eq!(back.args_hint, "[root]");
         assert!(!back.live);
         assert_eq!(back.create_label.as_deref(), Some("Create note: %s"));
+        assert!(
+            back.rooted,
+            "a guest declaring `rooted` must arrive rooted — a picker that \
+             silently stops naming its root reads as the feature not existing"
+        );
         assert_eq!(back.args_schema.len(), 1);
         assert_eq!(back.args_schema[0].name, "root");
     }

@@ -1634,11 +1634,17 @@ fn annotation_color(
 /// is the v1 display strategy; multi-buffer support brings split /
 /// Vertico-style picker prompt (DESIGN.md §5.9.7) drawn in the
 /// cmdline row when a [`lattice_picker::Picker`] is open. Format:
-/// `<title>> <query>` -- the title stands in for the `:` prompt
-/// so the user knows what they're picking, and `query` is the
-/// live filter they're typing. Sits at the screen bottom; the
+/// `<title>[ <root>]> <query>` -- the title stands in for the `:`
+/// prompt so the user knows what they're picking, and `query` is
+/// the live filter they're typing. Sits at the screen bottom; the
 /// candidate list is rendered below by
 /// [`draw_picker_candidates`].
+///
+/// PP.2: `root` appears only for a picker whose results are scoped
+/// to a project (`Picker::root_label`), because when several
+/// checkouts are open the rows cannot say which one answered and
+/// memory is not a reliable substitute. Most pickers have no root
+/// and their prompt is byte-identical to what it was.
 fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
     // Slice 3c.final.B (group 3): bind picker substate Arc.
     let picker = app.picker_state();
@@ -1658,17 +1664,37 @@ fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("  {count}")
     };
-    let para = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!("{}> ", p.title),
-            TuiStyle::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(p.query.clone()),
-        Span::styled(trailing, TuiStyle::default().fg(Color::DarkGray)),
-    ]));
-    frame.render_widget(para, area);
+    // PP.2: a rooted picker names the root it is operating on, between the
+    // source and the `>`. Dimmer than the title and brighter than the count:
+    // it is context, read once on open, not the thing you came to read.
+    //
+    // `None` for every picker whose results are not root-scoped, which is most
+    // of them — the span simply is not emitted, so nothing about those prompts
+    // moves.
+    let mut spans = vec![Span::styled(
+        p.title.clone(),
+        TuiStyle::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if let Some(root) = p.root_label.as_deref() {
+        spans.push(Span::styled(
+            format!(" {root}"),
+            TuiStyle::default().fg(Color::DarkGray),
+        ));
+    }
+    spans.push(Span::styled(
+        "> ",
+        TuiStyle::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::raw(p.query.clone()));
+    spans.push(Span::styled(
+        trailing,
+        TuiStyle::default().fg(Color::DarkGray),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Vertico-style candidate list (DESIGN.md §5.9.7) drawn in the
@@ -11305,6 +11331,68 @@ mod tests {
         let fp = compose_fingerprint(&lines);
         let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1   \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                      \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2   \"/Some(DarkGray)/None/NONE|\"\u{2502}\"/Some(Rgb(108, 112, 134))/None/NONE|\"   \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3   \"/Some(DarkGray)/None/NONE|\"\u{2502}\"/Some(Rgb(108, 112, 134))/None/NONE|\"   \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4   \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE";
         assert_eq!(fp, expected, "active-pane compose output changed");
+    }
+
+    /// PP.2: the root reaches the PAINTED prompt row, and an unrooted picker's
+    /// prompt does not move.
+    ///
+    /// Asserted on the frame rather than on `Picker::root_label`, because the
+    /// host-side test already pins the field and the thing that can still go
+    /// missing is this render. A prompt that carries the root in its model and
+    /// never paints it is indistinguishable, to the user, from the feature not
+    /// existing.
+    #[test]
+    fn pp2_a_rooted_picker_paints_its_root_in_the_prompt() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let row_text = |app: &App| -> String {
+            let (tw, th): (u16, u16) = (80, 10);
+            let mut terminal = Terminal::new(TestBackend::new(tw, th)).unwrap();
+            let snap = app.ad().snapshot.clone();
+            terminal
+                .draw(|f| {
+                    draw_picker_prompt(
+                        f,
+                        Rect {
+                            x: 0,
+                            y: 0,
+                            width: tw,
+                            height: 1,
+                        },
+                        app,
+                    );
+                    let _ = &snap;
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..tw)
+                .map(|x| buf[(x, 0)].symbol().to_string())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+
+        let mut a = app_with("scratch\n", 20);
+        let _ = a.mutate_editor_with(|e: &mut lattice_host::editor::Editor| {
+            e.open_picker("buffers".to_string(), Vec::new())
+        });
+        let unrooted = row_text(&a);
+        assert!(
+            unrooted.starts_with("buffers> "),
+            "an unrooted picker's prompt is unchanged: {unrooted:?}"
+        );
+
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            if let Some(p) = e.picker.as_mut() {
+                p.root_label = Some("~/src/lattice".to_string());
+            }
+        });
+        let rooted = row_text(&a);
+        assert!(
+            rooted.starts_with("buffers ~/src/lattice> "),
+            "the root sits between the source and the `>`: {rooted:?}"
+        );
     }
 
     #[test]

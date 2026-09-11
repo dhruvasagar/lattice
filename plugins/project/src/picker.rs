@@ -58,6 +58,12 @@ pub fn spec() -> PickerSourceSpec {
         args_hint: String::new(),
         // Not live: the remembered list cannot change while the picker is open.
         live: false,
+        // PP.2: NOT rooted, and this is the source where that reads backwards
+        // at first glance. The list is *of* project roots — but it is the list
+        // of ALL of them, and it is the same list whichever project you happen
+        // to be in. Naming one root above a list of every root would say
+        // something untrue about what the rows are.
+        rooted: false,
         // PC.12: the create row is back, and the argument that ruled it out is
         // still correct — it just answered a different question.
         //

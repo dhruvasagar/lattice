@@ -82,10 +82,15 @@ impl BranchPickBaseSource {
     pub fn new(repo: RepoLens) -> Self {
         Self {
             repo,
+            // PP.2: `with_rooted` on every source in this file, for
+            // `takes_ex_command`'s reason — a branch list belongs to ONE
+            // repository, and which one is a live question by design
+            // (`magit-repo-scoping.md` §2 resolves it from the buffer so two
+            // checkouts can be open at once).
             spec: PickerSourceSpec::no_args(
                 "magit-branch-pick-base",
                 "Pick an existing branch as the base for a new branch (magit branch-create wizard).",
-            ),
+            ).with_rooted(true),
         }
     }
 }
@@ -155,7 +160,8 @@ impl BranchCheckoutSource {
             spec: PickerSourceSpec::no_args(
                 BRANCH_CHECKOUT_SOURCE,
                 "Pick a branch and check it out.",
-            ),
+            )
+            .with_rooted(true),
         }
     }
 }
@@ -250,7 +256,8 @@ impl BranchCreateNoCheckoutSource {
             spec: PickerSourceSpec::no_args(
                 BRANCH_CREATE_NO_CHECKOUT_SOURCE,
                 "Pick a base, then name a new branch — without checking it out.",
-            ),
+            )
+            .with_rooted(true),
         }
     }
 }
@@ -315,7 +322,8 @@ impl BranchRenameSource {
             spec: PickerSourceSpec::no_args(
                 BRANCH_RENAME_SOURCE,
                 "Pick a branch, then type its new name.",
-            ),
+            )
+            .with_rooted(true),
         }
     }
 }
@@ -385,7 +393,8 @@ impl BranchDeleteSource {
             spec: PickerSourceSpec::no_args(
                 BRANCH_DELETE_SOURCE,
                 "Pick a branch to delete — asks before deleting.",
-            ),
+            )
+            .with_rooted(true),
         }
     }
 }
@@ -547,6 +556,12 @@ fn takes_ex_command(id: &'static str, doc: &'static str, noun: &'static str) -> 
         )],
         args_hint: std::borrow::Cow::Borrowed("<magit ex-command>"),
         live: false,
+        // PP.2: every magit source lists one REPOSITORY's refs, and the whole
+        // reason `RepoLens` exists is that which repository is a live question
+        // — `magit-repo-scoping.md` §2 resolves it from the buffer, precisely
+        // so two checkouts can be open at once. A branch list with no repo on
+        // it is the case that rule was written for.
+        rooted: true,
     }
 }
 

@@ -424,6 +424,21 @@ pub enum PickerAction {
 #[derive(Debug, Clone)]
 pub struct Picker {
     pub title: String,
+    /// PP.2: the root these results are scoped to, ready to display —
+    /// home-contracted (`~/src/lattice`) by whoever set it, because the
+    /// renderers have one line and the home prefix is the least informative
+    /// part of a path.
+    ///
+    /// `None` for every picker whose results are not root-scoped, which is
+    /// most of them: `buffers` spans every project you have open, `commands`
+    /// is registry-wide, `lines` is one buffer. A root on those is noise on
+    /// the one line the user reads to know what they are looking at.
+    ///
+    /// Set at seat time, from the seating source's
+    /// [`PickerSourceSpec::rooted`](source::PickerSourceSpec::rooted) — or
+    /// directly, for the LSP pickers, which are seated by hand and never had
+    /// a spec.
+    pub root_label: Option<String>,
     pub query: String,
     /// Byte offset within `query` where the cursor sits. Today
     /// the picker only appends / backspaces at end-of-query so
@@ -566,6 +581,7 @@ impl Picker {
     pub fn new(title: impl Into<String>, source: PickerSource, on_accept: PickerAction) -> Self {
         Self {
             title: title.into(),
+            root_label: None,
             query: String::new(),
             query_cursor: 0,
             candidates: Vec::new(),

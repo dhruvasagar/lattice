@@ -1287,6 +1287,23 @@ interface types {
         /// `accept`, which decides what creation means. `none` — every source
         /// but roam's — behaves exactly as before.
         create-label: option<string>,
+        /// PP.2: these results are scoped to a project / workspace root, so the
+        /// picker prompt names the root it is operating on
+        /// (`files ~/src/lattice> `).
+        ///
+        /// A DECLARATION, not an inference. The host resolves a root for every
+        /// picker open — `picker-context.workspace-root` is always filled — so
+        /// it could show one everywhere, and a path on a list that spans every
+        /// open project is noise on the one line the user reads to know what
+        /// they are looking at. Only the source knows whether the root is part
+        /// of what its list MEANS.
+        ///
+        /// Set it when the answer to *"would these results be different in
+        /// another project?"* is yes. `false` is the answer for a list that is
+        /// global, buffer-local, or registry-wide — and for a source whose
+        /// QUERY already names a path, where a root beside it would be a
+        /// second and staler answer to the same question.
+        rooted: bool,
     }
 
     /// Mirrors the crossable core of `lattice_completion::traits::GenerateContext`

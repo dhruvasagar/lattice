@@ -436,6 +436,10 @@ impl FilesSource {
             spec: PickerSourceSpec {
                 create_label: None,
                 id: "files".into(),
+                // PP.2: the list IS the project. `:files` in one checkout and
+                // `:files` in another answer entirely differently, and nothing
+                // else on screen says which one answered.
+                rooted: true,
                 doc: "File picker rooted at the active buffer's PROJECT (recursive). Pass an explicit path to override.".into(),
                 args_hint: "[root]".into(),
                 args_schema: vec![ArgSpec {
@@ -577,6 +581,8 @@ impl FilePickSource {
             spec: PickerSourceSpec {
                 create_label: None,
                 id: FILE_PICK_SOURCE.into(),
+                // Same walk as `files`, so the same root and the same reason.
+                rooted: true,
                 doc: "Pick a file and supply its path as a value (for a transient argument or \
                       other caller awaiting one). Lists the same files as `files`; differs only \
                       in that accepting yields the path rather than opening it."
@@ -657,6 +663,12 @@ impl DirPickSource {
             spec: PickerSourceSpec {
                 create_label: None,
                 id: DIR_PICK_SOURCE.into(),
+                // PP.2: NOT rooted, despite being the most path-shaped source
+                // there is. Its query is the directory it is listing, so the
+                // prompt already says where it is — a root beside that would
+                // be a second answer to the same question, and a staler one
+                // (it would name where browsing STARTED, not where you are).
+                rooted: false,
                 doc: "Browse to a directory and supply its path as a value (for a transient \
                       argument, a command argument, or other caller awaiting one). Lists one \
                       level at a time: `<C-l>` descends into the selected directory, `<C-h>` \
@@ -2157,6 +2169,9 @@ impl GrepSource {
             spec: PickerSourceSpec {
                 create_label: None,
                 id: "grep".into(),
+                // The search is run WITH the root as its cwd, so the root is
+                // half of what a hit means.
+                rooted: true,
                 doc: "Live recursive text search via the configured backend (`rg`/`ag`/`grep`). Re-runs as you type; `<CR>` jumps to the chosen hit.".into(),
                 args_hint: "[pattern]".into(),
                 args_schema: vec![ArgSpec {

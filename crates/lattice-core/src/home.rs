@@ -67,6 +67,35 @@ pub fn expand_tilde_path(raw: &Path) -> PathBuf {
     }
 }
 
+/// [`expand_tilde`]'s inverse: put the `~` back for DISPLAY.
+///
+/// `/Users/dhruva/src/lattice` → `~/src/lattice`. For showing a path in a
+/// prompt, a status line or any other one-line surface where the home prefix is
+/// the least informative part of it and the part that squeezes out the rest.
+///
+/// **Display only.** The result is not a path to hand to anything that opens
+/// files — that is what the expanding direction is for, and round-tripping
+/// through here would be a way to lose a path whose home resolution changed
+/// underneath it.
+///
+/// Home itself contracts to `~`, not `~/`. Anything outside home, a
+/// non-UTF-8 path, or an unresolvable home is returned verbatim, so the
+/// failure is a path that reads slightly long rather than one that reads wrong.
+pub fn contract_tilde(raw: &Path) -> String {
+    let Some(home) = dirs::home_dir() else {
+        return raw.display().to_string();
+    };
+    match raw.strip_prefix(&home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        // `Path::join` rather than string concatenation so the separator is the
+        // platform's. `strip_prefix` is component-wise, so `/Users/dhruvax`
+        // cannot match a home of `/Users/dhruva` the way a `starts_with` on the
+        // string would.
+        Ok(rest) => Path::new("~").join(rest).display().to_string(),
+        Err(_) => raw.display().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +138,51 @@ mod tests {
             let home = dirs::home_dir().map(|h| h.join("$FOO").display().to_string());
             home.unwrap_or_else(|| "~/$FOO".to_string())
         });
+    }
+
+    /// The display direction, and the round trip that says the two agree.
+    #[test]
+    fn a_path_under_home_contracts_back_to_a_tilde() {
+        let Some(home) = dirs::home_dir() else {
+            eprintln!("SKIP: no home directory on this machine");
+            return;
+        };
+        assert_eq!(contract_tilde(&home.join("src").join("lattice")), {
+            let sep = std::path::MAIN_SEPARATOR;
+            format!("~{sep}src{sep}lattice")
+        });
+        assert_eq!(contract_tilde(&home), "~", "home itself is `~`, not `~/`");
+        assert_eq!(
+            expand_tilde(&contract_tilde(&home.join("src"))),
+            home.join("src").display().to_string(),
+            "the two directions round-trip"
+        );
+    }
+
+    /// Outside home is left alone — contracting it would have to invent a
+    /// prefix, and a shortened path to the wrong place is the failure the
+    /// expanding direction already refuses to produce.
+    #[test]
+    fn a_path_outside_home_is_left_verbatim() {
+        assert_eq!(contract_tilde(Path::new("/etc/hosts")), "/etc/hosts");
+    }
+
+    /// Component-wise, not a string prefix. A sibling whose name merely starts
+    /// with the home directory's must not contract — the result would name a
+    /// directory that does not exist.
+    #[test]
+    fn a_sibling_sharing_homes_prefix_does_not_contract() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let Some(name) = home.file_name().and_then(|n| n.to_str()) else {
+            return;
+        };
+        let Some(parent) = home.parent() else {
+            return;
+        };
+        let sibling = parent.join(format!("{name}x"));
+        assert_eq!(contract_tilde(&sibling), sibling.display().to_string());
     }
 
     #[test]

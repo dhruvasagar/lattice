@@ -88,6 +88,26 @@ pub struct PickerSourceSpec {
     /// knows: org-roam mints a node, another source might make a file. `None` —
     /// every source but roam's — behaves exactly as before.
     pub create_label: Option<Cow<'static, str>>,
+    /// PP.2: this source's results are scoped to a project / workspace root,
+    /// so the picker prompt names the root it is operating on.
+    ///
+    /// **A declaration, not an inference.** The host resolves a root for every
+    /// picker open (`build_picker_context` always fills `workspace_root`), so
+    /// it could show one everywhere — and a path on `buffers`, `commands` or
+    /// `marks`, whose results span every project you have open, is noise on a
+    /// surface that has one line to be read. Only the source knows whether the
+    /// root is part of what the list MEANS.
+    ///
+    /// Set it when the answer to *"would these results be different in another
+    /// project?"* is yes: `files`, `grep`, every magit source (scoped to the
+    /// buffer's repository). Leave it off when the list is global
+    /// (`buffers`, `recent`, `projects`), buffer-local (`lines`, `outline`) or
+    /// registry-wide (`commands`, `snippets`, `colorscheme`).
+    ///
+    /// `dir-pick` deliberately declines it despite being path-shaped: its
+    /// QUERY is the directory it is listing, so the prompt already says where
+    /// it is and a root beside that would be a second, staler answer.
+    pub rooted: bool,
 }
 
 impl PickerSourceSpec {
@@ -101,6 +121,7 @@ impl PickerSourceSpec {
             args_hint: Cow::Borrowed(""),
             live: false,
             create_label: None,
+            rooted: false,
         }
     }
 
@@ -119,6 +140,13 @@ impl PickerSourceSpec {
     /// debounced keystroke.
     pub fn with_live(mut self, live: bool) -> Self {
         self.live = live;
+        self
+    }
+
+    /// Builder-style: PP.2's [`rooted`](Self::rooted) — the prompt names the
+    /// root these results are scoped to.
+    pub fn with_rooted(mut self, rooted: bool) -> Self {
+        self.rooted = rooted;
         self
     }
 }

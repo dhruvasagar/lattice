@@ -293,10 +293,15 @@ struct VisualLookup {
 /// separates them and the fallback still answers for every bare-chord binding
 /// the Visual catalog has always relied on — `V` then `d` is unaffected,
 /// because raw and normalized are the same chord there.
-fn lookup_visual_chord(handle: &KeymapHandle, path: &[KeyChord], chord: KeyChord) -> VisualLookup {
+fn lookup_visual_chord(
+    handle: &KeymapHandle,
+    path: &[KeyChord],
+    chord: KeyChord,
+    active_minor_modes: &[lattice_mode::ModeId],
+) -> VisualLookup {
     let mut raw_path: Vec<KeyChord> = path.to_vec();
     raw_path.push(chord);
-    let raw = handle.lookup(BindingMode::Visual, &raw_path);
+    let raw = handle.lookup_with_context(BindingMode::Visual, &raw_path, active_minor_modes);
     if matches!(raw, LookupResult::Bound { .. } | LookupResult::Partial) {
         return VisualLookup {
             result: raw,
@@ -313,7 +318,11 @@ fn lookup_visual_chord(handle: &KeymapHandle, path: &[KeyChord], chord: KeyChord
     let mut normalized_path: Vec<KeyChord> = path.to_vec();
     normalized_path.push(normalized);
     VisualLookup {
-        result: handle.lookup(BindingMode::Visual, &normalized_path),
+        result: handle.lookup_with_context(
+            BindingMode::Visual,
+            &normalized_path,
+            active_minor_modes,
+        ),
         resolved: normalized,
     }
 }
@@ -357,6 +366,7 @@ pub fn dispatch_visual(
     chord: &KeyChord,
     kind: VisualKind,
     partial_chord: &[KeyChord],
+    active_minor_modes: &[lattice_mode::ModeId],
 ) -> Action {
     // SN.3d.2: `<C-g>` toggles Visual → Select (reserved in both modes
     // for the toggle; select-mode.md §4). Must precede the CONTROL
@@ -387,7 +397,7 @@ pub fn dispatch_visual(
     // Resolve the full path; the blockwise `I` / `A` overlay does not
     // apply here (it is a fresh-chord-only shortcut).
     if !partial_chord.is_empty() {
-        let found = lookup_visual_chord(handle, partial_chord, *chord);
+        let found = lookup_visual_chord(handle, partial_chord, *chord, active_minor_modes);
         return match found.result {
             LookupResult::Bound { command, captured } => {
                 crate::keymap_normal::action_from_bound_with_capture(&command, &captured)
@@ -404,7 +414,7 @@ pub fn dispatch_visual(
             _ => {}
         }
     }
-    let found = lookup_visual_chord(handle, &[], *chord);
+    let found = lookup_visual_chord(handle, &[], *chord, active_minor_modes);
     let chord = found.resolved;
     match found.result {
         LookupResult::Bound { command, captured } => {
@@ -470,11 +480,18 @@ mod os0d_tests {
         let chord = KeyChord::new(KeyKind::Special(SpecialKey::Right), KeyMods::ALT);
         bind_visual(&h, mode, chord, id);
 
-        let found = lookup_visual_chord(&h, &[], chord);
+        let found = lookup_visual_chord(&h, &[], chord, &[mode]);
         assert_eq!(bound_command(&found.result), id);
         assert_eq!(found.resolved, chord);
     }
 
+    /// The `&[mode]` on every lookup below is load-bearing, not boilerplate:
+    /// `bind_visual` binds into `KeymapLayer::MajorMode(mode)`, and since the
+    /// Visual dispatcher started gating on the active-mode slice a binding is
+    /// only reachable when its mode is active. These read `&[]` until then —
+    /// and passed, because the lookup ignored activation for every mode in the
+    /// editor. That is the bug they now have to be correct about.
+    ///
     /// **The reason this needed its own helper.** `<M-S-Right>` and `<M-Right>`
     /// differ only in SHIFT, which Visual's normalize strips — so a
     /// normalize-first lookup would collapse OS.6's two verbs onto one.
@@ -493,11 +510,11 @@ mod os0d_tests {
         bind_visual(&h, mode, shift_alt_right, shifted);
 
         assert_eq!(
-            bound_command(&lookup_visual_chord(&h, &[], alt_right).result),
+            bound_command(&lookup_visual_chord(&h, &[], alt_right, &[mode]).result),
             plain
         );
         assert_eq!(
-            bound_command(&lookup_visual_chord(&h, &[], shift_alt_right).result),
+            bound_command(&lookup_visual_chord(&h, &[], shift_alt_right, &[mode]).result),
             shifted,
             "<M-S-Right> must not collapse onto <M-Right>"
         );
@@ -514,7 +531,7 @@ mod os0d_tests {
         bind_visual(&h, mode, bare, id);
 
         let shifted = KeyChord::new(KeyKind::Special(SpecialKey::Right), KeyMods::SHIFT);
-        let found = lookup_visual_chord(&h, &[], shifted);
+        let found = lookup_visual_chord(&h, &[], shifted, &[mode]);
         assert_eq!(
             bound_command(&found.result),
             id,

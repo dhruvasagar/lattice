@@ -65,7 +65,7 @@ mod tests {
     /// Dispatch a fresh (non-mid-sequence) Visual chord -- empty
     /// `partial_chord`. The bulk of the catalog is single-key.
     fn dv(h: &KeymapHandle, chord: &KeyChord, kind: VisualKind) -> Action {
-        dispatch_visual(h, chord, kind, &[])
+        dispatch_visual(h, chord, kind, &[], &[])
     }
 
     #[test]
@@ -226,6 +226,7 @@ mod tests {
             &ev(KeyCode::Char('n'), KeyModifiers::NONE),
             VisualKind::Charwise,
             &prefix,
+            &[],
         );
         match r {
             Action::Invoke(inv) => {
@@ -268,6 +269,7 @@ mod tests {
             &ev(KeyCode::Char('X'), KeyModifiers::NONE),
             VisualKind::Charwise,
             &prefix,
+            &[],
         );
         match r {
             Action::Invoke(inv) => {
@@ -438,6 +440,7 @@ mod tests {
             &ev(KeyCode::Char('w'), KeyModifiers::NONE),
             VisualKind::Charwise,
             &prefix,
+            &[],
         );
         match r {
             Action::Invoke(inv) => {
@@ -460,6 +463,7 @@ mod tests {
             &ev(KeyCode::Char('w'), KeyModifiers::NONE),
             VisualKind::Charwise,
             &prefix,
+            &[],
         );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, b.around_word.0),
@@ -479,6 +483,7 @@ mod tests {
             &ev(KeyCode::Char('{'), KeyModifiers::NONE),
             VisualKind::Charwise,
             &prefix,
+            &[],
         );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, b.inner_brace.0),
@@ -498,6 +503,7 @@ mod tests {
             &ev(KeyCode::Char('f'), KeyModifiers::NONE),
             VisualKind::Charwise,
             &prefix,
+            &[],
         );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, so.around_function.0),
@@ -516,6 +522,7 @@ mod tests {
             &ev(KeyCode::Char('C'), KeyModifiers::NONE),
             VisualKind::Charwise,
             &prefix,
+            &[],
         );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, b.around_comment.0),
@@ -536,6 +543,7 @@ mod tests {
             &ev(KeyCode::Char('z'), KeyModifiers::NONE),
             VisualKind::Charwise,
             &prefix,
+            &[],
         );
         assert!(matches!(r, Action::None), "expected None, got {r:?}");
     }

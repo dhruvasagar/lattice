@@ -451,7 +451,13 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // pre-lookup in `dispatch_visual` until the architecture's
         // minor-mode-on-Visual layer push lands. The drift test
         // in `keymap_visual::tests` is the regression net.
-        ModalState::Visual(kind) => dispatch_visual(ctx.keymap, &chord, kind, ctx.partial_chord),
+        ModalState::Visual(kind) => dispatch_visual(
+            ctx.keymap,
+            &chord,
+            kind,
+            ctx.partial_chord,
+            ctx.active_minor_modes,
+        ),
         // SN.3d.1: Select mode — Visual's sibling with inverted typing
         // semantics. Genuinely new dispatch (a bare printable overtypes
         // the selection); see `keymap_select::translate_select`.

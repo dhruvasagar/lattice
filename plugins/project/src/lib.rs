@@ -665,10 +665,10 @@ impl Guest for Component {
         lattice::plugin_host::grammar::register_ex_command(
             picker::CHOOSE_DIR_COMMAND,
             "Browse the filesystem for a project directory — any folder will do, \
-             it need not be a git repo. `<C-l>` descends into the selected \
-             directory, `<C-h>` goes back up, `<CR>` chooses the one you are on \
-             (or goes up, on the `../` row) — and the chosen one is remembered \
-             and opened.",
+             it need not be a git repo. `<Tab>` (or `<C-l>`) descends into the \
+             selected directory, `<C-h>` goes back up, `<CR>` chooses the one \
+             you are on (or goes up, on the `../` row) — and the chosen one is \
+             remembered and opened.",
             &no_arg_spec(),
             CB_PARSE,
             CB_CHOOSE_DIR,

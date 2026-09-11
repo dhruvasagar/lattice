@@ -3042,6 +3042,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             let signals = editor.do_picker_ascend();
             _out.renderer_signals.extend(signals);
         }
+        Action::PickerDescendOrSelectNext => {
+            let signals = editor.do_picker_tab();
+            _out.renderer_signals.extend(signals);
+        }
         Action::PickerSelectNext => {
             // PICK.1: in transient mode, walk the item selection —
             // wrapping, and bounded by the spec's own item count. It
@@ -9478,6 +9482,34 @@ impl Editor {
             return Vec::new();
         }
         self.set_live_picker_query(next)
+    }
+
+    /// PP.5: `<Tab>` — drill in if this source has depth, else select the next
+    /// row.
+    ///
+    /// **Decided by whether the descend actually moved**, not by asking the
+    /// source a second question. `descend` already IS the depth declaration;
+    /// a separate "does tab drill" flag would be a second knob that can
+    /// disagree with the first, and the disagreement would show up as a
+    /// `<Tab>` that drills in one picker and not in another with the same
+    /// shape.
+    ///
+    /// The query is the thing compared because that is exactly what a descend
+    /// changes — `do_picker_descend`'s signals are not a usable indicator, it
+    /// returns an empty vec both when it declined and when it descended into a
+    /// directory with nothing to preview.
+    #[must_use]
+    pub fn do_picker_tab(&mut self) -> Vec<RendererSignal> {
+        let before = self.picker.as_ref().map(|p| p.query.clone());
+        let signals = self.do_picker_descend();
+        let after = self.picker.as_ref().map(|p| p.query.clone());
+        if before != after {
+            return signals;
+        }
+        if let Some(p) = self.picker.as_mut() {
+            p.select_next();
+        }
+        signals
     }
 
     /// Shared tail of [`Self::do_picker_descend`] / [`Self::do_picker_ascend`]:

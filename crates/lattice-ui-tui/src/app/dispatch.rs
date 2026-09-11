@@ -456,6 +456,11 @@ impl App {
             // nothing to add.
             | Action::PickerDescend
             | Action::PickerAscend
+            // PP.5: `<Tab>` — drills in where the source has depth, selects
+            // next everywhere else. Host-side like its two neighbours; an
+            // action missing from THIS list is a key that silently does
+            // nothing, which is the shape of the report that produced it.
+            | Action::PickerDescendOrSelectNext
             | Action::CloseHover
             // 5.5.G.12: HelpDismiss migrated to Editor::dispatch.
             | Action::HelpDismiss

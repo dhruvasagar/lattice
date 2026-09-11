@@ -678,8 +678,9 @@ impl DirPickSource {
                 rooted: false,
                 doc: "Browse to a directory and supply its path as a value (for a transient \
                       argument, a command argument, or other caller awaiting one). Lists one \
-                      level at a time: `<C-l>` descends into the selected directory, `<C-h>` \
-                      goes up, `<CR>` chooses — except on the `../` row, where it goes up."
+                      level at a time: `<Tab>` (or `<C-l>`) descends into the selected \
+                      directory, `<C-h>` goes up, `<CR>` chooses — except on the `../` row, \
+                      where it goes up."
                     .into(),
                 args_hint: "[start]".into(),
                 args_schema: vec![ArgSpec {

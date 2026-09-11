@@ -73,14 +73,16 @@ browser:
       ↓
   Choose a directory:  ~/src/dh▊
 ▸ ../                                 <CR>  go up
-  ~/src/dhruvasagar/                   <C-l> go in
+  ~/src/dhruvasagar/                   <Tab> go in
   ~/src/dharma/                        <C-h> go back up
                                        <CR>  choose this one
 ```
 
-The prompt shows the directory you are in. Typing filters as you go, `<C-l>`
-descends into the highlighted directory and `<C-h>` climbs back out. `<CR>`
-takes the one you are on: it is remembered, and its switch menu opens straight
+The prompt shows the directory you are in. Typing filters as you go, `<Tab>`
+descends into the highlighted directory — keep pressing it to go as deep as you
+like — and `<C-h>` climbs back out. `<C-l>` is `<Tab>`'s peer if you have
+ranger / lf muscle memory; `<C-n>` / `<C-p>` and the arrows move the selection.
+`<CR>` takes the one you are on: it is remembered, and its switch menu opens straight
 away — the same place you would have landed had it been in the list all along.
 
 `../` is the exception, and it reads the way it looks: `<CR>` on it **goes up**

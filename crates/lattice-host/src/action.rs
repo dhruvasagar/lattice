@@ -518,6 +518,15 @@ pub enum Action {
     /// previous `/`, which is a pure query edit and generic over any
     /// path-shaped query.
     PickerAscend,
+    /// PP.5: `<Tab>` — drill in where the source has depth, select the next
+    /// row everywhere else.
+    ///
+    /// One action rather than a `<Tab>` that translate resolves two ways,
+    /// because translate cannot see which source seated the picker — only the
+    /// dispatcher can ask it. The fallback is what keeps `<Tab>` meaning
+    /// select-next in the pickers that have no notion of depth, which is every
+    /// one but `dir-pick` today.
+    PickerDescendOrSelectNext,
     /// LR.5 (2026-08-11): `<C-q>` — send every candidate that survived
     /// the current query to the picker's declared bulk outcome, and
     /// dismiss. Echoes when the opener declared none.

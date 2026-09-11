@@ -586,7 +586,27 @@ fn translate_picker(chord: KeyChord) -> Action {
         KeyKind::Special(SpecialKey::Backspace) => Action::PickerBackspace,
         KeyKind::Special(SpecialKey::Up) => Action::PickerSelectPrev,
         KeyKind::Special(SpecialKey::Down) => Action::PickerSelectNext,
-        KeyKind::Special(SpecialKey::Tab) if !chord.mods.shift() => Action::PickerSelectNext,
+        // PP.5: `<Tab>` DRILLS IN where the source has depth, and selects the
+        // next row everywhere else.
+        //
+        // PC.10 rejected exactly this — `<Tab>` is `PickerSelectNext` in every
+        // picker, and giving one picker a `<Tab>` that means something else is
+        // the inconsistency the UX-convention rule exists to prevent. The
+        // reversal is that same rule read against the right reference: emacs's
+        // `read-directory-name` is what `dir-pick` is modelled on, and there
+        // `<Tab>` completes the path while `C-n` / `C-p` move the selection.
+        // `<Tab>` = select-next is OUR deviation, not emacs's.
+        //
+        // And in the picker this was reported from it did nothing at all: one
+        // row matched `/Users/dh`, so select-next wrapped onto the row already
+        // selected. A key that visibly does nothing is worse than one that
+        // means two things.
+        //
+        // Selection movement is untouched: `<C-n>` / `<C-p>` and the arrows
+        // are separate arms above, so nothing loses a way to move.
+        KeyKind::Special(SpecialKey::Tab) if !chord.mods.shift() => {
+            Action::PickerDescendOrSelectNext
+        }
         KeyKind::Special(SpecialKey::Tab) if chord.mods.shift() => Action::PickerSelectPrev,
         KeyKind::Char(c) if !chord.mods.ctrl() => Action::PickerAppend(c),
         _ => Action::None,

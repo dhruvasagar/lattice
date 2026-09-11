@@ -665,3 +665,38 @@ the guard the reversal needs: a marker above the path still resolves to the
 checkout, driven with a FILE path — the case verbatim storage would mangle
 worst. A fix that took the path verbatim in every case passes the first and
 quietly breaks the second.
+
+## PP.5 ✅ — `<Tab>` drills in
+
+Reported twice: *"I can't drill down"*, then *"at `dir-pick> /Users/dh` I can
+only choose `dhruva/`"*. `<C-l>` was wired correctly the whole time — a TUI
+test through the real crossterm → translate → `App::apply` → host seam proves
+it — and the key being pressed was `<Tab>`, which with one matching row
+wrapped select-next onto the row already selected and did nothing visible.
+
+**The first diagnosis was wrong and worth recording.** `picker_descend.rs`
+drives `Editor::dispatch_chord`, and on that evidence `<C-l>` was reported as
+working end to end. It is not the path a terminal keypress takes — crossterm
+event, `crate::input::translate`, `App::apply`'s action match, then the host —
+and a report that a key does nothing in the running editor is exactly a failure
+in one of those seams. `descend_through_the_tui` now crosses all of them.
+
+PC.10 rejected `<Tab>` (`picker.md` §4.2bis, reversed in place): it is
+`PickerSelectNext` in every picker, and one picker meaning something else by it
+is the inconsistency the UX-convention rule prevents. Right rule, wrong
+reference — `dir-pick` is modelled on emacs `read-directory-name`, where
+`<Tab>` completes and `C-n` / `C-p` move, so `<Tab>` = select-next is ours, not
+emacs's.
+
+`Action::PickerDescendOrSelectNext` carries both meanings, because translate
+cannot see which source seated the picker and only the dispatcher can ask.
+`do_picker_tab` tries `descend` and falls back to select-next **when the query
+did not move**: `descend` already IS the depth declaration, so a separate flag
+would be a second knob free to disagree with it. `<C-n>` / `<C-p>` and the
+arrows are untouched; `<S-Tab>` stays `PickerSelectPrev`.
+
+**Tests.** `descend_through_the_tui` in `lattice-ui-tui` — `<C-l>` / `<C-h>`
+through the real seam, `<Tab>` drilling twice ("until I am satisfied" is the
+requirement, and one drill that worked with a second that did not is the same
+complaint one level deeper), and `<Tab>` still selecting next in `buffers`,
+which is the half of PC.10's argument that stays true.

@@ -250,11 +250,38 @@ is a hook rather than a generic "delete back through the last `/`" because
 *live* is not *path-shaped* — `grep` is live, and a generic `<C-h>` would have
 silently truncated a grep pattern at a slash.
 
-**Not `<Tab>`.** `<Tab>` is `PickerSelectNext` in every picker and `<S-Tab>`
-its peer. Giving one picker a `<Tab>` that means something different from all
-the others is the inconsistency the UX-convention rule exists to prevent;
-`<C-l>` / `<C-h>` were unbound, and are what ranger / lf / nnn / vifm use for
-this exact surface.
+**`<C-l>` / `<C-h>` come from the file managers** — ranger, lf, nnn and vifm
+all use them for exactly this surface, and both were unbound here. Plain `h` /
+`l` cannot be used: a picker's query takes every printable key, so the
+directional pair has to be the control variants.
+
+**And `<Tab>` drills in too, which reverses this section (PP.5).** It used to
+read: *"`<Tab>` is `PickerSelectNext` in every picker and `<S-Tab>` its peer.
+Giving one picker a `<Tab>` that means something different from all the others
+is the inconsistency the UX-convention rule exists to prevent."*
+
+That rule is right and it was applied against the wrong reference. `dir-pick`
+is modelled on emacs's `read-directory-name`, where `<Tab>` completes the path
+and `C-n` / `C-p` move the selection — so `<Tab>` = select-next is **our**
+deviation, not emacs's, and importing the flow while dropping its primary key
+imports the shape and not the muscle memory.
+
+The report that produced the reversal is the sharper argument. At
+`dir-pick> /Users/dh` exactly one row matched, so `<Tab>` — select-next —
+wrapped onto the row already selected and did *nothing visible at all*. A key
+that appears dead reads as a broken feature, not as the wrong key, and the
+right one (`<C-l>`) is undiscoverable from a prompt that shows no legend.
+
+`Action::PickerDescendOrSelectNext` carries both meanings because translate
+cannot see which source seated the picker; only the dispatcher can ask. The
+dispatcher tries `descend` and falls back to select-next **when the query did
+not move** — `descend` already IS the depth declaration, and a separate
+"does tab drill" flag would be a second knob free to disagree with the first.
+So `<Tab>` still selects the next row in every picker that is not path-shaped,
+which is the half of the original argument that stays true.
+
+`<C-n>` / `<C-p>` and the arrows are separate arms, so nothing loses a way to
+move the selection. `<S-Tab>` stays `PickerSelectPrev`.
 
 The first consumer is **`dir-pick`** (PC.9), `file-pick`'s directory peer:
 `live`, listing the children of the directory its query names, one `read_dir`

@@ -2191,3 +2191,206 @@ mod tests {
         );
     }
 }
+
+/// PP.5 — `<C-l>` / `<C-h>` through the REAL TUI keystroke seam.
+///
+/// `picker_descend.rs` drives `Editor::dispatch_chord`, which is the host's
+/// entry point and NOT the path a terminal keypress takes: crossterm event →
+/// `crate::input::translate` → `App::apply`'s action match → the host
+/// dispatcher. Three seams that test never crossed, and a report that `<C-l>`
+/// does nothing in the running editor is precisely a failure in one of them.
+#[cfg(test)]
+mod descend_through_the_tui {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use crate::app::test_helpers::{app_with, press};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn tree() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("alpha").join("inner")).unwrap();
+        dir
+    }
+
+    fn query(app: &crate::app::App) -> String {
+        app.editor
+            .picker
+            .as_ref()
+            .map(|p| p.query.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn ctrl_l_descends_and_ctrl_h_comes_back() {
+        let dir = tree();
+        let root = dir.path().canonicalize().unwrap();
+        let mut app = app_with("scratch\n", 20);
+        let opened = root.to_string_lossy().to_string();
+        let signals = app.mutate_editor_with(move |e: &mut lattice_host::editor::Editor| {
+            e.open_picker(lattice_picker::DIR_PICK_SOURCE.to_string(), vec![opened])
+        });
+        for s in signals {
+            app.handle_renderer_signal(s);
+        }
+        assert!(app.editor.picker.is_some(), "precondition: dir-pick seated");
+
+        // Onto a child row — `../` is first and opens selected.
+        while app
+            .editor
+            .picker
+            .as_ref()
+            .and_then(|p| p.selected_candidate())
+            .is_some_and(|c| c.raw.display == "../")
+        {
+            press(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        let child = app
+            .editor
+            .picker
+            .as_ref()
+            .and_then(|p| p.selected_candidate())
+            .map(|c| c.raw.text.clone())
+            .expect("the tree has a child row");
+
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            query(&app),
+            child,
+            "`<C-l>` descends into the selected directory through the REAL key \
+             path — translate, App::apply's action match, then the host"
+        );
+
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            query(&app),
+            format!("{}/", root.to_string_lossy()),
+            "and `<C-h>` comes back out"
+        );
+    }
+
+    /// **PP.5: `<Tab>` drills in, which is what this picker was reported
+    /// against.**
+    ///
+    /// The report: at `dir-pick> /Users/dh` with one matching row, `<Tab>` did
+    /// nothing. It was `PickerSelectNext`, and with one row select-next wraps
+    /// onto the row already selected — a key that visibly does nothing, which
+    /// reads as a broken feature rather than as the wrong key.
+    ///
+    /// Driven from a ONE-ROW listing on purpose, so a regression to
+    /// select-next is invisible in the state and visible only here.
+    #[test]
+    fn tab_drills_into_the_selected_directory() {
+        let dir = tree();
+        let root = dir.path().canonicalize().unwrap();
+        let mut app = app_with("scratch\n", 20);
+        let opened = root.to_string_lossy().to_string();
+        let signals = app.mutate_editor_with(move |e: &mut lattice_host::editor::Editor| {
+            e.open_picker(lattice_picker::DIR_PICK_SOURCE.to_string(), vec![opened])
+        });
+        for s in signals {
+            app.handle_renderer_signal(s);
+        }
+        // Onto the child row. `<Tab>` is what moved the selection before PP.5,
+        // so this walk cannot use it — `PickerSelectNext` is dispatched
+        // directly, which is also what proves the two meanings stayed
+        // separable.
+        while app
+            .editor
+            .picker
+            .as_ref()
+            .and_then(|p| p.selected_candidate())
+            .is_some_and(|c| c.raw.display == "../")
+        {
+            app.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+                if let Some(p) = e.picker.as_mut() {
+                    p.select_next();
+                }
+            });
+        }
+
+        press(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(
+            query(&app),
+            format!("{}/alpha/", root.to_string_lossy()),
+            "`<Tab>` goes INTO the directory — `project.el`'s behaviour, and \
+             the whole point of the key in a path picker"
+        );
+
+        // …and again, because "until I am satisfied" is the actual
+        // requirement: one drill that worked and a second that did not would
+        // be the same complaint one level deeper.
+        app.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            if let Some(p) = e.picker.as_mut() {
+                p.query = String::new();
+            }
+        });
+        let opened = format!("{}/alpha", root.to_string_lossy());
+        let signals = app.mutate_editor_with(move |e: &mut lattice_host::editor::Editor| {
+            e.open_picker(lattice_picker::DIR_PICK_SOURCE.to_string(), vec![opened])
+        });
+        for s in signals {
+            app.handle_renderer_signal(s);
+        }
+        while app
+            .editor
+            .picker
+            .as_ref()
+            .and_then(|p| p.selected_candidate())
+            .is_some_and(|c| c.raw.display == "../")
+        {
+            app.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+                if let Some(p) = e.picker.as_mut() {
+                    p.select_next();
+                }
+            });
+        }
+        press(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(
+            query(&app),
+            format!("{}/alpha/inner/", root.to_string_lossy()),
+            "and keeps drilling, which is the `until I am satisfied` half of \
+             the requirement"
+        );
+    }
+
+    /// …and `<Tab>` still selects the next row in a picker with no depth. The
+    /// UX-convention argument PC.10 made against `<Tab>` is still right for
+    /// every picker that is not path-shaped, and the fallback is what keeps it
+    /// true.
+    #[test]
+    fn tab_still_selects_next_where_there_is_no_depth() {
+        let mut app = app_with("one\ntwo\n", 20);
+        let signals = app.mutate_editor_with(|e: &mut lattice_host::editor::Editor| {
+            e.open_picker("buffers".to_string(), Vec::new())
+        });
+        for s in signals {
+            app.handle_renderer_signal(s);
+        }
+        assert!(
+            app.editor.picker.is_some(),
+            "precondition: `buffers` seated"
+        );
+        let before = app.editor.picker.as_ref().map(|p| p.selected).unwrap_or(0);
+        let query_before = query(&app);
+
+        press(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(
+            query(&app),
+            query_before,
+            "a picker with no notion of depth must not have its query rewritten"
+        );
+        assert_ne!(
+            app.editor.picker.as_ref().map(|p| p.selected).unwrap_or(0),
+            before,
+            "`<Tab>` still moves the selection there"
+        );
+    }
+}

@@ -485,6 +485,26 @@ pub trait PickerSourceGenerator: Send + Sync {
         None
     }
 
+    /// PP.1: the query the picker opens WITH.
+    ///
+    /// `None` — the default — leaves the host's rule in place: a live source's
+    /// first argument seeds the query (`:picker grep foo` opens on `foo`),
+    /// everything else opens empty.
+    ///
+    /// A source overrides this when its query is not a *filter* but a
+    /// *position*. `dir-pick`'s query is the directory being listed, so an
+    /// empty one means the prompt cannot say where you are while every row
+    /// can — and the first `<C-h>` has nothing to take a level off. Seeding it
+    /// makes the prompt read `dir-pick> ~/` and the ascend/descend keys work
+    /// from the first keystroke rather than the second.
+    ///
+    /// Only consulted for a `live` source, for [`descend`](Self::descend)'s
+    /// reason: a static source's rows come from `init` and a seeded query
+    /// would fuzzy-filter them instead of re-listing.
+    fn initial_query(&self, _args: &[String]) -> Option<String> {
+        None
+    }
+
     /// T.12: live-preview hook — invoked as the picker SELECTION moves to
     /// a candidate (before accept). Default None = no preview. A source
     /// returns an outcome the host applies immediately for a live preview;

@@ -699,9 +699,126 @@ impl DirPickSource {
         }
     }
 
+    /// The directory one level above `prefix`, spelled the way the query
+    /// spells it.
+    ///
+    /// Shared by `<C-h>` and the `../` row so the two cannot disagree about
+    /// where "up" is — two ways to go up that arrive somewhere different is
+    /// the kind of inconsistency nobody reports and everybody trips on.
+    ///
+    /// The trailing `/` comes off first, or `~/src/` would resolve its own
+    /// last component and go nowhere.
+    fn parent_of(prefix: &str) -> Option<String> {
+        let trimmed = prefix.strip_suffix('/').unwrap_or(prefix);
+        if trimmed.is_empty() {
+            // `/`. There is nothing above the root, and pretending otherwise
+            // would silently relocate the user somewhere they did not ask for.
+            return None;
+        }
+        match trimmed.rfind('/') {
+            // `/tmp` → `/`, keeping the separator that makes it a listing.
+            Some(0) => Some("/".to_string()),
+            Some(i) => Some(trimmed[..=i].to_string()),
+            // No separator left in the spelling: `~`, the one case where the
+            // query's own text cannot name its parent. Resolve it and answer
+            // absolutely, rather than reporting that the home directory has no
+            // parent — `<C-h>` at `~/` used to clear the query, which re-listed
+            // `~/` and so read as a key that did nothing.
+            //
+            // A bare word (a query the user typed over) is not a path we can
+            // resolve, and guessing at one would move them somewhere arbitrary.
+            None => {
+                let absolute = lattice_core::home::expand_tilde(trimmed);
+                let path = std::path::Path::new(&absolute);
+                if !path.is_absolute() {
+                    return None;
+                }
+                path.parent().map(|p| {
+                    let s = p.to_string_lossy();
+                    if s.ends_with('/') {
+                        s.into_owned()
+                    } else {
+                        format!("{s}/")
+                    }
+                })
+            }
+        }
+    }
+
+    /// PP.1: the `../` row.
+    ///
+    /// An ORDINARY row whose text is the parent's path, which is what makes it
+    /// need no special-casing anywhere else: `<C-l>` descends into it because
+    /// the text ends in `/`, and `<CR>` supplies the parent because that is
+    /// what every other row does with its own path. A synthetic "go up" row
+    /// with its own accept semantics would be a second answer to a question
+    /// `descend` already answers.
+    ///
+    /// **Only when `prefix` names a whole directory** (it ends in `/`). Once
+    /// the user has typed a basename the listing is a filter over children,
+    /// and a `../` surviving the filter would be the one row in it that is not
+    /// a match.
+    fn parent_row(prefix: &str) -> Option<(RawCandidate, RoutingPayload)> {
+        if !prefix.ends_with('/') {
+            return None;
+        }
+        let parent = Self::parent_of(prefix)?;
+        let expanded = std::path::PathBuf::from(lattice_core::home::expand_tilde(&parent));
+        Some((
+            RawCandidate {
+                insert_text: None,
+                text: parent,
+                // `../`, not the path it resolves to. The path is already in
+                // the prompt (the query); what this row adds is the verb.
+                display: "../".to_string(),
+                // Built the way `path_entries` builds a directory — same kind,
+                // same `CandidateData::File`, same empty annotations — because
+                // everything downstream (the icon, `descend`, the accept) reads
+                // those and must not be able to tell this row apart.
+                kind: CandidateKind::Directory,
+                data: lattice_completion::CandidateData::File {
+                    path: expanded.clone(),
+                    is_dir: true,
+                    size: None,
+                },
+                source: None,
+                accept_action: None,
+                annotations: Vec::new(),
+                display_spans: Vec::new(),
+            },
+            RoutingPayload::SuppliedValue {
+                value: expanded.to_string_lossy().to_string(),
+            },
+        ))
+    }
+
     /// Rows for `prefix`. Directories only, each carrying its expanded
-    /// absolute path as the value it supplies.
+    /// absolute path as the value it supplies, `../` first.
+    ///
+    /// **`../` belongs to a directory that exists.** A query naming nothing
+    /// yields an empty list — this source's contract, and the reason it does
+    /// not spend its life reporting failure while you type a path — and a
+    /// lone `../` there would suggest the path resolved when it did not. The
+    /// `is_dir` stat is paid only when the listing came back empty, which is
+    /// the one case where "no children" and "no directory" are not the same
+    /// thing.
     fn rows(prefix: &str) -> Vec<(RawCandidate, RoutingPayload)> {
+        let children = Self::child_rows(prefix);
+        let parent = if children.is_empty()
+            && !std::path::Path::new(&lattice_core::home::expand_tilde(prefix)).is_dir()
+        {
+            None
+        } else {
+            Self::parent_row(prefix)
+        };
+        parent.into_iter().chain(children).collect()
+    }
+
+    /// The real entries — everything [`rows`](Self::rows) lists apart from
+    /// `../`. Split out because `init`'s "cannot read this directory" check
+    /// asks whether the listing is empty, and a `../` row is present whether
+    /// or not the directory can be read.
+    fn child_rows(prefix: &str) -> Vec<(RawCandidate, RoutingPayload)> {
         lattice_completion::builtins::generators::path_entries(prefix, false, false)
             .into_iter()
             .map(|cand| {
@@ -744,16 +861,20 @@ impl PickerSourceGenerator for DirPickSource {
 
     fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
         let start = Self::start_dir(args);
+        let prefix = Self::prefix_for(&start, "");
         // An unreadable start IS an error, unlike an unreadable query: the
         // caller named this one, and opening an empty picker over a directory
         // that does not exist would report nothing at all.
-        let rows = Self::rows(&Self::prefix_for(&start, ""));
-        if rows.is_empty()
+        //
+        // Asked of the CHILDREN, not of `rows`: PP.1's `../` is present
+        // whether or not the directory can be read, so `rows` is never empty
+        // and this check would never fire again.
+        if Self::child_rows(&prefix).is_empty()
             && !std::path::Path::new(&lattice_core::home::expand_tilde(&start)).is_dir()
         {
             return Err(format!("{DIR_PICK_SOURCE}: cannot read {start}"));
         }
-        Ok(PickerInitResult::Inline(rows))
+        Ok(PickerInitResult::Inline(Self::rows(&prefix)))
     }
 
     /// Re-list on every keystroke. An unreadable query yields an EMPTY list,
@@ -790,22 +911,32 @@ impl PickerSourceGenerator for DirPickSource {
 
     /// `<C-h>`: drop the last path component.
     ///
-    /// The trailing `/` comes off first, or `~/src/` would resolve its own
-    /// last component and go nowhere. `/` is a fixed point — there is nothing
-    /// above the root, and emptying the query there would silently relocate
-    /// the user to somewhere they did not ask for.
+    /// [`parent_of`](Self::parent_of) does the work, shared with the `../`
+    /// row so the key and the row cannot land in different places. `/` stays
+    /// a fixed point — `parent_of` answers `None` there, and this returns the
+    /// query unchanged so the host recognises it and spends no re-query.
     fn ascend(&self, query: &str) -> Option<String> {
         if query == "/" {
             return Some("/".to_string());
         }
-        let trimmed = query.strip_suffix('/').unwrap_or(query);
-        Some(match trimmed.rfind('/') {
-            Some(i) => trimmed[..=i].to_string(),
-            // No separator left: `~`, or a bare word. Clearing takes the
-            // picker back to its empty-query listing rather than leaving a
-            // half-word that names nothing.
-            None => String::new(),
-        })
+        Self::parent_of(query)
+    }
+
+    /// PP.1: open on the start directory rather than on an empty query.
+    ///
+    /// The query IS the directory being listed here, so an empty one leaves
+    /// the prompt unable to say where you are — every row carries a path and
+    /// the one line meant to orient you carries nothing. It also left `<C-h>`
+    /// with no last component to drop, so the first press did nothing and the
+    /// second worked.
+    ///
+    /// The trailing `/` is what makes it a LISTING rather than a filter:
+    /// `path_entries("~/src")` lists `~`'s children whose names start with
+    /// `src`, where `path_entries("~/src/")` lists what is inside. Seeding
+    /// the un-slashed form is the bug this normalisation exists to prevent,
+    /// and `:picker dir-pick /tmp` walked straight into it.
+    fn initial_query(&self, args: &[String]) -> Option<String> {
+        Some(Self::prefix_for(&Self::start_dir(args), ""))
     }
 
     fn accept(
@@ -2988,17 +3119,151 @@ mod dir_pick_tests {
     /// The empty query lists the start directory — and the rows carry their
     /// full path, not bare names. That is what makes the first `<C-l>` behave
     /// like every later one.
+    ///
+    /// PP.1 put `../` in front of them. It is first because going up is the
+    /// one destination that is never in the listing, so a row for it that
+    /// sorted among the children would be lost in a long one.
     #[test]
     fn an_empty_query_lists_the_start_directory_with_full_paths() {
         let dir = tree();
         let start = dir.path().to_string_lossy().to_string();
+        let parent = std::path::Path::new(&start)
+            .parent()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let rows = DirPickSource::rows(&DirPickSource::prefix_for(&start, ""));
 
         assert_eq!(
             texts(&rows),
-            vec![format!("{start}/alpha/"), format!("{start}/beta/")],
-            "both subdirectories, each spelled from the start directory"
+            vec![
+                format!("{parent}/"),
+                format!("{start}/alpha/"),
+                format!("{start}/beta/")
+            ],
+            "`../` first, then both subdirectories, each spelled from the start \
+             directory"
         );
+        assert_eq!(
+            rows[0].0.display, "../",
+            "and it READS as `../` — the path it resolves to is already in the \
+             prompt, so what the row adds is the verb"
+        );
+    }
+
+    /// PP.1: `../` is an ORDINARY row. `<C-l>` descends into it because its
+    /// text ends in `/`, and `<CR>` supplies the parent because that is what
+    /// every other row does with its own path. Pinned, because a synthetic
+    /// go-up row with its own accept semantics would be a second answer to a
+    /// question `descend` already answers.
+    #[test]
+    fn the_parent_row_descends_and_supplies_like_any_other() {
+        let dir = tree();
+        let start = dir.path().to_string_lossy().to_string();
+        let rows = DirPickSource::rows(&DirPickSource::prefix_for(&start, ""));
+        let (cand, routing) = &rows[0];
+
+        assert!(
+            cand.text.ends_with('/'),
+            "`descend` takes any row whose text ends in `/`: {}",
+            cand.text
+        );
+        let RoutingPayload::SuppliedValue { value } = routing else {
+            panic!("`../` supplies a value like every other row: {routing:?}");
+        };
+        assert_eq!(
+            std::path::Path::new(value),
+            std::path::Path::new(&start).parent().unwrap(),
+            "and the value is the parent directory itself"
+        );
+    }
+
+    /// **`../` and `<C-h>` must land in the same place.** They share
+    /// `parent_of` for exactly this reason: two ways to go up that arrive
+    /// somewhere different is an inconsistency nobody reports and everybody
+    /// trips on.
+    #[test]
+    fn the_parent_row_and_the_ascend_key_agree() {
+        let source = DirPickSource::new();
+        for query in ["/tmp/", "~/src/", "~/"] {
+            let row = DirPickSource::parent_row(query).map(|(c, _)| c.text);
+            assert_eq!(
+                row,
+                source.ascend(query),
+                "`../` and `<C-h>` disagree about the parent of {query}"
+            );
+        }
+    }
+
+    /// `<C-h>` at `~/` used to CLEAR the query, which re-listed `~/` — a key
+    /// that visibly did nothing. Home's parent is spelled absolutely because
+    /// the tilde form cannot name it, which is the one case where the query's
+    /// own text is not enough.
+    #[test]
+    fn home_has_a_parent_spelled_absolutely() {
+        let home = lattice_core::home::expand_tilde("~");
+        if !std::path::Path::new(&home).is_dir() {
+            eprintln!("SKIP: no home directory to expand against");
+            return;
+        }
+        let up = DirPickSource::parent_of("~/").expect("home has a parent");
+        assert!(
+            up.starts_with('/') && up.ends_with('/'),
+            "absolute, and a listing prefix: {up}"
+        );
+        assert_eq!(
+            std::path::Path::new(up.trim_end_matches('/')),
+            std::path::Path::new(&home).parent().unwrap()
+        );
+    }
+
+    /// The root is where going up stops. A `../` row there would offer a
+    /// destination that does not exist.
+    #[test]
+    fn the_root_offers_no_way_up() {
+        assert_eq!(DirPickSource::parent_of("/"), None);
+        assert!(
+            !texts(&DirPickSource::rows("/")).iter().any(|t| t == "/"),
+            "no row pointing `/` at itself"
+        );
+    }
+
+    /// PP.1: the picker opens ON the start directory, so the prompt says
+    /// where you are from the first frame.
+    ///
+    /// The trailing `/` is the assertion that matters: without it the seeded
+    /// query is a FILTER (`path_entries("/tmp")` lists `/`'s children whose
+    /// names start with `tmp`) rather than a listing, which is exactly what
+    /// `:picker dir-pick /tmp` used to do.
+    #[test]
+    fn the_query_opens_on_the_start_directory() {
+        let source = DirPickSource::new();
+        assert_eq!(
+            source.initial_query(&["/tmp".to_string()]),
+            Some("/tmp/".to_string()),
+            "an argument without a trailing slash is normalised into a listing"
+        );
+        assert_eq!(
+            source.initial_query(&["/tmp/".to_string()]),
+            Some("/tmp/".to_string()),
+            "and one with it is left alone"
+        );
+        assert_eq!(
+            source.initial_query(&[]),
+            Some("~/".to_string()),
+            "no argument opens on home, which is where this source starts"
+        );
+    }
+
+    /// A basename filter is not a listing, and `../` must not survive it: it
+    /// would be the one row in a filtered set that is not a match.
+    #[test]
+    fn a_filtered_listing_offers_no_parent_row() {
+        let dir = tree();
+        let start = dir.path().to_string_lossy().to_string();
+        let rows = DirPickSource::rows(&format!("{start}/al"));
+
+        assert_eq!(texts(&rows), vec![format!("{start}/alpha/")]);
     }
 
     /// Files are not directories. A source that listed them would hand back a
@@ -3052,7 +3317,9 @@ mod dir_pick_tests {
             return;
         }
         let rows = DirPickSource::rows("~/");
-        let Some((cand, routing)) = rows.first() else {
+        // Past `../`: that row is the deliberate exception to the spelling
+        // rule, because the tilde form cannot name home's parent (PP.1).
+        let Some((cand, routing)) = rows.iter().find(|(c, _)| c.display != "../") else {
             eprintln!("SKIP: the home directory has no subdirectories");
             return;
         };
@@ -3092,11 +3359,17 @@ mod dir_pick_tests {
             );
             // The round trip descend relies on: this row's own text, used as
             // the next query, lists what is inside it.
+            //
+            // `../` is excluded from the *inner* listing, not from the slash
+            // rule above: it is the one row that points OUT, so the listing it
+            // produces contains its own `../` pointing further out, which is
+            // not under the query by construction. Excluding the whole row
+            // instead would stop checking that `<C-l>` on `../` works at all.
             assert!(
-                DirPickSource::rows(&cand.text).is_empty()
-                    || DirPickSource::rows(&cand.text)
-                        .iter()
-                        .all(|(c, _)| c.text.starts_with(&cand.text)),
+                DirPickSource::rows(&cand.text)
+                    .iter()
+                    .filter(|(c, _)| c.display != "../")
+                    .all(|(c, _)| c.text.starts_with(&cand.text)),
                 "descending into {} must list its children",
                 cand.text
             );

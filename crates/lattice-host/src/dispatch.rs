@@ -13999,11 +13999,19 @@ impl Editor {
             {
                 inflight.cancel.cancel();
             }
-            let initial_query = args
-                .first()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .map(String::from);
+            // PP.1: the SOURCE decides what it opens on, falling back to the
+            // rule every live source had — the first argument seeds the query
+            // (`:picker grep foo` opens on `foo`). A source overrides when its
+            // query is a position rather than a filter: `dir-pick`'s query is
+            // the directory being listed, and it normalises the argument into
+            // a listing prefix on the way through, which bare `args.first()`
+            // could not do.
+            let initial_query = generator.initial_query(&args).or_else(|| {
+                args.first()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            });
             self.live_picker_query = Some(crate::state::LivePickerQueryState {
                 source_id: source.clone(),
                 generator: generator.clone(),

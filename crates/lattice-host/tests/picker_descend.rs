@@ -68,6 +68,31 @@ fn rows(editor: &Editor) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Move the selection onto the first row that is not PP.1's `../`.
+///
+/// `dir-pick` lists `../` first and opens selected on it, so a test about
+/// descending into a CHILD has to say which row it means. Done by moving the
+/// selection rather than by indexing the list, because what `<C-l>` acts on is
+/// the selection and that is the thing under test.
+fn select_first_child(editor: &mut Editor) -> String {
+    while editor
+        .picker
+        .as_ref()
+        .and_then(|p| p.selected_candidate())
+        .is_some_and(|c| c.raw.display == "../")
+    {
+        if let Some(p) = editor.picker.as_mut() {
+            p.select_next();
+        }
+    }
+    editor
+        .picker
+        .as_ref()
+        .and_then(|p| p.selected_candidate())
+        .map(|c| c.raw.text.clone())
+        .expect("the tree has a child row")
+}
+
 /// `<C-l>` replaces the query with the selected directory, so the next
 /// listing is of its children rather than its siblings.
 #[test]
@@ -76,7 +101,7 @@ fn descending_makes_the_selected_directory_the_query() {
     let root = dir.path().canonicalize().unwrap();
     let mut editor = open_dir_pick(&root);
 
-    let selected = rows(&editor).first().cloned().expect("the tree has rows");
+    let selected = select_first_child(&mut editor);
     assert!(
         selected.ends_with('/'),
         "precondition: rows are directories: {selected}"
@@ -102,6 +127,7 @@ fn ascending_undoes_a_descend() {
     let mut editor = open_dir_pick(&root);
 
     let before = query(&editor);
+    select_first_child(&mut editor);
     press(&mut editor, 'l');
     assert_ne!(query(&editor), before, "precondition: the descend moved");
 
@@ -111,6 +137,55 @@ fn ascending_undoes_a_descend() {
         query(&editor),
         format!("{}/", root.to_string_lossy()),
         "back to the directory we were listing"
+    );
+}
+
+/// PP.1: `../` descends OUT, which is the whole reason it is a row rather than
+/// a legend. `<C-l>` on it must land exactly where `<C-h>` would — they share
+/// `parent_of` so they cannot drift, and this is what says so through the real
+/// keystroke path.
+#[test]
+fn descending_into_the_parent_row_goes_up() {
+    let dir = tree();
+    let root = dir.path().canonicalize().unwrap();
+    let parent = format!("{}/", root.parent().unwrap().to_string_lossy());
+
+    let mut up_by_row = open_dir_pick(&root);
+    assert_eq!(
+        up_by_row
+            .picker
+            .as_ref()
+            .and_then(|p| p.selected_candidate())
+            .map(|c| c.raw.display.clone()),
+        Some("../".to_string()),
+        "precondition: `../` is first and is what opens selected"
+    );
+    press(&mut up_by_row, 'l');
+
+    let mut up_by_key = open_dir_pick(&root);
+    press(&mut up_by_key, 'h');
+
+    assert_eq!(query(&up_by_row), parent, "`<C-l>` on `../` goes up");
+    assert_eq!(
+        query(&up_by_key),
+        parent,
+        "and `<C-h>` goes to the same place"
+    );
+}
+
+/// The query opens ON the start directory, which is what puts the current
+/// directory in the prompt — the one line meant to orient you used to be the
+/// only one carrying no path at all.
+#[test]
+fn the_picker_opens_on_the_directory_it_is_listing() {
+    let dir = tree();
+    let root = dir.path().canonicalize().unwrap();
+    let editor = open_dir_pick(&root);
+
+    assert_eq!(
+        query(&editor),
+        format!("{}/", root.to_string_lossy()),
+        "the prompt reads the directory being listed, trailing slash and all"
     );
 }
 

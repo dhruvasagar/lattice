@@ -602,6 +602,15 @@ const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
         &[("path", "Repo-relative path of the untracked file to delete")],
     ),
     (
+        "action:magit-discard-batch-execute",
+        "Discard every file in the confirmed selection",
+        // A variadic list, not named slots: one entry per selected file,
+        // each `<t|u><path>` so the tracked flag travels with its path.
+        // That flag decides `git checkout` versus `git clean`, and losing
+        // it would either fail on an untracked path or DELETE a tracked one.
+        &[("files", "One `<t|u><path>` entry per selected file")],
+    ),
+    (
         "action:magit-global-file-delete-execute",
         "Delete the file after confirmation",
         &[("file", "Repo-relative path the prompt named")],
@@ -3031,6 +3040,10 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-discard-untracked-execute",
         "Delete the untracked file after confirmation",
+    );
+    reg(
+        "action:magit-discard-batch-execute",
+        "Discard every file in the confirmed selection",
     );
     reg("action:magit-commit", "Open the commit buffer");
     reg("action:magit-commit-amend", "Amend the previous commit");

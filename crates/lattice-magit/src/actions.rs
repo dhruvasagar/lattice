@@ -676,6 +676,21 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                 crate::magit_core_mode::HunkResolution::Refused(effect) => Some(effect),
                 crate::magit_core_mode::HunkResolution::FileLevel => {
                     let s = status_state(ctx)?;
+                    // A Visual selection over ENTRY rows means "these files",
+                    // not "this file" — the same rule `s` and `u` already
+                    // follow in `stage_or_unstage`. `x` was the one that did
+                    // not: it read `ctx.cursor.line` alone, so selecting three
+                    // untracked files and pressing `x` discarded exactly one.
+                    if let Some(region) = ctx.selection {
+                        let lo = region.start.line.min(region.end.line);
+                        let hi = region.start.line.max(region.end.line);
+                        if hi > lo
+                            && let Some((files, _)) = discardable_files_in_rows(&s, lo..=hi)
+                            && files.len() > 1
+                        {
+                            return Some(batch_discard_confirm(&files));
+                        }
+                    }
                     let g = s.lock().ok()?;
                     let StatusLine::File {
                         path, untracked, ..
@@ -813,6 +828,73 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                     }
                 };
                 spawn_untracked_delete(s.clone(), workdir, path)
+            }
+        );
+    }
+
+    // Discarding a MULTI-FILE selection, after confirmation.
+    //
+    // One handler for both kinds, unlike the single-file pair above, and the
+    // split there is the reason: those two exist so the question the user
+    // answered and the command that runs cannot drift apart, which works when
+    // the ask names one file. A selection can hold both kinds at once, and
+    // asking two questions for one keypress is worse than asking one — so the
+    // ask names both counts (see `batch_discard_confirm`) and this half does
+    // each path the right way.
+    //
+    // ONE task, ONE refresh, and one `git` invocation per kind rather than per
+    // file — `stage_rows`' reasoning: N spawns meant N `.git/index.lock`
+    // cycles and a partial batch nobody could describe.
+    {
+        handler!(
+            "action:magit-discard-batch-execute",
+            move |ctx: &ActionContext<'_>| {
+                let files = carried_batch(&ctx.args);
+                if files.is_empty() {
+                    return None;
+                }
+                let s = status_state(ctx)?;
+                let workdir = s.lock().ok()?.workdir.clone();
+                let tracked: Vec<String> = files
+                    .iter()
+                    .filter(|(_, u)| !*u)
+                    .map(|(p, _)| p.to_string_lossy().into_owned())
+                    .collect();
+                let untracked: Vec<String> = files
+                    .iter()
+                    .filter(|(_, u)| *u)
+                    .map(|(p, _)| p.to_string_lossy().into_owned())
+                    .collect();
+                let label = format!("discard {} files", files.len());
+                spawn_mutation_and_refresh(s.clone(), label, move || {
+                    let repo = Repository::discover(&workdir)
+                        .map_err(|e| format!("not a git repository: {e}"))?;
+                    let mut out = String::new();
+                    if !tracked.is_empty() {
+                        let mut args: Vec<&str> = vec!["checkout", "--"];
+                        args.extend(tracked.iter().map(String::as_str));
+                        out.push_str(
+                            &repo
+                                .run_git(args)
+                                .map(|o| String::from_utf8_lossy(&o).into_owned())
+                                .map_err(|e| e.to_string())?,
+                        );
+                    }
+                    if !untracked.is_empty() {
+                        // `clean -f -d`, for `spawn_untracked_delete`'s
+                        // reason: checkout addresses paths git knows, and
+                        // these by definition are not.
+                        let mut args: Vec<&str> = vec!["clean", "-f", "-d", "--"];
+                        args.extend(untracked.iter().map(String::as_str));
+                        out.push_str(
+                            &repo
+                                .run_git(args)
+                                .map(|o| String::from_utf8_lossy(&o).into_owned())
+                                .map_err(|e| e.to_string())?,
+                        );
+                    }
+                    Ok(out)
+                })
             }
         );
     }
@@ -1154,6 +1236,104 @@ pub(crate) fn distinct_files(lines: impl Iterator<Item = Option<StatusLine>>) ->
 /// `picker_sources::branch_checkout_outcome` is: the choice is worth
 /// testing directly, and the handler's context fixture is not part of
 /// the decision.
+/// Every distinct file the selected rows cover, each with whether git
+/// tracks it — the discard peer of [`files_in_rows`], which needs only
+/// paths because staging treats both kinds alike.
+///
+/// Discard does not: a tracked file is restored with `git checkout` and an
+/// untracked one is *deleted*, and `checkout` fails outright on a path git
+/// has no record of. So the flag has to travel with the path.
+fn discardable_files_in_rows(
+    s: &Arc<Mutex<StatusBufferState>>,
+    rows: std::ops::RangeInclusive<u32>,
+) -> Option<(Vec<(PathBuf, bool)>, PathBuf)> {
+    let g = s.lock().ok()?;
+    let mut out: Vec<(PathBuf, bool)> = Vec::new();
+    for line in rows.filter_map(|line| classify_line(&g, line)) {
+        if let StatusLine::File {
+            path, untracked, ..
+        } = line
+            // Distinct, for `distinct_files`' reasons: a file entry and its
+            // expanded inline diff are separate rows of one file, and the
+            // same path can sit in the staged and unstaged sections at once.
+            && !out.iter().any(|(p, _)| *p == path)
+        {
+            out.push((path, untracked));
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some((out, g.workdir.clone()))
+}
+
+/// The question for a multi-file discard, and the list it carries.
+///
+/// **One question, even for a mixed selection.** The counts are named
+/// separately because the two halves are not equally severe — a tracked
+/// file comes back from the index, an untracked one does not come back at
+/// all — and a prompt that said only "Discard 5 files?" would hide the
+/// irreversible half behind the recoverable one.
+///
+/// Routes to a single batch execute rather than the two single-file halves.
+/// Those stay as they are: one action, one act, for a selection of one.
+fn batch_discard_confirm(files: &[(PathBuf, bool)]) -> Effect {
+    let untracked = files.iter().filter(|(_, u)| *u).count();
+    let tracked = files.len() - untracked;
+    let prompt = match (tracked, untracked) {
+        (0, n) => format!("Delete {n} untracked files? git has no copy to restore."),
+        (n, 0) => format!("Discard changes to {n} files?"),
+        (t, u) => format!(
+            "Discard changes to {t} file(s) and DELETE {u} untracked file(s)? \
+             The untracked ones cannot be restored."
+        ),
+    };
+    // IX.2: carry the payload. Each entry is `<flag><path>` — one leading
+    // byte for trackedness, so a path containing any character at all still
+    // round-trips, which splitting on a separator would not survive.
+    let args = lattice_grammar::Args::List(
+        files
+            .iter()
+            .map(|(path, untracked)| {
+                lattice_grammar::ArgValue::String(format!(
+                    "{}{}",
+                    if *untracked { 'u' } else { 't' },
+                    path.to_string_lossy()
+                ))
+            })
+            .collect(),
+    );
+    crate::confirm::ask_with(prompt, "action:magit-discard-batch-execute", args)
+}
+
+/// Decode what [`batch_discard_confirm`] carried.
+///
+/// Takes the ARGS rather than the context so it is a pure function over the
+/// payload — the encode/decode pair is the part worth testing, and a test
+/// that had to stand up an `ActionContext` would be testing the harness.
+fn carried_batch(args: &lattice_grammar::Args) -> Vec<(PathBuf, bool)> {
+    let mut out = Vec::new();
+    let entries = match args.as_list() {
+        Some(list) => list,
+        None => return out,
+    };
+    for value in entries {
+        let entry = match value {
+            lattice_grammar::ArgValue::String(v) | lattice_grammar::ArgValue::Raw(v) => v.as_str(),
+            _ => continue,
+        };
+        let mut chars = entry.chars();
+        match chars.next() {
+            Some('u') => out.push((PathBuf::from(chars.as_str()), true)),
+            Some('t') => out.push((PathBuf::from(chars.as_str()), false)),
+            // Neither flag: not ours. Dropped rather than guessed — a
+            // mis-decoded entry here would delete a path nobody named.
+            _ => {}
+        }
+    }
+    out
+}
+
 fn file_discard_confirm(path: &std::path::Path, untracked: bool) -> Effect {
     let target = path.to_string_lossy().into_owned();
     if untracked {
@@ -2415,5 +2595,101 @@ mod expand_payload_tests {
              (paramount-goal-1 regression, MG.31). The git call and the \
              styling belong inside `spawn_blocking`."
         );
+    }
+}
+
+/// MG — `x` over a multi-file Visual selection.
+///
+/// Reported 2026-09-11: selecting several untracked files and pressing `x`
+/// untracked only the first. `s` and `u` had honoured a selection since
+/// MG.23g (`stage_or_unstage`'s FileLevel branch reads `ctx.selection`);
+/// `x` alone still read `ctx.cursor.line`.
+#[cfg(test)]
+mod batch_discard_tests {
+    use super::*;
+
+    fn f(path: &str, untracked: bool) -> (PathBuf, bool) {
+        (PathBuf::from(path), untracked)
+    }
+
+    /// The reported case: all untracked. The prompt says DELETE and says how
+    /// many, because there is no copy to restore and a count of one would be
+    /// a lie about what the key is about to do.
+    #[test]
+    fn an_all_untracked_selection_asks_to_delete_all_of_them() {
+        let effect = batch_discard_confirm(&[f("a.txt", true), f("b.txt", true)]);
+        let lattice_grammar::Effect::Confirm {
+            prompt, yes_action, ..
+        } = effect
+        else {
+            panic!("expected a Confirm, got {effect:?}");
+        };
+        assert!(prompt.contains('2'), "the count is named: {prompt}");
+        assert!(prompt.contains("Delete"), "and that it deletes: {prompt}");
+        assert_eq!(yes_action, "action:magit-discard-batch-execute");
+    }
+
+    #[test]
+    fn an_all_tracked_selection_asks_to_discard_changes() {
+        let effect = batch_discard_confirm(&[f("a.rs", false), f("b.rs", false)]);
+        let lattice_grammar::Effect::Confirm { prompt, .. } = effect else {
+            panic!("expected a Confirm");
+        };
+        assert!(prompt.contains("Discard changes"), "{prompt}");
+        assert!(!prompt.contains("Delete"), "nothing is deleted: {prompt}");
+    }
+
+    /// **A mixed selection names BOTH counts.** The two halves are not
+    /// equally severe — a tracked file comes back from the index, an
+    /// untracked one does not come back at all — so a prompt saying only
+    /// "Discard 3 files?" would hide the irreversible half behind the
+    /// recoverable one.
+    #[test]
+    fn a_mixed_selection_names_the_irreversible_half_separately() {
+        let effect = batch_discard_confirm(&[
+            f("tracked.rs", false),
+            f("new_a.txt", true),
+            f("new_b.txt", true),
+        ]);
+        let lattice_grammar::Effect::Confirm { prompt, .. } = effect else {
+            panic!("expected a Confirm");
+        };
+        assert!(prompt.contains("DELETE"), "{prompt}");
+        assert!(prompt.contains("cannot be restored"), "{prompt}");
+    }
+
+    /// The carried payload round-trips, flag included — that flag is what
+    /// decides `git checkout` versus `git clean`, so losing it would either
+    /// fail on an untracked path or DELETE a tracked one.
+    #[test]
+    fn the_carried_list_round_trips_with_its_flags() {
+        let files = vec![f("a.rs", false), f("b.txt", true)];
+        let lattice_grammar::Effect::Confirm { args, .. } = batch_discard_confirm(&files) else {
+            panic!("expected a Confirm");
+        };
+        assert_eq!(carried_batch(&args), files);
+    }
+
+    /// A path with a space, a quote, a newline. The flag is ONE leading byte
+    /// rather than a separator precisely so every path survives — splitting
+    /// on one would lose exactly the paths that most need care.
+    #[test]
+    fn a_hostile_path_survives_the_round_trip() {
+        let files = vec![f("dir with space/a'b\nc.txt", true)];
+        let lattice_grammar::Effect::Confirm { args, .. } = batch_discard_confirm(&files) else {
+            panic!("expected a Confirm");
+        };
+        assert_eq!(carried_batch(&args), files);
+    }
+
+    /// An entry carrying neither flag is DROPPED, not guessed. A
+    /// mis-decoded entry here would delete a path nobody named.
+    #[test]
+    fn an_unflagged_entry_is_dropped_rather_than_guessed() {
+        let args = lattice_grammar::Args::List(vec![
+            lattice_grammar::ArgValue::String("ta.rs".to_string()),
+            lattice_grammar::ArgValue::String("/etc/passwd".to_string()),
+        ]);
+        assert_eq!(carried_batch(&args), vec![f("a.rs", false)]);
     }
 }

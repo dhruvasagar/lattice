@@ -44,6 +44,9 @@ pub(crate) const DESTRUCTIVE_ACTIONS: &[(&str, &str)] = &[
         "action:magit-discard",
         "action:magit-discard-untracked-execute",
     ),
+    // A multi-file selection: one ask, one act, both kinds. See
+    // `batch_discard_confirm`.
+    ("action:magit-discard", "action:magit-discard-batch-execute"),
     (
         "action:magit-global-file-discard",
         "action:magit-global-file-discard-execute",

@@ -1969,17 +1969,12 @@ mod reported_vim_grammar_2026_09_11 {
     /// oil binds no delete chord — it is an EDITABLE listing, so removing a
     /// file means removing its line and saving. The reported failure was
     /// therefore ordinary Visual `d` not working in that buffer, which is the
-    /// minor-mode shadowing bug — but it is NOT. Fixing that gating left this
-    /// failing, and the failure is precise: `ggVd` deletes exactly ONE
-    /// CHARACTER (`alpha.txt` → `lpha.txt`). The same keys in a plain buffer
-    /// delete the whole line (`visual_line_delete_in_a_plain_buffer`, which
-    /// passes), so `V` is entering CHARWISE Visual here instead of linewise.
-    /// oil registers no Visual binding of its own, so the interception is
-    /// somewhere between the listing mode and the visual-kind decision.
+    /// minor-mode shadowing bug — it was `run_oil_invocation` running the
+    /// grammar against a DETACHED `Document::from_text` copy, whose default
+    /// selection set is one cursor at the origin. `Range::Selection` resolved
+    /// against that, so `d` deleted a single character no matter what was
+    /// selected (`alpha.txt` → `lpha.txt`).
     #[test]
-    #[ignore = "OPEN BUG (reported 2026-09-11): `V` yields a CHARWISE selection \
-                in an oil buffer, so `d` removes one character instead of the \
-                line. Narrowed, not yet fixed — see the note on this test."]
     fn visual_delete_removes_lines_in_an_oil_buffer() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("alpha.txt"), "").unwrap();
@@ -2013,5 +2008,39 @@ mod reported_vim_grammar_2026_09_11 {
         let mut a = app_with("alpha\nbeta\ngamma\n", 20);
         press_chars(&mut a, "ggVd");
         assert_eq!(a.editor.document.text(), "beta\ngamma\n");
+    }
+
+    /// The reported case by NAME. The other read-only tests use
+    /// `*plugin-trace*` because `*messages*` records the editor's own echoes
+    /// and its content shifts underneath an exact-equality assertion — but
+    /// "did the register get something, and did anything refuse" is stable
+    /// however much else got logged, so the buffer the user actually named
+    /// gets its own test.
+    #[test]
+    fn yank_works_in_the_messages_buffer_by_name() {
+        let mut a = app_with("origin\n", 10);
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            e.open_synthetic_buffer("*messages*", "messages-mode");
+        });
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            let _ = e.run_tick_pending();
+        });
+        assert!(
+            !a.editor.document.text().trim().is_empty(),
+            "precondition: *messages* has content to copy"
+        );
+
+        press_chars(&mut a, "ggvly");
+
+        let reg = a
+            .editor
+            .read_register(None)
+            .map(|r| r.content)
+            .unwrap_or_default();
+        assert!(
+            !reg.is_empty(),
+            "copying out of *messages* must work; register empty, echo said {:?}",
+            a.editor.last_message.as_ref().map(|m| m.text.clone())
+        );
     }
 }

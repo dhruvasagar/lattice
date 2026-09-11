@@ -41893,6 +41893,28 @@ impl Editor {
         self.op_count = 0;
 
         let mut temp_doc = lattice_core::Document::from_text(oil_text);
+        // **The temp document needs the real buffer's SELECTIONS.**
+        //
+        // `Document::from_text` starts with a default selection set — one
+        // cursor at the origin — so `Range::Selection` resolved against it to
+        // a single character no matter what the user had selected. `V` then
+        // `d` in an oil buffer deleted one character (`alpha.txt` →
+        // `lpha.txt`) instead of the line, which is what "I can't delete files
+        // in visual mode" looks like from the outside.
+        //
+        // Oil is a buffer like any other: a Visual selection selects, `d`
+        // deletes, and oil's only special job is persisting the result to the
+        // filesystem on `:w`. This carries the selection across so the grammar
+        // sees what the user sees.
+        //
+        // It is a patch on a shape that should not exist. Running the grammar
+        // against a DETACHED copy is what made the selections invisible in the
+        // first place, and the same detachment will keep producing bugs of
+        // this class for anything else the grammar reads off the document
+        // rather than off the text — marks, folds, the selection set's
+        // secondary cursors. The real fix is for oil to have no invocation
+        // runner at all; see `oil-is-a-buffer` in the slice plan.
+        temp_doc.set_selections((*self.document.selections()).clone());
         let was_visual = matches!(self.modal, ModalState::Visual(_));
         let inv_for_repeat = inv.clone();
         let cursor_before = self.cursor;

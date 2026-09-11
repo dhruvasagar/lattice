@@ -173,6 +173,74 @@ fn descending_into_the_parent_row_goes_up() {
     );
 }
 
+/// **PP.3: `<CR>` on `../` GOES UP — it does not choose the parent.**
+///
+/// PP.1 shipped the other reading (`../` is an ordinary row, so `<CR>`
+/// supplies its path) and it was wrong in the way that only shows up in use:
+/// at `~/`, `<CR>` on `../` supplied `/Users`, which the project flow then
+/// refused with `` `/Users/` is not inside a project `` — an error message
+/// where the user had asked to go up a level.
+///
+/// Asserted three ways, because "the query moved" alone would pass on a
+/// version that accepted AND moved: the picker must still be open, and nothing
+/// must have been resolved.
+#[test]
+fn accepting_the_parent_row_navigates_rather_than_choosing_it() {
+    let dir = tree();
+    let root = dir.path().canonicalize().unwrap();
+    let parent = format!("{}/", root.parent().unwrap().to_string_lossy());
+    let mut editor = open_dir_pick(&root);
+
+    assert_eq!(
+        editor
+            .picker
+            .as_ref()
+            .and_then(|p| p.selected_candidate())
+            .map(|c| c.raw.display.clone()),
+        Some("../".to_string()),
+        "precondition: `../` is what opens selected"
+    );
+
+    let out = editor.do_picker_accept();
+
+    assert!(
+        editor.picker.is_some(),
+        "the picker stays OPEN — `<CR>` on `../` is navigation, and an accept \
+         that closed the picker would have resolved something"
+    );
+    assert_eq!(query(&editor), parent, "and the query moved up one level");
+    assert!(
+        out.effects.is_empty(),
+        "nothing was resolved: no effect, no value supplied, no command run — \
+         got {:?}",
+        out.effects
+    );
+}
+
+/// …and `<CR>` on a CHILD still chooses it. `../` is the one row whose accept
+/// means something different; a fix that made every row navigate would turn
+/// `dir-pick` into a browser that can never answer the question it was opened
+/// to answer.
+#[test]
+fn accepting_a_child_row_still_chooses_it() {
+    let dir = tree();
+    let root = dir.path().canonicalize().unwrap();
+    let mut editor = open_dir_pick(&root);
+    let child = select_first_child(&mut editor);
+
+    let _ = editor.do_picker_accept();
+
+    assert!(
+        editor.picker.is_none(),
+        "choosing closes the picker, where navigating left it open"
+    );
+    assert_ne!(
+        query(&editor),
+        child,
+        "and the query did not become the row — that would be a descend"
+    );
+}
+
 /// The query opens ON the start directory, which is what puts the current
 /// directory in the prompt — the one line meant to orient you used to be the
 /// only one carrying no path at all.

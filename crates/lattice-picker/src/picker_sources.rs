@@ -656,6 +656,13 @@ pub struct DirPickSource {
 /// The source id, shared by the generator and every declaration that names it.
 pub const DIR_PICK_SOURCE: &str = "dir-pick";
 
+/// What PP.1's go-up row displays — and, since PP.3, how it is RECOGNISED.
+///
+/// One constant rather than two literals: `accept_navigates` decides from the
+/// display, so a row that rendered `..` while the hook looked for `../` would
+/// be a `<CR>` that silently went back to choosing the parent.
+pub const PARENT_ROW_DISPLAY: &str = "../";
+
 impl DirPickSource {
     pub fn new() -> Self {
         use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
@@ -672,7 +679,7 @@ impl DirPickSource {
                 doc: "Browse to a directory and supply its path as a value (for a transient \
                       argument, a command argument, or other caller awaiting one). Lists one \
                       level at a time: `<C-l>` descends into the selected directory, `<C-h>` \
-                      goes up, `<CR>` chooses."
+                      goes up, `<CR>` chooses — except on the `../` row, where it goes up."
                     .into(),
                 args_hint: "[start]".into(),
                 args_schema: vec![ArgSpec {
@@ -781,8 +788,10 @@ impl DirPickSource {
                 insert_text: None,
                 text: parent,
                 // `../`, not the path it resolves to. The path is already in
-                // the prompt (the query); what this row adds is the verb.
-                display: "../".to_string(),
+                // the prompt (the query); what this row adds is the verb — and
+                // since PP.3 the display is also how `accept_navigates`
+                // recognises the row, hence the constant.
+                display: PARENT_ROW_DISPLAY.to_string(),
                 // Built the way `path_entries` builds a directory — same kind,
                 // same `CandidateData::File`, same empty annotations — because
                 // everything downstream (the icon, `descend`, the accept) reads
@@ -919,6 +928,29 @@ impl PickerSourceGenerator for DirPickSource {
             .text
             .ends_with('/')
             .then(|| candidate.text.clone())
+    }
+
+    /// PP.3: `<CR>` on `../` GOES UP. It does not choose the parent.
+    ///
+    /// PP.1 shipped the other reading — `../` is an ordinary row, so `<CR>`
+    /// supplies its path like every other row does — and it was wrong in the
+    /// way that only shows up in use. `../` reads as a verb, every file
+    /// browser there is (netrw, oil, ranger, lf, telescope-file-browser)
+    /// treats `<CR>` on `..` as "go up", and the UX-convention rule says
+    /// muscle memory wins on a surface like this one.
+    ///
+    /// What it looked like in practice: `<CR>` on `../` at `~/` supplied
+    /// `/Users`, which the project flow then refused — an error message where
+    /// the user had asked to go up a level.
+    ///
+    /// Only this row. Every other row in this picker is a directory you might
+    /// be choosing, and `<CR>` still chooses it.
+    fn accept_navigates(
+        &self,
+        _ctx: &PickerContext<'_>,
+        candidate: &RawCandidate,
+    ) -> Option<String> {
+        (candidate.display == PARENT_ROW_DISPLAY).then(|| candidate.text.clone())
     }
 
     /// `<C-h>`: drop the last path component.

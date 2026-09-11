@@ -284,14 +284,37 @@ in: `path_entries("/tmp")` lists `/`'s children whose names begin `tmp`, where
 `path_entries("/tmp/")` lists what is inside.
 
 `dir-pick` also grows a **`../` row**, first, whenever the query names a whole
-directory that exists. It is an ordinary row whose text is the parent's path,
-which is what makes it need no special-casing: `<C-l>` descends into it because
-the text ends in `/`, `<CR>` supplies the parent because that is what every row
-does with its own path. It shares `parent_of` with `ascend` so the row and the
-key cannot land somewhere different. It is suppressed once the query carries a
-basename (it would be the one row in a filtered set that is not a match) and
-for a path that resolves to nothing (a lone `../` there suggests the path
-resolved).
+directory that exists. Its text is the parent's path, so `<C-l>` descends into
+it for free (the text ends in `/`), and it shares `parent_of` with `ascend` so
+the row and the key cannot land somewhere different. It is suppressed once the
+query carries a basename (it would be the one row in a filtered set that is not
+a match) and for a path that resolves to nothing (a lone `../` there suggests
+the path resolved).
+
+**`<CR>` on `../` goes up (PP.3).** PP.1 shipped the other reading — it is an
+ordinary row, so `<CR>` supplies its path like every other row — and that was
+wrong in the way that only shows up in use: `<CR>` on `../` at `~/` supplied
+`/Users`, and the project flow answered `` `/Users/` is not inside a project ``
+where the user had asked to go up a level. `../` reads as a verb, and every
+file browser there is (netrw, oil, ranger, lf, telescope-file-browser) treats
+`<CR>` on `..` as *go up* — the UX-convention rule, on a surface where muscle
+memory is the dominant cost.
+
+The seam is a fourth source hook, `accept_navigates(ctx, candidate) ->
+Option<String>`, defaulting to `None`. Returning `Some(query)` means *this row
+is a signpost, not a destination*: the host replaces the query and re-lists,
+the picker stays open, and nothing is accepted — no outcome resolved, no MRU
+recorded, no `PickerAccepted` published, because none of that happened.
+
+It is a distinct question from `descend`, which it resembles. `descend` answers
+for every row that *contains* things and its key asks "go into the selection";
+this answers for rows that are not things at all. In `dir-pick` every other row
+is a directory you might be choosing, so `<C-l>` answers for all of them and
+this answers only for `../`.
+
+Checked in `do_picker_accept` **before** any of the three accept paths, and
+native-only: a `WasmPickerSource` takes the `None` default, so no guest can
+declare it yet and the boundary is untouched.
 
 **A source whose results are scoped to a root declares it.**
 `PickerSourceSpec.rooted: bool`; the host resolves the root at seat time and

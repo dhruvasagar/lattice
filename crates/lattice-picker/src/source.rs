@@ -513,6 +513,35 @@ pub trait PickerSourceGenerator: Send + Sync {
         None
     }
 
+    /// PP.3: `<CR>` on a row that is a SIGNPOST rather than a destination.
+    ///
+    /// Returning `Some(query)` means "this row is navigation": the host
+    /// replaces the query and re-lists, the picker stays open, and nothing is
+    /// accepted — no outcome resolved, no MRU recorded, no `PickerAccepted`
+    /// published, because none of that happened.
+    ///
+    /// **Distinct from [`descend`](Self::descend), which it resembles.**
+    /// `descend` answers for every row that *contains* things, and its key
+    /// (`<C-l>`) asks "go into the thing I have selected". This answers for
+    /// rows that are not things at all. `dir-pick`'s `../` is the whole
+    /// motivating case: every other row in that picker is a directory you
+    /// might be choosing, and `../` is a way out — so `<C-l>` answers for all
+    /// of them and this answers only for `../`.
+    ///
+    /// The default `None` keeps `<CR>` meaning "take this row" everywhere it
+    /// already does, which is every picker but that one.
+    ///
+    /// Only meaningful for a `live` source, for `descend`'s reason: a static
+    /// source's rows come from `init` and rewriting its query would fuzzy-
+    /// filter them rather than fetch new ones.
+    fn accept_navigates(
+        &self,
+        _ctx: &PickerContext<'_>,
+        _candidate: &RawCandidate,
+    ) -> Option<String> {
+        None
+    }
+
     /// PP.1: the query the picker opens WITH.
     ///
     /// `None` — the default — leaves the host's rule in place: a live source's

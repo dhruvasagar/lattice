@@ -34349,6 +34349,34 @@ impl Editor {
                 return DispatchOutcome::default();
             }
         };
+        // PP.3: a row that NAVIGATES rather than resolves — `dir-pick`'s `../`
+        // today, and nothing else. Checked HERE, before any of the three
+        // accept paths below, because this is not an accept: no outcome is
+        // resolved, no MRU is recorded and no `PickerAccepted` is published,
+        // since none of that happened. The picker goes back where it was and
+        // the query moves.
+        //
+        // Gated on the source being LIVE, for `descend`'s reason: only a live
+        // source refetches, so rewriting a static source's query would
+        // fuzzy-filter the rows `init` already returned.
+        let selected = c.raw.clone();
+        if let Some(generator) = self.live_picker_query.as_ref().map(|s| s.generator.clone()) {
+            let snap = self.document.snapshot();
+            let ctx = self.build_picker_context(&snap);
+            let next = generator.accept_navigates(&ctx, &selected);
+            drop(ctx);
+            drop(snap);
+            if let Some(query) = next {
+                // Re-seat first: `set_live_picker_query` writes through
+                // `self.picker`, which was taken at the top of this function.
+                self.picker = Some(picker);
+                let signals = self.set_live_picker_query(query);
+                return DispatchOutcome {
+                    renderer_signals: signals,
+                    ..DispatchOutcome::default()
+                };
+            }
+        }
         // Slice `3c.unify.picker-registry-cutover` (7d.0):
         // typed-accept-action path. The 10 first-party picker
         // sources (slices 7b.1-7b.6) set `accept_action` on

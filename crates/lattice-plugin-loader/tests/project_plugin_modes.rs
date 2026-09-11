@@ -262,7 +262,7 @@ async fn both_prefixes_are_bound_in_the_modes_own_layer() {
         out
     };
 
-    let expected = vec!["b", "d", "f", "g", "p", "s", "v"];
+    let expected = vec!["b", "d", "f", "g", "m", "p", "s"];
     assert_eq!(
         suffix_after("KeyChord { key: Char(' ')"),
         expected,

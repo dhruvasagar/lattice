@@ -74,7 +74,13 @@ pub fn defaults() -> Vec<SwitchCommand> {
         ("d", "Browse tree", "project-dired"),
         ("g", "Find regexp", "project-grep"),
         ("s", "Shell", "project-shell"),
-        ("v", "Magit", "magit-status"),
+        // `m` for Magit, not project.el's `v`. `v` is emacs shorthand for
+        // `project-vc-dir` — version control, the generic verb — and magit
+        // rebinds it there because it is REPLACING that command. Nothing here
+        // is replacing anything: the row names magit outright, and `m` is what
+        // it reads as. The letter is worth more as a mnemonic than as a
+        // transplant.
+        ("m", "Magit", "magit-status"),
     ]
     .into_iter()
     .map(|(key, label, command)| SwitchCommand {
@@ -242,7 +248,7 @@ mod tests {
     #[test]
     fn the_default_keys_match_project_el() {
         let keys: Vec<String> = defaults().into_iter().map(|r| r.key).collect();
-        assert_eq!(keys, vec!["f", "b", "d", "g", "s", "v"]);
+        assert_eq!(keys, vec!["f", "b", "d", "g", "s", "m"]);
     }
 
     /// **PK.1: every menu row is also a direct chord, and the letter is the
@@ -263,7 +269,7 @@ mod tests {
         // Mirrors `register_modes`' `verbs`, minus `p` — the picker itself is
         // a chord with no menu row, which is right: it is what OPENS the menu,
         // and a row for it would be the menu offering itself.
-        let chorded = ["f", "b", "d", "g", "s", "v"];
+        let chorded = ["f", "b", "d", "g", "s", "m"];
         for row in defaults() {
             assert!(
                 chorded.contains(&row.key.as_str()),
@@ -283,7 +289,11 @@ mod tests {
     /// magit already does.
     #[test]
     fn the_magit_row_names_magits_own_command() {
-        let row = defaults().into_iter().find(|r| r.key == "v").unwrap();
+        // `m`, not project.el's `v`: `v` is emacs shorthand for
+        // `project-vc-dir` and magit takes that key there because it REPLACES
+        // that command. This row replaces nothing — it names magit outright,
+        // so it reads as `m`.
+        let row = defaults().into_iter().find(|r| r.key == "m").unwrap();
         assert_eq!(row.command, "magit-status");
     }
 }

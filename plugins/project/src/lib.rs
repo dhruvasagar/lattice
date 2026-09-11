@@ -736,7 +736,7 @@ impl Guest for Component {
             // runs unconditionally at boot; the row has a greyed-with-reason
             // fallback for a missing command and a chord has none, so this
             // binding is only correct while that stays true.
-            ("v", "magit-status"),
+            ("m", "magit-status"),
         ];
         let mut keymap = Vec::with_capacity(verbs.len() * 2);
         for (suffix, command) in verbs {

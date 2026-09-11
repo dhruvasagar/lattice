@@ -17,6 +17,9 @@ Both prefixes are bound, so `project.el` muscle memory works either way.
 | `<leader>pf` | `<C-x>pf` | Find a file in **this** project |
 | `<leader>pb` | `<C-x>pb` | Switch to an open buffer in **this** project |
 | `<leader>pd` | `<C-x>pd` | Browse **this** project's tree |
+| `<leader>pg` | `<C-x>pg` | Live grep in **this** project |
+| `<leader>ps` | `<C-x>ps` | A shell in **this** project |
+| `<leader>pm` | `<C-x>pm` | Magit status for **this** project |
 
 The distinction matters: `pf` acts on the project you are already in and shows
 no project picker, while `pp` asks which project first. Both are wanted — the
@@ -116,7 +119,7 @@ switch-commands = [
   { key = "d", label = "Browse tree", command = "project-dired" },
   { key = "g", label = "Find regexp", command = "project-grep" },
   { key = "s", label = "Shell",       command = "project-shell" },
-  { key = "v", label = "Magit",       command = "magit-status" },
+  { key = "m", label = "Magit",       command = "magit-status" },
 ]
 ```
 

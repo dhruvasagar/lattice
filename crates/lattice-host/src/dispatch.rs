@@ -9218,10 +9218,25 @@ impl Editor {
                         .with_args(lattice_grammar::Args::String(text.to_string())),
                     &mut out,
                 );
-                // The effects a plugin's handler returns are applied by
-                // `apply_effect_host` inside `dispatch_invocation`; what is
-                // left here are renderer signals and follow-up actions, which
-                // this path has nowhere to hand back. Queued onto the editor
+                // MOST of the effects a handler returns are applied by
+                // `apply_effect_host` inside `dispatch_invocation`. The
+                // renderer-owned ones are not, and this path has no renderer
+                // to hand them back to — the same hole the async picker-accept
+                // drain has, so it goes through the same applier rather than
+                // growing a second copy of the list.
+                //
+                // **This line used to be a comment claiming there was nothing
+                // left to apply**, and PC.12's second hop is what disproved it:
+                // `project-remember-and-switch` returns `Effect::OpenTransient`,
+                // so choosing a directory remembered the project and then
+                // opened no menu at all.
+                let mut effect_signals = Vec::new();
+                for effect in std::mem::take(&mut out.effects) {
+                    effect_signals.extend(self.apply_off_renderer_effect("picker fill", effect));
+                }
+                out.renderer_signals.extend(effect_signals);
+                // What is left are renderer signals and follow-up actions,
+                // which this path has nowhere to return. Queued onto the editor
                 // so the peers' existing drains pick them up — the same seam
                 // `activate_buffer`'s cascade uses for exactly this reason.
                 self.enqueue_renderer_signals(out.renderer_signals);
@@ -14183,103 +14198,8 @@ impl Editor {
                 // dropping the record of it changed nothing, and a comment in
                 // `org_roam_index.rs` records a whole investigation that found
                 // this line, patched it, and could not tell the difference.
-                //
-                // `Effect::OpenTransient` is the first that is not: its body
-                // is `open_named_transient`, hoisted precisely so both
-                // renderer peers share it, and nothing on this path called it.
-                // A picker accept that opens a menu therefore did nothing at
-                // all — which is org-roam's create-from-template flow.
-                //
-                // OR.16: `Effect::OpenBufferAt` is the second — renderer-
-                // coupled per its own doc comment (`effect.rs`), applied by
-                // the TUI/GPUI peers' `apply_effect_app_arms` via `do_edit`
-                // then `land_cursor_at`. Both of those are plain `Editor`
-                // methods (no renderer state needed), so the arm below can
-                // call them directly, same as `jump_to_lsp_location` already
-                // does for the same pair. This is the NARROW fix; see the
-                // `other` arm below for why the full structural fix (closing
-                // the asymmetry for every current and future effect, not
-                // just these two) is not done here.
                 for effect in out.effects {
-                    match effect {
-                        Effect::OpenTransient { source, args } => {
-                            signals.extend(self.open_named_transient(source, args));
-                        }
-                        Effect::OpenBufferAt {
-                            path,
-                            position,
-                            force,
-                        } => {
-                            let edit_signals = match self.do_edit(path, force) {
-                                DoEditOutcome::Opened(s)
-                                | DoEditOutcome::Activated(s)
-                                | DoEditOutcome::Reloaded(s) => s,
-                                DoEditOutcome::Directory(_)
-                                | DoEditOutcome::Failed
-                                | DoEditOutcome::NoFileName => Vec::new(),
-                            };
-                            signals.extend(edit_signals);
-                            self.land_cursor_at(position);
-                        }
-                        // OR.7c: the insert picker's whole payload — a link
-                        // resolved by the picker and applied at the caret.
-                        //
-                        // **The third feature this allowlist would have
-                        // killed**, and it fails the same silent way as the
-                        // first two: the picker accepts, the row disappears,
-                        // and nothing lands. Caught only because OR.7c's test
-                        // drove a real accept rather than the ex-command
-                        // underneath it.
-                        //
-                        // Applied INLINE rather than deferred onto
-                        // `next_actions` the way `handle_effect` does it:
-                        // nothing re-dispatches this outcome's actions on the
-                        // async path, which is the whole reason the allowlist
-                        // exists here at all.
-                        Effect::ApplyEdit {
-                            target,
-                            edit,
-                            cursor,
-                        } => {
-                            // Reports its own failure (an echo) rather than
-                            // returning one — the same helper the sync path
-                            // and the org test harness both use.
-                            self.apply_edit_effect_inline(target, edit, cursor);
-                        }
-                        // Named rather than swallowed — but `debug!` is what
-                        // let `OpenBufferAt` above sit here silently dropped
-                        // through two real features (OR.11b's own comment
-                        // predicted "the next effect ... should be a log
-                        // line", and the next effect was a second dropped
-                        // feature instead). `warn!` because this fires only
-                        // when a picker accept actually produced an effect
-                        // this arm doesn't know how to apply — not a per-
-                        // keystroke/per-frame path — so it is exactly the
-                        // "one-shot, user-actionable" case that earns
-                        // visibility above `debug!`.
-                        //
-                        // This match is still an allowlist, and allowlists
-                        // in this codebase have now silently killed a
-                        // feature twice (`OpenTransient`'s own comment
-                        // records the first). See OR.16's report
-                        // (`.superpowers/sdd/org-structure-editing/or16-report.md`)
-                        // for why a full structural fix — the async drain
-                        // returning `Effect`s so callers apply them through
-                        // the renderer's own `apply_effect_app_arms`, the
-                        // same path `do_picker_accept`'s sync return already
-                        // takes — was scoped out of this slice: it requires
-                        // threading a `Vec<Effect>` through
-                        // `Editor::run_tick_pending`'s `Vec<RendererSignal>`
-                        // return, which ~15 production and test call sites
-                        // across `lattice-host`, `lattice-ui-tui` and
-                        // `lattice-ui-gpui` depend on, including the editor
-                        // actor's cross-thread `Tick` message.
-                        other => tracing::warn!(
-                            effect = ?std::mem::discriminant(&other),
-                            "picker accept: an effect reached the async drain with no handler \
-                             (see OR.16's report for the structural fix this allowlist still needs)"
-                        ),
-                    }
+                    signals.extend(self.apply_off_renderer_effect("picker accept", effect));
                 }
                 signals
             }
@@ -14288,6 +14208,113 @@ impl Editor {
                 Vec::new()
             }
         }
+    }
+
+    /// Apply one renderer-owned [`Effect`] on a path that has **no renderer to
+    /// hand it back to**.
+    ///
+    /// Most effects are host-applied by `apply_effect_host` on the way out of
+    /// `dispatch_invocation`. The rest are applied by the TUI / GPUI peers'
+    /// `apply_effect_app_arms` from the `DispatchOutcome` a keystroke returns —
+    /// and a handful of host paths produce effects with no such return: the
+    /// async picker-accept drain (the picker closed a tick ago, and nothing
+    /// re-dispatches its outcome) and `FillTarget::Action` (the value goes
+    /// straight into a command, off the keystroke's outcome).
+    ///
+    /// Those two grew **separate** drop sites, and both dropped silently. This
+    /// is the one place either of them extends now, because the failure mode is
+    /// a feature that does nothing at all with no message, and a second copy of
+    /// the list is a second place to forget.
+    ///
+    /// Every arm below is an `Editor` method the renderer peers already call
+    /// with no renderer state of their own — `open_named_transient` was hoisted
+    /// for exactly that reason — so calling them here is the same body, not a
+    /// re-implementation.
+    ///
+    /// **It is still an allowlist**, and this allowlist has now silently killed
+    /// four features: `OpenTransient` (org-roam's create-from-template, OR.11b),
+    /// `OpenBufferAt` (`<leader>onf`, OR.16), `ApplyEdit` (the insert picker,
+    /// OR.7c) and `OpenPicker` (`… (choose a dir)`, PC.12). See OR.16's report
+    /// (`.superpowers/sdd/org-structure-editing/or16-report.md`) for why the
+    /// full structural fix — these paths returning `Effect`s so callers apply
+    /// them through the renderer's own `apply_effect_app_arms`, the same path
+    /// `do_picker_accept`'s sync return already takes — is not done here: it
+    /// requires threading a `Vec<Effect>` through `run_tick_pending`'s
+    /// `Vec<RendererSignal>` return, which ~15 production and test call sites
+    /// across `lattice-host`, `lattice-ui-tui` and `lattice-ui-gpui` depend on,
+    /// including the editor actor's cross-thread `Tick` message.
+    ///
+    /// `what` names the calling path in the log line, so an effect that lands
+    /// here with no arm says WHICH seam dropped it.
+    #[must_use]
+    fn apply_off_renderer_effect(&mut self, what: &str, effect: Effect) -> Vec<RendererSignal> {
+        let mut signals = Vec::new();
+        match effect {
+            Effect::OpenTransient { source, args } => {
+                signals.extend(self.open_named_transient(source, args));
+            }
+            // PC.12: a plugin's picker row that opens another picker —
+            // `… (choose a dir)` is the projects picker handing off to
+            // `dir-pick`. `fill_action` must ride along: it is captured at
+            // OPEN (YR.3), and a sub-picker seated without it answers
+            // `nothing was waiting for a value` one hop later.
+            Effect::OpenPicker {
+                source,
+                args,
+                root,
+                fill_action,
+            } => {
+                signals.extend(self.open_picker_for_effect(source, args, root, fill_action));
+            }
+            Effect::OpenBufferAt {
+                path,
+                position,
+                force,
+            } => {
+                let edit_signals = match self.do_edit(path, force) {
+                    DoEditOutcome::Opened(s)
+                    | DoEditOutcome::Activated(s)
+                    | DoEditOutcome::Reloaded(s) => s,
+                    DoEditOutcome::Directory(_)
+                    | DoEditOutcome::Failed
+                    | DoEditOutcome::NoFileName => Vec::new(),
+                };
+                signals.extend(edit_signals);
+                self.land_cursor_at(position);
+            }
+            // OR.7c: a link resolved by the picker and applied at the caret.
+            //
+            // Applied INLINE rather than deferred onto `next_actions` the way
+            // `handle_effect` does it: nothing re-dispatches these outcomes'
+            // actions, which is the whole reason this function exists.
+            Effect::ApplyEdit {
+                target,
+                edit,
+                cursor,
+            } => {
+                // Reports its own failure (an echo) rather than returning one
+                // — the same helper the sync path and the org test harness
+                // both use.
+                self.apply_edit_effect_inline(target, edit, cursor);
+            }
+            // No `Effect::Many` arm: `apply_effect_host` flattens the tree into
+            // `out.effects` before either caller gets here, so a `Many` reaching
+            // this match would mean a new, unflattened producer — which the
+            // fallback below should report rather than quietly absorb.
+            //
+            // Named rather than swallowed — and `warn!`, not `debug!`, because
+            // `debug!` is what let two of the four above sit here dropped. This
+            // fires only when one of these paths actually produced an effect
+            // with no arm (not per-keystroke, not per-frame), so it is the
+            // one-shot, user-actionable case that earns the level.
+            other => tracing::warn!(
+                effect = ?std::mem::discriminant(&other),
+                path = what,
+                "an effect reached a path with no renderer to apply it and no handler \
+                 (see OR.16's report for the structural fix this allowlist still needs)"
+            ),
+        }
+        signals
     }
 
     /// The project root picker sources scan from.

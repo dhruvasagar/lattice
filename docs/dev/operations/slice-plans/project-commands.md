@@ -28,6 +28,7 @@ feature is useful at PC.6.
 | PC.11 | lattice | `FillTarget::Action` + the `open-picker` field | ✅ |
 | PC.12 | plugin | The `… (choose a dir)` row, end to end | ✅ |
 | PC.13 | both | Docs, and `:project-remember`'s missing completion | ✅ |
+| PC.14 | lattice | The row did nothing — two host seams dropped its effects | ✅ |
 
 **Deliberate ordering.** The plugin leads. PC.4–PC.6 prove the whole shape —
 list, picker, menu, keymap — against the two verbs that need nothing from the
@@ -455,3 +456,55 @@ echoes the existing refusal and remembers nothing.
 - **PC.13** found `:project-remember`'s `completion` and `picker` both `None`
   since PC.4 — a command whose entire argument is a directory, offering nothing
   when asked for one. Nothing justified it; they were simply never wired.
+
+---
+
+## PC.14 ✅ — the row did nothing, on both of its hops
+
+Reported as *"`project-switch` has the option `… (choose a dir)` but selecting
+it doesn't do anything"*, and PC.12's tests all passed: the guest emitted every
+effect it was supposed to. **Nothing applied them.**
+
+Two host seams produce effects with no renderer to hand them back to, and both
+dropped the ones this flow needs:
+
+1. `Editor::drain_pending_picker_accept`. A plugin picker source's accept is
+   always async (`accept_async`, PH7.4c.2), so the commit happens a tick after
+   the keystroke, off any `DispatchOutcome` a renderer will see. It forwarded
+   three variants by name and `warn!`ed the rest into the log.
+   `Effect::OpenPicker` was not one of the three, so accepting the row closed
+   the projects picker and opened nothing.
+2. `FillTarget::Action` (PC.11's own arm). It discarded `out.effects` under a
+   comment asserting `apply_effect_host` had already applied them — true of
+   most effects, and false of exactly the ones a plugin reaches for.
+   `project-remember-and-switch` returns `Effect::OpenTransient`, so **even with
+   hop 1 fixed**, choosing a directory would have remembered the project and
+   opened no menu.
+
+Fixed by one `Editor::apply_off_renderer_effect`, called by both. The allowlist
+is unchanged in kind — it gained `OpenPicker` and lost its duplicate — but it
+now has a single place to extend, because a second copy is a second place to
+forget, and this list has silently killed four features now: `OpenTransient`
+(OR.11b), `OpenBufferAt` (OR.16), `ApplyEdit` (OR.7c) and `OpenPicker` here.
+The structural fix OR.16's report describes — these paths returning `Effect`s
+so callers apply them through the renderer's own `apply_effect_app_arms` — is
+still open and still costs a `Vec<Effect>` threaded through
+`run_tick_pending`'s return.
+
+**Why the tests missed it.** Every PC.12 test stopped at a seam boundary. The
+plugin tests asserted the guest returns the right effect; PC.11's host test
+asserted the fill command *runs*, with a fixture returning `Effect::None` — the
+one return value that cannot tell an applied effect from a dropped one. Neither
+side was wrong; the gap was between them, which is where this class of bug
+always is.
+
+**Tests.**
+- `lattice-host/tests/choose_a_dir_reaches_its_picker.rs` — the sub-picker
+  opens, it opens *with its fill target captured*, and the picked directory
+  opens the menu. Driven through `do_picker_accept` + the async drain, not the
+  sync return: a test on the sync path passes on the broken code, because there
+  the renderer applies the effects.
+- `lattice-plugin-host/tests/project_plugin_picker.rs` gains the guest half —
+  `:project-choose-dir` returns `OpenPicker { dir-pick, fill_action }`. The
+  effect being right and the host applying it are different claims, and for a
+  while only the first was true.

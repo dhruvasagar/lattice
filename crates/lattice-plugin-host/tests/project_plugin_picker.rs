@@ -406,6 +406,41 @@ fn apply_ex(host: &PluginHost, name: &str, arg: &str) -> lattice_grammar::Effect
     .expect("the command dispatches")
 }
 
+/// PC.12 — the first hop: `:project-choose-dir` opens `dir-pick`, and names
+/// where the answer goes.
+///
+/// The `fill-action` is asserted, not just the open. A sub-picker that opens
+/// without one is worse than one that does not open: the user browses, picks a
+/// directory, and gets `picker: nothing was waiting for a value` — a dead end
+/// one hop further in, where it is much harder to recognise as the same bug.
+///
+/// The other half of this hop — the host actually applying the effect — is
+/// `lattice-host`'s `choose_a_dir_reaches_its_picker`. It has to be a separate
+/// test because the guest returning the right effect and the host applying it
+/// are different claims, and for a while only the first one was true.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn choose_dir_opens_the_directory_picker_naming_where_the_answer_goes() {
+    let Some(_) = plugin_wasm() else {
+        eprintln!("SKIP: project plugin not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(tmp.path().join("cache"), tmp.path().join("data")).unwrap();
+
+    let effects = apply_ex(&host, "project-choose-dir", "");
+
+    let rendered = format!("{effects:?}");
+    assert!(
+        rendered.contains("OpenPicker") && rendered.contains("dir-pick"),
+        "the row opens the directory sub-picker. Got: {rendered}"
+    );
+    assert!(
+        rendered.contains("project-remember-and-switch"),
+        "…naming the command the picked directory is handed to (PC.11's \
+         fill-action — the only destination a guest can own). Got: {rendered}"
+    );
+}
+
 /// PC.12 — **choosing a directory must remember it AND open the menu.**
 ///
 /// Both halves asserted together, deliberately. Remembering without the menu

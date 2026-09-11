@@ -157,7 +157,12 @@ async fn remember_through_events(host: &PluginHost, files: &[PathBuf]) {
 }
 
 /// Connect the picker seam of the same component, on the same host.
-async fn connect_picker(host: &PluginHost) -> WasmPickerSource {
+///
+/// **By id, not by position.** The plugin registers two sources now (PB.1),
+/// and `.next()` on the connected list would silently start testing whichever
+/// one registration happened to emit first — a test that passes against the
+/// wrong source is worse than one that fails.
+async fn connect_source(host: &PluginHost, id: &str) -> WasmPickerSource {
     let component = host
         .compile(&std::fs::read(plugin_wasm().unwrap()).unwrap())
         .unwrap();
@@ -173,15 +178,30 @@ async fn connect_picker(host: &PluginHost) -> WasmPickerSource {
         .await
         .unwrap();
     tokio::spawn(actor.run());
-    WasmPickerSource::connect_all(client)
+    let all = WasmPickerSource::connect_all(client)
         .await
-        .expect("registration reaches the guest")
-        .into_iter()
-        .next()
-        .expect("the plugin declares the projects source")
+        .expect("registration reaches the guest");
+    let ids: Vec<String> = all.iter().map(|s| s.spec().id.to_string()).collect();
+    all.into_iter()
+        .find(|s| s.spec().id == id)
+        .unwrap_or_else(|| panic!("the plugin declares `{id}` (registered: {ids:?})"))
+}
+
+async fn connect_picker(host: &PluginHost) -> WasmPickerSource {
+    connect_source(host, "projects").await
 }
 
 fn with_ctx<R>(f: impl FnOnce(&PickerContext<'_>) -> R) -> R {
+    with_ctx_rooted("/ws", Vec::new(), f)
+}
+
+/// PB.1: a context carrying a real root and a real buffer list — what
+/// `project-buffers` reads, and the only two fields it reads.
+fn with_ctx_rooted<R>(
+    root: &str,
+    buffers: Vec<lattice_picker::BufferEntry>,
+    f: impl FnOnce(&PickerContext<'_>) -> R,
+) -> R {
     let buffer = Buffer::empty();
     let ctx = PickerContext {
         active_buffer: ActiveBufferSnapshot {
@@ -194,10 +214,10 @@ fn with_ctx<R>(f: impl FnOnce(&PickerContext<'_>) -> R) -> R {
             syntax_symbols: Vec::new(),
             syntax_highlights: Vec::new(),
         },
-        workspace_root: "/ws".into(),
+        workspace_root: root.into(),
         recent_files: &[],
         position_history: Vec::new(),
-        buffers: Vec::new(),
+        buffers,
         marks: Vec::new(),
         registers: Vec::new(),
         yank_ring: Vec::new(),
@@ -404,6 +424,75 @@ fn apply_ex(host: &PluginHost, name: &str, arg: &str) -> lattice_grammar::Effect
         &lattice_protocol::CancellationToken::never(),
     )
     .expect("the command dispatches")
+}
+
+/// PB.1 — `project-buffers` lists ONE project's open buffers, through the real
+/// guest seam.
+///
+/// The sibling sharing a string prefix is the row that matters: `~/src/lattice`
+/// and `~/src/lattice-old` are different projects, and a `starts_with` filter
+/// would put the second's buffers in the first's list — a wrong answer that
+/// looks like a right one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_buffers_lists_only_this_projects_buffers() {
+    let Some(_) = plugin_wasm() else {
+        eprintln!("SKIP: project plugin not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(tmp.path().join("cache"), tmp.path().join("data")).unwrap();
+    let source = connect_source(&host, "project-buffers").await;
+
+    assert!(
+        source.spec().rooted,
+        "PP.2: a filtered list must say what it was filtered BY"
+    );
+
+    let entry = |id: u32, path: &str| lattice_picker::BufferEntry {
+        id,
+        kind_label: "file".to_string(),
+        path: Some(std::path::PathBuf::from(path)),
+        title: path.rsplit('/').next().unwrap_or(path).to_string(),
+        dirty: false,
+    };
+    let buffers = vec![
+        entry(1, "/src/lattice/crates/host/editor.rs"),
+        entry(2, "/src/other/main.rs"),
+        entry(3, "/src/lattice-old/crates/a.rs"),
+        lattice_picker::BufferEntry {
+            id: 4,
+            kind_label: "messages".to_string(),
+            path: None,
+            title: "*messages*".to_string(),
+            dirty: false,
+        },
+    ];
+
+    let init = with_ctx_rooted("/src/lattice", buffers, |ctx| source.init(ctx, &[]))
+        .expect("init returns a result");
+    let batch = match init {
+        PickerInitResult::Future(fut) => fut.await.expect("the guest produced rows"),
+        other => panic!("expected Future, got {other:?}"),
+    };
+
+    let displays: Vec<String> = batch.iter().map(|(c, _)| c.display.clone()).collect();
+    assert_eq!(
+        displays,
+        vec!["editor.rs".to_string()],
+        "the other project, the prefix-sharing sibling and the pathless \
+         synthetic buffer are all out"
+    );
+
+    let routing = batch[0].1.clone();
+    let fut = with_ctx(|ctx| source.accept_async(ctx, &routing)).expect("accept_async");
+    match fut.await.expect("the guest resolved the routing") {
+        PickerAcceptOutcome::SwitchBuffer { buffer_id } => assert_eq!(
+            buffer_id, 1,
+            "accepting activates that buffer — a picker that lists correctly \
+             and goes nowhere is the same as one that does not work"
+        ),
+        other => panic!("expected SwitchBuffer, got {other:?}"),
+    }
 }
 
 /// PC.12 — the first hop: `:project-choose-dir` opens `dir-pick`, and names

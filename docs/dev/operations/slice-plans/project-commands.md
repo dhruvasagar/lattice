@@ -29,6 +29,9 @@ feature is useful at PC.6.
 | PC.12 | plugin | The `… (choose a dir)` row, end to end | ✅ |
 | PC.13 | both | Docs, and `:project-remember`'s missing completion | ✅ |
 | PC.14 | lattice | The row did nothing — two host seams dropped its effects | ✅ |
+| PP.1 | lattice | `dir-pick` shows where it is, and offers `../` | ✅ |
+| PP.2 | both | A rooted picker names the root it is operating on | ✅ |
+| PB.1 | plugin | `project-buffers` — one project's open buffers | ✅ |
 
 **Deliberate ordering.** The plugin leads. PC.4–PC.6 prove the whole shape —
 list, picker, menu, keymap — against the two verbs that need nothing from the
@@ -508,3 +511,92 @@ always is.
   `:project-choose-dir` returns `OpenPicker { dir-pick, fill_action }`. The
   effect being right and the host applying it are different claims, and for a
   while only the first was true.
+
+---
+
+## PP.1 ✅ — `dir-pick` shows where it is, and offers `../`
+
+Two halves of one complaint: the picker listing a directory was the one surface
+that could not say which directory.
+
+- **The query opens on the start directory.** A third source hook,
+  `initial_query(args)`, peer to PC.10's `descend` / `ascend`, defaulting to
+  `None` (the host's existing rule — a live source's first argument seeds the
+  query). The hook exists rather than the host reading `args[0]` because the
+  default start belongs to the source (home, not the workspace) and because the
+  argument needs normalising into a *listing* prefix: `path_entries("/tmp")`
+  lists `/`'s children beginning `tmp`, where `path_entries("/tmp/")` lists
+  what is inside. `:picker dir-pick /tmp` seeded the un-slashed form and had
+  been walking into that since PC.9.
+- **A `../` row**, first, whenever the query names a whole directory that
+  exists. An ordinary row whose text is the parent's path, so `<C-l>` descends
+  into it and `<CR>` supplies it with no special-casing anywhere.
+- It shares `parent_of` with `ascend`, which fixed `<C-h>` at `~/` — it used to
+  clear the query, which re-listed `~/`: a key that visibly did nothing. Home
+  is the one case where the query's own spelling cannot name its parent, so
+  that answer is absolute.
+
+Suppressed for a filtered query (it would be the one row in the set that is not
+a match) and for a path that resolves to nothing (a lone `../` there suggests
+the path resolved). The `is_dir` stat is paid only when the listing came back
+empty.
+
+**Tests.** `lattice-picker`'s `dir_pick_tests` gain the row, the row/key
+agreement, home's absolute parent, the root's refusal and the seeded query;
+`lattice-host/tests/picker_descend.rs` drives `<C-l>` on `../` through the real
+keystroke path and pins the opening query. Two existing tests changed shape
+rather than meaning — both took `rows.first()` and now say which row they mean.
+
+## PP.2 ✅ — a rooted picker names the root it is operating on
+
+`files> ` reads the same in every checkout and so do its rows, so with two
+projects open nothing on screen says which one answered.
+
+`PickerSourceSpec.rooted` declares it; the host resolves at seat time and the
+prompt reads `files ~/src/lattice> `. A **declaration, not an inference** — the
+host resolves a root for every open, so it could show one everywhere and must
+not: `buffers` spans every open project, `commands` is registry-wide, `lines`
+is one buffer. See `picker.md` §4.2ter for the full argument and the per-source
+verdicts.
+
+Declared by `files`, `file-pick`, `grep`, every magit source. Declined by
+`dir-pick` (its query is the answer) and by `projects` (its rows *are* roots,
+and it lists all of them). The LSP pickers set `Picker::root_label` directly —
+they are seated by hand and have no spec — for the workspace-scoped ones
+(definitions, references, symbols, workspace-symbols, the two hierarchies), not
+the cursor-local ones and not `:diagnostics` / `:clist`, which span every
+attached server by their own definition.
+
+`lattice_core::home::contract_tilde` is new: `expand_tilde`'s inverse, display
+only, component-wise so a sibling sharing home's prefix cannot contract into a
+path that does not exist.
+
+**Cost, stated.** `picker-source-spec` crosses WIT, so every guest needs
+`wit-sync` and a rebuild. The boundary round-trip and the guest fixture both
+carry `rooted: true` against a `false` peer — PC.11's `fill-action` shipped
+through exactly this hole, where a mechanical field-add wrote the default on
+the one arm where the value is the feature.
+
+**Tests.** `lattice-host/tests/a_rooted_picker_names_its_root.rs` (the root is
+the one that was walked; two projects give two prompts; `buffers` / `commands`
+/ `marks` / `registers` name nothing; `dir-pick` leaves it to its query; the
+label is contracted) and a painted-frame test in `lattice-ui-tui`'s `render`
+module — a prompt that carries the root in its model and never paints it is
+indistinguishable, to the user, from the feature not existing.
+
+## PB.1 ✅ — `project-buffers`
+
+`project.el`'s `project-switch-to-buffer`: `b` under both prefixes, second row
+of the switch menu, `:project-buffers [dir]`. A plugin picker source, because
+`picker-context` already carries `buffers` and `workspace-root` so it computes
+inside the plugin's `state:write`-only boundary with no host round-trip.
+
+Design and the filter's stated cost: `project-commands.md` §6bis.
+
+**Tests.** `projects.rs` pins the prefix trap (`lattice` vs `lattice-old`), the
+root-contains-itself case and the empty root; `picker.rs` pins the filter, the
+pathless-buffer exclusion, the searchable directory, the active-buffer sink and
+the accept; `lattice-plugin-host/tests/project_plugin_picker.rs` drives all of
+it through the real guest seam. `connect_picker` now resolves a source BY ID —
+with two sources registered, `.next()` would silently start testing whichever
+one registration emitted first.

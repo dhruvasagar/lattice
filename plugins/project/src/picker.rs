@@ -24,13 +24,22 @@
 //! property that makes switching back and forth between two projects free.
 
 use crate::lattice::plugin_host::types::{
-    Annotation, AnnotationCustom, Args, CandidateData, CandidateKind, CommandRef,
+    Annotation, AnnotationCustom, Args, BufferEntry, CandidateData, CandidateKind, CommandRef,
     PickerAcceptOutcome, PickerSourceSpec, RawCandidate, RoutingPayload,
 };
 use crate::projects;
 
 /// The registered picker id.
 pub const PROJECTS_PICKER: &str = "projects";
+
+/// PB.1: `project-buffers` — the open buffers that live in THIS project.
+///
+/// `project.el`'s `project-switch-to-buffer`, and the everyday half of the
+/// project verbs rather than the switching half: `:b` lists every buffer you
+/// have open across every checkout, which is the right answer for `:b` and the
+/// wrong one when you are working inside one project and want the six files
+/// that belong to it.
+pub const PROJECT_BUFFERS_PICKER: &str = "project-buffers";
 
 /// What an accepted row routes into: the switch-commands menu (PC.6).
 ///
@@ -173,6 +182,137 @@ fn row(root: String) -> (RawCandidate, RoutingPayload) {
     )
 }
 
+pub fn buffers_spec() -> PickerSourceSpec {
+    PickerSourceSpec {
+        id: PROJECT_BUFFERS_PICKER.to_string(),
+        doc: "Switch to an open buffer inside this project. `:b` lists every \
+              buffer across every checkout; this one lists the project's."
+            .to_string(),
+        args_schema: Vec::new(),
+        args_hint: String::new(),
+        // Not live: the host hands the buffer list in the context at open, and
+        // it cannot change while the picker is up.
+        live: false,
+        // Nothing to create — a buffer comes into existence by opening a file,
+        // which `project-find-file` is for.
+        create_label: None,
+        // PP.2: rooted, and this is the source that asked for the mechanism.
+        // The whole point of the list is that it is ONE project's, so a prompt
+        // that did not say which project would leave the user reading a
+        // filtered list with no way to know what it was filtered BY.
+        rooted: true,
+    }
+}
+
+/// One row per open buffer whose file lives under `root`.
+///
+/// ## The filter is a path prefix, and that is a real choice
+///
+/// Component-wise containment against the project root, computed from the
+/// picker context alone (`buffers` + `workspace-root`). The alternative —
+/// asking the host to resolve each buffer's project and comparing roots — is
+/// more correct for symlinked checkouts and nested repositories, where "under
+/// this path" and "in this project" are genuinely different questions.
+///
+/// It is not what this does, because it costs one host round-trip per open
+/// buffer on a path that runs synchronously inside a keystroke (paramount #1),
+/// where this costs a string compare. The cost of the cheaper answer is
+/// honest and bounded: a buffer whose file sits outside the root but is
+/// morally the project's — a sibling checkout, a generated file under /tmp —
+/// does not appear, and `:b` still lists it.
+///
+/// ## What has no path at all
+///
+/// Magit status buffers, oil listings, `*messages*`, help. They are excluded
+/// rather than kept: this list answers "which of MY project's files are open",
+/// and a synthetic buffer belongs to no project — including it would put the
+/// same rows in every project's list, which is the `:b` behaviour this source
+/// exists to narrow.
+pub fn buffers_init(
+    root: &str,
+    buffers: Vec<BufferEntry>,
+    active: u32,
+) -> Vec<(RawCandidate, RoutingPayload)> {
+    let mut rows: Vec<&BufferEntry> = buffers
+        .iter()
+        .filter(|e| {
+            e.path
+                .as_deref()
+                .is_some_and(|p| projects::is_under(root, p))
+        })
+        .collect();
+    // The active buffer sinks to the bottom, so the initial selection lands on
+    // the alternate — `buffers`' own rule, and for its reason: the buffer you
+    // are already in is the one row you never came here to choose.
+    rows.sort_by_key(|e| (e.id == active, e.id));
+    rows.into_iter()
+        .map(|e| buffer_row(root, e, active))
+        .collect()
+}
+
+fn buffer_row(root: &str, entry: &BufferEntry, active: u32) -> (RawCandidate, RoutingPayload) {
+    let path = entry.path.clone().unwrap_or_default();
+    let relative = projects::relative_to(root, &path);
+    let name = projects::basename(&relative).to_string();
+    // Basename as the display, the directory as the annotation — the projects
+    // picker's own rule (`magit-repo-scoping.md` §3.1), and here it earns its
+    // keep twice over: a project has many `mod.rs`, and the directory is what
+    // tells them apart.
+    //
+    // The matched text carries BOTH, because annotations are shown and never
+    // matched: a row whose directory the matcher could not see would make
+    // `host/mod` unable to narrow to one of them.
+    let directory = match relative.rfind('/') {
+        Some(i) => relative[..=i].to_string(),
+        // A file directly at the root. `./` rather than empty, or the
+        // annotation column collapses for exactly those rows and the list
+        // looks ragged.
+        None => "./".to_string(),
+    };
+    let mut annotations = vec![Annotation::Custom(AnnotationCustom {
+        text: directory,
+        slot: "completion.annotation.doc".to_string(),
+    })];
+    // Dirty and active are the two things `:b` shows that you would miss here.
+    // Only when true — an annotation slot that is present-but-empty on most
+    // rows is a column of whitespace.
+    let status = match (entry.dirty, entry.id == active) {
+        (true, true) => Some("[+] (current)"),
+        (true, false) => Some("[+]"),
+        (false, true) => Some("(current)"),
+        (false, false) => None,
+    };
+    if let Some(status) = status {
+        annotations.push(Annotation::Custom(AnnotationCustom {
+            text: status.to_string(),
+            slot: "completion.annotation.doc".to_string(),
+        }));
+    }
+    (
+        RawCandidate {
+            insert_text: None,
+            text: format!("{name} {relative}"),
+            display: name,
+            source: Some(PROJECT_BUFFERS_PICKER.to_string()),
+            kind: CandidateKind::Buffer,
+            data: CandidateData::Plain,
+            annotations,
+            display_spans: Vec::new(),
+        },
+        RoutingPayload::Buffer(entry.id),
+    )
+}
+
+/// Accept a `project-buffers` row: activate the chosen buffer.
+pub fn buffers_accept(routing: RoutingPayload) -> Result<PickerAcceptOutcome, String> {
+    match routing {
+        RoutingPayload::Buffer(id) => Ok(PickerAcceptOutcome::SwitchBuffer(id)),
+        other => Err(format!(
+            "project: the project-buffers picker got a routing token it did not emit ({other:?})"
+        )),
+    }
+}
+
 /// Resolve a chosen row.
 ///
 /// A forward for the project rows and the choose-a-dir row, since both already
@@ -279,6 +419,133 @@ mod tests {
             "a `create` label would promise something this plugin cannot do: {label}"
         );
         assert!(label.contains("%s"), "the query is substituted in: {label}");
+    }
+
+    fn buffer(id: u32, path: Option<&str>, title: &str) -> BufferEntry {
+        BufferEntry {
+            id,
+            kind_label: "file".to_string(),
+            path: path.map(|p| p.to_string()),
+            title: title.to_string(),
+            dirty: false,
+        }
+    }
+
+    /// The headline: only this project's buffers, and the sibling sharing a
+    /// prefix is the row that proves the filter is not a `starts_with`.
+    #[test]
+    fn only_buffers_inside_the_project_are_listed() {
+        let rows = buffers_init(
+            "/src/lattice",
+            vec![
+                buffer(1, Some("/src/lattice/crates/host/editor.rs"), "editor.rs"),
+                buffer(2, Some("/src/other/main.rs"), "main.rs"),
+                buffer(3, Some("/src/lattice-old/crates/a.rs"), "a.rs"),
+                buffer(4, Some("/src/lattice/README.md"), "README.md"),
+            ],
+            0,
+        );
+        assert_eq!(
+            displays(&rows),
+            vec!["editor.rs".to_string(), "README.md".to_string()],
+            "the other project and the prefix-sharing sibling are both out"
+        );
+    }
+
+    /// A buffer with no path belongs to no project. Including one would put
+    /// the same rows in every project's list, which is the `:b` behaviour this
+    /// source exists to narrow.
+    #[test]
+    fn a_buffer_with_no_path_is_not_in_any_project() {
+        let rows = buffers_init(
+            "/src/lattice",
+            vec![
+                buffer(1, None, "*messages*"),
+                buffer(2, None, "*magit: lattice*"),
+                buffer(3, Some("/src/lattice/a.rs"), "a.rs"),
+            ],
+            0,
+        );
+        assert_eq!(displays(&rows), vec!["a.rs".to_string()]);
+    }
+
+    /// Basename to read, directory to tell two `mod.rs` apart — and BOTH in
+    /// the matched text, because annotations are shown and never matched. A
+    /// row whose directory the matcher could not see would make `host/mod`
+    /// unable to narrow to one of them.
+    #[test]
+    fn the_directory_is_both_shown_and_searchable() {
+        let rows = buffers_init(
+            "/src/lattice",
+            vec![
+                buffer(1, Some("/src/lattice/crates/host/mod.rs"), "mod.rs"),
+                buffer(2, Some("/src/lattice/crates/picker/mod.rs"), "mod.rs"),
+                buffer(3, Some("/src/lattice/build.rs"), "build.rs"),
+            ],
+            0,
+        );
+        assert!(
+            rows[0].0.text.contains("crates/host/"),
+            "the directory is matchable: {}",
+            rows[0].0.text
+        );
+        assert!(
+            !rows[0].0.annotations.is_empty(),
+            "and shown in the annotation column"
+        );
+        let root_row = rows.iter().find(|(c, _)| c.display == "build.rs").unwrap();
+        match &root_row.0.annotations[0] {
+            Annotation::Custom(a) => assert_eq!(
+                a.text, "./",
+                "a file at the root reads `./` rather than collapsing the column"
+            ),
+            other => panic!("expected a custom annotation, got {other:?}"),
+        }
+    }
+
+    /// The active buffer sinks to the bottom, so the initial selection lands
+    /// on the alternate — `buffers`' own rule, and for its reason: the buffer
+    /// you are already in is the one row you never came here to choose.
+    #[test]
+    fn the_active_buffer_sinks_so_the_alternate_is_selected() {
+        let rows = buffers_init(
+            "/src/lattice",
+            vec![
+                buffer(1, Some("/src/lattice/a.rs"), "a.rs"),
+                buffer(2, Some("/src/lattice/b.rs"), "b.rs"),
+            ],
+            1,
+        );
+        assert_eq!(displays(&rows), vec!["b.rs".to_string(), "a.rs".to_string()]);
+    }
+
+    /// An accepted row activates that buffer. A source whose accept resolved
+    /// to anything else would be a picker that lists correctly and goes
+    /// nowhere.
+    #[test]
+    fn accepting_a_row_switches_to_that_buffer() {
+        let rows = buffers_init(
+            "/src/lattice",
+            vec![buffer(7, Some("/src/lattice/a.rs"), "a.rs")],
+            0,
+        );
+        match buffers_accept(rows[0].1.clone()).unwrap() {
+            PickerAcceptOutcome::SwitchBuffer(id) => assert_eq!(id, 7),
+            other => panic!("expected SwitchBuffer, got {other:?}"),
+        }
+    }
+
+    /// PP.2: rooted, and this is the source that asked for the mechanism. A
+    /// filtered list with no statement of what it was filtered BY is the case
+    /// the prompt-root feature exists for.
+    #[test]
+    fn the_buffers_source_declares_itself_rooted() {
+        assert!(buffers_spec().rooted);
+        assert!(
+            !buffers_spec().live,
+            "the host hands the buffer list at open; it cannot change while \
+             the picker is up"
+        );
     }
 
     /// A project row still routes to the switch-commands hop, unchanged. The

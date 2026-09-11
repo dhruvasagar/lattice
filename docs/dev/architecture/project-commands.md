@@ -226,6 +226,52 @@ Both are wanted. The first is the everyday verb; the second is the one this
 design exists for. A design that only had the second would make the common case
 pay a project picker it does not need.
 
+### 6bis. `project-buffers` — the same distinction, applied to buffers
+
+`project.el`'s `project-switch-to-buffer`, on `b` under both prefixes and as
+the second row of the switch menu. `:b` lists every buffer across every
+checkout, which is the right answer for `:b` and the wrong one when you are
+inside one project and want the handful of files that belong to it.
+
+A **plugin** picker source, not a native one, because the domain is this
+plugin's: it already owns every other project verb, and splitting one of them
+into the host is the half-migration the mode-ownership rule exists to prevent.
+It needs nothing the plugin does not have — `picker-context` already carries
+`buffers` and `workspace-root`, so the source computes its list inside the
+`state:write`-only capability boundary §3 drew, with no `fs:` grant and no host
+round-trip.
+
+**The filter is component-wise path containment**, and that is a real choice
+with a stated cost. The alternative is asking the host to resolve each buffer's
+project and comparing roots, which is more correct for symlinked checkouts and
+nested repositories — "under this path" and "in this project" are genuinely
+different questions there. It is not what this does, because it costs one WIT
+round-trip per open buffer on a path that runs synchronously inside a keystroke
+(paramount #1), where containment costs a string compare. What the cheap answer
+loses is bounded and visible: a buffer whose file sits outside the root but is
+morally the project's — a sibling checkout, a generated file under `/tmp` —
+does not appear, and `:b` still lists it.
+
+Component-wise rather than `starts_with`, because `~/src/lattice` and
+`~/src/lattice-old` share a prefix and are different projects. A buffer from
+the second appearing in the first's list is a wrong answer that looks like a
+right one, which is the only kind worth writing a test for.
+
+**A buffer with no path is in no project.** Magit status buffers, oil listings,
+`*messages*`, help. Including them would put the same rows in every project's
+list, which is exactly the `:b` behaviour this source exists to narrow.
+
+It declares `rooted` (picker.md §4.2ter), and it is the source that asked for
+that mechanism: a filtered list with no statement of what it was filtered BY
+leaves the user reading a short list with no way to know why it is short.
+
+**Not remembered on the way through**, unlike `find-file` / `dired` / `grep` /
+`shell`. Those four can land you in a project you have not recorded; this one
+can only list buffers that are already open, and opening them is what
+remembered the project in the first place (`document-opened`). Recording it
+again here would touch the store on a keystroke to write bytes it already
+holds.
+
 ## 7. `project-switch-commands` — the menu, and how it extends
 
 After the project picker accepts, the plugin emits `Effect::OpenTransient`

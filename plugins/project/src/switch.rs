@@ -65,6 +65,12 @@ pub struct SwitchCommand {
 pub fn defaults() -> Vec<SwitchCommand> {
     [
         ("f", "Find file", "project-find-file"),
+        // PB.1: `b`, `project.el`'s letter, in `project.el`'s position —
+        // second, right after find-file. Here rather than only on `<leader>pb`
+        // because the menu is what you get after CHOOSING a project, and
+        // "which of that project's buffers are already open" is a question you
+        // ask exactly then.
+        ("b", "Buffers", "project-buffers"),
         ("d", "Browse tree", "project-dired"),
         ("g", "Find regexp", "project-grep"),
         ("s", "Shell", "project-shell"),
@@ -230,11 +236,13 @@ mod tests {
     }
 
     /// The default keys are project.el's, because that muscle memory is the
-    /// thing being imported.
+    /// thing being imported — the ORDER too, which is why this is a sequence
+    /// comparison and not a set one. `b` sits second, where `project.el` puts
+    /// `project-switch-to-buffer`.
     #[test]
     fn the_default_keys_match_project_el() {
         let keys: Vec<String> = defaults().into_iter().map(|r| r.key).collect();
-        assert_eq!(keys, vec!["f", "d", "g", "s", "v"]);
+        assert_eq!(keys, vec!["f", "b", "d", "g", "s", "v"]);
     }
 
     /// The magit row names magit's OWN command, not a wrapper — PC.3 made

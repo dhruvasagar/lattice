@@ -154,12 +154,109 @@ pub fn basename(root: &str) -> &str {
     root.rsplit('/').find(|s| !s.is_empty()).unwrap_or(root)
 }
 
+/// PB.1: does `path` live inside `root`?
+///
+/// **Component-wise, not a string prefix**, which is the whole reason this is
+/// a function rather than a `starts_with` at the call site: `~/src/lattice`
+/// and `~/src/lattice-old` share a prefix and are different projects, and a
+/// buffer from the second appearing in the first's list is a wrong answer that
+/// looks like a right one.
+///
+/// The root itself counts as inside it, so a directory buffer at the root is
+/// not excluded on a technicality.
+///
+/// No canonicalising — the plugin holds no `fs:` grant, so it cannot resolve
+/// symlinks and must not pretend to. Same honesty [`normalize`] already
+/// records: a tree reached through a symlink reads as a different path, and
+/// the list says so rather than guessing.
+pub fn is_under(root: &str, path: &str) -> bool {
+    let root = normalize(root);
+    if root.is_empty() {
+        return false;
+    }
+    let Some(rest) = path.strip_prefix(&root) else {
+        return false;
+    };
+    // `rest` is what follows the root: empty (the root itself), or something
+    // that must begin at a component boundary. Without this check
+    // `lattice-old` strips to `-old` and passes.
+    rest.is_empty() || rest.starts_with('/')
+}
+
+/// PB.1: `path` spelled relative to `root`, for display.
+///
+/// Returns `path` verbatim when it is not under `root` — a caller that
+/// filtered with [`is_under`] never sees that, and a caller that did not gets
+/// something readable rather than a mangled suffix.
+pub fn relative_to(root: &str, path: &str) -> String {
+    if !is_under(root, path) {
+        return path.to_string();
+    }
+    let root = normalize(root);
+    path[root.len()..].trim_start_matches('/').to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn list(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// **The prefix trap, and the whole reason `is_under` is a function.**
+    /// `~/src/lattice` and `~/src/lattice-old` share a string prefix and are
+    /// different projects; a buffer from the second showing up in the first's
+    /// list is a wrong answer that looks like a right one.
+    #[test]
+    fn containment_is_component_wise_not_a_string_prefix() {
+        assert!(is_under("/src/lattice", "/src/lattice/crates/a.rs"));
+        assert!(
+            !is_under("/src/lattice", "/src/lattice-old/crates/a.rs"),
+            "a sibling sharing the prefix is a different project"
+        );
+        assert!(
+            !is_under("/src/lattice", "/src/other/a.rs"),
+            "an unrelated tree is not inside it"
+        );
+    }
+
+    /// The root itself is inside itself — a directory buffer sitting at the
+    /// root must not be excluded on a technicality.
+    #[test]
+    fn the_root_counts_as_inside_itself() {
+        assert!(is_under("/src/lattice", "/src/lattice"));
+        assert!(is_under("/src/lattice", "/src/lattice/"));
+        assert!(
+            is_under("/src/lattice/", "/src/lattice/a.rs"),
+            "a trailing slash on the root changes nothing — `normalize`'s job"
+        );
+    }
+
+    /// An empty root matches nothing. It is what a context arrives with before
+    /// a project resolves, and treating `""` as a prefix would put every open
+    /// buffer in the list.
+    #[test]
+    fn an_empty_root_contains_nothing() {
+        assert!(!is_under("", "/src/lattice/a.rs"));
+    }
+
+    #[test]
+    fn a_path_is_shown_relative_to_its_root() {
+        assert_eq!(
+            relative_to("/src/lattice", "/src/lattice/crates/host/a.rs"),
+            "crates/host/a.rs"
+        );
+        assert_eq!(
+            relative_to("/src/lattice", "/src/lattice/README.md"),
+            "README.md",
+            "a file at the root keeps no leading slash"
+        );
+        assert_eq!(
+            relative_to("/src/lattice", "/elsewhere/a.rs"),
+            "/elsewhere/a.rs",
+            "something outside the root is returned whole rather than mangled"
+        );
     }
 
     #[test]

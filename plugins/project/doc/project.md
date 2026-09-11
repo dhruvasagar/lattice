@@ -15,11 +15,19 @@ Both prefixes are bound, so `project.el` muscle memory works either way.
 |---|---|---|
 | `<leader>pp` | `<C-x>pp` | Pick a project, then pick what to do in it |
 | `<leader>pf` | `<C-x>pf` | Find a file in **this** project |
+| `<leader>pb` | `<C-x>pb` | Switch to an open buffer in **this** project |
 | `<leader>pd` | `<C-x>pd` | Browse **this** project's tree |
 
 The distinction matters: `pf` acts on the project you are already in and shows
 no project picker, while `pp` asks which project first. Both are wanted — the
 first is the everyday verb and the second is what the plugin exists for.
+
+`pb` is the same distinction applied to buffers. `:b` lists every buffer you
+have open across every checkout, which is right for `:b` and wrong when you are
+inside one project and want the handful of files that belong to it. It lists
+buffers whose file lives under the project root; a buffer with no file at all
+(`*messages*`, a magit status, an oil listing) belongs to no project and is not
+listed.
 
 > `<C-x>p` stays bound even with `:set noemacs-keys`. A plugin registers its
 > keymap once at load and there is no unregister, so the gate the design wanted
@@ -31,6 +39,7 @@ first is the everyday verb and the second is what the plugin exists for.
 |---|---|
 | `:project-switch` | The project picker |
 | `:project-find-file [dir]` | Find a file in a project |
+| `:project-buffers [dir]` | Switch to an open buffer in a project |
 | `:project-dired [dir]` | Browse a project's tree |
 | `:project-grep [dir]` | Live grep in a project |
 | `:project-shell [dir]` | A shell in a project |
@@ -93,6 +102,7 @@ come from `project.switch-commands`:
 [project]
 switch-commands = [
   { key = "f", label = "Find file",   command = "project-find-file" },
+  { key = "b", label = "Buffers",     command = "project-buffers" },
   { key = "d", label = "Browse tree", command = "project-dired" },
   { key = "g", label = "Find regexp", command = "project-grep" },
   { key = "s", label = "Shell",       command = "project-shell" },

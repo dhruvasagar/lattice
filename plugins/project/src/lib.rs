@@ -91,6 +91,10 @@ const CB_SHELL: u32 = 8;
 /// rather than renumbered, since the event id crosses a different seam.
 const CB_CHOOSE_DIR: u32 = 9;
 const CB_REMEMBER_AND_SWITCH: u32 = 11;
+/// PB.1. `10` stays skipped for the reason above — `ON_DOCUMENT_OPENED` lives
+/// at that number in the event-handler namespace, and reusing the digit here
+/// would make the two tables read as if they collided.
+const CB_BUFFERS: u32 = 12;
 
 /// The native live-grep picker. Rooted through the OPEN's root (PC.1), not
 /// through an argument: `grep` re-queries on every keystroke via
@@ -353,6 +357,31 @@ fn cmd_find_file(ctx: &ExCommandContext) -> Vec<Effect> {
     }
 }
 
+/// PB.1: `:project-buffers [root]` — the open buffers inside a project.
+///
+/// `project.el`'s `project-switch-to-buffer`. The everyday half of the project
+/// verbs rather than the switching half: `:b` lists every buffer across every
+/// checkout, which is right for `:b` and wrong when you are inside one project
+/// and want the handful of files that belong to it.
+///
+/// **Not remembered on the way through**, unlike `find-file` / `dired` /
+/// `grep` / `shell`. Those four can land you in a project you have not
+/// recorded; this one can only list buffers that are already open, and opening
+/// them is what remembered the project in the first place (`document-opened`).
+/// Recording it again here would touch the store on a keystroke to write bytes
+/// it already holds.
+fn cmd_buffers(ctx: &ExCommandContext) -> Vec<Effect> {
+    match target_root(ctx) {
+        Ok(root) => vec![Effect::OpenPicker(OpenPickerPayload {
+            source: picker::PROJECT_BUFFERS_PICKER.to_string(),
+            args: Vec::new(),
+            root: Some(root),
+            fill_action: None,
+        })],
+        Err(effects) => effects,
+    }
+}
+
 /// `:project-dired [root]` — the directory browser, rooted at a project.
 fn cmd_dired(ctx: &ExCommandContext) -> Vec<Effect> {
     match target_root(ctx) {
@@ -560,6 +589,18 @@ impl Guest for Component {
             CB_DIRED,
         );
         lattice::plugin_host::grammar::register_ex_command(
+            "project-buffers",
+            "Switch to an open buffer inside a project. `:b` lists every buffer \
+             across every checkout; this lists one project's. With no argument, \
+             this buffer's project; with a path, that one.",
+            &path_arg_spec(
+                "the project whose buffers to list; defaults to this buffer's project",
+                "Buffers in project: ",
+            ),
+            CB_PARSE,
+            CB_BUFFERS,
+        );
+        lattice::plugin_host::grammar::register_ex_command(
             "project-switch-to",
             "Open the project-switch menu for a project. The second hop of the \
              project picker — `picker-accept-outcome` has no arm for opening a \
@@ -653,6 +694,11 @@ impl Guest for Component {
             ("p", "project-switch"),
             ("f", "project-find-file"),
             ("d", "project-dired"),
+            // PB.1: `b`, `project.el`'s own letter for
+            // `project-switch-to-buffer`. Under both prefixes like its three
+            // neighbours, so the muscle memory transfers whichever one a user
+            // reaches for.
+            ("b", "project-buffers"),
         ];
         let mut keymap = Vec::with_capacity(verbs.len() * 2);
         for (suffix, command) in verbs {
@@ -710,6 +756,9 @@ impl Guest for Component {
     /// source it provides.
     fn register_picker_sources() {
         lattice::plugin_host::picker_registry::register_picker_source(&picker::spec());
+        // PB.1: the second source from this component — the OR.5b shape this
+        // seam was built for.
+        lattice::plugin_host::picker_registry::register_picker_source(&picker::buffers_spec());
     }
 
     /// Subscribe to `document-opened` — how a project comes to be remembered at
@@ -787,6 +836,7 @@ impl GrammarCallbacks for Component {
             CB_SWITCH => cmd_switch(),
             CB_FIND_FILE => cmd_find_file(&ctx),
             CB_DIRED => cmd_dired(&ctx),
+            CB_BUFFERS => cmd_buffers(&ctx),
             CB_SWITCH_TO => cmd_switch_to(&ctx),
             CB_GREP => cmd_grep(&ctx),
             CB_SHELL => cmd_shell(&ctx),
@@ -831,13 +881,25 @@ impl PickerSource for Component {
     /// never registered is untrusted input, not a case to fall through.
     fn init(
         source: String,
-        _ctx: PickerContext,
+        ctx: PickerContext,
         _args: Vec<String>,
     ) -> Result<Vec<CandidatePair>, String> {
-        if source != picker::PROJECTS_PICKER {
-            return Err(format!("project: no picker source `{source}`"));
-        }
-        Ok(picker::init(load())?
+        let pairs = match source.as_str() {
+            picker::PROJECTS_PICKER => picker::init(load())?,
+            // PB.1: the root rides the CONTEXT, not the args — PC.1's rule,
+            // and the same reason: `:project-buffers` opened from the
+            // switch-commands menu names a project other than the one the
+            // buffer is in, and `Effect::OpenPicker { root }` is the seam that
+            // carries it. Reading `args[0]` would work for this source and
+            // then be a second convention for the next one.
+            picker::PROJECT_BUFFERS_PICKER => picker::buffers_init(
+                &ctx.workspace_root,
+                ctx.buffers,
+                ctx.active_buffer.buffer_id,
+            ),
+            other => return Err(format!("project: no picker source `{other}`")),
+        };
+        Ok(pairs
             .into_iter()
             .map(|(candidate, routing)| CandidatePair { candidate, routing })
             .collect())
@@ -848,10 +910,11 @@ impl PickerSource for Component {
         _ctx: PickerContext,
         routing: RoutingPayload,
     ) -> Result<PickerAcceptOutcome, String> {
-        if source != picker::PROJECTS_PICKER {
-            return Err(format!("project: no picker source `{source}`"));
+        match source.as_str() {
+            picker::PROJECTS_PICKER => picker::accept(routing),
+            picker::PROJECT_BUFFERS_PICKER => picker::buffers_accept(routing),
+            other => Err(format!("project: no picker source `{other}`")),
         }
-        picker::accept(routing)
     }
 }
 

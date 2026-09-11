@@ -209,10 +209,26 @@ selected row.
 
 **Choosing a non-project is not refused here.** `project_of_path` resolves the
 *containing* project, so choosing `~/src/lattice/crates` remembers `lattice`.
-A directory with no root marker above it is the one real refusal, and it is
-reported by the existing `project: `…` is not inside a project` path rather
-than by the picker declining to show the row — the plugin holds no `fs:` grant
-and cannot know what is a project until it asks the host.
+
+**And a directory with no root marker above it is not refused either (PP.4).**
+This section used to call that "the one real refusal", on the grounds that the
+plugin holds no `fs:` grant and cannot know what is a project until it asks the
+host. That is true and it is not the same claim: the host answers *"is there a
+marker above this"*, and that question had been standing in for *"is this a
+project"* without ever being it.
+
+A directory of notes, a scratch tree, a vendored drop, anything not yet
+`git init`-ed — all are projects if you want to work in them, and every verb
+here (`find-file`, `grep`, `dired`, `shell`, `buffers`) works perfectly well
+rooted at a plain directory. The refusal bought nothing and cost the whole
+flow: browsing to a folder and being told it does not count is the picker
+declining to do the one thing it was opened to do.
+
+So resolution is a **preference, not a gate**. A marker above the path still
+wins — `:project-remember .` inside a checkout still names the checkout, and a
+path to a *file* still names its project rather than storing a file as a
+project. Only the unresolvable case changed: it used to refuse and now takes
+the path as the project.
 
 ## 6. Two entry points, and the difference matters
 
@@ -537,7 +553,12 @@ All echo, none panic, and none loses the user's place.
   dropping the value silently. A picked directory that vanishes with no
   message is indistinguishable from a picker that did nothing.
 - `root-for-buffer` answering `kind = pwd` → not remembered. "Not in a project"
-  is not a project.
+  is not a project. **This is the AUTOMATIC path only** — the
+  `document-opened` subscription, where the user named nothing and the cwd
+  standing in would put `~` at the top of the list forever. A directory the
+  user explicitly chose is a project whether or not a marker sits above it
+  (§5, PP.4); the two cases differ in who asked, which is exactly why one
+  refuses and the other does not.
 - A `switch-commands` row naming a command that is not registered → the row is
   **shown greyed with the reason**, not silently dropped. A missing row is
   invisible; a row that says *"magit-status: no such command"* tells you the

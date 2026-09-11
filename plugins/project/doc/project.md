@@ -72,15 +72,23 @@ browser:
 ▸ … (choose a dir)                     <CR>
       ↓
   Choose a directory:  ~/src/dh▊
-▸ ~/src/dhruvasagar/                   <C-l> go in
+▸ ../                                 <CR>  go up
+  ~/src/dhruvasagar/                   <C-l> go in
   ~/src/dharma/                        <C-h> go back up
                                        <CR>  choose this one
 ```
 
-Typing filters as you go, `<C-l>` descends into the highlighted directory and
-`<C-h>` climbs back out. `<CR>` takes the one you are on: it is remembered, and
-its switch menu opens straight away — the same place you would have landed had
-it been in the list all along.
+The prompt shows the directory you are in. Typing filters as you go, `<C-l>`
+descends into the highlighted directory and `<C-h>` climbs back out. `<CR>`
+takes the one you are on: it is remembered, and its switch menu opens straight
+away — the same place you would have landed had it been in the list all along.
+
+`../` is the exception, and it reads the way it looks: `<CR>` on it **goes up**
+rather than choosing the parent, the same as `<C-h>`.
+
+**Any folder can be a project.** It does not have to be a git repo or carry any
+other marker — a directory of notes or a scratch tree is a project if you want
+to work in it, and every verb here works rooted at a plain directory.
 
 Choosing anywhere *inside* a project picks the project, so you can stop at
 `~/src/thing/src` and still get `~/src/thing`.

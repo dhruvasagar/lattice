@@ -306,7 +306,11 @@ mod tests {
         let mut l = list(&["/a", "/b"]);
         assert_eq!(remember(&mut l, "/a"), Ok(false));
         assert_eq!(l, list(&["/a", "/b"]), "and leaves the order alone");
-        assert_eq!(remember(&mut l, "/b"), Ok(true), "a real move still reports");
+        assert_eq!(
+            remember(&mut l, "/b"),
+            Ok(true),
+            "a real move still reports"
+        );
     }
 
     #[test]

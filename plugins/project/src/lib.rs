@@ -58,9 +58,9 @@ use lattice::plugin_host::modes::{
     ModeKind,
 };
 use lattice::plugin_host::types::{
-    OpenPickerPayload, OpenTransientPayload, SpawnTerminalPayload, PickerAcceptOutcome, PickerContext, RoutingPayload,
-    TransientAction, TransientContext, TransientGroup, TransientItem, TransientItemKind,
-    TransientSpec,
+    OpenPickerPayload, OpenTransientPayload, PickerAcceptOutcome, PickerContext, RoutingPayload,
+    SpawnTerminalPayload, TransientAction, TransientContext, TransientGroup, TransientItem,
+    TransientItemKind, TransientSpec,
 };
 
 mod picker;
@@ -165,6 +165,34 @@ fn project_of_path(path: &str) -> Option<String> {
     (info.kind != ProjectKind::Pwd).then_some(info.root)
 }
 
+/// PP.4: the project for a path the user NAMED — and **a directory with no
+/// root marker above it is a project, because the user said so.**
+///
+/// This reverses design §5's one real refusal: *"A directory with no root
+/// marker above it is the one real refusal, and it is reported by the existing
+/// `project: `…` is not inside a project` path."* The argument for it was that
+/// the plugin cannot know what a project is without asking the host, which is
+/// true and is not the same claim — the host answers "is there a marker above
+/// this", and that question was standing in for "is this a project" without
+/// ever being it.
+///
+/// A directory of notes, a scratch tree, a vendored drop, anything not yet
+/// `git init`-ed: all are projects if you want to work in them, and every verb
+/// this plugin has (`find-file`, `grep`, `dired`, `shell`, `buffers`) works
+/// perfectly well rooted at a plain directory. The refusal bought nothing and
+/// cost the whole flow — browsing to a folder and being told it does not count
+/// is the picker declining to do the one thing it was opened to do.
+///
+/// **Resolution stays as a preference, not a gate.** A marker above the path
+/// still wins, so `:project-remember .` inside a checkout still names the
+/// checkout rather than the subdirectory you happen to be standing in, and a
+/// path to a FILE still names its project rather than storing a file as a
+/// project. Only the `None` case changed: it used to refuse and now takes the
+/// path.
+fn project_root_or_path(path: &str) -> String {
+    project_of_path(path).unwrap_or_else(|| path.to_string())
+}
+
 fn echo(level: EchoLevel, text: String) -> Vec<Effect> {
     vec![Effect::Echo(EchoPayload { level, text })]
 }
@@ -208,16 +236,11 @@ fn remember_root(root: &str) -> Option<String> {
 /// escape hatch (`project-remember-projects-under`) for the same reason.
 fn cmd_remember(ctx: &ExCommandContext) -> Vec<Effect> {
     let root = match arg_path(&ctx.args) {
-        // An explicit path: resolve it so `:project-remember .` or a path to a
-        // file inside the tree both name the project rather than the argument.
-        Some(path) => match project_of_path(&path) {
-            Some(root) => root,
-            None => {
-                return warn(format!(
-                    "project: `{path}` is not inside a project — no root marker above it"
-                ));
-            }
-        },
+        // An explicit path: a marker above it still wins, so `:project-remember .`
+        // and a path to a file inside the tree both name the project rather
+        // than the argument. PP.4: a path with NO marker above it is taken as
+        // the project itself rather than refused — see `project_root_or_path`.
+        Some(path) => project_root_or_path(&path),
         None => match project_of_buffer(ctx.buffer_id as u64) {
             Some(root) => root,
             None => return warn("project: this buffer is not inside a project".to_string()),
@@ -318,11 +341,7 @@ fn cmd_remember_and_switch(ctx: &ExCommandContext) -> Vec<Effect> {
     let Some(path) = arg_path(&ctx.args) else {
         return warn("project: choose a directory first".to_string());
     };
-    let Some(root) = project_of_path(&path) else {
-        return warn(format!(
-            "project: `{path}` is not inside a project — no root marker above it"
-        ));
-    };
+    let root = project_root_or_path(&path);
     if let Some(message) = remember_root(&root) {
         return warn(message);
     }
@@ -645,9 +664,11 @@ impl Guest for Component {
         // way in, which is why it is documented rather than hidden.
         lattice::plugin_host::grammar::register_ex_command(
             picker::CHOOSE_DIR_COMMAND,
-            "Browse the filesystem for a project directory. `<C-l>` descends \
-             into the selected directory, `<C-h>` goes back up, `<CR>` chooses \
-             — and the chosen one is remembered and opened.",
+            "Browse the filesystem for a project directory — any folder will do, \
+             it need not be a git repo. `<C-l>` descends into the selected \
+             directory, `<C-h>` goes back up, `<CR>` chooses the one you are on \
+             (or goes up, on the `../` row) — and the chosen one is remembered \
+             and opened.",
             &no_arg_spec(),
             CB_PARSE,
             CB_CHOOSE_DIR,

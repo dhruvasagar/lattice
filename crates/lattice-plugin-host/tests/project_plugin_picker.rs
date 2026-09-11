@@ -597,17 +597,31 @@ async fn choosing_a_directory_remembers_it_and_opens_the_switch_menu() {
     );
 }
 
-/// A directory with no root marker above it is refused, and says why. The
-/// picker cannot know what is a project — the plugin holds no `fs:` grant — so
-/// the refusal has to happen here, at the one place that can ask the host.
+/// **PP.4 reversed this test, and the reversal is the point.**
+///
+/// It used to assert that a directory with no root marker above it is REFUSED,
+/// on design §5's "the one real refusal". The argument was that the plugin
+/// cannot know what a project is without asking the host — true, and not the
+/// same claim: the host answers *"is there a marker above this"*, and that
+/// question was standing in for *"is this a project"* without ever being it.
+///
+/// A directory of notes, a scratch tree, anything not yet `git init`-ed is a
+/// project if you want to work in it, and every verb this plugin has works
+/// perfectly well rooted at a plain directory. The refusal bought nothing and
+/// cost the whole flow: browsing to a folder and being told it does not count
+/// is the picker declining to do the one thing it was opened to do.
+///
+/// Both halves are asserted together for the reason the sibling test gives —
+/// remembering without the menu and the menu without remembering are each half
+/// the feature and each looks fine alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_directory_that_is_not_a_project_is_refused_with_a_reason() {
+async fn a_directory_with_no_root_marker_is_a_project_because_you_chose_it() {
     let Some(_) = plugin_wasm() else {
         return;
     };
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().canonicalize().unwrap();
-    let orphan = workspace.join("not-a-project");
+    let orphan = workspace.join("just-a-folder");
     std::fs::create_dir_all(&orphan).unwrap();
     let host = PluginHost::with_dirs(tmp.path().join("cache"), tmp.path().join("data")).unwrap();
 
@@ -628,18 +642,65 @@ async fn a_directory_that_is_not_a_project_is_refused_with_a_reason() {
         &orphan.to_string_lossy(),
     );
 
+    let remembered = host
+        .plugin_store_get(PLUGIN_ID, "projects")
+        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+        .unwrap_or_default();
+    assert_eq!(
+        remembered,
+        orphan.to_string_lossy(),
+        "the directory you chose IS the project — stored verbatim, because \
+         there is no marker above it to resolve to"
+    );
+
     let rendered = format!("{effects:?}");
     assert!(
-        rendered.contains("not inside a project"),
-        "the refusal names the reason: {rendered}"
+        !rendered.contains("not inside a project"),
+        "and nothing is refused: {rendered}"
     );
     assert!(
-        !rendered.contains("OpenTransient"),
-        "and nothing opens — a menu for a project that was not remembered is \
-         the worse half of a half-working feature: {rendered}"
+        rendered.contains("OpenTransient") && rendered.contains("project-switch"),
+        "the menu opens in the same breath, exactly as it does for a checkout: \
+         {rendered}"
     );
-    assert!(
-        host.plugin_store_get(PLUGIN_ID, "projects").is_none(),
-        "and nothing is stored"
+}
+
+/// A marker above the path still WINS. PP.4 removed the refusal, not the
+/// resolution — `:project-remember .` inside a checkout must still name the
+/// checkout rather than the subdirectory you happen to be standing in, and a
+/// path to a FILE must still name its project rather than storing a file as a
+/// project.
+///
+/// This is the guard on the reversal: a fix that took the path verbatim in
+/// EVERY case would pass the test above and quietly break both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_marker_above_the_path_still_resolves_to_the_checkout() {
+    let Some(_) = plugin_wasm() else {
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().canonicalize().unwrap();
+    let (delta, delta_file) = marker_repo(&workspace, "delta");
+    let host = PluginHost::with_dirs(tmp.path().join("cache"), tmp.path().join("data")).unwrap();
+    let resolver: lattice_core::ProjectResolverHandle = Arc::new(
+        lattice_core::MarkerResolver::with_default_markers(workspace.clone()),
+    );
+    host.set_project_context(
+        resolver,
+        BufferStoreHandle::new(Arc::new(Buffers { paths: Vec::new() })),
+    );
+
+    // A FILE inside the checkout — the case verbatim-storage would mangle
+    // worst, since a file path in the project list is not a project at all.
+    apply_ex(&host, "project-remember", &delta_file.to_string_lossy());
+
+    let remembered = host
+        .plugin_store_get(PLUGIN_ID, "projects")
+        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+        .unwrap_or_default();
+    assert_eq!(
+        remembered,
+        delta.to_string_lossy(),
+        "resolution is a preference, not a gate — the marker still wins"
     );
 }

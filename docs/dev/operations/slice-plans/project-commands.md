@@ -32,6 +32,8 @@ feature is useful at PC.6.
 | PP.1 | lattice | `dir-pick` shows where it is, and offers `../` | ✅ |
 | PP.2 | both | A rooted picker names the root it is operating on | ✅ |
 | PB.1 | plugin | `project-buffers` — one project's open buffers | ✅ |
+| PP.3 | lattice | `<CR>` on `../` navigates, it does not choose the parent | ✅ |
+| PP.4 | plugin | Any folder is a project — the marker refusal is gone | ✅ |
 
 **Deliberate ordering.** The plugin leads. PC.4–PC.6 prove the whole shape —
 list, picker, menu, keymap — against the two verbs that need nothing from the
@@ -600,3 +602,66 @@ the accept; `lattice-plugin-host/tests/project_plugin_picker.rs` drives all of
 it through the real guest seam. `connect_picker` now resolves a source BY ID —
 with two sources registered, `.next()` would silently start testing whichever
 one registration emitted first.
+
+## PP.3 ✅ — `<CR>` on `../` navigates
+
+Reported as `WARN project: `/Users/` is not inside a project` while navigating
+up. The warn was correct for what happened: `<CR>` on `../` at `~/` *chose*
+`/Users` as a project, and the project flow refused it. PP.1 shipped that
+reading deliberately — `../` is an ordinary row, so `<CR>` supplies its path
+like every other row — and it is wrong in the way that only shows up in use.
+`../` reads as a verb, and every file browser there is (netrw, oil, ranger, lf,
+telescope-file-browser) treats `<CR>` on `..` as *go up*. UX-convention rule:
+muscle memory is the dominant cost on a surface like this one.
+
+A fourth source hook, `accept_navigates(ctx, candidate) -> Option<String>`,
+default `None`. `Some(query)` means *this row is a signpost, not a
+destination*: the host replaces the query and re-lists, the picker stays open,
+and nothing is accepted — no outcome resolved, no MRU recorded, no
+`PickerAccepted` published, because none of that happened.
+
+Distinct from `descend`, which it resembles: `descend` answers for every row
+that CONTAINS things, this answers for rows that are not things at all. In
+`dir-pick` every other row is a directory you might be choosing, so `<C-l>`
+answers for all of them and this answers only for `../`.
+
+Checked in `do_picker_accept` before any of the three accept paths, and
+native-only — a `WasmPickerSource` takes the `None` default, so the WIT
+boundary is untouched and no guest needs rebuilding for this.
+
+**Tests.** `picker_descend.rs` gains the navigation (picker still open, query
+moved, no effects) and its guard — `<CR>` on a CHILD still chooses it, because
+a fix that made every row navigate would turn `dir-pick` into a browser that
+can never answer the question it was opened to answer.
+
+## PP.4 ✅ — any folder is a project
+
+Design §5 used to call a directory with no root marker above it "the one real
+refusal", reasoning that the plugin holds no `fs:` grant and cannot know what a
+project is without asking the host. True, and not the same claim: the host
+answers *"is there a marker above this"*, and that had been standing in for
+*"is this a project"* without ever being it.
+
+A directory of notes, a scratch tree, a vendored drop, anything not yet
+`git init`-ed — all are projects if you want to work in them, and every verb
+this plugin has works rooted at a plain directory. The refusal bought nothing
+and cost the whole flow: browsing to a folder and being told it does not count
+is the picker declining to do the one thing it was opened to do.
+
+**Resolution stays a preference, not a gate.** A marker above the path still
+wins, so `:project-remember .` inside a checkout still names the checkout and a
+path to a FILE still names its project rather than storing a file as a project.
+Only the unresolvable case changed: it used to refuse, and now takes the path.
+
+The automatic path is untouched and the distinction is who asked —
+`root-for-buffer` answering `kind = pwd` on `document-opened` is still not
+remembered, because nobody named it and the cwd standing in would put `~` at
+the top of the list forever.
+
+**Tests.** `project_plugin_picker.rs` reverses
+`a_directory_that_is_not_a_project_is_refused_with_a_reason` into
+`a_directory_with_no_root_marker_is_a_project_because_you_chose_it`, and adds
+the guard the reversal needs: a marker above the path still resolves to the
+checkout, driven with a FILE path — the case verbatim storage would mangle
+worst. A fix that took the path verbatim in every case passes the first and
+quietly breaks the second.

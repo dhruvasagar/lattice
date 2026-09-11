@@ -516,7 +516,10 @@ mod tests {
             ],
             1,
         );
-        assert_eq!(displays(&rows), vec!["b.rs".to_string(), "a.rs".to_string()]);
+        assert_eq!(
+            displays(&rows),
+            vec!["b.rs".to_string(), "a.rs".to_string()]
+        );
     }
 
     /// An accepted row activates that buffer. A source whose accept resolved

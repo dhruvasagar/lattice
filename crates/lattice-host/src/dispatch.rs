@@ -42787,12 +42787,34 @@ impl Editor {
         ) {
             return false;
         }
-        if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
+        // **Yank READS.** Read-only is about what may be written, and refusing
+        // a yank refuses the single most common thing anyone does in one of
+        // these buffers — copying a line out of `*messages*`, a hunk out of
+        // magit, a snippet out of `:help`. vim has never gated it: `y` works
+        // in a `nomodifiable` buffer, and a help buffer you cannot copy from
+        // is a help buffer you have to retype.
+        //
+        // Identified by command id rather than by a spec flag because
+        // `OperatorSpec` has no "mutates" bit to read. It is worth adding when
+        // a second non-mutating operator appears; with exactly one, a list of
+        // one id is honest and a new flag on every operator would be
+        // speculative. The `y`-with-motion and Visual-`y` paths both arrive
+        // here as this same command, so one check covers both.
+        let is_yank = inv.command == self.builtins.yank.0;
+        if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) && !is_yank {
             self.pending_count = 0;
             self.op_count = 0;
             self.pending_register = None;
             self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
             return true;
+        }
+        if is_yank {
+            // Hand it to the normal document path, which owns the range
+            // resolution (`Range::Selection` for Visual, the motion for
+            // `y{motion}`) and the register write. Returning `false` is how
+            // this runner says "not mine" — the same answer it already gives
+            // for Action and ExCommand above.
+            return false;
         }
         let is_vertical_jump = inv.command == self.builtins.goto_first_line.0
             || inv.command == self.builtins.goto_last_line.0;

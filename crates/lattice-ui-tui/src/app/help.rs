@@ -1314,18 +1314,41 @@ mod tests {
     }
 
     #[test]
-    fn help_invoke_operator_echoes_read_only() {
-        // Operators on a help buffer are rejected with a "read-only"
-        // echo -- v1 doesn't model yank-against-help yet.
+    fn help_yank_reads_and_mutating_operators_still_do_not() {
+        // **This test used to assert the opposite**, under the comment "v1
+        // doesn't model yank-against-help yet". That was the limitation, not
+        // the design: read-only governs what may be WRITTEN, and a help buffer
+        // you cannot copy out of is one you have to retype. vim yanks freely
+        // in a `nomodifiable` buffer.
         let mut a = app_with("xx", 10);
         install_help(&mut a, HelpContent::from_lines("ro", vec!["abc".into(); 5]));
         let yank = a.editor.builtins.yank;
         a.apply(Action::Invoke(
             CommandInvocation::of(yank.0).with_range(lattice_grammar::Range::CurrentLine),
         ));
+        assert!(
+            a.editor.unnamed_register.is_some(),
+            "yank reads, so it lands in the register"
+        );
+        assert!(
+            !a.editor
+                .last_message
+                .as_ref()
+                .map(|m| m.text.contains("read-only"))
+                .unwrap_or(false),
+            "and nothing refuses it"
+        );
+
+        // The other half, in the same test so the two cannot drift: a
+        // MUTATING operator is still refused. A fix that let yank through by
+        // weakening the gate would pass the half above and quietly make help
+        // editable.
+        let delete = a.editor.builtins.delete;
+        a.apply(Action::Invoke(
+            CommandInvocation::of(delete.0).with_range(lattice_grammar::Range::CurrentLine),
+        ));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("read-only"), "got: {msg:?}");
-        assert!(a.editor.unnamed_register.is_none());
     }
 
     #[test]

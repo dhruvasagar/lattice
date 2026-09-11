@@ -1788,3 +1788,178 @@ mod tests {
         assert_eq!(a.editor.document.text(), "bac");
     }
 }
+
+/// Vim-grammar regressions reported 2026-09-11. Driven through `press_chars`,
+/// which is the REAL keystroke path — `Editor::dispatch_chord` alone does not
+/// compose operator+motion (that lives in `App::apply`) and does not run the
+/// selection write-through, so a harness built on it silently measures
+/// something else.
+#[cfg(test)]
+mod reported_vim_grammar_2026_09_11 {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use crate::app::test_helpers::{app_with, press_chars};
+
+    /// `x` in Visual deletes the selection, vim's alias for `d`.
+    ///
+    /// It was resolving to `action:magit-discard`. Visual's keymap lookup used
+    /// the legacy `lookup`, which treats EVERY registered minor mode as
+    /// active, so magit's `x` fired in every buffer in the editor. Normal mode
+    /// had already migrated to the gated `lookup_with_context`; Visual had
+    /// not, and its own code comment said so.
+    #[test]
+    fn x_in_visual_deletes_the_selection() {
+        let mut a = app_with("abcdef\n", 10);
+        press_chars(&mut a, "vllx");
+        assert_eq!(a.editor.document.text(), "def\n");
+    }
+
+    /// And the general form of that bug: no minor mode's Visual binding may
+    /// fire in a buffer where the mode is not active. `x` is the one that was
+    /// reported; this asserts the mechanism rather than the symptom.
+    #[test]
+    fn a_visual_chord_matches_its_normal_mode_peer_in_a_plain_buffer() {
+        let mut a = app_with("abcdef\n", 10);
+        press_chars(&mut a, "vlld");
+        let by_d = a.editor.document.text();
+        let mut b = app_with("abcdef\n", 10);
+        press_chars(&mut b, "vllx");
+        assert_eq!(
+            b.editor.document.text(),
+            by_d,
+            "`x` and `d` are the same operator in Visual; a difference means \
+             something outside the vim grammar claimed the chord"
+        );
+    }
+
+    /// `D` empties the line and LEAVES it. `dd` is the one that removes a
+    /// line, and the newline is the whole difference between them.
+    ///
+    /// `motion:line-end` targets one byte past the last character, and the
+    /// inclusive-motion adjustment then stepped onto the `\n` and took it —
+    /// so `D` pulled the next line up into the current one.
+    #[test]
+    fn capital_d_deletes_to_end_of_line_and_keeps_the_break() {
+        let mut a = app_with("abc\ndef\n", 10);
+        press_chars(&mut a, "D");
+        assert_eq!(a.editor.document.text(), "\ndef\n");
+    }
+
+    #[test]
+    fn capital_c_changes_to_end_of_line_and_keeps_the_break() {
+        let mut a = app_with("abc\ndef\n", 10);
+        press_chars(&mut a, "C");
+        assert_eq!(a.editor.document.text(), "\ndef\n");
+    }
+
+    /// `D` is `d$` — the doc says so, so they must agree.
+    #[test]
+    fn capital_d_equals_d_dollar() {
+        let mut a = app_with("abc\ndef\n", 10);
+        press_chars(&mut a, "D");
+        let mut b = app_with("abc\ndef\n", 10);
+        press_chars(&mut b, "d$");
+        assert_eq!(a.editor.document.text(), b.editor.document.text());
+    }
+
+    /// The clamp is about inclusive motions in general, not about `$`. `e` on
+    /// a line's last word targets its last character; covering that character
+    /// must not reach across the break.
+    #[test]
+    fn an_inclusive_motion_at_a_line_end_does_not_eat_the_break() {
+        let mut a = app_with("abc\ndef\n", 10);
+        press_chars(&mut a, "de");
+        assert_eq!(
+            a.editor.document.text(),
+            "\ndef\n",
+            "`de` over the last word of a line stops at the line end"
+        );
+    }
+
+    /// A count'd `D` still stops at the line end — `2D` is not `2dd`.
+    #[test]
+    fn a_counted_capital_d_still_keeps_the_break() {
+        let mut a = app_with("abc\ndef\n", 10);
+        press_chars(&mut a, "2D");
+        assert!(
+            a.editor.document.text().contains('\n'),
+            "got {:?}",
+            a.editor.document.text()
+        );
+    }
+
+    /// **Yank READS.** A read-only buffer refuses writes, not copies — and
+    /// copying a line out of `*messages*` / magit / `:help` is most of what
+    /// anyone does in one. `run_read_only_motion` refused every non-Motion
+    /// command, so `y` echoed "buffer is read-only" and the register stayed
+    /// empty.
+    ///
+    /// Driven against `*plugin-trace*` rather than `*messages*`: the messages
+    /// buffer records the editor's own echoes, so its content moves under the
+    /// test. Same read-only mechanism, no self-narration.
+    #[test]
+    fn yank_works_in_a_read_only_synthetic_buffer() {
+        let mut a = app_with("origin\n", 10);
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            e.open_synthetic_buffer("*plugin-trace*", "plugin-trace-mode");
+            let b = e.buffers.by_name("*plugin-trace*").expect("exists");
+            if let Some(h) = e.buffers.document_handle(b) {
+                let _ = h.apply_edit_batch(vec![lattice_protocol::edit::Edit::insert(
+                    lattice_protocol::position::Position::new(0, 0),
+                    "hello world\n",
+                )]);
+            }
+        });
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            let _ = e.run_tick_pending();
+        });
+        assert!(
+            a.editor.document.text().starts_with("hello"),
+            "precondition: the buffer has content, got {:?}",
+            a.editor.document.text()
+        );
+
+        press_chars(&mut a, "gg0vlly");
+
+        let reg = a
+            .editor
+            .read_register(None)
+            .map(|r| r.content)
+            .unwrap_or_default();
+        assert_eq!(reg, "hel", "the selection is yanked, not refused");
+        assert!(
+            !a.editor
+                .last_message
+                .as_ref()
+                .map(|m| m.text.contains("read-only"))
+                .unwrap_or(false),
+            "and nothing complains about read-only"
+        );
+    }
+
+    /// The other half: the buffer is still read-only. A fix that let yank
+    /// through by weakening the gate would pass the test above and quietly
+    /// make `*messages*` editable.
+    #[test]
+    fn the_buffer_is_still_read_only_for_everything_that_writes() {
+        let mut a = app_with("origin\n", 10);
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            e.open_synthetic_buffer("*plugin-trace*", "plugin-trace-mode");
+            let b = e.buffers.by_name("*plugin-trace*").expect("exists");
+            if let Some(h) = e.buffers.document_handle(b) {
+                let _ = h.apply_edit_batch(vec![lattice_protocol::edit::Edit::insert(
+                    lattice_protocol::position::Position::new(0, 0),
+                    "hello world\n",
+                )]);
+            }
+        });
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            let _ = e.run_tick_pending();
+        });
+        let before = a.editor.document.text();
+        press_chars(&mut a, "gg0x");
+        assert_eq!(a.editor.document.text(), before, "`x` still refused");
+        press_chars(&mut a, "dd");
+        assert_eq!(a.editor.document.text(), before, "`dd` still refused");
+    }
+}

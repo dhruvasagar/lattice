@@ -237,7 +237,9 @@
 - [X] window motions C-w left|up|right|down should work better with splits, for instance when there are 4 splits open, C-w down should go to the down split from the buffer above it, right now from either above it goes down to the left window, not based on the cursor position
 - [ ] Issues with folding, sometimes folds get folded while making changes (especially in lists in org mode)
       eg.) `o` on a headline instantly folds the headline
-- [ ] `C`, `D` also removes the training newline character hence ends of bring the next line to this line like a join
+- [X] `C`, `D` also removes the training newline character hence ends of bring the next line to this line like a join
+- [X] When a picker in a stack is dismissed, it should dismiss the entire stack, in my test if I dismiss a stacked picker while it appears it's dismissed, but when I launch a new picker insted of the new picker, it still shows the previous stacked picker
+- [X] When navigating `../` I get the following errors: `WARN project: `/Users/` is not inside a project — no root marker above it`
 
 * Documentation
 - [X] lattice-tutor

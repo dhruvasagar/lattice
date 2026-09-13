@@ -1419,3 +1419,41 @@ first-party trait surface has been exercised by ≥ 5
 concrete sources — exactly the
 [`../operations/implementation.md`](../operations/implementation.md)
 § Build order principle.
+
+### 4.2quinquies. An accept in flight does not outlive the user moving on
+
+A plugin picker source resolves its accept **asynchronously**
+(`accept_async`), so `do_picker_accept` takes `self.picker`, parks a
+`pending_picker_accept`, and `drain_pending_picker_accept` applies the outcome
+later on the `async_landed` wake.
+
+Between those two moments there is **no picker on screen**. That is the whole
+problem: the picker vanishing at the moment of accept is indistinguishable,
+from the user's side, from the picker being dismissed. `<Esc>` there reaches
+nothing — with no picker seated there is none to dismiss — so the flow reads as
+*cancelled*.
+
+Then the wake runs, which is usually the next thing the user does, and the
+outcome seats a picker over whatever they asked for instead. The symptom lands
+one step away from its cause: **"I opened a picker and got the previous one."**
+
+Two places cancel it, and neither is sufficient alone:
+
+- **`open_picker`** — asking for a list supersedes an outcome still in flight
+  from the last one. This is the one that fixes the reported case, because the
+  user never dismissed anything; they simply opened something else.
+- **`do_picker_dismiss`** — for the case where a picker *is* seated over the
+  in-flight accept and the user dismisses that. Cleared at the top of the
+  function so every return path inherits it, including the yank picker's
+  stash-restore: returning to the list you were filtering must not resurrect
+  an accept you abandoned to get there.
+
+`do_picker_accept` already set the precedent — arming a new accept cancels the
+previous one, without comparing sources. These are the other two ways a picker
+supersedes what came before it, and they follow the same rule for the same
+reason.
+
+**This does not break the flow that depends on the outcome landing.**
+`… (choose a dir)` → `project-choose-dir` → `Effect::OpenPicker` works because
+the drain has already *taken* the pending accept before applying it, so the
+`open_picker` that outcome triggers has nothing left to cancel.

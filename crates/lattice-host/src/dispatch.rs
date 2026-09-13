@@ -14088,6 +14088,30 @@ impl Editor {
     /// registered id so the user can recover without `:apropos`.
     /// Phase 5.8.AF.3.
     pub fn open_picker(&mut self, source: String, args: Vec<String>) -> Vec<RendererSignal> {
+        // Opening a picker cancels an accept still IN FLIGHT from a previous
+        // one, because that outcome is now stale by definition: the user has
+        // asked for this list instead.
+        //
+        // The failure without it is the reported one, and it does not look
+        // like a race. A plugin source resolves its accept asynchronously, so
+        // `do_picker_accept` takes `self.picker` and parks the outcome —
+        // which means the picker vanishes at the moment of accept and READS as
+        // dismissed. `drain_pending_picker_accept` then applies it on the next
+        // `async_landed` wake, which is usually the next thing the user does.
+        // So the symptom lands one step away from its cause: *I opened a
+        // picker and got the previous one instead.*
+        //
+        // Safe against the flow that DEPENDS on the outcome landing
+        // (`… (choose a dir)` → `project-choose-dir` → `OpenPicker`): there
+        // the drain has already taken the pending accept before applying it,
+        // so the `open_picker` it triggers has nothing left to cancel.
+        //
+        // `do_picker_accept` sets the precedent — arming a new accept cancels
+        // the previous one. This is the same rule for the other way a picker
+        // supersedes what came before it.
+        if let Some(pending) = self.pending_picker_accept.take() {
+            pending.cancel.cancel();
+        }
         // Slice `3c.unify.picker-registry-cutover` (7d.1):
         // dual-lookup. First consult `CompletionRegistry::source_by_id`
         // (engine-shape registrations: future plugin sources +
@@ -33864,6 +33888,30 @@ impl Editor {
         // own. Cleared first so every `return` below inherits it.
         self.picker_fill_target = None;
         self.picker_fill_replace = None;
+        // An accept that is still IN FLIGHT is cancelled, for the same reason
+        // `pending_picker_init` is cancelled below and with the same symptom.
+        // A plugin source resolves its accept asynchronously, so
+        // `do_picker_accept` takes `self.picker`, parks the outcome, and
+        // `drain_pending_picker_accept` applies it on the `async_landed` wake.
+        // Between those two moments there is NO picker on screen — and a user
+        // who gives up there and presses `<Esc>` used to get the outcome
+        // anyway, landing whenever the wake next ran. That is usually the next
+        // thing they do, so it read as *the picker I just asked for is not the
+        // one I got*.
+        //
+        // Unconditional, and `do_picker_accept` is the precedent: arming a new
+        // accept cancels the previous one without comparing sources. A pending
+        // accept always belongs to a picker that has already left the screen,
+        // so any picker visible at dismiss time was opened after it — letting
+        // the earlier one paint over the dismissal is the same surprise one
+        // step removed.
+        //
+        // Cleared FIRST so every `return` below inherits it, including the
+        // stash-restore path: returning to the list you were filtering must
+        // not also resurrect an accept you abandoned to get there.
+        if let Some(pending) = self.pending_picker_accept.take() {
+            pending.cancel.cancel();
+        }
         // YR.5b: a yank picker opened over another picker restores it on
         // Esc. Closing both would lose the list the user was filtering,
         // which they never asked to leave — they asked to abandon the

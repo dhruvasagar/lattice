@@ -219,6 +219,44 @@ Mostly the rules vim already uses, generalised:
   during a scan, silently undid the fold the user had just
   toggled.
 
+- **…and "appear later" excludes folds the user's own edit
+  created.** `recompute_folds_because` takes a
+  `FoldRecomputeCause`: `Populate` (activation, a late syntax
+  attach, an async provider batch, an LSP folding-range
+  response) lets `foldlevel` seed what it has not seen;
+  `Edit` — passed by the one caller on the edit path,
+  `maybe_reparse_syntax` — does not.
+
+  The exception above had grown back into the invariant it was
+  carved out of. A fold that exists because a keystroke just
+  created it is not structure the user has yet to see: they are
+  looking at it, usually typing inside it. At org's
+  `foldlevel=0` that shut the fold under the cursor on every
+  edit that changed the buffer's shape. `o` on a bare headline
+  was the purest case — a headline with no body produces no
+  fold at all, so opening a line under it made one appear for
+  the very first time, mid-insert, and it closed immediately.
+  New list items did the same one level down.
+
+  Emacs (`#+STARTUP: overview`) and vim (`foldlevelstart`) both
+  treat level-driven collapse as an opening act; vim's
+  `foldlevel` standing over `foldmethod=syntax` is the source of
+  the InsertEnter/InsertLeave `foldmethod=manual` hack in every
+  other vimrc, which is the behaviour this rules out rather than
+  reproduces.
+
+  The `Edit` pass still stamps `last_folded_text_version`, so
+  the per-tick `maybe_refold_after_async_population` sees a
+  current stamp and does not re-run the same recompute as
+  `Populate` a frame later — reopening on the keystroke and
+  closing on the next tick would be a flicker, and worse than
+  the bug.
+
+  Providers that want their folds collapsed regardless say so
+  themselves with `closed: true` — diff-mode's unchanged
+  regions and the agent transcript's tool-call folds already
+  do, so neither depends on which cause is in play.
+
 - **The default is `99`, not vim's `0`.** Vim's `0` default
   is why practically every vimrc carries
   `set foldlevelstart=99`. Lattice would wear it worse:

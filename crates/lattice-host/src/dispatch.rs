@@ -20482,6 +20482,12 @@ impl Editor {
     /// closed/open state of any existing fold whose identity matches
     /// a recomputed one (so `zc` survives a reparse).
     ///
+    /// **`foldlevel` seeds only folds this pass has not seen before, and only
+    /// when the recompute is a [`crate::folds::FoldRecomputeCause::Populate`]
+    /// one.** The edit path goes through
+    /// [`Self::recompute_folds_because`] with `Edit` instead, so a fold the
+    /// user's own keystroke created arrives open.
+    ///
     /// `Syntax` runs the language's tree-sitter `folds.scm` query
     /// against the live parse tree; when the language doesn't ship a
     /// `folds.scm` (or the parse tree hasn't been built yet), the
@@ -20491,6 +20497,17 @@ impl Editor {
     /// is empty (request still in-flight, server not attached, or
     /// sub-mode disabled).
     pub fn recompute_folds(&mut self) {
+        self.recompute_folds_because(crate::folds::FoldRecomputeCause::Populate);
+    }
+
+    /// [`Self::recompute_folds`], told why it is running.
+    ///
+    /// The `cause` decides one thing and nothing else: whether `foldlevel` may
+    /// seed the folds this pass has not seen before. See
+    /// [`crate::folds::FoldRecomputeCause`] — the short version is that a fold
+    /// the user's own keystroke just created must not close under their
+    /// cursor, which is what `foldlevel=0` org buffers did on every `o`.
+    pub fn recompute_folds_because(&mut self, cause: crate::folds::FoldRecomputeCause) {
         // OA.4d: stamp what these folds were computed from, so the tick can
         // tell whether they still match the document.
         self.last_folded_text_version =
@@ -20596,7 +20613,9 @@ impl Editor {
         // the state the user put them in. Doing this before the manual
         // (`zf`) folds are appended keeps hand-made folds out of it
         // entirely — those are the user's, start to finish.
-        crate::folds::apply_fold_level_to_new(&mut next, &carried, self.foldlevel());
+        if matches!(cause, crate::folds::FoldRecomputeCause::Populate) {
+            crate::folds::apply_fold_level_to_new(&mut next, &carried, self.foldlevel());
+        }
         // Manual folds (identity = None) coexist with computed
         // folds; recomputed providers don't produce them, so carry
         // them over verbatim.
@@ -21669,7 +21688,13 @@ impl Editor {
         // the next request's from_version mismatch triggers a full
         // reparse and self-corrects.
         self.last_synced_syntax_version = tv;
-        self.recompute_folds();
+        // The edit path, and the ONE caller that passes `Edit`: this runs
+        // because the user's keystroke changed the text. `foldlevel` must not
+        // close the structure that keystroke just created (see
+        // `FoldRecomputeCause`). Stamping still happens inside, so the tick's
+        // `maybe_refold_after_async_population` sees a current stamp and does
+        // not re-run the same pass as `Populate` a frame later.
+        self.recompute_folds_because(crate::folds::FoldRecomputeCause::Edit);
     }
 
     /// Vim's `:marks` -- list every set mark's name + position in

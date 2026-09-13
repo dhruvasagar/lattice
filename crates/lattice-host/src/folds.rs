@@ -405,9 +405,39 @@ fn level_opens_everything(folds: &[Fold], level: u32) -> bool {
     level as usize >= folds.len()
 }
 
+/// Why [`crate::editor::Editor::recompute_folds_because`] is running, and so
+/// whether `foldlevel` gets to seed the folds it has not seen before.
+///
+/// `fold-architecture.md` states that `foldlevel` "applies as a bulk action,
+/// not a standing invariant" — [`apply_fold_level_to_new`] is the narrow
+/// exception that lets it decide the initial state of structure that shows up
+/// later. On the edit path that exception had grown back into the invariant it
+/// was carved out of: every keystroke that created a fold handed `foldlevel` a
+/// fold it had never seen, and at org's `foldlevel=0` that fold closed under
+/// the cursor. `o` on a bare headline was the purest case — a headline with no
+/// body produces no fold at all, so opening a line under it makes one appear
+/// for the very first time, mid-insert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldRecomputeCause {
+    /// Content arrived from somewhere other than the user's hands: buffer
+    /// activation, a late syntax attach, an async provider batch, an LSP
+    /// folding-range response. This is structure the user has genuinely not
+    /// seen, so `foldlevel` seeds it — org opens on an overview, `:set
+    /// foldlevel=0` keeps collapsing a project diff whose hunks are still
+    /// streaming in.
+    Populate,
+    /// The user's own edit reshaped the buffer. `foldlevel` gets no vote: a
+    /// fold that exists because a keystroke just created it is not structure
+    /// the user has yet to see — they are looking at it, and usually typing
+    /// inside it. Emacs (`#+STARTUP: overview`) and vim (`foldlevelstart`)
+    /// both treat level-driven collapse as an opening act for the same reason.
+    Edit,
+}
+
 /// Close new folds that sit deeper than `foldlevel`, leaving folds
 /// whose state was carried over untouched.
 ///
+
 /// `carried[i]` is true when `folds[i]` inherited its `closed` flag from
 /// a previous fold with the same identity. Those keep whatever the user
 /// last did to them; the rest are new structure, and new structure obeys

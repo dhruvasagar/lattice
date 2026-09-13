@@ -187,7 +187,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::compute_fold_hash;
-    use crate::app::test_helpers::{app_with, attach_test_syntax, invoke_motion};
+    use crate::app::test_helpers::{app_with, attach_test_syntax, invoke_motion, press};
     use crate::app::*;
     use lattice_grammar::{ModalState, VisualKind};
     use lattice_protocol::edit::Edit;
@@ -1282,5 +1282,137 @@ mod tests {
         assert_eq!(a.editor.cursor.line, 5, "### → ## (one level up)");
         a.apply(Action::GotoParentFold);
         assert_eq!(a.editor.cursor.line, 0, "## → # (one more level)");
+    }
+
+    /// `foldlevel` seeds structure that ARRIVES; it must not re-fold the
+    /// structure the user's own keystroke just made.
+    ///
+    /// Org declares `foldlevel=0` — its `#+STARTUP: overview` equivalent — so
+    /// every one of these runs at the level org buffers actually live at.
+    /// `foldmethod=markdown` stands in for org's `syntax`: both are heading
+    /// providers, both key identity on the trimmed heading text, and this test
+    /// module can reach markdown without a plugin in the loop.
+    mod foldlevel_and_the_edit_path {
+        use super::*;
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        /// `:set foldmethod=markdown` + `:set foldlevel=0`, in that order —
+        /// the same cascade org's two mode-option layers drive.
+        fn org_shaped(text: &str) -> App {
+            let mut a = app_with(text, 20);
+            for cmd in ["set foldmethod=markdown", "set foldlevel=0"] {
+                a.editor.set_command_line_text(cmd);
+                a.editor.modal = ModalState::Command;
+                a.apply(Action::CommandLineSubmit);
+            }
+            a
+        }
+
+        fn fold_at(a: &App, start_line: u32) -> Fold {
+            *a.editor
+                .folds
+                .iter()
+                .find(|f| f.start_line == start_line)
+                .unwrap_or_else(|| panic!("expected a fold starting at line {start_line}"))
+        }
+
+        /// **The reported bug.** `o` on a headline with nothing under it
+        /// folded the headline the instant the line appeared.
+        ///
+        /// A bare headline produces NO fold (`markdown_single_line_heading_skipped`
+        /// pins the same rule provider-side), so opening a line under it makes
+        /// one appear for the very first time. Under the old unconditional
+        /// `apply_fold_level_to_new` that counted as unseen structure, and at
+        /// `foldlevel=0` unseen structure closes — around the cursor, in insert
+        /// mode, on the line being typed.
+        #[test]
+        fn open_line_under_a_bare_heading_does_not_fold_it() {
+            let mut a = org_shaped("# H1\n");
+            assert!(a.editor.folds.is_empty(), "a bare heading has no fold yet");
+
+            a.editor.cursor = Position::new(0, 0);
+            press(&mut a, KeyEvent::from(KeyCode::Char('o')));
+            press(&mut a, KeyEvent::from(KeyCode::Char('x')));
+
+            assert!(
+                !fold_at(&a, 0).closed,
+                "the fold the user just opened a line inside must not snap shut"
+            );
+        }
+
+        /// The same mechanism one level down — the "especially in lists" half
+        /// of the report. A nested heading created by an edit is new structure
+        /// at depth 2, so `foldlevel=0` closed it even harder than the parent.
+        #[test]
+        fn a_nested_section_created_by_an_edit_arrives_open() {
+            let mut a = org_shaped("# H1\nbody\n");
+            a.editor.cursor = Position::new(1, 0);
+            press(&mut a, KeyEvent::from(KeyCode::Char('o')));
+            for ch in "## H2".chars() {
+                press(&mut a, KeyEvent::from(KeyCode::Char(ch)));
+            }
+            press(&mut a, KeyEvent::from(KeyCode::Enter));
+            press(&mut a, KeyEvent::from(KeyCode::Char('x')));
+
+            assert!(
+                !fold_at(&a, 2).closed,
+                "a sub-section the user just typed must not fold itself away"
+            );
+        }
+
+        /// The other side of the fix, and the thing org would lose if the
+        /// `Populate` path were gated too: content that ARRIVES still obeys
+        /// `foldlevel`. This is `#+STARTUP: overview` — open the file, see the
+        /// outline.
+        #[test]
+        fn structure_that_arrives_still_obeys_the_level() {
+            let a = org_shaped("# H1\nbody\nmore\n");
+            assert!(
+                fold_at(&a, 0).closed,
+                "a buffer that opens with structure in it still opens collapsed"
+            );
+        }
+
+        /// …and an edit inside a collapsed outline does not reopen its
+        /// siblings. The identity carry-over owns that; this pins that the new
+        /// `Edit` cause did not quietly turn into "reopen everything".
+        #[test]
+        fn an_edit_leaves_the_other_sections_collapsed() {
+            let mut a = org_shaped("# H1\nbody\n# H2\nbody\n");
+            assert!(fold_at(&a, 2).closed, "H2 starts collapsed");
+
+            a.editor.cursor = Position::new(1, 0);
+            press(&mut a, KeyEvent::from(KeyCode::Char('o')));
+            press(&mut a, KeyEvent::from(KeyCode::Char('x')));
+
+            assert!(
+                fold_at(&a, 3).closed,
+                "H2 (now one line lower) keeps the closed state it was carried \
+                 over with — an edit in H1 is not a reason to expand it"
+            );
+        }
+
+        /// The failure mode the `Edit` cause could have re-introduced through
+        /// the back door: `recompute_folds_because` still stamps
+        /// `last_folded_text_version`, so the per-tick
+        /// `maybe_refold_after_async_population` sees a current stamp and does
+        /// NOT re-run the same pass as `Populate` a frame later. Without the
+        /// stamp the fold would reopen on the keystroke and close again on the
+        /// next tick — a flicker, which is worse than the bug.
+        #[test]
+        fn the_tick_does_not_re_close_what_the_edit_path_left_open() {
+            let mut a = org_shaped("# H1\n");
+            a.editor.cursor = Position::new(0, 0);
+            press(&mut a, KeyEvent::from(KeyCode::Char('o')));
+            press(&mut a, KeyEvent::from(KeyCode::Char('x')));
+            assert!(!fold_at(&a, 0).closed);
+
+            a.editor.maybe_refold_after_async_population();
+
+            assert!(
+                !fold_at(&a, 0).closed,
+                "the idle tick must not undo what the edit path decided"
+            );
+        }
     }
 }

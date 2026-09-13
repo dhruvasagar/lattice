@@ -418,6 +418,19 @@ pub enum PickerAction {
     AcceptColorPresentation,
 }
 
+/// Source of [`Picker::revision`] stamps.
+///
+/// Process-wide and monotonic so that two DIFFERENT pickers — which is what a
+/// live re-query produces, since seating builds a fresh one rather than
+/// mutating the open one — can never carry the same stamp. `Relaxed` is
+/// sufficient: nothing orders on this value, the host only ever asks "is it
+/// the same number as last publish", and both reads happen on the actor
+/// thread.
+fn next_picker_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// One open vertico-style picker. Lives on `App.picker` while
 /// active; the input and render layers route to / from it via
 /// the `Action::Picker*` family.
@@ -510,6 +523,32 @@ pub struct Picker {
     /// fetch errors. See `seat_picker_from_pairs` /
     /// `open_picker` / `fire_live_picker_query_changed`.
     pub loading: bool,
+    /// Globally monotonic stamp, re-taken by [`Self::refilter`] — i.e. by every
+    /// change to `candidates`, because `refilter` is the only thing that writes
+    /// them and every `raw` assignment calls it.
+    ///
+    /// Exists for the host's paint gate. `compute_paint_revision` used to fold
+    /// in `picker.is_some()` and nothing else, on a comment that read "async
+    /// result GROWTH inside an open picker still rides a keystroke today; if
+    /// that changes, fold a content count here." PC.10's `<C-l>` / `<Tab>`
+    /// descend is when that changed: it re-queries the source off-keystroke, so
+    /// the new listing replaced `candidates` while the gate reported nothing
+    /// moved, `paint_request` never fired, and the rows on screen stayed the
+    /// ones from before the descend until the user typed.
+    ///
+    /// A stamp rather than hashing the rows: the gate runs on every publish and
+    /// a picker may hold tens of thousands of candidates (paramount #1). A
+    /// stamp rather than `candidates.len()`: a re-query returning the same
+    /// NUMBER of different rows is exactly what a length cannot see.
+    ///
+    /// **GLOBAL rather than per-picker**, which is the whole of why the first
+    /// attempt at this did not work. A live re-query does not mutate the open
+    /// picker — `seat_picker_from_pairs` builds a FRESH [`Picker`] and swaps it
+    /// in. A per-instance counter therefore read 1 both before and after the
+    /// descend, the hash did not move, and the gate was as blind as before. A
+    /// process-wide counter is unrepeatable by construction, so re-seating
+    /// cannot alias.
+    pub revision: u64,
     /// Active transient-mode specification + live state. When
     /// `Some`, the renderer switches to grouped section layout
     /// with single-key chord dispatch, and the input layer routes
@@ -593,6 +632,7 @@ impl Picker {
             source_id: None,
             mru_bonuses: Vec::new(),
             loading: false,
+            revision: next_picker_revision(),
             live_source_mode: false,
             orderless: true,
             transient: None,
@@ -1014,6 +1054,18 @@ impl Picker {
     /// the buffer switcher depend on this -- alternate-buffer
     /// floats to the top via insertion order).
     pub fn refilter(&mut self) {
+        // Re-stamped HERE, at the one entry point, rather than beside each of
+        // the three `candidates` writes below: `refilter` has an early return,
+        // so per-write stamps would be three chances to add a fourth write and
+        // forget. The consumer is the host's paint gate — see
+        // [`Self::revision`].
+        self.revision = next_picker_revision();
+        self.refilter_rows();
+    }
+
+    /// The filtering itself. Split from [`Self::refilter`] so the revision bump
+    /// cannot be bypassed by an early return inside it.
+    fn refilter_rows(&mut self) {
         // Live-source bypass: the seating source's external
         // engine (grep, future LSP workspace-symbols) IS the
         // filter -- it returned exactly the rows that match

@@ -1815,13 +1815,30 @@ impl Editor {
             self.search_pattern().hash(&mut h);
             self.search_line.as_ref().map(|s| s.direction).hash(&mut h);
         }
-        // Popups / floats (presence + placement + anchor). Async result
-        // GROWTH inside an open picker/completion still rides a keystroke
-        // today; if that changes, fold a content count here.
+        // Popups / floats (presence + placement + anchor).
         self.popup_buffer.hash(&mut h);
         std::mem::discriminant(&self.popup_placement).hash(&mut h);
         self.popup_anchor.hash(&mut h);
-        self.picker.is_some().hash(&mut h);
+        // The picker's CONTENT, not merely its presence. This used to be
+        // `self.picker.is_some()` alone, on a comment reading "async result
+        // GROWTH inside an open picker/completion still rides a keystroke
+        // today; if that changes, fold a content count here". PC.10's descend
+        // is when it changed: `<C-l>` / `<Tab>` rewrites the query and the
+        // re-query lands off-keystroke through `drain_pending_live_picker_query`
+        // on the actor's `async_landed` arm. That arm repaints only when this
+        // hash moves — so the new listing sat in `Editor::picker` while the
+        // screen kept the rows from before the descend, until the next
+        // keystroke shook it loose. `Picker::revision` is bumped by `refilter`,
+        // the one writer of `candidates`; `selected` rides along because
+        // arrowing moves no other field here.
+        //
+        // Completion popups have the same shape and are NOT fixed here — see
+        // `insert_completion` below. No async-growth path reaches them
+        // off-keystroke today; when one does, it wants the same treatment.
+        self.picker
+            .as_ref()
+            .map(|p| (p.revision, p.selected))
+            .hash(&mut h);
         self.completion_state.is_some().hash(&mut h);
         self.insert_completion.is_some().hash(&mut h);
         // Echo line.

@@ -283,6 +283,37 @@ which is the half of the original argument that stays true.
 `<C-n>` / `<C-p>` and the arrows are separate arms, so nothing loses a way to
 move the selection. `<S-Tab>` stays `PickerSelectPrev`.
 
+**The re-list lands off-keystroke, so it has to move the paint gate.**
+Replacing the query does not itself fetch anything: it bumps the live-query
+debounce, and the source is re-asked a quiet window later, on the actor's
+`async_landed` arm. That arm repaints only when `publish_render_state()`
+reports `RenderState::paint_revision` moved — and the gate folded in
+`Picker::is_some()` and nothing about the picker's contents, on a standing
+comment that async growth inside an open picker "still rides a keystroke
+today". `descend` is what made that false. The symptom was exact and
+unhelpful: `src<Tab>` updated the path to `~/src/` on the keystroke, then
+showed the *parent's* rows until the user typed another character.
+
+So `Picker::revision` — a stamp re-taken by `Picker::refilter`, the single
+writer of `candidates` (every `raw` assignment calls it, and the two
+replacements plus the create-row push all live inside it) — is folded into
+`compute_paint_revision`.
+
+The stamp is drawn from a **process-wide** counter, not a per-picker one, and
+that is the load-bearing detail rather than a flourish: a live re-query does
+not mutate the open picker, it builds a fresh `Picker` through
+`seat_picker_from_pairs` and swaps it in. A per-instance counter reads the
+same value before and after, so the hash does not move and the gate stays
+exactly as blind. Hashing the rows themselves is the other obvious answer and
+is rejected on paramount goal #1 — the gate runs on every publish and a picker
+may hold tens of thousands of candidates; `candidates.len()` is rejected
+because a re-query returning the same number of different rows is precisely
+what a length cannot see.
+
+Completion popups are named in the same retired comment and are **not**
+changed: no async-growth path reaches them off-keystroke today. When one does,
+it wants the same treatment.
+
 ### 4.2quater. `<C-d>` — removing a row (PD.1)
 
 `<C-s>` / `<C-v>` / `<C-t>` are cheap because they are purely host concerns:

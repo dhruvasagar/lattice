@@ -54,6 +54,11 @@ impl Guest for Component {
             // cannot tell apart from one that carries the value — the hole
             // PC.11's `fill-action` shipped through.
             rooted: true,
+            // PD.1, same reasoning as `rooted` above and the same hole it
+            // guards: a boundary arm writing `None` is indistinguishable from
+            // one that carried a `None`, so this source names a command and
+            // its sibling names none.
+            delete_command: Some("fixture-forget".to_string()),
         });
         register_picker_source(&PickerSourceSpec {
             id: SECOND.to_string(),
@@ -65,6 +70,7 @@ impl Guest for Component {
             // …and `false` here, so the pair proves the value TRAVELS rather
             // than that the host defaults everything to the same answer.
             rooted: false,
+            delete_command: None,
         });
     }
 }

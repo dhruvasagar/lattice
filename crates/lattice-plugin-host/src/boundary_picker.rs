@@ -326,6 +326,7 @@ impl WitBoundary for NativePickerSourceSpec {
             live: self.live,
             create_label: self.create_label.as_ref().map(|l| l.to_string()),
             rooted: self.rooted,
+            delete_command: self.delete_command.as_ref().map(|c| c.to_string()),
         })
     }
 
@@ -352,6 +353,10 @@ impl WitBoundary for NativePickerSourceSpec {
             // way — a mechanical field-add wrote the default on this arm — so
             // the round-trip test carries a populated value.
             rooted: wit.rooted,
+            // PD.1, and the same direction the note above is about: a guest
+            // declaring a delete verb that arrived `None` is a `<C-d>` that
+            // silently does nothing.
+            delete_command: wit.delete_command.map(Into::into),
         })
     }
 }
@@ -796,6 +801,11 @@ mod tests {
             // where a mechanical field-add wrote the default on the one arm
             // where the value IS the feature.
             rooted: true,
+            // PD.1, populated for that same reason: a `None` here would
+            // round-trip clean through an arm that dropped the field, and the
+            // value is the whole feature — a guest whose delete verb arrived
+            // `None` gets a `<C-d>` that silently does nothing.
+            delete_command: Some("project-forget".into()),
         };
         let back = NativePickerSourceSpec::from_wit(native.to_wit().unwrap()).unwrap();
         assert_eq!(back.id, "files");
@@ -807,6 +817,13 @@ mod tests {
             back.rooted,
             "a guest declaring `rooted` must arrive rooted — a picker that \
              silently stops naming its root reads as the feature not existing"
+        );
+        assert_eq!(
+            back.delete_command.as_deref(),
+            Some("project-forget"),
+            "a guest declaring a delete verb must arrive with it — `<C-d>` is \
+             silent by design when none is declared, so a dropped field is \
+             indistinguishable from a source that never wanted the key"
         );
         assert_eq!(back.args_schema.len(), 1);
         assert_eq!(back.args_schema[0].name, "root");

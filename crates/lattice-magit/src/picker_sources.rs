@@ -556,6 +556,13 @@ fn takes_ex_command(id: &'static str, doc: &'static str, noun: &'static str) -> 
         )],
         args_hint: std::borrow::Cow::Borrowed("<magit ex-command>"),
         live: false,
+        // PD.1: nothing here is removable from a picker. A branch, a stash
+        // and a tag are all deletable THINGS, and magit has commands for each
+        // — but deleting one is a git operation with its own confirmation and
+        // its own failure modes, not a list-tidying keystroke. `<C-d>` stays
+        // inert here rather than becoming a second, unconfirmed path to
+        // `branch -D`.
+        delete_command: None,
         // PP.2: every magit source lists one REPOSITORY's refs, and the whole
         // reason `RepoLens` exists is that which repository is a live question
         // — `magit-repo-scoping.md` §2 resolves it from the buffer, precisely

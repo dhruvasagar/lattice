@@ -283,6 +283,60 @@ which is the half of the original argument that stays true.
 `<C-n>` / `<C-p>` and the arrows are separate arms, so nothing loses a way to
 move the selection. `<S-Tab>` stays `PickerSelectPrev`.
 
+### 4.2quater. `<C-d>` — removing a row (PD.1)
+
+`<C-s>` / `<C-v>` / `<C-t>` are cheap because they are purely host concerns:
+the host knows how to open a candidate in a split without asking anybody.
+Deletion is not like that. Only the source knows that removing a row from
+`projects` means forgetting a root, that removing one from a future `snippets`
+would mean something else, and that removing one from `buffers` would be
+`:bdelete` — a different verb with different consequences. And the `projects`
+source is a WASM guest, so the host cannot work it out even in principle.
+
+So **the source owns the verb and the host owns only the key**.
+`PickerSourceSpec.delete_command` names an ex-command; `<C-d>` runs it with the
+selected row's routing ARGUMENT and then re-lists. A source that names none —
+every source but `projects` today — leaves `<C-d>` silent, the same silence
+`<C-l>` keeps in a picker with no depth, and for the same reason: there is no
+wiring bug to report and a message on every stray press would be noise.
+
+**The routing carries the identity, not the candidate.** A row's `text` is the
+matched text (`"lattice /src/lattice"`), built for the fuzzy matcher and not
+for a command line; its `display` is a basename. The routing is where a row's
+identity actually lives, which is why `accept` is handed that and not the
+candidate. `Editor::row_delete_argument` reads `InvokeCommand`'s args,
+`OpenFile`'s path and `Buffer`'s id, and declines everything else — the same
+set and the same reasoning as `routing_identity`: coordinates drift, per-request
+indices are meaningless later, LSP handles are ephemeral. A row with no stable
+argument gets a no-op rather than a command run with an empty one, because
+`:project-forget` with no argument falls back to the current buffer's project
+and would forget something never selected.
+
+**A record field, not a new export.** It crosses WIT the way `rooted` and
+`create_label` do, so guests rebuild but no guest has to add a function. The
+alternative — a `delete` export symmetric with `accept` — is the more general
+shape and would let a source compute what deletion means rather than name it;
+it was not taken because naming a command is the routing every plugin row
+already uses, so a source declaring this needs no new seam and no new
+capability.
+
+**Never a filesystem delete, and the boundary is load-bearing.** `projects`
+forgets a path; oil and the file tree are where deleting a directory lives. A
+source whose delete verb touched disk would make `<C-d>` mean two very
+different things depending on which picker had focus — the exact inconsistency
+these key rules exist to prevent. The corollary is that there is no
+confirmation prompt: forgetting is trivially reversible (open a file in the
+project again and `document-opened` remembers it), and a prompt on a reversible
+action is friction on the common path.
+
+**The picker stays open, the query survives, the selection clamps.** Deleting
+is a tidying action — you narrow to `old`, then remove the three stale entries
+it turned up — so a refresh that closed the picker or cleared the filter would
+make each removal a round trip. Re-running `init` rather than splicing the row
+out locally is what makes the list agree with its store: the source owns what
+is in it, and a host that removed a row itself would be guessing that the
+command did what the row implied.
+
 The first consumer is **`dir-pick`** (PC.9), `file-pick`'s directory peer:
 `live`, listing the children of the directory its query names, one `read_dir`
 per keystroke rather than a walk. See

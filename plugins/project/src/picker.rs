@@ -67,6 +67,17 @@ pub fn spec() -> PickerSourceSpec {
         args_hint: String::new(),
         // Not live: the remembered list cannot change while the picker is open.
         live: false,
+        // PD.1: `<C-d>` forgets the selected project. The verb is this
+        // plugin's own `:project-forget`, which already takes a root as its
+        // first argument — the same routing every row here already uses, so
+        // declaring it costs no new seam and no new capability.
+        //
+        // Forgetting is a RETRACTION, never a filesystem delete: nothing is
+        // removed from disk and the directory is untouched. Deleting a
+        // directory is oil's job and the file tree's. It is also trivially
+        // reversible — open a file in the project again and `document-opened`
+        // remembers it — which is why there is no confirmation prompt.
+        delete_command: Some("project-forget".to_string()),
         // PP.2: NOT rooted, and this is the source where that reads backwards
         // at first glance. The list is *of* project roots — but it is the list
         // of ALL of them, and it is the same list whichever project you happen
@@ -196,6 +207,12 @@ pub fn buffers_spec() -> PickerSourceSpec {
         // Nothing to create — a buffer comes into existence by opening a file,
         // which `project-find-file` is for.
         create_label: None,
+        // PD.1: nothing to delete. A row here is an OPEN BUFFER, and `<C-d>`
+        // removing one would be `:bdelete` — a different verb with different
+        // consequences (an unsaved buffer, a window showing it), reached by a
+        // key that in the picker next door merely forgets a path. `:bd` is
+        // where closing a buffer lives.
+        delete_command: None,
         // PP.2: rooted, and this is the source that asked for the mechanism.
         // The whole point of the list is that it is ONE project's, so a prompt
         // that did not say which project would leave the user reading a

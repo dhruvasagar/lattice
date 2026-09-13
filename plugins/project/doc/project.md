@@ -55,6 +55,17 @@ With no argument each acts on the current buffer's project.
 `:project-remember <Tab>` completes directory names, and `<C-x><C-o>` on the
 argument opens the same directory browser `:project-choose-dir` does.
 
+## Removing a project
+
+`<C-d>` in the project picker forgets the highlighted entry — the list
+re-draws and the picker stays open, so you can clear out several in a row.
+`:project-forget [dir]` does the same from the `:` line.
+
+**Nothing is deleted from disk.** Forgetting is just "stop listing this one",
+and it is trivially undone: open a file in that project again and it comes
+back. Deleting an actual directory is oil's job (`:project-dired`) or the file
+tree's.
+
 ## Where the list comes from
 
 Projects are **remembered as you visit them** — open a file in one and it joins

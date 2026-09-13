@@ -1304,6 +1304,23 @@ interface types {
         /// QUERY already names a path, where a root beside it would be a
         /// second and staler answer to the same question.
         rooted: bool,
+        /// PD.1: `<C-d>` — the ex-command that REMOVES the selected row from
+        /// whatever backs this list, invoked with that row's routing argument.
+        /// `none` leaves `<C-d>` doing nothing.
+        ///
+        /// The SOURCE owns the verb and the host owns only the key. `<C-s>` /
+        /// `<C-v>` / `<C-t>` are host concerns — it knows how to open a thing
+        /// in a split without asking. Deletion is not: only the source knows
+        /// that removing a row from a project list means forgetting a root.
+        /// Naming a command is how a source says so, and it is the same
+        /// routing its rows already take, so declaring this needs no new seam
+        /// and no new capability.
+        ///
+        /// **Not destructive to the filesystem, and must not be.** A project
+        /// list forgets a path; deleting a directory is oil's job and the file
+        /// tree's. A source whose delete verb touched disk would make `<C-d>`
+        /// mean two very different things depending on which picker had focus.
+        delete-command: option<string>,
     }
 
     /// Mirrors the crossable core of `lattice_completion::traits::GenerateContext`

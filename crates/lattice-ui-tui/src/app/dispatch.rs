@@ -461,6 +461,9 @@ impl App {
             // action missing from THIS list is a key that silently does
             // nothing, which is the shape of the report that produced it.
             | Action::PickerDescendOrSelectNext
+            // PD.1: `<C-d>` — the source names the verb, the host runs it and
+            // re-lists. Host-side like its neighbours.
+            | Action::PickerDelete
             | Action::CloseHover
             // 5.5.G.12: HelpDismiss migrated to Editor::dispatch.
             | Action::HelpDismiss

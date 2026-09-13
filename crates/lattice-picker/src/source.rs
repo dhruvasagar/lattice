@@ -108,6 +108,32 @@ pub struct PickerSourceSpec {
     /// QUERY is the directory it is listing, so the prompt already says where
     /// it is and a root beside that would be a second, staler answer.
     pub rooted: bool,
+    /// PD.1: `<C-d>` — the ex-command that REMOVES the selected row from
+    /// whatever backs this list. `None` (every source but `projects` today)
+    /// leaves `<C-d>` doing nothing at all.
+    ///
+    /// **The source owns the verb; the host owns only the key.** `<C-s>` /
+    /// `<C-v>` / `<C-t>` are host concerns — the host knows how to open a
+    /// thing in a split without asking anyone. Deletion is not: only the
+    /// source knows that removing a row from `projects` means forgetting a
+    /// root, and that removing one from a future `snippets` would mean
+    /// something else entirely. Naming a command is how a source says so,
+    /// and it is the same routing its rows already take
+    /// (`PickerAcceptOutcome::InvokeCommand`), so a plugin declaring this
+    /// needs no new seam and no new capability.
+    ///
+    /// The command is invoked with the selected row's routing ARGUMENT — the
+    /// root, for a project row. A row whose routing carries no stable argument
+    /// gets a no-op rather than a command with an empty one; see
+    /// `Editor::row_delete_argument` for exactly which routings qualify.
+    ///
+    /// **Deleting is not destructive to the filesystem and must not be.**
+    /// `projects` forgets a path; oil and the file tree are where deleting a
+    /// directory lives. A source whose delete verb touched disk would make
+    /// `<C-d>` mean two very different things depending on which picker had
+    /// focus, which is exactly the inconsistency this repo's key rules exist
+    /// to prevent.
+    pub delete_command: Option<Cow<'static, str>>,
 }
 
 impl PickerSourceSpec {
@@ -122,6 +148,7 @@ impl PickerSourceSpec {
             live: false,
             create_label: None,
             rooted: false,
+            delete_command: None,
         }
     }
 
@@ -147,6 +174,13 @@ impl PickerSourceSpec {
     /// root these results are scoped to.
     pub fn with_rooted(mut self, rooted: bool) -> Self {
         self.rooted = rooted;
+        self
+    }
+
+    /// Builder-style: PD.1's [`delete_command`](Self::delete_command) — the
+    /// ex-command `<C-d>` runs on the selected row.
+    pub fn with_delete_command(mut self, command: impl Into<Cow<'static, str>>) -> Self {
+        self.delete_command = Some(command.into());
         self
     }
 }

@@ -165,6 +165,39 @@ async fn a_plugin_source_declares_its_create_label() {
     );
 }
 
+/// PD.1: a plugin source declares its `delete_command`, and it crosses the
+/// boundary intact.
+///
+/// Asserted as a PAIR — one source naming a command, its sibling naming none —
+/// for the reason the fixture's own comment gives: a boundary arm that writes
+/// the default is indistinguishable from one that carried the value, and a
+/// single `None` assertion passes either way. PC.11's `fill-action` shipped
+/// through exactly that hole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_source_declares_its_delete_command() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: picker_actor delete-command — fixture guest not built");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let client = spawn(&host_in(&tmp)).await;
+
+    let specs = client
+        .register_sources()
+        .await
+        .expect("registration reaches the guest");
+    assert_eq!(
+        specs[0].delete_command.as_deref(),
+        Some("fixture-forget"),
+        "the guest's delete verb crossed as declared"
+    );
+    assert_eq!(
+        specs[1].delete_command, None,
+        "and a source that declares none still gets none — the half that \
+         proves the value TRAVELS rather than that the host defaults both"
+    );
+}
+
 /// OR.5: accepting the create row hands the source the query, **verbatim**.
 ///
 /// The picker synthesises the row and the source decides what creation means,

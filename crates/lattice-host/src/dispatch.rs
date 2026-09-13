@@ -3046,6 +3046,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             let signals = editor.do_picker_tab();
             _out.renderer_signals.extend(signals);
         }
+        Action::PickerDelete => {
+            let signals = editor.do_picker_delete();
+            _out.renderer_signals.extend(signals);
+        }
         Action::PickerSelectNext => {
             // PICK.1: in transient mode, walk the item selection —
             // wrapping, and bounded by the spec's own item count. It
@@ -9508,6 +9512,121 @@ impl Editor {
         }
         if let Some(p) = self.picker.as_mut() {
             p.select_next();
+        }
+        signals
+    }
+
+    /// PD.1: the argument `<C-d>`'s command receives — the row's identity, as
+    /// the row itself already spells it.
+    ///
+    /// **Reads the routing, not the candidate.** A row's `text` is the
+    /// MATCHED text (`"lattice /src/lattice"` for a project row), built for
+    /// the fuzzy matcher and not for a command line; its `display` is a
+    /// basename. The routing is where a row's identity actually lives, which
+    /// is why `accept` is handed that and not the candidate.
+    ///
+    /// `None` for a routing with no stable argument, and the caller treats
+    /// that as "nothing to delete" rather than running the command with an
+    /// empty one — a `:project-forget` with no argument would fall back to the
+    /// current buffer's project and forget something the user never selected.
+    fn row_delete_argument(routing: &lattice_picker::RoutingPayload) -> Option<String> {
+        use lattice_picker::RoutingPayload;
+        match routing {
+            // The shape every plugin row takes: the source resolved an
+            // identity at build time and the accept forwards it.
+            RoutingPayload::InvokeCommand { args, .. } => match args {
+                lattice_grammar::Args::String(s) if !s.trim().is_empty() => Some(s.clone()),
+                _ => None,
+            },
+            RoutingPayload::OpenFile { path } => Some(path.display().to_string()),
+            RoutingPayload::Buffer { id } => Some(id.to_string()),
+            // Everything else — coordinates, per-request indices, ephemeral
+            // LSP handles. `routing_identity` declines these for the same
+            // reason and it is the same reason: there is nothing stable to
+            // name.
+            _ => None,
+        }
+    }
+
+    /// PD.1: `<C-d>` — remove the selected row from whatever backs the list.
+    ///
+    /// The source names the verb (`PickerSourceSpec::delete_command`) and the
+    /// host supplies the key and the refresh. A source that names none leaves
+    /// this silent, exactly as `<C-l>` is silent in a picker with no depth —
+    /// and for the same reason: a key that echoed "this picker cannot delete"
+    /// on every stray press would be noise, and there is no wiring bug to
+    /// report.
+    ///
+    /// **The picker stays open and re-lists.** Deleting is a tidying action,
+    /// and one that closed the picker would make removing three stale
+    /// projects into three round trips. Re-running `init` rather than dropping
+    /// the row locally is what makes the list agree with the store: the source
+    /// owns what is in it, and a host that spliced a row out would be guessing
+    /// that the command did what the row implied.
+    #[must_use]
+    pub fn do_picker_delete(&mut self) -> Vec<RendererSignal> {
+        let Some(picker) = self.picker.as_ref() else {
+            return Vec::new();
+        };
+        let Some(source) = picker.source_id.clone() else {
+            return Vec::new();
+        };
+        let Some(command) = self
+            .picker_registry
+            .load()
+            .entry(&source)
+            .and_then(|e| e.spec.delete_command.as_ref().map(|c| c.to_string()))
+        else {
+            return Vec::new();
+        };
+        let Some(argument) = picker
+            .selected_candidate()
+            .and_then(|c| picker.routing_for(c))
+            .and_then(Self::row_delete_argument)
+        else {
+            return Vec::new();
+        };
+        // The query survives the refresh. Deleting is something you do WHILE
+        // narrowing — typing `old`, removing three stale entries — and a
+        // refresh that cleared the filter would put the user back at the top
+        // of the full list after every one.
+        let query = picker.query.clone();
+        let selected = picker.selected;
+
+        let Some(cmd_id) = self.registry.load().id_by_name(&command) else {
+            // Named, not silent. A declared verb that is not registered is a
+            // plugin that failed to load, and only this message can point at
+            // it — the row simply staying put is indistinguishable from a key
+            // that is not bound.
+            self.set_message(
+                EchoLevel::Error,
+                format!("picker: unknown delete command `{command}`"),
+            );
+            return Vec::new();
+        };
+        let mut out = DispatchOutcome::default();
+        self.dispatch_invocation(
+            lattice_grammar::CommandInvocation::of(cmd_id)
+                .with_args(lattice_grammar::Args::String(argument)),
+            &mut out,
+        );
+        let mut signals = out.renderer_signals;
+        for effect in std::mem::take(&mut out.effects) {
+            signals.extend(self.apply_off_renderer_effect("picker delete", effect));
+        }
+        // Re-open the source so the list reflects the store. `open_picker`
+        // re-runs `init` and re-seats; the query and selection are put back
+        // afterwards because a re-seat starts both fresh.
+        signals.extend(self.open_picker(source, Vec::new()));
+        if let Some(p) = self.picker.as_mut() {
+            p.query_cursor = query.len();
+            p.query = query;
+            p.refilter();
+            // Clamp: the row that was selected is the one that just went away,
+            // so the same index now names its successor — which is what you
+            // want when deleting several in a row — and `selected` may be past
+            // the end if the deleted row was last.
+            p.selected = selected.min(p.candidates.len().saturating_sub(1));
         }
         signals
     }

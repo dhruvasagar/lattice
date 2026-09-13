@@ -33,6 +33,9 @@ feature is useful at PC.6.
 | PP.2 | both | A rooted picker names the root it is operating on | ✅ |
 | PB.1 | plugin | `project-buffers` — one project's open buffers | ✅ |
 | PP.3 | lattice | `<CR>` on `../` navigates, it does not choose the parent | ✅ |
+| PP.5 | lattice | `<Tab>` drills into a directory, and keeps drilling | ✅ |
+| PK.1 | plugin | Every switch-menu verb has a direct chord | ✅ |
+| PD.1 | both | `<C-d>` forgets the selected project | ✅ |
 | PP.4 | plugin | Any folder is a project — the marker refusal is gone | ✅ |
 
 **Deliberate ordering.** The plugin leads. PC.4–PC.6 prove the whole shape —
@@ -700,3 +703,62 @@ through the real seam, `<Tab>` drilling twice ("until I am satisfied" is the
 requirement, and one drill that worked with a second that did not is the same
 complaint one level deeper), and `<Tab>` still selecting next in `buffers`,
 which is the half of PC.10's argument that stays true.
+
+## PK.1 ✅ — every switch-menu verb has a direct chord
+
+§6's two entry points are the same verbs reached two ways, and three of the six
+only had the second half: `g`, `s` and `v` were menu rows with no chord, so
+they were reachable only by choosing a project you were already standing in.
+`project.el` binds all three. The keymap list and `switch.rs`'s defaults are now
+the same letters, held together by `every_menu_row_has_a_chord`.
+
+The magit row moved `v` → `m` in a follow-up: `v` is emacs shorthand for
+`project-vc-dir` and magit takes that key because it REPLACES that command;
+this row replaces nothing, it names `magit-status` outright, so the letter is
+worth more as a mnemonic than as a transplant.
+
+`m` binds to another subsystem's command, which is safe only because
+`lattice_magit::install` runs at `editor_boot.rs:720` and
+`lattice_plugin_loader::install` at `:2058` — a `mode-keymap-binding` resolves
+its command name against the `CommandRegistry` AT REGISTRATION and an
+unresolvable name is dropped silently. The menu row has a greyed-with-reason
+fallback for a missing command; a chord has none.
+
+**It also fixed a test PB.1 broke and crate-scoped gating missed.**
+`both_prefixes_are_bound_in_the_modes_own_layer` asserted `== 3` per prefix and
+`b` made it 4; the run that would have caught it was `-p lattice-plugin-host`,
+not `-p lattice-plugin-loader`. A count is the wrong assertion for a list that
+grows — it reported only `4 != 3`, naming neither the letter that arrived nor
+the one that should have. It asserts the suffix SET now.
+
+## PD.1 ✅ — `<C-d>` forgets the selected project
+
+`<C-s>` / `<C-v>` / `<C-t>` are cheap because they are host concerns; the host
+knows how to open a candidate in a split without asking. Deletion is not — only
+the source knows that removing a row from `projects` means forgetting a root,
+and that source is a WASM guest.
+
+So the source owns the verb and the host owns only the key.
+`PickerSourceSpec.delete_command` names an ex-command; `<C-d>` runs it with the
+selected row's routing ARGUMENT and re-lists. Design: `picker.md` §4.2quater.
+
+**A record field, not a new export.** It crosses WIT the way `rooted` and
+`create_label` do, so guests rebuild but none has to add a function. The
+alternative — a `delete` export symmetric with `accept` — is the more general
+shape; it was not taken because naming a command is the routing every plugin
+row already uses, so declaring this needs no new seam and no new capability.
+
+**Never a filesystem delete.** `projects` forgets a path; oil and the file tree
+own deleting a directory. That is also why there is no confirmation: forgetting
+is trivially reversible, and a prompt on a reversible action is friction on the
+common path. `project-buffers` declares no verb — removing one of its rows
+would be `:bdelete`, a different verb with different consequences.
+
+**Tests.** `lattice-host/tests/picker_delete_row.rs` — the verb runs with the
+row's own argument, the picker stays open and re-lists from the store,
+repeated presses walk down the list (and a press on an empty one runs nothing
+rather than firing with an empty argument, which `:project-forget` would read
+as the current buffer's project), the query survives, and a source declaring no
+verb is silent. `picker_actor.rs` covers the boundary with a
+`Some`/`None` fixture PAIR — a single `None` assertion passes whether or not
+the value travels, which is the hole PC.11's `fill-action` shipped through.

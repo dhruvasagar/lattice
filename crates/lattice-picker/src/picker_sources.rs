@@ -435,6 +435,7 @@ impl FilesSource {
         Self {
             spec: PickerSourceSpec {
                 create_label: None,
+                delete_command: None,
                 id: "files".into(),
                 // PP.2: the list IS the project. `:files` in one checkout and
                 // `:files` in another answer entirely differently, and nothing
@@ -580,6 +581,7 @@ impl FilePickSource {
         Self {
             spec: PickerSourceSpec {
                 create_label: None,
+                delete_command: None,
                 id: FILE_PICK_SOURCE.into(),
                 // Same walk as `files`, so the same root and the same reason.
                 rooted: true,
@@ -669,6 +671,7 @@ impl DirPickSource {
         Self {
             spec: PickerSourceSpec {
                 create_label: None,
+                delete_command: None,
                 id: DIR_PICK_SOURCE.into(),
                 // PP.2: NOT rooted, despite being the most path-shaped source
                 // there is. Its query is the directory it is listing, so the
@@ -2201,6 +2204,7 @@ impl GrepSource {
         Self {
             spec: PickerSourceSpec {
                 create_label: None,
+                delete_command: None,
                 id: "grep".into(),
                 // The search is run WITH the root as its cwd, so the root is
                 // half of what a hit means.

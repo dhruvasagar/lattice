@@ -527,6 +527,13 @@ pub enum Action {
     /// select-next in the pickers that have no notion of depth, which is every
     /// one but `dir-pick` today.
     PickerDescendOrSelectNext,
+    /// PD.1: `<C-d>` — remove the selected row from whatever backs the list.
+    ///
+    /// The source names the verb through
+    /// `PickerSourceSpec::delete_command`; a source that names none leaves
+    /// this doing nothing at all. Never a filesystem delete — see that
+    /// field's doc for why that boundary is load-bearing.
+    PickerDelete,
     /// LR.5 (2026-08-11): `<C-q>` — send every candidate that survived
     /// the current query to the picker's declared bulk outcome, and
     /// dismiss. Echoes when the opener declared none.

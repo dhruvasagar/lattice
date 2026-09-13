@@ -207,6 +207,25 @@ lf, nnn and vifm use for descend / ascend — the tools this surface most
 resembles. `<CR>` keeps the meaning it has in every other picker: take the
 selected row.
 
+**`<C-d>` forgets the selected project (PD.1).** The source declares
+`delete_command = "project-forget"` — this plugin's own command, which already
+takes a root as its first argument, so the row's existing routing carries
+everything the key needs and declaring it costs no new seam and no new
+capability. See `picker.md` §4.2quater for the mechanism.
+
+Forgetting is a **retraction, not a deletion**: nothing leaves the filesystem
+and the directory is untouched. That boundary is why there is no confirmation
+prompt — the action is trivially reversible (open a file in the project again
+and `document-opened` remembers it), and a prompt on a reversible action is
+friction on the common path. Deleting a *directory* is oil's job and the file
+tree's, and a project verb that blurred the two would make one keystroke mean
+two very different things.
+
+`project-buffers` declares none. Its rows are open buffers, and removing one
+would be `:bdelete` — a different verb with different consequences (an unsaved
+buffer, a window showing it) reached by the same key that merely forgets a path
+in the picker next door. `:bd` is where closing a buffer lives.
+
 **Choosing a non-project is not refused here.** `project_of_path` resolves the
 *containing* project, so choosing `~/src/lattice/crates` remembers `lattice`.
 

@@ -544,6 +544,15 @@ fn translate_picker(chord: KeyChord) -> Action {
             // LR.5: send the FILTERED result set somewhere editable —
             // the telescope idiom. Echoes on a picker whose opener
             // declared no bulk meaning, rather than doing nothing.
+            // PD.1: remove the selected row from whatever backs the list.
+            // The SOURCE decides what that means by naming a command
+            // (`PickerSourceSpec::delete_command`); a source that names none
+            // — every one but `projects` today — leaves this doing nothing,
+            // the same silence `<C-l>` keeps in a picker with no depth.
+            //
+            // Never a filesystem delete. Removing a project from the list is
+            // forgetting a path; deleting a directory is oil's job.
+            KeyKind::Char('d') => Action::PickerDelete,
             KeyKind::Char('q') => Action::PickerBulkAccept,
             // YR.5b: open the yank picker over this one and append the
             // pick to THIS picker's query. `<C-r>` rather than the

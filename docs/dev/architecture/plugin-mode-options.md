@@ -275,17 +275,33 @@ A user override **beats a mode's contribution**, which is what makes this worth
 having: `recompute_options_for_buffer` ranks *Layer 1: modal-state, Layer 2:
 buffer-local, Layers 3+: modes*, so buffer-local outranks every mode.
 
-**Except against `OverridePriority::High`.** `Resolver::candidate_better` makes
-`High` win *absolute* — ahead of layer rank, not within it — so a mode
-declaring `High` beats a user override at `Normal` whatever layer it sits in.
-That is deliberate where it is used (`read-only-mode` declares
-`writable=false` at `High` precisely so nothing downstream can quietly make the
-buffer writable) and it is **not selective**: any mode may declare `High` and
-become equally unoverridable from a user's config.
+**Including against `OverridePriority::High`.** `Resolver::candidate_better`
+makes `High` win *absolute* — ahead of layer rank, not within it — so a mode
+declaring it was unoverridable from a user's config. That is right for the case
+the rule was written for (`read-only-mode` declares `writable=false` at `High`
+so no *other mode* can quietly flip it) and wrong as a general rule, because
+any mode may declare `High` and a user has no way to know which did.
 
-Both directions are pinned in
-`lattice-host/tests/buffer_scoped_option_override.rs`, so "my override did
-nothing" has a documented cause rather than reading as a broken feature.
+So `candidate_better` now checks authorship first: a `BufferLocal` candidate
+outranks a `ModeContribution` one, priority included. **Mode-versus-mode is
+untouched** — `read-only-mode` still beats every other mode regardless of
+activation order, which is the threat model `High` exists for. What changed is
+that the person who owns the editor can say otherwise about one buffer.
+
+This is the behaviour the seam already *claimed*: a mode contribution is
+documented as "a LAYER, not a write … a `:setlocal` in that buffer still wins
+over it, which is the right way round — the user gets the last word in their
+own buffer." It was true only against `Normal` contributions.
+
+**`BufferLocal` only, not `GlobalConfig`.** Global config is the baseline a
+mode is *supposed* to refine: org setting `foldmethod=syntax` over a global
+`foldmethod=indent` is the seam working. If global config outranked modes,
+`mode-declaration.options` would do nothing for any option the user had ever
+set. A buffer-local value is a different act — it names one buffer, so there is
+no reading under which the mode is the more specific answer.
+
+All three directions are pinned in
+`lattice-host/tests/buffer_scoped_option_override.rs`.
 
 ### 6.3 Known: the override lands after the first paint
 

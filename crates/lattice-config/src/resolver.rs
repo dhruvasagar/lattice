@@ -66,7 +66,8 @@ impl Resolver {
     ///
     /// `OverridePriority::High` wins regardless of layer
     /// position; `Low` only wins when no `Normal`/`High` covers
-    /// the option. Within a single layer, two overrides at the
+    /// the option. The one thing `High` does NOT beat is a user's
+    /// own per-buffer value — see [`Self::candidate_better`]. Within a single layer, two overrides at the
     /// same priority resolve to last-pushed (per
     /// `mode-architecture.md` §6.2 conflict policy; M.2.1 hooks
     /// this to a `ModeEvent::OptionConflict` emission).
@@ -130,10 +131,45 @@ impl Resolver {
     }
 
     /// "Is `a` more authoritative than `b`?" Used during the
-    /// merge walk. Order: `OverridePriority::High` always wins;
-    /// `Low` always loses; among `Normal`s, higher layer rank
-    /// wins; within a layer, later position wins.
+    /// merge walk. Order: a user's per-buffer set outranks any mode
+    /// contribution; then `OverridePriority::High` wins and `Low` loses;
+    /// among `Normal`s, higher layer rank wins; within a layer, later
+    /// position wins.
     fn candidate_better(a: &Candidate<'_>, b: &Candidate<'_>) -> bool {
+        // **A user's explicit per-buffer value beats any mode's, priority
+        // included.** Checked BEFORE priority, which is the whole point: the
+        // rule below makes `High` win absolute, so without this a mode
+        // declaring `High` was unoverridable from a user's config — and any
+        // mode may declare it.
+        //
+        // This is the behaviour the mode-option seam already claimed. A plugin
+        // declaring `foldmethod` for its buffers documents it as "a LAYER, not
+        // a write … a `:setlocal` in that buffer still wins over it, which is
+        // the right way round — the user gets the last word in their own
+        // buffer." That was true only against `Normal` contributions.
+        //
+        // `BufferLocal` only, NOT `GlobalConfig`. Global config is the
+        // baseline a mode is *supposed* to refine — org setting
+        // `foldmethod=syntax` over a global `foldmethod=indent` is the seam
+        // working, not a conflict. A buffer-local set is a different act: it
+        // names one buffer, so there is no reading of it under which the mode
+        // is the more specific answer.
+        //
+        // Mode-versus-mode is untouched, so `read-only-mode`'s `High` on
+        // `writable=false` still beats every other mode regardless of
+        // activation order — which is the threat model that rule was written
+        // for. What changes is only that the person who owns the editor can
+        // now say otherwise about one buffer.
+        let outranks_by_authorship = |x: &Candidate<'_>, y: &Candidate<'_>| {
+            matches!(x.origin, OptionOrigin::BufferLocal)
+                && matches!(y.origin, OptionOrigin::ModeContribution { .. })
+        };
+        if outranks_by_authorship(a, b) {
+            return true;
+        }
+        if outranks_by_authorship(b, a) {
+            return false;
+        }
         // Explicit-priority wins absolute.
         if a.ov.priority == OverridePriority::High && b.ov.priority != OverridePriority::High {
             return true;

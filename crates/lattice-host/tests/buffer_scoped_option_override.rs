@@ -182,21 +182,27 @@ fn a_user_override_beats_a_modes_contribution() {
     );
 }
 
-/// …and the one case where it does NOT, stated rather than discovered.
+/// **…including against a mode that declared `High`, which used to be the one
+/// case it lost.**
 ///
-/// `candidate_better` makes `OverridePriority::High` win **absolute** —
-/// ahead of layer rank, not within it. A mode declaring `High` therefore
-/// beats a user override at `Normal`, whatever layer the user's sits in.
+/// `Resolver::candidate_better` makes `OverridePriority::High` win *absolute*
+/// — ahead of layer rank, not within it — so a mode declaring it was
+/// unoverridable from a user's config. That is fine for the case the rule was
+/// written for (`read-only-mode` declaring `writable=false` so no other mode
+/// can quietly flip it) and wrong as a general rule, because ANY mode may
+/// declare `High` and there is no way for a user to know which did.
 ///
-/// That is deliberate where it is used: `read-only-mode` declares
-/// `writable=false` at `High` precisely so nothing downstream can quietly make
-/// the buffer writable. The cost is that it is not selective — any mode may
-/// declare `High` and become equally unoverridable from a user's config.
+/// The seam already claimed the behaviour this now has. The mode-option doc
+/// says a contribution is "a LAYER, not a write … a `:setlocal` in that buffer
+/// still wins over it, which is the right way round — the user gets the last
+/// word in their own buffer." It was true only against `Normal`.
 ///
-/// Pinned as the boundary of the guarantee above, so "my override did nothing"
-/// has a documented cause rather than looking like this feature is broken.
+/// Mode-versus-mode is untouched: `read-only-mode` still beats every other
+/// mode regardless of activation order, which is the threat model `High`
+/// exists for. What changed is that the person who owns the editor can say
+/// otherwise about one buffer.
 #[test]
-fn a_high_priority_mode_override_still_wins_and_that_is_the_boundary() {
+fn a_user_override_beats_even_a_high_priority_mode() {
     use lattice_config::{OptionOrigin, OptionOverride, OptionOverrideSet, OverridePriority};
 
     let mode_set: OptionOverrideSet = std::iter::once(OptionOverride {
@@ -219,7 +225,7 @@ fn a_high_priority_mode_override_still_wins_and_that_is_the_boundary() {
             (
                 &mode_set,
                 OptionOrigin::ModeContribution {
-                    mode_id: "read-only-mode".to_string(),
+                    mode_id: "some-mode".to_string(),
                 },
             ),
         ],
@@ -228,9 +234,57 @@ fn a_high_priority_mode_override_still_wins_and_that_is_the_boundary() {
 
     assert_eq!(
         resolved.get::<AutoWrapOption>().map(|v| *v),
+        Some(AutoWrap::All),
+        "a user's per-buffer value is the last word — a mode that declared \
+         `High` must not be able to make its option unoverridable"
+    );
+}
+
+/// The other half of that rule, and the reason it keys on `BufferLocal` rather
+/// than on "not a mode": GLOBAL config does NOT beat a mode.
+///
+/// That is the seam working, not a conflict — org setting `foldmethod=syntax`
+/// over a global `foldmethod=indent` is exactly what mode options are for. A
+/// buffer-local set is a different act: it names one buffer, so there is no
+/// reading under which the mode is the more specific answer.
+#[test]
+fn global_config_still_loses_to_a_mode_contribution() {
+    use lattice_config::{OptionOrigin, OptionOverride, OptionOverrideSet, OverridePriority};
+
+    let global_set: OptionOverrideSet = std::iter::once(OptionOverride {
+        option_type_id: std::any::TypeId::of::<AutoWrapOption>(),
+        value: std::sync::Arc::new(AutoWrap::All),
+        priority: OverridePriority::Normal,
+    })
+    .collect();
+    let mode_set: OptionOverrideSet = std::iter::once(OptionOverride {
+        option_type_id: std::any::TypeId::of::<AutoWrapOption>(),
+        value: std::sync::Arc::new(AutoWrap::Comments),
+        priority: OverridePriority::Normal,
+    })
+    .collect();
+
+    let mut resolved = lattice_config::ResolvedOptions::new();
+    // The mode layer is pushed FIRST here — higher authority — exactly as the
+    // Editor orders them relative to the global bootstrap.
+    lattice_config::Resolver.resolve_into_with_origins(
+        vec![
+            (
+                &mode_set,
+                OptionOrigin::ModeContribution {
+                    mode_id: "org-mode".to_string(),
+                },
+            ),
+            (&global_set, OptionOrigin::GlobalConfig),
+        ],
+        &mut resolved,
+    );
+
+    assert_eq!(
+        resolved.get::<AutoWrapOption>().map(|v| *v),
         Some(AutoWrap::Comments),
-        "a `High` mode override outranks a `Normal` user one — by design for \
-         `read-only-mode`, and the reason a user override cannot be made \
-         unconditionally last without deciding that question deliberately"
+        "a mode refines the global baseline for its own buffers — if global \
+         config outranked it, `mode-declaration.options` would do nothing for \
+         any option the user had ever set"
     );
 }

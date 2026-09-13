@@ -3883,3 +3883,45 @@ blob is absent / oversized / binary), and the `magit.*` options table in
 - [`../../architecture/mode-architecture.md`](../../architecture/mode-architecture.md) — Mode trait, ModeActivator, ActionHandlerRegistry
 - [`../../architecture/compilation-mode.md`](../../architecture/compilation-mode.md) — synthetic-buffer + process spawning pattern
 - [`../implementation.md`](../implementation.md) — per-slice status ledger
+
+## MG.batch-discard-fix ✅ — the batch discard carried one file, not all of them
+
+Reported as "visual selection and discard still doesn't work for untracked
+files" — the same complaint `b0772901` set out to fix, one seam later.
+
+`b0772901` made `x` over a Visual selection produce a batch ask, and it was
+correct: `discardable_files_in_rows` collects every selected entry and
+`batch_discard_confirm` names both counts. It shipped with **no test**, which
+is why the next link went unnoticed.
+
+`Effect::Confirm` seeds the dialog's transient state by ZIPPING the
+yes-action's declared schema with the carried values (`seed_transient_state`),
+and `TransientValue` is `Bool | String` — **a transient slot cannot hold a
+list at all.** The action declared one slot, `files`, under a comment calling
+it "a variadic list, not named slots". The declared intent and the mechanism
+disagreed, silently: the zip stopped at one, the yes half decoded one entry,
+and selecting three untracked files discarded exactly one.
+
+**Fixed by packing, not by growing the mechanism.** The ask joins every
+`<t|u><path>` entry into the single declared slot and `carried_batch` splits
+them back out. The alternative — teaching `TransientValue` to hold a list and
+`seed`/`project` to handle a variadic tail slot — is the more general shape
+and was not taken: it changes an enum every transient consumer matches on, for
+one caller, and positional projection of a variadic slot is only well-defined
+in tail position, which is a new rule across the whole transient system. If a
+second batch action appears, that becomes the right build.
+
+**NUL is the separator** because it is the one byte a POSIX path cannot
+contain. Every other candidate is legal in a filename and git will hand us
+paths that use them — which is the same reason the tracked flag is a single
+leading byte rather than a delimited field.
+
+**Tests**, one per link, because the chain broke between two correct halves:
+- `lattice-magit`: the ask emits exactly as many slots as the action DECLARES,
+  asserted against `CONFIRM_TARGET_ACTIONS` rather than a literal, so producer
+  and schema cannot drift in either direction; plus the existing
+  `carried_batch` round trip, which now covers the packed form.
+- `lattice-host`: a packed slot survives seed → project byte-identical,
+  separators and awkward paths included.
+- `lattice-ui-tui`: `do_confirm` actually gets every file into the dialog —
+  the step `confirm_seeding` exists to cover.

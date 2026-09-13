@@ -55053,6 +55053,37 @@ mod tests {
         assert!(seed_transient_state(&schema, &Args::None).is_empty());
     }
 
+    /// A slot holding a packed batch survives intact, separator and all.
+    ///
+    /// `extra_values_beyond_the_schema_are_dropped_not_misbound` below is the
+    /// rule that bit magit's batch discard: it emitted one value per selected
+    /// file against a one-slot schema, so every file but the first was dropped
+    /// between the prompt and the act — three files selected, one discarded.
+    /// The fix packs them into the one declared slot, which only works if a
+    /// value containing NUL round-trips unchanged. It is not a hypothetical
+    /// byte: it is the one character a POSIX path cannot contain, which is
+    /// exactly why it was chosen as the separator.
+    #[test]
+    fn a_packed_slot_round_trips_including_its_separators() {
+        use lattice_grammar::{ArgKind, ArgSpec, ArgValue, Args};
+
+        let schema = vec![ArgSpec::optional("files", ArgKind::String, "packed batch")];
+        // Paths with a space, a quote and a newline — the ones a per-entry
+        // separator could not have survived, which is why the separator is NUL.
+        let packed = "ta.rs\0u new b.txt\0uc\"d.txt\0ue\nf.txt";
+        let carried = Args::List(vec![ArgValue::String(packed.to_string())]);
+
+        let seeded = seed_transient_state(&schema, &carried);
+        let round_tripped = project_transient_state(&schema, &seeded);
+
+        assert_eq!(
+            format!("{round_tripped:?}"),
+            format!("{carried:?}"),
+            "a packed batch must arrive byte-identical — a mangled separator \
+             would split a path in two and act on neither"
+        );
+    }
+
     /// Values beyond the schema are dropped rather than bound to
     /// whatever name happens to be next: a caller passing more than the
     /// action declares has a bug, and guessing would act on the wrong

@@ -1289,20 +1289,37 @@ fn batch_discard_confirm(files: &[(PathBuf, bool)]) -> Effect {
         ),
     };
     // IX.2: carry the payload. Each entry is `<flag><path>` — one leading
-    // byte for trackedness, so a path containing any character at all still
-    // round-trips, which splitting on a separator would not survive.
-    let args = lattice_grammar::Args::List(
+    // byte for trackedness, so the flag travels with its path. That flag
+    // decides `git checkout` versus `git clean`, and losing it would either
+    // fail on an untracked path or DELETE a tracked one.
+    //
+    // **ONE slot holding every entry, not one slot per entry**, and that is
+    // the fix for the bug this batch was written to solve reappearing one
+    // seam later. `Effect::Confirm` seeds the dialog's transient state by
+    // ZIPPING the yes-action's declared schema with the carried list
+    // (`seed_transient_state`), so a list longer than the schema is silently
+    // truncated. This action declares one slot, `files`, because
+    // `TransientValue` is `Bool | String` and a transient slot cannot hold a
+    // list at all — so emitting N values meant N-1 of them were dropped
+    // between the ask and the act, and selecting three files discarded one.
+    //
+    // Joined on NUL: the only byte that cannot occur in a POSIX path, so the
+    // split is exact for every path git can hand us — including the ones with
+    // newlines and spaces that made a per-entry separator unusable in the
+    // first place. A Rust `String` holds it fine; it is only paths that cannot.
+    let args = lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
         files
             .iter()
             .map(|(path, untracked)| {
-                lattice_grammar::ArgValue::String(format!(
+                format!(
                     "{}{}",
                     if *untracked { 'u' } else { 't' },
                     path.to_string_lossy()
-                ))
+                )
             })
-            .collect(),
-    );
+            .collect::<Vec<_>>()
+            .join(BATCH_SEPARATOR),
+    )]);
     crate::confirm::ask_with(prompt, "action:magit-discard-batch-execute", args)
 }
 
@@ -1311,17 +1328,35 @@ fn batch_discard_confirm(files: &[(PathBuf, bool)]) -> Effect {
 /// Takes the ARGS rather than the context so it is a pure function over the
 /// payload — the encode/decode pair is the part worth testing, and a test
 /// that had to stand up an `ActionContext` would be testing the harness.
+/// Separates the entries packed into the batch discard's single carried slot.
+///
+/// NUL, because it is the one byte a POSIX path cannot contain — every other
+/// candidate (newline, tab, any punctuation) is legal in a filename, and git
+/// will hand us paths that use them.
+const BATCH_SEPARATOR: &str = "\0";
+
 fn carried_batch(args: &lattice_grammar::Args) -> Vec<(PathBuf, bool)> {
     let mut out = Vec::new();
     let entries = match args.as_list() {
         Some(list) => list,
         None => return out,
     };
-    for value in entries {
-        let entry = match value {
-            lattice_grammar::ArgValue::String(v) | lattice_grammar::ArgValue::Raw(v) => v.as_str(),
-            _ => continue,
-        };
+    // Flattens NUL-joined slots. Written as split-then-flatten rather than
+    // "read slot 0 and split it" so the decode is agnostic to how many slots
+    // the value arrived in — the ask half packs everything into one because
+    // the confirm round trip truncates to the schema's arity, and a decoder
+    // that hard-coded that packing would break silently the day the transient
+    // state learns to hold a list.
+    for entry in entries
+        .iter()
+        .filter_map(|value| match value {
+            lattice_grammar::ArgValue::String(v) | lattice_grammar::ArgValue::Raw(v) => {
+                Some(v.as_str())
+            }
+            _ => None,
+        })
+        .flat_map(|slot| slot.split(BATCH_SEPARATOR))
+    {
         let mut chars = entry.chars();
         match chars.next() {
             Some('u') => out.push((PathBuf::from(chars.as_str()), true)),
@@ -2656,6 +2691,37 @@ mod batch_discard_tests {
         };
         assert!(prompt.contains("DELETE"), "{prompt}");
         assert!(prompt.contains("cannot be restored"), "{prompt}");
+    }
+
+    /// **The ask emits exactly as many slots as its action DECLARES**, and
+    /// this is the assertion the whole batch turned on.
+    ///
+    /// `Effect::Confirm` seeds the dialog's transient state by ZIPPING the
+    /// yes-action's schema with the carried values, and `TransientValue` is
+    /// `Bool | String` — a slot cannot hold a list. So a producer emitting one
+    /// slot per file against a one-slot schema loses every file but the first
+    /// BETWEEN the ask and the act: the prompt says "Discard 3 files?", you
+    /// confirm, and one is discarded. That is the bug `b0772901` set out to
+    /// fix, reappearing one seam later because it shipped with no test.
+    ///
+    /// Asserted against the schema in `lib.rs` rather than against the literal
+    /// `1`, so the two cannot drift apart in either direction.
+    #[test]
+    fn the_ask_emits_one_slot_per_declared_schema_slot() {
+        let declared = crate::confirm_target_slots("action:magit-discard-batch-execute")
+            .expect("the batch execute declares its slots");
+        let lattice_grammar::Effect::Confirm { args, .. } =
+            batch_discard_confirm(&[f("a.rs", false), f("b.txt", true), f("c.txt", true)])
+        else {
+            panic!("expected a Confirm");
+        };
+        assert_eq!(
+            args.as_list().map(<[_]>::len),
+            Some(declared),
+            "the ask carries a different number of slots than the action \
+             declares — anything past the declared count is dropped by the \
+             confirm round trip, silently, and the act runs on a truncated list"
+        );
     }
 
     /// The carried payload round-trips, flag included — that flag is what

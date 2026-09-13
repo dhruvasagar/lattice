@@ -1029,6 +1029,53 @@ mod confirm_seeding {
         }
     }
 
+    /// **The batch discard must carry EVERY file, not the first.**
+    ///
+    /// `b0772901` made `x` over a Visual selection produce a batch ask, and
+    /// shipped with no test. The ask is right; the round trip is not.
+    /// `seed_transient_state` ZIPS the yes-action's schema with the carried
+    /// list, and the batch declares ONE slot for what its own comment calls "a
+    /// variadic list" — a thing the transient state cannot hold, since
+    /// `TransientValue` is `Bool | String`. So the zip stops at one, the yes
+    /// half decodes one entry, and selecting three untracked files discards
+    /// exactly one: the very bug `b0772901` set out to fix, moved one seam
+    /// later.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_batch_discard_carries_every_selected_file() {
+        let mut app = app_with("one\n", 20);
+        let entries = ["ua.txt", "ub.txt", "tc.rs"];
+
+        // The shape the ask half actually emits: ONE slot, NUL-joined,
+        // because the schema declares one and anything past it is dropped.
+        // `lattice-magit` pins the producer to that arity; this pins that the
+        // arity is enough to get every file across.
+        app.do_confirm(
+            "Discard 3 files?".to_string(),
+            "action:magit-discard-batch-execute".to_string(),
+            lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
+                entries.join("\0"),
+            )]),
+        );
+
+        let picker = app.editor.picker.as_ref().expect("transient opened");
+        let Some(lattice_picker::TransientValue::String(carried)) =
+            picker.transient_state.get("files")
+        else {
+            panic!(
+                "the dialog carries nothing under `files` — the yes half would \
+                 decode an empty batch and discard nothing at all"
+            );
+        };
+        for entry in entries {
+            assert!(
+                carried.contains(entry),
+                "`{entry}` did not survive the confirm round trip; carried \
+                 {carried:?}. A selection of three that discards one is the \
+                 bug this batch exists to fix."
+            );
+        }
+    }
+
     /// A confirm carrying nothing seeds nothing — the pre-IX.1 shape,
     /// which must keep working for every unmigrated caller.
     #[tokio::test(flavor = "multi_thread")]

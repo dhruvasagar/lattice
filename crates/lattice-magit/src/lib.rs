@@ -583,6 +583,21 @@ fn subscribe_view_invalidation(
 /// `magit-rebase-abort-execute` is absent deliberately: it aborts *the*
 /// in-progress rebase, of which there is exactly one, so it has no
 /// target to carry and nothing to get wrong.
+/// How many argument slots `name` declares, or `None` if it is not a
+/// confirm-target action.
+///
+/// Exists so a producer can be pinned against the DECLARATION rather than
+/// against a literal count: `Effect::Confirm` zips this schema with the
+/// carried values, so a producer emitting more than is declared has those
+/// extras dropped silently between the ask and the act.
+#[cfg(test)]
+pub(crate) fn confirm_target_slots(name: &str) -> Option<usize> {
+    CONFIRM_TARGET_ACTIONS
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|(_, _, slots)| slots.len())
+}
+
 const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
     (
         "action:magit-discard-execute",
@@ -604,11 +619,22 @@ const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
     (
         "action:magit-discard-batch-execute",
         "Discard every file in the confirmed selection",
-        // A variadic list, not named slots: one entry per selected file,
-        // each `<t|u><path>` so the tracked flag travels with its path.
-        // That flag decides `git checkout` versus `git clean`, and losing
-        // it would either fail on an untracked path or DELETE a tracked one.
-        &[("files", "One `<t|u><path>` entry per selected file")],
+        // ONE slot holding the whole batch, NUL-joined, each entry
+        // `<t|u><path>` so the tracked flag travels with its path. That flag
+        // decides `git checkout` versus `git clean`, and losing it would
+        // either fail on an untracked path or DELETE a tracked one.
+        //
+        // This comment used to read "a variadic list, not named slots", and
+        // the machinery has no such thing: `seed_transient_state` zips this
+        // schema with the carried values and `TransientValue` is
+        // `Bool | String`, so a slot cannot hold a list and everything past
+        // the first value was dropped between the ask and the act. The
+        // declared intent and the mechanism disagreed, silently, and
+        // `x` over three files discarded one.
+        &[(
+            "files",
+            "Every selected file as NUL-joined `<t|u><path>` entries",
+        )],
     ),
     (
         "action:magit-global-file-delete-execute",

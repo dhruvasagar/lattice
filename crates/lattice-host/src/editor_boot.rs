@@ -923,6 +923,18 @@ impl Editor {
         // `Event::ModeEnablementRequested`; the per-tick `drain_mode_enablement`
         // flips the mode registry + re-activates open buffers (the guest can't
         // reach the activator, so it routes through here — config-and-init.md §6).
+        // The buffer-local option bridge. A plugin's `set-option-in-buffer`
+        // publishes `Event::BufferOptionOverrideRequested`; the per-tick drain
+        // writes the buffer-local override layer. Same shape and same reason as
+        // the enablement bridge below — the guest cannot reach the Editor.
+        let (buffer_option_override_tx, buffer_option_override_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_protocol::Event>();
+        event_bus.subscribe(
+            lattice_runtime::EventFilter::kind(
+                lattice_protocol::EventKind::BufferOptionOverrideRequested,
+            ),
+            lattice_runtime::SubscriptionTarget::Channel(buffer_option_override_tx),
+        );
         let (mode_enablement_tx, mode_enablement_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_protocol::Event>();
         event_bus.subscribe(
@@ -2497,6 +2509,7 @@ impl Editor {
             pending_mode_lifecycle_rx: Some(mode_lifecycle_rx),
             pending_major_entered_rx: Some(major_entered_rx),
             pending_mode_enablement_rx: Some(mode_enablement_rx),
+            pending_buffer_option_override_rx: Some(buffer_option_override_rx),
             pending_provider_view_refresh_rx: Some(view_refresh_rx),
             pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
             inlay_refresh_pending: std::collections::HashSet::new(),

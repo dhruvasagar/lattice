@@ -165,6 +165,45 @@ interface config {
     /// can set another plugin's option by its full `auto-pair.style` name.
     set-option: func(name: string, value: string) -> bool;
 
+    /// Set an option for ONE buffer — the `:setlocal` front-end, and the call a
+    /// mode-lifecycle handler needs.
+    ///
+    /// `set-option` above writes the GLOBAL layer (it is the `:set` path), so a
+    /// handler that wants *wrap in org buffers* cannot use it: it would wrap
+    /// everything, and nothing would unwrap on leaving org. This writes the
+    /// buffer-local override layer instead, which is exactly the scope the
+    /// question has.
+    ///
+    /// The canonical use is a `major-entered` / `minor-activated` subscription
+    /// filtered to one mode — `add-hook 'org-mode-hook` in this editor's
+    /// vocabulary:
+    ///
+    /// ```ignore
+    /// subscribe(&EventFilter {
+    ///     kinds: Some(vec![EventKind::MajorEntered]),
+    ///     major_modes: Some(vec!["org-mode".into()]),
+    ///     ..
+    /// }, ON_ORG);
+    /// // in the handler:
+    /// set_option_in_buffer(ev.buffer, "autowrap", "all");
+    /// ```
+    ///
+    /// Works uniformly for built-in, core-plugin and external-plugin modes:
+    /// the lifecycle events are published by the mode dispatcher, which does
+    /// not know which of those declared the mode.
+    ///
+    /// Parsed by the same path `:setlocal name=value` uses, so a guest can
+    /// express nothing `:setlocal` could not and a bad value is refused with
+    /// the same message. Returns `false` — setting nothing — on an unknown
+    /// option, an invalid value, or an unknown buffer; never a trap, the
+    /// `set-option` contract.
+    ///
+    /// **Applied on the next host tick, not synchronously.** The buffer-local
+    /// layer lives on the Editor rather than in the config registry, so this
+    /// publishes a host-internal request the Editor drains. A handler cannot
+    /// observe its own write by reading the option back in the same call.
+    set-option-in-buffer: func(buffer: u64, name: string, value: string) -> bool;
+
     /// Read an option's current value, formatted as a string (the `OptionType`
     /// `format` contract). `none` if no option by that name is registered.
     /// Resolves the plugin's OWN namespace first (`style` → `<id>.style`), then

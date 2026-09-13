@@ -106,6 +106,7 @@ mod tests {
             kinds: Some(vec![kind]),
             path_globs: None,
             major_modes: None,
+            minor_modes: None,
         }
     }
 

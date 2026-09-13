@@ -209,3 +209,95 @@ Tests worth naming now: a plugin mode's override reaches
 skipped and warned with the rest applying; the user's global setting is
 unaffected outside the mode; two modes overriding the same option resolve by
 the existing conflict policy rather than a plugin-specific one.
+
+---
+
+## 6. User overrides for a mode you do not own
+
+MO.1 lets a mode declare options for **its own** buffers. It does not let a
+*user* say "wrap in org buffers" — `mode-declaration.options` is a declaration,
+so only whoever declares the mode can use it, and a user's `init.rs` does not
+declare `org-mode`.
+
+The mechanism for that is the **event bus**, not a second declaration seam, and
+the reason is uniformity: the mode dispatcher publishes `MajorEntered` /
+`MajorExiting` / `MinorActivated` / `MinorDeactivated` without knowing whether
+the mode came from the built-in table, a core plugin, or an external one. A
+subscription keys on the mode *id* at activation time, so it works the same for
+all three by construction. This is `add-hook 'org-mode-hook` in this editor's
+vocabulary, and design.md §5.10's "hooks ≡ autocmds ≡ typed event
+subscriptions" is the claim it makes good on.
+
+```rust
+// init.rs
+events::subscribe(&EventFilter {
+    kinds: Some(vec![EventKind::MajorEntered]),
+    major_modes: Some(vec!["org-mode".to_string()]),
+    ..
+}, ON_ORG);
+
+fn on_event(handler: u32, ev: Event) {
+    if let (ON_ORG, Event::MajorEntered(l)) = (handler, &ev) {
+        config::set_option_in_buffer(l.buffer, "autowrap", "all");
+    }
+}
+```
+
+### 6.1 Two gaps this needed, and why each was a gap
+
+**`minor_modes` on `EventFilter`.** `major_modes` was the only mode filter, and
+`event_major_mode` answers `None` for the minor lifecycle — so a
+`major_modes`-constrained subscription to `MinorActivated` matched *nothing*,
+and an unconstrained one matched *everything*. A subscriber wanting one minor
+had to compare names in its own handler, which for a plugin is a WASM crossing
+per activation per buffer to do nothing. There are far more minors than majors,
+so that cost is not theoretical.
+
+Kept as a **separate field** rather than merged into one `modes` list: the two
+ask different questions. `major_modes` means *the buffer is entering one of
+these majors* (§7.4's minor-activation allowlist); `minor_modes` means *this
+specific minor turned on*. A merged field answers both at once, so a
+subscription meaning the second would also fire on a major sharing the name —
+and mode ids are user-chosen strings, so that collision is available to anyone.
+Constraining both matches nothing, since no event carries both names.
+
+**`set-option-in-buffer` in the config seam.** WIT's `set-option` is the `:set`
+path and writes the GLOBAL layer. A handler using it to wrap org buffers would
+wrap every buffer in the editor, with nothing to unwrap on leaving. The
+buffer-local layer is the scope the question actually has, and it lives on the
+`Editor` (`buffer_local_overrides`) while a guest holds a `ConfigRegistry`
+handle — hence a host-internal `BufferOptionOverrideRequested` bridge, the
+shape `enable-mode` already uses for the same reason.
+
+### 6.2 Precedence, and the one place it stops
+
+A user override **beats a mode's contribution**, which is what makes this worth
+having: `recompute_options_for_buffer` ranks *Layer 1: modal-state, Layer 2:
+buffer-local, Layers 3+: modes*, so buffer-local outranks every mode.
+
+**Except against `OverridePriority::High`.** `Resolver::candidate_better` makes
+`High` win *absolute* — ahead of layer rank, not within it — so a mode
+declaring `High` beats a user override at `Normal` whatever layer it sits in.
+That is deliberate where it is used (`read-only-mode` declares
+`writable=false` at `High` precisely so nothing downstream can quietly make the
+buffer writable) and it is **not selective**: any mode may declare `High` and
+become equally unoverridable from a user's config.
+
+Both directions are pinned in
+`lattice-host/tests/buffer_scoped_option_override.rs`, so "my override did
+nothing" has a documented cause rather than reading as a broken feature.
+
+### 6.3 Known: the override lands after the first paint
+
+`MajorEntered` is published from a **spawned** cascade task, so a handler's
+write arrives after the buffer has opened and rendered. For `autowrap` that is
+invisible in practice; for an option that changes layout it would be a visible
+re-flow of content the user did not edit, which the UX rules name explicitly as
+unacceptable.
+
+`pre-plugin-loaded` sets the precedent for the fix — its delivery is **awaited**
+so an `init.rs` handler can affect what the plugin then reads — and the same
+treatment would apply here at the cost of a WASM round-trip on buffer-open (not
+a keystroke path). Not done yet, deliberately: the flicker is predicted rather
+than observed, and it should be measured on a real option before event delivery
+semantics are changed for every subscriber.

@@ -18264,6 +18264,7 @@ impl Editor {
         // CI.4: apply any pending `enable-mode` / `disable-mode` (a plugin's
         // deferred config) — flip enablement + re-activate open buffers.
         signals.extend(self.drain_mode_enablement());
+        signals.extend(self.drain_buffer_option_overrides());
         // OA.15a: …and any pending `refresh-view`. AFTER the enablement and
         // activation drains above, deliberately: a guest's `minor-activated`
         // handler is what publishes the refresh, so draining it first would
@@ -20130,6 +20131,71 @@ impl Editor {
         // The opener's own activator calls stash their signals on
         // `pending_renderer_signals`; nothing here adds more.
         Vec::new()
+    }
+
+    /// Drain `Event::BufferOptionOverrideRequested` (a plugin's
+    /// `set-option-in-buffer`) into the buffer-local override layer.
+    ///
+    /// The guest→Editor bridge for per-buffer options, and the reason it is a
+    /// bridge rather than a direct write: the buffer-local layer lives on the
+    /// Editor, while a guest holds a `ConfigRegistry` handle — the GLOBAL
+    /// layer, and the wrong scope for "wrap in org buffers".
+    ///
+    /// Parsed through `parse_for_buffer_local`, the same path `:setlocal`
+    /// takes, so a guest can express nothing `:setlocal` could not and an
+    /// invalid value is refused with the identical message. A refusal is
+    /// logged rather than echoed: nothing the USER did provoked it, and an
+    /// error bar over a buffer they just opened would blame them for their
+    /// config's bug at the least useful moment. The log names the option.
+    ///
+    /// A request naming a buffer that has since closed is dropped silently —
+    /// ordinary, not exceptional, since the request crosses a tick and a
+    /// buffer can close inside one.
+    pub fn drain_buffer_option_overrides(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_buffer_option_override_rx.take() else {
+            return Vec::new();
+        };
+        let mut requests: Vec<(lattice_core::BufferId, String)> = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let lattice_protocol::Event::BufferOptionOverrideRequested { buffer, option } = evt {
+                requests.push((lattice_core::BufferId(buffer.raw() as u32), option));
+            }
+        }
+        self.pending_buffer_option_override_rx = Some(rx);
+
+        let mut signals = Vec::new();
+        for (buffer_id, option) in requests {
+            if !self.buffers.contains(buffer_id) {
+                tracing::debug!(
+                    buffer = buffer_id.0,
+                    %option,
+                    "set-option-in-buffer dropped: buffer closed before the request landed"
+                );
+                continue;
+            }
+            let (type_id, erased, canonical) = match self.config.parse_for_buffer_local(&option) {
+                Ok(triple) => triple,
+                Err(e) => {
+                    tracing::warn!(
+                        %option,
+                        error = %e,
+                        "set-option-in-buffer refused"
+                    );
+                    continue;
+                }
+            };
+            self.buffer_local_overrides
+                .entry(buffer_id)
+                .or_default()
+                .push(lattice_config::OptionOverride {
+                    option_type_id: type_id,
+                    value: erased,
+                    priority: lattice_config::OverridePriority::Normal,
+                });
+            self.recompute_options_for_buffer(buffer_id);
+            self.apply_option_cascade(&canonical, &mut signals);
+        }
+        signals
     }
 
     /// CI.4: drain `Event::ModeEnablementRequested` (a plugin's `enable-mode` /

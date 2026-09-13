@@ -2827,6 +2827,68 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
     /// `parse_and_set_command` path `:set name=value` uses (coerce + validate +
     /// publish `OptionChanged`). `false` on an unknown option / invalid value /
     /// no registry — a logged no-op, never a trap.
+    /// `set-option-in-buffer`: the `:setlocal` front-end for a guest.
+    ///
+    /// Publishes a host-internal request rather than writing, for
+    /// `enable-mode`'s reason: the buffer-local override layer lives on the
+    /// Editor (`buffer_local_overrides`), and the plugin host holds a
+    /// `ConfigRegistry` handle — which is the GLOBAL layer and the wrong scope
+    /// entirely. Writing there is what `set-option` already does.
+    ///
+    /// Returns `false` only for what can be judged HERE: no bus, or an option
+    /// name the registry does not know. Validity of the value is the Editor's
+    /// to judge when it parses, so a `true` means "the request was sent and
+    /// names a real option", not "the value stuck".
+    fn set_option_in_buffer(&mut self, buffer: u64, name: String, value: String) -> bool {
+        // Namespace resolution matches `set-option`: the plugin's OWN option
+        // wins on a short name, so a config can still reach a core option by
+        // its full name.
+        let target = match self.config_registry.as_ref() {
+            Some(registry) => {
+                let namespaced = self
+                    .plugin_name
+                    .as_ref()
+                    .map(|id| format!("{id}.{name}"))
+                    .filter(|full| registry.lookup(full).is_some());
+                match namespaced {
+                    Some(full) => full,
+                    None if registry.lookup(&name).is_some() => name,
+                    None => {
+                        tracing::warn!(
+                            option = %name,
+                            "set-option-in-buffer ignored: no option by that name"
+                        );
+                        return false;
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    option = %name,
+                    "set-option-in-buffer ignored: plugin has no config registry wired"
+                );
+                return false;
+            }
+        };
+        match &self.event_emit {
+            Some(ctx) => {
+                ctx.bus
+                    .publish(lattice_protocol::Event::BufferOptionOverrideRequested {
+                        buffer: lattice_protocol::ids::BufferId::new(buffer),
+                        option: format!("{target}={value}"),
+                    });
+                true
+            }
+            None => {
+                tracing::warn!(
+                    option = %target,
+                    "set-option-in-buffer dropped: no bus wired (plugin not spawned onto a bus)"
+                );
+                false
+            }
+        }
+    }
+
     fn set_option(&mut self, name: String, value: String) -> bool {
         let Some(registry) = self.config_registry.as_ref() else {
             tracing::warn!(

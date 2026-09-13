@@ -105,6 +105,13 @@ impl WitBoundary for NativeEventKind {
             NativeEventKind::PluginUnloaded => WitEventKind::PluginUnloaded,
             // CI.4: host-internal enable/disable bridge — the Editor handles it,
             // never a guest (no WIT variant), like `plugin-crashed`.
+            NativeEventKind::BufferOptionOverrideRequested => {
+                return Err(
+                    "event-kind `buffer-option-override-requested` is host-internal, not \
+                     deliverable to plugins"
+                        .to_string(),
+                );
+            }
             NativeEventKind::ModeEnablementRequested => {
                 return Err(
                     "event-kind `mode-enablement-requested` is host-internal, not deliverable to plugins"
@@ -258,6 +265,13 @@ impl WitBoundary for NativeEvent {
                 })
             }
             // CI.4: host-internal — never routed to a guest.
+            NativeEvent::BufferOptionOverrideRequested { .. } => {
+                return Err(
+                    "event `buffer-option-override-requested` is host-internal, not \
+                     deliverable to plugins"
+                        .to_string(),
+                );
+            }
             NativeEvent::ModeEnablementRequested { .. } => {
                 return Err(
                     "event `mode-enablement-requested` is host-internal, not deliverable to plugins"
@@ -401,6 +415,9 @@ pub fn project_event_filter(wit: WitEventFilter) -> Result<NativeEventFilter, St
         path_glob: wit.path_globs.map(compile_glob_set),
         major_modes: wit
             .major_modes
+            .map(|ms| ms.iter().map(|m| ModeId::new(m)).collect()),
+        minor_modes: wit
+            .minor_modes
             .map(|ms| ms.iter().map(|m| ModeId::new(m)).collect()),
         predicate: None,
     })
@@ -598,6 +615,7 @@ mod tests {
             kinds: Some(vec![WitEventKind::DocumentSaved, WitEventKind::BeforeQuit]),
             path_globs: Some(vec!["**/*.rs".into()]),
             major_modes: Some(vec!["rust-mode".into()]),
+            minor_modes: Some(vec!["auto-pair-mode".into()]),
         };
         let native = project_event_filter(wit).unwrap();
         let kinds = native.kinds.expect("kinds crossed");
@@ -606,6 +624,12 @@ mod tests {
         assert!(native.path_glob.is_some(), "path glob compiled");
         let modes = native.major_modes.expect("major modes crossed");
         assert_eq!(modes[0].as_str(), "rust-mode");
+        // Populated on purpose: a `None` here would round-trip clean through
+        // an arm that dropped the field, and a guest whose minor filter
+        // arrived empty gets woken for every minor in every buffer — the
+        // exact cost the field exists to remove.
+        let minors = native.minor_modes.expect("minor modes crossed");
+        assert_eq!(minors[0].as_str(), "auto-pair-mode");
         // The predicate never crosses — a plugin filters in `on-event`.
         assert!(native.predicate.is_none());
     }
@@ -616,6 +640,7 @@ mod tests {
             kinds: None,
             path_globs: None,
             major_modes: None,
+            minor_modes: None,
         };
         let native = project_event_filter(wit).unwrap();
         assert!(native.kinds.is_none(), "none kinds stays the wildcard");

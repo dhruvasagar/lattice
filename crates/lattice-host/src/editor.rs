@@ -2200,6 +2200,13 @@ pub struct Editor {
     /// re-activates open buffers.
     pub pending_mode_enablement_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
+    /// Receives `Event::BufferOptionOverrideRequested` (a plugin's
+    /// `set-option-in-buffer`) so the per-tick drain writes the buffer-local
+    /// layer. `pending_mode_enablement_rx`'s shape and its reason: the layer
+    /// lives here, on the Editor, and the guest holds only a `ConfigRegistry`
+    /// handle — which is the global layer and the wrong scope.
+    pub pending_buffer_option_override_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
     /// OA.15a: receives `ProviderViewRefreshRequested` (a plugin's
     /// `refresh-view`) so the per-tick `drain_provider_view_refresh` re-opens
     /// the view. The guest cannot reach the activator, so the call is a request

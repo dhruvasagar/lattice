@@ -31,6 +31,7 @@ impl Guest for Component {
                 kinds: Some(vec![EventKind::PluginLoaded]),
                 path_globs: None,
                 major_modes: None,
+                minor_modes: None,
             },
             1,
         );
@@ -42,6 +43,7 @@ impl Guest for Component {
                 kinds: Some(vec![EventKind::PrePluginLoaded]),
                 path_globs: None,
                 major_modes: None,
+                minor_modes: None,
             },
             2,
         );

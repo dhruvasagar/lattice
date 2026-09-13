@@ -86,6 +86,7 @@ fn kind_filter(kind: EventKind) -> EventFilter {
         kinds: Some(vec![kind]),
         path_globs: None,
         major_modes: None,
+        minor_modes: None,
     }
 }
 

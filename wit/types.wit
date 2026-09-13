@@ -1845,6 +1845,26 @@ interface types {
         kinds: option<list<event-kind>>,
         path-globs: option<list<string>>,
         major-modes: option<list<string>>,
+        /// Restrict minor-mode lifecycle events to ones naming these minors —
+        /// the peer of `major-modes`, and NOT the same field.
+        ///
+        /// `minor-activated` / `minor-deactivated` carry the MINOR's name, so
+        /// a `major-modes` constraint rejects every one of them. Without this
+        /// a subscriber wanting one specific minor had to subscribe
+        /// unfiltered and compare names in its handler — which wakes the
+        /// plugin's task for every minor activation in every buffer, to do
+        /// nothing.
+        ///
+        /// Separate rather than merged into one `modes` list because there
+        /// are far more minors than majors and the two ask different
+        /// questions: `major-modes` means *the buffer is entering one of
+        /// these majors*, this means *this specific minor turned on*. A
+        /// merged field would answer both at once and let a subscription fire
+        /// on a name collision across the two namespaces.
+        ///
+        /// Constraining both matches NOTHING, since no event carries both
+        /// names — the honest reading of "a major event AND a minor event".
+        minor-modes: option<list<string>>,
     }
 
     /// Mirrors `lattice_protocol::Event` (owned; delivered to `on-event`). Each

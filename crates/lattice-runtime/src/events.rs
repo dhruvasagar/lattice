@@ -122,6 +122,30 @@ pub struct EventFilter {
     /// allowlist matches nothing, which is the correct semantics
     /// for "only fire inside these majors."
     pub major_modes: Option<Vec<ModeId>>,
+    /// Restrict to minor-mode lifecycle events naming one of these
+    /// minors — the peer of [`Self::major_modes`], and the reason it
+    /// cannot simply reuse it.
+    ///
+    /// `MinorActivated` / `MinorDeactivated` carry the MINOR's name,
+    /// so `event_major_mode` answers `None` for them and a
+    /// `major_modes`-constrained filter rejects every one. Before this
+    /// field a subscriber that wanted one specific minor had no
+    /// declarative way to say so: it subscribed unfiltered and compared
+    /// names in its handler, which for a plugin means waking its task
+    /// for every minor activation in every buffer to do nothing.
+    ///
+    /// Deliberately a SEPARATE field rather than one merged `modes`
+    /// list. There are far more minors than majors and the two ask
+    /// different questions — `major_modes` means "the buffer is
+    /// entering one of these majors" (§7.4's minor-activation
+    /// allowlist), while this means "this specific minor turned on".
+    /// A merged field would answer both at once and let a subscription
+    /// fire on a name collision between the two namespaces.
+    ///
+    /// `None` is unconstrained. Both constrained is an AND, and since
+    /// no event carries both names it matches nothing — which is the
+    /// honest reading of "a major event AND a minor event".
+    pub minor_modes: Option<Vec<ModeId>>,
     /// Escape-hatch predicate. `None` is unconstrained. See
     /// [`EventPredicate`] for the locking contract -- it runs under
     /// the bus mutex and must not re-enter the bus.
@@ -136,6 +160,7 @@ impl std::fmt::Debug for EventFilter {
             .field("kinds", &self.kinds)
             .field("path_glob", &self.path_glob)
             .field("major_modes", &self.major_modes)
+            .field("minor_modes", &self.minor_modes)
             .field("predicate", &self.predicate.as_ref().map(|_| "<fn>"))
             .finish()
     }
@@ -195,6 +220,7 @@ impl EventFilter {
 struct ExtraFilter {
     path_glob: Option<GlobSet>,
     major_modes: Option<Vec<ModeId>>,
+    minor_modes: Option<Vec<ModeId>>,
     predicate: Option<EventPredicate>,
 }
 
@@ -203,6 +229,7 @@ impl std::fmt::Debug for ExtraFilter {
         f.debug_struct("ExtraFilter")
             .field("path_glob", &self.path_glob)
             .field("major_modes", &self.major_modes)
+            .field("minor_modes", &self.minor_modes)
             .field("predicate", &self.predicate.as_ref().map(|_| "<fn>"))
             .finish()
     }
@@ -226,6 +253,12 @@ impl ExtraFilter {
         if let Some(allow) = &self.major_modes {
             match event_major_mode(event) {
                 Some(major) if allow.iter().any(|id| id.as_str() == major) => {}
+                _ => return false,
+            }
+        }
+        if let Some(allow) = &self.minor_modes {
+            match event_minor_mode(event) {
+                Some(minor) if allow.iter().any(|id| id.as_str() == minor) => {}
                 _ => return false,
             }
         }
@@ -395,6 +428,7 @@ impl EventBus {
             kinds,
             path_glob,
             major_modes,
+            minor_modes,
             predicate,
         } = filter;
         // EF.1: the non-`kinds` fields ride along on each
@@ -404,6 +438,7 @@ impl EventBus {
         let extra = ExtraFilter {
             path_glob,
             major_modes,
+            minor_modes,
             predicate,
         };
         let mut inner = self.inner.lock().expect("EventBus poisoned");
@@ -774,6 +809,7 @@ fn event_path(event: &Event) -> Option<&Path> {
         | Event::PluginUnloaded { .. }
         // The enablement request carries a mode name, not a path (CI.4).
         | Event::ModeEnablementRequested { .. }
+        | Event::BufferOptionOverrideRequested { .. }
         // MG.41g: no path, and no major mode — a background task is
         // not buffer-scoped.
         | Event::BackgroundTaskFinished { .. }
@@ -795,6 +831,23 @@ fn event_path(event: &Event) -> Option<&Path> {
 /// lifecycle events -- the correct semantics for a minor mode that
 /// should fire when a buffer enters / exits specific majors
 /// (mode-architecture.md §7.4).
+/// The MINOR mode name a lifecycle event names, for the `minor_modes`
+/// filter. The peer of [`event_major_mode`], and deliberately disjoint
+/// from it: no event carries both, so a filter constraining both
+/// matches nothing rather than something surprising.
+fn event_minor_mode(event: &Event) -> Option<&str> {
+    match event {
+        Event::MinorActivated { minor, .. } | Event::MinorDeactivated { minor, .. } => Some(minor),
+        // Everything else is minor-mode-agnostic. Written as an
+        // explicit catch-all rather than an enumeration because the
+        // question this answers — "does this event name a minor" — has
+        // exactly two yes cases and gains nothing from listing the
+        // dozens of noes, unlike `event_major_mode` where the
+        // enumeration documents which variants were considered.
+        _ => None,
+    }
+}
+
 fn event_major_mode(event: &Event) -> Option<&str> {
     match event {
         Event::MajorEntered { major, .. } | Event::MajorExiting { major, .. } => Some(major),
@@ -823,6 +876,7 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         | Event::PluginUnloaded { .. }
         // The enablement request is not tied to a buffer's major mode (CI.4).
         | Event::ModeEnablementRequested { .. }
+        | Event::BufferOptionOverrideRequested { .. }
         // MG.41g: no path, and no major mode — a background task is
         // not buffer-scoped.
         | Event::BackgroundTaskFinished { .. }

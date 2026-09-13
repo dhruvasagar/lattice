@@ -233,6 +233,28 @@ pub enum Event {
         mode: String,
         enabled: bool,
     },
+    /// A request to set an option for ONE buffer — the guest-to-Editor bridge
+    /// for `set-option-in-buffer`, and the peer of
+    /// [`Self::ModeEnablementRequested`] in both shape and reason.
+    ///
+    /// The config seam's `set-option` writes the GLOBAL layer (it is the
+    /// `:set` path). A handler that wants "wrap in org buffers" cannot use it:
+    /// it would wrap everything, and nothing would unwrap on leaving org. The
+    /// buffer-local layer is what expresses that, and it lives on the Editor
+    /// (`buffer_local_overrides`) rather than in the `ConfigRegistry` the
+    /// plugin host holds — hence the bridge.
+    ///
+    /// Host-internal, NOT delivered back to guests: a plugin observing every
+    /// other plugin's option writes is a surveillance seam nobody asked for,
+    /// and `option-changed` already reports the outcome.
+    BufferOptionOverrideRequested {
+        buffer: BufferId,
+        /// `name=value` in `:set` syntax, parsed by the same
+        /// `parse_for_buffer_local` the `:setlocal` path uses — so a guest
+        /// cannot express anything `:setlocal` could not, and a bad value is
+        /// rejected with the same message.
+        option: String,
+    },
     /// MG.41g: a long-running background operation finished.
     ///
     /// The decoupling seam between *producers* of async work (magit's
@@ -330,6 +352,7 @@ impl Event {
             Event::PluginLoaded { .. } => EventKind::PluginLoaded,
             Event::PluginUnloaded { .. } => EventKind::PluginUnloaded,
             Event::ModeEnablementRequested { .. } => EventKind::ModeEnablementRequested,
+            Event::BufferOptionOverrideRequested { .. } => EventKind::BufferOptionOverrideRequested,
             Event::BackgroundTaskFinished { .. } => EventKind::BackgroundTaskFinished,
             Event::FilesChanged { .. } => EventKind::FilesChanged,
         }
@@ -374,6 +397,9 @@ pub enum EventKind {
     /// Discriminator for [`Event::ModeEnablementRequested`] (CI.4) — the
     /// host-internal enable/disable-minor-mode bridge the Editor handles.
     ModeEnablementRequested,
+    /// Discriminator for [`Event::BufferOptionOverrideRequested`] — like its
+    /// neighbour above, host-internal and never deliverable to a guest.
+    BufferOptionOverrideRequested,
     /// Discriminator for [`Event::BackgroundTaskFinished`] (MG.41g).
     BackgroundTaskFinished,
     /// Discriminator for [`Event::FilesChanged`] (OR.2) — a plugin's

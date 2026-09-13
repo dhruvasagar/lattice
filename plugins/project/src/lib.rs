@@ -812,6 +812,7 @@ impl Guest for Component {
                 kinds: Some(vec![EventKind::DocumentOpened]),
                 path_globs: None,
                 major_modes: None,
+                minor_modes: None,
             },
             ON_DOCUMENT_OPENED,
         );

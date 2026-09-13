@@ -720,7 +720,11 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
     {
         handler!(
             "action:magit-discard-execute",
-            move |ctx: &ActionContext<'_>| {
+            // The collapse lands on the EXECUTE half, not the ask: `x` over a
+            // selection returns `Effect::Confirm` and has not acted yet, so
+            // dropping the selection there would lose it for a question the
+            // user may still answer `no` to.
+            crate::magit_core_mode::consuming_selection(move |ctx: &ActionContext<'_>| {
                 // Slot 1 is the carried patch, slot 2 its workdir.
                 if let (Some(patch), Some(workdir)) = (ctx.arg_str(1), ctx.arg_str(2))
                     && !patch.is_empty()
@@ -797,7 +801,7 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                         )
                     }
                 }
-            }
+            })
         );
     }
 
@@ -811,7 +815,11 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
     {
         handler!(
             "action:magit-discard-untracked-execute",
-            move |ctx: &ActionContext<'_>| {
+            // The collapse lands on the EXECUTE half, not the ask: `x` over a
+            // selection returns `Effect::Confirm` and has not acted yet, so
+            // dropping the selection there would lose it for a question the
+            // user may still answer `no` to.
+            crate::magit_core_mode::consuming_selection(move |ctx: &ActionContext<'_>| {
                 let s = status_state(ctx)?;
                 let workdir = s.lock().ok()?.workdir.clone();
                 // IX.2: act on what the prompt named. Re-derivation is
@@ -828,7 +836,7 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                     }
                 };
                 spawn_untracked_delete(s.clone(), workdir, path)
-            }
+            })
         );
     }
 
@@ -848,7 +856,11 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
     {
         handler!(
             "action:magit-discard-batch-execute",
-            move |ctx: &ActionContext<'_>| {
+            // The collapse lands on the EXECUTE half, not the ask: `x` over a
+            // selection returns `Effect::Confirm` and has not acted yet, so
+            // dropping the selection there would lose it for a question the
+            // user may still answer `no` to.
+            crate::magit_core_mode::consuming_selection(move |ctx: &ActionContext<'_>| {
                 let files = carried_batch(&ctx.args);
                 if files.is_empty() {
                     return None;
@@ -895,7 +907,7 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                     }
                     Ok(out)
                 })
-            }
+            })
         );
     }
 

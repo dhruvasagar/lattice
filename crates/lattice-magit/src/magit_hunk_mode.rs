@@ -694,6 +694,54 @@ mod tests {
         }
     }
 
+    /// Every chord bound in VISUAL must act through a handler that collapses
+    /// the selection when it finishes.
+    ///
+    /// The rule itself lives in `magit_core_mode::consuming_selection` and is
+    /// applied at registration, so nothing about a keymap entry can prove a
+    /// given handler was wrapped. What this pins instead is the list: a chord
+    /// bound in Visual is, by definition, one that acts on a selection, so its
+    /// action has to appear here — and adding a sixth content chord without
+    /// wrapping it fails this test naming the chord.
+    ///
+    /// A list rather than introspection because a closure cannot be asked what
+    /// it wraps. The cost is that the list is maintained by hand; the
+    /// alternative is no guard at all, and `magit-diff-mode`'s missing `x`
+    /// already showed what a gap in a hand-copied set looks like — invisible
+    /// until someone reaches for the key.
+    #[test]
+    fn every_content_chord_collapses_the_selection() {
+        /// Actions registered through `consuming_selection`. Keep in step with
+        /// the registration sites in `magit_core_mode.rs` (stage / unstage /
+        /// apply / reverse) and `actions.rs` (the three discard executes).
+        const WRAPPED: &[&str] = &[
+            "action:magit-stage",
+            "action:magit-unstage",
+            "action:magit-apply-hunk",
+            "action:magit-reverse-hunk",
+            // `x` itself is deliberately NOT wrapped: over a selection it
+            // returns `Effect::Confirm` and has not acted yet. Its three
+            // execute halves carry the collapse instead, so it lands when the
+            // discard does rather than when the question is asked.
+            "action:magit-discard",
+        ];
+
+        for entry in magit_hunk_keymap_entries() {
+            if !format!("{:?}", entry.modes).contains("Visual") {
+                continue;
+            }
+            let Some(cmd) = entry.command else { continue };
+            assert!(
+                WRAPPED.contains(&cmd),
+                "`{}` is bound in Visual but `{cmd}` is not in the \
+                 selection-collapsing set — a chord that acts on a selection \
+                 and leaves it live outlives the rows it referred to, over a \
+                 buffer its own refresh just rebuilt",
+                entry.chord
+            );
+        }
+    }
+
     /// Every chord that acts on a hunk, in both the modes that can
     /// reach it. A Normal-only binding would leave MG.18e's region
     /// staging unreachable by its own documented gesture.

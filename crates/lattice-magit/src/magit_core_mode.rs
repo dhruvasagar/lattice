@@ -906,6 +906,49 @@ fn hunk_site(
 
 /// Resolve the hunk at the cursor for `op`, per magit-hunk-staging.md
 /// §"Resolution order: hunk, then file".
+/// Wrap a content action so that finishing it **collapses the Visual
+/// selection**, the way acting on a region does everywhere else.
+///
+/// evil-magit deactivates the region when the command runs, and so does vim
+/// for its own visual operators: you selected a thing in order to act on it,
+/// and once acted upon the selection has no referent — worse, the refresh
+/// rebuilds the buffer underneath it, so what stays highlighted is whatever
+/// rows now occupy those line numbers.
+///
+/// `do_exit_visual` stashes the range as `last_visual` first, so `gv` brings
+/// it back. That is why this is a collapse rather than a loss, and it is what
+/// makes "stage these three, then discard those same three" still cheap.
+///
+/// **Only when the handler returned `None`.** A handler with an effect to
+/// return has not finished — `x` over a selection returns
+/// `Effect::Confirm`, and the action has not happened yet. Collapsing there
+/// would drop the selection for a question the user may answer *no* to, and
+/// `Option<Effect>` has no room to carry both. The execute half is wrapped
+/// too, so the collapse lands when the work actually does.
+///
+/// **Only when a selection was live.** Every one of these chords is bound in
+/// Normal as well, where there is nothing to collapse and emitting
+/// `ExitVisual` would be a no-op that still costs an effect round-trip.
+///
+/// Applied at the five registration sites rather than inside each body: the
+/// bodies are three different shapes (`stage_or_unstage`, `apply_or_reverse`,
+/// discard's own branch) and a rule written three times is the one that ends
+/// up written twice — the gap `magit-diff-mode`'s missing `x` already
+/// demonstrated.
+pub(crate) fn consuming_selection(
+    inner: impl Fn(&ActionContext<'_>) -> Option<Effect> + Send + Sync + 'static,
+) -> impl Fn(&ActionContext<'_>) -> Option<Effect> + Send + Sync + 'static {
+    move |ctx: &ActionContext<'_>| {
+        let had_selection = ctx.selection.is_some();
+        match inner(ctx) {
+            None if had_selection => {
+                Some(Effect::AppAction(lattice_grammar::AppEffect::ExitVisual))
+            }
+            other => other,
+        }
+    }
+}
+
 pub(crate) fn resolve_hunk(ctx: &ActionContext<'_>, op: HunkOp) -> HunkResolution {
     let (Some(store), Some(view)) = (
         ctx.services.get::<BufferStoreHandle>(),
@@ -1596,11 +1639,15 @@ impl Mode for MagitCoreMode {
             // per-view.
             lattice_mode::ActionHandlerContribution {
                 action_name: "action:magit-stage",
-                handler: Arc::new(|ctx: &ActionContext<'_>| stage_or_unstage(ctx, HunkOp::Stage)),
+                handler: Arc::new(consuming_selection(|ctx| {
+                    stage_or_unstage(ctx, HunkOp::Stage)
+                })),
             },
             lattice_mode::ActionHandlerContribution {
                 action_name: "action:magit-unstage",
-                handler: Arc::new(|ctx: &ActionContext<'_>| stage_or_unstage(ctx, HunkOp::Unstage)),
+                handler: Arc::new(consuming_selection(|ctx| {
+                    stage_or_unstage(ctx, HunkOp::Unstage)
+                })),
             },
             // MG.23g: the committed-hunk pair, through the same
             // resolution. They live here rather than on the revision
@@ -1610,11 +1657,15 @@ impl Mode for MagitCoreMode {
             // leave one of them dead (MG.13's collision class).
             lattice_mode::ActionHandlerContribution {
                 action_name: "action:magit-apply-hunk",
-                handler: Arc::new(|ctx: &ActionContext<'_>| apply_or_reverse(ctx, HunkOp::Apply)),
+                handler: Arc::new(consuming_selection(|ctx| {
+                    apply_or_reverse(ctx, HunkOp::Apply)
+                })),
             },
             lattice_mode::ActionHandlerContribution {
                 action_name: "action:magit-reverse-hunk",
-                handler: Arc::new(|ctx: &ActionContext<'_>| apply_or_reverse(ctx, HunkOp::Reverse)),
+                handler: Arc::new(consuming_selection(|ctx| {
+                    apply_or_reverse(ctx, HunkOp::Reverse)
+                })),
             },
             // ── close (q) ─────────────────────────────────
             // Bug fix: this used to return `Effect::QuitEditor { scope:
@@ -1844,6 +1895,113 @@ index 111..222 100644
     /// Run the ladder the way a chord press does.
     fn resolve(cursor_line: u32, source: Option<DiffSource>, op: HunkOp) -> HunkResolution {
         resolve_with_region(cursor_line, None, source, op)
+    }
+
+    /// Acting on a selection in magit must END Visual mode.
+    ///
+    /// evil-magit deactivates the region when the command runs, and vim does
+    /// the same for its own visual operators: you selected a thing in order to
+    /// act on it, and once acted upon the selection has no referent. In magit
+    /// it is worse than untidy — the action triggers a refresh that rebuilds
+    /// the buffer, so what stays highlighted is whatever rows now happen to
+    /// occupy those line numbers.
+    ///
+    /// Asserted on the COMBINATOR rather than on each of the five chords: the
+    /// bodies are three different shapes (`stage_or_unstage`,
+    /// `apply_or_reverse`, discard's own branch) and the wrapper is the only
+    /// thing common to them, so it is the only place the rule can be stated
+    /// once. A sixth content chord that forgets to wrap is caught by
+    /// `every_content_chord_collapses_the_selection` below.
+    #[test]
+    fn acting_with_a_selection_collapses_it() {
+        let (services, id) = services_for(DIFF, None);
+        let events = lattice_runtime::EventBus::new();
+        let ctx = ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(id.0 as u64),
+            cursor: Position::new(0, 0),
+            selection: Some(lattice_protocol::position::Range::new(
+                Position::new(1, 0),
+                Position::new(3, 0),
+            )),
+            services: &services,
+            events: &events,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+        };
+
+        // A body that acted and had nothing to return — every mutating magit
+        // handler's shape, since `spawn_mutation_and_refresh` returns `None`.
+        let wrapped = consuming_selection(|_| None);
+        assert!(
+            matches!(
+                wrapped(&ctx),
+                Some(Effect::AppAction(lattice_grammar::AppEffect::ExitVisual))
+            ),
+            "the highlight must not outlive the rows it referred to, over a \
+             buffer the action itself just rebuilt"
+        );
+    }
+
+    /// In Normal there is nothing to collapse, and emitting the effect anyway
+    /// would be a no-op costing an effect round-trip on every `s`.
+    #[test]
+    fn acting_without_a_selection_emits_nothing() {
+        let (services, id) = services_for(DIFF, None);
+        let events = lattice_runtime::EventBus::new();
+        let ctx = ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(id.0 as u64),
+            cursor: Position::new(0, 0),
+            selection: None,
+            services: &services,
+            events: &events,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+        };
+        assert!(
+            consuming_selection(|_| None)(&ctx).is_none(),
+            "every one of these chords is bound in Normal too"
+        );
+    }
+
+    /// A handler that returned an effect has NOT finished, so the selection
+    /// stays.
+    ///
+    /// `x` over a selection returns `Effect::Confirm` — the discard has not
+    /// happened and the user may still answer `no`. Collapsing there would
+    /// drop a selection they never spent, and `Option<Effect>` has no room to
+    /// carry both. The three discard EXECUTE halves are wrapped instead, so
+    /// the collapse lands when the work does.
+    #[test]
+    fn an_action_awaiting_confirmation_keeps_the_selection() {
+        let (services, id) = services_for(DIFF, None);
+        let events = lattice_runtime::EventBus::new();
+        let ctx = ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(id.0 as u64),
+            cursor: Position::new(0, 0),
+            selection: Some(lattice_protocol::position::Range::new(
+                Position::new(1, 0),
+                Position::new(3, 0),
+            )),
+            services: &services,
+            events: &events,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+        };
+        let pending = || {
+            Some(Effect::Confirm {
+                prompt: "Discard 3 files?".to_string(),
+                yes_action: "action:magit-discard-batch-execute".to_string(),
+                args: lattice_grammar::Args::None,
+            })
+        };
+        assert!(
+            matches!(
+                consuming_selection(move |_| pending())(&ctx),
+                Some(Effect::Confirm { .. })
+            ),
+            "the handler's own effect survives — the collapse must not \
+             displace the question it was asking"
+        );
     }
 
     /// MG.18e: the same, with a Visual-mode region live — `rows` is the

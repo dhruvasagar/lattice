@@ -258,6 +258,23 @@ pub fn wire(boot: &mut impl SubsystemBoot, grid: WhichKeyGrid) {
     let grid = grid.0;
     let stash: Stash = Arc::new(Mutex::new(None));
 
+    // WK.11: whether OUR popup is on screen — set by the gate body when it
+    // actually returns `OpenPopup`, cleared by the dismissal below.
+    //
+    // This used to be a `bool` local to the inbound handler, set when the gate
+    // was ARMED. Arming and opening are not the same event: the gate body has
+    // five paths that open nothing (the prefix evaporated, a service is
+    // missing, the prefix has no continuations, the node is empty, the pane is
+    // too narrow) and it does not run at all when the chord completes inside
+    // the delay. So the flag meant "a prefix was pending", and every two-key
+    // chord typed faster than `which-key.delay` — `zz`, `gg`, `dd`, `ci"` —
+    // ended by dismissing a popup which-key had never opened. Somebody else's,
+    // whatever happened to be showing.
+    //
+    // Shared rather than local because the two halves that know the truth are
+    // different closures: the gate opens, the inbound handler dismisses.
+    let popup_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     let config = boot.service::<Arc<ConfigRegistry>>();
     let keymap = boot.service::<lattice_keymap::KeymapHandle>();
     let commands = boot.service::<CommandRegistryHandle>();
@@ -269,6 +286,7 @@ pub fn wire(boot: &mut impl SubsystemBoot, grid: WhichKeyGrid) {
             let stash = Arc::clone(&stash);
             let grid = Arc::clone(&grid);
             let config = config.clone();
+            let popup_open = Arc::clone(&popup_open);
             move || {
                 let Some(pending) = stash
                     .lock()
@@ -319,6 +337,9 @@ pub fn wire(boot: &mut impl SubsystemBoot, grid: WhichKeyGrid) {
                     return Vec::new();
                 }
                 *grid.lock().unwrap_or_else(|e| e.into_inner()) = rendered;
+                // The one place which-key's popup comes into existence, so the
+                // one place that may claim it is open.
+                popup_open.store(true, std::sync::atomic::Ordering::Relaxed);
                 vec![Effect::OpenPopup {
                     name: WHICH_KEY_BUFFER_NAME.to_string(),
                     mode_id: WhichKeyMode::mode_id().as_str().to_string(),
@@ -338,7 +359,7 @@ pub fn wire(boot: &mut impl SubsystemBoot, grid: WhichKeyGrid) {
         let stash = Arc::clone(&stash);
         let gate = Arc::clone(&gate);
         let config = config.clone();
-        let mut popup_open = false;
+        let popup_open = Arc::clone(&popup_open);
         move |ev: PartialChordPending| {
             let enabled = config
                 .as_ref()
@@ -348,8 +369,10 @@ pub fn wire(boot: &mut impl SubsystemBoot, grid: WhichKeyGrid) {
             if ev.chords.is_empty() || !enabled {
                 gate.disarm();
                 *stash.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                if std::mem::take(&mut popup_open) {
-                    return vec![Effect::DismissPopup];
+                if popup_open.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                    return vec![Effect::DismissPopupNamed {
+                        name: WHICH_KEY_BUFFER_NAME.to_string(),
+                    }];
                 }
                 return Vec::new();
             }
@@ -361,7 +384,6 @@ pub fn wire(boot: &mut impl SubsystemBoot, grid: WhichKeyGrid) {
                 .max(0) as u64;
             *stash.lock().unwrap_or_else(|e| e.into_inner()) = Some(ev);
             gate.arm(tokio::time::Instant::now() + std::time::Duration::from_millis(delay));
-            popup_open = true;
             Vec::new()
         }
     });

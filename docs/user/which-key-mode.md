@@ -46,6 +46,13 @@ This is deliberate: a hint with its own navigation keys would change
 what a chord means, differently for each prefix. Under `<C-w>` it would
 eat `n`; under `g` it would eat `j`.
 
+It also takes nothing else with it when it goes. Finishing a chord
+closes the panel and only the panel — a hover, a diagnostic float or any
+other popup you had open stays open. That was not always true: until
+2026-09-14 a chord finished faster than `which-key.delay` (`zz`, `gg`,
+`dd`) dismissed whatever popup happened to be on screen, including one
+the panel had never replaced.
+
 ## What the rows mean
 
 | Row | Meaning |

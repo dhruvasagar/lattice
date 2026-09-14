@@ -41,6 +41,40 @@ async fn quiesce(editor: &Editor) {
 /// Let the subscription task forward the published event into the
 /// inbound bus, then run the per-tick drain the actor would run. This is
 /// the arming half — NOT the popup, which only the gate can produce.
+///
+/// **A condition wait, not a fixed number of yields.** This was 20
+/// `yield_now()`s followed by one drain, which is a guess about how many
+/// times the runtime has to be polled before a task on ANOTHER thread has
+/// forwarded the event. Under load — a full `cargo test`, or simply more
+/// tests in this file — the guess runs out and the drain finds nothing, so
+/// the popup content assertions fail on a build where the feature works.
+/// Both `holding_a_prefix_opens_the_popup_without_another_keystroke` and
+/// `the_keys_in_the_popup_are_highlighted` failed that way and passed when
+/// re-run alone.
+///
+/// `want_armed` is what the gate should look like once the event has landed,
+/// which is the observable end of the forward: arming sets a deadline,
+/// resolving clears it. Polling for it makes the wait as long as it needs to
+/// be and no longer.
+///
+/// Sleeping here cannot fire the gate: firing is `fire_idle_gates()`, an
+/// explicit call, so the tests that assert "nothing opens inside the delay"
+/// stay meaningful however long this takes.
+async fn settle_arming_to(editor: &mut Editor, want_armed: bool) {
+    for _ in 0..500 {
+        tokio::task::yield_now().await;
+        let _ = editor.run_tick_pending();
+        if editor.idle_gate_deadline().is_some() == want_armed {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// [`settle_arming_to`] for the cases with no state change to wait on —
+/// which-key disabled, or an event that must be ignored. There is nothing to
+/// poll for, so this is the old fixed drain, and it is correct here precisely
+/// because the assertion that follows is that nothing happened.
 async fn settle_arming(editor: &mut Editor) {
     for _ in 0..20 {
         tokio::task::yield_now().await;
@@ -75,7 +109,7 @@ async fn holding_a_prefix_opens_the_popup_without_another_keystroke() {
     quiesce(&editor).await;
 
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
-    settle_arming(&mut editor).await;
+    settle_arming_to(&mut editor, true).await;
     assert!(
         editor.popup_buffer.is_none(),
         "the popup must not appear before the delay elapses — that would be \
@@ -107,13 +141,13 @@ async fn a_chord_completed_before_the_delay_never_shows_a_popup() {
     quiesce(&editor).await;
 
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
-    settle_arming(&mut editor).await;
+    settle_arming_to(&mut editor, true).await;
     assert!(editor.idle_gate_deadline().is_some(), "armed");
 
     // The chord resolves: any non-absorbing action clears `partial_chord`,
     // which republishes with an empty list.
     let _ = editor.dispatch(Action::ScrollLineDown);
-    settle_arming(&mut editor).await;
+    settle_arming_to(&mut editor, false).await;
 
     assert!(
         editor.idle_gate_deadline().is_none(),
@@ -138,7 +172,7 @@ async fn the_popup_is_passive_and_leaves_the_document_focused() {
     let doc_before = editor.document_buffer_id;
 
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
-    settle_arming(&mut editor).await;
+    settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
     assert!(editor.popup_buffer.is_some(), "popup open");
 
@@ -165,6 +199,9 @@ async fn disabling_the_option_never_arms_the_gate() {
     quiesce(&editor).await;
 
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
+    // The plain drain, not the condition wait: the assertion below is that
+    // NOTHING happened, so there is no state change to poll for and waiting
+    // for one would just burn the timeout.
     settle_arming(&mut editor).await;
 
     assert!(
@@ -187,7 +224,7 @@ async fn a_prefix_with_no_continuations_opens_nothing() {
         lattice_protocol::KeyKind::Char('k'),
         lattice_protocol::KeyMods::ALT,
     )));
-    settle_arming(&mut editor).await;
+    settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
 
     assert!(
@@ -210,7 +247,7 @@ async fn the_keys_in_the_popup_are_highlighted() {
     quiesce(&editor).await;
 
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
-    settle_arming(&mut editor).await;
+    settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
     let popup = editor.popup_buffer.expect("popup open");
 
@@ -269,7 +306,7 @@ async fn resolving_a_chord_dismisses_an_open_popup() {
     quiesce(&editor).await;
 
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
-    settle_arming(&mut editor).await;
+    settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
     assert!(
         popup_text(&editor).is_some(),
@@ -280,10 +317,105 @@ async fn resolving_a_chord_dismisses_an_open_popup() {
     // which republishes with an empty list — the same path a real second
     // keystroke takes once the trie reaches a binding.
     let _ = editor.dispatch(Action::ScrollLineDown);
-    settle_arming(&mut editor).await;
+    settle_arming_to(&mut editor, false).await;
 
     assert!(
         editor.popup_buffer.is_none(),
         "the popup describes a prefix that no longer exists"
+    );
+}
+
+// ── WK.11: which-key dismisses ITS popup, and only its popup ──────────────
+
+/// **The `zz` bug.** A two-key chord finished inside the delay window must
+/// leave a popup which-key never opened exactly where it was.
+///
+/// `popup_open` used to be set when the gate was ARMED rather than when the
+/// popup was OPENED, and the dismissal it drove was untargeted — so every
+/// chord typed faster than `which-key.delay` (`zz`, `gg`, `dd`, `ci"`) tore
+/// down whatever hover or diagnostic popup happened to be showing.
+///
+/// `a_chord_completed_before_the_delay_never_shows_a_popup` passed on the
+/// broken build because nothing else had a popup open to lose. That is the
+/// gap this closes: the bug was never in whether which-key's OWN popup
+/// appeared, it was in what its dismissal reached.
+#[tokio::test]
+async fn a_fast_chord_leaves_someone_elses_popup_alone() {
+    let mut editor = booted();
+    quiesce(&editor).await;
+
+    let content = lattice_help::parse_help_lines("hover", vec!["int foo(void)".to_string()]);
+    editor.open_popup(content, lattice_host::popup::PopupPlacement::Centered);
+    let theirs = editor
+        .popup_buffer
+        .expect("their popup is open to begin with");
+
+    // Arm on the prefix...
+    let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
+    settle_arming_to(&mut editor, true).await;
+    assert!(editor.idle_gate_deadline().is_some(), "armed");
+
+    // ...and resolve well inside the delay, so the gate never fires and
+    // which-key never opens anything.
+    let _ = editor.dispatch(Action::ScrollLineDown);
+    settle_arming_to(&mut editor, false).await;
+
+    assert_eq!(
+        editor.popup_buffer,
+        Some(theirs),
+        "which-key opened no popup, so it must not have dismissed one"
+    );
+}
+
+/// The other half: which-key's OWN popup is still dismissed when the chord
+/// resolves. A fix that simply stopped dismissing would pass the test above
+/// and leave a hint describing a prefix that no longer exists.
+#[tokio::test]
+async fn which_keys_own_popup_is_still_dismissed_when_the_chord_resolves() {
+    let mut editor = booted();
+    quiesce(&editor).await;
+
+    let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
+    settle_arming_to(&mut editor, true).await;
+    fire_gate(&mut editor).await;
+    assert!(editor.popup_buffer.is_some(), "the hint opened");
+
+    let _ = editor.dispatch(Action::ScrollLineDown);
+    settle_arming_to(&mut editor, false).await;
+
+    assert!(
+        editor.popup_buffer.is_none(),
+        "resolving the chord closes the hint it was describing"
+    );
+}
+
+/// And if someone else's popup REPLACED which-key's between opening and
+/// resolving, the dismissal finds a stranger in the slot and leaves it.
+///
+/// There is one popup slot, so this is reachable whenever any other subsystem
+/// opens one while a prefix is pending — exactly the race an untargeted
+/// dismiss cannot see.
+#[tokio::test]
+async fn a_popup_that_replaced_the_hint_survives_the_dismissal() {
+    let mut editor = booted();
+    quiesce(&editor).await;
+
+    let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
+    settle_arming_to(&mut editor, true).await;
+    fire_gate(&mut editor).await;
+    assert!(editor.popup_buffer.is_some(), "the hint opened");
+
+    // Something else takes the slot while the prefix is still pending.
+    let content = lattice_help::parse_help_lines("hover", vec!["int foo(void)".to_string()]);
+    editor.open_popup(content, lattice_host::popup::PopupPlacement::Centered);
+    let theirs = editor.popup_buffer.expect("their popup took the slot");
+
+    let _ = editor.dispatch(Action::ScrollLineDown);
+    settle_arming_to(&mut editor, false).await;
+
+    assert_eq!(
+        editor.popup_buffer,
+        Some(theirs),
+        "which-key's dismissal must not reach a popup it did not open"
     );
 }

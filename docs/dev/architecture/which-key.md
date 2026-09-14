@@ -215,6 +215,21 @@ Dismissal: the chord resolves or aborts (the same event fires with
 empty `chords` → disarm + close), the buffer or focus changes, the pane
 resizes, or `<Esc>`.
 
+**It closes its own popup, and only its own.** The close half emits
+`Effect::DismissPopupNamed { name: "*which-key*" }` — a no-op unless the
+popup on screen is which-key's — and it is emitted only when the **gate
+body actually opened one**, tracked by a flag the gate sets rather than
+one the arming path sets.
+
+Both of those were wrong, and together they were a reported bug (WK.11,
+2026-09-14). Arming is not opening: the gate body has five paths that
+open nothing, and it does not run at all when the chord completes inside
+the delay. So the flag meant "a prefix was pending", and the untargeted
+dismiss it drove reached whatever popup was showing — every two-key
+chord finished faster than `which-key.delay` (`zz`, `gg`, `dd`, `ci"`)
+tore down the user's hover or diagnostic popup. `popup-api.md` §4.3
+carries the general rule the second variant encodes.
+
 **Both halves are off-keystroke, and that is a delivery hazard.**
 `apply_effect_host` routes `OpenPopup` / `DismissPopup` to the renderer
 tail (`DispatchOutcome::effects`), which off a keystroke has no drainer

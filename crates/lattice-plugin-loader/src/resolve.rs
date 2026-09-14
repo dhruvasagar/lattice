@@ -45,6 +45,29 @@ pub enum PluginSource {
     Prebuilt { url: String },
 }
 
+/// Whether a source that is already in the cache may be advanced from the
+/// network.
+///
+/// The distinction exists because "resolve" is asked for by two callers that
+/// want opposite things. Boot and rebuild want *what the user already has* —
+/// deterministic, offline-capable, no per-start network round trip. The
+/// `update` verb exists precisely to go and get something newer, and is the
+/// only caller that should.
+///
+/// A **pinned** rev ignores this entirely: a pin is the answer to "which
+/// commit", so there is nothing for either policy to decide. Both will still
+/// fetch-and-move when the checkout is not at the pin (the user edited the pin
+/// in `init.rs`), and neither touches the network when it already is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RefreshPolicy {
+    /// Use the checkout on disk as it stands. No network for a repository
+    /// that is already cloned.
+    #[default]
+    UseCache,
+    /// Fetch and move an unpinned checkout to the tracked head.
+    Update,
+}
+
 /// What a source resolved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
@@ -136,6 +159,10 @@ pub fn git_cache_dir(cache_root: &Path, name: &str) -> PathBuf {
 /// `user_root` is the plugin cache (`~/.config/lattice/plugins/`) a
 /// `Prebuilt` artifact lands in.
 ///
+/// `policy` decides whether an already-cloned git source is advanced from the
+/// network; it is meaningless for `Local` (the tree IS the source) and for
+/// `Prebuilt` (which re-downloads whenever the artifact is missing).
+///
 /// Blocking (clone / fetch / download). Run on `spawn_blocking`.
 pub fn resolve(
     git: &dyn GitRunner,
@@ -144,6 +171,7 @@ pub fn resolve(
     name: &str,
     cache_root: &Path,
     user_root: &Path,
+    policy: RefreshPolicy,
 ) -> Result<Resolved, String> {
     match source {
         PluginSource::Local(path) => {
@@ -156,7 +184,7 @@ pub fn resolve(
             Ok(Resolved::Source(path.clone()))
         }
         PluginSource::Git { url, rev } => {
-            let dir = resolve_git(git, url, rev.as_deref(), name, cache_root)?;
+            let dir = resolve_git(git, url, rev.as_deref(), name, cache_root, policy)?;
             Ok(Resolved::Source(dir))
         }
         PluginSource::Prebuilt { url } => {
@@ -166,49 +194,92 @@ pub fn resolve(
     }
 }
 
-/// Clone or update `name`'s checkout and put it at `rev`.
+/// Clone `name`'s checkout, or bring an existing one to where `rev` and
+/// `policy` say it should be.
 ///
-/// A re-resolve of an unchanged rev does no network work at all: if the
-/// checkout is already at the requested revision, the fetch is skipped.
-/// That is the same warm-boot requirement the build stamp serves — a
-/// pinned plugin should not touch the network on every start.
+/// Only reach the network when the answer requires it:
+///
+/// | on disk | pinned | policy | network |
+/// |---|---|---|---|
+/// | absent | either | either | clone |
+/// | present | at the pin | either | none |
+/// | present | pin differs | either | fetch + checkout |
+/// | present | unpinned | `UseCache` | **none** |
+/// | present | unpinned | `Update` | fetch + move to the tracked head |
+///
+/// **The unpinned rows are the 2026-09-14 fix.** Every re-resolve used to
+/// `fetch` an unpinned checkout and then stop — the `checkout` below is
+/// reachable only with a pin — so the objects arrived and local `HEAD` never
+/// moved. An unpinned plugin was frozen at the commit it was first cloned at,
+/// for the life of the checkout, while paying a network round trip on every
+/// single boot to stay that way. Both halves are wrong and they are each
+/// other's fix: `UseCache` drops the pointless fetch, and `Update` follows its
+/// fetch with the move that makes it mean something.
+///
+/// `reset --hard FETCH_HEAD` rather than a merge or a pull: the checkout is a
+/// cache the editor owns, never a working tree the user edits, so the tracked
+/// head is simply what it should contain. A merge could conflict, and there is
+/// nobody to resolve it.
 fn resolve_git(
     git: &dyn GitRunner,
     url: &str,
     rev: Option<&str>,
     name: &str,
     cache_root: &Path,
+    policy: RefreshPolicy,
 ) -> Result<PathBuf, String> {
     let dir = git_cache_dir(cache_root, name);
-    if dir.join(".git").is_dir() {
-        // Already cloned. Only reach the network when we have to.
-        if let Some(rev) = rev
-            && git.run(&dir, &["rev-parse", "HEAD"]).ok().as_deref() == Some(rev)
-        {
-            tracing::debug!(plugin = name, rev, "git: already at the requested rev");
-            return Ok(dir);
+    if !dir.join(".git").is_dir() {
+        clone_git(git, url, rev, &dir)?;
+        if let Some(rev) = rev {
+            git.run(&dir, &["checkout", "--detach", rev])?;
         }
-        git.run(&dir, &["fetch", "--tags", "origin"])?;
-    } else {
-        let parent = dir
-            .parent()
-            .ok_or_else(|| format!("bad cache path {}", dir.display()))?;
-        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
-        // Full history when a rev is pinned (a shallow clone may not
-        // contain it); shallow when tracking the default branch, which
-        // is the common case and much cheaper.
-        let dir_str = dir.to_string_lossy().to_string();
-        let mut args = vec!["clone"];
-        if rev.is_none() {
-            args.extend(["--depth", "1"]);
-        }
-        args.extend([url, dir_str.as_str()]);
-        git.run(parent, &args)?;
+        return Ok(dir);
     }
-    if let Some(rev) = rev {
-        git.run(&dir, &["checkout", "--detach", rev])?;
+
+    match rev {
+        // Pinned. The pin is the answer whatever the policy, so the only
+        // question is whether we are already at it.
+        Some(rev) => {
+            if git.run(&dir, &["rev-parse", "HEAD"]).ok().as_deref() == Some(rev) {
+                tracing::debug!(plugin = name, rev, "git: already at the requested rev");
+                return Ok(dir);
+            }
+            git.run(&dir, &["fetch", "--tags", "origin"])?;
+            git.run(&dir, &["checkout", "--detach", rev])?;
+        }
+        // Unpinned. `UseCache` is every boot and every rebuild; `Update` is
+        // the `update` verb, and nothing else.
+        None => {
+            if policy == RefreshPolicy::Update {
+                git.run(&dir, &["fetch", "--tags", "origin"])?;
+                git.run(&dir, &["reset", "--hard", "FETCH_HEAD"])?;
+            } else {
+                tracing::debug!(plugin = name, "git: using the cached checkout");
+            }
+        }
     }
     Ok(dir)
+}
+
+/// Clone into `dir`, shallow unless a rev is pinned.
+///
+/// Full history when a rev is pinned (a shallow clone may not contain it);
+/// shallow when tracking the default branch, which is the common case and much
+/// cheaper.
+fn clone_git(git: &dyn GitRunner, url: &str, rev: Option<&str>, dir: &Path) -> Result<(), String> {
+    let parent = dir
+        .parent()
+        .ok_or_else(|| format!("bad cache path {}", dir.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    let dir_str = dir.to_string_lossy().to_string();
+    let mut args = vec!["clone"];
+    if rev.is_none() {
+        args.extend(["--depth", "1"]);
+    }
+    args.extend([url, dir_str.as_str()]);
+    git.run(parent, &args)?;
+    Ok(())
 }
 
 /// Download a prebuilt component and give it a manifest.
@@ -338,6 +409,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         )
         .unwrap();
 
@@ -358,6 +430,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         )
         .unwrap_err();
         assert!(err.contains("not a directory"), "got: {err}");
@@ -382,6 +455,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         )
         .unwrap();
 
@@ -413,6 +487,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         )
         .unwrap();
 
@@ -449,6 +524,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         )
         .unwrap();
 
@@ -480,6 +556,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         )
         .unwrap();
 
@@ -491,8 +568,15 @@ mod tests {
         );
     }
 
+    /// Boot and rebuild resolve with `UseCache`, and an unpinned checkout that
+    /// is already on disk is then answered entirely from it.
+    ///
+    /// This asserted the opposite until 2026-09-14 — that a warm unpinned
+    /// checkout fetches — which was true and useless: the fetch was never
+    /// followed by anything that moved `HEAD`, so it bought a network round
+    /// trip per boot and changed nothing. See [`super::resolve_git`].
     #[test]
-    fn an_existing_checkout_without_a_pin_fetches() {
+    fn a_warm_unpinned_checkout_touches_no_network_under_use_cache() {
         let root = tempdir("git-head");
         let dir = root.join("cache").join("demo");
         std::fs::create_dir_all(dir.join(".git")).unwrap();
@@ -508,10 +592,87 @@ mod tests {
             "demo",
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         )
         .unwrap();
 
-        assert!(git.calls().iter().any(|c| c.starts_with("fetch")));
+        assert!(
+            git.calls().is_empty(),
+            "a cloned, unpinned checkout needs no git at all: {:?}",
+            git.calls()
+        );
+    }
+
+    /// `Update` is the policy the `update` verb passes, and it is the whole
+    /// point: fetch AND move. A fetch on its own leaves the plugin exactly
+    /// where it was, which is the bug this pair exists to keep fixed.
+    #[test]
+    fn an_unpinned_checkout_advances_to_the_fetched_head_under_update() {
+        let root = tempdir("git-update");
+        let dir = root.join("cache").join("demo");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        let git = FakeGit::default();
+
+        resolve(
+            &git,
+            &fetcher(b""),
+            &PluginSource::Git {
+                url: "https://example.invalid/p.git".into(),
+                rev: None,
+            },
+            "demo",
+            &root.join("cache"),
+            &root.join("user"),
+            RefreshPolicy::Update,
+        )
+        .unwrap();
+
+        let calls = git.calls();
+        assert!(
+            calls.iter().any(|c| c.starts_with("fetch")),
+            "got: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c == "reset --hard FETCH_HEAD"),
+            "the fetch must be followed by the move that makes it mean \
+             something: {calls:?}"
+        );
+    }
+
+    /// A pin does not move, whatever the policy asks for. `update` on a pinned
+    /// plugin is a no-op by design — the pin IS the answer to "which commit" —
+    /// and a fetch here would be network traffic for a decision already made.
+    #[test]
+    fn a_pinned_checkout_at_its_rev_stays_put_even_under_update() {
+        let root = tempdir("git-pinned-update");
+        let dir = root.join("cache").join("demo");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        let git = FakeGit::default();
+        *git.head.lock().unwrap() = Some("abc123".to_string());
+
+        resolve(
+            &git,
+            &fetcher(b""),
+            &PluginSource::Git {
+                url: "https://example.invalid/p.git".into(),
+                rev: Some("abc123".into()),
+            },
+            "demo",
+            &root.join("cache"),
+            &root.join("user"),
+            RefreshPolicy::Update,
+        )
+        .unwrap();
+
+        let calls = git.calls();
+        assert!(
+            !calls.iter().any(|c| c.starts_with("fetch")),
+            "already at the pin ⇒ no network: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.starts_with("reset")),
+            "a pin never moves: {calls:?}"
+        );
     }
 
     /// The fake asserts shape; this asserts the real thing works. A
@@ -544,6 +705,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         )
         .unwrap();
 
@@ -565,6 +727,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         );
         assert!(again.is_ok());
     }
@@ -586,6 +749,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &user,
+            RefreshPolicy::UseCache,
         )
         .unwrap();
 
@@ -613,6 +777,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &user,
+            RefreshPolicy::UseCache,
         )
         .unwrap();
 
@@ -641,6 +806,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &user,
+            RefreshPolicy::UseCache,
         )
         .unwrap();
 
@@ -668,6 +834,7 @@ mod tests {
             "demo",
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         )
         .unwrap_err();
         assert!(err.contains("404"), "got: {err}");

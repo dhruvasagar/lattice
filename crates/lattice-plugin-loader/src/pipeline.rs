@@ -27,7 +27,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::build::{BuildOutcome, ComponentBuilder, build_plugin};
-use crate::resolve::{Fetcher, GitRunner, PluginSource, Resolved, resolve};
+use crate::resolve::{Fetcher, GitRunner, PluginSource, RefreshPolicy, Resolved, resolve};
 
 /// One plugin a guest declared. The loader-side mirror of the host's
 /// `RequiredPlugin`.
@@ -102,6 +102,7 @@ pub fn install_required(
     spec: &RequiredSpec,
     cache_root: &Path,
     user_root: &Path,
+    policy: RefreshPolicy,
 ) -> Install {
     let skip = |error: String| Install::Skipped {
         name: spec.name.clone(),
@@ -115,6 +116,7 @@ pub fn install_required(
         &spec.name,
         cache_root,
         user_root,
+        policy,
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -182,10 +184,11 @@ pub fn install_all(
     specs: &[RequiredSpec],
     cache_root: &Path,
     user_root: &Path,
+    policy: RefreshPolicy,
 ) -> Vec<Install> {
     specs
         .iter()
-        .map(|spec| install_required(git, fetcher, builder, spec, cache_root, user_root))
+        .map(|spec| install_required(git, fetcher, builder, spec, cache_root, user_root, policy))
         .collect()
 }
 
@@ -284,6 +287,7 @@ mod tests {
             &local(&root, "demo"),
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         );
         match out {
             Install::Ready {
@@ -321,6 +325,7 @@ mod tests {
             },
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         );
         assert!(matches!(out, Install::Ready { .. }));
         assert_eq!(
@@ -345,6 +350,7 @@ mod tests {
             },
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         );
         match out {
             Install::Skipped { name, error } => {
@@ -365,6 +371,7 @@ mod tests {
             &local(&root, "broken"),
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         );
         assert!(matches!(out, Install::Skipped { .. }));
     }
@@ -383,6 +390,7 @@ mod tests {
             &spec,
             &root.join("cache"),
             &user,
+            RefreshPolicy::UseCache,
         );
 
         // Dirty the source so the next attempt is a rebuild, then fail it.
@@ -403,6 +411,7 @@ mod tests {
             &spec,
             &root.join("cache"),
             &user,
+            RefreshPolicy::UseCache,
         );
         match out {
             Install::Ready {
@@ -439,6 +448,7 @@ mod tests {
             &specs,
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         );
 
         assert_eq!(out.len(), 3, "every spec is attempted");
@@ -521,6 +531,7 @@ mod tests {
             &specs,
             &root.join("cache"),
             &root.join("user"),
+            RefreshPolicy::UseCache,
         );
         let names: Vec<&str> = out.iter().map(|i| i.name()).collect();
         assert_eq!(names, vec!["aaa", "bbb", "ccc"]);

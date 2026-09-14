@@ -1554,6 +1554,9 @@ impl PluginLoader {
                 &spec,
                 &cache_root,
                 &user_root,
+                // Rebuild means "build what I have from source again", not
+                // "go and get something newer" — that is `update`.
+                resolve::RefreshPolicy::UseCache,
             )
         })
         .await

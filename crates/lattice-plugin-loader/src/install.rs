@@ -521,6 +521,10 @@ async fn install_required_plugins(loader: &std::sync::Arc<crate::PluginLoader>) 
                 &specs,
                 &cache_root,
                 &user_root,
+                // Boot uses what the user already has: deterministic, works
+                // offline, no network round trip per start. `:plugin-update`
+                // is the verb that goes looking for something newer.
+                crate::resolve::RefreshPolicy::UseCache,
             )
         }
     })

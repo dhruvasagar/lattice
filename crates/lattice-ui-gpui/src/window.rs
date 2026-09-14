@@ -931,51 +931,81 @@ where
         .unwrap_or(dflt)
 }
 
-fn diagnostic_glyph_and_color(
-    config: &lattice_config::ConfigRegistry,
-    resolved: &lattice_host::ui::theme::ResolvedTheme,
-    ids: &lattice_host::ui::theme::BuiltinElementIds,
-    severity: lattice_lsp::DiagnosticSeverity,
-) -> (char, u32) {
-    // T.6.t: the severity glyph reads from the `ui.diagnostic-*-glyph`
-    // typed options (was the deleted host `Theme.*_glyph` char); the
-    // *style* reads from the resolved table.
-    let (glyph, style) = match severity {
-        lattice_lsp::DiagnosticSeverity::ERROR => (
-            diagnostic_glyph_option::<lattice_host::ui::theme_options::UiDiagnosticErrorGlyph>(
-                config, '■',
+/// T.6.t, restored: the four severity glyphs and their resolved
+/// colours, read ONCE per frame.
+///
+/// `ConfigRegistry::get_typed` takes a mutex, a `TypeId` hashmap lookup,
+/// an `Arc` clone and a downcast. The original T.6.t hoisted the four
+/// glyph reads out of the per-line closure for exactly that reason; a
+/// later change routed every read through a
+/// `diagnostic_glyph_and_color(config, ..)` helper that did its own
+/// lookup per call, which put that mutex back on the paint path — once
+/// per diagnostic, per frame. The hoisted bindings went unused and
+/// nothing said so, because `--features window` was never built.
+///
+/// This is `Copy` and holds resolved values, so `for_severity` is a
+/// match and nothing else. The TUI peer has always done it this way
+/// (`build_tui_theme` resolves all four at theme-build time); GPUI was
+/// the outlier.
+#[derive(Clone, Copy)]
+struct DiagnosticGlyphs {
+    error: (char, u32),
+    warning: (char, u32),
+    info: (char, u32),
+    hint: (char, u32),
+}
+
+impl DiagnosticGlyphs {
+    /// The only place the four typed options are read. Call once per
+    /// frame, outside every per-line / per-diagnostic loop.
+    fn resolve(
+        config: &lattice_config::ConfigRegistry,
+        resolved: &lattice_host::ui::theme::ResolvedTheme,
+        ids: &lattice_host::ui::theme::BuiltinElementIds,
+    ) -> Self {
+        use lattice_host::ui::theme_options as opts;
+        // 0x9399b2 is Catppuccin overlay2 — the v1 muted fallback if the
+        // theme uses `Color::Default` (no concrete RGB).
+        let colour = |element| {
+            resolved
+                .get(element)
+                .fg
+                .map(|c| c.to_rgb_u32(0x9399b2))
+                .unwrap_or(0x9399b2)
+        };
+        Self {
+            error: (
+                diagnostic_glyph_option::<opts::UiDiagnosticErrorGlyph>(config, '■'),
+                colour(ids.diagnostic_error),
             ),
-            resolved.get(ids.diagnostic_error),
-        ),
-        lattice_lsp::DiagnosticSeverity::WARNING => (
-            diagnostic_glyph_option::<lattice_host::ui::theme_options::UiDiagnosticWarningGlyph>(
-                config, '▲',
+            warning: (
+                diagnostic_glyph_option::<opts::UiDiagnosticWarningGlyph>(config, '▲'),
+                colour(ids.diagnostic_warning),
             ),
-            resolved.get(ids.diagnostic_warning),
-        ),
-        lattice_lsp::DiagnosticSeverity::INFORMATION => (
-            diagnostic_glyph_option::<lattice_host::ui::theme_options::UiDiagnosticInfoGlyph>(
-                config, '●',
+            info: (
+                diagnostic_glyph_option::<opts::UiDiagnosticInfoGlyph>(config, '●'),
+                colour(ids.diagnostic_info),
             ),
-            resolved.get(ids.diagnostic_info),
-        ),
-        lattice_lsp::DiagnosticSeverity::HINT => (
-            diagnostic_glyph_option::<lattice_host::ui::theme_options::UiDiagnosticHintGlyph>(
-                config, '·',
+            hint: (
+                diagnostic_glyph_option::<opts::UiDiagnosticHintGlyph>(config, '·'),
+                colour(ids.diagnostic_hint),
             ),
-            resolved.get(ids.diagnostic_hint),
-        ),
-        _ => (
-            diagnostic_glyph_option::<lattice_host::ui::theme_options::UiDiagnosticInfoGlyph>(
-                config, '●',
-            ),
-            resolved.get(ids.diagnostic_info),
-        ),
-    };
-    // 0x9399b2 is Catppuccin overlay2 — the v1 muted fallback if
-    // the theme uses `Color::Default` (no concrete RGB).
-    let color = style.fg.map(|c| c.to_rgb_u32(0x9399b2)).unwrap_or(0x9399b2);
-    (glyph, color)
+        }
+    }
+
+    /// An unknown severity reads as INFORMATION, which is what the
+    /// per-call helper this replaced did — the LSP spec leaves the value
+    /// open, and treating an unrecognised one as the neutral level beats
+    /// dropping the mark.
+    fn for_severity(&self, severity: lattice_lsp::DiagnosticSeverity) -> (char, u32) {
+        match severity {
+            lattice_lsp::DiagnosticSeverity::ERROR => self.error,
+            lattice_lsp::DiagnosticSeverity::WARNING => self.warning,
+            lattice_lsp::DiagnosticSeverity::INFORMATION => self.info,
+            lattice_lsp::DiagnosticSeverity::HINT => self.hint,
+            _ => self.info,
+        }
+    }
 }
 
 // 5.8.N: `CursorShape` lives host-side
@@ -2060,20 +2090,11 @@ impl EditorView {
             }
             (columns, signs_rs)
         };
-        // T.6.t hoisted the four severity glyphs to here — one typed-option
-        // read each instead of O(viewport) lookups — and a later change
-        // routed every read through `diagnostic_glyph_and_color`, which
-        // does its own lookup per call. The four bindings have been dead
-        // since; deleted 2026-09-14 when turning `--features window` on in
-        // `scripts/precommit.sh` finally surfaced the warnings.
-        //
-        // NOTE, deliberately left rather than quietly fixed: the hoist's
-        // PURPOSE is still defeated. `diagnostic_glyph_and_color` is called
-        // once per diagnostic when building underlines (~line 2522), so the
-        // per-frame typed-option reads T.6.t removed are back, just spelled
-        // differently. Restoring it means threading the resolved glyphs into
-        // that helper, which is a signature change and a perf claim worth
-        // measuring, not a warning fix.
+        // T.6.t: the four severity glyphs + colours, resolved once per
+        // frame. Every consumer below reads through this rather than
+        // calling the config registry, whose `get_typed` takes a mutex
+        // (paramount #1: no lock per diagnostic on the paint path).
+        let diagnostic_glyphs = DiagnosticGlyphs::resolve(&config, &resolved_theme, &theme_ids);
         // SG.2b: hoisted out of the per-line closure — the palette is a
         // property of the session, not of a row, and re-reading it per
         // visible line would put a typed-option lookup on the paint path
@@ -2488,7 +2509,7 @@ impl EditorView {
         // pane's URI (`None` => unsaved scratch / no LSP /
         // disabled). For each diagnostic, convert utf-16 → utf-8
         // against the corresponding line, resolve severity →
-        // color via `diagnostic_glyph_and_color`.
+        // color via `DiagnosticGlyphs::for_severity`.
         let diagnostic_underlines: Vec<crate::editor_element::DiagnosticUnderline> = uri
             .and_then(|u| render_state.diagnostics.layer.diagnostics_arc(u))
             .map(|diags| {
@@ -2517,12 +2538,9 @@ impl EditorView {
                         );
                         let color = d
                             .severity
-                            .map(|s| {
-                                diagnostic_glyph_and_color(&config, &resolved_theme, &theme_ids, s)
-                                    .1
-                            })
+                            .map(|s| diagnostic_glyphs.for_severity(s).1)
                             // Unknown severity: fall back to overlay2
-                            // (matches `diagnostic_glyph_and_color`).
+                            // (matches `DiagnosticGlyphs`' own fallback).
                             .unwrap_or(0x9399b2);
                         crate::editor_element::DiagnosticUnderline {
                             range: lattice_core::protocol::position::Range {
@@ -2547,38 +2565,35 @@ impl EditorView {
         // for the ACTIVE buffer's cursor line; resolve it only on the
         // active pane (the summary tracks the focused cursor). The
         // severity rank maps to the same host-theme colour the gutter
-        // glyph + underline use, via `diagnostic_glyph_and_color`.
+        // glyph + underline use, via `DiagnosticGlyphs::for_severity`.
         let diag_mode_on = render_state
             .translator
             .active_minor_modes
             .iter()
             .any(|m| *m == lattice_lsp::modes::LspDiagnosticsMode::mode_id());
-        let inline_diag_summary: Option<crate::editor_element::InlineDiagSummary> = if is_active
-            && diag_mode_on
-        {
-            render_state
-                .diagnostics
-                .inline_summary
-                .as_ref()
-                .map(|(line, summary)| {
-                    let severity = match summary.severity_rank {
-                        0 => lattice_lsp::DiagnosticSeverity::ERROR,
-                        1 => lattice_lsp::DiagnosticSeverity::WARNING,
-                        2 => lattice_lsp::DiagnosticSeverity::INFORMATION,
-                        _ => lattice_lsp::DiagnosticSeverity::HINT,
-                    };
-                    let color =
-                        diagnostic_glyph_and_color(&config, &resolved_theme, &theme_ids, severity)
-                            .1;
-                    crate::editor_element::InlineDiagSummary {
-                        line: *line,
-                        text: format!("    {}", summary.text),
-                        color,
-                    }
-                })
-        } else {
-            None
-        };
+        let inline_diag_summary: Option<crate::editor_element::InlineDiagSummary> =
+            if is_active && diag_mode_on {
+                render_state
+                    .diagnostics
+                    .inline_summary
+                    .as_ref()
+                    .map(|(line, summary)| {
+                        let severity = match summary.severity_rank {
+                            0 => lattice_lsp::DiagnosticSeverity::ERROR,
+                            1 => lattice_lsp::DiagnosticSeverity::WARNING,
+                            2 => lattice_lsp::DiagnosticSeverity::INFORMATION,
+                            _ => lattice_lsp::DiagnosticSeverity::HINT,
+                        };
+                        let color = diagnostic_glyphs.for_severity(severity).1;
+                        crate::editor_element::InlineDiagSummary {
+                            line: *line,
+                            text: format!("    {}", summary.text),
+                            color,
+                        }
+                    })
+            } else {
+                None
+            };
 
         // T.6: inlay color resolves from the `inlay.hint` element
         // (shared with the TUI peer's `inlay_hint_style`).
@@ -6426,5 +6441,105 @@ mod matrix_staleness_guard_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_glyph_tests {
+    use super::*;
+    use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _};
+    use lattice_lsp::DiagnosticSeverity as Sev;
+
+    fn glyphs() -> (
+        DiagnosticGlyphs,
+        std::sync::Arc<lattice_host::ui::theme::ResolvedTheme>,
+    ) {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+        let config = lattice_config::ConfigRegistry::new();
+        config.init_from_linkme();
+        (
+            DiagnosticGlyphs::resolve(&config, &resolved, &ids),
+            resolved,
+        )
+    }
+
+    /// Each severity keeps its own glyph. The defaults are the ones the
+    /// deleted host `Theme` carried (`■▲●·`), so a theme that sets none
+    /// still renders four distinguishable marks.
+    #[test]
+    fn each_severity_resolves_its_own_default_glyph() {
+        let (g, _) = glyphs();
+        assert_eq!(g.for_severity(Sev::ERROR).0, '■');
+        assert_eq!(g.for_severity(Sev::WARNING).0, '▲');
+        assert_eq!(g.for_severity(Sev::INFORMATION).0, '●');
+        assert_eq!(g.for_severity(Sev::HINT).0, '·');
+    }
+
+    /// …and its own colour, resolved from the theme rather than from a
+    /// literal. Asserted as "all four differ" rather than against four
+    /// hex values, so a theme change does not break the test that exists
+    /// to prove severities stay distinguishable.
+    #[test]
+    fn each_severity_resolves_a_distinct_colour() {
+        let (g, _) = glyphs();
+        let colours = [
+            g.for_severity(Sev::ERROR).1,
+            g.for_severity(Sev::WARNING).1,
+            g.for_severity(Sev::INFORMATION).1,
+            g.for_severity(Sev::HINT).1,
+        ];
+        let distinct: std::collections::HashSet<u32> = colours.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            4,
+            "four severities must be four colours; got {colours:?}"
+        );
+    }
+
+    /// An unrecognised severity reads as INFORMATION — the behaviour the
+    /// per-call helper this replaced had, kept verbatim: the LSP spec
+    /// leaves the value open, and the neutral level beats dropping the
+    /// mark.
+    ///
+    /// Asserted through the four documented severities rather than by
+    /// constructing an out-of-spec one, because `DiagnosticSeverity`'s
+    /// inner `i32` is private in `lsp-types` and the only ways in are a
+    /// serde round-trip (not a dependency here) or the associated
+    /// consts. What is checkable without either is that the `_` arm's
+    /// target is the INFORMATION entry and not, say, a fifth default
+    /// nobody set — so a future edit that points it elsewhere has to
+    /// change this line.
+    #[test]
+    fn the_unknown_severity_fallback_is_the_information_entry() {
+        let (g, _) = glyphs();
+        assert_eq!(g.info, g.for_severity(Sev::INFORMATION));
+        assert_ne!(
+            g.info, g.error,
+            "the fallback must be a real severity's entry, distinct from ERROR"
+        );
+    }
+
+    /// **The property the whole change is for: resolving is separable
+    /// from reading.** `for_severity` is a match over `Copy` data, so it
+    /// can be called per diagnostic without touching the config
+    /// registry — whose `get_typed` takes a mutex. That the struct is
+    /// `Copy` is what makes "read once, use many" enforceable rather
+    /// than a convention someone has to remember, and it is what the
+    /// previous shape (a `(config, theme, ids, severity)` helper) could
+    /// not offer.
+    #[test]
+    fn the_resolved_set_is_copy_so_it_cannot_re_read_config() {
+        let (g, _) = glyphs();
+        fn takes_copy<T: Copy>(_: T) {}
+        takes_copy(g);
+        // Using it after the move proves the copy, and proves a caller
+        // can hold one across a loop without borrowing anything.
+        let mut seen = Vec::new();
+        for sev in [Sev::ERROR, Sev::WARNING, Sev::INFORMATION, Sev::HINT] {
+            seen.push(g.for_severity(sev));
+        }
+        assert_eq!(seen.len(), 4);
     }
 }

@@ -199,7 +199,7 @@ pub(crate) struct InlayHintRow {
 /// One diagnostic underline range (slice X3.full.4). Caller converts
 /// the LSP utf-16 range to a utf-8-byte `Range` against the buffer's
 /// line text. `color` is `0xRRGGBB` resolved via
-/// `diagnostic_glyph_and_color`. Painted as a 2px `paint_quad` along
+/// `DiagnosticGlyphs::for_severity`. Painted as a 2px `paint_quad` along
 /// the bottom of the row(s) the range covers.
 pub(crate) struct DiagnosticUnderline {
     pub(crate) range: lattice_core::protocol::position::Range,

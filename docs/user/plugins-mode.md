@@ -1,5 +1,5 @@
 ---
-summary: "plugins-mode: the *plugins* manager buffer — a live status table of every loaded plugin, with r to reload, x to unload, and t to open its boundary trace."
+summary: "plugins-mode: the *plugins* manager buffer — a live status table of every loaded plugin, where lowercase acts on the row under the cursor and uppercase acts on every row."
 related: [plugins, plugin, ex:plugins]
 ---
 
@@ -13,14 +13,55 @@ write or install a plugin, see [`plugins`](help:plugins).
 
 ## Chords
 
+**Lowercase acts on the row under the cursor; uppercase acts on every row.**
+
 | Chord | Action |
 |---|---|
 | `<CR>` or `K` | Describe the plugin under the cursor |
-| `r` | Reload it |
-| `x` | Unload it |
+| `r` / `R` | Reload it / reload every loaded plugin |
+| `b` / `B` | Rebuild it from source / rebuild every one |
+| `u` / `U` | Update it / update every one |
+| `x` / `X` | Unload it / remove staged directories nothing loads any more |
 | `t` | Open its boundary trace |
 | `T` | Cycle its trace verbosity |
 | `gr` | Refresh the list |
+
+`u`, `U`, `R` and `X` shadow vim's `u`, `R` and `x`-adjacent meanings inside
+this buffer only. Nothing is lost: the table is read-only, so there is no edit
+for undo to reverse and no text for Replace to overwrite.
+
+## Reload, rebuild, update
+
+Three different amounts of work, cheapest first:
+
+- **Reload** re-instantiates the `.wasm` already on disk.
+- **Rebuild** compiles that artifact from the source you already have — what
+  you want after editing a local plugin, and what reload cannot do.
+- **Update** fetches a newer source first, then rebuilds. A plugin pinned to a
+  revision declines and says so: the pin is already the answer to which commit
+  you wanted.
+
+A bulk run works through the list one plugin at a time — `cargo` already uses
+the whole machine, so running six at once would contend rather than go faster.
+It says where it is on the title line (`# Plugins (7 loaded) — updating 3/7
+(org)…`) while the row being worked reads `building…`. One plugin failing never
+stops the rest; the counts and a line per failure land in `*messages*`.
+
+## Cleaning up
+
+`X` removes staged plugin directories that nothing loads any more. It is the
+only chord here that deletes anything, so it names exactly what would go and
+waits for you to confirm.
+
+It will not offer you a plugin that **failed** to load — that is still one you
+asked for, and removing it would turn "my plugin is broken" into "my plugin is
+gone", taking the error message with it. It will not offer your `init` config.
+And it will not offer a directory without a `.source` marker, because
+provenance is what makes the removal recoverable: with it the plugin can be
+fetched and built again, without it those bytes are the only copy.
+
+`:plugin-clean` does the same from the command line — it lists, and
+`:plugin-clean!` removes.
 
 ## Live status
 

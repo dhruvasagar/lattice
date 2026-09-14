@@ -39,6 +39,11 @@ feature uses — it is not a second-class bolt-on.
 | `:plugin-load <path>` | Load a `.wasm` component from `<path>` (under its manifest's capability grant). |
 | `:plugin-unload <name>` | Unload a plugin by name (or numeric id): abort its tasks, reverse every registry contribution. |
 | `:plugin-reload <name>` | Unload then re-load from disk — a fresh instance with an untripped quarantine. |
+| `:plugin-update <name>` | Bring its source up to date, rebuild, reload. Pinned plugins decline and say so. |
+| `:plugin-rebuild-all` | Rebuild every loaded plugin from the source it already has, then reload each. |
+| `:plugin-reload-all` | Reload every loaded plugin from the artifact on disk — no build, no network. |
+| `:plugin-update-all` | Update every loaded plugin. Pinned ones are skipped, not failed. |
+| `:plugin-clean` | List staged plugin directories nothing loads any more; `:plugin-clean!` removes them. |
 | `:plugins` | Open the **manager view** — a buffer listing every loaded plugin with health, tier, and capabilities. |
 | `:plugin-trace` | Open `*plugin-trace*` — the live boundary-trace firehose across all plugins. |
 | `:reload-config` | Re-load your `init.rs` config module. |
@@ -46,8 +51,10 @@ feature uses — it is not a second-class bolt-on.
 | `:list-plugin-apis` / `:describe-plugin-api [<seam>]` | Browse the plugin **API catalog** (the WIT seams). |
 | `:list-plugins` / `:describe-plugin <name>` | List / describe the currently-loaded plugins. |
 
-In the `:plugins` view: `r` reload · `x` unload · `K` / `<CR>` describe · `gr`
-refresh · `t` open that plugin's trace · `T` cycle its trace verbosity.
+In the `:plugins` view, lowercase acts on the row under the cursor and
+uppercase on every row: `r`/`R` reload · `b`/`B` rebuild · `u`/`U` update ·
+`x` unload, `X` clean · `K` / `<CR>` describe · `gr` refresh · `t` open that
+plugin's trace · `T` cycle its trace verbosity.
 
 ---
 
@@ -111,14 +118,37 @@ while the view is open flips to `quarantined` immediately.
 It is a real buffer (everything-is-a-buffer), so ordinary motions work, and it
 carries in-view chords on the row under the cursor:
 
+**Lowercase acts on the row under the cursor; uppercase acts on every row.**
+
 | Key | Action |
 |---|---|
-| `r` | Reload the plugin under the cursor |
-| `x` | Unload it |
+| `r` / `R` | Reload the plugin under the cursor / every loaded plugin |
+| `b` / `B` | Rebuild it from source / rebuild every one |
+| `u` / `U` | Update it / update every one |
+| `x` / `X` | Unload it / remove staged directories nothing loads any more |
 | `K` / `<CR>` | Open its documentation (`:describe-plugin`) |
 | `gr` | Refresh the list (pick up out-of-band loads) |
 | `t` | Open that plugin's boundary trace (`*plugin-trace:<name>*`) |
 | `T` | Cycle that plugin's trace verbosity (off → error → … → trace) |
+
+**Reload, rebuild, update are three different amounts of work.** Reload
+re-instantiates the `.wasm` already on disk. Rebuild compiles that artifact
+from the source you already have — what you want after editing a local plugin.
+Update fetches a newer source first, then rebuilds. Each does strictly more
+than the one before it, so reach for the cheapest one that does what you need.
+
+A bulk run works through the list one plugin at a time and says where it is on
+the title line (`# Plugins (7 loaded) — updating 3/7 (org)…`), with the row it
+is working on reading `building…`. One plugin failing never stops the rest; the
+counts land in `*messages*` when it finishes, with a line per failure naming
+the plugin.
+
+`X` is the only key here that deletes anything, so it asks first and names
+exactly what would go. It is deliberately cautious about what it offers: a
+plugin that FAILED to load is never listed (it is still one you asked for, and
+cleaning it would turn "my plugin is broken" into "my plugin is gone"), your
+`init` config is never listed, and neither is any directory without a `.source`
+marker — provenance is what makes the removal recoverable.
 
 ---
 

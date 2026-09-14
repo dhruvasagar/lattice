@@ -128,6 +128,32 @@ eventual-consistency the UX contract already permits for plugin cold-start.
   `~/.cache/lattice/sources/<name>/` (checked out at `rev`, default the remote
   head), then built like `Local`. A re-`require` fetches + rebuilds only when the
   resolved rev differs from the cached one (or `pinned` skips the fetch).
+
+### Who may touch the network — `RefreshPolicy`
+
+Resolving a git source is asked for by two callers that want opposite things,
+so the resolver takes which one is asking:
+
+| policy | callers | an already-cloned, **unpinned** checkout |
+|---|---|---|
+| `UseCache` | boot, `rebuild` | used as it stands — **no git at all** |
+| `Update` | `update` / `update-all`, and nothing else | `fetch`, then `reset --hard FETCH_HEAD` |
+
+A **pinned** rev ignores the policy: the pin is the answer to "which commit",
+so `update` on a pinned plugin does nothing and costs nothing, while a CHANGED
+pin (the user edited `init.rs`) still fetches and moves under either.
+
+`reset --hard` rather than merge or pull, because the checkout is a cache the
+editor owns and never a tree the user edits: the tracked head is simply what it
+should contain, and a merge could conflict with nobody there to resolve it.
+
+> **Corrected 2026-09-14.** Every re-resolve used to `fetch` an unpinned
+> checkout and then stop — the checkout step ran only under a pin — so the
+> objects arrived and local `HEAD` never moved. An unpinned plugin was frozen
+> at the commit it was first cloned at for the life of the checkout, while
+> paying a network round trip on every boot to stay that way. Both halves are
+> wrong and they are each other's fix: `UseCache` drops the pointless fetch,
+> `Update` follows its fetch with the move that makes it mean something.
 - **`Prebuilt{url}`** — download the `.wasm` straight into the cache; **no build,
   no toolchain** (§7).
 
@@ -355,6 +381,78 @@ lifecycle: **source** (`local` / `git@rev` / `prebuilt`), **build state**
 (force a rebuild of the plugin under the cursor). Async-build progress surfaces via
 the buffer's headerline (the async-buffer-status-in-headerline rule), not a status
 line. Reload already re-instantiates; a new "rebuild" is reload + a forced build.
+
+### 8.1 Scope — lowercase is the row, uppercase is every row
+
+Three verbs do strictly increasing amounts of work, and each has both scopes:
+
+| | row | all | what it does |
+|---|---|---|---|
+| reload | `r` | `R` | re-instantiate the artifact already on disk |
+| rebuild | `b` | `B` | compile that artifact from the source you have |
+| update | `u` | `U` | fetch a newer source first, then rebuild |
+| unload / clean | `x` | `X` | drop the instance / remove unclaimed staged dirs |
+
+The lowercase-row / uppercase-all split is the idiom the view already taught
+with `t` / `T`; reusing it beats inventing a second convention inside one
+buffer. The all-scope keys shadow vim's `u`, `R` and `U` here, which costs
+nothing — the buffer is read-only, so there is no edit for undo to reverse and
+no text for Replace to overwrite — and a mode-layer binding is scoped to
+`plugins-mode`-active buffers, so vim's meanings are untouched elsewhere.
+
+The ex-command peers are `:plugin-update <name>`, `:plugin-rebuild-all`,
+`:plugin-reload-all`, `:plugin-update-all` and `:plugin-clean[!]`. The bulk
+forms are spelled out rather than reached by omitting `:plugin-update`'s
+argument: a command that rebuilds the whole editor should not be one typo away.
+
+### 8.2 Bulk runs are sequential, and report per leg
+
+**Sequential is the design, not a simplification.** Concurrency reads as the
+obvious win and is wrong three times over: `cargo` already saturates the
+machine, so N of them contend rather than parallelise (and can exhaust the disk
+— a full build tree is tens of gigabytes); every leg finishes by reloading,
+which mutates the shared registries by copy-on-write RCU, so overlapping legs
+race to publish; and a user watching the view wants to read which plugin is
+building now, not six rows all claiming to be. One leg's failure never stops
+the next — the rule `install_all` already follows at boot.
+
+Progress repaints **between** legs, because a bulk rebuild is minutes of
+`cargo` and a view that only updated at the end would sit still for exactly the
+time it mattered. The note rides the **title line** (`# Plugins (7 loaded) —
+updating 3/7 (org)…`) rather than taking a line of its own: the interactivity
+layer maps `cursor.line - HEADER_LINES` into the plugin list, so an extra
+header row would put every chord on the wrong plugin — and only while a run was
+in flight, which is the worst kind of bug to be handed a report about.
+
+A leg is `Done`, `Skipped` or `Failed`, and **skipped is not failed**. "Pinned,
+so there was nothing to update" and "the build broke" both leave the plugin as
+it was, but only one is worth investigating: `4 updated, 2 pinned` reads as
+success where `4 updated, 2 failed` sends someone hunting for a problem that
+does not exist.
+
+### 8.3 `clean` — the only verb that deletes
+
+A staged directory under the user root is removable only when **all** hold, and
+each clause is there because dropping it destroys something wanted:
+
+1. **nothing loads it** — the obvious one;
+2. **it did not FAIL to load this session** — a broken plugin is still one the
+   user asked for, and cleaning it turns "my plugin is failing" into "my plugin
+   is gone", taking the error the view was showing with it;
+3. **it is not `init`** — that is the user's configuration, and it never
+   appears in the loaded set under that name;
+4. **it carries a `.source` marker** — provenance is what makes removal
+   recoverable. With it the directory can be re-resolved and rebuilt; without
+   it the bytes are the only copy, which is exactly the hand-staged case.
+
+`:plugin-clean` lists and `:plugin-clean!` removes — vim's own "yes, I mean
+it", costing no new mechanism. The `X` chord uses `Effect::Confirm` instead,
+and the confirmation carries the **names** (packed into one `Args::String`,
+since a confirm truncates its payload to the action's declared arity) so that
+what the user agreed to is what gets deleted: between the prompt appearing and
+`y` being pressed a plugin can finish loading, and re-deriving the list
+afterwards would delete the one that just arrived. The removal re-checks each
+name regardless.
 
 ## 9. auto-pair as the first consumer (AP.4, reframed)
 

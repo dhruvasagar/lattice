@@ -40,7 +40,7 @@ detection.
 | `z<Space>` / `:fold-cycle` | **Org-cycle**: the heading under the cursor (FOLDED → CHILDREN → SUBTREE), or — when not on a fold — the whole buffer |
 | `z<Tab>` / `:fold-cycle-global` | **Org-cycle** the whole buffer explicitly: OVERVIEW → CONTENTS → SHOW-ALL |
 | `zd`                | Delete the fold under cursor (manual folds only; computed folds re-emerge) |
-| `zj` / `zk`         | Jump to the next / previous fold start                                     |
+| `zj` / `zk`         | Jump to the next / previous **visible** fold start / end                   |
 | `zp` / `:fold-goto-parent` | Jump to the **parent** heading (one level up the fold hierarchy)    |
 | `:set foldmethod=X` | Pick the fold provider: `manual` / `indent` / `markdown` / `syntax`        |
 | `:set nofoldenable` | Hide all fold affordances (folds still exist, all lines render)            |
@@ -165,6 +165,15 @@ like org. `<Tab>` here is a `z`-prefixed chord, distinct from the bare
 `outline-up-heading` (evil-org's `gh`). It's distinct from `zj` / `zk`,
 which step to the next / previous fold *edge* among siblings: `zp` climbs
 *out*, `zj`/`zk` move *across*.
+
+`zj` and `zk` step between edges that are actually **on screen**. A closed fold
+counts as one fold, as in vim, so the sub-folds collapsed inside a closed
+section are not separate stops — stepping to one would move the cursor's line
+without moving the cursor a single row. Stepping *into* a closed fold is still
+a stop: `zk` from below a collapsed section lands on its last line, which puts
+the cursor on the collapsed row. What is skipped is a step you could not see,
+not a step into a fold. With `:set nofoldenable` nothing is collapsed, so every
+edge is a stop again.
 
 ---
 

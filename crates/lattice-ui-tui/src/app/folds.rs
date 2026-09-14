@@ -1415,4 +1415,122 @@ mod tests {
             );
         }
     }
+
+    /// `zj` / `zk` step between *visible* fold edges.
+    ///
+    /// Vim: "zj — move downwards to the start of the next fold. **A closed
+    /// fold is counted as one fold.**" The folds nested inside a closed one
+    /// are not separate stops, because they are not on screen: they render on
+    /// the closed fold's own row, so stepping to one moves `cursor.line`
+    /// without moving the cursor a single row. A motion that reports success
+    /// and visibly does nothing is worse than one that says "no more folds".
+    mod zj_and_zk_step_between_visible_folds {
+        use super::*;
+
+        /// `# [10..=30]` closed, containing `## [12..=20]`, with a visible
+        /// sibling at `[35..=40]`. The shape of a collapsed org section that
+        /// has sub-headings, which is where this shows up.
+        fn nested_under_a_closed_fold() -> App {
+            let mut a = app_with(&"x\n".repeat(45), 60);
+            for (s, e, closed) in [(10u32, 30u32, true), (12, 20, false), (35, 40, false)] {
+                a.editor.folds.push(Fold {
+                    start_line: s,
+                    end_line: e,
+                    closed,
+                    identity: None,
+                });
+            }
+            a
+        }
+
+        /// **The reported bug.** On the closed fold's head, `zj` picked the
+        /// nested fold's start — a line hidden inside the very fold the cursor
+        /// sits on — so the cursor did not appear to move at all.
+        #[test]
+        fn zj_skips_a_fold_hidden_inside_the_closed_one_it_is_on() {
+            let mut a = nested_under_a_closed_fold();
+            a.editor.cursor = Position::new(10, 0);
+
+            a.apply(Action::GotoNextFold);
+
+            assert_eq!(
+                a.editor.cursor.line, 35,
+                "the next VISIBLE fold is the sibling after the closed one, \
+                 not the sub-fold collapsed inside it"
+            );
+        }
+
+        /// …and the closed fold itself is still a stop. Skipping hidden edges
+        /// must not turn into skipping the fold that hides them, or `zj` would
+        /// walk straight past every collapsed section.
+        #[test]
+        fn zj_still_lands_on_a_closed_folds_own_head() {
+            let mut a = nested_under_a_closed_fold();
+            a.editor.cursor = Position::new(5, 0);
+
+            a.apply(Action::GotoNextFold);
+
+            assert_eq!(
+                a.editor.cursor.line, 10,
+                "the closed fold's head is visible"
+            );
+        }
+
+        /// `zk`'s half of the same rule: from inside a closed fold, the nested
+        /// fold's END is on the cursor's own display row, so it is not a stop.
+        #[test]
+        fn zk_skips_a_fold_end_hidden_on_the_cursors_own_row() {
+            let mut a = nested_under_a_closed_fold();
+            // An earlier, visible fold to land on once the hidden one is
+            // rejected — otherwise "skipped it" and "found nothing" look alike.
+            a.editor.folds.push(Fold {
+                start_line: 2,
+                end_line: 5,
+                closed: false,
+                identity: None,
+            });
+            a.editor.cursor = Position::new(25, 0);
+
+            a.apply(Action::GotoPrevFold);
+
+            assert_eq!(
+                a.editor.cursor.line, 5,
+                "`[12..=20]` ends on the same row the cursor is already \
+                 displayed on, so the previous visible fold end is `[2..=5]`"
+            );
+        }
+
+        /// …and `zk` still steps INTO a closed fold from below. Landing on
+        /// line 30 puts the cursor on the collapsed row — a real move from
+        /// line 32 — which is what vim does and must not be mistaken for a
+        /// hidden edge.
+        #[test]
+        fn zk_still_enters_a_closed_fold_from_below() {
+            let mut a = nested_under_a_closed_fold();
+            a.editor.cursor = Position::new(32, 0);
+
+            a.apply(Action::GotoPrevFold);
+
+            assert_eq!(a.editor.cursor.line, 30, "the closed fold's end is a stop");
+        }
+
+        /// `:set nofoldenable` means nothing is collapsed, so every edge is
+        /// visible and both motions go back to plain nearest-edge stepping.
+        #[test]
+        fn nofoldenable_makes_every_edge_visible_again() {
+            let mut a = nested_under_a_closed_fold();
+            a.editor.set_command_line_text("set nofoldenable");
+            a.editor.modal = ModalState::Command;
+            a.apply(Action::CommandLineSubmit);
+            a.editor.cursor = Position::new(10, 0);
+
+            a.apply(Action::GotoNextFold);
+
+            assert_eq!(
+                a.editor.cursor.line, 12,
+                "with folding disabled the nested fold is on screen, so it is \
+                 the next stop"
+            );
+        }
+    }
 }

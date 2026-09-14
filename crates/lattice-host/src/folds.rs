@@ -607,6 +607,42 @@ impl FoldIndex {
             .copied()
     }
 
+    /// The row `line` is actually DISPLAYED on: itself when visible, else
+    /// the head of the outermost closed fold that swallows it.
+    ///
+    /// Two lines share an anchor exactly when they occupy the same row on
+    /// screen. That is what makes it the right comparison for a motion that
+    /// has to *look* like it moved — `zj` / `zk` step between fold edges, and
+    /// an edge collapsed inside a closed fold is not a place the cursor can
+    /// visibly go (see `Editor::do_goto_fold`).
+    ///
+    /// **Outermost, not innermost**, which is why this walks rather than
+    /// calling [`Self::enclosing_closed_fold`] once: closed folds nest, and a
+    /// sub-fold's head is itself hidden when its parent is also closed. The
+    /// walk climbs head-to-head until it reaches one nothing encloses, so the
+    /// answer is a row that is genuinely on screen. Bounded by fold nesting
+    /// depth (single digits in practice) and each step is the same binary
+    /// search the predicates beside it use.
+    ///
+    /// Collapses to the identity under `:set nofoldenable`, like every other
+    /// predicate here — nothing is folded, so nothing is hidden.
+    pub fn visible_anchor(&self, line: u32) -> u32 {
+        if !self.foldenable {
+            return line;
+        }
+        let mut at = line;
+        // `closed` bounds the climb: each step moves strictly left (a fold's
+        // head is below the line it encloses), so this cannot loop even if a
+        // user hand-folds overlapping ranges.
+        for _ in 0..self.closed.len() {
+            match self.enclosing_closed_fold(at) {
+                Some((start, _)) => at = start,
+                None => break,
+            }
+        }
+        at
+    }
+
     /// True iff `line` falls strictly inside the interior of some closed
     /// fold (`start_line < line <= end_line`). Matches the existing
     /// `Editor::line_inside_closed_fold` semantics.
@@ -2019,6 +2055,60 @@ impl Buffer {
             Some((2, 4)),
             "innermost on overlap"
         );
+    }
+
+    /// A visible line is its own anchor; a swallowed one reports the head it
+    /// is drawn on.
+    #[test]
+    fn fold_index_visible_anchor_maps_a_hidden_line_to_its_head() {
+        let folds = vec![closed(10, 30)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        assert_eq!(idx.visible_anchor(5), 5, "outside the fold");
+        assert_eq!(idx.visible_anchor(10), 10, "the head is visible");
+        assert_eq!(
+            idx.visible_anchor(20),
+            10,
+            "an interior line draws on the head"
+        );
+        assert_eq!(idx.visible_anchor(30), 10, "…including the last one");
+        assert_eq!(idx.visible_anchor(31), 31, "past the end");
+    }
+
+    /// **The reason this climbs instead of asking once.** A sub-fold's head is
+    /// itself hidden when its parent is also closed, so the innermost
+    /// encloser is not necessarily on screen — only the outermost is.
+    #[test]
+    fn fold_index_visible_anchor_climbs_to_the_outermost_closed_fold() {
+        let folds = vec![closed(0, 40), closed(10, 30), closed(12, 20)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        assert_eq!(
+            idx.visible_anchor(15),
+            0,
+            "three deep, and only the outermost head is actually drawn"
+        );
+        assert_eq!(idx.visible_anchor(10), 0, "a nested head is hidden too");
+    }
+
+    /// An open parent does not hide its closed child's head.
+    #[test]
+    fn fold_index_visible_anchor_stops_at_an_open_parent() {
+        let folds = vec![open(0, 40), closed(12, 20)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        assert_eq!(
+            idx.visible_anchor(15),
+            12,
+            "the closed child's head is on screen"
+        );
+        assert_eq!(idx.visible_anchor(35), 35, "open folds hide nothing");
+    }
+
+    #[test]
+    fn fold_index_visible_anchor_is_identity_with_foldenable_off() {
+        let folds = vec![closed(0, 40), closed(10, 30)];
+        let idx = FoldIndex::from_folds(&folds, false);
+        for line in [0, 10, 15, 30, 41] {
+            assert_eq!(idx.visible_anchor(line), line);
+        }
     }
 
     #[test]

@@ -193,6 +193,27 @@ Mostly the rules vim already uses, generalised:
   `self.folds` without caring about source.
 - **`zR` opens every fold; `zM` closes every fold.** No
   source distinction.
+- **`zj` / `zk` step between VISIBLE fold edges.** Vim's "a
+  closed fold is counted as one fold", stated as a rule about
+  rows rather than about line numbers: candidates are compared
+  by `FoldIndex::visible_anchor` — the row a line is actually
+  drawn on — and an edge sharing the cursor's row is not a
+  destination. Without it, `zj` on a collapsed section with
+  sub-headings picked the nested fold's head, which renders on
+  the section's own row: the motion reported success and moved
+  the cursor zero rows.
+
+  The anchor **climbs to the outermost** closed fold rather than
+  asking `enclosing_closed_fold` once, because closed folds nest
+  and a sub-fold's head is itself hidden when its parent is
+  closed; only the outermost head is on screen.
+
+  Stepping *into* a closed fold is still a stop — `zk` from
+  below lands on the fold's last line, putting the cursor on the
+  collapsed row, as vim does. What is rejected is a step that
+  cannot be seen, not a step into a fold. Source-agnostic like
+  the rest of the `z*` family, and identity under
+  `:set nofoldenable`.
 - **`:set foldlevel=N` honours nesting depth.** The depth
   computation walks `self.folds` and counts enclosing
   folds; source-agnostic. Built in FL.1 —

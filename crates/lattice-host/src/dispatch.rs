@@ -22138,20 +22138,40 @@ impl Editor {
     }
 
     /// 5.5.G.1: vim's `zj` (forward) / `zk` (backward) -- jump
-    /// the cursor to the next / previous fold edge.
+    /// the cursor to the next / previous **visible** fold edge.
+    ///
+    /// Visible is the load-bearing word, and it is vim's: "a closed fold is
+    /// counted as one fold". The folds nested inside a closed one are not
+    /// separate stops, because they are not on screen — they render on the
+    /// closed fold's own row. Stepping to one moved `cursor.line` without
+    /// moving the cursor a single row, so on a collapsed org section with
+    /// sub-headings `zj` reported success and visibly did nothing.
+    ///
+    /// So candidates are compared by the row they are DISPLAYED on
+    /// ([`crate::folds::FoldIndex::visible_anchor`]) rather than by their line
+    /// number, and an edge that shares the cursor's row is not a destination.
+    /// The edges themselves are still the line numbers — `zk` from below a
+    /// collapsed section lands on its last line, which puts the cursor on the
+    /// collapsed row, exactly as vim does. What is rejected is a step that
+    /// cannot be seen, not a step into a fold.
+    ///
+    /// Nearest-first is preserved by picking the min / max LINE among the
+    /// surviving candidates; anchors decide eligibility, not ordering.
     pub fn do_goto_fold(&mut self, forward: bool) {
         let line = self.cursor.line;
+        let idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+        let here = idx.visible_anchor(line);
         let target = if forward {
             self.folds
                 .iter()
-                .filter(|f| f.start_line > line)
                 .map(|f| f.start_line)
+                .filter(|&s| s > line && idx.visible_anchor(s) > here)
                 .min()
         } else {
             self.folds
                 .iter()
-                .filter(|f| f.end_line < line)
                 .map(|f| f.end_line)
+                .filter(|&e| e < line && idx.visible_anchor(e) < here)
                 .max()
         };
         if let Some(t) = target {

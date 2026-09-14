@@ -221,6 +221,32 @@ impl Mode for PluginManagerMode {
                 action_name: actions::REBUILD,
                 handler: actions::rebuild_handler(),
             },
+            ActionHandlerContribution {
+                action_name: actions::UPDATE,
+                handler: actions::update_handler(),
+            },
+            ActionHandlerContribution {
+                action_name: actions::RELOAD_ALL,
+                handler: actions::reload_all_handler(),
+            },
+            ActionHandlerContribution {
+                action_name: actions::REBUILD_ALL,
+                handler: actions::rebuild_all_handler(),
+            },
+            ActionHandlerContribution {
+                action_name: actions::UPDATE_ALL,
+                handler: actions::update_all_handler(),
+            },
+            ActionHandlerContribution {
+                action_name: actions::CLEAN,
+                handler: actions::clean_handler(),
+            },
+            // No chord: reached only through `clean`'s confirmation, which
+            // names it as its `yes_action`.
+            ActionHandlerContribution {
+                action_name: actions::CLEAN_CONFIRMED,
+                handler: actions::clean_confirmed_handler(),
+            },
         ]
     }
 
@@ -347,6 +373,140 @@ fn plugins_keymap_entries() -> &'static [KeymapEntry] {
                 doc: "plugins: force a fresh build of the plugin under the cursor",
                 cmd: "action:plugins-rebuild"
             },
+            // `u` for update: fetch something newer, THEN build it. The
+            // difference from `b` is where the source comes from, not what
+            // happens to it.
+            keymap_entry! {
+                mode: Normal, chord: "u",
+                doc: "plugins: update the plugin under the cursor",
+                cmd: "action:plugins-update"
+            },
+            // The all-scope peers. Uppercase is the view's existing idiom for
+            // "the other scope of this verb" — `t` / `T` already read that
+            // way — so `r`/`R`, `b`/`B`, `u`/`U` and `x`/`X` follow it rather
+            // than inventing a second convention inside one buffer.
+            //
+            // These shadow vim's `u` (undo), `R` (Replace) and `U` (undo-line)
+            // in this buffer, which costs nothing: `*plugins*` is a read-only
+            // synthetic buffer, so there is no edit for undo to reverse and no
+            // text for Replace to overwrite. Shadowing in a mode layer is
+            // scoped to `plugins-mode`-active buffers by the per-keystroke
+            // filter, so vim's meanings are untouched everywhere else.
+            keymap_entry! {
+                mode: Normal, chord: "R",
+                doc: "plugins: reload every loaded plugin",
+                cmd: "action:plugins-reload-all"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "B",
+                doc: "plugins: rebuild every loaded plugin from source",
+                cmd: "action:plugins-rebuild-all"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "U",
+                doc: "plugins: update every loaded plugin",
+                cmd: "action:plugins-update-all"
+            },
+            // `x` unloads the row; `X` cleans everything unused. Confirmed
+            // before it runs — the only verb in this view that deletes files.
+            keymap_entry! {
+                mode: Normal, chord: "X",
+                doc: "plugins: remove staged plugin directories nothing loads any more",
+                cmd: "action:plugins-clean"
+            },
         ]
     })
+}
+
+/// The wiring between the three halves of a mode-owned chord: the keymap entry
+/// names a command, `register_actions` registers that command, and
+/// `action_handlers` supplies the body that intercepts it.
+///
+/// `actions.rs` has claimed since PL8.H.3 that this is "pinned by
+/// `keymap_cmds_have_registered_handlers`". It was not — no such test existed
+/// anywhere in the workspace — so a chord could name a command nobody
+/// registered, or one with no handler behind it, and the only symptom would be
+/// a key that does nothing while `:describe-key` happily agrees it is bound.
+#[cfg(test)]
+mod wiring_tests {
+    use super::*;
+    use lattice_grammar::CommandRegistry;
+    use lattice_mode::Mode;
+    use std::collections::HashSet;
+
+    fn registered_action_names() -> HashSet<String> {
+        let mut commands = CommandRegistry::new();
+        actions::register_actions(&mut commands);
+        commands.names().map(|n| n.to_string()).collect()
+    }
+
+    fn handler_names() -> HashSet<String> {
+        PluginManagerMode
+            .action_handlers()
+            .into_iter()
+            .map(|c| c.action_name.to_string())
+            .collect()
+    }
+
+    fn keymap_commands() -> Vec<&'static str> {
+        plugins_keymap_entries()
+            .iter()
+            .filter_map(|e| e.command)
+            .collect()
+    }
+
+    #[test]
+    fn every_keymap_cmd_is_a_registered_action() {
+        let registered = registered_action_names();
+        for cmd in keymap_commands() {
+            assert!(
+                registered.contains(cmd),
+                "`{cmd}` is bound to a chord but never registered — the chord \
+                 resolves to nothing and says so nowhere"
+            );
+        }
+    }
+
+    #[test]
+    fn every_keymap_cmd_has_a_handler_body() {
+        let handlers = handler_names();
+        for cmd in keymap_commands() {
+            assert!(
+                handlers.contains(cmd),
+                "`{cmd}` is bound and registered but has no handler — it would \
+                 fall through to the dead body and do nothing"
+            );
+        }
+    }
+
+    /// The confirmation's yes-half is deliberately chordless: it is reached
+    /// only through `Effect::Confirm`, carrying the names the prompt named. It
+    /// still needs to be registered AND handled, which is exactly the pair a
+    /// chordless action is easiest to forget.
+    #[test]
+    fn the_confirmed_clean_half_is_wired_but_unbound() {
+        assert!(registered_action_names().contains(actions::CLEAN_CONFIRMED));
+        assert!(handler_names().contains(actions::CLEAN_CONFIRMED));
+        assert!(
+            !keymap_commands().contains(&actions::CLEAN_CONFIRMED),
+            "the yes-half must not be reachable by a keystroke: pressing it \
+             directly would delete without asking"
+        );
+    }
+
+    /// The view's scope idiom: lowercase acts on the row, uppercase on every
+    /// row. `t`/`T` already read that way; a gap in the set is the silent kind
+    /// of bug — nobody notices the one chord that was never added.
+    #[test]
+    fn every_row_verb_with_an_all_scope_peer_has_both_chords() {
+        let bound: HashSet<&str> = plugins_keymap_entries().iter().map(|e| e.chord).collect();
+        for (row, all) in [("r", "R"), ("b", "B"), ("u", "U"), ("x", "X")] {
+            assert!(bound.contains(row), "the row-scope chord `{row}` is bound");
+            assert!(
+                bound.contains(all),
+                "`{row}` has no all-scope peer `{all}` — the view teaches an \
+                 idiom and then breaks it"
+            );
+        }
+    }
 }

@@ -1642,12 +1642,12 @@ impl PluginLoader {
             .collect()
     }
 
-    /// Rebuild every loaded plugin from the source it already has.
+    /// Run `op` over every loaded plugin, reporting each leg as it starts.
     ///
     /// **Sequential, deliberately.** The obvious reading is that N plugins
-    /// should build concurrently, and it is wrong three times over: `cargo`
-    /// already saturates the machine on its own, so N of them contend rather
-    /// than parallelise (and can exhaust disk — a full build tree is tens of
+    /// should run concurrently, and it is wrong three times over: `cargo`
+    /// already saturates the machine, so N of them contend rather than
+    /// parallelise (and can exhaust the disk — a full build tree is tens of
     /// gigabytes); every leg finishes by reloading, which mutates the shared
     /// registries by copy-on-write RCU, so overlapping legs race to publish;
     /// and a user watching the view wants to read which plugin is building
@@ -1656,64 +1656,82 @@ impl PluginLoader {
     /// A leg's failure never stops the next one — the same rule `install_all`
     /// follows at boot, for the same reason: one broken plugin should cost you
     /// that plugin, not the rest.
-    pub async fn rebuild_all(&self) -> BulkReport {
+    ///
+    /// `on_leg(done, total, name)` fires BEFORE each leg runs, which is what
+    /// lets the `:plugins` view say which plugin it is on rather than only
+    /// what it finished. A caller with nothing to show passes a no-op.
+    pub async fn run_bulk(
+        &self,
+        op: BulkOp,
+        on_leg: &(dyn Fn(usize, usize, &str) + Send + Sync),
+    ) -> BulkReport {
+        let targets = self.bulk_targets();
+        let total = targets.len();
         let mut report = BulkReport::default();
-        for (name, source) in self.bulk_targets() {
-            let leg = if source.is_buildable() {
-                match self.rebuild(&name).await {
-                    Ok(()) => BulkLeg::Done,
-                    Err(why) => BulkLeg::Failed(why),
-                }
-            } else {
-                // Bundled ships prebuilt; Unknown has nowhere to build from.
-                BulkLeg::Skipped(format!("no buildable source ({})", source.label()))
-            };
+        for (done, (name, source)) in targets.into_iter().enumerate() {
+            on_leg(done, total, &name);
+            let leg = self.run_leg(op, &name, &source).await;
             report.legs.push((name, leg));
         }
         report
     }
 
-    /// Update every loaded plugin: bring each source up to date, rebuild,
-    /// reload.
+    /// One plugin's leg of a bulk run.
     ///
-    /// Sequential for [`Self::rebuild_all`]'s reasons. A pinned plugin is
-    /// `Skipped`, not `Failed` — see [`BulkLeg`].
-    pub async fn update_all(&self) -> BulkReport {
-        let mut report = BulkReport::default();
-        for (name, source) in self.bulk_targets() {
-            let leg = if let Some(why) = update_refusal(&name, source.as_plugin_source().as_ref()) {
-                BulkLeg::Skipped(why)
-            } else if !source.is_buildable() && !matches!(source, SourceRecord::Prebuilt { .. }) {
-                BulkLeg::Skipped(format!("no updatable source ({})", source.label()))
-            } else {
-                match self.update(&name).await {
-                    Ok(()) => BulkLeg::Done,
-                    Err(why) => BulkLeg::Failed(why),
-                }
-            };
-            report.legs.push((name, leg));
-        }
-        report
-    }
-
-    /// Re-instantiate every loaded plugin from the artifact already on disk.
-    ///
-    /// No build and no network — the cheap one of the three. Still sequential:
-    /// the registry RCU reason from [`Self::rebuild_all`] applies on its own.
-    pub async fn reload_all(&self) -> BulkReport {
-        let mut report = BulkReport::default();
-        for (name, _) in self.bulk_targets() {
-            let leg = match self.reload(&name, TrustTier::UserInstalled).await {
+    /// The skip arms are what keeps `op` honest about scope: a bundled plugin
+    /// has nothing to build from and a pinned one has nothing to update to, and
+    /// neither is a failure the user should go looking into.
+    async fn run_leg(&self, op: BulkOp, name: &str, source: &SourceRecord) -> BulkLeg {
+        match op {
+            BulkOp::Reload => match self.reload(name, TrustTier::UserInstalled).await {
                 Ok(_) => BulkLeg::Done,
                 // `error_chain`, not `to_string`: a reload failure is almost
                 // always reported by an inner cause (a missing artifact, a
                 // trap at instantiation), and the outer layer alone says
                 // nothing actionable.
                 Err(why) => BulkLeg::Failed(error_chain(&why)),
-            };
-            report.legs.push((name, leg));
+            },
+            BulkOp::Rebuild => {
+                if !source.is_buildable() {
+                    // Bundled ships prebuilt; Unknown has nowhere to build from.
+                    return BulkLeg::Skipped(format!("no buildable source ({})", source.label()));
+                }
+                match self.rebuild(name).await {
+                    Ok(()) => BulkLeg::Done,
+                    Err(why) => BulkLeg::Failed(why),
+                }
+            }
+            BulkOp::Update => {
+                if let Some(why) = update_refusal(name, source.as_plugin_source().as_ref()) {
+                    return BulkLeg::Skipped(why);
+                }
+                if !source.is_buildable() && !matches!(source, SourceRecord::Prebuilt { .. }) {
+                    return BulkLeg::Skipped(format!("no updatable source ({})", source.label()));
+                }
+                match self.update(name).await {
+                    Ok(()) => BulkLeg::Done,
+                    Err(why) => BulkLeg::Failed(why),
+                }
+            }
         }
-        report
+    }
+
+    /// Rebuild every loaded plugin from the source it already has, then reload
+    /// each. See [`Self::run_bulk`].
+    pub async fn rebuild_all(&self) -> BulkReport {
+        self.run_bulk(BulkOp::Rebuild, &|_, _, _| {}).await
+    }
+
+    /// Update every loaded plugin: bring each source up to date, rebuild,
+    /// reload. Pinned plugins are skipped. See [`Self::run_bulk`].
+    pub async fn update_all(&self) -> BulkReport {
+        self.run_bulk(BulkOp::Update, &|_, _, _| {}).await
+    }
+
+    /// Re-instantiate every loaded plugin from the artifact already on disk —
+    /// no build, no network. See [`Self::run_bulk`].
+    pub async fn reload_all(&self) -> BulkReport {
+        self.run_bulk(BulkOp::Reload, &|_, _, _| {}).await
     }
 
     /// Staged plugin directories that nothing this session claims — what
@@ -1783,11 +1801,7 @@ impl PluginLoader {
         };
         let this = Arc::clone(self);
         runtime.spawn(async move {
-            let report = match op {
-                BulkOp::Rebuild => this.rebuild_all().await,
-                BulkOp::Reload => this.reload_all().await,
-                BulkOp::Update => this.update_all().await,
-            };
+            let report = this.run_bulk(op, &|_, _, _| {}).await;
             for (name, why) in report.failures() {
                 tracing::warn!(plugin = %name, error = %why, ?op, "bulk plugin operation failed");
             }

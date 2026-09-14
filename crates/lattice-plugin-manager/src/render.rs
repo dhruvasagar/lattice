@@ -89,7 +89,29 @@ pub fn render_status(plugins: &[PluginStatus]) -> String {
 /// made the reported failure take a debugging session — org was absent, and
 /// absent looks the same either way.
 pub fn render_status_with_failures(plugins: &[PluginStatus], failed: &[FailedLoad]) -> String {
-    let mut out = format!("# Plugins ({} loaded)\n\n", plugins.len());
+    render_status_full(plugins, failed, None)
+}
+
+/// [`render_status_with_failures`] with a bulk run's progress on the title
+/// line.
+///
+/// **On the title line, and not a line of its own**, because the
+/// interactivity layer maps `cursor.line - HEADER_LINES` into the plugin list:
+/// an extra header row would silently put every chord on the wrong plugin, and
+/// it would do so only while a bulk run was in flight — a bug that appears and
+/// disappears. Widening a line the header already has costs the mapping
+/// nothing.
+///
+/// This is the view-header surface the async-buffer rule asks for: a bulk run
+/// says where it is in the buffer the user is looking at, not in the status
+/// line and not as a notification.
+pub fn render_status_full(
+    plugins: &[PluginStatus],
+    failed: &[FailedLoad],
+    progress: Option<&str>,
+) -> String {
+    let note = progress.map(|p| format!(" — {p}")).unwrap_or_default();
+    let mut out = format!("# Plugins ({} loaded){note}\n\n", plugins.len());
     if plugins.is_empty() {
         out.push_str("No plugins are loaded. Load one with `:plugin-load <path>`.\n");
         out.push_str(&failures_section(failed));
@@ -413,6 +435,46 @@ mod tests {
         assert!(
             lines[HEADER_LINES].contains("first"),
             "the first plugin row lands at line HEADER_LINES"
+        );
+    }
+
+    /// The progress note goes ON the title line, so the header stays exactly
+    /// three lines and the cursor → plugin mapping is unchanged while a bulk
+    /// run is in flight.
+    ///
+    /// An extra header row would put every chord on the wrong plugin, and only
+    /// for the duration of the run — a bug that appears and disappears, which
+    /// is the worst kind to be handed a report about.
+    #[test]
+    fn a_progress_note_widens_the_title_without_adding_a_line() {
+        let plugins = [status("first", TrustTier::Bundled, PluginHealth::Healthy)];
+        let out = render_status_full(&plugins, &[], Some("updating 1/3 (org)…"));
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(
+            lines[0].starts_with("# Plugins"),
+            "line 0 is still the title"
+        );
+        assert!(
+            lines[0].contains("updating 1/3 (org)…"),
+            "the note rides the title: {:?}",
+            lines[0]
+        );
+        assert!(lines[1].is_empty(), "line 1 is still blank");
+        assert!(
+            lines[HEADER_LINES].contains("first"),
+            "the first plugin row is still at line HEADER_LINES: {:?}",
+            lines[HEADER_LINES]
+        );
+    }
+
+    /// No run in flight, no note — and byte-identical to the plain render, so
+    /// clearing progress cannot leave a stray separator behind.
+    #[test]
+    fn no_progress_note_renders_exactly_the_plain_header() {
+        let plugins = [status("first", TrustTier::Bundled, PluginHealth::Healthy)];
+        assert_eq!(
+            render_status_full(&plugins, &[], None),
+            render_status(&plugins)
         );
     }
 

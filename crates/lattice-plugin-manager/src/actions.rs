@@ -24,7 +24,7 @@ use lattice_grammar::registry::ActionSpec;
 use lattice_grammar::{CommandRegistry, EchoLevel, Effect};
 use lattice_mode::{ActionContext, ActionHandler, BufferStoreHandle};
 use lattice_plugin_host::{PluginTracerHandle, TrustTier};
-use lattice_plugin_loader::PluginLoaderHandle;
+use lattice_plugin_loader::{BulkOp, PluginLoaderHandle};
 
 use crate::render::{self, HEADER_LINES};
 
@@ -39,6 +39,19 @@ pub const TRACE: &str = "action:plugins-trace";
 pub const TRACE_LEVEL: &str = "action:plugins-trace-level";
 /// PM.8b: force a fresh build of the plugin under the cursor.
 pub const REBUILD: &str = "action:plugins-rebuild";
+/// The row verb that goes and gets something newer first.
+pub const UPDATE: &str = "action:plugins-update";
+/// The all-scope peers of `r` / `b` / `u`. Uppercase is the view's existing
+/// idiom for "the other scope of this verb" (`t` / `T` already read that way).
+pub const RELOAD_ALL: &str = "action:plugins-reload-all";
+pub const REBUILD_ALL: &str = "action:plugins-rebuild-all";
+pub const UPDATE_ALL: &str = "action:plugins-update-all";
+/// `X` — remove staged directories nothing loads any more. Confirmed before it
+/// runs, because it is the only verb here that deletes anything.
+pub const CLEAN: &str = "action:plugins-clean";
+/// The yes-half of [`CLEAN`]'s confirmation. Never bound to a chord: it is
+/// reached only through `Effect::Confirm`, carrying the names the prompt named.
+pub const CLEAN_CONFIRMED: &str = "action:plugins-clean-confirmed";
 
 /// Register the four `action:plugins-*` commands (dead-body — the mode's handler
 /// closures do the work) so the keymap's `cmd:` names resolve at boot. The
@@ -69,6 +82,30 @@ pub fn register_actions(commands: &mut CommandRegistry) {
         (
             REBUILD,
             "plugins: force a fresh build of the plugin under the cursor (mode-owned).",
+        ),
+        (
+            UPDATE,
+            "plugins: update the plugin under the cursor — fetch, rebuild, reload (mode-owned).",
+        ),
+        (
+            RELOAD_ALL,
+            "plugins: reload every loaded plugin (mode-owned).",
+        ),
+        (
+            REBUILD_ALL,
+            "plugins: rebuild every loaded plugin from source (mode-owned).",
+        ),
+        (
+            UPDATE_ALL,
+            "plugins: update every loaded plugin (mode-owned).",
+        ),
+        (
+            CLEAN,
+            "plugins: remove staged plugin directories nothing loads any more (mode-owned).",
+        ),
+        (
+            CLEAN_CONFIRMED,
+            "plugins: the confirmed half of clean — not bound to a chord (mode-owned).",
         ),
     ] {
         commands.register_action(
@@ -184,6 +221,191 @@ pub fn rebuild_handler() -> ActionHandler {
         Some(Effect::Echo {
             level: EchoLevel::Info,
             text: format!("rebuilding `{name}`…"),
+        })
+    })
+}
+
+/// `u` — update the plugin under the cursor: bring its source up to date,
+/// rebuild, reload.
+///
+/// The difference from `b` (rebuild) is where the source comes from, not what
+/// happens to it: rebuild compiles what is already on disk, update fetches
+/// first. A pinned plugin declines and says so — the loader's arm table owns
+/// that decision, not this handler.
+pub fn update_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let name = plugin_name_at(ctx)?;
+        let loader = ctx.services.get::<PluginLoaderHandle>()?;
+        let store = ctx.services.get::<BufferStoreHandle>()?;
+        let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return Some(Effect::Echo {
+                level: EchoLevel::Error,
+                text: "no runtime available to update on".to_string(),
+            });
+        };
+        let name_c = name.clone();
+        runtime.spawn(async move {
+            let result = loader.update(&name_c).await;
+            // Re-render either way: success flips BUILD back to `cached`,
+            // failure reads `build-failed`, and a decline leaves the row as it
+            // was — all three are the answer the user pressed `u` to get.
+            if let Some(handle) = store.handle_for(buffer_id) {
+                let text = render::render_status_with_failures(
+                    &loader.plugin_status(),
+                    &loader.failed_loads(),
+                );
+                crate::mode::write_all(&handle, text).await;
+            }
+            match result {
+                Ok(()) => tracing::info!(plugin = %name_c, "plugin updated"),
+                Err(error) => tracing::warn!(plugin = %name_c, %error, "plugin update failed"),
+            }
+        });
+        Some(Effect::Echo {
+            level: EchoLevel::Info,
+            text: format!("updating `{name}`…"),
+        })
+    })
+}
+
+/// `R` / `B` / `U` — the all-scope peers, one handler body over [`BulkOp`].
+///
+/// Re-renders BETWEEN legs, not only at the end, and that is the feature: a
+/// bulk rebuild is minutes of `cargo`, so a view that only updated when the
+/// whole run finished would sit still for the entire time it mattered. Each
+/// leg's start repaints the title with `updating 3/7 (org)…` and the row it is
+/// working on flips to `building…` — the async-buffer rule's headerline
+/// surface, in the buffer the user is already looking at.
+fn bulk_handler(op: BulkOp, progressive: &'static str) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let loader = ctx.services.get::<PluginLoaderHandle>()?;
+        let store = ctx.services.get::<BufferStoreHandle>()?;
+        let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return Some(Effect::Echo {
+                level: EchoLevel::Error,
+                text: format!("no runtime available to {progressive} on"),
+            });
+        };
+        runtime.spawn(async move {
+            let repaint = |note: Option<String>| {
+                let text = render::render_status_full(
+                    &loader.plugin_status(),
+                    &loader.failed_loads(),
+                    note.as_deref(),
+                );
+                crate::mode::spawn_write(&store, buffer_id, text);
+            };
+            let report = loader
+                .run_bulk(op, &|done, total, name| {
+                    repaint(Some(format!(
+                        "{progressive} {}/{total} ({name})…",
+                        done + 1
+                    )));
+                })
+                .await;
+            // Clear the note on the way out: a title still claiming to be
+            // updating after the run finished is the kind of stuck indicator
+            // users stop trusting.
+            repaint(None);
+            for (name, why) in report.failures() {
+                tracing::warn!(plugin = %name, error = %why, "bulk plugin operation failed");
+            }
+            tracing::info!(summary = %report.summary(past_tense(op)), "bulk plugin operation done");
+        });
+        Some(Effect::Echo {
+            level: EchoLevel::Info,
+            text: format!("{progressive} all plugins…"),
+        })
+    })
+}
+
+/// The word a finished bulk run counts with.
+///
+/// Duplicated from the loader's private peer rather than exported: it is one
+/// word per variant, and widening the loader's public surface to share three
+/// strings buys less than it costs.
+fn past_tense(op: BulkOp) -> &'static str {
+    match op {
+        BulkOp::Rebuild => "rebuilt",
+        BulkOp::Reload => "reloaded",
+        BulkOp::Update => "updated",
+    }
+}
+
+pub fn reload_all_handler() -> ActionHandler {
+    bulk_handler(BulkOp::Reload, "reloading")
+}
+
+pub fn rebuild_all_handler() -> ActionHandler {
+    bulk_handler(BulkOp::Rebuild, "rebuilding")
+}
+
+pub fn update_all_handler() -> ActionHandler {
+    bulk_handler(BulkOp::Update, "updating")
+}
+
+/// `X` — ask before removing staged directories nothing loads any more.
+///
+/// The confirmation carries the NAMES, not a cursor position or a count, so
+/// the thing the user agreed to is the thing that gets deleted (effect.rs,
+/// IX.1). Between the prompt appearing and `y` being pressed a plugin can
+/// finish loading; re-deriving the list afterwards would delete the one that
+/// just arrived.
+///
+/// One `Args::String` rather than one argument per name: a confirm's payload
+/// is truncated to the action's declared arity, so a variadic list has to
+/// travel in a single slot.
+pub fn clean_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let loader = ctx.services.get::<PluginLoaderHandle>()?;
+        let removable = loader.removable_plugin_dirs();
+        if removable.is_empty() {
+            return Some(Effect::Echo {
+                level: EchoLevel::Info,
+                text: "nothing to clean".to_string(),
+            });
+        }
+        let names: Vec<String> = removable.into_iter().map(|(n, _)| n).collect();
+        Some(Effect::Confirm {
+            prompt: format!(
+                "Remove {} staged plugin director{} ({})?",
+                names.len(),
+                if names.len() == 1 { "y" } else { "ies" },
+                names.join(", ")
+            ),
+            yes_action: CLEAN_CONFIRMED.to_string(),
+            args: lattice_grammar::Args::String(names.join(",")),
+        })
+    })
+}
+
+/// The yes-half of [`clean_handler`]. Reached only through the confirmation,
+/// carrying the names it named.
+pub fn clean_confirmed_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let loader = ctx.services.get::<PluginLoaderHandle>()?;
+        let lattice_grammar::Args::String(packed) = &ctx.args else {
+            return Some(Effect::Echo {
+                level: EchoLevel::Error,
+                text: "clean: no plugins named in the confirmation".to_string(),
+            });
+        };
+        let names: Vec<String> = packed
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        let report = loader.clean(&names);
+        for (name, why) in report.failures() {
+            tracing::warn!(plugin = %name, error = %why, "plugin clean failed");
+        }
+        refresh(ctx);
+        Some(Effect::Echo {
+            level: EchoLevel::Info,
+            text: report.summary("removed"),
         })
     })
 }

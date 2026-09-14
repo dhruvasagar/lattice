@@ -72,13 +72,15 @@ component-model language (Go, JS, Zig, Python, ...) calls these directly. The
 Rust `lattice-plugin-sdk` `#[derive(PluginOption)]` (PH7.10b) is optional
 ergonomics that expands to these same calls; it adds no capability not here.
 
-### Functions (6)
+### Functions (8)
 
 - `get-option` — Read an option's current value, formatted as a string (the `OptionType`
 - `get-option-value` — Read an option's current value as a tree. `none` if no option by that
+- `option-diagnostic` — **Did the last assignment to `name` fail, and what did it say?**
 - `register-option` — Declare a plugin option into the editor's `ConfigRegistry`. `default` is
 - `register-structured-option` — Declare an option whose value has structure. The schema-taking peer of
 - `set-option` — Set (override) an EXISTING option's value (CI.7) — the init.rs config
+- `set-option-in-buffer` — Set an option for ONE buffer — the `:setlocal` front-end, and the call a
 - `set-option-value` — Set an option from a tree. Validated against the option's declared
 
 ## context  (guest implements this interface, capability: none (pure data / dispatch))

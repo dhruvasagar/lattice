@@ -98,4 +98,4 @@ the rows and act on those instead.
 ## See also
 
 - [`scan-view-mode`](help:scan-view-mode) — the views this report appears on.
-- [`org-mode`](help:org-mode) — clocking in and out of a headline.
+- [`org`](help:org) — clocking in and out of a headline.

@@ -30,7 +30,7 @@ line in the status buffer expands its diff on the first press, which is what
 ## Activation
 
 Manual, never automatic. In an ordinary file `<Tab>` is the terminal's name for
-`<C-i>` — [jump forward](help:jumps) through the jump list — and that must keep
+`<C-i>` — [jump forward](help:buffers) through the jump list — and that must keep
 working, so this mode attaches only to the generated views that opt in.
 
 The trade is deliberate: inside one of those views, `<Tab>` folds rather than

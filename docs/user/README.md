@@ -54,6 +54,7 @@ same surface).
 | Oil (editable directory)   | [`oil-mode`](help:oil-mode)              | ✅      |
 |   — listing presentation   | [`directory-listing-mode`](help:directory-listing-mode) | ✅      |
 | Tables (markdown + org)    | [`table-mode`](help:table-mode)          | ✅      |
+| Org files                  | [`org`](help:org)                        | ✅      |
 | Multibuffer views          | [`multibuffer-mode`](help:multibuffer-mode) | ✅      |
 |   — `gr` refresh          | [`refreshable-view-mode`](help:refreshable-view-mode) | ✅      |
 |   — `<Tab>` fold a block   | [`foldable-view-mode`](help:foldable-view-mode) | ✅      |
@@ -115,6 +116,8 @@ same surface).
 | Picker & marginalia        | [`picker`](help:picker)                  | ✅      |
 | Options and configuration  | [`options`](help:options)                | ✅      |
 | When a key does nothing    | [`troubleshooting-keys`](help:troubleshooting-keys) | ✅      |
+| Key hints as you type      | [`which-key-mode`](help:which-key-mode)  | ✅      |
+| Formatting                 | [`formatting`](help:formatting)          | ✅      |
 | LSP                        | [`lsp`](help:lsp)                        | ✅      |
 | `lsp-mode`                 | [`lsp-mode`](help:lsp-mode)              | ✅      |
 |   — subsystem log          | [`lsp-log-mode`](help:lsp-log-mode) | ✅      |

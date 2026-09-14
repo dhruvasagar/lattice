@@ -169,6 +169,7 @@ pub mod lsp_watcher;
 pub mod mode_action_handlers;
 pub mod modeline;
 pub mod modes;
+pub mod mouse;
 pub mod oil;
 pub mod pane;
 // PBH.1: per-pane buffer history (`<C-6>` / `<C-7>`). Design:

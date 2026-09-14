@@ -207,6 +207,31 @@ pub enum Action {
     GotoNextFold,
     /// Vim's `zk` -- move cursor to the end of the previous fold.
     GotoPrevFold,
+    /// MO.2: the wheel turned over `pane`.
+    ///
+    /// The pane under the POINTER scrolls, and it does not take focus —
+    /// the convention vim (`mousescroll`), Zed and Helix share, and the
+    /// one that makes a wheel over a reference split usable while you
+    /// are typing in another.
+    MouseScroll {
+        pane: lattice_core::ui::pane::PaneId,
+        down: bool,
+    },
+    /// MO.2: a press or drag resolved to a buffer position in `pane`.
+    ///
+    /// The renderer has already inverted its own geometry; this carries
+    /// a buffer coordinate and nothing about the screen. `extend` is
+    /// what separates the two gestures: a press moves the cursor and
+    /// leaves any Visual selection behind, a drag keeps the press's
+    /// anchor and extends charwise Visual to here. Unlike scroll, this
+    /// DOES focus the pane — clicking into a split is how you move to
+    /// it.
+    MouseGoto {
+        pane: lattice_core::ui::pane::PaneId,
+        line: u32,
+        byte: u32,
+        extend: bool,
+    },
     /// Vim's `zi` -- toggle [`App::foldenable`]. With folds disabled
     /// every line renders flat regardless of any closed flag.
     ToggleFoldEnable,

@@ -2784,6 +2784,13 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::CycleFoldsGlobal => editor.do_cycle_folds_global(),
         Action::GotoParentFold => editor.do_goto_parent_fold(),
         Action::DeleteFoldAtCursor => editor.do_delete_fold_at_cursor(),
+        Action::MouseScroll { pane, down } => editor.do_mouse_scroll(pane, down),
+        Action::MouseGoto {
+            pane,
+            line,
+            byte,
+            extend,
+        } => editor.do_mouse_goto(pane, line, byte, extend),
         Action::GotoNextFold => editor.do_goto_fold(true),
         Action::GotoPrevFold => editor.do_goto_fold(false),
         Action::StartMacroRecord(reg) => editor.do_start_macro_record(reg),
@@ -22135,6 +22142,137 @@ impl Editor {
                 f.closed = true;
             }
         }
+    }
+
+    /// MO.2: the wheel over `pane` — scroll it WITHOUT taking focus.
+    ///
+    /// Focus staying put is the convention vim (`mousescroll`), Zed and
+    /// Helix share, and it is the behaviour that makes a wheel over a
+    /// reference split usable while you are typing in another. A click
+    /// is the gesture that moves focus; a wheel is not.
+    ///
+    /// The active pane delegates to [`Self::do_scroll_line`], so mouse
+    /// scrolling inherits `<C-e>` / `<C-y>`'s fold-aware step and its
+    /// cursor-follows-the-viewport clamp rather than restating either.
+    /// An inactive pane has no live cursor to clamp — its position is
+    /// stashed on the leaf — so it moves its own `scroll` through the
+    /// same fold walk, against ITS buffer's folds
+    /// ([`crate::modes::DocumentFolds`]), not the active buffer's.
+    pub fn do_mouse_scroll(&mut self, pane: lattice_core::ui::pane::PaneId, down: bool) {
+        let lines = crate::mouse::MOUSE_SCROLL_LINES;
+        if self.pane_tree.active().id == pane {
+            for _ in 0..lines {
+                self.do_scroll_line(down);
+            }
+            return;
+        }
+        let Some(idx) = self.pane_tree.leaves().iter().position(|p| p.id == pane) else {
+            return;
+        };
+        let buffer_id = self.pane_tree.leaves()[idx].buffer_id;
+        let Some(handle) = self.buffers.document_handle(buffer_id) else {
+            return;
+        };
+        let snapshot = handle.snapshot();
+        let total = snapshot.buffer.content_line_count();
+        let folds = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+            .map(|f| f.0.clone())
+            .unwrap_or_default();
+        let fold_idx = crate::folds::FoldIndex::from_folds(&folds, self.foldenable());
+        let Some(leaf) = self.pane_tree.leaves_mut().get_mut(idx) else {
+            return;
+        };
+        let mut at = leaf.scroll;
+        for _ in 0..lines {
+            at = if down {
+                crate::folds::nth_visible_line_forward(&fold_idx, at, 1, total)
+            } else {
+                crate::folds::nth_visible_line_backward(&fold_idx, at, 1)
+            };
+        }
+        leaf.scroll = at.min(total.saturating_sub(1));
+        // Keep the stashed cursor inside the pane's viewport, the same
+        // clamp `do_scroll_line` applies to the live one — otherwise
+        // focusing this pane later snaps the view back and the scroll
+        // the user just did is silently undone.
+        let bottom = leaf.scroll + leaf.viewport_height.max(1).saturating_sub(1);
+        if leaf.cursor.line < leaf.scroll {
+            leaf.cursor.line = leaf.scroll;
+        } else if leaf.cursor.line > bottom {
+            leaf.cursor.line = bottom;
+        }
+    }
+
+    /// MO.2: a press or drag resolved to a buffer position.
+    ///
+    /// Focuses `pane` first when it is not the active one — clicking
+    /// into a split is how you move to it, which is the half of the
+    /// gesture `do_mouse_scroll` deliberately does not do.
+    ///
+    /// `extend` is the whole difference between the two gestures, and
+    /// selection is **Visual mode**, not a parallel concept: a drag ends
+    /// with the region live in `ModalState::Visual(Charwise)`, so `d`,
+    /// `y` and every operator work on it with no new machinery. That is
+    /// the design's "Visual mode IS the active region" taken literally.
+    /// A plain press leaves Visual, which is what a click means
+    /// everywhere else.
+    pub fn do_mouse_goto(
+        &mut self,
+        pane: lattice_core::ui::pane::PaneId,
+        line: u32,
+        byte: u32,
+        extend: bool,
+    ) {
+        use lattice_grammar::{ModalState, VisualKind};
+        use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+
+        if self.pane_tree.active().id != pane {
+            let Some(idx) = self.pane_tree.leaves().iter().position(|p| p.id == pane) else {
+                return;
+            };
+            self.activate_pane(idx);
+        }
+
+        // Clamp into the buffer rather than trusting the renderer's
+        // arithmetic: a click past the last row is an ordinary gesture
+        // (terminals report a column for every cell, including the blank
+        // ones), not a bug to propagate into a cursor.
+        let snapshot = self.document.snapshot();
+        let last = snapshot.buffer.content_line_count().saturating_sub(1);
+        let line = line.min(last);
+        let byte = byte.min(snapshot.buffer.line(line).unwrap_or_default().len() as u32);
+        let head = lattice_protocol::position::Position::new(line, byte);
+
+        if extend {
+            // The anchor is whatever the press established. Taking the
+            // CURRENT cursor when Visual is not yet active is what makes
+            // press-then-drag work without the press having to predict
+            // that a drag is coming.
+            let anchor = self.visual_anchor.unwrap_or(self.cursor);
+            self.modal = ModalState::Visual(VisualKind::Charwise);
+            self.visual_anchor = Some(anchor);
+            self.cursor = head;
+            self.set_selections_blocking(SelectionSet::single(Selection {
+                anchor,
+                head,
+                visual: Some(VisualMode::Charwise),
+            }));
+        } else {
+            if matches!(self.modal, ModalState::Visual(_) | ModalState::Select(_)) {
+                self.modal = ModalState::Normal;
+            }
+            self.visual_anchor = None;
+            self.cursor = head;
+        }
+        // No `snap_cursor_past_closed_folds` here, deliberately: the
+        // renderer resolved this line by inverting the map it painted
+        // with, so it is a row the user can see. Snapping exists for
+        // paths that move the cursor blind to the fold state; applied
+        // here it would move the caret off the line that was clicked.
+        self.ensure_cursor_visible();
     }
 
     /// 5.5.G.1: vim's `zj` (forward) / `zk` (backward) -- jump

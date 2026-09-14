@@ -379,6 +379,11 @@ pub struct App {
     /// GPUI peer reads too. GPUI needs no equivalent: its elements are
     /// real `div`s and the window system does the hit test.
     pub modeline_hits: std::cell::RefCell<lattice_host::modeline::ModelineHitMap>,
+    /// MO.2: this frame's pane bodies, for editor-body mouse
+    /// hit-testing. Same lifecycle as `modeline_hits` beside it —
+    /// recorded during paint, cleared at the top of each frame — so a
+    /// pane that stops painting stops taking clicks.
+    pub pane_hits: std::cell::RefCell<lattice_host::mouse::PaneHitMap>,
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable `Document` (from `lattice-core`);
     /// mutations route through it; reads load a versioned snapshot.

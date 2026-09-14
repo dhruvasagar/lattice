@@ -110,6 +110,7 @@ docs = [
   "architecture/decoration-retention",
   "architecture/owner-write-caret",
   "architecture/gpui-window-chrome",
+  "architecture/mouse",
 ]
 
 [[section]]

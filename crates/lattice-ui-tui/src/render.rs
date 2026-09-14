@@ -334,6 +334,11 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // painter is what makes a pane that stops painting a modeline
     // (closed split, full-screen popup) stop being clickable too.
     app.modeline_hits.borrow_mut().clear();
+    // MO.2: same contract as the modeline map above — last frame's pane
+    // rects describe a layout about to be overwritten, and clearing here
+    // is what makes a pane that stops painting (closed split) stop taking
+    // clicks.
+    app.pane_hits.borrow_mut().clear();
     // Vertico-style layout (DESIGN.md §5.11.3, §5.9.7): when the
     // cmdline completion popup OR the picker is open in
     // minibuffer mode, an extra row band sits below the cmdline
@@ -3018,6 +3023,25 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         // Mode-driven dispatch (each major mode contributes its
         // own draw fn) replaces the helper-side match in a
         // follow-up.
+        // MO.2: record this pane's painted body for mouse hit-testing,
+        // beside the paint rather than derived from the layout later —
+        // the `ModelineHitMap` rule, and for the same reason: a second
+        // computation of the layout is free to disagree with the one on
+        // screen, and the symptom is a click landing in the wrong pane.
+        // `content_rect` excludes the status footer, so a click there is
+        // not a click in the buffer.
+        app.pane_hits
+            .borrow_mut()
+            .push(lattice_host::mouse::PaneHitZone {
+                pane_id: pane.id,
+                buffer_id: pane.buffer_id,
+                x: content_rect.x,
+                y: content_rect.y,
+                width: content_rect.width,
+                height: content_rect.height,
+                text_left: pane_text_left(app, &pane, is_active, content_rect),
+                scroll: pane.scroll,
+            });
         draw_pane_content(frame, content_rect, app, snap, &pane, is_active, idx);
         if let Some(sr) = status_rect {
             draw_pane_status_line(frame, sr, app, &pane, is_active);
@@ -4466,6 +4490,53 @@ pub fn compose_visible_lines(
 /// pre-merge path (pinned by `dr3_active_pane_compose_characterization`):
 /// for the active pane `ctx.buffer_id == app.ad().document_buffer_id`,
 /// so the per-buffer decoration sourcing resolves the same id.
+/// Columns the gutter occupies before the first text cell.
+///
+/// Extracted so the compose loop, the caret walk and MO.2's mouse hit
+/// map all read ONE expression. Four inputs feed it (line count,
+/// `number`, the trailing-pad rule, the centring pad) and each extra
+/// copy is a chance for the body, the caret and a click to land in three
+/// different columns — which is the bug class the `2`-vs-`GUTTER_TRAILING_PAD`
+/// comment below records, from back when there were two copies.
+fn gutter_cols(view: &FrameView<'_>, total_lines: u32) -> u32 {
+    (if view.show_line_numbers {
+        gutter_width(total_lines)
+    } else {
+        // `:set nonumber` still paints a gutter — `format_gutter_cell`
+        // ALWAYS emits its three trailing cells (separator + fold-glyph
+        // slot + gap), so the width must cover them. `2` here made
+        // `saturating_sub(label_cols + 3)` clamp to zero and the cell
+        // came out 3 cells wide against a declared width of 2: the body
+        // painted one column right of where every arithmetic consumer
+        // thought it was, and the caret landed a cell to its LEFT — on
+        // the last character instead of after it. Same class as the `↪`
+        // fix in `format_gutter_cell`, opposite direction.
+        GUTTER_TRAILING_PAD
+    })
+    // DB.4: horizontal centring widens the gutter (content + cursor shift
+    // right); 0 for non-centred buffers.
+    + view.content_left_pad
+}
+
+/// MO.2: the column a pane's text starts at, for the mouse hit map.
+///
+/// The gutter plus the sign columns — the same two terms the compose
+/// loop subtracts from the pane width to get its body width, read
+/// through the same helpers, so a click and a glyph agree on where
+/// column 0 is.
+fn pane_text_left(app: &App, pane: &crate::pane::PaneState, is_active: bool, rect: Rect) -> u16 {
+    let Some(handle) = app.buffers().registry.document_handle(pane.buffer_id) else {
+        return 0;
+    };
+    let total_lines = handle.snapshot().buffer.content_line_count();
+    let (view, _ctx) = pane_compose_inputs(app, pane, is_active);
+    let cols = gutter_cols(&view, total_lines) + sign_columns_width(&view);
+    // Clamped into the pane: a gutter wider than the pane cannot leave a
+    // text origin outside it, and an out-of-range `text_left` would make
+    // every cell in the pane read as gutter.
+    cols.min(rect.width as u32) as u16
+}
+
 pub(crate) fn compose_pane_lines(
     view: &FrameView<'_>,
     snap: &DocumentSnapshot,
@@ -4501,23 +4572,7 @@ pub(crate) fn compose_pane_lines(
     // ropey's line API and pull only the visible window. A 100MB
     // log file should cost the same per-frame as a 100-line file.
     let total_lines = snap.buffer.content_line_count();
-    let gutter_w = (if view.show_line_numbers {
-        gutter_width(total_lines)
-    } else {
-        // `:set nonumber` still paints a gutter — `format_gutter_cell`
-        // ALWAYS emits its three trailing cells (separator + fold-glyph
-        // slot + gap), so the width must cover them. `2` here made
-        // `saturating_sub(label_cols + 3)` clamp to zero and the cell
-        // came out 3 cells wide against a declared width of 2: the body
-        // painted one column right of where every arithmetic consumer
-        // thought it was, and the caret landed a cell to its LEFT — on
-        // the last character instead of after it. Same class as the `↪`
-        // fix in `format_gutter_cell`, opposite direction.
-        GUTTER_TRAILING_PAD
-    })
-    // DB.4: horizontal centring widens the gutter (content + cursor shift
-    // right); 0 for non-centred buffers.
-    + view.content_left_pad;
+    let gutter_w = gutter_cols(view, total_lines);
     // Severity column is prepended (Phase 4.1.d.iii); reserve
     // one cell so buffer width stays correct. D.3.d.1: diff
     // sign column sits between severity and gutter, costs one

@@ -127,6 +127,7 @@ impl App {
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
             modeline_hits: std::cell::RefCell::new(lattice_host::modeline::ModelineHitMap::new()),
+            pane_hits: std::cell::RefCell::new(lattice_host::mouse::PaneHitMap::new()),
         };
         // App-side post-actor setup: rebuild the cached TUI theme
         // from the freshly-published `render_state.theme`. Reads

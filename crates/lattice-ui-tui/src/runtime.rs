@@ -450,17 +450,53 @@ fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut O
         // (modeline.md §6, §9). No per-element handler, and no new
         // `Action` variant.
         Event::Mouse(m) => {
-            if !matches!(
-                m.kind,
-                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
-            ) {
-                return;
-            }
-            let hit = app.modeline_hits.borrow().hit(m.column, m.row);
-            if let Some(command) = hit {
+            use crossterm::event::{MouseButton, MouseEventKind};
+            // The modeline claims a left-press before the body sees it:
+            // its zones sit on the pane's status row, which is outside
+            // every `PaneHitZone` (those cover `content_rect` only), so
+            // the two maps cannot both answer — but asking the modeline
+            // first keeps that a property of the code and not only of
+            // the geometry.
+            let modeline_hit = if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+                // Bound out of the `if` so the `RefCell` borrow ends
+                // before `app.apply` takes `&mut app`.
+                app.modeline_hits.borrow().hit(m.column, m.row)
+            } else {
+                None
+            };
+            if let Some(command) = modeline_hit {
                 app.apply(Action::Invoke(lattice_grammar::CommandInvocation::of(
                     command,
                 )));
+                if perf_input {
+                    *last_input_at = Some(Instant::now());
+                }
+                return;
+            }
+            // MO.2: the editor body. `resolve` answers `None` for a cell
+            // no pane painted (the `:` line, a status row, the gap
+            // between splits), which is how those stay inert.
+            let resolved = app.pane_hits.borrow().resolve(m.column, m.row);
+            let Some(hit) = resolved else {
+                return;
+            };
+            let action = match m.kind {
+                // The wheel scrolls the pane under the POINTER and does
+                // not focus it — vim's `mousescroll`, Zed and Helix all
+                // agree, and it is what makes a wheel over a reference
+                // split usable mid-edit.
+                MouseEventKind::ScrollDown => Some(Action::MouseScroll {
+                    pane: hit.zone.pane_id,
+                    down: true,
+                }),
+                MouseEventKind::ScrollUp => Some(Action::MouseScroll {
+                    pane: hit.zone.pane_id,
+                    down: false,
+                }),
+                _ => None,
+            };
+            if let Some(action) = action {
+                app.apply(action);
                 if perf_input {
                     *last_input_at = Some(Instant::now());
                 }

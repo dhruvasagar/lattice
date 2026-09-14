@@ -691,6 +691,12 @@ impl App {
             // no-op so the post-dispatch hooks (ensure_cursor_visible,
             // hover auto-dismiss) still run.
             Action::FollowLink => {}
+            // MO.2: both mouse gestures are host-handled
+            // (`Editor::do_mouse_scroll` / `do_mouse_goto`). No-ops here
+            // so the post-dispatch hooks still run — a click that moved
+            // the cursor wants `ensure_cursor_visible` and hover
+            // auto-dismiss exactly as a `j` does.
+            Action::MouseScroll { .. } | Action::MouseGoto { .. } => {}
             // Phase 5.8.AF: migrated to host (consumed = true).
             Action::OilNavigateUp => {}
             // M.10.7 (2026-06-03): four Action arms removed —

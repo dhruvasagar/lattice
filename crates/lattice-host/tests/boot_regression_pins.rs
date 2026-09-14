@@ -303,6 +303,7 @@ fn plugin_lifecycle_ex_commands_registered_at_boot() {
         "plugin-load",
         "plugin-unload",
         "plugin-reload",
+        "plugin-update",
         "reload-config",
     ] {
         assert!(

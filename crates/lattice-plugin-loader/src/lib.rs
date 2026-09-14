@@ -219,6 +219,25 @@ enum BuildActivity {
 /// local plugin's source and wants the view to say `stale` without a restart.
 /// It is two small file reads per row, on the `:plugins` refresh path, not a
 /// per-frame cost.
+/// Why `update` can do nothing for `source` — `None` when it can.
+///
+/// Only the pinned-git arm refuses. `Local` is always current (the directory
+/// IS the source), `Prebuilt` re-downloads on every resolve, and unpinned git
+/// is the case the verb exists for. A pin, though, is already the answer to
+/// "which commit": updating past it would discard the choice the user wrote
+/// in `init.rs`, and updating to it is what boot already did.
+///
+/// Split out from [`PluginLoader::update`] so the table is testable without a
+/// loaded plugin behind it — the refusal is a property of the source alone.
+fn update_refusal(name: &str, source: Option<&resolve::PluginSource>) -> Option<String> {
+    match source {
+        Some(resolve::PluginSource::Git { rev: Some(rev), .. }) => {
+            Some(format!("`{name}` is pinned to {rev}; nothing to update"))
+        }
+        _ => None,
+    }
+}
+
 fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> BuildState {
     // PM.8b: an in-flight or just-failed build is the more current answer —
     // the artifact on disk describes the *previous* build, and reporting
@@ -1437,6 +1456,25 @@ impl PluginLoader {
         });
     }
 
+    /// `:plugin-update <name>` — [`Self::update`] on the loader's runtime.
+    ///
+    /// Mirrors [`Self::spawn_reload`]: the ex-command's `apply` must not block
+    /// the dispatch path, so the work is spawned and its outcome reported
+    /// through `*messages*` — the one-shot user-actionable class.
+    pub(crate) fn spawn_update(self: &Arc<Self>, target: String) {
+        let Some(runtime) = self.env.runtime.clone() else {
+            tracing::warn!("no runtime wired; :plugin-update cannot run");
+            return;
+        };
+        let this = Arc::clone(self);
+        runtime.spawn(async move {
+            match this.update(&target).await {
+                Ok(()) => tracing::info!(plugin = %target, "plugin updated (:plugin-update)"),
+                Err(err) => tracing::warn!(plugin = %target, error = %err, ":plugin-update failed"),
+            }
+        });
+    }
+
     /// Load a single plugin from an explicit directory — the `:plugin-load <path>`
     /// entry point (PL8.C). Unlike [`discover_and_load`](Self::discover_and_load)
     /// (a tree scan that silently skips non-plugin dirs), a direct request
@@ -1507,6 +1545,60 @@ impl PluginLoader {
     ///
     /// Blocking work runs on `spawn_blocking`; only the reload is awaited.
     pub async fn rebuild(&self, name: &str) -> Result<(), String> {
+        self.rebuild_with(name, resolve::RefreshPolicy::UseCache, "rebuild")
+            .await
+    }
+
+    /// Bring `name` up to date with its upstream, then rebuild and reload it.
+    ///
+    /// The difference from [`Self::rebuild`] is one argument — the
+    /// [`RefreshPolicy`](resolve::RefreshPolicy) the resolver runs under — but
+    /// it is the whole verb: rebuild compiles the source you already have,
+    /// update goes and gets a newer one first.
+    ///
+    /// What "newer" means is the source's to answer, and three of the four
+    /// kinds answer it without any work here:
+    ///
+    /// | source | update |
+    /// |---|---|
+    /// | `Git { rev: None }` | fetch, move to the tracked head, rebuild |
+    /// | `Git { rev: Some(_) }` | **declines** — a pin is the answer already |
+    /// | `Local(_)` | rebuild; the directory IS the source, so it is always current |
+    /// | `Prebuilt { url }` | re-download (the resolver fetches unconditionally) |
+    ///
+    /// The pinned arm declines rather than silently rebuilding, because those
+    /// are different outcomes and a user who pinned a plugin and then pressed
+    /// update is owed the reason nothing moved.
+    pub async fn update(&self, name: &str) -> Result<(), String> {
+        let source = {
+            let loaded = self
+                .loaded
+                .lock()
+                .map_err(|_| "plugin registry unavailable".to_string())?;
+            loaded
+                .iter()
+                .find(|r| r.name == name)
+                .ok_or_else(|| format!("`{name}` is not loaded"))?
+                .source
+                .clone()
+        };
+        if let Some(reason) = update_refusal(name, source.as_plugin_source().as_ref()) {
+            return Err(reason);
+        }
+        self.rebuild_with(name, resolve::RefreshPolicy::Update, "update")
+            .await
+    }
+
+    /// The body [`Self::rebuild`] and [`Self::update`] share.
+    ///
+    /// `verb` appears only in the error text for a failed task join, so the
+    /// message names the thing the user actually pressed.
+    async fn rebuild_with(
+        &self,
+        name: &str,
+        policy: resolve::RefreshPolicy,
+        verb: &str,
+    ) -> Result<(), String> {
         let (source, dir) = {
             let loaded = self
                 .loaded
@@ -1554,13 +1646,11 @@ impl PluginLoader {
                 &spec,
                 &cache_root,
                 &user_root,
-                // Rebuild means "build what I have from source again", not
-                // "go and get something newer" — that is `update`.
-                resolve::RefreshPolicy::UseCache,
+                policy,
             )
         })
         .await
-        .map_err(|e| format!("rebuild task failed: {e}"))?;
+        .map_err(|e| format!("{verb} task failed: {e}"))?;
 
         match install {
             pipeline::Install::Ready {
@@ -3527,5 +3617,63 @@ mod error_chain_tests {
             9,
             "eight causes plus the ellipsis: {out}"
         );
+    }
+}
+
+/// `update`'s arm table, tested without a loaded plugin behind it — the
+/// refusal is a property of the source alone.
+#[cfg(test)]
+mod update_refusal_tests {
+    use super::{resolve, update_refusal};
+
+    /// The only arm that refuses. A pin is the answer to "which commit", so
+    /// there is nothing to update TO, and moving past it would discard what
+    /// the user wrote in `init.rs`.
+    #[test]
+    fn update_declines_on_a_pinned_git_source_and_names_the_pin() {
+        let reason = update_refusal(
+            "demo",
+            Some(&resolve::PluginSource::Git {
+                url: "https://example.invalid/p.git".into(),
+                rev: Some("abc123".into()),
+            }),
+        )
+        .expect("a pinned source refuses");
+        assert!(
+            reason.contains("abc123"),
+            "the refusal names the pin, so the user knows why nothing moved: {reason}"
+        );
+    }
+
+    /// The three that proceed, for the three different reasons they do:
+    /// unpinned git is the case the verb exists for, a local directory IS the
+    /// source, and a prebuilt artifact is re-downloaded by the resolver on
+    /// every pass.
+    #[test]
+    fn update_proceeds_on_every_other_source() {
+        for source in [
+            resolve::PluginSource::Git {
+                url: "https://example.invalid/p.git".into(),
+                rev: None,
+            },
+            resolve::PluginSource::Local(std::path::PathBuf::from("/tmp/demo")),
+            resolve::PluginSource::Prebuilt {
+                url: "https://example.invalid/demo.wasm".into(),
+            },
+        ] {
+            assert_eq!(
+                update_refusal("demo", Some(&source)),
+                None,
+                "{source:?} has somewhere to update from"
+            );
+        }
+    }
+
+    /// A record with no recorded source falls through to `rebuild_with`, which
+    /// owns the "no buildable source" message — two functions must not both
+    /// answer the same question differently.
+    #[test]
+    fn update_leaves_a_sourceless_record_to_the_rebuild_path() {
+        assert_eq!(update_refusal("demo", None), None);
     }
 }

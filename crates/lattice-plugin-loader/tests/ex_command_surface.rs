@@ -145,6 +145,7 @@ async fn all_three_commands_register_with_plain_names() {
         "plugin-load",
         "plugin-unload",
         "plugin-reload",
+        "plugin-update",
         "reload-config",
     ] {
         assert!(
@@ -174,7 +175,12 @@ async fn reload_config_echoes_and_takes_no_arg() {
 async fn missing_arg_echoes_a_usage_hint() {
     let base = tempfile::tempdir().unwrap();
     let (_loader, commands) = loader_with_ex_commands(base.path());
-    for name in ["plugin-load", "plugin-unload", "plugin-reload"] {
+    for name in [
+        "plugin-load",
+        "plugin-unload",
+        "plugin-reload",
+        "plugin-update",
+    ] {
         let (level, text) = {
             let e = invoke(&commands, name, None);
             let (l, t) = echo_text(&e);

@@ -52,6 +52,16 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
         reload_spec(Arc::clone(loader)),
     );
     registry.register_ex_command(
+        "plugin-update",
+        "Update a plugin (`:plugin-update <id|name>`) — bring its source up to \
+         date with upstream, rebuild it, and reload. An unpinned git source \
+         moves to the tracked head; a `Local` one is always current, so this is \
+         a rebuild; a prebuilt one is re-downloaded. A plugin pinned to a \
+         revision declines and says so — the pin is the answer already. Updates \
+         asynchronously — completion is reported in `*messages*`.",
+        update_spec(Arc::clone(loader)),
+    );
+    registry.register_ex_command(
         "reload-config",
         "Reload the user's `init.rs` configuration (`:reload-config`) — unload the \
          `init` plugin and re-instantiate it from `<config>/lattice/init/` with a \
@@ -155,6 +165,28 @@ fn unload_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
                     format!("no loaded plugin `{target}`"),
                 )),
             }
+        }),
+        args_schema: string_arg(
+            "target",
+            "Loaded plugin's manifest id or numeric plugin id.",
+            "plugin:",
+        ),
+        surface_form: SurfaceForm::Keyword,
+    }
+}
+
+fn update_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
+    ExCommandSpec {
+        latency_class: LatencyClass::Reflex,
+        accepts_bang: false,
+        accepts_range: false,
+        parse_args: Arc::new(parse_target),
+        apply: Arc::new(move |ctx: &ExCommandContext| {
+            let Some(target) = arg_string(ctx) else {
+                return Ok(echo(EchoLevel::Warn, "usage: :plugin-update <id|name>"));
+            };
+            loader.spawn_update(target.clone());
+            Ok(echo(EchoLevel::Info, format!("updating `{target}`…")))
         }),
         args_schema: string_arg(
             "target",

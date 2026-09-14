@@ -4392,15 +4392,20 @@ impl Render for EditorView {
                             .text_color(rgb(theme.cursor_background))
                             .child(picker.title.clone()),
                     )
-                    // PP.2: the root between the source and the `>`, dimmer
-                    // than the title — context, read once on open, not the
-                    // thing you came to read. Emitted only when the picker has
-                    // one, so nothing about an unrooted prompt moves. Mirrors
-                    // the TUI's `draw_picker_prompt`.
+                    // PP.2 / PP.2b: the root between the source and the `>`.
+                    // Padded on BOTH sides so it reads as a field rather than
+                    // as a suffix of the title — it used to abut the `>`
+                    // (`project-files ~/src/lattice> `), one run of punctuation
+                    // with the prompt lost inside it. Coloured from its own
+                    // `picker.root` slot rather than sharing `popup_border`
+                    // with the `(n/m)` count, which made the prompt's one piece
+                    // of context the dimmest thing on the line. Emitted only
+                    // when the picker has a root, so nothing about an unrooted
+                    // prompt moves. Mirrors the TUI's `draw_picker_prompt`.
                     .children(picker.root_label.as_deref().map(|root| {
                         div()
-                            .text_color(rgb(theme.popup_border))
-                            .child(format!(" {root}"))
+                            .text_color(rgb(theme.picker_root))
+                            .child(format!("  {root}  "))
                     }))
                     .child(div().text_color(rgb(theme.cursor_background)).child("> "))
                     .child(div().child(picker.query.clone()))

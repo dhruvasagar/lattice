@@ -1683,9 +1683,28 @@ fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
             .add_modifier(Modifier::BOLD),
     )];
     if let Some(root) = p.root_label.as_deref() {
+        // PP.2b: two spaces, not one — the root used to abut the `>`
+        // (`project-files ~/src/lattice> `), which read as one run of
+        // punctuation and made the prompt hard to find at a glance.
+        // Padded on BOTH sides so the root is a field rather than a
+        // suffix of the title.
+        //
+        // Resolved through `picker.root` rather than a hardcoded
+        // `DarkGray`: PP.2 shipped it at the same dimness as the
+        // `(n/m)` count, so the one piece of context the prompt carries
+        // read as chrome. It is also what makes the line themeable at
+        // all — the title and count beside it are still hardcoded, and
+        // are the next thing to migrate.
+        let cells_rs = app.render_state.load().cells.load_full();
+        let root_fg = cells_rs
+            .resolved_theme
+            .get(cells_rs.theme_ids.picker_root)
+            .fg
+            .map(crate::theme::host_color_to_ratatui)
+            .unwrap_or(Color::Blue);
         spans.push(Span::styled(
-            format!(" {root}"),
-            TuiStyle::default().fg(Color::DarkGray),
+            format!("  {root}  "),
+            TuiStyle::default().fg(root_fg),
         ));
     }
     spans.push(Span::styled(
@@ -11477,9 +11496,75 @@ mod tests {
             }
         });
         let rooted = row_text(&a);
+        // PP.2b: padded on BOTH sides. The root used to abut the `>`
+        // (`buffers ~/src/lattice> `), which read as one run of
+        // punctuation with the prompt lost inside it — the gap is what
+        // makes the `>` findable at a glance.
         assert!(
-            rooted.starts_with("buffers ~/src/lattice> "),
-            "the root sits between the source and the `>`: {rooted:?}"
+            rooted.starts_with("buffers  ~/src/lattice  > "),
+            "the root sits between the source and the `>`, with a gap on \
+             each side: {rooted:?}"
+        );
+    }
+
+    /// PP.2b: the root is painted in its own colour, distinct from the
+    /// `(n/m)` count beside it.
+    ///
+    /// The point of the slot is that the root stopped being the dimmest
+    /// thing on the line — it shared `DarkGray` with the count, so the
+    /// one piece of context the prompt carries read as chrome. Asserted
+    /// as "different from the count's colour" rather than against a
+    /// concrete colour, so a theme is free to choose one without
+    /// breaking the test that exists to keep them distinguishable.
+    #[test]
+    fn pp2b_the_root_is_painted_distinctly_from_the_count() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app_with("scratch\n", 20);
+        let _ = a.mutate_editor_with(|e: &mut lattice_host::editor::Editor| {
+            e.open_picker("buffers".to_string(), Vec::new())
+        });
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            if let Some(p) = e.picker.as_mut() {
+                p.root_label = Some("~/src/lattice".to_string());
+            }
+        });
+
+        let (tw, th): (u16, u16) = (80, 10);
+        let mut terminal = Terminal::new(TestBackend::new(tw, th)).unwrap();
+        terminal
+            .draw(|f| {
+                draw_picker_prompt(
+                    f,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: tw,
+                        height: 1,
+                    },
+                    &a,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let row: String = (0..tw).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+
+        let fg_at = |col: u16| -> Color { buf[(col, 0)].style().fg.expect("a foreground") };
+        let root_fg = fg_at(row.find("~/src/lattice").expect("the root is painted") as u16);
+        // The count is `(n/m)`, and `n` depends on how many buffers the
+        // picker seated — so find it by its opening paren rather than by
+        // a literal that a different fixture would change.
+        let count_fg = fg_at(row.rfind('(').expect("the count is painted") as u16);
+        assert_ne!(
+            root_fg, count_fg,
+            "the root must not share the count's colour — that is what made \
+             it read as chrome"
+        );
+        assert_ne!(
+            root_fg,
+            Color::DarkGray,
+            "…and specifically must not still be the dim grey PP.2 shipped"
         );
     }
 

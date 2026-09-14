@@ -127,6 +127,7 @@ with them.
 | `transient.description` | a row's description column |
 | `transient.value` | a flag's `[x]` state, or a variable's current value |
 | `transient.border` | the menu's border |
+| `picker.root` | the project root a rooted [picker](help:picker) is scoped to |
 
 The `transient.*` set exists because a menu row is three columns that
 mean different things — the key you press, what it does, and whether
@@ -136,6 +137,12 @@ reached the menu at all, and GPUI borrowed its popup border and cursor
 colours for five roles, which left **keys and flags the same colour**
 and descriptions painted in the border tone. One named palette now
 drives both.
+
+`picker.root` is the `~/src/lattice` a rooted picker shows between its
+source and the `>`. It has its own element because it used to share the
+dim tone of the `(3/40)` count beside it, which made the one piece of
+context the prompt carries — *which checkout answered* — read as chrome.
+Retune it if your palette wants the prompt quieter.
 
 The four `help.*` elements are what make a help page scannable: keys
 are bold so the thing you are hunting for stands out, commands take the

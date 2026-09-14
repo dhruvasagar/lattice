@@ -219,6 +219,11 @@ pub struct GpuiTheme {
     pub popup_background: u32,
     /// Popup-overlay border / accent color.
     pub popup_border: u32,
+    /// PP.2b: the root a rooted picker is scoped to, in its prompt.
+    /// Its own slot rather than `popup_border` (which it shared with the
+    /// `(n/m)` count) so the one piece of context the prompt carries is
+    /// not the dimmest thing on the line.
+    pub picker_root: u32,
     /// Popup header TITLE colour (bold accent) — `ui.popup.title`.
     pub popup_title: u32,
     /// Popup header HINT colour (dim) — `ui.popup.hint`.
@@ -279,6 +284,7 @@ impl Default for GpuiTheme {
             popup_background: 0x181825,
             // Catppuccin Mocha lavender (accent).
             popup_border: 0xb4befe,
+            picker_root: 0x89b4fa,
             // Catppuccin Mocha blue — popup title accent (`ui.popup.title`).
             popup_title: 0x89b4fa,
             // Catppuccin Mocha overlay — dim popup hint (`ui.popup.hint`).
@@ -956,6 +962,10 @@ impl GpuiApp {
         // role: thin accent line between visual regions).
         if let Some(fg) = resolved.get(ids.pane_separator).fg {
             self.theme.popup_border = fg.to_rgb_u32(defaults.popup_border);
+        }
+        // PP.2b: the rooted picker's root label ↔ `picker.root`.
+        if let Some(fg) = resolved.get(ids.picker_root).fg {
+            self.theme.picker_root = fg.to_rgb_u32(defaults.picker_root);
         }
         // Popup header title / hint ↔ `ui.popup.title` / `ui.popup.hint`
         // (shared with the TUI peer so the accent is themeable + identical).

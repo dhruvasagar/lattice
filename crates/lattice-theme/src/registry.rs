@@ -1191,6 +1191,18 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         spec().fg("green"),
         "Marginalia: file modified-time column.",
     );
+    // PP.2b: the root a rooted picker is scoped to, shown between the
+    // source and the `>`. `blue` rather than the `overlay` the marginalia
+    // paths use: this is the answer to "which checkout answered", read
+    // before you start typing, so it has to be legible at a glance —
+    // PP.2 shipped it at the same dimness as the `(n/m)` count, where it
+    // read as chrome rather than as the one piece of context the prompt
+    // carries. Still below the title, which stays bold.
+    reg_one(
+        "picker.root",
+        spec().fg("blue"),
+        "Picker prompt: the root a rooted picker is scoped to.",
+    );
     // ---- MARG §9: picker marginalia rollout (location / status /
     // latency / args / buffer-id / register). Same `Annotation::Styled`
     // mechanism, new slot families consumed by the non-file pickers. ----
@@ -1560,6 +1572,8 @@ pub struct BuiltinElementIds {
     pub completion_annotation_perm_none: ElementId,
     pub completion_annotation_size: ElementId,
     pub completion_annotation_mtime: ElementId,
+    // PP.2b: the rooted picker's root label.
+    pub picker_root: ElementId,
     // MARG §9: picker marginalia rollout slots.
     pub completion_annotation_location_path: ElementId,
     pub completion_annotation_location_line: ElementId,
@@ -1691,6 +1705,7 @@ impl Default for BuiltinElementIds {
             doc_highlight_text: ElementId::INVALID,
             substitute_preview: ElementId::INVALID,
             inlay_hint: ElementId::INVALID,
+            picker_root: ElementId::INVALID,
             completion_annotation_kind: ElementId::INVALID,
             completion_annotation_doc: ElementId::INVALID,
             completion_annotation_keybinding: ElementId::INVALID,
@@ -1896,6 +1911,7 @@ impl BuiltinElementIds {
             doc_highlight_text: id("doc_highlight.text"),
             substitute_preview: id("substitute.preview"),
             inlay_hint: id("inlay.hint"),
+            picker_root: id("picker.root"),
             completion_annotation_kind: id("completion.annotation.kind"),
             completion_annotation_doc: id("completion.annotation.doc"),
             completion_annotation_keybinding: id("completion.annotation.keybinding"),

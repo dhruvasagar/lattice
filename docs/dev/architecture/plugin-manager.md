@@ -547,3 +547,13 @@ box first** (no build service needed), then the **user require+build track**:
   graceful) → **PM.6** source resolver (`Local` → `Git` → `Prebuilt`) → **PM.7** the
   `require` seam + init.rs `require`-drain + init.rs-built-by-the-service
   bootstrapping → **PM.8** the `:plugins` source/build columns + rebuild chord.
+
+*Bulk track (PM.9, 2026-09-14) — scope for verbs that only ever had one row:*
+see [`../operations/slice-plans/archive/plugin-bulk-verbs.md`](../operations/slice-plans/archive/plugin-bulk-verbs.md).
+- **PM.9a** `RefreshPolicy` — an unpinned git checkout is fetched AND moved, or
+  not touched at all (§4).
+- **PM.9b** `update` + `:plugin-update <name>` — the arm table by source kind.
+- **PM.9c** the bulk engine + `clean` (§8.2, §8.3).
+- **PM.9d** the view's scope chords `R` / `B` / `u` / `U` / `X` + per-leg
+  progress (§8.1).
+- **PM.9e** docs. **PM.9f** the slice plan + workspace verification.

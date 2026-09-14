@@ -1049,12 +1049,12 @@ impl Render for ModelineTooltip {
     }
 }
 
-struct EditorView {
+pub(crate) struct EditorView {
     /// IM.5: decoded pixels for the media blocks in view, shared with every
     /// pane's `EditorElement`. Written only by the media landing (off the UI
     /// thread's critical path); read by `paint`, which never loads.
     media_pixels: std::sync::Arc<crate::editor_element::MediaPixels>,
-    app: GpuiApp,
+    pub(crate) app: GpuiApp,
     focus_handle: FocusHandle,
     /// Perf plan A.3: per-frame ensure-work delta cache.
     ensure_gate: EnsureGateCache,
@@ -2608,6 +2608,11 @@ impl EditorView {
         // inlay-hint virtual text + per-cell diagnostic
         // underlines restore in slice X3.full.4.
         let editor_element = crate::editor_element::EditorElement {
+            // MO.2: this pane is a click target.
+            mouse: Some(crate::editor_element::MouseTarget {
+                pane_id: pane.id,
+                view: cx.entity().downgrade(),
+            }),
             media_pixels: self.media_pixels.clone(),
             pane_idx,
             theme: theme.clone(),
@@ -4017,6 +4022,9 @@ impl Render for EditorView {
                         .map(|c| c.load_full())
                         .filter(|m| m.version.text == text_version);
                     let editor_element = crate::editor_element::EditorElement {
+                        // MO.2: a popup body is not a pane, so it is not a
+                        // click target.
+                        mouse: None,
                         media_pixels: self.media_pixels.clone(),
                         // CV.4: live wrap width for this pseudo-pane; `0`
                         // when it has no published entry, which falls back
@@ -4659,6 +4667,9 @@ impl Render for EditorView {
                 .map(|c| c.load_full())
                 .filter(|m| m.version.text == text_version);
             let editor_element = crate::editor_element::EditorElement {
+                // MO.2: a popup body is not a pane, so it is not a
+                // click target.
+                mouse: None,
                 media_pixels: self.media_pixels.clone(),
                 // CV.4: live wrap width for the popup pseudo-pane; `0`
                 // when it has no published entry, which falls back to the

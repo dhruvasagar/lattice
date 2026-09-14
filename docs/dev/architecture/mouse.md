@@ -149,25 +149,60 @@ tail), closed folds, and virtual rows. Virtual rows and the `~` filler
 carry no origin and fall back to the last row above that has one, so
 clicking below a short buffer lands on its last line.
 
-**GPUI: the wheel.** No hit-testing needed on that peer — the element
-*is* the pane, so the listener closes over its id, the same `cx.listener`
+**GPUI: all three.** The wheel needs no hit-testing — the element *is*
+the pane, so the listener closes over its id, the same `cx.listener`
 routing the modeline and tabline clicks already use.
+
+Click and drag register through `window.on_mouse_event` inside
+`EditorElement::paint`, which is the only place the element's **bounds**
+exist and every term is relative to them. Everything the handler needs
+is captured at paint time rather than read back later: a handler
+outlives the frame that made it, and by the time a click arrives the
+prepaint state has been rebuilt against a layout the user never clicked
+on.
+
+Three inverses compose there, and each is again the forward map run
+backwards:
+
+- **y → row** searches the cumulative `row_tops` rather than dividing
+  by a line height, because rows are *not* uniform: a scaled heading is
+  taller, and a division would drift further down the pane.
+- **x → column** inverts `column_origin_x`, which is now the single
+  expression `paint` and the click handler share. It carries the two
+  things a uniform `advance * col` misses — per-token scaling on a
+  heading row, where the advance is not uniform *across* the row, and
+  `leftcol` panning. `ScaledLine::x_offset` delegates to the same walk
+  via `ColumnScale`, a glyph-free view of the piece layout, so the caret
+  and a click cannot be placed by two different walks (and the handler
+  need not clone `ShapedLine`s to outlive the frame).
+- **column → byte** is `hit_test::combined_col_to_byte`, rewritten in
+  MO.2 as a binary search over this peer's own
+  `byte_to_combined_col` — see below.
 
 ## 6. Known gaps
 
-- **GPUI click and drag.** The wheel needs no coordinates; positioning
-  does, and on that peer the bounds live inside `EditorElement::paint`
-  rather than on a `div`, so it wants the `window.on_mouse_event` +
-  bounds route with `hit_test.rs`'s existing primitives. Deferred
-  rather than written blind: pixel→cell arithmetic that compiles is not
-  the same as pixel→cell arithmetic that is right, and it cannot be
-  checked without a window.
-- **GPUI's `combined_col_to_byte` is conceal-blind.** It walks real
-  UTF-8 bytes while the shared inverse works in char-columns —
-  reconciling the two is the question `subtract_conceals`' doc already
-  defers ("its own non-ASCII risk"), and a mouse slice is the wrong
-  place to settle it. When GPUI click lands it should go through
-  `display_col_to_source_byte`, which means settling this first.
+- **The conceal reconciliation did not need settling after all.** The
+  worry was that `hit_test::combined_col_to_byte` walked real UTF-8
+  bytes while `lattice-cells`' inverse works in char-columns, and that
+  making GPUI conceal-aware meant unifying them — the question
+  `subtract_conceals`' doc defers for its non-ASCII risk. It does not:
+  each peer inverts **its own** forward map, so each is consistent with
+  where *it* draws the caret, and neither has to adopt the other's
+  column space. The old hand-written walk knew about inlays and not
+  conceal, so it disagreed with the forward map it was supposedly the
+  inverse of; the binary search picks conceal up for free and will pick
+  up whatever the forward map learns next.
+
+  Its tests changed behaviour as a result, deliberately: a click on
+  inlay text now lands on the byte **before** the splice rather than
+  snapping forward to the anchor. The old answer put the caret three
+  columns right of the click, because the forward map draws the anchor
+  byte on the far side of the hint.
+- **Six `editor_element` gutter tests fail under `--features window`,
+  and pre-date MO.2** (verified by stashing). They are invisible to
+  `scripts/precommit.sh`, which never builds that feature — so the GPUI
+  peer's window-gated tests are effectively ungated. Worth closing
+  separately; it is a gate gap, not a mouse one.
 - **No `mousescroll` option.** Three lines is a constant with one named
   home, so the option has an obvious thing to replace. GPUI converts a
   pixel delta through `row_px` so a trackpad and a wheel travel the

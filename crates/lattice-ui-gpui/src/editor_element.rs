@@ -226,6 +226,18 @@ pub(crate) struct InlineDiagSummary {
 /// front so the element holds only owned data; no borrow against
 /// `GpuiApp` survives across layout / prepaint / paint method
 /// boundaries.
+/// MO.2: what an `EditorElement` needs to turn a click into an action.
+///
+/// The pane it paints, and a weak handle to the view that owns the
+/// dispatcher. Weak because the handler is registered with the window
+/// and outlives the frame that made it — a strong handle would keep the
+/// view alive through teardown.
+#[derive(Clone)]
+pub(crate) struct MouseTarget {
+    pub(crate) pane_id: lattice_core::ui::pane::PaneId,
+    pub(crate) view: gpui::WeakEntity<crate::window::EditorView>,
+}
+
 pub(crate) struct EditorElement {
     /// IM.5: pixels already decoded for the media blocks in view, keyed by
     /// descriptor.
@@ -238,6 +250,16 @@ pub(crate) struct EditorElement {
     /// Pane index inside the active pane tree. Used for
     /// `ElementId` so GPUI tracks the same element across frames.
     pub(crate) pane_idx: usize,
+    /// MO.2: where a click in this element's bounds is routed, or
+    /// `None` for an element that is not a document pane.
+    ///
+    /// `None` rather than a check on `pane_idx`: the popup and
+    /// completion-docs elements are constructed with sentinel indices
+    /// (`usize::MAX`, `usize::MAX - 1`) and have no pane to move a
+    /// cursor in, so leaving the field off makes them inert by
+    /// construction instead of by a comparison someone has to keep in
+    /// sync with the sentinels.
+    pub(crate) mouse: Option<MouseTarget>,
     /// Cached theme colours (bg, fg, cursor_bg, cursor_fg, ...).
     pub(crate) theme: GpuiTheme,
     /// Full document text (pre-extracted via `snapshot.text()`).
@@ -603,17 +625,51 @@ impl ScaledLine {
     /// advance plus the partial advance within the piece holding `col`.
     /// `col` at/after the row end returns the full scaled width.
     fn x_offset(&self, col: u32, advance: Pixels) -> Pixels {
+        self.column_scale().x_offset(col, advance)
+    }
+
+    /// MO.2: the piece layout without the shaped glyphs.
+    ///
+    /// A click handler needs the geometry and outlives the frame, but a
+    /// `ShapedLine` is neither cheap to clone nor meaningful once the
+    /// frame is gone. This is the part that answers "where is column N",
+    /// and `x_offset` above now goes through it too — so the caret and a
+    /// click cannot be placed by two different walks.
+    fn column_scale(&self) -> ColumnScale {
+        ColumnScale {
+            pieces: self
+                .pieces
+                .iter()
+                .map(|p| (p.start_col, p.cols, p.scale))
+                .collect(),
+        }
+    }
+}
+
+/// `(start_col, cols, scale)` per piece — [`ScaledLine`] minus its
+/// glyphs. See [`ScaledLine::column_scale`].
+#[derive(Clone, Default)]
+pub(crate) struct ColumnScale {
+    pieces: Vec<(u32, u32, f32)>,
+}
+
+impl ColumnScale {
+    fn x_offset(&self, col: u32, advance: Pixels) -> Pixels {
         let mut x = Pixels::ZERO;
-        for p in &self.pieces {
-            let end = p.start_col + p.cols;
+        for (start_col, cols, scale) in &self.pieces {
+            let end = start_col + cols;
             if col >= end {
-                x += advance * p.scale * (p.cols as f32);
+                x += advance * *scale * (*cols as f32);
             } else {
-                x += advance * p.scale * (col.saturating_sub(p.start_col) as f32);
+                x += advance * *scale * (col.saturating_sub(*start_col) as f32);
                 return x;
             }
         }
         x
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pieces.is_empty()
     }
 }
 
@@ -2275,6 +2331,13 @@ impl Element for EditorElement {
         // `col_scale` gives that column's font scale. Ordinary rows (no
         // split) reduce to the uniform `text_origin_x + advance * col`.
         let row_split = &prepaint.row_split;
+        // MO.2: the glyph-free piece layout, built once per frame and
+        // shared by `col_x` and the click handler so both place a column
+        // with the same walk.
+        let row_scales: Vec<ColumnScale> = row_split
+            .iter()
+            .map(|o| o.as_ref().map(|sl| sl.column_scale()).unwrap_or_default())
+            .collect();
         let col_scale = |i: usize, col: u32| -> f32 {
             match row_split.get(i) {
                 Some(Some(sl)) => sl.scale_at(col),
@@ -2282,13 +2345,7 @@ impl Element for EditorElement {
             }
         };
         let col_x = |i: usize, col: u32| -> Pixels {
-            match row_split.get(i) {
-                // Scaled rows: sum each preceding piece's scaled advance.
-                // No h-scroll offset on scaled content yet (follow-up).
-                Some(Some(sl)) => text_origin_x + sl.x_offset(col, advance),
-                // Ordinary rows pan left by `leftcol` (wrap off).
-                _ => text_origin_x + advance * (col.saturating_sub(leftcol) as f32),
-            }
+            column_origin_x(row_scales.get(i), col, text_origin_x, advance, leftcol)
         };
         // F.2: with variable row height the cumulative stack of
         // `viewport_height` rows can exceed the pane (the host still
@@ -2298,6 +2355,65 @@ impl Element for EditorElement {
         // all-1.0 scales no row is ever clipped (exactly `viewport_height`
         // uniform rows fit), so this is a no-op for ordinary buffers.
         let pane_bottom = bounds.origin.y + bounds.size.height;
+
+        // ── MO.2: click and drag ──────────────────────────────────
+        //
+        // Registered here rather than as a `div` listener because this
+        // is the only place the element's BOUNDS exist, and every term
+        // below is relative to them. `None` for popups, which are not
+        // panes (see `EditorElement::mouse`).
+        //
+        // Everything the closures need is captured now: the handler
+        // outlives the frame, and reaching back into `prepaint` later
+        // would read a layout that has since been rebuilt. The clone is
+        // O(visible rows) of short strings and mostly-empty vecs, next
+        // to a paint that shapes every one of those rows.
+        if let Some(target) = self.mouse.clone() {
+            let geom = std::sync::Arc::new(MouseGeometry {
+                bounds,
+                row_tops: row_tops.clone(),
+                rows: prepaint
+                    .row_meta
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (line, text))| {
+                        (
+                            *line,
+                            prepaint.row_segment.get(i).copied().unwrap_or(0),
+                            text.clone(),
+                        )
+                    })
+                    .collect(),
+                coords: prepaint.inlay_offsets_per_row.clone(),
+                splits: row_scales.clone(),
+                text_origin_x,
+                advance,
+                leftcol,
+                wrap_width: prepaint.wrap_width,
+            });
+
+            // A press positions; a move with the button still down
+            // extends from where the press landed. Two events, one
+            // resolver, differing by `extend` alone — the same split the
+            // TUI peer makes, so the two cannot drift on what a drag
+            // means.
+            let press = (geom.clone(), target.clone());
+            window.on_mouse_event(move |ev: &gpui::MouseDownEvent, phase, _window, cx| {
+                if phase != gpui::DispatchPhase::Bubble || ev.button != gpui::MouseButton::Left {
+                    return;
+                }
+                press.0.dispatch(&press.1, ev.position, false, cx);
+            });
+            let drag = (geom, target);
+            window.on_mouse_event(move |ev: &gpui::MouseMoveEvent, phase, _window, cx| {
+                if phase != gpui::DispatchPhase::Bubble
+                    || ev.pressed_button != Some(gpui::MouseButton::Left)
+                {
+                    return;
+                }
+                drag.0.dispatch(&drag.1, ev.position, true, cx);
+            });
+        }
 
         // Slice X3.full.3: per-row decoration backgrounds. Layered
         // bottom -> top so the strongest signal wins visually:
@@ -3000,6 +3116,144 @@ impl Element for EditorElement {
             let _ = tag_shaped.paint(point(text_x + tag_indent, tag_top), tag_h, window, cx);
         }
     }
+}
+
+/// MO.2: everything a click handler needs, captured at paint time.
+///
+/// Captured rather than looked up later because the handler outlives
+/// the frame that registered it: by the time a click arrives the
+/// prepaint state has been rebuilt, and reading it then would resolve
+/// against a layout the user never clicked on.
+struct MouseGeometry {
+    bounds: Bounds<Pixels>,
+    /// Cumulative row tops. Rows are NOT uniform height — a scaled
+    /// heading is taller — so the row under a y is a search over these
+    /// rather than a division.
+    row_tops: Vec<Pixels>,
+    /// Per painted row: source line, wrap segment, and the row's source
+    /// text.
+    rows: Vec<(u32, u32, String)>,
+    coords: Vec<RowCoords>,
+    splits: Vec<ColumnScale>,
+    text_origin_x: Pixels,
+    advance: Pixels,
+    leftcol: u32,
+    wrap_width: u32,
+}
+
+impl MouseGeometry {
+    /// Window position → buffer position, or `None` outside the pane.
+    fn resolve(&self, pos: gpui::Point<Pixels>) -> Option<(u32, u32)> {
+        if !self.bounds.contains(&pos) {
+            return None;
+        }
+        // The last row whose top is at or above the click. Inverting the
+        // cumulative stack rather than dividing by a line height is what
+        // makes a click on a scaled heading land on the heading.
+        let row = self.row_tops.iter().rposition(|t| *t <= pos.y)?;
+        let (line, segment, text) = self.rows.get(row)?;
+        let coords = self.coords.get(row)?;
+        let split = self.splits.get(row);
+
+        // The row's own column space, then the line's. Under wrap a
+        // continuation row starts `segment * wrap_width` into the
+        // logical line; with wrap off `wrap_width` is 0 and `leftcol`
+        // carries the pan instead (inside `column_origin_x`), so the two
+        // terms are never both live.
+        let max_col = byte_to_combined_col(text, text.len(), coords) as u32;
+        let col = x_to_column(
+            split,
+            pos.x,
+            self.text_origin_x,
+            self.advance,
+            self.leftcol,
+            max_col,
+        );
+        let logical = segment * self.wrap_width + col;
+        let byte = crate::hit_test::combined_col_to_byte(text, logical, coords);
+        Some((*line, byte as u32))
+    }
+
+    fn dispatch(
+        &self,
+        target: &MouseTarget,
+        pos: gpui::Point<Pixels>,
+        extend: bool,
+        cx: &mut gpui::App,
+    ) {
+        let Some((line, byte)) = self.resolve(pos) else {
+            return;
+        };
+        let pane = target.pane_id;
+        let _ = target.view.update(cx, |view, cx| {
+            view.app
+                .dispatch_action(lattice_host::action::Action::MouseGoto {
+                    pane,
+                    line,
+                    byte,
+                    extend,
+                });
+            cx.notify();
+        });
+    }
+}
+
+/// The x origin of display column `col` on a row.
+///
+/// Extracted so `paint`'s `col_x` and MO.2's click inverse read ONE
+/// expression. Two things live in here that a naive `advance * col`
+/// misses, and each is a class of click landing in the wrong place:
+/// per-token scaling on a heading row (the advance is not uniform
+/// across the row), and horizontal scroll (`leftcol` pans ordinary
+/// rows left).
+pub(crate) fn column_origin_x(
+    split: Option<&ColumnScale>,
+    col: u32,
+    text_origin_x: Pixels,
+    advance: Pixels,
+    leftcol: u32,
+) -> Pixels {
+    match split.filter(|s| !s.is_empty()) {
+        // Scaled rows: sum each preceding piece's scaled advance.
+        // No h-scroll offset on scaled content yet (follow-up).
+        Some(sl) => text_origin_x + sl.x_offset(col, advance),
+        // Ordinary rows pan left by `leftcol` (wrap off).
+        None => text_origin_x + advance * (col.saturating_sub(leftcol) as f32),
+    }
+}
+
+/// MO.2: which display column an x coordinate falls in — the inverse of
+/// [`column_origin_x`], and derived from it by binary search for the
+/// same reason every other inverse in this feature is: it cannot
+/// disagree with where the glyph was painted, because it *is* the
+/// function that placed it. A scaled heading row and a horizontally
+/// scrolled row come out right without this knowing what either is.
+///
+/// Returns the column the x is *inside*, which is conventional caret
+/// placement for a click, and clamps to `max_col` for an x past the end
+/// of the row's text — a window reports a position for every pixel in
+/// the pane, so that is the ordinary case.
+pub(crate) fn x_to_column(
+    split: Option<&ColumnScale>,
+    x: Pixels,
+    text_origin_x: Pixels,
+    advance: Pixels,
+    leftcol: u32,
+    max_col: u32,
+) -> u32 {
+    let mut lo = 0u32;
+    let mut hi = max_col;
+    while lo < hi {
+        // Bias up so `lo = mid` advances; rounding down fails to
+        // terminate on `hi == lo + 1`.
+        let mid = lo + (hi - lo).div_ceil(2);
+        if column_origin_x(split, mid, text_origin_x, advance, leftcol) <= x {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    lo
 }
 
 /// Convert a utf-8 byte offset within `line` to a char column in
@@ -4822,5 +5076,96 @@ mod tests {
             0xb,
         );
         assert_eq!(out, vec![(0, 5, 0xa), (1, 4, 0xb)]);
+    }
+
+    // ── MO.2: the column ↔ x inverse ──────────────────────────────
+
+    fn px(v: f32) -> Pixels {
+        gpui::px(v)
+    }
+
+    /// On an ordinary row the inverse is the plain division, and a click
+    /// inside a cell lands on that cell rather than the next one.
+    #[test]
+    fn x_to_column_is_the_plain_division_on_an_unscaled_row() {
+        let (origin, adv) = (px(100.0), px(10.0));
+        for col in 0..8u32 {
+            let x = column_origin_x(None, col, origin, adv, 0);
+            assert_eq!(x_to_column(None, x, origin, adv, 0, 20), col);
+            // …and anywhere inside the cell resolves to the same column.
+            assert_eq!(x_to_column(None, x + px(9.0), origin, adv, 0, 20), col);
+        }
+    }
+
+    /// Horizontal scroll pans the row, and the inverse pans with it:
+    /// the left edge of a row scrolled by 5 is column 5, not column 0.
+    #[test]
+    fn x_to_column_accounts_for_horizontal_scroll() {
+        let (origin, adv) = (px(100.0), px(10.0));
+        assert_eq!(x_to_column(None, origin, origin, adv, 5, 50), 5);
+        assert_eq!(x_to_column(None, origin + px(20.0), origin, adv, 5, 50), 7);
+    }
+
+    /// **A scaled heading row.** Its glyphs are wider, so a uniform
+    /// division would drift further right the further along the row you
+    /// click — landing several columns off by the end of a heading.
+    /// Inverting the same walk that placed the glyphs cannot drift.
+    #[test]
+    fn x_to_column_follows_a_scaled_rows_own_advance() {
+        // `## ` at base size, then a 2× title.
+        let scale = ColumnScale {
+            pieces: vec![(0, 3, 1.0), (3, 10, 2.0)],
+        };
+        let (origin, adv) = (px(0.0), px(10.0));
+
+        for col in 0..13u32 {
+            let x = column_origin_x(Some(&scale), col, origin, adv, 0);
+            assert_eq!(
+                x_to_column(Some(&scale), x, origin, adv, 0, 13),
+                col,
+                "column {col} sits at x {x:?} and must come back"
+            );
+        }
+        // The drift a uniform division would produce, stated concretely:
+        // column 10 is 3 base cells + 7 double cells = 170px, which a
+        // uniform 10px walk would call column 17.
+        assert_eq!(column_origin_x(Some(&scale), 10, origin, adv, 0), px(170.0));
+        assert_eq!(x_to_column(Some(&scale), px(170.0), origin, adv, 0, 13), 10);
+    }
+
+    /// An x past the end of the row's text clamps to its last column —
+    /// the ordinary case, since a window reports a position for every
+    /// pixel in the pane, not only the ones with glyphs under them.
+    #[test]
+    fn x_past_the_end_of_a_row_clamps_to_its_last_column() {
+        let (origin, adv) = (px(0.0), px(10.0));
+        assert_eq!(x_to_column(None, px(9999.0), origin, adv, 0, 12), 12);
+    }
+
+    /// An x left of the text origin — a click on the gutter — clamps to
+    /// column 0 rather than going negative.
+    #[test]
+    fn x_left_of_the_text_clamps_to_column_zero() {
+        let (origin, adv) = (px(100.0), px(10.0));
+        assert_eq!(x_to_column(None, px(0.0), origin, adv, 0, 12), 0);
+    }
+
+    /// `ScaledLine::x_offset` and the click inverse must walk the same
+    /// pieces — that is the whole point of `column_scale()`, and a
+    /// divergence would put the caret and the click in different places
+    /// on exactly the rows (headings) where it is most visible.
+    #[test]
+    fn the_scale_view_agrees_with_the_shaped_lines_own_offsets() {
+        let scale = ColumnScale {
+            pieces: vec![(0, 2, 1.0), (2, 6, 1.5)],
+        };
+        let adv = px(8.0);
+        // Hand-computed: 2 base cells, then 1.5× cells.
+        assert_eq!(scale.x_offset(0, adv), px(0.0));
+        assert_eq!(scale.x_offset(2, adv), px(16.0));
+        assert_eq!(scale.x_offset(4, adv), px(16.0 + 24.0));
+        assert_eq!(scale.x_offset(8, adv), px(16.0 + 72.0));
+        // …and past the end it stops growing rather than extrapolating.
+        assert_eq!(scale.x_offset(99, adv), px(16.0 + 72.0));
     }
 }

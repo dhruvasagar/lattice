@@ -716,11 +716,30 @@ way §5.4's `C-c C-c` does:
 
 | At point | `<M-CR>` | `<M-S-CR>` |
 |---|---|---|
-| checkbox item | new checkbox item, same indent | new *plain* item |
+| checkbox item | new **plain** item, same indent | new checkbox item |
 | plain list item | new plain item | new **checkbox** item |
 | headline | new sibling, after the subtree | new sibling with the first TODO keyword |
 | table row | declines — `table-mode` owns it | — |
 | preamble / prose | `Effect::None` | — |
+
+**The box belongs to the chord, not to the item.** `<M-CR>` never inserts
+one; `<M-S-CR>` always does. That is org's own rule rather than a
+simplification of it: `org-meta-return` reaches an item through
+`(call-interactively #'org-insert-item)`, so the `checkbox` argument is
+the prefix arg — nil — and `org-list-insert-item` builds the bullet from
+`(and checkbox "[ ]")`; `org-insert-todo-heading` calls
+`(org-insert-item 'checkbox)` and documents it ("When called at a plain
+list item, insert a new item with an unchecked check box"). The new box
+is empty whichever way it arrives — copying `[X]` would tick a task
+nobody has done.
+
+The checkbox row read the other way round until 2026-09-14: `<M-CR>`
+mirrored the item's own shape and `<M-S-CR>` inverted it, so the pair
+meant "same kind" / "other kind". The symmetry is tidier than org and
+loses to it on the UX-convention rule — on a checkbox list, which is
+where org users press these most, it made `<M-CR>` do `<M-S-CR>`'s job
+and left `<M-S-CR>` — the chord whose name means *give me a checkbox* —
+taking the box away.
 
 The Meta-arrows dispatch the same way: on a headline `<M-Right>` demotes,
 on a list item it indents.

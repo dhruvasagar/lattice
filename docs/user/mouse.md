@@ -7,6 +7,7 @@ Lattice reads the mouse in both the terminal and the GPUI window.
 | Wheel / trackpad scroll | Scrolls the pane **under the pointer**, three lines a notch |
 | Left click | Moves the cursor there, and focuses that pane |
 | Left drag | Selects, in Visual mode |
+| Click a link | Follows it |
 | Click a modeline element | Runs whatever that element declares |
 
 ## Scrolling doesn't steal focus
@@ -34,6 +35,19 @@ on it:
 Drag from where you want the selection to start; the anchor stays put
 while you move. A plain click ends the selection, as it does anywhere
 else.
+
+## Clicking links
+
+In buffers that carry links — the dashboard, help pages — clicking a
+link follows it. Clicking anywhere else just moves the cursor, so
+ordinary text stays ordinary text.
+
+Dragging **across** a link selects it instead of following it, which is
+how you copy a link's text.
+
+The file tree and oil buffers deliberately don't work this way: a click
+there moves the cursor, and `<CR>` opens the entry under it. Otherwise
+you could never click a row without opening it.
 
 ## Turning it off
 
@@ -72,5 +86,6 @@ for the mouse costs you nothing there.
 - **Clicking in the gutter**, on a fold marker, or on a sticky-context
   header. These are inert for now. Scrolling over them works, because
   the pane underneath is still the pane.
-- **Click and drag in the GPUI window.** Scrolling works there; cursor
-  positioning is terminal-only so far.
+- **Links in the help popup.** `:help` currently opens as a floating
+  popup rather than a pane, and clicks don't reach it yet. Links in the
+  dashboard, and in help opened into a pane, work.

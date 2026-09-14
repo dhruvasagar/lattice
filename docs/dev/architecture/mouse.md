@@ -123,6 +123,43 @@ knows nothing about cells or pixels. Same shape as keys, which reach
   see. Snapping exists for paths that move the cursor blind to fold
   state; applied here it would move the caret off the clicked line.
 
+### 3.1 Clicking a link (MO.3)
+
+A press **on a link** follows it; a press anywhere else positions.
+Emacs's `mouse-1-click-follows-link`, and what every help viewer and
+browser does.
+
+The gate is `Editor::help_link_at(pos).is_some()` — a *property*, not a
+`BufferKind` test, and that is what makes one rule correct in four
+places at once:
+
+- **help / dashboard** seed `HelpLinks` ranges at creation → a click on
+  a label follows, a click on body text does not;
+- **oil / file tree** seed none. Their `<CR>` follow is a different
+  gesture over a different table, and a click must stay a plain cursor
+  move rather than opening whatever row it landed on;
+- **a document** has none either.
+
+A kind test would have had to name all four and would have got oil
+wrong. It is also why the gate exists at all rather than calling the
+follow unconditionally: `do_help_follow_link` echoes "no link under
+cursor" on a miss, so an ungated call would put that in the echo area on
+every click on ordinary text.
+
+**Not on a drag.** Extending a selection across a link is how you copy
+its text; following on the way past would make that impossible, and
+would fire once per move event.
+
+Both peers get this without either one knowing about it — they dispatch
+`MouseGoto` and the follow lives in the host's arm.
+
+**Help-as-popup is the gap.** The rule reaches any link buffer living in
+a *pane* (the dashboard, `:help` opened into one). The transient help
+popup paints outside `draw_panes`, so no `PaneHitZone` covers it and a
+click there is inert. Fixing it properly is the queued "help moves into
+the buffer registry" work, not a popup special-case in the mouse path —
+that case would be deleted by the move.
+
 Positions are clamped host-side rather than trusted. A click past the
 last row is an ordinary gesture — terminals report a cell for every
 row, including blank ones — not a bug to propagate into a cursor.

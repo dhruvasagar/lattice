@@ -280,3 +280,145 @@ fn a_press_in_a_vanished_pane_is_ignored() {
 
     assert_eq!(editor.cursor.line, 5, "the live pane's cursor is untouched");
 }
+
+// ── MO.3: clicking a link ────────────────────────────────────────────
+//
+// **A press ON a link follows it; a press anywhere else positions.**
+// Emacs's `mouse-1-click-follows-link`, and what every help viewer does.
+//
+// The rule is gated on a link actually being under the position rather
+// than on the buffer's kind, which is what makes one rule correct in
+// four places at once: help and dashboard seed link ranges, oil and the
+// file tree seed none — their `<CR>` follow is a different gesture over
+// a different table, and a click there has to stay a plain cursor move
+// rather than opening whatever it landed on — and a document has none
+// either. A kind test would have had to name all four and would have
+// got oil wrong.
+mod clicking_a_link {
+    use lattice_grammar::Effect;
+    use lattice_help::HelpLinkTarget;
+    use lattice_host::action::Action;
+    use lattice_host::modes::HelpLinks;
+
+    use super::*;
+
+    /// Open the dashboard and return the position of a link that runs
+    /// `:tutor`, plus a position that is on no link at all.
+    fn dashboard_with_a_link(editor: &mut Editor) -> lattice_protocol::position::Position {
+        editor.do_open_dashboard();
+        let id = editor.buffers.by_name("*dashboard*").unwrap();
+        editor
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<HelpLinks>())
+            .and_then(|hl| {
+                hl.0.iter()
+                    .find(|l| matches!(&l.target, HelpLinkTarget::Execute(c) if c == "tutor"))
+                    .map(|l| l.range.start)
+            })
+            .expect("the dashboard seeds a `:tutor` link")
+    }
+
+    fn followed_the_tutor_link(outcome: &lattice_host::dispatch::DispatchOutcome) -> bool {
+        outcome
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::Tutor { lesson: None }))
+    }
+
+    /// The reported ask: clicking a link navigates.
+    #[test]
+    fn a_press_on_a_link_follows_it() {
+        let mut editor = boot("scratch\n");
+        let at = dashboard_with_a_link(&mut editor);
+        let pane = active(&editor);
+
+        let outcome = editor.dispatch(Action::MouseGoto {
+            pane,
+            line: at.line,
+            byte: at.byte,
+            extend: false,
+        });
+
+        assert!(
+            followed_the_tutor_link(&outcome),
+            "clicking the `:tutor` link should follow it"
+        );
+    }
+
+    /// …and clicking ordinary text does not, **and says nothing about
+    /// it**. Following unconditionally would have worked and echoed "no
+    /// link under cursor" on every click on body text, which is why the
+    /// gate reads the link table rather than letting the follow report a
+    /// miss.
+    #[test]
+    fn a_press_off_a_link_just_moves_the_cursor() {
+        let mut editor = boot("scratch\n");
+        let at = dashboard_with_a_link(&mut editor);
+        let pane = active(&editor);
+        // A column well right of any link label on that row.
+        let off = at.byte + 400;
+        // Opening the dashboard echoed its own "switched to buffer"
+        // line; clear it so what follows is about the click alone.
+        editor.last_message = None;
+
+        let outcome = editor.dispatch(Action::MouseGoto {
+            pane,
+            line: at.line,
+            byte: off,
+            extend: false,
+        });
+
+        assert!(
+            !followed_the_tutor_link(&outcome),
+            "a click off the link must not follow it"
+        );
+        assert_eq!(
+            editor.last_message.as_ref().map(|m| m.text.as_str()),
+            None,
+            "and must not echo `no link under cursor` at the user"
+        );
+    }
+
+    /// **A drag over a link selects it rather than activating it.** A
+    /// drag is how you copy a link's text, so following on the way past
+    /// would make that impossible — and would fire repeatedly, once per
+    /// move event.
+    #[test]
+    fn a_drag_across_a_link_does_not_follow_it() {
+        let mut editor = boot("scratch\n");
+        let at = dashboard_with_a_link(&mut editor);
+        let pane = active(&editor);
+
+        let outcome = editor.dispatch(Action::MouseGoto {
+            pane,
+            line: at.line,
+            byte: at.byte,
+            extend: true,
+        });
+
+        assert!(
+            !followed_the_tutor_link(&outcome),
+            "extending a selection over a link is selecting, not clicking"
+        );
+    }
+
+    /// A plain document has no link table, so a click is only ever a
+    /// cursor move. This is the case a `BufferKind` gate would have had
+    /// to remember; the property gate gets it for free.
+    #[test]
+    fn a_press_in_a_document_never_follows_anything() {
+        let mut editor = boot(&numbered(20));
+        let pane = active(&editor);
+
+        let outcome = editor.dispatch(Action::MouseGoto {
+            pane,
+            line: 3,
+            byte: 0,
+            extend: false,
+        });
+
+        assert!(outcome.effects.is_empty(), "a document click emits nothing");
+        assert_eq!(editor.cursor.line, 3);
+    }
+}

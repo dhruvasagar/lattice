@@ -2790,7 +2790,26 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             line,
             byte,
             extend,
-        } => editor.do_mouse_goto(pane, line, byte, extend),
+        } => {
+            editor.do_mouse_goto(pane, line, byte, extend);
+            // MO.3: a press ON a link follows it; a press anywhere else
+            // just positions. Emacs's `mouse-1-click-follows-link`, and
+            // what every help viewer and browser does.
+            //
+            // Gated on a link actually being there, which is what keeps
+            // this one rule correct in four different buffers without
+            // naming any of them: help and dashboard have link ranges,
+            // oil and the file tree have none (their `<CR>` follow is a
+            // different gesture, and a click there must stay a plain
+            // cursor move rather than opening whatever it landed on),
+            // and a document has none either.
+            //
+            // Not on a drag: extending a selection over a link is
+            // selecting text, not activating it.
+            if !extend && editor.help_link_at(editor.cursor).is_some() {
+                editor.do_help_follow_link(_out);
+            }
+        }
         Action::GotoNextFold => editor.do_goto_fold(true),
         Action::GotoPrevFold => editor.do_goto_fold(false),
         Action::StartMacroRecord(reg) => editor.do_start_macro_record(reg),
@@ -3463,6 +3482,28 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // explicitly handled. The match is exhaustive — a future
     // variant becomes a compile error rather than a silent miss,
     // which is the louder signal.
+}
+
+/// Range-containment with the same semantics as the help link table:
+/// cursor-on-byte inside `[start, end)`, walking across multi-line
+/// labels.
+fn help_range_contains(
+    r: &lattice_protocol::position::Range,
+    pos: lattice_protocol::position::Position,
+) -> bool {
+    if pos.line == r.start.line && pos.line == r.end.line {
+        return pos.byte >= r.start.byte && pos.byte < r.end.byte;
+    }
+    if pos.line < r.start.line || pos.line > r.end.line {
+        return false;
+    }
+    if pos.line == r.start.line {
+        return pos.byte >= r.start.byte;
+    }
+    if pos.line == r.end.line {
+        return pos.byte < r.end.byte;
+    }
+    true
 }
 
 /// Wire-typed projection of [`EchoLevel`]. Used by [`Editor::set_message`]
@@ -31171,32 +31212,26 @@ impl Editor {
     /// Hoisted from `lattice-ui-tui::app::help::do_help_follow_link`
     /// in 2026-05-27 so both renderer peers route `<CR>` through one
     /// host-side dispatcher.
-    pub fn do_help_follow_link(&mut self, out: &mut DispatchOutcome) {
-        use crate::state::PositionSource;
-        use lattice_help::HelpLinkTarget;
-
-        // Range-containment with the same semantics as the help link
-        // table: cursor-on-byte inside `[start, end)`, walking across
-        // multi-line labels.
-        fn range_contains(
-            r: &lattice_protocol::position::Range,
-            pos: lattice_protocol::position::Position,
-        ) -> bool {
-            if pos.line == r.start.line && pos.line == r.end.line {
-                return pos.byte >= r.start.byte && pos.byte < r.end.byte;
-            }
-            if pos.line < r.start.line || pos.line > r.end.line {
-                return false;
-            }
-            if pos.line == r.start.line {
-                return pos.byte >= r.start.byte;
-            }
-            if pos.line == r.end.line {
-                return pos.byte < r.end.byte;
-            }
-            true
-        }
-
+    /// The help/dashboard link covering `pos`, if any.
+    ///
+    /// Extracted from [`Self::do_help_follow_link`] so the mouse can ask
+    /// *whether* there is a link before deciding a click means "follow"
+    /// rather than "position". Calling the follow unconditionally would
+    /// have worked but echoed "no link under cursor" on every click on
+    /// ordinary text, which is exactly the noise the `debug!`-vs-`info!`
+    /// rule exists to keep out of the echo area.
+    ///
+    /// It is also what keeps the mouse path free of a `BufferKind`
+    /// test. A buffer either has link ranges here or it does not: help
+    /// and dashboard seed `HelpLinks` at creation, oil and the file tree
+    /// never do (their `<CR>` follow is a different gesture over a
+    /// different table), and a document has none. So "click a link to
+    /// follow it" is one rule that lands correctly in all four without
+    /// naming any of them.
+    pub fn help_link_at(
+        &self,
+        pos: lattice_protocol::position::Position,
+    ) -> Option<lattice_help::HelpLink> {
         // Not in a help context: nothing to follow. Dashboard groups with
         // Help here (dashboard.md §9.2) — it's a read-only, link-bearing,
         // help-style buffer whose HelpLinks local is seeded at creation, so
@@ -31206,9 +31241,8 @@ impl Editor {
         if self.popup_buffer.is_none()
             && !matches!(self.active_buffer, BufferKind::Help | BufferKind::Dashboard)
         {
-            return;
+            return None;
         }
-        let cursor = self.cursor;
         let popup_id = self.popup_buffer;
         let pane_id = self.active_pane_buffer_id();
 
@@ -31221,17 +31255,29 @@ impl Editor {
                 .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
                 .and_then(|hl| {
                     hl.0.iter()
-                        .find(|l| range_contains(&l.range, cursor))
+                        .find(|l| help_range_contains(&l.range, pos))
                         .cloned()
                 })
         };
-        let link = popup_id.and_then(find_link).or_else(|| {
+        popup_id.and_then(&find_link).or_else(|| {
             if Some(pane_id) == popup_id {
                 None
             } else {
                 find_link(pane_id)
             }
-        });
+        })
+    }
+
+    pub fn do_help_follow_link(&mut self, out: &mut DispatchOutcome) {
+        use crate::state::PositionSource;
+        use lattice_help::HelpLinkTarget;
+
+        let cursor = self.cursor;
+        let link = self.help_link_at(cursor);
+        // Still needed below by the anchor lookup, which resolves a
+        // `Topic`'s `#fragment` against the same two buffer ids.
+        let popup_id = self.popup_buffer;
+        let pane_id = self.active_pane_buffer_id();
         let Some(link) = link else {
             self.set_message(EchoLevel::Info, "no link under cursor".to_string());
             return;

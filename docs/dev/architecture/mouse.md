@@ -235,11 +235,15 @@ backwards:
   snapping forward to the anchor. The old answer put the caret three
   columns right of the click, because the forward map draws the anchor
   byte on the far side of the hint.
-- **Six `editor_element` gutter tests fail under `--features window`,
-  and pre-date MO.2** (verified by stashing). They are invisible to
-  `scripts/precommit.sh`, which never builds that feature — so the GPUI
-  peer's window-gated tests are effectively ungated. Worth closing
-  separately; it is a gate gap, not a mouse one.
+- ~~Seven `lattice-ui-gpui` tests fail under `--features window`.~~
+  Fixed 2026-09-14, along with the reason nobody knew: `scripts/precommit.sh`
+  never built that feature, so the crate reported green while a quarter
+  of its suite was red. The gate now turns the feature on whenever that
+  crate is in scope — it is the only crate in the workspace whose
+  default build is a subset of itself. Both failures were stale TESTS,
+  not stale code: six gutter ones restating a width formula that
+  `c9236c61` changed, and one asserting that an inlay run ignores its
+  style, which `DL.3a` stopped being true.
 - **No `mousescroll` option.** Three lines is a constant with one named
   home, so the option has an obvious thing to replace. GPUI converts a
   pixel delta through `row_px` so a trackpad and a wheel travel the

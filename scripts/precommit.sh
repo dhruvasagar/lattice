@@ -24,6 +24,23 @@ fi
 fail=0
 say() { printf '\n=== %s\n' "$1"; }
 
+# `lattice-ui-gpui`'s real code is behind `--features window`: the
+# `EditorElement` paint path, the gutter formatter, the cells->runs
+# converter and their tests are all `#[cfg(feature = "window")]`. A
+# plain `-p lattice-ui-gpui` compiles none of it, so for a month this
+# gate reported that crate GREEN while seven of its tests were red --
+# six gutter ones stale since c9236c61 added a leading pad and updated
+# the fixtures it broke but not these, and one stale since DL.3a stopped
+# inlay runs ignoring their style. Neither could be noticed, because
+# neither was ever built.
+#
+# So: turn the feature on whenever that crate is in scope. It is the
+# only crate in the workspace whose default build is a subset of itself.
+FEATURES=()
+case " $SCOPE " in
+    *" lattice-ui-gpui "*|" workspace ") FEATURES=(--features lattice-ui-gpui/window) ;;
+esac
+
 # Refuse to run beside another cargo job.
 #
 # Parts of this suite settle by POLLING with a timeout (`settle_mode`
@@ -52,7 +69,7 @@ else
 fi
 
 say "2/3  warnings in $SCOPE"
-json=$(cargo clippy "${PKGS[@]}" --all-targets --message-format=json 2>/dev/null)
+json=$(cargo clippy "${PKGS[@]}" ${FEATURES[@]+"${FEATURES[@]}"} --all-targets --message-format=json 2>/dev/null)
 printf '%s' "$json" | ONLY="$ONLY" python3 -c '
 import sys, json, collections, os
 # Restrict to the named crates own files when a scope was given.
@@ -110,7 +127,7 @@ sys.exit(bad)
 ' || fail=1
 
 say "3/3  tests in $SCOPE"
-if cargo test "${PKGS[@]}" >/tmp/lattice-precommit-tests.log 2>&1; then
+if cargo test "${PKGS[@]}" ${FEATURES[@]+"${FEATURES[@]}"} >/tmp/lattice-precommit-tests.log 2>&1; then
     # Sum across every suite. `tail -1` alone lands on the doc-test line,
     # which is usually "0 passed" and reads like nothing ran.
     awk '/^test result: ok/ { n += $4 } END { printf "  %d tests passed — green\n", n }' \

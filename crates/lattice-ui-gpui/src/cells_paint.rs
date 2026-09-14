@@ -625,8 +625,7 @@ mod tests {
     fn display_line_resolves_keyword_and_inlay_runs() {
         use lattice_host::display_matrix::{DisplayLine, DisplayRun};
         use lattice_host::ui::theme::{
-            BuiltinElementIds, Color, InMemoryThemeRegistry, NamedColor, ThemeRegistry as _,
-            resolve_syntax_style,
+            BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _, resolve_syntax_style,
         };
         // T.5.b: resolve through the default registry's resolved table.
         let reg = InMemoryThemeRegistry::with_defaults();
@@ -636,7 +635,15 @@ mod tests {
             .fg
             .map(|c| c.to_rgb_u32(0))
             .unwrap_or(0);
-        let inlay_fg = Color::Named(NamedColor::DarkGray).to_rgb_u32(0);
+        // DL.3a: an inlay run resolves through the `inlay.hint` element
+        // like every other style, rather than through a hardcoded
+        // `DarkGray`. Resolved here the same way the production path
+        // does it, so the test cannot re-freeze a literal that the theme
+        // is free to change.
+        let inlay_fg = resolve_syntax_style(&resolved, &ids, lattice_syntax::Style::InlayHint)
+            .fg
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
         // "fn" (Keyword) followed by ": i32" (inlay-spliced virtual text).
         let text = "fn: i32";
         let line = DisplayLine {
@@ -650,9 +657,13 @@ mod tests {
                         flags: 0,
                         refine: None,
                     },
+                    // DL.3a: a real LSP hint carries `Style::InlayHint`.
+                    // Tagged `Default` here, this test asserted that an
+                    // inlay run ignores its style — which is exactly what
+                    // DL.3a stopped being true.
                     DisplayRun {
                         len: 5,
-                        style: lattice_syntax::Style::Default,
+                        style: lattice_syntax::Style::InlayHint,
                         flags: cell_flags::INLAY,
                         refine: None,
                     },

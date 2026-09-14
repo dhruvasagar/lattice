@@ -1182,9 +1182,7 @@ impl Element for EditorElement {
                 // The leading pad exists only alongside the digits —
                 // `gutter_width` is 0 exactly when `number` is off, which
                 // is the same gate the TUI and `gutter_cols` use.
-                let num_pad = usize::from(self.gutter_width > 0);
-                let sign_cells = if self.sign_column { 2 } else { 0 };
-                sign_cells + self.gutter_width + num_pad + 3
+                gutter_cells(self.gutter_width, self.sign_column)
             };
         let gutter_width_px: Pixels = glyph_advance * (gutter_chars as f32);
 
@@ -4139,6 +4137,29 @@ fn virtual_row_gutter_text(gutter_line: Option<u32>, gutter_width: usize) -> Str
     format!("{:lead$}{num}   ", "", lead = lead)
 }
 
+/// Columns a gutter row occupies: sign cells + digits + the leading pad
+/// + the three trailing cells.
+///
+/// Extracted 2026-09-14 because the copy of this formula that lived in
+/// `gutter_text_width_matches_reserved_chars` went stale and nothing
+/// said so. `c9236c61` added the leading pad to the production path (to
+/// stop this peer wrapping a column narrower than the TUI and the host)
+/// and updated the six FIXTURES it broke, but not the six unit tests —
+/// which are `#[cfg(feature = "window")]` and so are never built by
+/// `scripts/precommit.sh`. A test that restates a formula instead of
+/// calling it can only be as current as the last person to remember it.
+///
+/// `format_gutter_text` must produce exactly this many chars, and
+/// `gutter_text_width_matches_reserved_chars` is what says so.
+pub(crate) fn gutter_cells(gutter_width: usize, sign_column: bool) -> usize {
+    // The pad exists only alongside the digits — `gutter_width` is 0
+    // exactly when `number` is off, the same gate the TUI and
+    // `cells_worker::gutter_cols` use.
+    let num_pad = usize::from(gutter_width > 0);
+    let sign_cells = if sign_column { 2 } else { 0 };
+    sign_cells + gutter_width + num_pad + 3
+}
+
 fn format_gutter_text(
     meta: &GutterLineMeta,
     gutter_width: usize,
@@ -4497,8 +4518,8 @@ mod tests {
         };
         let gutter_width = 3usize;
         for &sign in &[false, true] {
-            let sign_cells = if sign { 2 } else { 0 };
-            let reserved = sign_cells + gutter_width + 3;
+            // Derived, not restated — see `gutter_cells`.
+            let reserved = gutter_cells(gutter_width, sign);
             assert_eq!(
                 format_gutter_text(&doc, gutter_width, sign, true)
                     .chars()
@@ -4690,9 +4711,14 @@ mod tests {
             diff_sign: None,
             is_virtual: false,
         };
-        // {sev}{diff}{num:>3} {fold} = "  " + "  1" + " " + " " + " "
-        // = "    1   " (8 chars): fold marker now trails the number.
-        assert_eq!(format_gutter_text(&meta, 3, true, true), "    1   ");
+        // {sev}{diff}{pad}{num:>3} {fold} = "  " + " " + "  1" + " "
+        // + " " + " " = "     1   " (9 chars): the leading pad is
+        // `c9236c61`'s, and the fold marker trails the number.
+        assert_eq!(format_gutter_text(&meta, 3, true, true), "     1   ");
+        assert_eq!(
+            format_gutter_text(&meta, 3, true, true).chars().count(),
+            gutter_cells(3, true)
+        );
     }
 
     #[test]
@@ -4706,9 +4732,10 @@ mod tests {
             diff_sign: None,
             is_virtual: false,
         };
-        // {sev}{diff}{num:>3} {fold} = "  " + " 42" + " " + "▸" + " "
-        // = "   42 ▸ " (8 chars): the glyph sits AFTER the number now.
-        assert_eq!(format_gutter_text(&meta, 3, true, true), "   42 ▸ ");
+        // {sev}{diff}{pad}{num:>3} {fold} = "  " + " " + " 42" + " "
+        // + "▸" + " " = "    42 ▸ " (9 chars): the glyph sits AFTER the
+        // number, and the leading pad is `c9236c61`'s.
+        assert_eq!(format_gutter_text(&meta, 3, true, true), "    42 ▸ ");
     }
 
     #[test]
@@ -4750,8 +4777,9 @@ mod tests {
             diff_sign: None,
             is_virtual: false,
         };
-        // 'E' + ' ' (diff) + "10" + ' ' + ' ' (fold) + ' ' = "E 10   ".
-        assert_eq!(format_gutter_text(&meta, 2, true, true), "E 10   ");
+        // 'E' + ' ' (diff) + ' ' (pad) + "10" + ' ' + ' ' (fold) + ' '
+        // = "E  10   ".
+        assert_eq!(format_gutter_text(&meta, 2, true, true), "E  10   ");
     }
 
     #[test]
@@ -4765,17 +4793,17 @@ mod tests {
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
         };
-        // D.3.d.2: ' ' (sev) + '+' (diff) + "10" + ' ' + ' ' (fold) + ' '
-        // = " +10   ".
-        assert_eq!(format_gutter_text(&meta, 2, true, true), " +10   ");
+        // D.3.d.2: ' ' (sev) + '+' (diff) + ' ' (pad) + "10" + ' '
+        // + ' ' (fold) + ' ' = " + 10   ".
+        assert_eq!(format_gutter_text(&meta, 2, true, true), " + 10   ");
     }
 
     #[test]
     fn gutter_text_signcolumn_no_drops_severity_and_diff_cells() {
         // PU.1b-1a: with `signcolumn=no` the severity + diff cells are
         // gone even when a diagnostic + hunk touch the line. Gutter is
-        // line-number + separator + fold + trail: "10" + ' ' + ' ' + ' '
-        // = "10   ".
+        // pad + line-number + separator + fold + trail: ' ' + "10"
+        // + ' ' + ' ' + ' ' = " 10   ".
         let meta = GutterLineMeta {
             line_idx: 9,
             display_line: 9,
@@ -4785,15 +4813,15 @@ mod tests {
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
         };
-        assert_eq!(format_gutter_text(&meta, 2, false, true), "10   ");
+        assert_eq!(format_gutter_text(&meta, 2, false, true), " 10   ");
         // The reserved (default) form keeps both sign cells.
-        assert_eq!(format_gutter_text(&meta, 2, true, true), "E+10   ");
+        assert_eq!(format_gutter_text(&meta, 2, true, true), "E+ 10   ");
         // build_gutter_runs must not mis-slice the gated text: with no
         // sign cells the runs are (line-number+separator), (fold slot),
         // (trailing gap) = 3 runs summing to the full text length.
-        let runs = build_gutter_runs("10   ", &meta, gpui::font("monospace"), false);
+        let runs = build_gutter_runs(" 10   ", &meta, gpui::font("monospace"), false);
         assert_eq!(runs.len(), 3);
-        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), "10   ".len());
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), " 10   ".len());
     }
 
     #[test]

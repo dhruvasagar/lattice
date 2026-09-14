@@ -2060,21 +2060,20 @@ impl EditorView {
             }
             (columns, signs_rs)
         };
-        // T.6.t: hoist the four severity glyphs out of the per-line
-        // closure — one typed-option read each instead of O(viewport)
-        // lookups. The *style* still resolves per-line from the table.
-        let glyph_error = diagnostic_glyph_option::<
-            lattice_host::ui::theme_options::UiDiagnosticErrorGlyph,
-        >(&config, '■');
-        let glyph_warning = diagnostic_glyph_option::<
-            lattice_host::ui::theme_options::UiDiagnosticWarningGlyph,
-        >(&config, '▲');
-        let glyph_info = diagnostic_glyph_option::<
-            lattice_host::ui::theme_options::UiDiagnosticInfoGlyph,
-        >(&config, '●');
-        let glyph_hint = diagnostic_glyph_option::<
-            lattice_host::ui::theme_options::UiDiagnosticHintGlyph,
-        >(&config, '·');
+        // T.6.t hoisted the four severity glyphs to here — one typed-option
+        // read each instead of O(viewport) lookups — and a later change
+        // routed every read through `diagnostic_glyph_and_color`, which
+        // does its own lookup per call. The four bindings have been dead
+        // since; deleted 2026-09-14 when turning `--features window` on in
+        // `scripts/precommit.sh` finally surfaced the warnings.
+        //
+        // NOTE, deliberately left rather than quietly fixed: the hoist's
+        // PURPOSE is still defeated. `diagnostic_glyph_and_color` is called
+        // once per diagnostic when building underlines (~line 2522), so the
+        // per-frame typed-option reads T.6.t removed are back, just spelled
+        // differently. Restoring it means threading the resolved glyphs into
+        // that helper, which is a signature change and a perf claim worth
+        // measuring, not a warning fix.
         // SG.2b: hoisted out of the per-line closure — the palette is a
         // property of the session, not of a row, and re-reading it per
         // visible line would put a typed-option lookup on the paint path

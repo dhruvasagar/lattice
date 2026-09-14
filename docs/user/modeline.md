@@ -127,7 +127,7 @@ GPUI window honour it.
 
 In the terminal this rides `ui.mouse`, which is **on by default** — the
 same option that gives the editor body its wheel, click-to-position and
-drag-to-select (see [Mouse](mouse.md)).
+drag-to-select (see [Mouse](help:mouse)).
 
 There is a real cost to it being on, so it is worth knowing about. While
 the editor is reading the mouse, your **terminal** isn't — click-drag

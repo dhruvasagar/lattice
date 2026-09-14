@@ -100,6 +100,7 @@ same surface).
 | Whitespace markers         | [`whitespace-show-mode`](help:whitespace-show-mode) | ✅      |
 | Current-line highlight     | [`current-line-highlight-mode`](help:current-line-highlight-mode) | ✅      |
 | Modeline                   | [`modeline`](help:modeline)              | ✅      |
+| Mouse                      | [`mouse`](help:mouse)                    | ✅      |
 | Themes & colours           | [`themes`](help:themes)                  | ✅      |
 | Surround (`ds`/`cs`/`ys`)  | [`surround-mode`](help:surround-mode)    | ✅      |
 | Terminal buffers           | [`terminal-mode`](help:terminal-mode)    | ✅      |

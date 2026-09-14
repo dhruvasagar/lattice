@@ -23,7 +23,7 @@ use lattice_grammar::{
     ExCommandSpec, GrammarResult, LatencyClass, SurfaceForm,
 };
 
-use crate::PluginLoader;
+use crate::{BulkOp, PluginLoader};
 
 /// Register all three commands into `registry` (called under the loader's
 /// load→clone→register→store RCU in [`PluginLoader::register_ex_commands`]).
@@ -60,6 +60,42 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
          revision declines and says so — the pin is the answer already. Updates \
          asynchronously — completion is reported in `*messages*`.",
         update_spec(Arc::clone(loader)),
+    );
+    registry.register_ex_command(
+        "plugin-rebuild-all",
+        "Rebuild every loaded plugin from the source it already has \
+         (`:plugin-rebuild-all`), then reload each. Plugins with no buildable \
+         source (bundled, prebuilt) are skipped, not failed. Runs one at a \
+         time — `cargo` already uses the whole machine — and one plugin's \
+         failure never stops the rest. Reported in `*messages*`.",
+        bulk_spec(Arc::clone(loader), BulkOp::Rebuild),
+    );
+    registry.register_ex_command(
+        "plugin-reload-all",
+        "Reload every loaded plugin (`:plugin-reload-all`) from the artifact \
+         already on disk — no build, no network. Use after editing something \
+         every plugin reads. One plugin's failure never stops the rest; \
+         reported in `*messages*`.",
+        bulk_spec(Arc::clone(loader), BulkOp::Reload),
+    );
+    registry.register_ex_command(
+        "plugin-update-all",
+        "Update every loaded plugin (`:plugin-update-all`) — bring each source \
+         up to date, rebuild, reload. Pinned plugins are skipped and say so, \
+         since a pin is the answer already. Spelled out rather than left as a \
+         bare `:plugin-update`, which means one named plugin: a command that \
+         rebuilds your whole editor should not be reachable by forgetting an \
+         argument. Reported in `*messages*`.",
+        bulk_spec(Arc::clone(loader), BulkOp::Update),
+    );
+    registry.register_ex_command(
+        "plugin-clean",
+        "List staged plugin directories that nothing loads any more \
+         (`:plugin-clean`); `:plugin-clean!` removes them. A plugin that \
+         FAILED to load is never listed — it is still one you asked for — and \
+         neither is a directory without a `.source` marker, because provenance \
+         is what makes the removal recoverable.",
+        clean_spec(Arc::clone(loader)),
     );
     registry.register_ex_command(
         "reload-config",
@@ -193,6 +229,81 @@ fn update_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
             "Loaded plugin's manifest id or numeric plugin id.",
             "plugin:",
         ),
+        surface_form: SurfaceForm::Keyword,
+    }
+}
+
+/// The word the acknowledgement uses while a bulk run is in flight
+/// (`updating all plugins…`).
+///
+/// The past-tense peer lives on [`BulkOp`] itself, because the loader needs it
+/// for the summary it logs when the run finishes; this one is only ever said
+/// here, on the dispatch path, so it stays here.
+fn progressive(op: BulkOp) -> &'static str {
+    match op {
+        BulkOp::Rebuild => "rebuilding",
+        BulkOp::Reload => "reloading",
+        BulkOp::Update => "updating",
+    }
+}
+
+/// One spec builder over [`BulkOp`] rather than three near-identical
+/// builders: the three differ only in the loader method awaited and the word
+/// the echo uses, and three copies of the spawn-and-echo scaffolding is three
+/// places for them to drift apart.
+fn bulk_spec(loader: Arc<PluginLoader>, op: BulkOp) -> ExCommandSpec {
+    ExCommandSpec {
+        latency_class: LatencyClass::Reflex,
+        accepts_bang: false,
+        accepts_range: false,
+        parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
+        apply: Arc::new(move |_ctx: &ExCommandContext| {
+            loader.spawn_bulk(op);
+            Ok(echo(
+                EchoLevel::Info,
+                format!("{} all plugins…", progressive(op)),
+            ))
+        }),
+        args_schema: Vec::new(),
+        surface_form: SurfaceForm::Keyword,
+    }
+}
+
+fn clean_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
+    ExCommandSpec {
+        latency_class: LatencyClass::Reflex,
+        // The bang is the confirmation. `:plugin-clean` shows you what would
+        // go; `:plugin-clean!` removes it. Vim's own convention for "yes, I
+        // mean it", and it costs no new mechanism.
+        accepts_bang: true,
+        accepts_range: false,
+        parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
+        apply: Arc::new(move |ctx: &ExCommandContext| {
+            let removable = loader.removable_plugin_dirs();
+            if removable.is_empty() {
+                return Ok(echo(EchoLevel::Info, "nothing to clean"));
+            }
+            let names: Vec<String> = removable.into_iter().map(|(n, _)| n).collect();
+            // `ctx.bang`, not a parsed arg: the dispatcher already carries
+            // the bang, and re-encoding it into `Args` would be a second
+            // answer to a question the context has answered.
+            if !ctx.bang {
+                return Ok(echo(
+                    EchoLevel::Info,
+                    format!(
+                        "{} removable: {} — `:plugin-clean!` to remove",
+                        names.len(),
+                        names.join(", ")
+                    ),
+                ));
+            }
+            let report = loader.clean(&names);
+            for (name, why) in report.failures() {
+                tracing::warn!(plugin = %name, error = %why, "plugin clean failed");
+            }
+            Ok(echo(EchoLevel::Info, report.summary("removed")))
+        }),
+        args_schema: Vec::new(),
         surface_form: SurfaceForm::Keyword,
     }
 }

@@ -304,6 +304,10 @@ fn plugin_lifecycle_ex_commands_registered_at_boot() {
         "plugin-unload",
         "plugin-reload",
         "plugin-update",
+        "plugin-rebuild-all",
+        "plugin-reload-all",
+        "plugin-update-all",
+        "plugin-clean",
         "reload-config",
     ] {
         assert!(

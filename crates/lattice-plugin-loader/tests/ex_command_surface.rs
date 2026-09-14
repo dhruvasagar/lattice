@@ -135,7 +135,7 @@ fn echo_text(effect: &Effect) -> (&EchoLevel, &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn all_three_commands_register_with_plain_names() {
+async fn every_loader_command_registers_under_its_plain_name() {
     let base = tempfile::tempdir().unwrap();
     let (_loader, commands) = loader_with_ex_commands(base.path());
     let snapshot = commands.load();
@@ -146,6 +146,10 @@ async fn all_three_commands_register_with_plain_names() {
         "plugin-unload",
         "plugin-reload",
         "plugin-update",
+        "plugin-rebuild-all",
+        "plugin-reload-all",
+        "plugin-update-all",
+        "plugin-clean",
         "reload-config",
     ] {
         assert!(

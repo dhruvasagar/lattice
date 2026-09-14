@@ -219,6 +219,179 @@ enum BuildActivity {
 /// local plugin's source and wants the view to say `stale` without a restart.
 /// It is two small file reads per row, on the `:plugins` refresh path, not a
 /// per-frame cost.
+/// The removable directories under `root`, given the names to keep.
+///
+/// Split from [`PluginLoader::removable_plugin_dirs`] so the rules can be
+/// tested against a real directory tree without a loaded editor behind them —
+/// `default_plugins_dir()` is the user's actual config root, which a test must
+/// never read and certainly never delete from.
+///
+/// Name-ordered, like every other list the manager view reads.
+fn removable_under(
+    root: &std::path::Path,
+    keep: &std::collections::HashSet<String>,
+) -> Vec<(String, std::path::PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, std::path::PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if keep.contains(&name) {
+                return None;
+            }
+            // Clause 4: no provenance, no removal. Re-installing needs a
+            // source to re-install FROM; without one the bytes are the only
+            // copy there is.
+            if !e.path().join(".source").is_file() {
+                tracing::debug!(
+                    plugin = %name,
+                    "clean: skipping a directory with no `.source` marker"
+                );
+                return None;
+            }
+            Some((name, e.path()))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Remove the `names` that still appear in `removable`.
+///
+/// The re-check is the point, not a formality: a confirmation the user left
+/// sitting while a plugin loaded must not delete the plugin that just
+/// arrived. A name that has stopped being removable is `Skipped`, never
+/// deleted and never reported as a failure.
+///
+/// Split from [`PluginLoader::clean`] so that rule is testable without the
+/// real config root behind it.
+fn clean_listed(removable: &[(String, std::path::PathBuf)], names: &[String]) -> BulkReport {
+    let by_name: std::collections::HashMap<&str, &std::path::PathBuf> =
+        removable.iter().map(|(n, p)| (n.as_str(), p)).collect();
+    let mut report = BulkReport::default();
+    for name in names {
+        let leg = match by_name.get(name.as_str()) {
+            None => BulkLeg::Skipped("no longer removable".to_string()),
+            Some(path) => match std::fs::remove_dir_all(path) {
+                Ok(()) => {
+                    tracing::info!(plugin = %name, path = %path.display(), "plugin directory removed");
+                    BulkLeg::Done
+                }
+                Err(e) => BulkLeg::Failed(format!("remove {}: {e}", path.display())),
+            },
+        };
+        report.legs.push((name.clone(), leg));
+    }
+    report
+}
+
+/// Which bulk verb [`PluginLoader::spawn_bulk`] should run.
+///
+/// A tag rather than three `spawn_*` methods: the scaffolding around each —
+/// find the runtime, spawn, log the summary and every failure — is identical,
+/// and the only difference is which `async fn` gets awaited in the middle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BulkOp {
+    /// [`PluginLoader::rebuild_all`].
+    Rebuild,
+    /// [`PluginLoader::reload_all`].
+    Reload,
+    /// [`PluginLoader::update_all`].
+    Update,
+}
+
+impl BulkOp {
+    /// The past-tense word its summary counts with.
+    fn past(self) -> &'static str {
+        match self {
+            BulkOp::Rebuild => "rebuilt",
+            BulkOp::Reload => "reloaded",
+            BulkOp::Update => "updated",
+        }
+    }
+}
+
+/// What a bulk run did to one plugin.
+///
+/// `Skipped` is not `Failed`, and keeping them apart is the whole reason this
+/// is an enum rather than a `Result`. "Pinned, so there was nothing to update"
+/// and "the build broke" both leave the plugin exactly as it was, but only one
+/// of them is something the user needs to go and look at. A run that reports
+/// `4 updated, 2 pinned` reads as success; the same run reporting `4 updated,
+/// 2 failed` sends someone hunting for a problem that does not exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BulkLeg {
+    /// The operation ran and succeeded.
+    Done,
+    /// The operation did not apply to this plugin, for the reason given.
+    Skipped(String),
+    /// The operation applied, ran, and failed.
+    Failed(String),
+}
+
+/// The outcome of a bulk operation, one leg per plugin.
+///
+/// Ordered as the plugins were visited, which is name order — the same order
+/// `:plugins` lists them in, so a report can be read against the view.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BulkReport {
+    pub legs: Vec<(String, BulkLeg)>,
+}
+
+impl BulkReport {
+    fn count(&self, f: impl Fn(&BulkLeg) -> bool) -> usize {
+        self.legs.iter().filter(|(_, leg)| f(leg)).count()
+    }
+
+    /// How many legs succeeded.
+    pub fn done(&self) -> usize {
+        self.count(|l| matches!(l, BulkLeg::Done))
+    }
+
+    /// How many legs did not apply.
+    pub fn skipped(&self) -> usize {
+        self.count(|l| matches!(l, BulkLeg::Skipped(_)))
+    }
+
+    /// How many legs ran and failed.
+    pub fn failed(&self) -> usize {
+        self.count(|l| matches!(l, BulkLeg::Failed(_)))
+    }
+
+    /// Every plugin that failed, with its reason — what the caller logs.
+    pub fn failures(&self) -> Vec<(&str, &str)> {
+        self.legs
+            .iter()
+            .filter_map(|(name, leg)| match leg {
+                BulkLeg::Failed(why) => Some((name.as_str(), why.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A one-line summary for the echo.
+    ///
+    /// Names only the non-zero parts, so the common all-succeeded run says
+    /// `3 updated` rather than `3 updated, 0 skipped, 0 failed` — a count of
+    /// zero is noise that makes the counts that matter harder to find.
+    pub fn summary(&self, verb_past: &str) -> String {
+        if self.legs.is_empty() {
+            return "no plugins loaded".to_string();
+        }
+        let mut parts = vec![format!("{} {verb_past}", self.done())];
+        if self.skipped() > 0 {
+            parts.push(format!("{} skipped", self.skipped()));
+        }
+        if self.failed() > 0 {
+            parts.push(format!("{} failed", self.failed()));
+        }
+        parts.join(", ")
+    }
+}
+
 /// Why `update` can do nothing for `source` — `None` when it can.
 ///
 /// Only the pinned-git arm refuses. `Local` is always current (the directory
@@ -1453,6 +1626,172 @@ impl PluginLoader {
                     tracing::warn!(plugin = %target, error = %err, ":plugin-reload failed")
                 }
             }
+        });
+    }
+
+    /// The loaded plugins, in the order `:plugins` lists them.
+    ///
+    /// Snapshotted before a bulk run starts rather than iterated live: every
+    /// leg of a rebuild or update unloads and re-appends its plugin, so
+    /// walking the live set while mutating it would visit some plugins twice
+    /// and miss others.
+    fn bulk_targets(&self) -> Vec<(String, SourceRecord)> {
+        self.plugin_status()
+            .into_iter()
+            .map(|row| (row.name, row.source))
+            .collect()
+    }
+
+    /// Rebuild every loaded plugin from the source it already has.
+    ///
+    /// **Sequential, deliberately.** The obvious reading is that N plugins
+    /// should build concurrently, and it is wrong three times over: `cargo`
+    /// already saturates the machine on its own, so N of them contend rather
+    /// than parallelise (and can exhaust disk — a full build tree is tens of
+    /// gigabytes); every leg finishes by reloading, which mutates the shared
+    /// registries by copy-on-write RCU, so overlapping legs race to publish;
+    /// and a user watching the view wants to read which plugin is building
+    /// now, not six rows all claiming to be.
+    ///
+    /// A leg's failure never stops the next one — the same rule `install_all`
+    /// follows at boot, for the same reason: one broken plugin should cost you
+    /// that plugin, not the rest.
+    pub async fn rebuild_all(&self) -> BulkReport {
+        let mut report = BulkReport::default();
+        for (name, source) in self.bulk_targets() {
+            let leg = if source.is_buildable() {
+                match self.rebuild(&name).await {
+                    Ok(()) => BulkLeg::Done,
+                    Err(why) => BulkLeg::Failed(why),
+                }
+            } else {
+                // Bundled ships prebuilt; Unknown has nowhere to build from.
+                BulkLeg::Skipped(format!("no buildable source ({})", source.label()))
+            };
+            report.legs.push((name, leg));
+        }
+        report
+    }
+
+    /// Update every loaded plugin: bring each source up to date, rebuild,
+    /// reload.
+    ///
+    /// Sequential for [`Self::rebuild_all`]'s reasons. A pinned plugin is
+    /// `Skipped`, not `Failed` — see [`BulkLeg`].
+    pub async fn update_all(&self) -> BulkReport {
+        let mut report = BulkReport::default();
+        for (name, source) in self.bulk_targets() {
+            let leg = if let Some(why) = update_refusal(&name, source.as_plugin_source().as_ref()) {
+                BulkLeg::Skipped(why)
+            } else if !source.is_buildable() && !matches!(source, SourceRecord::Prebuilt { .. }) {
+                BulkLeg::Skipped(format!("no updatable source ({})", source.label()))
+            } else {
+                match self.update(&name).await {
+                    Ok(()) => BulkLeg::Done,
+                    Err(why) => BulkLeg::Failed(why),
+                }
+            };
+            report.legs.push((name, leg));
+        }
+        report
+    }
+
+    /// Re-instantiate every loaded plugin from the artifact already on disk.
+    ///
+    /// No build and no network — the cheap one of the three. Still sequential:
+    /// the registry RCU reason from [`Self::rebuild_all`] applies on its own.
+    pub async fn reload_all(&self) -> BulkReport {
+        let mut report = BulkReport::default();
+        for (name, _) in self.bulk_targets() {
+            let leg = match self.reload(&name, TrustTier::UserInstalled).await {
+                Ok(_) => BulkLeg::Done,
+                // `error_chain`, not `to_string`: a reload failure is almost
+                // always reported by an inner cause (a missing artifact, a
+                // trap at instantiation), and the outer layer alone says
+                // nothing actionable.
+                Err(why) => BulkLeg::Failed(error_chain(&why)),
+            };
+            report.legs.push((name, leg));
+        }
+        report
+    }
+
+    /// Staged plugin directories that nothing this session claims — what
+    /// `clean` would remove.
+    ///
+    /// A directory is removable only when **all** of these hold, and each
+    /// clause is here because dropping it deletes something a user wanted:
+    ///
+    /// 1. **Not loaded.** The obvious one.
+    /// 2. **Not a load FAILURE this session.** A plugin that tried and broke
+    ///    is still a plugin the user asked for; cleaning it would turn "my
+    ///    plugin is failing" into "my plugin is gone" and hide the error the
+    ///    view was showing.
+    /// 3. **Not `init`.** That is the user's own configuration, not a plugin,
+    ///    and it is never in the loaded set under that name.
+    /// 4. **Carries a `.source` marker.** Provenance is what makes removal
+    ///    recoverable — with it the directory can be re-resolved and rebuilt,
+    ///    without it the bytes are the only copy. A hand-staged directory has
+    ///    no marker, and is exactly the case where deleting is unrecoverable.
+    ///
+    /// Returns `(name, path)` pairs in name order. Reading only — the caller
+    /// decides whether to act, which is what lets `:plugin-clean` show the
+    /// list and `:plugin-clean!` act on it.
+    pub fn removable_plugin_dirs(&self) -> Vec<(String, std::path::PathBuf)> {
+        let Some(root) = default_plugins_dir() else {
+            return Vec::new();
+        };
+        removable_under(&root, &self.clean_keep_set())
+    }
+
+    /// Every name `clean` must leave alone — clauses 1-3 of
+    /// [`Self::removable_plugin_dirs`].
+    fn clean_keep_set(&self) -> std::collections::HashSet<String> {
+        self.plugin_status()
+            .into_iter()
+            .map(|r| r.name)
+            .chain(self.failed_loads().into_iter().map(|f| f.name))
+            .chain(std::iter::once("init".to_string()))
+            .collect()
+    }
+
+    /// Remove the named staged plugin directories.
+    ///
+    /// Takes names rather than re-deriving the list, so the thing the user
+    /// confirmed is the thing that gets deleted — `Effect::Confirm` carries
+    /// the payload for this reason (effect.rs, IX.1). Re-deriving after the
+    /// prompt would let a reload land in between and change the answer.
+    ///
+    /// Each name is re-checked against [`Self::removable_plugin_dirs`] before
+    /// its directory goes: a confirmation the user left sitting while a plugin
+    /// loaded must not delete the plugin that just arrived.
+    pub fn clean(&self, names: &[String]) -> BulkReport {
+        clean_listed(&self.removable_plugin_dirs(), names)
+    }
+
+    /// Run a bulk verb on the loader's runtime, reporting through `*messages*`.
+    ///
+    /// The ex-command `apply` that calls this must return immediately — a bulk
+    /// rebuild is minutes of `cargo`, and the dispatch path is the keystroke
+    /// path. So the whole run is spawned and its outcome surfaces the way
+    /// every other async plugin outcome does: one `info!` with the counts, one
+    /// `warn!` per failure naming the plugin.
+    pub(crate) fn spawn_bulk(self: &Arc<Self>, op: BulkOp) {
+        let Some(runtime) = self.env.runtime.clone() else {
+            tracing::warn!(?op, "no runtime wired; bulk plugin operation cannot run");
+            return;
+        };
+        let this = Arc::clone(self);
+        runtime.spawn(async move {
+            let report = match op {
+                BulkOp::Rebuild => this.rebuild_all().await,
+                BulkOp::Reload => this.reload_all().await,
+                BulkOp::Update => this.update_all().await,
+            };
+            for (name, why) in report.failures() {
+                tracing::warn!(plugin = %name, error = %why, ?op, "bulk plugin operation failed");
+            }
+            tracing::info!(summary = %report.summary(op.past()), ?op, "bulk plugin operation done");
         });
     }
 
@@ -3675,5 +4014,207 @@ mod update_refusal_tests {
     #[test]
     fn update_leaves_a_sourceless_record_to_the_rebuild_path() {
         assert_eq!(update_refusal("demo", None), None);
+    }
+}
+
+/// [`BulkReport`]'s arithmetic and the sentence it produces. Pure over the
+/// legs, so the counting is pinned without running a build behind it.
+#[cfg(test)]
+mod bulk_report_tests {
+    use super::{BulkLeg, BulkReport};
+
+    fn report(legs: &[(&str, BulkLeg)]) -> BulkReport {
+        BulkReport {
+            legs: legs
+                .iter()
+                .map(|(n, l)| ((*n).to_string(), l.clone()))
+                .collect(),
+        }
+    }
+
+    /// The common run says one number. Zeroes are noise that makes the count
+    /// that matters harder to find.
+    #[test]
+    fn an_all_succeeded_run_reports_only_the_one_count() {
+        let r = report(&[("a", BulkLeg::Done), ("b", BulkLeg::Done)]);
+        assert_eq!(r.summary("updated"), "2 updated");
+    }
+
+    /// Skipped is reported and is NOT failed — the distinction is the reason
+    /// `BulkLeg` is an enum rather than a `Result`. `4 updated, 2 pinned`
+    /// reads as success; `4 updated, 2 failed` sends someone hunting.
+    #[test]
+    fn skipped_is_counted_apart_from_failed() {
+        let r = report(&[
+            ("a", BulkLeg::Done),
+            ("b", BulkLeg::Skipped("pinned to abc123".into())),
+            ("c", BulkLeg::Failed("build broke".into())),
+        ]);
+        assert_eq!(r.done(), 1);
+        assert_eq!(r.skipped(), 1);
+        assert_eq!(r.failed(), 1);
+        assert_eq!(r.summary("updated"), "1 updated, 1 skipped, 1 failed");
+    }
+
+    /// Only failures are worth a `warn!` line each, and each must name its
+    /// plugin — a summary saying `2 failed` with no names is not actionable.
+    #[test]
+    fn failures_name_the_plugin_and_the_reason() {
+        let r = report(&[
+            ("a", BulkLeg::Done),
+            ("b", BulkLeg::Failed("build broke".into())),
+            ("c", BulkLeg::Skipped("bundled".into())),
+        ]);
+        assert_eq!(r.failures(), vec![("b", "build broke")]);
+    }
+
+    /// An editor with no plugins says so rather than `0 updated`, which reads
+    /// like something went wrong.
+    #[test]
+    fn an_empty_run_says_there_was_nothing_to_do() {
+        assert_eq!(
+            BulkReport::default().summary("updated"),
+            "no plugins loaded"
+        );
+    }
+}
+
+/// `clean`'s safety rules, against a real directory tree.
+///
+/// Every test here is a clause that, if dropped, deletes something the user
+/// wanted — which is why they are tested one clause at a time rather than as
+/// one "it works" case.
+#[cfg(test)]
+mod removable_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::removable_under;
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn tempdir(tag: &str) -> PathBuf {
+        // A counter as well as the pid: a timestamp alone collides under a
+        // parallel `cargo test`.
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("lattice-clean-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A staged plugin directory: a marker, and something to delete.
+    fn staged(root: &Path, name: &str, marker: bool) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.wasm")), b"\0asm").unwrap();
+        if marker {
+            std::fs::write(dir.join(".source"), "kind = local\npath = /tmp/x\n").unwrap();
+        }
+    }
+
+    fn keep(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|n| (*n).to_string()).collect()
+    }
+
+    #[test]
+    fn an_unclaimed_staged_directory_with_provenance_is_removable() {
+        let root = tempdir("basic");
+        staged(&root, "ghost", true);
+        let got = removable_under(&root, &keep(&[]));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "ghost");
+    }
+
+    /// Clause 1 + 2. A plugin that FAILED to load is still one the user asked
+    /// for: cleaning it would turn "my plugin is broken" into "my plugin is
+    /// gone", and take the error message in the view with it.
+    #[test]
+    fn a_loaded_or_failed_plugin_is_never_removable() {
+        let root = tempdir("claimed");
+        staged(&root, "loaded", true);
+        staged(&root, "failed", true);
+        staged(&root, "ghost", true);
+        let got = removable_under(&root, &keep(&["loaded", "failed"]));
+        assert_eq!(
+            got.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["ghost"]
+        );
+    }
+
+    /// Clause 3. `init` is the user's own configuration, not a plugin, and it
+    /// never appears in the loaded set under that name — so without naming it
+    /// explicitly, clean would delete the user's config.
+    #[test]
+    fn the_users_init_directory_is_never_removable() {
+        let root = tempdir("init");
+        staged(&root, "init", true);
+        assert!(removable_under(&root, &keep(&["init"])).is_empty());
+    }
+
+    /// Clause 4. Provenance is what makes removal recoverable. A hand-staged
+    /// directory has no `.source`, and deleting it destroys the only copy.
+    #[test]
+    fn a_directory_without_provenance_is_left_alone() {
+        let root = tempdir("nomarker");
+        staged(&root, "handmade", false);
+        assert!(
+            removable_under(&root, &keep(&[])).is_empty(),
+            "no `.source` marker ⇒ nothing to re-install from ⇒ never delete"
+        );
+    }
+
+    /// Files beside the plugin directories are not plugins and are not
+    /// candidates — only directories are.
+    #[test]
+    fn a_stray_file_in_the_root_is_not_a_candidate() {
+        let root = tempdir("stray");
+        std::fs::write(root.join("notes.txt"), "hello").unwrap();
+        assert!(removable_under(&root, &keep(&[])).is_empty());
+    }
+
+    /// A missing plugins root is an empty answer, not an error: a user who has
+    /// never installed a plugin has no directory, and `:plugin-clean` there
+    /// should say "nothing to clean".
+    #[test]
+    fn a_missing_root_is_empty_rather_than_an_error() {
+        let root = tempdir("gone");
+        let missing = root.join("nope");
+        assert!(removable_under(&missing, &keep(&[])).is_empty());
+    }
+
+    /// The removal itself: what was listed goes, and the directory is really
+    /// gone rather than emptied.
+    #[test]
+    fn cleaning_a_listed_name_removes_its_directory() {
+        let root = tempdir("remove");
+        staged(&root, "ghost", true);
+        let listed = removable_under(&root, &keep(&[]));
+        let report = super::clean_listed(&listed, &["ghost".to_string()]);
+        assert_eq!(report.done(), 1);
+        assert!(!root.join("ghost").exists(), "the directory is gone");
+    }
+
+    /// The re-check. A confirmation left sitting while a plugin loaded must
+    /// not delete the plugin that just arrived — so a name that has stopped
+    /// being removable is skipped, and its files are still there afterwards.
+    #[test]
+    fn a_name_that_stopped_being_removable_is_skipped_not_deleted() {
+        let root = tempdir("recheck");
+        staged(&root, "arrived", true);
+        // Listed when nothing claimed it...
+        let listed = removable_under(&root, &keep(&[]));
+        assert_eq!(listed.len(), 1);
+        // ...but by the time the user confirms, it has loaded.
+        let now = removable_under(&root, &keep(&["arrived"]));
+        let report = super::clean_listed(&now, &["arrived".to_string()]);
+        assert_eq!(report.skipped(), 1, "skipped, not failed");
+        assert_eq!(report.done(), 0);
+        assert!(
+            root.join("arrived").is_dir(),
+            "the plugin that just loaded still has its files"
+        );
     }
 }

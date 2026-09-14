@@ -712,6 +712,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::ListPlugins => WitEffect::ListPlugins,
         NativeEffect::OpenHover { markdown } => WitEffect::OpenHover(markdown.clone()),
         NativeEffect::DismissPopup => WitEffect::DismissPopup,
+        NativeEffect::DismissPopupNamed { name } => WitEffect::DismissPopupNamed(name.clone()),
         NativeEffect::BuryBuffer => {
             // No WIT mirror yet. Adding one is a versioned plugin-API
             // change and deserves its own slice rather than riding
@@ -1119,6 +1120,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::ListPlugins => NativeEffect::ListPlugins,
         WitEffect::OpenHover(markdown) => NativeEffect::OpenHover { markdown },
         WitEffect::DismissPopup => NativeEffect::DismissPopup,
+        WitEffect::DismissPopupNamed(name) => NativeEffect::DismissPopupNamed { name },
         WitEffect::OpenPopup(p) => NativeEffect::OpenPopup {
             name: p.name,
             mode_id: p.mode_id,
@@ -1869,6 +1871,12 @@ mod tests {
             NativeEffect::CloseFileTree,
             NativeEffect::ListOptions,
             NativeEffect::DismissPopup,
+            // WK.11: populated, not defaulted — the name IS the feature, and a
+            // round-trip that carried an empty string would pass while losing
+            // the only field that distinguishes this from `DismissPopup`.
+            NativeEffect::DismissPopupNamed {
+                name: "*which-key*".to_string(),
+            },
             NativeEffect::OpenPopup {
                 name: "*ai-permission*".to_string(),
                 mode_id: "ai-permission-mode".to_string(),

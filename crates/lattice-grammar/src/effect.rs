@@ -802,7 +802,38 @@ pub enum Effect {
     },
     /// Dismiss the active popup, whatever its content. Content-agnostic
     /// (routes through `dismiss_popup`); produced today by `:HoverClose`.
+    ///
+    /// **This is the USER's verb — "close what I am looking at".** It is the
+    /// right one for a key the user pressed (`:popup-dismiss`, magit's `q`,
+    /// answering a permission prompt), because the popup they mean is the one
+    /// on screen by definition. It is the WRONG one for a mode dismissing on
+    /// its own schedule — see [`Effect::DismissPopupNamed`].
     DismissPopup,
+    /// Dismiss the active popup **only if it is the named one** — a no-op
+    /// otherwise.
+    ///
+    /// `name` is the popup buffer's synthetic name, the same string
+    /// [`Effect::OpenPopup`] was given.
+    ///
+    /// **Why the pair exists.** There is one popup slot
+    /// (`Editor::popup_buffer`), so [`Effect::DismissPopup`] means "close
+    /// whatever is in it". For a keypress that is exactly right. For a
+    /// BACKGROUND dismissal it is a bug waiting to be written: between the
+    /// moment a mode decided to close its popup and the moment the effect is
+    /// applied, the slot may hold someone else's — and the mode closes that
+    /// instead, silently, with nothing in the type to warn it.
+    ///
+    /// Which-key wrote that bug. Its timer-driven dismissal fired on every
+    /// resolved chord, so any two-key sequence typed faster than the popup
+    /// delay (`zz`, `gg`, `dd`, `ci"`) tore down whatever hover or diagnostic
+    /// popup happened to be showing. Naming the target makes the stale case a
+    /// no-op instead of a wrong action.
+    ///
+    /// **Rule of thumb:** a dismissal the user asked for is
+    /// [`Effect::DismissPopup`]; a dismissal a mode decided on is this.
+    DismissPopupNamed {
+        name: String,
+    },
     /// Show a popup overlay at `placement` with the given `focus`
     /// (popup-api.md §4.3). Content-agnostic and data-only: the host
     /// idempotently ensures a popup buffer named `name` under major mode

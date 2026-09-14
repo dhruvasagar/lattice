@@ -1497,6 +1497,15 @@ impl GpuiApp {
                 // popup_content covers it directly.
                 self.dismiss_popup();
             }
+            // Targeted peer: a no-op unless the popup showing is the named
+            // one. Goes through the host primitive rather than
+            // `self.dismiss_popup()` because only the host can compare the
+            // popup buffer's synthetic name. See `Editor::dismiss_popup_named`.
+            Effect::DismissPopupNamed { name } => {
+                self.mutate_editor(move |e| {
+                    e.dismiss_popup_named(&name);
+                });
+            }
             Effect::BuryBuffer => {
                 // Distinct from DismissPopup: a full-pane synthetic
                 // buffer swapped the active document, so returning has

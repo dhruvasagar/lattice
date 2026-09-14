@@ -1133,6 +1133,13 @@ impl App {
             // grouped no-op above.
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
             Effect::DismissPopup => self.do_dismiss_popup(),
+            // Targeted peer: a no-op unless the popup showing is the named
+            // one. See `Editor::dismiss_popup_named`.
+            Effect::DismissPopupNamed { name } => {
+                self.mutate_editor(move |e| {
+                    e.dismiss_popup_named(&name);
+                });
+            }
             Effect::BuryBuffer => {
                 self.mutate_editor(|e| {
                     e.bury_buffer();
@@ -1430,6 +1437,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
+        | Effect::DismissPopupNamed { .. }
         | Effect::BuryBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
@@ -1580,6 +1588,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
+        | Effect::DismissPopupNamed { .. }
         | Effect::BuryBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }

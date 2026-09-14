@@ -811,6 +811,12 @@ interface types {
         list-plugins,
         open-hover(string),
         dismiss-popup,
+        // Dismiss the popup only if it is the named one; a no-op otherwise.
+        // `dismiss-popup` is the user's verb ("close what I am looking at");
+        // this is the one a mode uses when it dismisses on its own schedule,
+        // where the slot may hold someone else's popup by the time the effect
+        // lands. See `Effect::DismissPopupNamed` for the bug that motivated it.
+        dismiss-popup-named(string),
         open-popup(open-popup-payload),
         open-help-topic(option<string>),
         list-diagnostics,

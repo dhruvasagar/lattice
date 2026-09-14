@@ -7954,6 +7954,40 @@ impl Editor {
         true
     }
 
+    /// `Effect::DismissPopupNamed` — dismiss the popup **only if** the one on
+    /// screen is the named one, and answer whether it was.
+    ///
+    /// The targeted peer of [`Self::dismiss_popup`]. There is one popup slot,
+    /// so an untargeted dismiss closes whatever is in it — correct for a key
+    /// the user pressed, and a bug for a mode dismissing on its own schedule,
+    /// where the slot may hold someone else's popup by the time the effect
+    /// lands.
+    ///
+    /// Which-key is why this exists: its timer-driven dismissal fired on every
+    /// resolved chord, so a two-key sequence typed faster than the popup delay
+    /// (`zz`, `gg`, `dd`) tore down whatever hover or diagnostic popup was
+    /// showing. Naming the target turns the stale case into a no-op.
+    ///
+    /// Matches on the buffer's SYNTHETIC NAME — the same string
+    /// `Effect::OpenPopup` was given, and what `ensure_named_popup_buffer`
+    /// filed it under. A buffer with no name (a content popup opened through
+    /// `open_floating_popup` rather than by name) matches nothing, which is
+    /// right: it has no identity for a mode to claim.
+    pub fn dismiss_popup_named(&mut self, name: &str) -> bool {
+        let Some(id) = self.popup_buffer else {
+            return false;
+        };
+        if self.buffers.name_of(id).as_deref() != Some(name) {
+            tracing::debug!(
+                want = name,
+                "dismiss-popup-named: a different popup is showing; leaving it alone"
+            );
+            return false;
+        }
+        self.dismiss_popup();
+        true
+    }
+
     pub fn dismiss_popup(&mut self) {
         self.dismiss_stale_popup_registry();
         self.popup_buffer = None;
@@ -18561,6 +18595,9 @@ impl Editor {
                     out.renderer_signals.extend(signals);
                 }
                 lattice_grammar::Effect::DismissPopup => self.dismiss_popup(),
+                lattice_grammar::Effect::DismissPopupNamed { name } => {
+                    self.dismiss_popup_named(&name);
+                }
                 other => out.effects.push(other),
             }
         }
@@ -41526,6 +41563,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
+        | Effect::DismissPopupNamed { .. }
         | Effect::BuryBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
@@ -41676,6 +41714,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
+        | Effect::DismissPopupNamed { .. }
         | Effect::BuryBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }

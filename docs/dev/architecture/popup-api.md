@@ -162,11 +162,46 @@ renderer reads `ad().popup_focused` directly — no re-derivation from
 ```rust
 Effect::OpenPopup { buffer: BufferId, placement: PopupPlacement, focus: PopupFocus }
 Effect::DismissPopup
+Effect::DismissPopupNamed { name: String }
 ```
 
 `DismissPopup` is a **rename of the existing `Effect::CloseHover`**, which
 already calls `dismiss_popup()` generically in both renderers. It was a
-hover-flavoured name on a generic action; there is no second variant to add.
+hover-flavoured name on a generic action.
+
+#### The dismissal pair — whose popup are you closing?
+
+There is **one** popup slot (`Editor::popup_buffer`), so `DismissPopup` means
+"close whatever is in it". That is exactly right for a dismissal the **user
+asked for** — `:popup-dismiss`, magit's `q`, answering a permission prompt —
+because the popup they mean is the one on screen, by definition.
+
+It is the wrong verb for a dismissal a **mode decided on**. Between the moment
+a mode resolves to close its popup and the moment the effect is applied, the
+slot may hold someone else's — and the mode closes that instead, silently,
+with nothing in the type to warn it.
+
+> **WK.11 (2026-09-14) — the bug that added the second variant.** Which-key
+> dismissed on a timer-driven path, untargeted, and tracked "my popup is open"
+> from the moment its gate was **armed** rather than the moment the popup was
+> **opened**. Arming and opening are not the same event: the gate body has five
+> paths that open nothing, and it does not run at all when the chord completes
+> inside the delay. So every two-key chord typed faster than `which-key.delay`
+> — `zz`, `gg`, `dd`, `ci"` — dismissed whatever hover or diagnostic popup
+> happened to be showing. Both halves were wrong; both are fixed.
+>
+> The deeper half is the one this variant addresses, and it is an
+> everything-is-a-buffer point: a mode should close **its buffer**, not **the**
+> popup. `DismissPopupNamed` matches on the popup buffer's synthetic name — the
+> same string `OpenPopup` was given — and is a no-op otherwise, so the stale
+> case becomes nothing rather than something wrong.
+
+**Rule of thumb:** a dismissal the user asked for is `DismissPopup`; a
+dismissal a mode decided on is `DismissPopupNamed`.
+
+A popup opened by content rather than by name (`open_floating_popup`) has no
+synthetic name and so matches nothing — correct, since it has no identity for
+a mode to claim.
 
 Both renderers match `Effect` exhaustively, so a missed arm is a compile error,
 not a silent parity divergence.

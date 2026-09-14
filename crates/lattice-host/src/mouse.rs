@@ -61,6 +61,10 @@ pub struct PaneHitZone {
     pub text_left: u16,
     /// The pane's first visible source line at paint time.
     pub scroll: u32,
+    /// First visible display column (horizontal scroll). Always 0
+    /// under soft wrap, which is why the column arithmetic can add it
+    /// unconditionally.
+    pub leftcol: u32,
 }
 
 impl PaneHitZone {
@@ -73,6 +77,21 @@ impl PaneHitZone {
     }
 }
 
+/// Which part of the buffer a painted row came from.
+///
+/// `segment` is the soft-wrap segment index: the second visual row of a
+/// wrapped line is `segment: 1`, and its columns start
+/// `segment * body_width` into the logical line. Without it every
+/// wrapped row would resolve to the line's first `body_width` columns,
+/// so clicking the tail of a wrapped paragraph would land near its
+/// start — wrong in a way that looks like an off-by-a-lot rather than
+/// like a missing concept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowOrigin {
+    pub source_line: u32,
+    pub segment: u32,
+}
+
 /// Every pane body painted this frame.
 ///
 /// Small (one entry per visible pane, so single digits) and walked
@@ -81,6 +100,19 @@ impl PaneHitZone {
 #[derive(Debug, Clone, Default)]
 pub struct PaneHitMap {
     zones: Vec<PaneHitZone>,
+    /// Per-pane row → buffer origin, in painted order.
+    ///
+    /// Recorded by the compose loop rather than derived from scroll and
+    /// the fold list, because a painted row is not `scroll + n`: soft
+    /// wrap splits one line across several, closed folds skip interiors,
+    /// and virtual rows (sticky context, inline diagnostics) occupy rows
+    /// that mirror no line at all. Re-deriving all three is a second
+    /// implementation of the compose loop, and the one on screen is the
+    /// one that is right.
+    ///
+    /// `None` marks a row with no source line — a virtual row, or the
+    /// `~` filler past the end of the buffer.
+    rows: std::collections::HashMap<PaneId, Vec<Option<RowOrigin>>>,
 }
 
 impl PaneHitMap {
@@ -92,6 +124,31 @@ impl PaneHitMap {
     /// stale map would route clicks against a layout no longer painted.
     pub fn clear(&mut self) {
         self.zones.clear();
+        self.rows.clear();
+    }
+
+    /// Record what the compose loop painted into `pane`, row by row.
+    ///
+    /// Called from the composer rather than from the layout pass, which
+    /// is why it is a separate call from [`Self::push`]: the zone's rect
+    /// is known before the pane's contents are composed, and its rows
+    /// only after.
+    pub fn set_rows(&mut self, pane_id: PaneId, rows: Vec<Option<RowOrigin>>) {
+        self.rows.insert(pane_id, rows);
+    }
+
+    /// The buffer origin of `row_offset` within `pane`, if it has one.
+    ///
+    /// A row past the end of the buffer, or a virtual row, falls back to
+    /// the **last row above it that does** have an origin. Clicking the
+    /// blank space below a short buffer puts the cursor on its last line,
+    /// which is what every editor does and what a terminal makes the
+    /// common case — it reports a cell for every row on screen, not only
+    /// the ones with text under them.
+    pub fn origin_at(&self, pane_id: PaneId, row_offset: u16) -> Option<RowOrigin> {
+        let rows = self.rows.get(&pane_id)?;
+        let upto = rows.get(..=(row_offset as usize)).unwrap_or(rows);
+        upto.iter().rev().find_map(|r| *r)
     }
 
     pub fn push(&mut self, zone: PaneHitZone) {
@@ -134,10 +191,12 @@ impl PaneHitMap {
     pub fn resolve(&self, col: u16, row: u16) -> Option<BodyHit> {
         let zone = self.hit(col, row)?;
         let within = col - zone.x;
+        let row_offset = row - zone.y;
         Some(BodyHit {
             zone,
-            row_offset: row - zone.y,
+            row_offset,
             text_col: within.checked_sub(zone.text_left),
+            origin: self.origin_at(zone.pane_id, row_offset),
         })
     }
 }
@@ -158,6 +217,25 @@ pub struct BodyHit {
     /// Display columns right of the first text cell, or `None` when the
     /// cell is on the gutter.
     pub text_col: Option<u16>,
+    /// Which logical line (and wrap segment) this row was painted from.
+    /// `None` when the pane recorded no rows at all — a pane composed
+    /// before this frame's paint, or one whose content path does not go
+    /// through the shared composer.
+    pub origin: Option<RowOrigin>,
+}
+
+impl BodyHit {
+    /// The display column within the LOGICAL line, undoing soft wrap and
+    /// horizontal scroll.
+    ///
+    /// `None` on the gutter or on a row with no source line. The two
+    /// terms are exclusive in practice — `leftcol` is forced to 0 under
+    /// wrap — so adding both is correct rather than merely convenient.
+    pub fn logical_col(&self, body_width: u32) -> Option<u32> {
+        let text_col = self.text_col? as u32;
+        let origin = self.origin?;
+        Some(origin.segment * body_width + text_col + self.zone.leftcol)
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +253,7 @@ mod tests {
             height: h,
             text_left: 4,
             scroll: 0,
+            leftcol: 0,
         }
     }
 
@@ -275,5 +354,160 @@ mod tests {
         map.push(zone(1, 0, 0, 0, 10));
         map.push(zone(2, 0, 0, 40, 0));
         assert_eq!(map.len(), 0);
+    }
+
+    // ── row origins ──────────────────────────────────────────────────
+
+    fn origin(line: u32, segment: u32) -> Option<RowOrigin> {
+        Some(RowOrigin {
+            source_line: line,
+            segment,
+        })
+    }
+
+    /// The straightforward case: one painted row per source line.
+    #[test]
+    fn a_row_resolves_to_the_line_painted_on_it() {
+        let mut map = PaneHitMap::new();
+        map.push(zone(1, 0, 0, 40, 4));
+        map.set_rows(
+            PaneId(1),
+            vec![origin(10, 0), origin(11, 0), origin(12, 0), origin(13, 0)],
+        );
+
+        assert_eq!(map.resolve(6, 2).unwrap().origin, origin(12, 0));
+    }
+
+    /// **Soft wrap: the second row of a wrapped line is the same line,
+    /// segment 1.** The segment is what puts a click on the tail of a
+    /// wrapped paragraph near its tail instead of near its head.
+    #[test]
+    fn a_wrapped_line_keeps_its_line_and_advances_its_segment() {
+        let mut map = PaneHitMap::new();
+        map.push(zone(1, 0, 0, 40, 4));
+        map.set_rows(
+            PaneId(1),
+            vec![origin(7, 0), origin(7, 1), origin(7, 2), origin(8, 0)],
+        );
+
+        assert_eq!(map.resolve(6, 0).unwrap().origin, origin(7, 0));
+        assert_eq!(map.resolve(6, 2).unwrap().origin, origin(7, 2));
+        assert_eq!(map.resolve(6, 3).unwrap().origin, origin(8, 0));
+    }
+
+    /// …and the column arithmetic uses it: segment 2 of a 30-column body
+    /// starts 60 columns into the logical line.
+    #[test]
+    fn the_logical_column_accounts_for_the_wrap_segment() {
+        let mut map = PaneHitMap::new();
+        map.push(zone(1, 0, 0, 34, 4));
+        map.set_rows(PaneId(1), vec![origin(7, 0), origin(7, 1), origin(7, 2)]);
+
+        // text_left is 4, so a click at screen column 9 is text column 5.
+        assert_eq!(map.resolve(9, 0).unwrap().logical_col(30), Some(5));
+        assert_eq!(map.resolve(9, 1).unwrap().logical_col(30), Some(35));
+        assert_eq!(map.resolve(9, 2).unwrap().logical_col(30), Some(65));
+    }
+
+    /// Horizontal scroll shifts the same way. `leftcol` is forced to 0
+    /// under wrap, so the two terms never both apply and adding both is
+    /// correct rather than merely convenient.
+    #[test]
+    fn the_logical_column_accounts_for_horizontal_scroll() {
+        let mut map = PaneHitMap::new();
+        let mut z = zone(1, 0, 0, 34, 4);
+        z.leftcol = 100;
+        map.push(z);
+        map.set_rows(PaneId(1), vec![origin(7, 0)]);
+
+        assert_eq!(map.resolve(9, 0).unwrap().logical_col(30), Some(105));
+    }
+
+    /// A virtual row — sticky context, an inline diagnostic — mirrors no
+    /// source line, so it falls back to the last row that does rather
+    /// than resolving to whatever line happens to be recorded next.
+    #[test]
+    fn a_virtual_row_falls_back_to_the_line_above_it() {
+        let mut map = PaneHitMap::new();
+        map.push(zone(1, 0, 0, 40, 4));
+        map.set_rows(
+            PaneId(1),
+            vec![origin(4, 0), None, origin(5, 0), origin(6, 0)],
+        );
+
+        assert_eq!(
+            map.resolve(6, 1).unwrap().origin,
+            origin(4, 0),
+            "clicking a virtual row acts on the line it is anchored below"
+        );
+    }
+
+    /// **A click below the end of the buffer lands on its last line.**
+    /// A terminal reports a cell for every row on screen, so clicking
+    /// the `~` filler is the common case, not a defensive one, and an
+    /// inert click there would read as the feature being broken.
+    #[test]
+    fn a_click_past_the_end_of_the_buffer_lands_on_the_last_line() {
+        let mut map = PaneHitMap::new();
+        map.push(zone(1, 0, 0, 40, 6));
+        map.set_rows(
+            PaneId(1),
+            vec![origin(0, 0), origin(1, 0), None, None, None, None],
+        );
+
+        assert_eq!(map.resolve(6, 5).unwrap().origin, origin(1, 0));
+    }
+
+    /// A pane whose rows were never recorded resolves its rect but no
+    /// origin — the scroll target is still right, and a click is inert
+    /// rather than landing somewhere invented.
+    #[test]
+    fn a_pane_with_no_recorded_rows_has_no_origin() {
+        let mut map = PaneHitMap::new();
+        map.push(zone(1, 0, 0, 40, 4));
+
+        let hit = map.resolve(6, 2).unwrap();
+        assert_eq!(hit.zone.pane_id, PaneId(1));
+        assert_eq!(hit.origin, None);
+        assert_eq!(hit.logical_col(30), None);
+    }
+
+    /// …and a buffer whose first rows are all virtual has nothing above
+    /// to fall back to, so it stays inert rather than guessing line 0.
+    #[test]
+    fn a_row_with_nothing_above_it_has_no_origin() {
+        let mut map = PaneHitMap::new();
+        map.push(zone(1, 0, 0, 40, 4));
+        map.set_rows(PaneId(1), vec![None, None, origin(0, 0)]);
+
+        assert_eq!(map.resolve(6, 1).unwrap().origin, None);
+    }
+
+    /// Rows are per-pane: one pane's listing must not answer for
+    /// another's, which is what keying on `PaneId` rather than on a
+    /// single vector buys.
+    #[test]
+    fn each_pane_keeps_its_own_rows() {
+        let mut map = PaneHitMap::new();
+        map.push(zone(1, 0, 0, 40, 4));
+        map.push(zone(2, 40, 0, 40, 4));
+        map.set_rows(PaneId(1), vec![origin(100, 0), origin(101, 0)]);
+        map.set_rows(PaneId(2), vec![origin(7, 0), origin(8, 0)]);
+
+        assert_eq!(map.resolve(6, 1).unwrap().origin, origin(101, 0));
+        assert_eq!(map.resolve(46, 1).unwrap().origin, origin(8, 0));
+    }
+
+    /// Clearing drops the rows with the zones, so a stale listing cannot
+    /// answer for a layout that is no longer painted.
+    #[test]
+    fn clearing_drops_the_recorded_rows_too() {
+        let mut map = PaneHitMap::new();
+        map.push(zone(1, 0, 0, 40, 4));
+        map.set_rows(PaneId(1), vec![origin(3, 0)]);
+
+        map.clear();
+
+        assert_eq!(map.origin_at(PaneId(1), 0), None);
     }
 }

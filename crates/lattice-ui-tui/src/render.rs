@@ -3041,6 +3041,7 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
                 height: content_rect.height,
                 text_left: pane_text_left(app, &pane, is_active, content_rect),
                 scroll: pane.scroll,
+                leftcol: pane.leftcol,
             });
         draw_pane_content(frame, content_rect, app, snap, &pane, is_active, idx);
         if let Some(sr) = status_rect {
@@ -4902,6 +4903,15 @@ pub(crate) fn compose_pane_lines(
         columns
     };
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
+    // MO.2: what each painted row came from, recorded in lockstep with
+    // `out` so the mouse can invert the compose loop rather than
+    // re-implement it. `None` is a row mirroring no source line — a
+    // virtual row, or the `~` filler past the end of the buffer. Pushed
+    // beside EVERY `out.push` below; the two must stay the same length
+    // or every click past the divergence lands on the wrong line, which
+    // is why the tail asserts it.
+    let mut row_src: Vec<Option<lattice_host::mouse::RowOrigin>> =
+        Vec::with_capacity(height as usize);
     // Sticky pre-pass: render fixed-top rows before the scrollable content.
     // These are excluded from virtual_rows_at so they don't double-paint.
     for vrow in virtual_rows_matrix.sticky_rows() {
@@ -4909,6 +4919,7 @@ pub(crate) fn compose_pane_lines(
             break;
         }
         out.push(render_virtual_row(view, vrow, gutter_w, body_col_width));
+        row_src.push(None);
     }
     // TC.3b: the pinned context strip, painted AFTER the matrix's sticky rows
     // and never instead of them. That ordering is the whole contract — the
@@ -4961,6 +4972,7 @@ pub(crate) fn compose_pane_lines(
             gutter_fg: sticky_context.line_number_fg,
         };
         out.push(render_virtual_row(view, &vrow, gutter_w, body_col_width));
+        row_src.push(None);
     }
     let mut visible_idx: usize = 0;
     while (out.len() as u32) < height {
@@ -4971,6 +4983,7 @@ pub(crate) fn compose_pane_lines(
             }
             None => {
                 out.push(empty_marker_line(gutter_w));
+                row_src.push(None);
                 continue;
             }
         };
@@ -4985,6 +4998,7 @@ pub(crate) fn compose_pane_lines(
                 break;
             }
             out.push(render_virtual_row(view, vrow, gutter_w, body_col_width));
+            row_src.push(None);
         }
         if (out.len() as u32) >= height {
             break;
@@ -5760,8 +5774,16 @@ pub(crate) fn compose_pane_lines(
                 Vec::new()
             };
             out.push(combine_prefixed(sign_prefix, gutter, seg0));
+            row_src.push(Some(lattice_host::mouse::RowOrigin {
+                source_line: line_idx,
+                segment: 0,
+            }));
         }
-        for seg in seg_iter {
+        // MO.2: `cont_idx + 1` — continuation rows are segments 1, 2, …
+        // of the same logical line, and that index is what shifts a
+        // click's column into the right part of it. Without it the tail
+        // of a wrapped paragraph would resolve to its head.
+        for (cont_idx, seg) in seg_iter.enumerate() {
             if (out.len() as u32) >= height {
                 break;
             }
@@ -5783,6 +5805,10 @@ pub(crate) fn compose_pane_lines(
                 Vec::new()
             };
             out.push(combine_prefixed(cont_sign_prefix, cont_gutter, seg));
+            row_src.push(Some(lattice_host::mouse::RowOrigin {
+                source_line: line_idx,
+                segment: cont_idx as u32 + 1,
+            }));
         }
         // D.3.b.1: emit Below-anchored virtual rows for this
         // document line, then continue to the next visible
@@ -5796,8 +5822,15 @@ pub(crate) fn compose_pane_lines(
                 break;
             }
             out.push(render_virtual_row(view, vrow, gutter_w, body_col_width));
+            row_src.push(None);
         }
     }
+    debug_assert_eq!(
+        out.len(),
+        row_src.len(),
+        "MO.2: every painted row records its origin"
+    );
+    app.pane_hits.borrow_mut().set_rows(ctx.pane_id, row_src);
     out
 }
 

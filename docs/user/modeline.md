@@ -125,19 +125,23 @@ elements declare none — nothing in the default modeline is clickable —
 but modes and plugins can, and when they do, both the terminal and the
 GPUI window honour it.
 
-In the terminal you have to opt in first:
+In the terminal this rides `ui.mouse`, which is **on by default** — the
+same option that gives the editor body its wheel, click-to-position and
+drag-to-select (see [Mouse](mouse.md)).
+
+There is a real cost to it being on, so it is worth knowing about. While
+the editor is reading the mouse, your **terminal** isn't — click-drag
+text selection and middle-click paste stop working inside Lattice. Some
+terminals let you hold Shift to get them back; not all do. If yours
+doesn't, or you'd simply rather the terminal kept the mouse:
 
 ```
-:set ui.mouse
+:set ui.mouse=false
 ```
 
-It's off by default on purpose. While the editor is reading the mouse,
-your **terminal** isn't — click-drag text selection and middle-click
-paste stop working inside Lattice. Some terminals let you hold Shift to
-get them back; not all do. Rather than take that away from everyone for
-a feature few use yet, you turn it on when you want it. `:set noui.mouse`
-turns it back off immediately, so it's reasonable to flip on when you
-need it and off when you want to copy something.
+That takes effect immediately, so it's reasonable to flip off when you
+want to copy something and on again afterwards. To make it permanent,
+put `mouse = false` under `[ui]` in your config.
 
 The GPUI window ignores this option entirely — it owns its own input, so
 listening for clicks costs you nothing there.

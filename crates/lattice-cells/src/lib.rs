@@ -68,7 +68,9 @@ pub mod context;
 
 pub use cell::{Cell, flags as cell_flags};
 pub use chunk::CellChunk;
-pub use coords::{ConcealRange, source_byte_to_display_col, subtract_conceals};
+pub use coords::{
+    ConcealRange, display_col_to_source_byte, source_byte_to_display_col, subtract_conceals,
+};
 pub use edit_delta::EditDelta;
 pub use headerline::{Headerline, HeaderlineProvider, HeaderlineRow, SimpleHeaderlineHandle};
 pub use matrix::{

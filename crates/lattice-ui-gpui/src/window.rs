@@ -2859,12 +2859,43 @@ impl EditorView {
         };
 
         let status_row = Self::modeline_row(pane, render_active, &rs_guard, cx);
+        // MO.2: the wheel over this pane. No hit-testing needed on this
+        // peer — the element IS the pane, so the listener closes over its
+        // id rather than resolving one from a coordinate. Same
+        // `cx.listener` routing the modeline and tabline clicks use.
+        //
+        // Attached to the whole chrome rather than the body alone: a
+        // wheel over a pane's status row still means that pane, and
+        // carving the row out would create a dead strip for no gain.
+        let wheel_pane = pane.id;
         Self::pane_chrome(
             editor_element.into_any_element(),
             status_row,
             render_active,
             inactive_pane_opacity(&self.app),
         )
+        .on_scroll_wheel(cx.listener(
+            move |this, ev: &gpui::ScrollWheelEvent, _window, cx| {
+                // GPUI reports a positive y when the content moves DOWN
+                // — i.e. the user scrolled up — for both delta flavours.
+                // A pixel delta is converted by the same `row_px` the
+                // layout was measured with, so a trackpad notch and a
+                // wheel notch travel the same distance.
+                let dy = match ev.delta {
+                    gpui::ScrollDelta::Lines(p) => p.y,
+                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y) / row_px.max(1.0),
+                };
+                if dy == 0.0 {
+                    return;
+                }
+                this.app
+                    .dispatch_action(lattice_host::action::Action::MouseScroll {
+                        pane: wheel_pane,
+                        down: dy < 0.0,
+                    });
+                cx.notify();
+            },
+        ))
     }
 
     fn build_terminal_inner(

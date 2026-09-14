@@ -135,6 +135,7 @@ docs = [
   "display",
   "themes",
   "modeline",
+  "mouse",
 ]
 
 [[section]]
@@ -371,5 +372,6 @@ docs = [
 "buffers"              = "Buffers & panes"
 "picker"               = "Picker & marginalia"
 "modeline"             = "Modeline"
+"mouse"                = "Mouse"
 "display"              = "Display & layout"
 "themes"               = "Themes & colorschemes"

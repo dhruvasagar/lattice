@@ -13,7 +13,8 @@ early on anything that was not a left-press on a modeline zone, and
 the GPUI peer had hit-test primitives (`hit_test.rs`) with a comment
 recording that nothing consumed them.
 
-MO.2 is the editor body: **scroll, click-to-position, drag-to-select**.
+MO.2 is the editor body: **scroll, click-to-position, drag-to-select**
+— and, once those work, `ui.mouse` defaulting on.
 
 ## 2. The spine: every inverse is derived from the forward map
 
@@ -137,21 +138,42 @@ this one: it needs SGR re-encoding and a per-app mode handshake, and
 the property-based way to reach it is a per-buffer "consumes raw input"
 flag rather than a kind test. Deferred with that named.
 
-## 5. Known gaps
+## 5. Renderer status
 
-- **GPUI's editor body has no listeners.** `hit_test.rs` has the
-  primitives; `editor_element.rs` has no mouse or scroll reference at
-  all. Both peers were equally unbuilt at MO.2's start, so this is
-  divergence created by MO.2 and it is the first thing that closes it.
+**TUI: all three gestures.** The compose loop records each painted
+row's origin (`PaneHitMap::set_rows`) in lockstep with the rows it
+emits, so the inversion is a lookup rather than a re-derivation — which
+is what makes it correct under soft wrap (the row carries its wrap
+*segment*, so a click on the tail of a wrapped paragraph lands on the
+tail), closed folds, and virtual rows. Virtual rows and the `~` filler
+carry no origin and fall back to the last row above that has one, so
+clicking below a short buffer lands on its last line.
+
+**GPUI: the wheel.** No hit-testing needed on that peer — the element
+*is* the pane, so the listener closes over its id, the same `cx.listener`
+routing the modeline and tabline clicks already use.
+
+## 6. Known gaps
+
+- **GPUI click and drag.** The wheel needs no coordinates; positioning
+  does, and on that peer the bounds live inside `EditorElement::paint`
+  rather than on a `div`, so it wants the `window.on_mouse_event` +
+  bounds route with `hit_test.rs`'s existing primitives. Deferred
+  rather than written blind: pixel→cell arithmetic that compiles is not
+  the same as pixel→cell arithmetic that is right, and it cannot be
+  checked without a window.
 - **GPUI's `combined_col_to_byte` is conceal-blind.** It walks real
   UTF-8 bytes while the shared inverse works in char-columns —
   reconciling the two is the question `subtract_conceals`' doc already
   defers ("its own non-ASCII risk"), and a mouse slice is the wrong
-  place to settle it. Until then a GPUI click in a buffer with conceal
-  rules (org links, markdown) lands off.
-- **`ui.mouse` still defaults off.** The flip waits on the body
-  gestures being complete; the option doc carries the reasoning
-  (capture takes click-drag selection and middle-click paste away from
-  the terminal emulator).
-- **No `mousescroll` option.** Three lines is a constant with one
-  named home, so the option has an obvious thing to replace.
+  place to settle it. When GPUI click lands it should go through
+  `display_col_to_source_byte`, which means settling this first.
+- **No `mousescroll` option.** Three lines is a constant with one named
+  home, so the option has an obvious thing to replace. GPUI converts a
+  pixel delta through `row_px` so a trackpad and a wheel travel the
+  same distance; the TUI has only notches.
+- **Clicking a fold, a sticky-context row or a gutter does nothing
+  special.** All three resolve (the pane is right, so the wheel works
+  over them) but carry no text column or no origin, so a click is
+  inert. Fold-toggle-on-gutter-click and jump-on-sticky-click are the
+  obvious next gestures and neither needs new geometry.

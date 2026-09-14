@@ -493,6 +493,12 @@ fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut O
                     pane: hit.zone.pane_id,
                     down: false,
                 }),
+                // A press positions the caret; dragging with the button
+                // held extends from where the press landed. `Drag` is
+                // reported only while a button is down, so the two share
+                // one resolver and differ by `extend` alone.
+                MouseEventKind::Down(MouseButton::Left) => mouse_goto(app, &hit, false),
+                MouseEventKind::Drag(MouseButton::Left) => mouse_goto(app, &hit, true),
                 _ => None,
             };
             if let Some(action) = action {
@@ -504,6 +510,74 @@ fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut O
         }
         _ => {}
     }
+}
+
+/// MO.2: turn a resolved cell into a buffer position.
+///
+/// The inverse of the compose loop, and derived from it rather than
+/// re-implemented: the row's origin was **recorded while painting**
+/// (`PaneHitMap::set_rows`), and the column goes back through
+/// `lattice_cells::display_col_to_source_byte`, the binary-search
+/// inverse of the very map the caret is drawn with. That is what makes
+/// a click land exactly where the caret would be — including under soft
+/// wrap, inlay hints and conceal, none of which this function knows
+/// anything about individually.
+///
+/// `None` when the cell is on the gutter or on a row mirroring no source
+/// line, which is how those stay inert rather than resolving to
+/// column 0 of something.
+fn mouse_goto(app: &App, hit: &lattice_host::mouse::BodyHit, extend: bool) -> Option<Action> {
+    let body_width = hit.zone.width.saturating_sub(hit.zone.text_left).max(1) as u32;
+    let logical_col = hit.logical_col(body_width)?;
+    let origin = hit.origin?;
+
+    let handle = app.buffers().registry.document_handle(hit.zone.buffer_id)?;
+    let snapshot = handle.snapshot();
+    let line_text = snapshot.buffer.line(origin.source_line).unwrap_or_default();
+
+    // The display row carries the tables the forward map used: inlay
+    // splices and conceal ranges for THIS line. Absent (matrix not built
+    // yet for a just-opened buffer) means no splices, which is the
+    // identity — a click still lands, just without corrections nothing
+    // has applied yet either.
+    let matrix = app
+        .render_state
+        .load()
+        .cells
+        .load_full()
+        .display_matrix_for_pane(hit.zone.pane_id)
+        .map(|cell| cell.load_full());
+    let row = matrix
+        .as_ref()
+        .and_then(|m| m.row_at_source_line(origin.source_line));
+
+    // Char columns, not bytes — the space the cell substrate's column
+    // tables live in (see the byte-vs-char note on
+    // `CellRow::byte_to_combined_col`). The conversion back to a byte
+    // offset is this function's job, and it is why `max_source_byte` is
+    // a char count.
+    let char_len = line_text.chars().count() as u32;
+    let char_col = match row {
+        Some(r) => lattice_cells::display_col_to_source_byte(
+            logical_col,
+            char_len,
+            &r.col_map,
+            &r.conceals,
+        ),
+        None => logical_col.min(char_len),
+    };
+    let byte = line_text
+        .char_indices()
+        .nth(char_col as usize)
+        .map(|(b, _)| b as u32)
+        .unwrap_or(line_text.len() as u32);
+
+    Some(Action::MouseGoto {
+        pane: hit.zone.pane_id,
+        line: origin.source_line,
+        byte,
+        extend,
+    })
 }
 
 /// Drain a batch of wakes: the `first` one that unblocked the loop plus every

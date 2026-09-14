@@ -1214,23 +1214,39 @@ crate::options! {
 
     /// Whether the editor captures mouse events from the terminal.
     ///
-    /// **Default `false`, and deliberately so.** Turning capture on
-    /// takes the mouse away from the terminal emulator, which means
-    /// click-drag text selection and middle-click paste — capabilities
-    /// every terminal user has today — stop working inside Lattice
-    /// unless the terminal offers a Shift-drag override, and not all
-    /// do. Defaulting on would trade something everyone already relies
-    /// on for something few have asked for, so it is opt-in until
-    /// mouse support is broad enough to be worth the swap.
+    /// With it on: the wheel scrolls the pane under the pointer, a
+    /// click positions the cursor, a drag selects in Visual mode, and
+    /// modeline elements that declare an `on_click` are clickable.
     ///
-    /// With it on: modeline elements that declare an `on_click` are
-    /// clickable. Editor-body click/drag and terminal passthrough are
-    /// not built yet; both will read this same option.
+    /// **Default `true` as of MO.2, and the trade is worth stating.**
+    /// Capture takes the mouse away from the terminal emulator, so the
+    /// emulator's own click-drag selection and middle-click paste stop
+    /// working inside Lattice unless the terminal offers a Shift-drag
+    /// override (most do; not all). MO.1 defaulted this off because the
+    /// only thing capture bought was modeline clicks — a bad trade
+    /// against a capability every terminal user already has. Now that
+    /// the editor body answers the mouse, the trade goes the other way
+    /// for most users, and the ones it does not suit have one line of
+    /// config:
+    ///
+    /// ```toml
+    /// [ui]
+    /// mouse = false
+    /// ```
+    ///
+    /// `:set ui.mouse=false` does the same thing for the session; the
+    /// TUI mirrors the option into the terminal's reporting state
+    /// without a restart.
+    ///
+    /// Terminal buffers get editor semantics like any other buffer.
+    /// Passthrough to a child pty is a separate mechanism and is not
+    /// built; until it is, a full-screen program inside `:terminal`
+    /// does not see the mouse.
     ///
     /// Ignored by the GPUI peer, which owns its window's input and
     /// therefore takes nothing away by listening for mouse events.
     #[name("ui.mouse")]
-    pub MouseEnabled: bool = false;
+    pub MouseEnabled: bool = true;
 }
 
 // L4 (2026-06-21): diagnostics group — inline end-of-line diagnostic
@@ -1527,15 +1543,43 @@ mod tests {
     }
 
     /// MO.1. The default is the whole point of the option, not an
-    /// incidental choice: capture takes the mouse away from the
-    /// terminal, so click-drag selection and middle-click paste stop
-    /// working while it is on. Defaulting to `true` would silently
-    /// remove a capability every terminal user has. Pinned so a later
-    /// "sensible defaults" sweep has to argue with a test.
+    /// **MO.2 flipped this to `true`, and the argument the old test
+    /// demanded is this one.**
+    ///
+    /// The reasoning for `false` was never "mouse capture is fine to
+    /// skip" — it was a trade. Capture takes the mouse away from the
+    /// terminal emulator, so its click-drag selection and middle-click
+    /// paste stop working while Lattice has it. Under MO.1 the only
+    /// thing bought in exchange was clickable modeline elements, which
+    /// is a bad deal against a capability every terminal user already
+    /// has, so it stayed opt-in "until mouse support is broad enough to
+    /// be worth the swap".
+    ///
+    /// MO.2 is that: the wheel scrolls, a click positions the cursor, a
+    /// drag selects. The trade now runs the other way for most users,
+    /// and the cost is recoverable in one line (`ui.mouse = false`,
+    /// or `:set ui.mouse=false` for the session) — whereas the old
+    /// default cost every user the feature until they discovered an
+    /// option they had no reason to look for.
+    ///
+    /// Still pinned, for the same reason it was pinned before: this is
+    /// a deliberate trade with a live cost, not a default that should
+    /// drift in either direction without someone arguing for it.
     #[test]
-    fn mouse_defaults_off() {
+    fn mouse_defaults_on_now_that_the_body_answers_it() {
         let r = ConfigRegistry::new();
         r.init_from_linkme();
+        assert!(*r.get_typed::<MouseEnabled>().unwrap());
+    }
+
+    /// …and it must stay switchable off, which is what makes the flip
+    /// defensible. A user whose terminal has no Shift-drag override
+    /// needs this to work.
+    #[test]
+    fn mouse_can_be_turned_back_off() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        r.parse_and_set_command("ui.mouse=false").unwrap();
         assert!(!*r.get_typed::<MouseEnabled>().unwrap());
     }
 

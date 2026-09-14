@@ -1676,10 +1676,32 @@ fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
     // `None` for every picker whose results are not root-scoped, which is most
     // of them — the span simply is not emitted, so nothing about those prompts
     // moves.
+    // PP.2c: every colour on this line resolves through the theme. It
+    // was the last wholly un-themeable surface in the editor — `Cyan`
+    // and `DarkGray` written straight into the spans, so `:colorscheme`
+    // could not reach the picker prompt at all. Resolved together here
+    // rather than per span, which is also what makes a collision
+    // visible: the root shared the count's tone for a release because
+    // the two were written ten lines apart.
+    let cells_rs = app.render_state.load().cells.load_full();
+    let ids = &cells_rs.theme_ids;
+    let fg = |id, fallback| {
+        cells_rs
+            .resolved_theme
+            .get(id)
+            .fg
+            .map(crate::theme::host_color_to_ratatui)
+            .unwrap_or(fallback)
+    };
+    let title_fg = fg(ids.picker_title, Color::Cyan);
+    let prompt_fg = fg(ids.picker_prompt, Color::Cyan);
+    let count_fg = fg(ids.picker_count, Color::DarkGray);
+    let root_fg = fg(ids.picker_root, Color::Blue);
+
     let mut spans = vec![Span::styled(
         p.title.clone(),
         TuiStyle::default()
-            .fg(Color::Cyan)
+            .fg(title_fg)
             .add_modifier(Modifier::BOLD),
     )];
     if let Some(root) = p.root_label.as_deref() {
@@ -1695,13 +1717,6 @@ fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
         // read as chrome. It is also what makes the line themeable at
         // all — the title and count beside it are still hardcoded, and
         // are the next thing to migrate.
-        let cells_rs = app.render_state.load().cells.load_full();
-        let root_fg = cells_rs
-            .resolved_theme
-            .get(cells_rs.theme_ids.picker_root)
-            .fg
-            .map(crate::theme::host_color_to_ratatui)
-            .unwrap_or(Color::Blue);
         spans.push(Span::styled(
             format!("  {root}  "),
             TuiStyle::default().fg(root_fg),
@@ -1710,14 +1725,14 @@ fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
     spans.push(Span::styled(
         "> ",
         TuiStyle::default()
-            .fg(Color::Cyan)
+            .fg(prompt_fg)
             .add_modifier(Modifier::BOLD),
     ));
+    // The query stays at the default foreground: it is the user's own
+    // text, and an accent there would make what they typed compete with
+    // the chrome around it.
     spans.push(Span::raw(p.query.clone()));
-    spans.push(Span::styled(
-        trailing,
-        TuiStyle::default().fg(Color::DarkGray),
-    ));
+    spans.push(Span::styled(trailing, TuiStyle::default().fg(count_fg)));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -11566,6 +11581,105 @@ mod tests {
             Color::DarkGray,
             "…and specifically must not still be the dim grey PP.2 shipped"
         );
+    }
+
+    /// PP.2c: every span on the prompt takes its colour from the theme,
+    /// so `:colorscheme` reaches the picker at all.
+    ///
+    /// Driven by actually retuning the four elements and re-rendering,
+    /// rather than by comparing against the defaults. A line that
+    /// resolves through the theme and a line that hardcodes four colours
+    /// are indistinguishable until the theme changes — which is exactly
+    /// the bug: the prompt looked fine and no colorscheme could touch it.
+    #[test]
+    fn pp2c_the_whole_prompt_line_follows_the_theme() {
+        use lattice_host::ui::theme::{ElementName, StyleSpec, ThemeRegistryHandle};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut a = app_with("scratch\n", 20);
+        let _ = a.mutate_editor_with(|e: &mut lattice_host::editor::Editor| {
+            e.open_picker("buffers".to_string(), Vec::new())
+        });
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            if let Some(p) = e.picker.as_mut() {
+                p.root_label = Some("~/src/lattice".to_string());
+            }
+        });
+
+        // Four unmistakable, mutually distinct colours — a span that is
+        // still hardcoded cannot land on one of these.
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            let reg = e
+                .services
+                .get::<ThemeRegistryHandle>()
+                .expect("the theme registry is a boot service");
+            for (name, colour) in [
+                ("picker.title", "red"),
+                ("picker.prompt", "green"),
+                ("picker.count", "blue"),
+                ("picker.root", "yellow"),
+            ] {
+                reg.set_override(ElementName::from_static(name), StyleSpec::new().fg(colour));
+            }
+        });
+        // The prompt reads its colours from the published table, so the
+        // override has to reach a publish before it reaches a frame —
+        // the same hop `RendererSignal::ThemeChanged` drives in
+        // production.
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            e.publish_render_state();
+        });
+        lattice_host::cells_worker::recompute(&a.editor.render_state);
+
+        let (tw, th): (u16, u16) = (80, 10);
+        let mut terminal = Terminal::new(TestBackend::new(tw, th)).unwrap();
+        terminal
+            .draw(|f| {
+                draw_picker_prompt(
+                    f,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: tw,
+                        height: 1,
+                    },
+                    &a,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let row: String = (0..tw).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        let fg_at = |col: u16| -> Color { buf[(col, 0)].style().fg.expect("a foreground") };
+
+        let title_fg = fg_at(0);
+        let root_fg = fg_at(row.find("~/src/lattice").expect("root") as u16);
+        let prompt_fg = fg_at(row.find('>').expect("prompt marker") as u16);
+        let count_fg = fg_at(row.rfind('(').expect("count") as u16);
+
+        // Four overrides, four distinct palette roles → four distinct
+        // painted colours. A span still holding `Color::Cyan` would
+        // collide with another or keep the old literal, and both show up
+        // here.
+        let all = [title_fg, root_fg, prompt_fg, count_fg];
+        let distinct: std::collections::HashSet<String> =
+            all.iter().map(|c| format!("{c:?}")).collect();
+        assert_eq!(
+            distinct.len(),
+            4,
+            "every span must follow its own element; got {all:?}"
+        );
+        for (what, c) in [
+            ("title", title_fg),
+            ("prompt", prompt_fg),
+            ("count", count_fg),
+            ("root", root_fg),
+        ] {
+            assert!(
+                !matches!(c, Color::Cyan | Color::DarkGray),
+                "{what} is still painting the hardcoded literal: {c:?}"
+            );
+        }
     }
 
     #[test]

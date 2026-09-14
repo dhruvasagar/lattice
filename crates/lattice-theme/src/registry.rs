@@ -1191,6 +1191,29 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         spec().fg("green"),
         "Marginalia: file modified-time column.",
     );
+    // PP.2c: the rest of the picker prompt. Until these were named the
+    // line was the last wholly un-themeable surface in the editor — the
+    // TUI hardcoded `Color::Cyan` / `Color::DarkGray` and GPUI borrowed
+    // `cursor_background` and `popup_border`, the same "each renderer
+    // invents its own answer" the `transient.*` set was introduced to
+    // end. `picker.prompt` defaults to `picker.title`'s tone because
+    // that is the relationship the hardcoded version had; it is a
+    // separate element so a theme can break it, not so it must.
+    reg_one(
+        "picker.title",
+        spec().fg("teal"),
+        "Picker prompt: the source name (`buffers`, `project-files`).",
+    );
+    reg_one(
+        "picker.prompt",
+        spec().fg("teal"),
+        "Picker prompt: the `>` marker where typing begins.",
+    );
+    reg_one(
+        "picker.count",
+        spec().fg("overlay"),
+        "Picker prompt: the `(3/40)` match count and `searching…` status.",
+    );
     // PP.2b: the root a rooted picker is scoped to, shown between the
     // source and the `>`. `blue` rather than the `overlay` the marginalia
     // paths use: this is the answer to "which checkout answered", read
@@ -1572,8 +1595,11 @@ pub struct BuiltinElementIds {
     pub completion_annotation_perm_none: ElementId,
     pub completion_annotation_size: ElementId,
     pub completion_annotation_mtime: ElementId,
-    // PP.2b: the rooted picker's root label.
+    // PP.2b / PP.2c: the picker prompt line.
     pub picker_root: ElementId,
+    pub picker_title: ElementId,
+    pub picker_prompt: ElementId,
+    pub picker_count: ElementId,
     // MARG §9: picker marginalia rollout slots.
     pub completion_annotation_location_path: ElementId,
     pub completion_annotation_location_line: ElementId,
@@ -1706,6 +1732,9 @@ impl Default for BuiltinElementIds {
             substitute_preview: ElementId::INVALID,
             inlay_hint: ElementId::INVALID,
             picker_root: ElementId::INVALID,
+            picker_title: ElementId::INVALID,
+            picker_prompt: ElementId::INVALID,
+            picker_count: ElementId::INVALID,
             completion_annotation_kind: ElementId::INVALID,
             completion_annotation_doc: ElementId::INVALID,
             completion_annotation_keybinding: ElementId::INVALID,
@@ -1912,6 +1941,9 @@ impl BuiltinElementIds {
             substitute_preview: id("substitute.preview"),
             inlay_hint: id("inlay.hint"),
             picker_root: id("picker.root"),
+            picker_title: id("picker.title"),
+            picker_prompt: id("picker.prompt"),
+            picker_count: id("picker.count"),
             completion_annotation_kind: id("completion.annotation.kind"),
             completion_annotation_doc: id("completion.annotation.doc"),
             completion_annotation_keybinding: id("completion.annotation.keybinding"),

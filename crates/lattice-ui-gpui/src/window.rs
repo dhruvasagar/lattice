@@ -4254,32 +4254,44 @@ impl Render for EditorView {
                         .border_2()
                         .border_color(rgb(theme.popup_border))
                         .child(
+                            // PP.2c: three roles, three spans. They used to be
+                            // one `format!` in `popup_border`, which made the
+                            // title, the root and the count a single flat run
+                            // — the overlay's version of the same collision
+                            // the minibuffer prompt had. Split so each resolves
+                            // its own element, and so a theme reaches this
+                            // surface as well as the other one.
                             div()
-                                .text_color(rgb(theme.popup_border))
+                                .flex()
+                                .flex_row()
                                 .pb_1()
-                                .child(format!(
-                                    " {}{} ({} / {}){} ",
-                                    picker.title,
-                                    // PP.2: a rooted picker names the root it
-                                    // is operating on. This overlay puts the
-                                    // title on its own header row, so the root
-                                    // rides there rather than beside the `>`.
-                                    picker
-                                        .root_label
-                                        .as_deref()
-                                        .map(|r| format!(" {r}"))
-                                        .unwrap_or_default(),
+                                .child(
+                                    div()
+                                        .text_color(rgb(theme.picker_title))
+                                        .child(format!(" {}", picker.title)),
+                                )
+                                // PP.2: a rooted picker names the root it is
+                                // operating on. This overlay puts the title on
+                                // its own header row, so the root rides there
+                                // rather than beside the `>`.
+                                .children(picker.root_label.as_deref().map(|r| {
+                                    div()
+                                        .text_color(rgb(theme.picker_root))
+                                        .child(format!("  {r}"))
+                                }))
+                                .child(div().text_color(rgb(theme.picker_count)).child(format!(
+                                    " ({} / {}){} ",
                                     if total == 0 { 0 } else { picker.selected + 1 },
                                     total,
                                     if picker.loading { " searching…" } else { "" },
-                                )),
+                                ))),
                         )
                         .child(
                             div()
                                 .flex()
                                 .flex_row()
                                 .pb_2()
-                                .child(div().text_color(rgb(theme.cursor_background)).child("> "))
+                                .child(div().text_color(rgb(theme.picker_prompt)).child("> "))
                                 .child(div().child(picker.query.clone()))
                                 .child(
                                     div()
@@ -4389,7 +4401,7 @@ impl Render for EditorView {
                     .text_color(rgb(theme.foreground))
                     .child(
                         div()
-                            .text_color(rgb(theme.cursor_background))
+                            .text_color(rgb(theme.picker_title))
                             .child(picker.title.clone()),
                     )
                     // PP.2 / PP.2b: the root between the source and the `>`.
@@ -4407,7 +4419,7 @@ impl Render for EditorView {
                             .text_color(rgb(theme.picker_root))
                             .child(format!("  {root}  "))
                     }))
-                    .child(div().text_color(rgb(theme.cursor_background)).child("> "))
+                    .child(div().text_color(rgb(theme.picker_prompt)).child("> "))
                     .child(div().child(picker.query.clone()))
                     .child(
                         div()
@@ -4415,7 +4427,7 @@ impl Render for EditorView {
                             .border_color(rgb(theme.cursor_background))
                             .child(" "),
                     )
-                    .child(div().text_color(rgb(theme.popup_border)).child(count));
+                    .child(div().text_color(rgb(theme.picker_count)).child(count));
 
                 div().flex().flex_col().child(prompt_row).child(
                     div()

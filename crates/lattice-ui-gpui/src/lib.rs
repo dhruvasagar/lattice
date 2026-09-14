@@ -224,6 +224,14 @@ pub struct GpuiTheme {
     /// `(n/m)` count) so the one piece of context the prompt carries is
     /// not the dimmest thing on the line.
     pub picker_root: u32,
+    /// PP.2c: the picker prompt's source name, `>` marker and match
+    /// count. Own slots rather than the borrowed `cursor_background` /
+    /// `popup_border` they used — borrowing is what left the count and
+    /// the root indistinguishable, and is the same failure the
+    /// `transient.*` set was introduced to end.
+    pub picker_title: u32,
+    pub picker_prompt: u32,
+    pub picker_count: u32,
     /// Popup header TITLE colour (bold accent) — `ui.popup.title`.
     pub popup_title: u32,
     /// Popup header HINT colour (dim) — `ui.popup.hint`.
@@ -285,6 +293,9 @@ impl Default for GpuiTheme {
             // Catppuccin Mocha lavender (accent).
             popup_border: 0xb4befe,
             picker_root: 0x89b4fa,
+            picker_title: 0x94e2d5,
+            picker_prompt: 0x94e2d5,
+            picker_count: 0x9399b2,
             // Catppuccin Mocha blue — popup title accent (`ui.popup.title`).
             popup_title: 0x89b4fa,
             // Catppuccin Mocha overlay — dim popup hint (`ui.popup.hint`).
@@ -963,9 +974,18 @@ impl GpuiApp {
         if let Some(fg) = resolved.get(ids.pane_separator).fg {
             self.theme.popup_border = fg.to_rgb_u32(defaults.popup_border);
         }
-        // PP.2b: the rooted picker's root label ↔ `picker.root`.
+        // PP.2b / PP.2c: the picker prompt line ↔ `picker.*`.
         if let Some(fg) = resolved.get(ids.picker_root).fg {
             self.theme.picker_root = fg.to_rgb_u32(defaults.picker_root);
+        }
+        if let Some(fg) = resolved.get(ids.picker_title).fg {
+            self.theme.picker_title = fg.to_rgb_u32(defaults.picker_title);
+        }
+        if let Some(fg) = resolved.get(ids.picker_prompt).fg {
+            self.theme.picker_prompt = fg.to_rgb_u32(defaults.picker_prompt);
+        }
+        if let Some(fg) = resolved.get(ids.picker_count).fg {
+            self.theme.picker_count = fg.to_rgb_u32(defaults.picker_count);
         }
         // Popup header title / hint ↔ `ui.popup.title` / `ui.popup.hint`
         // (shared with the TUI peer so the accent is themeable + identical).

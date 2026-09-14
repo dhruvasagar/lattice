@@ -127,7 +127,10 @@ with them.
 | `transient.description` | a row's description column |
 | `transient.value` | a flag's `[x]` state, or a variable's current value |
 | `transient.border` | the menu's border |
-| `picker.root` | the project root a rooted [picker](help:picker) is scoped to |
+| `picker.title` | the source name in a [picker](help:picker) prompt (`buffers`) |
+| `picker.prompt` | the `>` marker where typing begins |
+| `picker.root` | the project root a rooted picker is scoped to |
+| `picker.count` | the `(3/40)` match count and `searching…` status |
 
 The `transient.*` set exists because a menu row is three columns that
 mean different things — the key you press, what it does, and whether
@@ -138,11 +141,27 @@ colours for five roles, which left **keys and flags the same colour**
 and descriptions painted in the border tone. One named palette now
 drives both.
 
-`picker.root` is the `~/src/lattice` a rooted picker shows between its
-source and the `>`. It has its own element because it used to share the
-dim tone of the `(3/40)` count beside it, which made the one piece of
-context the prompt carries — *which checkout answered* — read as chrome.
-Retune it if your palette wants the prompt quieter.
+The four `picker.*` elements cover the whole prompt line:
+
+```
+buffers  ~/src/lattice  > lat            (3/40)
+───────  ─────────────  ─               ───────
+ title        root     prompt            count
+```
+
+Until they were named this line was the last wholly un-themeable surface
+in the editor — the terminal wrote `Cyan` and `DarkGray` straight into
+its spans and the GPUI window borrowed its cursor and border colours, so
+`:colorscheme` could not reach the picker prompt at all. Borrowing is
+also what left `picker.root` — the `~/src/lattice` that answers *which
+checkout answered* — sharing a tone with the count beside it, so the one
+piece of context the prompt carries read as chrome.
+
+`picker.prompt` starts out the same colour as `picker.title`, because
+that is the relationship the hardcoded version had. It is a separate
+element so you can break that, not so you must. What you type stays at
+the default foreground on purpose: an accent there would make your own
+text compete with the chrome around it.
 
 The four `help.*` elements are what make a help page scannable: keys
 are bold so the thing you are hunting for stands out, commands take the

@@ -120,9 +120,16 @@ mod tests {
         let so = shared_syntax_textobjects();
         let sm = shared_syntax_motions();
         crate::keymap_replace::register_replace_bindings(&h, a);
-        crate::keymap_visual::register_visual_bindings(&h, b, a, so, sm);
+        crate::keymap_visual::register_visual_bindings(&h, b, a, so);
         crate::keymap_insert::register_insert_bindings(&h, a);
         crate::keymap_normal::register_normal_bindings(&h, b, a, so, sm);
+        // VM.1: Visual's motion rows are derived from the Normal catalog.
+        crate::keymap_normal::expand_grammar_rows(
+            &h,
+            shared_registry(),
+            b,
+            lattice_host::keymap_trie::KeymapLayer::Builtin,
+        );
         h
     }
 

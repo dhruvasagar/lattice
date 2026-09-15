@@ -410,6 +410,21 @@ Once in Visual:
 - `o` swaps anchor and cursor (extends to the other end).
 - `gv` re-selects the previous Visual selection (Normal only).
 
+"Any motion" means any — the single-key ones in the table
+above, `gg`, `f` / `t` and their reverses, `<C-d>` / `<C-u>`,
+the tree-sitter structural motions (`]f`, `[c`, ...), and
+motions a plugin or a major mode contributes. Org's `[[` and
+`]]` walk headlines in Visual exactly as they do in Normal,
+and a motion you add yourself needs no extra declaration to
+work here: a motion is live in Normal, Visual, Select and
+after an operator because it is a motion, not because
+somebody remembered to list it four times.
+
+A handful of cursor-moving commands are **not** motions and so
+do not compose with an operator — `<C-f>` / `<C-b>` /
+`<C-e>` / `<C-y>` scroll the window, and vim does not accept
+them after `d` either.
+
 ### Blockwise specials
 
 In blockwise Visual:

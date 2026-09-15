@@ -74,6 +74,7 @@
 //! trie never sees them in slice 8.g.i (they migrate in
 //! 8.g.vi together with the `<C-w>` sub-tree).
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use lattice_grammar::SourceLocation;
@@ -1724,22 +1725,21 @@ fn register_find_char_paths(
     }
 }
 
-/// The canonical chord -> motion table.
+/// The chord -> motion table the Normal binder walks.
 ///
-/// Single source of truth shared by all three motion surfaces so a
-/// new motion added here lights up everywhere with no per-surface
-/// wiring (the same single-source guarantee [`text_object_rows`]
-/// gives text objects):
-/// - Normal bare motions ([`register_normal_bindings`]) — `[chord]`
-///   -> `Invoke(motion)`.
-/// - Operator-pending targets ([`register_operator_bindings`]) —
-///   `[op..., chord]` -> `Invoke(op, Target::Motion(motion))`.
-/// - Visual motions ([`crate::keymap_visual::register_visual_bindings`])
-///   — `[chord]` -> `Invoke(motion)` (the host's `SelectionChange`
-///   arm extends the active selection's head).
+/// **This is not the motion catalog, and a motion does not have to be here.**
+/// It used to claim otherwise — "single source of truth shared by all three
+/// motion surfaces" — and VM.1 found that false: `gg`, `f` / `F` / `t` / `T`,
+/// `<C-d>` / `<C-u>` and `<PageUp>` / `<PageDown>` all reach Normal by other
+/// routes in this file, so a Visual surface built by re-walking this table was
+/// missing every one of them, and had no route to a plugin's motions at all.
 ///
-/// Each consumer builds its own invocation SHAPE from the shared
-/// (chord, motion) pair, exactly as the text-object binders do.
+/// What is actually single-source is the DERIVATION:
+/// [`expand_grammar_rows`] walks each layer's finished Normal trie and gives
+/// every `CommandKind::Motion` binding — however it got there, builtin or
+/// contributed — its Visual, Select and operator-pending peers. Adding a row
+/// here is one convenient way to bind a motion in Normal; it is not what makes
+/// the motion work everywhere else.
 ///
 /// Argument motions (`f` / `F` / `t` / `T` find-char) are NOT here —
 /// they ride a separate wildcard-capture path
@@ -1783,14 +1783,14 @@ pub(crate) fn motion_rows(
 }
 
 /// The sixteen tree-sitter structural motions as full 2-key sequences
-/// (TSM.4). Single source of truth shared by the Normal binder
-/// ([`register_normal_bindings`]), the operator-pending resolver
-/// ([`register_operator_bindings`]), and the Visual binder
-/// ([`crate::keymap_visual::register_visual_bindings`]) so the three
-/// surfaces can never drift -- same discipline as [`motion_rows`] /
-/// [`text_object_rows`], just keyed on a full chord sequence instead of a
-/// single chord (each entry is `]x` / `[x`, a two-key sequence, not one
-/// key with aliases).
+/// (TSM.4). Walked by the Normal binder ([`register_normal_bindings`]) and by
+/// the operator-pending resolver ([`register_operator_bindings`]); Visual and
+/// Select get them from [`expand_grammar_rows`] like every other motion, so
+/// this table no longer has a third and fourth consumer to drift against. Same
+/// caveat as [`motion_rows`]: convenient, not canonical.
+///
+/// Keyed on a full chord sequence instead of a single chord — each entry is
+/// `]x` / `[x`, a two-key sequence, not one key with aliases.
 pub(crate) fn syntax_motion_rows(
     m: &SyntaxMotionIds,
 ) -> Vec<(Vec<ChordPattern>, lattice_grammar::registry::MotionId)> {
@@ -2198,55 +2198,105 @@ fn composable_operators(builtins: &Builtins) -> [lattice_grammar::registry::Oper
     ]
 }
 
-/// OM.4b: give a plugin mode's motion / text-object bindings their
-/// operator-pending (and, for text objects, Visual) rows — **in that mode's own
-/// layer**, never `Builtin`.
+/// Derive the rows a grammar binding implies but nobody wrote: a motion's
+/// Visual / Select / operator-pending peers, and a text object's.
 ///
 /// ## Why this exists
 ///
-/// `bind_mode_keymap` (plugin-host) binds a mode's declared chords in Normal
-/// and stops there. That is right for an action, and useless for the other two
-/// kinds: an operator+motion path like `d]]` and a text-object path like `dar`
-/// are bound EXPLICITLY, expanded across every operator, and for builtins that
-/// expansion comes from the hardcoded `motion_rows` / `text_object_rows`
-/// tables. A plugin has no route into those tables, so a plugin motion is
-/// unreachable after an operator and a plugin text object is unreachable
-/// entirely.
+/// A motion is an `nvo` command — vim's word for "lives in Normal, Visual and
+/// operator-pending", and the shape paramount-goal #3 asks for when it says the
+/// grammar IS the public command API. Lattice used to get that by HAND-LISTING
+/// the same motions in four places: [`motion_rows`] consumed by
+/// [`register_normal_bindings`], [`register_operator_bindings`],
+/// `keymap_visual`, and `keymap_select`.
+///
+/// Four copies of a list drift, and they did, silently. `gg`, `f` / `F` / `t` /
+/// `T`, `<C-d>` / `<C-u>` and `<PageUp>` / `<PageDown>` were all registered
+/// straight into the Normal binder without ever reaching that table, so `vgg`,
+/// `vf)`, `v<C-d>` and `dgg` were dead — not because Visual could not extend a
+/// selection (it extends it from `Editor::cursor` at the end of every dispatch,
+/// so ANY reachable cursor-mover works), but because the chord resolved to
+/// nothing there. A plugin motion had it worse: `bind_mode_keymap` binds one
+/// declared `binding-mode` and stops, so org's `[[` moved the cursor in Normal
+/// and did nothing in Visual.
+///
+/// So the mode-set stops being a list and becomes a DERIVATION: whatever the
+/// command *is* decides where it is live, uniformly for builtin, host-mode and
+/// plugin bindings.
 ///
 /// ## Why here and not at bind time
 ///
-/// The expansion needs `Builtins` — the host-resolved operator ids — which
-/// lives downstream of `lattice-plugin-host`. Rather than leak the operator
-/// vocabulary two crates down, the host runs this pass after the mode's layer
-/// exists. That framing is also the honest one: the host is applying its
-/// UNIVERSAL operator vocabulary to a contribution, exactly as it does for
-/// builtins, while the plugin still declares only chord + command.
-/// `register_operator_bindings` is `pub` for the same shape of reason (N.1.3,
-/// the provider-contributed `zn` operator).
+/// The derivation needs `Builtins` — the host-resolved operator ids — which
+/// lives downstream of `lattice-plugin-host`, and `push_layer` installs
+/// pre-built tries without passing through `bind` at all, so the registry has
+/// no single write choke point to hang this on. The host runs the pass instead,
+/// once per layer, after that layer's bindings exist. That framing is also the
+/// honest one: the host applies its UNIVERSAL operator vocabulary to a
+/// contribution, exactly as it does for builtins, while the contributor still
+/// declares only chord + command. `register_operator_bindings` is `pub` for the
+/// same shape of reason (N.1.3, the provider-contributed `zn` operator).
 ///
 /// ## What it does per binding
 ///
-/// Reads the mode's Normal layer, and for each terminal binding whose command
+/// Reads the layer's Normal trie, and for each terminal binding whose command
 /// resolves in `commands` to:
 ///
 /// * **`Motion`** — keeps the Normal binding (`]]` still moves on its own) and
-///   adds `<op-prefix><chord>` for every composable operator.
+///   adds a Visual row, a Select row, and `<op-prefix><chord>` for every
+///   composable operator.
 /// * **`TextObject`** — REPLACES the Normal binding, because a text object
-///   invoked standalone in Normal means nothing, and adds
-///   `<op-prefix><chord>` plus a Visual-mode binding so `var` extends the
-///   selection.
-/// * anything else — left alone.
+///   invoked standalone in Normal means nothing, and adds Visual + Select rows
+///   (`var` extends the selection) plus `<op-prefix><chord>`.
+/// * anything else — left alone. Note that a cursor-moving command registered
+///   as `CommandKind::Action` is NOT a motion as far as this pass is concerned;
+///   that is a statement about the command, not about the keymap.
 ///
-/// Idempotent: re-running rebinds the same paths to the same commands, so a
-/// plugin reload cannot accumulate rows.
-pub fn expand_plugin_mode_grammar_rows(
+/// ## Bind-if-absent
+///
+/// A derived row NEVER overwrites one somebody wrote deliberately. Visual's `x`
+/// / `s` / `r` aliases, the find-char paths' `Args::Char` capture routing under
+/// an operator, a mode's own Visual override — all of them are explicit
+/// statements, and a default that clobbers them is worse than no default. The
+/// pass snapshots each mode's existing paths first and only fills gaps, which
+/// also makes it idempotent: re-running adds nothing, so a plugin reload cannot
+/// accumulate rows and boot order stops mattering.
+pub fn expand_grammar_rows(
     handle: &KeymapHandle,
     commands: &lattice_grammar::registry::CommandRegistry,
     builtins: &Builtins,
     layer: KeymapLayer,
 ) -> usize {
+    let normal = handle.layer_bindings(layer, BindingMode::Normal);
+    // Snapshot BEFORE any write: "already bound" must mean "bound by someone
+    // else", not "bound by this loop two iterations ago".
+    let mut occupied: HashMap<BindingMode, HashSet<Vec<ChordPattern>>> = HashMap::new();
+    for mode in [
+        BindingMode::Normal,
+        BindingMode::Visual,
+        BindingMode::Select,
+    ] {
+        occupied.insert(
+            mode,
+            handle
+                .layer_bindings(layer, mode)
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect(),
+        );
+    }
+
     let mut added = 0usize;
-    for (path, bound) in handle.layer_bindings(layer, BindingMode::Normal) {
+    let mut bind_if_absent =
+        |mode: BindingMode, path: &[ChordPattern], command: CommandInvocation| {
+            let taken = occupied.entry(mode).or_default();
+            if !taken.insert(path.to_vec()) {
+                return 0;
+            }
+            handle.bind(layer, mode, path, command, source());
+            1
+        };
+
+    for (path, bound) in normal {
         let Some(spec) = commands.lookup(bound.command.command) else {
             continue;
         };
@@ -2271,30 +2321,30 @@ pub fn expand_plugin_mode_grammar_rows(
             let mut full: Vec<ChordPattern> =
                 prefix.into_iter().map(ChordPattern::Literal).collect();
             full.extend(path.iter().cloned());
-            handle.bind(
-                layer,
+            added += bind_if_absent(
                 BindingMode::Normal,
                 &full,
                 CommandInvocation::of(op.0).with_target(target.clone()),
-                source(),
             );
-            added += 1;
+        }
+
+        // Visual + Select carry the binding VERBATIM — the same
+        // `CommandInvocation` the Normal row holds, count and all, so
+        // `<C-d>`'s baked `Count(10)` survives into Visual. The dispatcher
+        // returns `Action::Invoke`, the motion moves `Editor::cursor`, and
+        // `write_through_caret` re-derives the selection from the anchor. A
+        // bare text object goes through `execute_text_object` instead and
+        // yields a `SelectionChange` spanning the object; either way there is
+        // nothing Visual-specific to encode here.
+        for mode in [BindingMode::Visual, BindingMode::Select] {
+            added += bind_if_absent(mode, &path, bound.command.clone());
         }
 
         if is_text_object {
-            // Visual: `var` extends the selection to the object. The
-            // invocation is the text object itself, not an operator — the
-            // Visual dispatcher resolves the range and moves the head.
-            handle.bind(
-                layer,
-                BindingMode::Visual,
-                &path,
-                bound.command.clone(),
-                source(),
-            );
-            added += 1;
-            // And drop the Normal terminal binding `bind_mode_keymap` wrote:
-            // `ar` alone in Normal is not a command a user can mean.
+            // Drop the Normal terminal binding `bind_mode_keymap` wrote: `ar`
+            // alone in Normal is not a command a user can mean. Kind-driven,
+            // not layer-driven — the builtin catalog binds no bare text object
+            // in Normal, so this reaches nothing there.
             handle.unbind(layer, BindingMode::Normal, &path);
         }
     }
@@ -2536,7 +2586,6 @@ mod syntax_motion_tests {
             &builtins,
             &action_ids,
             &syntax_textobjects,
-            &syntax_motions,
         );
         register_normal_bindings(
             &h,
@@ -2545,6 +2594,8 @@ mod syntax_motion_tests {
             &syntax_textobjects,
             &syntax_motions,
         );
+        // VM.1: Visual's motion rows are derived, not listed — mirror boot.
+        expand_grammar_rows(&h, &registry, &builtins, KeymapLayer::Builtin);
         (h, syntax_motions)
     }
 

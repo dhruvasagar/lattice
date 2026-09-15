@@ -1999,7 +1999,7 @@ impl Editor {
                                 lattice_keymap::KeymapLayer::MinorMode(mode_id)
                             }
                         };
-                        crate::keymap_normal::expand_plugin_mode_grammar_rows(
+                        crate::keymap_normal::expand_grammar_rows(
                             &expand_keymap,
                             &commands,
                             &expand_builtins,
@@ -2189,7 +2189,6 @@ impl Editor {
                     &builtins,
                     &action_ids,
                     &syntax_textobject_ids,
-                    &syntax_motion_ids,
                 );
                 // SN.3d.2: Select mode's motion/text-object table —
                 // duplicated from Visual, kept honest by the parity test
@@ -2199,7 +2198,6 @@ impl Editor {
                     &builtins,
                     &action_ids,
                     &syntax_textobject_ids,
-                    &syntax_motion_ids,
                 );
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
                 // CG.1: `<C-g>` → `action:cancel`. Builtin, so it does
@@ -2360,6 +2358,41 @@ impl Editor {
                     &mode_registry.load(),
                     &registry.load(),
                 );
+                // VM.1 (2026-09-15): derive every grammar row a binding
+                // implies but nobody wrote — a motion's Visual / Select /
+                // operator-pending peers, a text object's the same. Runs
+                // LAST, over the Builtin layer and over every mode layer
+                // registered so far, because it fills gaps and must see the
+                // deliberate bindings first: `keymap_visual`'s `x` / `s` / `r`
+                // aliases and the find-char paths' `Args::Char` routing are
+                // explicit statements the derivation must not clobber.
+                //
+                // This is what makes `vgg`, `vf)`, `v<C-d>` and `dgg` work,
+                // and what makes org's `[[` a motion in Visual without the
+                // plugin declaring `binding-mode: visual` a second time. The
+                // four hand-kept copies of `motion_rows` are gone with it;
+                // see `expand_grammar_rows`. Plugin layers are re-walked on
+                // `PluginLoaded` by the subscriber spawned above.
+                {
+                    let cmds = registry.load();
+                    crate::keymap_normal::expand_grammar_rows(
+                        &h,
+                        &cmds,
+                        &builtins,
+                        lattice_keymap::KeymapLayer::Builtin,
+                    );
+                    for (mode_id, kind) in mode_registry.load().iter_meta() {
+                        let layer = match kind {
+                            lattice_mode::ModeKind::Major => {
+                                lattice_keymap::KeymapLayer::MajorMode(mode_id)
+                            }
+                            lattice_mode::ModeKind::Minor => {
+                                lattice_keymap::KeymapLayer::MinorMode(mode_id)
+                            }
+                        };
+                        crate::keymap_normal::expand_grammar_rows(&h, &cmds, &builtins, layer);
+                    }
+                }
                 // MARG.2 (2026-06-03): now that every layer's
                 // bindings are registered, the reverse cache
                 // reflects the full Normal-mode keymap. Build

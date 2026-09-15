@@ -269,7 +269,7 @@ impl KeyChord {
 /// on `lattice-host`. The matcher engine
 /// (`KeymapTrie` / `KeymapLayer` / `BoundCommand`) stays in host:
 /// it owns the lookup hot path, not the wire shape.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChordPattern {
     Literal(KeyChord),
     CharLiteral,

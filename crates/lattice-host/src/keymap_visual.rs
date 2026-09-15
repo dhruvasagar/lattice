@@ -73,7 +73,6 @@ use lattice_grammar::SourceLocation;
 use lattice_grammar::VisualKind;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
-use lattice_syntax::SyntaxMotionIds;
 use lattice_syntax::SyntaxTextObjectIds;
 
 use crate::action::Action;
@@ -97,7 +96,6 @@ pub fn register_visual_bindings(
     builtins: &Builtins,
     actions: &ActionIds,
     syntax_textobjects: &SyntaxTextObjectIds,
-    syntax_motions: &SyntaxMotionIds,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Visual;
@@ -151,31 +149,23 @@ pub fn register_visual_bindings(
         source(),
     );
 
-    // Motions: each chord binds to a typed CommandInvocation. Sourced
-    // from the SHARED `keymap_normal::motion_rows` table -- the same
-    // one Normal + operator-pending consume -- so a motion added there
-    // works in Visual automatically (the host's `SelectionChange` arm
-    // extends the active selection's head). The dispatcher returns
-    // `Action::Invoke(command.clone())`.
-    for (chord, motion) in crate::keymap_normal::motion_rows(builtins) {
-        handle.bind(
-            layer,
-            mode,
-            std::slice::from_ref(&chord),
-            CommandInvocation::of(motion.0),
-            source(),
-        );
-    }
-
-    // TSM.4: the sixteen tree-sitter structural motions
-    // (`]f`/`[f`/`]F`/`[F`, `]c`/`[c`/`]C`/`[C`, `]a`/`[a`/`]A`/`[A`,
-    // `]l`/`[l`/`]L`/`[L`). Sourced from the SHARED
-    // `keymap_normal::syntax_motion_rows` table -- the same one Normal /
-    // operator-pending consume -- so a motion added there works in
-    // Visual automatically, exactly like the builtin motions above.
-    for (seq, motion) in crate::keymap_normal::syntax_motion_rows(syntax_motions) {
-        handle.bind(layer, mode, &seq, CommandInvocation::of(motion.0), source());
-    }
+    // VM.1 (2026-09-15): motions are NOT listed here any more, neither the
+    // builtin ones nor TSM.4's sixteen structural ones. They are DERIVED from
+    // the Normal catalog by `keymap_normal::expand_grammar_rows`, which walks
+    // every layer's Normal trie and gives each `CommandKind::Motion` binding
+    // its Visual, Select and operator-pending peers.
+    //
+    // The list that used to live here was a re-registration of
+    // `keymap_normal::motion_rows`, and its doc comment claimed to be a single
+    // source of truth for three surfaces. It was not: `gg`, `f` / `F` / `t` /
+    // `T`, `<C-d>` / `<C-u>` and `<PageUp>` / `<PageDown>` all entered the
+    // Normal binder by other doors and so were dead in Visual. A second copy
+    // of a list cannot notice what the first one never had, and a plugin motion
+    // had no route into either copy — org's `[[` moved the cursor in Normal and
+    // did nothing here.
+    //
+    // What remains below is what is genuinely Visual-SPECIFIC: chords that mean
+    // something different here than in Normal.
 
     // Visual-only operator ALIASES. The canonical operator trigger
     // chords (`d` / `c` / `y` / `>` / `<`, case `gU` / `gu` / `g~`,

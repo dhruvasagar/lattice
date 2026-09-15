@@ -45,7 +45,6 @@ use lattice_grammar::SourceLocation;
 use lattice_grammar::VisualKind;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
-use lattice_syntax::SyntaxMotionIds;
 use lattice_syntax::SyntaxTextObjectIds;
 
 use lattice_mode::mode::ModeId;
@@ -90,7 +89,6 @@ pub fn register_select_bindings(
     builtins: &Builtins,
     actions: &ActionIds,
     syntax_textobjects: &SyntaxTextObjectIds,
-    syntax_motions: &SyntaxMotionIds,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Select;
@@ -104,36 +102,13 @@ pub fn register_select_bindings(
         select_source(),
     );
 
-    // Motions: the SHARED `keymap_normal::motion_rows` table — same one
-    // Normal / operator-pending / Visual consume. The host's
-    // `SelectionChange` arm extends the active selection's head, so a
-    // motion extends the Select selection exactly as in Visual.
-    for (chord, motion) in crate::keymap_normal::motion_rows(builtins) {
-        handle.bind(
-            layer,
-            mode,
-            std::slice::from_ref(&chord),
-            CommandInvocation::of(motion.0),
-            select_source(),
-        );
-    }
-
-    // TSM.4: the sixteen tree-sitter structural motions
-    // (`]f`/`[f`/`]F`/`[F`, `]c`/`[c`/`]C`/`[C`, `]a`/`[a`/`]A`/`[A`,
-    // `]l`/`[l`/`]L`/`[L`). Bound identically to Visual from the SHARED
-    // `keymap_normal::syntax_motion_rows` table — Select≡Visual motion
-    // parity (select-mode.md §4) requires every Visual motion extend the
-    // Select selection too. The parity test below
-    // (`visual_and_select_share_every_motion`) walks this table as well.
-    for (seq, motion) in crate::keymap_normal::syntax_motion_rows(syntax_motions) {
-        handle.bind(
-            layer,
-            mode,
-            &seq,
-            CommandInvocation::of(motion.0),
-            select_source(),
-        );
-    }
+    // VM.1 (2026-09-15): motions are not listed here, for the same reason they
+    // are no longer listed in `keymap_visual` — see the note there.
+    // `keymap_normal::expand_grammar_rows` derives Select's motion rows from
+    // the Normal catalog, which is what makes Select≡Visual motion parity
+    // (select-mode.md §4) a property of the mechanism instead of a property of
+    // two lists staying in step. The parity test below now runs the derivation
+    // and asserts against its output.
 
     // Text objects: `i<obj>` / `a<obj>` set the selection to the object's
     // span — same SHARED `text_object_rows` table Visual + the Normal
@@ -381,15 +356,13 @@ mod tests {
         let builtins = grammar_builtins_populate(&mut registry);
         let action_ids = crate::actions::populate(&mut registry, &builtins);
         let syntax_textobjects = lattice_syntax::register_syntax_text_objects(&mut registry);
-        let syntax_motions: SyntaxMotionIds =
-            lattice_syntax::register_syntax_motions(&mut registry);
+        let syntax_motions = lattice_syntax::register_syntax_motions(&mut registry);
         let h = KeymapHandle::new();
         crate::keymap_visual::register_visual_bindings(
             &h,
             &builtins,
             &action_ids,
             &syntax_textobjects,
-            &syntax_motions,
         );
         // Operators bind into Visual via `register_operator_bindings` (called by
         // `register_normal_bindings`), not `register_visual_bindings` --
@@ -404,13 +377,11 @@ mod tests {
             &syntax_textobjects,
             &syntax_motions,
         );
-        register_select_bindings(
-            &h,
-            &builtins,
-            &action_ids,
-            &syntax_textobjects,
-            &syntax_motions,
-        );
+        register_select_bindings(&h, &builtins, &action_ids, &syntax_textobjects);
+        // VM.1: the derivation is now part of the boot path this helper
+        // mirrors — without it the handle has no motions in Visual or Select,
+        // because nobody lists them any more.
+        crate::keymap_normal::expand_grammar_rows(&h, &registry, &builtins, KeymapLayer::Builtin);
         h
     }
 
@@ -505,14 +476,22 @@ mod tests {
 
     // ── SN.3d.2: Visual≡Select parity (the drift guard, select-mode.md §4) ──
 
-    /// Every Visual MOTION binds to the same command in Select. This is
-    /// the LOCKED drift guard for the duplicated registration: if a
-    /// motion is added to `register_visual_bindings` but not
-    /// `register_select_bindings` (or they bind different commands), this
-    /// fails loudly. Covers BOTH the builtin `motion_rows` (single-key)
-    /// AND the TSM.4 tree-sitter `syntax_motion_rows` (two-key `]f`/`[f`
-    /// structural motions) — the latter closes the drift vector that let
-    /// `]f` overtype the selection in Select while extending it in Visual.
+    /// Every Visual MOTION binds to the same command in Select.
+    ///
+    /// VM.1 changed what this guards. There is no duplicated registration to
+    /// drift any more — both tables come out of
+    /// `keymap_normal::expand_grammar_rows`, which walks the Normal trie once
+    /// and writes both. So the guard is now that the derivation treats the two
+    /// modes identically, which is the Select≡Visual contract of
+    /// select-mode.md §4 stated directly rather than inferred from two lists
+    /// happening to agree.
+    ///
+    /// Walking `motion_rows` / `syntax_motion_rows` for the CHORDS is still
+    /// the right premise — they are the motions whose Visual behaviour users
+    /// depend on — but it is no longer an exhaustive sweep. The exhaustive
+    /// one lives in `tests/a_motion_is_live_in_visual.rs`, which enumerates
+    /// the Normal trie by command KIND and so also covers `gg`, `f`, `<C-d>`
+    /// and everything a plugin contributes.
     #[test]
     fn visual_and_select_share_every_motion() {
         use lattice_grammar::CommandRegistry;

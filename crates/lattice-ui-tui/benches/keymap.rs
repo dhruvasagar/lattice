@@ -462,9 +462,18 @@ fn production_keymap() -> (
     let sm = lattice_syntax::register_syntax_motions(&mut r);
     let h = KeymapHandle::new();
     lattice_ui_tui::keymap_replace::register_replace_bindings(&h, &a);
-    lattice_ui_tui::keymap_visual::register_visual_bindings(&h, &b, &a, &so, &sm);
+    lattice_ui_tui::keymap_visual::register_visual_bindings(&h, &b, &a, &so);
     lattice_ui_tui::keymap_insert::register_insert_bindings(&h, &a);
     lattice_ui_tui::keymap_normal::register_normal_bindings(&h, &b, &a, &so, &sm);
+    // VM.1: the Visual / Select / operator-pending motion rows are derived
+    // from the Normal catalog, so the bench must derive them to measure the
+    // trie the editor actually dispatches against.
+    lattice_ui_tui::keymap_normal::expand_grammar_rows(
+        &h,
+        &r,
+        &b,
+        lattice_host::keymap_trie::KeymapLayer::Builtin,
+    );
     (h, b, a)
 }
 

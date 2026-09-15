@@ -2341,8 +2341,109 @@ See the slice plan
 ([mode-activation](../operations/slice-plans/archive/mode-activation.md), SN.3c.2b)
 for sequencing and the landed commit.
 
+## 15. A motion's binding-modes are derived, not listed (VM.1)
+
+A motion is an **`nvo` command** — vim's word for one that fires in Normal,
+Visual and operator-pending. That is not a property of any particular chord; it
+is what being a motion *means*, and paramount goal #3 says the grammar is the
+public command API, so it has to hold for a motion a plugin contributed as
+firmly as for `w`.
+
+Until VM.1 it was a property of four hand-kept lists.
+`keymap_normal::motion_rows` was walked by `register_normal_bindings`, by
+`register_operator_bindings`, by `keymap_visual::register_visual_bindings`, and
+by `keymap_select::register_select_bindings`, and its doc comment called itself
+"single source of truth shared by all three motion surfaces".
+
+### What that cost
+
+It was false, and silently. These motions reach the Normal binder by other
+routes in the same file and so appeared in none of the derived surfaces:
+
+| Chord | Command | Dead in |
+| --- | --- | --- |
+| `gg` | `motion:goto-first-line` | Visual, Select, operator-pending |
+| `f` / `F` / `t` / `T` | `motion:find-char-*` | Visual, Select |
+| `<C-d>` / `<C-u>` | `motion:line-down` / `-up`, count 10 | Visual, Select, operator-pending |
+| `<PageDown>` / `<PageUp>` | `motion:line-down` / `-up` | Visual, Select, operator-pending |
+
+A plugin motion had no route into any of the four lists at all.
+`bind_mode_keymap` binds the one `binding-mode` a mode declared and stops, so
+org's `[[` moved the cursor in Normal and did nothing in Visual — and the only
+fix available to the plugin was to declare every motion chord three times.
+
+Worth being precise about what was NOT broken: Visual's behaviour.
+`Editor::write_through_caret` rebuilds the selection from `visual_anchor` +
+`cursor` at the end of every dispatch, so **any** reachable cursor-mover
+extends the selection with no per-motion wiring. The chord simply resolved to
+nothing.
+
+### The derivation
+
+`keymap_normal::expand_grammar_rows(handle, commands, builtins, layer)` walks
+one layer's finished Normal trie and, for each terminal binding, reads the
+command's kind out of the `CommandRegistry`:
+
+- **`Motion`** — keeps the Normal row, and adds a Visual row, a Select row, and
+  `<op-prefix><chord>` for every composable operator.
+- **`TextObject`** — replaces the Normal row (a bare text object in Normal is
+  not a command a user can mean) with Visual + Select rows and the same
+  operator expansion.
+- anything else — untouched.
+
+Visual and Select carry the binding **verbatim**, the same `CommandInvocation`
+the Normal row holds, so `<C-d>`'s baked `Count(10)` survives into Visual.
+
+Two properties make it safe to run over a layer somebody else populated:
+
+- **Bind-if-absent.** A derived row never overwrites one written deliberately.
+  Visual's `x` → delete and `s` → change aliases, the find-char paths'
+  `Args::Char` capture routing under an operator, and a mode's own Visual
+  override are all explicit statements, and a default that clobbers them is
+  worse than no default.
+- **Idempotent.** Re-running adds nothing, so a plugin reload cannot accumulate
+  rows and boot order stops being load-bearing.
+
+### Why a host pass and not the bind seam
+
+The obvious alternative is to mirror inside `KeymapRegistry::bind`. Two things
+argue against it. The operator half of the expansion needs `Builtins` — the
+host-resolved operator ids — which lives downstream of `lattice-plugin-host`,
+so the registry would either carry an incomplete derivation or drag the
+operator vocabulary two crates down. And `push_layer` installs pre-built tries
+without passing through `bind` at all, so there is no single write choke point
+to hang it on; a mirror at `bind` would quietly miss every mode layer that
+arrives that way.
+
+The lookup-time alternative — retry a Visual miss against the Normal trie — was
+rejected on UX rather than on plumbing: `:describe-key`, `:keymap`, which-key
+and the reverse cache all read the trie, so every one of them would report the
+chord unbound while it worked. It also strands the `f`-prefix `Partial` case
+mid-sequence and fixes nothing operator-pending.
+
+### Where it runs
+
+- `editor_boot.rs`, after every builtin binder and after
+  `translate_mode_keymaps` — over `KeymapLayer::Builtin` and over each
+  registered mode's layer. Last, deliberately: it fills gaps, so it must see
+  the deliberate bindings first.
+- the `PluginLoaded` subscriber, over every mode layer, so a plugin's motions
+  get their rows the moment the plugin lands.
+
+### What it does not cover
+
+A cursor-moving command registered as `CommandKind::Action` is not a motion as
+far as this pass is concerned — that is a statement about the command, not
+about the keymap. `<C-f>` / `<C-b>`, `%`, `;` / `,`, `H` / `M` / `L`, `n` / `N`,
+`*` / `#`, `` `x `` / `'x` and `gj` / `gk` / `g0` / `g$` are all typed as
+actions today, and several of them are genuine motions in vim (`d%`, `dn`,
+`dH`, `d;` all work there and are unbound here). Re-typing them is tracked in
+the [visual-motions slice plan](../operations/slice-plans/visual-motions.md),
+VM.3.
+
 ## See also
 
+- [slice plan: visual-motions](../operations/slice-plans/visual-motions.md) -- VM.1--VM.3 sequencing.
 - [slice plan: lattice-keymap crate + layer-trace](../archive/keymap-impl-plan.md) -- T1-T13 sequencing.
 - [slice plan: keymap-substrate](../archive/keymap-substrate.md) -- K.2 sequencing.
 - [slice plan: help-prefix](../archive/help-prefix.md) -- K.3 sequencing.

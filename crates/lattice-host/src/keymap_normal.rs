@@ -1659,11 +1659,10 @@ fn register_find_char_paths(
 /// ([`register_find_char_paths`]). This table is the simple, no-arg
 /// motions only.
 ///
-/// Note: operator targets are charwise for every motion (the engine
-/// has no linewise-motion-target expansion yet — `dj` / `dG` delete
-/// charwise, not by whole lines); sharing this table means `dG` /
-/// `cG` / `yG` now resolve (charwise to EOF), consistent with the
-/// pre-existing charwise `dj` / `dk`.
+/// Operator targets follow the motion: a linewise motion (`j` / `k` / `gg` /
+/// `G`) gives whole lines (`dj` deletes two lines, `yj` yanks them linewise),
+/// and an exclusive motion obeys `:h exclusive-linewise` (VM.3L). Sharing this
+/// table is what gives `dG` / `cG` / `yG` their operator rows.
 pub(crate) fn motion_rows(
     builtins: &Builtins,
 ) -> Vec<(ChordPattern, lattice_grammar::registry::MotionId)> {

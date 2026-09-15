@@ -307,6 +307,29 @@ The pattern itself reaches the grammar the same way `last_find` does.
 Needs the mark table. `'x` is linewise, which runs into the same missing
 `MotionSpec` flag VM.3b documented — likely blocked on that.
 
+### VM.3m 📝 — where an operator leaves the cursor
+
+Found while gating VM.3L; older than it. Checked in vim 9.2
+(`vimcheck_opcursor.vim`, buffer
+`['  one a', '    two b', '', '  four d', '  five e', '  six f']`):
+
+| Command | From | vim cursor |
+|---|---|---|
+| `dd` | 1,6 | 1,5 — first non-blank of the line that moved up |
+| `dk` | 5,5 | 4,3 — first non-blank |
+| `2dj` | 1,6 | 1,3 — first non-blank |
+| `yy` / `2yy` / `yj` | 1,6 / 2,8 / 1,6 | unchanged |
+| `yk` | 2,8 | 1,7 — start line, column kept (clamped to the line) |
+| `yb` | 2,8 | 2,5 — start of the yanked text |
+| `y{` | 5,5 | 3,1 |
+| `yip` | 5,5 | 4,1 — start of the object |
+
+Lattice: a linewise delete lands on column 0 (the edit's start), and no yank
+moves the cursor. The rule is vim's "the cursor is left at the start of the
+text operated upon", with linewise delete then going to the first non-blank.
+Yank needs the operated region's start BEFORE linewise expansion (`yk` keeps
+the column, `yip` doesn't), which `OperatorContext` doesn't carry today.
+
 ### VM.3f 📝 — `H` / `M` / `L`
 
 Viewport-relative, and fold- and line-height-aware
@@ -394,12 +417,46 @@ with `do_goto_fold`, which stays for the WIT `goto-next-fold` / `goto-prev-fold`
 effects. The multibuffer forwards the resolver like `last_find`. Not on WIT:
 a plugin motion has no fold table to ask.
 
-**Known gap, engine-wide:** `dzj` from 1,3 in vim deletes `ne 1\nline 2\nline 3`
-and keeps line 3's newline, by `:h exclusive-linewise` ("the end is moved to
-the end of the previous line"). Lattice doesn't implement that rule for any
-motion (`d}` shares it), so `dzj` also takes the newline. Fixing it belongs in
-`motion_to_range`, for every exclusive motion, not in this slice.
+**Known gap, closed by VM.3L:** `dzj` from 1,3 in vim keeps line 3's newline,
+by `:h exclusive-linewise`. When VM.3i landed, lattice's engine didn't
+implement that rule for any motion; VM.3L added it, and `dzj` is now pinned
+against vim's exact result.
 
 UX note: `zj` with no fold ahead used to echo "no more folds"; as a motion it
 is silent, which is what vim does.
+
+### VM.3L ✅ — linewise operator targets, and `:h exclusive-linewise`
+
+Decided 2026-09-15 (user): implement linewise operator targets before VM.3e
+(`'x`) and VM.3f (`H` / `M` / `L`), which are linewise motions. A motion's
+`linewise` flag never reached the operator, so `dj`, `yj`, `dG` and `dgg` all
+acted charwise — a documented deviation from vim.
+
+Checked in vim 9.2 (`vimcheck_linewise.vim`, `vimcheck_linewise_edges.vim`,
+`vimcheck_marks.vim`) and pinned row by row in `motion_composition.rs`:
+`dj` / `dk` / `dG` / `dgg` delete whole lines into a `V` register, `yj` yanks
+them linewise, `2dj` and `5dj` count and clamp, `cj` replaces lines, `dj` on
+the last line does nothing at all, and `yk` lands on the start line keeping
+the column. Marks behave the same way (`d'a` linewise, `` d`a `` charwise) and
+come with VM.3e.
+
+**Mechanism.** `motion_to_range` returns `(range, linewise)`. A linewise
+motion's range is whole lines, the shape `Range::CurrentLine` resolves to,
+and `resolve_target` carries the flag into `OperatorContext::linewise`, so
+`d` / `y` / `c` needed no change. `j` / `k` declare `linewise: true` and fail
+with the new `CommandError::MotionFailed` at the buffer edge: with linewise
+ranges, returning the cursor there would have made `dj` on the last line
+delete it. The host already drops a failed dispatch silently, and counts are
+cleared before dispatch, so a failed `j` is a plain no-op.
+
+**`:h exclusive-linewise`**, both halves, in `motion_to_range` for every
+exclusive motion: ending in column 1 of a later line after starting at or
+before the first non-blank makes the motion linewise (`d}` from a line start);
+otherwise the end moves to the end of the previous line (`d}` from mid-line,
+`dzj`).
+
+Behaviour changes, deliberate: `dj` / `dk` / `dG` / `dgg` / `yj` act on whole
+lines; `d}` from a line start deletes lines; `d}` / `dzj` from mid-line keep
+the last line's newline; `j` on the last line and `k` on the first fail
+(silently, as before, since nothing visible moved).
 

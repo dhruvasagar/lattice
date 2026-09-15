@@ -497,9 +497,7 @@ mod tests {
 
     /// VM.3i: `zk` composes with an operator. vim 9.2, folds on 4–6 and 9–10,
     /// `dzk` from 12,3 deletes "line 10\nline 11\nli" charwise, landing on
-    /// 10,1. (`dzj` differs from vim by one newline: vim's exclusive-linewise
-    /// rule, which lattice's engine doesn't implement for any motion; see the
-    /// slice plan.)
+    /// 10,1.
     /// VM.3i: a count repeats `zj`, over real keystrokes (the host's
     /// `dispatch_chord` harness doesn't carry counts). vim 9.2: `2zj` from 1,3,
     /// folds on 4–6 and 9–10, lands on 9,1.
@@ -518,6 +516,28 @@ mod tests {
         a.editor.cursor = Position::new(0, 2);
         press_chars(&mut a, "2zj");
         assert_eq!(a.editor.cursor, Position::new(8, 0));
+    }
+
+    /// VM.3L closes VM.3i's gap: `dzj` from 1,3 obeys `:h exclusive-linewise`
+    /// and keeps line 3's newline, as vim 9.2 does ("ne 1\nline 2\nline 3").
+    #[test]
+    fn dzj_keeps_the_newline_before_the_next_fold() {
+        let text: String = (1..=14).map(|n| format!("line {n}\n")).collect();
+        let mut a = app_with(&text, 20);
+        for (start_line, end_line) in [(3, 5), (8, 9)] {
+            a.editor.folds.push(Fold {
+                start_line,
+                end_line,
+                closed: false,
+                identity: None,
+            });
+        }
+        a.editor.cursor = Position::new(0, 2);
+        press_chars(&mut a, "dzj");
+        let after = a.editor.document.snapshot().buffer.as_string();
+        assert_eq!(after.lines().next(), Some("li"), "{after:?}");
+        assert_eq!(after.lines().nth(1), Some("line 4"), "{after:?}");
+        assert_eq!(after.lines().count(), 12);
     }
 
     #[test]

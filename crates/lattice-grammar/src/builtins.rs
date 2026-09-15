@@ -1844,27 +1844,40 @@ fn motion_char_right(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
 
 // ---- Motion: line-up / line-down ----
 
+/// VM.3L: `k` is linewise (`dk` deletes two whole lines), and on the first
+/// line it FAILS rather than returning the cursor. With linewise ranges, a
+/// no-move result would make `dk` delete the current line; vim beeps and
+/// deletes nothing. A count past the top clamps, as in vim (`5dk`).
 fn motion_line_up(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    if ctx.from.line == 0 {
+        return Err(CommandError::MotionFailed);
+    }
     let count = ctx.count.get().max(1);
     let line = ctx.from.line.saturating_sub(count);
     let max_byte = line_byte_len(ctx.buffer, line);
     let byte = ctx.from.byte.min(max_byte);
     Ok(MotionResult {
         target: Position::new(line, byte),
-        linewise: false,
+        linewise: true,
         exclusive: None,
     })
 }
 
+/// VM.3L: `j` is linewise, and on the last line it fails; see `k` above.
+/// vim 9.2: `dj` on the last line leaves the buffer and register untouched,
+/// and `5dj` two lines from the end clamps to the end.
 fn motion_line_down(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
-    let count = ctx.count.get().max(1);
     let last = last_addressable_line(ctx.buffer);
+    if ctx.from.line >= last {
+        return Err(CommandError::MotionFailed);
+    }
+    let count = ctx.count.get().max(1);
     let line = ctx.from.line.saturating_add(count).min(last);
     let max_byte = line_byte_len(ctx.buffer, line);
     let byte = ctx.from.byte.min(max_byte);
     Ok(MotionResult {
         target: Position::new(line, byte),
-        linewise: false,
+        linewise: true,
         exclusive: None,
     })
 }
@@ -4100,23 +4113,43 @@ mod tests {
         }
     }
 
+    /// VM.3L: `k` on the first line fails (vim beeps) instead of returning
+    /// the cursor, so `dk` there can't delete the line it's on.
     #[test]
-    fn line_up_at_top_stays_put() {
+    fn line_up_at_top_fails() {
         let (registry, b, mut doc) = fixture("a\nb");
         let inv = CommandInvocation::of(b.line_up.0);
-        let effect = execute(
+        let result = execute(
             &registry,
             &mut doc,
             lattice_core::BufferId(0),
             Position::ZERO,
             inv,
             &CancellationToken::never(),
-        )
-        .unwrap();
-        match effect {
-            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
-            other => panic!("expected CursorMove, got {other:?}"),
-        }
+        );
+        assert!(
+            matches!(result, Err(CommandError::MotionFailed)),
+            "got {result:?}"
+        );
+    }
+
+    /// And `j` on the last line.
+    #[test]
+    fn line_down_on_the_last_line_fails() {
+        let (registry, b, mut doc) = fixture("a\nb");
+        let inv = CommandInvocation::of(b.line_down.0);
+        let result = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(1, 0),
+            inv,
+            &CancellationToken::never(),
+        );
+        assert!(
+            matches!(result, Err(CommandError::MotionFailed)),
+            "got {result:?}"
+        );
     }
 
     #[test]

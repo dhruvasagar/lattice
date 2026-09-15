@@ -17,6 +17,13 @@ pub enum CommandError {
     #[error("missing target for operator")]
     MissingTarget,
 
+    /// VM.3L: a motion couldn't move (vim beeps): `j` on the last line, `k`
+    /// on the first. The dispatcher commits no effect, so an operator it was
+    /// feeding is cancelled — vim deletes nothing for `dj` on the last line,
+    /// where returning the cursor would have deleted that line.
+    #[error("motion failed")]
+    MotionFailed,
+
     #[error("invalid args for command: {0}")]
     InvalidArgs(&'static str),
 

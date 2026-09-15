@@ -346,22 +346,26 @@ fn execute_operator(
     }
 
     let motion_count = invocation.count_or_default();
-    let target_range: ProtoRange = match (&invocation.range, &invocation.target) {
-        (Some(grammar_range), _) => {
-            resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?
-        }
-        (None, Some(target)) => resolve_target(
-            registry,
-            document,
-            buffer_id,
-            cursor,
-            target,
-            motion_count,
-            cancel,
-            env,
-        )?,
-        (None, None) => return Err(CommandError::MissingTarget),
-    };
+    // VM.3L: a motion target reports whether it moved linewise (or became
+    // linewise by `:h exclusive-linewise`); a grammar range says so below.
+    let (target_range, target_linewise): (ProtoRange, bool) =
+        match (&invocation.range, &invocation.target) {
+            (Some(grammar_range), _) => (
+                resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?,
+                false,
+            ),
+            (None, Some(target)) => resolve_target(
+                registry,
+                document,
+                buffer_id,
+                cursor,
+                target,
+                motion_count,
+                cancel,
+                env,
+            )?,
+            (None, None) => return Err(CommandError::MissingTarget),
+        };
 
     let visual_linewise = matches!(invocation.range, Some(Range::Selection))
         && matches!(
@@ -374,7 +378,8 @@ fn execute_operator(
         linewise: matches!(
             invocation.range,
             Some(Range::CurrentLine) | Some(Range::Whole)
-        ) || visual_linewise,
+        ) || visual_linewise
+            || target_linewise,
         register: invocation.register_or_default(),
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
@@ -668,7 +673,7 @@ fn resolve_target(
     count: crate::command::Count,
     cancel: &CancellationToken,
     env: crate::registry::GrammarEnv<'_>,
-) -> GrammarResult<ProtoRange> {
+) -> GrammarResult<(ProtoRange, bool)> {
     match target {
         Target::Motion(motion_id, args) => {
             let entry = registry
@@ -731,9 +736,11 @@ fn resolve_target(
                 path: document.path(),
                 syntax: env.syntax,
             };
-            (tobj.apply)(&ctx)
+            (tobj.apply)(&ctx).map(|range| (range, false))
         }
-        Target::Range(grammar_range) => resolve_grammar_range(document, grammar_range, cursor, 1),
+        Target::Range(grammar_range) => {
+            resolve_grammar_range(document, grammar_range, cursor, 1).map(|range| (range, false))
+        }
     }
 }
 
@@ -833,30 +840,69 @@ fn resolve_grammar_range(
 /// genuinely-inclusive bidirectional motion arrived. `d%` from the CLOSING
 /// bracket deleted `(abc` and left the `)` behind. `F` / `T` are registered
 /// `exclusive: true` now, so their ranges are bit-identical and say why.
+///
+/// VM.3L: returns whether the range is LINEWISE too, which the operator reads
+/// as `OperatorContext::linewise` (whole lines, a `V` register).
 fn motion_to_range(
     buffer: &lattice_core::Buffer,
     from: Position,
     to: Position,
     exclusive: bool,
     linewise: bool,
-) -> ProtoRange {
-    // Linewise motions (`j`/`k`/`gg`/`G`) don't take a charwise
-    // inclusive-end adjustment -- their whole-line semantics are handled
-    // by the linewise path, and advancing a character here would be
-    // meaningless. Exclusive motions and empty ranges are `[min, max)`.
-    if exclusive || linewise || to == from {
+) -> (ProtoRange, bool) {
+    // A linewise motion (`j` / `k` / `gg` / `G`) acts on whole lines, from the
+    // lower line to the higher whichever way it moved. The range has the shape
+    // `Range::CurrentLine` resolves to, so every operator's existing linewise
+    // handling (`extend_linewise_range`, the `V` register) applies unchanged.
+    if linewise {
         let (a, b) = ordered(from, to);
-        return ProtoRange::new(a, b);
+        return (
+            ProtoRange::new(
+                Position::new(a.line, 0),
+                Position::new(b.line, line_byte_len(buffer, b.line)),
+            ),
+            true,
+        );
+    }
+    if exclusive || to == from {
+        let (a, b) = ordered(from, to);
+        // `:h exclusive-linewise`. An exclusive motion whose end lands in
+        // column 1 of a later line covers nothing on that line, so:
+        if exclusive && b.byte == 0 && b.line > a.line {
+            let last = b.line - 1;
+            let last_end = Position::new(last, line_byte_len(buffer, last));
+            // "...and the start of the motion was at or before the first
+            // non-blank in the line, the motion becomes linewise" — `d}` from
+            // the start of a paragraph deletes its lines, not the blank after.
+            if a.byte <= first_non_blank_byte(buffer, a.line) {
+                return (ProtoRange::new(Position::new(a.line, 0), last_end), true);
+            }
+            // "...the end of the motion is moved to the end of the previous line
+            // and the motion becomes inclusive" — `d}` / `dzj` from mid-line
+            // keep that line's newline.
+            return (ProtoRange::new(a, last_end), false);
+        }
+        return (ProtoRange::new(a, b), false);
     }
     if to > from {
         // Forward inclusive: cover the character under the target.
-        ProtoRange::new(from, advance_one_char(buffer, to))
+        (ProtoRange::new(from, advance_one_char(buffer, to)), false)
     } else {
         // Backward inclusive: the target is the range start, and the far end
         // is the character under the ORIGINAL cursor — included, because that
         // is what inclusive means.
-        ProtoRange::new(to, advance_one_char(buffer, from))
+        (ProtoRange::new(to, advance_one_char(buffer, from)), false)
     }
+}
+
+/// VM.3L: byte column of the first non-blank character on `line` (the line's
+/// length when it's blank), for `:h exclusive-linewise`.
+fn first_non_blank_byte(buffer: &lattice_core::Buffer, line: u32) -> u32 {
+    let text = buffer.line(line).unwrap_or_default();
+    let text = text.trim_end_matches('\n');
+    text.bytes()
+        .position(|b| b != b' ' && b != b'\t')
+        .unwrap_or(text.len()) as u32
 }
 
 /// Byte position one UTF-8 character past `pos`, clamped to the buffer
@@ -1232,5 +1278,72 @@ mod os2_tests {
         let seen = seen_selection(env).expect("region carried to the action");
         assert_eq!((seen.start.line, seen.start.byte), (1, 0));
         assert_eq!((seen.end.line, seen.end.byte), (3, 5));
+    }
+
+    // ── VM.3L: linewise motion ranges and `:h exclusive-linewise` ──────────
+
+    fn range_of(
+        text: &str,
+        from: Position,
+        to: Position,
+        exclusive: bool,
+        linewise: bool,
+    ) -> (ProtoRange, bool) {
+        let buffer = lattice_core::Buffer::from_text(text);
+        motion_to_range(&buffer, from, to, exclusive, linewise)
+    }
+
+    const PARA: &str = "  one a\n  two b\n\n  four d\n";
+
+    /// A linewise motion covers whole lines, lower to higher, either way.
+    #[test]
+    fn a_linewise_motion_covers_whole_lines_either_direction() {
+        let whole = ProtoRange::new(Position::new(0, 0), Position::new(1, 7));
+        assert_eq!(
+            range_of(PARA, Position::new(0, 4), Position::new(1, 4), false, true),
+            (whole, true)
+        );
+        assert_eq!(
+            range_of(PARA, Position::new(1, 4), Position::new(0, 4), false, true),
+            (whole, true)
+        );
+    }
+
+    /// vim: `d}` from 1,1 deletes lines 1–2 linewise (the motion starts at or
+    /// before the first non-blank, so it becomes linewise).
+    #[test]
+    fn exclusive_to_column_one_from_the_line_start_becomes_linewise() {
+        assert_eq!(
+            range_of(PARA, Position::new(0, 0), Position::new(2, 0), true, false),
+            (
+                ProtoRange::new(Position::new(0, 0), Position::new(1, 7)),
+                true
+            )
+        );
+    }
+
+    /// vim: `d}` from 1,5 deletes `e a\n  two b` charwise, keeping line 2's
+    /// newline (the end moves to the end of the previous line).
+    #[test]
+    fn exclusive_to_column_one_from_mid_line_ends_at_the_previous_line_end() {
+        assert_eq!(
+            range_of(PARA, Position::new(0, 4), Position::new(2, 0), true, false),
+            (
+                ProtoRange::new(Position::new(0, 4), Position::new(1, 7)),
+                false
+            )
+        );
+    }
+
+    /// Neither rule touches an exclusive motion that doesn't end in column 1.
+    #[test]
+    fn an_exclusive_motion_ending_mid_line_is_unchanged() {
+        assert_eq!(
+            range_of(PARA, Position::new(0, 4), Position::new(1, 2), true, false),
+            (
+                ProtoRange::new(Position::new(0, 4), Position::new(1, 2)),
+                false
+            )
+        );
     }
 }

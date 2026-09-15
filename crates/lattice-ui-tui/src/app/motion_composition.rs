@@ -89,11 +89,12 @@ mod tests {
         press_chars(&mut a, "dTa");
         assert_eq!(body(&a), "ae\n", "`dT` is exclusive of the cursor char");
 
-        // `dk` — charwise today (the linewise gap), and unchanged by VM.3b.
+        // `dk` — unchanged by VM.3b, and linewise since VM.3L closed the gap
+        // this test used to pin: both lines go, as in vim.
         let mut a = app_with("abcd\nefgh\n", 10);
         press_chars(&mut a, "jll");
         press_chars(&mut a, "dk");
-        assert_eq!(body(&a), "abgh\n", "`dk` must delete exactly what it did");
+        assert_eq!(body(&a), "\n", "`dk` deletes both lines, linewise");
     }
 
     /// VM.3c: `;` composes. `d;` under an operator is the reason `;` had to be
@@ -154,5 +155,150 @@ mod tests {
         let before = a.editor.position_history.len();
         press_chars(&mut a, "}");
         assert_eq!(a.editor.position_history.len(), before + 1);
+    }
+
+    // ── VM.3L: linewise operator targets (vim 9.2, `vimcheck_linewise*.vim`) ──
+
+    const SIX: &str = "  one a\n  two b\n\n  four d\n  five e\n  six f";
+    const THREE: &str = "  one a\n  two b\n  three c";
+
+    fn at(text: &str, line: u32, byte: u32) -> crate::app::App {
+        let mut a = app_with(text, 20);
+        a.editor.cursor = lattice_protocol::position::Position::new(line, byte);
+        a
+    }
+
+    fn cursor(a: &crate::app::App) -> (u32, u32) {
+        (a.editor.cursor.line, a.editor.cursor.byte)
+    }
+
+    fn register(a: &crate::app::App) -> Option<(String, lattice_grammar::YankKind)> {
+        a.editor
+            .unnamed_register
+            .as_ref()
+            .map(|r| (r.content.clone(), r.kind))
+    }
+
+    const LINEWISE: lattice_grammar::YankKind = lattice_grammar::YankKind::Linewise;
+    const CHARWISE: lattice_grammar::YankKind = lattice_grammar::YankKind::Charwise;
+
+    /// vim: `dj` from 1,5 deletes lines 1–2 whole; register `V`.
+    #[test]
+    fn dj_deletes_two_whole_lines() {
+        let mut a = at(SIX, 0, 4);
+        press_chars(&mut a, "dj");
+        assert_eq!(body(&a), "\n  four d\n  five e\n  six f");
+        assert_eq!(register(&a), Some(("  one a\n  two b\n".into(), LINEWISE)));
+        assert_eq!(cursor(&a), (0, 0));
+    }
+
+    /// vim: `yj` yanks lines 1–2 linewise and leaves the cursor where it was.
+    #[test]
+    fn yj_yanks_two_lines_linewise() {
+        let mut a = at(SIX, 0, 4);
+        press_chars(&mut a, "yj");
+        assert_eq!(body(&a), SIX);
+        assert_eq!(register(&a), Some(("  one a\n  two b\n".into(), LINEWISE)));
+        assert_eq!(cursor(&a), (0, 4));
+    }
+
+    /// vim: `dk` from 2,5 deletes the same two lines as `dj` from 1,5.
+    #[test]
+    fn dk_deletes_the_line_above_and_this_one() {
+        let mut a = at(SIX, 1, 4);
+        press_chars(&mut a, "dk");
+        assert_eq!(body(&a), "\n  four d\n  five e\n  six f");
+        assert_eq!(register(&a), Some(("  one a\n  two b\n".into(), LINEWISE)));
+        assert_eq!(cursor(&a), (0, 0));
+    }
+
+    /// vim: `dG` from 4,5 deletes lines 4–6 whole; cursor on the blank line 3.
+    ///
+    /// On a buffer that ends in a newline. Without one, vim's result
+    /// `['  one a', '  two b', '']` is the string `"  one a\n  two b\n"`, which
+    /// lattice (like any editor that treats a final newline as a terminator)
+    /// reads as two lines — so there is no blank line 3 for the cursor to sit on.
+    #[test]
+    fn d_upper_g_deletes_to_the_end_linewise() {
+        let mut a = at(&format!("{SIX}\n"), 3, 4);
+        press_chars(&mut a, "dG");
+        assert_eq!(body(&a), "  one a\n  two b\n\n");
+        assert_eq!(register(&a).map(|r| r.1), Some(LINEWISE));
+        assert_eq!(cursor(&a), (2, 0));
+    }
+
+    /// vim: `dgg` from 2,5 deletes lines 1–2 whole.
+    #[test]
+    fn dgg_deletes_to_the_top_linewise() {
+        let mut a = at(SIX, 1, 4);
+        press_chars(&mut a, "dgg");
+        assert_eq!(body(&a), "\n  four d\n  five e\n  six f");
+        assert_eq!(register(&a).map(|r| r.1), Some(LINEWISE));
+    }
+
+    /// vim: `2dj` from 1,5 deletes three lines. (vim then puts the cursor on
+    /// the first non-blank; lattice's linewise delete lands on column 0, as `dd`
+    /// always has — VM.3m.)
+    #[test]
+    fn a_count_on_dj_deletes_more_lines() {
+        let mut a = at(SIX, 0, 4);
+        press_chars(&mut a, "2dj");
+        assert_eq!(body(&a), "  four d\n  five e\n  six f");
+        assert_eq!(register(&a).map(|r| r.1), Some(LINEWISE));
+    }
+
+    /// vim: `d}` from 1,1 becomes linewise (`:h exclusive-linewise`): lines 1–2
+    /// go, the blank line stays.
+    #[test]
+    fn d_brace_from_the_line_start_is_linewise() {
+        let mut a = at(SIX, 0, 0);
+        press_chars(&mut a, "d}");
+        assert_eq!(body(&a), "\n  four d\n  five e\n  six f");
+        assert_eq!(register(&a).map(|r| r.1), Some(LINEWISE));
+    }
+
+    /// vim: `d}` from 1,5 ends at the end of line 2, keeping its newline.
+    #[test]
+    fn d_brace_from_mid_line_keeps_the_last_newline() {
+        let mut a = at(SIX, 0, 4);
+        press_chars(&mut a, "d}");
+        assert_eq!(body(&a), "  on\n\n  four d\n  five e\n  six f");
+        assert_eq!(register(&a), Some(("e a\n  two b".into(), CHARWISE)));
+    }
+
+    /// vim: `dj` on the last line does nothing, not even to the register.
+    #[test]
+    fn dj_on_the_last_line_does_nothing() {
+        let mut a = at(THREE, 2, 3);
+        press_chars(&mut a, "dj");
+        assert_eq!(body(&a), THREE);
+        assert_eq!(register(&a), None);
+    }
+
+    /// vim: `5dj` two lines from the end clamps to the end.
+    #[test]
+    fn a_count_past_the_end_clamps() {
+        let mut a = at(THREE, 1, 3);
+        press_chars(&mut a, "5dj");
+        assert_eq!(body(&a), "  one a");
+        assert_eq!(register(&a).map(|r| r.1), Some(LINEWISE));
+    }
+
+    /// vim: `yk` from 2,6 yanks lines 1–2 linewise. (vim also moves the cursor
+    /// to the start of what it yanked; no lattice yank moves the cursor yet —
+    /// VM.3m.)
+    #[test]
+    fn yk_yanks_the_line_above_and_this_one() {
+        let mut a = at(THREE, 1, 5);
+        press_chars(&mut a, "yk");
+        assert_eq!(register(&a), Some(("  one a\n  two b\n".into(), LINEWISE)));
+    }
+
+    /// vim: `cjX` replaces two lines with one holding `X`.
+    #[test]
+    fn cj_replaces_two_lines_with_one() {
+        let mut a = at(THREE, 0, 3);
+        press_chars(&mut a, "cjX");
+        assert_eq!(body(&a), "X\n  three c");
     }
 }

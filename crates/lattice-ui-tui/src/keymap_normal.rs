@@ -258,8 +258,8 @@ mod tests {
 
     /// Motion-table unification: `G` is now in the shared `motion_rows`
     /// table, so `dG` resolves as an operator target (previously the
-    /// operator-pending list omitted `G`). Charwise to EOF, consistent
-    /// with the pre-existing charwise `dj` / `dk`.
+    /// operator-pending list omitted `G`). `G` is linewise, so `dG` deletes
+    /// whole lines to the end (VM.3L).
     #[test]
     fn d_uppercase_g_resolves_to_delete_with_goto_last_line_target() {
         let (h, b, _) = populated_handle();

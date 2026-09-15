@@ -10188,6 +10188,35 @@ mod tests {
         // Toggle whitespace on. The option cascade republishes (and
         // rebuilds) with the new config.
         app.toggle_mode_by_name("whitespace-show-mode");
+
+        // The painted matrix's whitespace stamp, and the stamp a matrix
+        // built now would carry.
+        let stamps = || {
+            let live = app.editor.render_state.load().cells.load_full();
+            let painted = live
+                .display_matrix_for_pane(pane_id)
+                .expect("pane matrix")
+                .load()
+                .version
+                .whitespace;
+            (painted, live.whitespace_version_for_pane(pane_id))
+        };
+        // The toggle also woke the LIVE cells worker, which rebuilds on its
+        // own thread. If that rebuild lands after the replay below, it
+        // overwrites the stale stamp and the precondition fails: a race in
+        // this test's SETUP, lost more often the busier the suite is (it
+        // failed 3 of 4 full runs on 2026-09-15 and never alone). So wait for
+        // the worker to catch up with the toggle first. The budget is only
+        // spent if the worker never rebuilds, in which case there is no race.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while {
+            let (painted, current) = stamps();
+            painted != current
+        } && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
         // Now the in-flight rebuild lands, stamping the pane's matrix cell
         // with the pre-toggle version + undecorated cells.
         let pane = stale_inputs
@@ -10195,22 +10224,31 @@ mod tests {
             .iter()
             .find(|p| p.pane_id == pane_id)
             .expect("active document pane present in cells inputs");
-        let _ = lattice_host::cells_worker::recompute_pane(
-            pane,
-            lattice_host::cells_worker::CellTheme {
-                resolved: &stale_inputs.resolved_theme,
-                ids: &stale_inputs.theme_ids,
-            },
-            &stale_inputs.whitespace,
-        );
-        let live = app.editor.render_state.load().cells.load_full();
+        let replay_stale_write = || {
+            let _ = lattice_host::cells_worker::recompute_pane(
+                pane,
+                lattice_host::cells_worker::CellTheme {
+                    resolved: &stale_inputs.resolved_theme,
+                    ids: &stale_inputs.theme_ids,
+                },
+                &stale_inputs.whitespace,
+            );
+        };
+        replay_stale_write();
+        // A coalesced tail rebuild can still land once more. Only the setup is
+        // retried here; the assertions below run once, against a matrix that
+        // is stale when they start.
+        while {
+            let (painted, current) = stamps();
+            painted == current
+        } && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            replay_stale_write();
+        }
+        let (painted, current) = stamps();
         assert_ne!(
-            live.display_matrix_for_pane(pane_id)
-                .expect("pane matrix")
-                .load()
-                .version
-                .whitespace,
-            live.whitespace_version_for_pane(pane_id),
+            painted, current,
             "precondition: the painted matrix carries the pre-toggle \
              whitespace stamp"
         );

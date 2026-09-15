@@ -3244,6 +3244,7 @@ mod tests {
                     target: ctx.from,
                     linewise: false,
                     exclusive: None,
+                    notice: None,
                 })
             }),
             args_schema: vec![],

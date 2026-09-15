@@ -30,12 +30,10 @@ pub struct SearchLine {
     pub origin: Position,
 }
 
-/// Last completed search -- consulted by `n` and `N`.
-#[derive(Debug, Clone)]
-pub struct LastSearch {
-    pub pattern: String,
-    pub direction: SearchDirection,
-}
+/// Last completed search -- consulted by `n` and `N`. VM.3d-2: defined in
+/// `lattice-grammar` now that `n` is a motion; re-exported so no call site
+/// moved.
+pub use lattice_grammar::LastSearch;
 
 /// The unnamed register's payload. v1 uses a single global slot;
 /// the full vim register zoo (`"a-z`, `"+`, `"*`, etc.) lands

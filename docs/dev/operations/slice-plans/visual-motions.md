@@ -302,22 +302,45 @@ old behaviour until VM.3d-2 routes `n` / `N` there through the same motion.
 This is the first half of VM.3d on its own because it's UX-visible and
 independent of making `n` a motion.
 
-### VM.3d-2 📝 — `n` / `N` / `*` / `#`, and where `current_match` belongs
+### VM.3d-2 ✅ — `n` / `N` / `*` / `#` are motions
 
-**Not the same shape as `%` and `;`, and worth reading before starting.**
-`repeat_search` does far more than compute a position: it sets
-`current_match` (which drives hlsearch painting), emits vim's wrap echoes
-("search hit BOTTOM, continuing at TOP"), emits `E486: Pattern not found`, and
-refreshes the terminal search mirror. A motion returns only a `Position`, so
-converting `n` naively drops all of it silently.
+Decided 2026-09-15 (user): motion feedback lives in the grammar. Checked in vim
+9.2 (`vimcheck_n.vim`): `dn` from 1,1 deletes `alpha ` (charwise, exclusive),
+`dn` across a wrap deletes back to the wrapped match, `yN` yanks back to the
+previous match, `vny` includes the match start, `d*` deletes to the next
+occurrence of the word, and a `dn` that finds nothing deletes nothing and says
+`E486`.
 
-`current_match` is no longer `n`'s job: VM.3d-1 derives it from the cursor
-after every dispatch, so a search motion only has to move the cursor. What's
-left is the wrap echo, E486 (with the operator cancelled, as vim does), and
-recording the pattern for `*` / `#`, via motion feedback in the grammar
-(decided 2026-09-15; see `scratchpad/vm3L_vm3d_draft.md` for vim's results).
+**Motions.** `motion:search-next` / `-prev` / `-word-forward` /
+`-word-backward` are exclusive jumps. `LastSearch` moved into
+`lattice-grammar` (host re-export, no call site moved) and reaches the motion
+through `GrammarEnv` → `MotionContext` (owned in `DispatchEnv` across the
+actor, forwarded by the multibuffer), like `last_find`. The grammar compiles
+the pattern with `fancy-regex` and searches with `lattice_core::search`.
 
-The pattern itself reaches the grammar the same way `last_find` does.
+**Feedback.** `MotionResult::notice` (a `Copy` enum) carries the wrap, which
+the dispatcher echoes alongside the motion's effect, on the bare and operator
+paths alike. `CommandError::User` carries `E486` / `E35`: no effect is
+committed, so an operator fed by a failed search does nothing, and the host
+echoes the message instead of dropping the error.
+
+**`*` / `#`.** The word becomes the search before the motion runs:
+`Editor::capture_search_word`, called by both motion runners for a bare `*`
+and for an operator targeting it, records `last_search` and resolves
+`all_matches`; the motions then repeat that search. One word rule
+(`word_at_or_after_cursor`) serves this and the WIT action path.
+
+**Jumps** are recorded only after the motion succeeds, so a failed `n` leaves
+none. **Terminal panes** route the four ids to the host's search methods, which
+mirror hits into the grid. A read-only buffer (`:help`) gets the search in its
+motion env; its wrap echo is not shown (that runner returns a position only).
+
+### VM.3d-3 📝 — `*` / `#` match whole words
+
+vim's `*` searches `\<word\>` (whole-word, when the word is keyword
+characters); lattice's has always searched the plain escaped word, and existing
+tests pin that pattern. A vim-parity fix of its own, not part of making the keys
+motions.
 
 ### VM.3e 📝 — `` `x `` / `'x ``
 

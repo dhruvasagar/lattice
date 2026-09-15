@@ -66,8 +66,8 @@ pub use crate::register::Register;
 pub use crate::registry::{
     ActionContext, ActionSpec, CommandRegistration, CommandRegistry, CommentSyntax,
     ExCommandContext, ExCommandSpec, FindKind, FoldResolver, GrammarEnv, IndentResolver, LastFind,
-    MotionSpec, NavBoundary, NavDir, OperatorContext, OperatorSpec, ScopeResolver, SurfaceForm,
-    TextObjectSpec,
+    LastSearch, MotionNotice, MotionSpec, NavBoundary, NavDir, OperatorContext, OperatorSpec,
+    ScopeResolver, SurfaceForm, TextObjectSpec,
 };
 pub use crate::registry::{ExCommandId, MotionId, OperatorId, TextObjectId};
 pub use crate::source::{SourceKind, SourceLayer, SourceLocation};

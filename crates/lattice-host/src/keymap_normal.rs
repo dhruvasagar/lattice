@@ -345,34 +345,25 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.enter_search_backward),
         source(),
     );
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('n')],
-        CommandInvocation::of(actions.search_next),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('N')],
-        CommandInvocation::of(actions.search_previous),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('*')],
-        CommandInvocation::of(actions.search_word_under_cursor_forward),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('#')],
-        CommandInvocation::of(actions.search_word_under_cursor_backward),
-        source(),
-    );
+    // VM.3d-2: `n` / `N` / `*` / `#` are MOTIONS, as in vim (`dn`, `yN`, `vn`,
+    // `d*` all work there; checked in 9.2). As actions they composed with
+    // nothing and were dead in Visual. Normal is the only mode named here: the
+    // keymap's mirror puts them in Visual, and `expand_grammar_rows` gives them
+    // their operator rows. The action ids stay registered for the WIT effects.
+    for (key, motion) in [
+        ('n', builtins.search_next),
+        ('N', builtins.search_prev),
+        ('*', builtins.search_word_forward),
+        ('#', builtins.search_word_backward),
+    ] {
+        handle.bind(
+            layer,
+            mode,
+            &[lit_char(key)],
+            CommandInvocation::of(motion.0),
+            source(),
+        );
+    }
     // VM.3b: `%` is the MOTION, not `action:match-bracket`. Binding the
     // action left `d%` and `v%` unbound — an action does not compose with an
     // operator and VM.1's derivation only mirrors motions into Visual. The

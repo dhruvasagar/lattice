@@ -132,6 +132,7 @@ fn handle_next_excerpt_start(
         target: Position::new(target_row, 0),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -147,6 +148,7 @@ fn handle_prev_excerpt_start(
         target: Position::new(target_row, 0),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -162,6 +164,7 @@ fn handle_next_file_boundary(
         target: Position::new(target_row, 0),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -177,6 +180,7 @@ fn handle_prev_file_boundary(
         target: Position::new(target_row, 0),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 

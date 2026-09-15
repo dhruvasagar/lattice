@@ -2210,9 +2210,7 @@ impl Document for MultibufferDocumentHandle {
             invocation,
             cursor,
             cancel,
-            lattice_core::IndentUnit::default(),
-            None,
-            None,
+            lattice_runtime::DispatchEnv::default(),
         )
     }
 
@@ -2241,14 +2239,9 @@ impl Document for MultibufferDocumentHandle {
         // reason other than the field being new.
         // VM.3i: so is the fold resolver. The host's folds for a composed
         // view are composed-view lines, which are the lines `zj` walks here.
-        self.dispatch_composed(
-            invocation,
-            cursor,
-            cancel,
-            env.indent,
-            env.last_find,
-            env.fold_resolver,
-        )
+        // VM.3d-2: and so is the last search, for `n` / `N`: in a composed view
+        // the text `n` searches is the composed text.
+        self.dispatch_composed(invocation, cursor, cancel, env)
     }
 }
 
@@ -2365,10 +2358,17 @@ impl MultibufferDocumentHandle {
         invocation: CommandInvocation,
         cursor: Position,
         cancel: CancellationToken,
-        indent: lattice_core::IndentUnit,
-        last_find: Option<lattice_grammar::LastFind>,
-        fold_resolver: Option<lattice_runtime::FoldResolverHandle>,
+        env: lattice_runtime::DispatchEnv,
     ) -> Pending<Effect> {
+        // Only the fields that need no composed↔source mapping are read here;
+        // the coordinate-bearing ones (`scope_resolver`, …) are rebuilt below.
+        let lattice_runtime::DispatchEnv {
+            indent,
+            last_find,
+            fold_resolver,
+            last_search,
+            ..
+        } = env;
         // K.4.11 (2026-06-02): the multibuffer now owns grammar
         // dispatch directly. Pre-K.4.11 this returned
         // Err(ReadOnly), and `Editor::dispatch_blocking`
@@ -2482,6 +2482,9 @@ impl MultibufferDocumentHandle {
                 last_find,
                 // VM.3i: forwarded, not deferred — see `dispatch_with_env`.
                 fold_resolver: fold_resolver.as_deref().map(|r| r as _),
+                // VM.3d-2: forwarded, like `last_find`: `n` searches the text in
+                // front of the user, which in a composed view is the composed text.
+                last_search: last_search.as_ref(),
             },
         )
         .map_err(RuntimeError::Grammar);

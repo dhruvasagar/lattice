@@ -274,6 +274,7 @@ impl DocumentActor {
                     selection: env.selection,
                     last_find: env.last_find,
                     fold_resolver,
+                    last_search: env.last_search.as_ref(),
                 };
                 // B3b: snapshot the registry wait-free for this dispatch. A
                 // plugin registered at runtime (loader RCU-store into the

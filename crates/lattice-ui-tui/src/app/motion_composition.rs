@@ -301,4 +301,108 @@ mod tests {
         press_chars(&mut a, "cjX");
         assert_eq!(body(&a), "X\n  three c");
     }
+
+    // ── VM.3d-2: `n` / `N` / `*` / `#` are motions (vim 9.2, `vimcheck_n.vim`) ──
+
+    const FOO: &str = "alpha foo one\nbeta two\ngamma foo three\ndelta four";
+
+    fn searching(pattern: &str, line: u32, byte: u32) -> crate::app::App {
+        let mut a = app_with(FOO, 20);
+        a.editor.last_search = Some(lattice_host::state::LastSearch {
+            pattern: pattern.into(),
+            direction: lattice_grammar::SearchDirection::Forward,
+        });
+        a.editor.refresh_hlsearch_from_last();
+        a.editor.cursor = lattice_protocol::position::Position::new(line, byte);
+        a
+    }
+
+    /// vim: `dn` from 1,1 deletes `alpha ` (charwise, exclusive).
+    #[test]
+    fn dn_deletes_up_to_the_next_match() {
+        let mut a = searching("foo", 0, 0);
+        press_chars(&mut a, "dn");
+        assert_eq!(body(&a), "foo one\nbeta two\ngamma foo three\ndelta four");
+    }
+
+    /// vim: `dn` from 3,10 wraps to the match at 1,7 and deletes back to it.
+    #[test]
+    fn dn_across_a_wrap_deletes_back_to_the_wrapped_match() {
+        let mut a = searching("foo", 2, 9);
+        press_chars(&mut a, "dn");
+        assert_eq!(body(&a), "alpha  three\ndelta four");
+        assert_eq!(
+            a.editor.cursor,
+            lattice_protocol::position::Position::new(0, 6)
+        );
+    }
+
+    /// vim: `yN` from 3,10 yanks the `foo` behind the cursor.
+    #[test]
+    fn y_upper_n_yanks_back_to_the_previous_match() {
+        let mut a = searching("foo", 2, 9);
+        press_chars(&mut a, "yN");
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.content, "foo");
+    }
+
+    /// vim: `dn` with no match deletes nothing and says E486.
+    #[test]
+    fn dn_with_no_match_deletes_nothing_and_echoes_e486() {
+        let mut a = searching("zzz", 0, 0);
+        press_chars(&mut a, "dn");
+        assert_eq!(body(&a), FOO);
+        let msg = a.editor.last_message.as_ref().expect("an echo");
+        assert_eq!(msg.text, "E486: Pattern not found: zzz");
+    }
+
+    /// vim: `vny` from 1,1 yanks `alpha f` (Visual includes the match start).
+    #[test]
+    fn vn_extends_the_selection_to_the_match() {
+        let mut a = searching("foo", 0, 0);
+        press_chars(&mut a, "vny");
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.content, "alpha f");
+    }
+
+    /// vim: `d*` on `foo` at 1,7 deletes to the next `foo`, and `*` recorded
+    /// the word as the search.
+    #[test]
+    fn d_star_deletes_to_the_next_occurrence_of_the_word() {
+        let mut a = searching("unrelated", 0, 6);
+        press_chars(&mut a, "d*");
+        assert_eq!(body(&a), "alpha foo three\ndelta four");
+        assert_eq!(a.editor.last_search.as_ref().unwrap().pattern, "foo");
+    }
+
+    /// vim: `n` past the last match wraps and says so.
+    #[test]
+    fn a_wrapping_n_echoes_search_hit_bottom() {
+        let mut a = searching("foo", 2, 9);
+        press_chars(&mut a, "n");
+        assert_eq!(
+            a.editor.cursor,
+            lattice_protocol::position::Position::new(0, 6)
+        );
+        let msg = a.editor.last_message.as_ref().expect("an echo");
+        assert_eq!(msg.text, "search hit BOTTOM, continuing at TOP");
+    }
+
+    /// A successful `n` records a jump; a failed one (E486) records none.
+    #[test]
+    fn only_a_successful_n_records_a_jump() {
+        let mut a = searching("foo", 0, 0);
+        let before = a.editor.position_history.len();
+        press_chars(&mut a, "n");
+        assert_eq!(a.editor.position_history.len(), before + 1);
+
+        let mut b = searching("zzz", 0, 0);
+        let before = b.editor.position_history.len();
+        press_chars(&mut b, "n");
+        assert_eq!(
+            b.editor.position_history.len(),
+            before,
+            "E486 is not a jump"
+        );
+    }
 }

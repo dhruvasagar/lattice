@@ -745,6 +745,39 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             args_schema: vec![],
         },
     );
+    // VM.3d-2: vim's `n` / `N` / `*` / `#`. Charwise and exclusive (vim 9.2:
+    // `dn` from 1,1 deletes `alpha `), and jumps. `*` / `#` repeat the search
+    // exactly as `n` does: the host records the word under the cursor as the
+    // search before the motion runs (`Editor::capture_search_word`), so there's
+    // one word rule, not two. They were host actions, so `dn` / `vn` / `d*`
+    // were unbound.
+    let search_spec =
+        |apply: fn(&MotionContext) -> Result<MotionResult, CommandError>| MotionSpec {
+            jump: true,
+            exclusive: true,
+            apply: Arc::new(apply),
+            args_schema: vec![],
+        };
+    let search_next = registry.register_motion(
+        "motion:search-next",
+        "Repeat the last search in its own direction (vim's `n`).",
+        search_spec(motion_search_next),
+    );
+    let search_prev = registry.register_motion(
+        "motion:search-prev",
+        "Repeat the last search in the opposite direction (vim's `N`).",
+        search_spec(motion_search_prev),
+    );
+    let search_word_forward = registry.register_motion(
+        "motion:search-word-forward",
+        "Search forward for the word under the cursor (vim's `*`).",
+        search_spec(motion_search_next),
+    );
+    let search_word_backward = registry.register_motion(
+        "motion:search-word-backward",
+        "Search backward for the word under the cursor (vim's `#`).",
+        search_spec(motion_search_next),
+    );
 
     Builtins {
         word_forward,
@@ -775,6 +808,10 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         match_pair,
         goto_next_fold,
         goto_prev_fold,
+        search_next,
+        search_prev,
+        search_word_forward,
+        search_word_backward,
         delete,
         change,
         yank,
@@ -855,6 +892,11 @@ pub struct Builtins {
     /// VM.3i: vim's `zj` / `zk`, as the motions they are in vim.
     pub goto_next_fold: MotionId,
     pub goto_prev_fold: MotionId,
+    /// VM.3d-2: vim's `n` / `N` / `*` / `#`, as the motions they are in vim.
+    pub search_next: MotionId,
+    pub search_prev: MotionId,
+    pub search_word_forward: MotionId,
+    pub search_word_backward: MotionId,
     pub delete: OperatorId,
     pub change: OperatorId,
     pub yank: OperatorId,
@@ -950,6 +992,7 @@ fn motion_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError
         target,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1039,6 +1082,7 @@ fn motion_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandErro
         target,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1083,6 +1127,7 @@ fn motion_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         target,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1132,6 +1177,7 @@ fn motion_match_pair(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
         target: ctx.from,
         linewise: false,
         exclusive: None,
+        notice: None,
     });
     let text = ctx.buffer.as_string();
     let bytes = text.as_bytes();
@@ -1172,6 +1218,7 @@ fn motion_match_pair(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
             target: pos,
             linewise: false,
             exclusive: None,
+            notice: None,
         }),
         None => unmoved,
     }
@@ -1222,6 +1269,109 @@ fn scan_backward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Op
     }
 }
 
+/// VM.3d-2: `n` (`reverse = false`) / `N` — the last search again, `count`
+/// times, from one character past the cursor so the match under it isn't found
+/// again. vim's rules, checked in 9.2: the target is the match START (charwise,
+/// exclusive), a search that wraps says so, and a pattern with no match fails
+/// with E486, which cancels an operator (`dn` deletes nothing).
+fn motion_search(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, CommandError> {
+    use crate::modal::SearchDirection;
+    let Some(last) = ctx.last_search else {
+        return Err(CommandError::User(
+            "E35: no previous regular expression".to_string(),
+        ));
+    };
+    let direction = match (last.direction, reverse) {
+        (SearchDirection::Forward, false) | (SearchDirection::Backward, true) => {
+            SearchDirection::Forward
+        }
+        (SearchDirection::Backward, false) | (SearchDirection::Forward, true) => {
+            SearchDirection::Backward
+        }
+    };
+    let regex = fancy_regex::Regex::new(&last.pattern)
+        .map_err(|e| CommandError::User(format!("regex: {e}")))?;
+    let core_direction = match direction {
+        SearchDirection::Forward => lattice_core::search::Direction::Forward,
+        SearchDirection::Backward => lattice_core::search::Direction::Backward,
+    };
+    let mut at = ctx.from;
+    let mut wrapped = false;
+    for _ in 0..ctx.count.get().max(1) {
+        let from = step_for_search(ctx.buffer, at, direction);
+        match lattice_core::search::find(ctx.buffer, &regex, from, core_direction, ctx.cancel)? {
+            Some(hit) => {
+                at = hit.range.start;
+                wrapped |= hit.wrapped;
+            }
+            None => {
+                return Err(CommandError::User(format!(
+                    "E486: Pattern not found: {}",
+                    last.pattern
+                )));
+            }
+        }
+    }
+    Ok(MotionResult {
+        target: at,
+        linewise: false,
+        exclusive: None,
+        notice: wrapped.then_some(match direction {
+            SearchDirection::Forward => crate::registry::MotionNotice::SearchHitBottom,
+            SearchDirection::Backward => crate::registry::MotionNotice::SearchHitTop,
+        }),
+    })
+}
+
+fn motion_search_next(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    motion_search(ctx, false)
+}
+
+fn motion_search_prev(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    motion_search(ctx, true)
+}
+
+/// VM.3d-2: one character in the search direction, so `n` skips the match the
+/// cursor is on. The same rule as the host's `step_byte` for `repeat_search`: a
+/// whole UTF-8 scalar forward (a mid-scalar offset would be snapped back onto
+/// the match being skipped), across a line end to the next line's start, and
+/// one byte back or to the previous line's end.
+fn step_for_search(
+    buffer: &lattice_core::Buffer,
+    p: Position,
+    direction: crate::modal::SearchDirection,
+) -> Position {
+    let line = buffer.line(p.line).unwrap_or_default();
+    match direction {
+        crate::modal::SearchDirection::Forward => {
+            if p.byte < line_byte_len(buffer, p.line) {
+                let mut byte = p.byte as usize + 1;
+                while byte < line.len() && !line.is_char_boundary(byte) {
+                    byte += 1;
+                }
+                Position::new(p.line, byte as u32)
+            } else if p.line < last_addressable_line(buffer) {
+                Position::new(p.line + 1, 0)
+            } else {
+                p
+            }
+        }
+        crate::modal::SearchDirection::Backward => {
+            if p.byte > 0 {
+                let mut byte = (p.byte as usize - 1).min(line.len());
+                while byte > 0 && !line.is_char_boundary(byte) {
+                    byte -= 1;
+                }
+                Position::new(p.line, byte as u32)
+            } else if p.line > 0 {
+                Position::new(p.line - 1, line_byte_len(buffer, p.line - 1))
+            } else {
+                p
+            }
+        }
+    }
+}
+
 /// VM.3i: `zj` (`forward`) / `zk` — the next fold start / previous fold end,
 /// `count` times. The host decides which folds are visible (a closed fold
 /// counts as one, vim's rule); this only walks the answers.
@@ -1247,6 +1397,7 @@ fn motion_goto_fold(ctx: &MotionContext, forward: bool) -> Result<MotionResult, 
         target,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1283,6 +1434,7 @@ fn motion_paragraph_forward(ctx: &MotionContext) -> Result<MotionResult, Command
         target: Position::new(line, 0),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1303,6 +1455,7 @@ fn motion_paragraph_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
         target: Position::new(line, 0),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1389,6 +1542,7 @@ fn motion_sentence_forward(ctx: &MotionContext) -> Result<MotionResult, CommandE
         target,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1415,6 +1569,7 @@ fn motion_sentence_backward(ctx: &MotionContext) -> Result<MotionResult, Command
         target,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1504,6 +1659,7 @@ fn motion_big_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandE
         target,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1536,6 +1692,7 @@ fn motion_big_word_backward(ctx: &MotionContext) -> Result<MotionResult, Command
         target,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1573,6 +1730,7 @@ fn motion_big_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError
         target,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1613,6 +1771,7 @@ fn motion_find_char_forward(ctx: &MotionContext) -> Result<MotionResult, Command
                 target: Position::new(ctx.from.line, idx as u32),
                 linewise: false,
                 exclusive: None,
+                notice: None,
             });
         }
         idx += 1;
@@ -1622,6 +1781,7 @@ fn motion_find_char_forward(ctx: &MotionContext) -> Result<MotionResult, Command
         target: ctx.from,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1638,6 +1798,7 @@ fn motion_find_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
             target: ctx.from,
             linewise: false,
             exclusive: None,
+            notice: None,
         });
     }
     let mut idx = (ctx.from.byte as usize) - nlen;
@@ -1647,6 +1808,7 @@ fn motion_find_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
                 target: Position::new(ctx.from.line, idx as u32),
                 linewise: false,
                 exclusive: None,
+                notice: None,
             });
         }
         if idx == 0 {
@@ -1658,6 +1820,7 @@ fn motion_find_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
         target: ctx.from,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1672,6 +1835,7 @@ fn motion_till_char_forward(ctx: &MotionContext) -> Result<MotionResult, Command
         target: Position::new(result.target.line, target_byte),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1689,6 +1853,7 @@ fn motion_till_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
         target: Position::new(result.target.line, line_len),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1725,6 +1890,7 @@ fn find_repeat(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, Comma
             target: ctx.from,
             linewise: false,
             exclusive: None,
+            notice: None,
         });
     };
     let kind = if reverse {
@@ -1748,6 +1914,7 @@ fn find_repeat(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, Comma
         syntax: ctx.syntax,
         last_find: ctx.last_find,
         fold_resolver: ctx.fold_resolver,
+        last_search: ctx.last_search,
     };
     let mut result = match kind {
         FindKind::Forward => motion_find_char_forward(&sub)?,
@@ -1781,6 +1948,7 @@ fn motion_first_non_blank(ctx: &MotionContext) -> Result<MotionResult, CommandEr
         target: Position::new(ctx.from.line, col as u32),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1810,6 +1978,7 @@ fn motion_char_left(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         target: pos,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1839,6 +2008,7 @@ fn motion_char_right(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
         target: pos,
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1860,6 +2030,7 @@ fn motion_line_up(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         target: Position::new(line, byte),
         linewise: true,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1879,6 +2050,7 @@ fn motion_line_down(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         target: Position::new(line, byte),
         linewise: true,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1889,6 +2061,7 @@ fn motion_line_start(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
         target: Position::new(ctx.from.line, 0),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1898,6 +2071,7 @@ fn motion_line_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         target: Position::new(ctx.from.line, len),
         linewise: false,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1915,6 +2089,7 @@ fn motion_goto_first_line(ctx: &MotionContext) -> Result<MotionResult, CommandEr
         target: Position::new(target_line, 0),
         linewise: true,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -1930,6 +2105,7 @@ fn motion_goto_last_line(ctx: &MotionContext) -> Result<MotionResult, CommandErr
         target: Position::new(target_line, 0),
         linewise: true,
         exclusive: None,
+        notice: None,
     })
 }
 
@@ -3651,6 +3827,107 @@ mod tests {
             &cancel,
         );
         assert!(result.is_ok());
+    }
+
+    // ---- VM.3d-2: `n` / `N` are motions ----
+
+    const FOO: &str = "alpha foo one\nbeta two\ngamma foo three\ndelta four\n";
+
+    fn search_effect(
+        from: Position,
+        reverse: bool,
+        count: Option<u32>,
+        last: Option<&crate::registry::LastSearch>,
+    ) -> Result<Effect, CommandError> {
+        let (registry, b, mut doc) = fixture(FOO);
+        let id = if reverse {
+            b.search_prev
+        } else {
+            b.search_next
+        };
+        let mut inv = CommandInvocation::of(id.0);
+        if let Some(n) = count {
+            inv = inv.with_count(crate::command::Count(n));
+        }
+        let env = crate::registry::GrammarEnv {
+            last_search: last,
+            ..Default::default()
+        };
+        crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            from,
+            inv,
+            &CancellationToken::never(),
+            env,
+        )
+    }
+
+    fn foo_forward() -> crate::registry::LastSearch {
+        crate::registry::LastSearch {
+            pattern: "foo".into(),
+            direction: crate::modal::SearchDirection::Forward,
+        }
+    }
+
+    /// vim: `n` from 1,1 lands on the next `foo` (1,7), with no echo.
+    #[test]
+    fn n_moves_to_the_next_match_start() {
+        let last = foo_forward();
+        match search_effect(Position::new(0, 0), false, None, Some(&last)).unwrap() {
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 6)),
+            other => panic!("expected a plain CursorMove, got {other:?}"),
+        }
+    }
+
+    /// `2n` counts; `N` reverses the search's own direction.
+    #[test]
+    fn a_count_repeats_and_upper_n_reverses() {
+        let last = foo_forward();
+        match search_effect(Position::new(0, 0), false, Some(2), Some(&last)).unwrap() {
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(2, 6)),
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+        match search_effect(Position::new(2, 9), true, None, Some(&last)).unwrap() {
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(2, 6)),
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+    }
+
+    /// vim: `n` past the last match wraps to the first and says so.
+    #[test]
+    fn a_wrapping_n_echoes_search_hit_bottom() {
+        let last = foo_forward();
+        match search_effect(Position::new(2, 9), false, None, Some(&last)).unwrap() {
+            Effect::Many(parts) => {
+                assert!(matches!(parts[0], Effect::CursorMove(p) if p == Position::new(0, 6)));
+                assert!(matches!(
+                    &parts[1],
+                    Effect::Echo { level: crate::effect::EchoLevel::Warn, text }
+                        if text == "search hit BOTTOM, continuing at TOP"
+                ));
+            }
+            other => panic!("expected CursorMove + Echo, got {other:?}"),
+        }
+    }
+
+    /// vim: no match is E486; no previous search is E35. Both are user-facing
+    /// errors, so the host echoes them and an operator commits nothing.
+    #[test]
+    fn a_failed_search_is_a_user_facing_error() {
+        let missing = crate::registry::LastSearch {
+            pattern: "zzz".into(),
+            direction: crate::modal::SearchDirection::Forward,
+        };
+        match search_effect(Position::new(0, 0), false, None, Some(&missing)) {
+            Err(CommandError::User(msg)) => assert_eq!(msg, "E486: Pattern not found: zzz"),
+            other => panic!("expected E486, got {other:?}"),
+        }
+        match search_effect(Position::new(0, 0), false, None, None) {
+            Err(CommandError::User(msg)) => assert_eq!(msg, "E35: no previous regular expression"),
+            other => panic!("expected E35, got {other:?}"),
+        }
     }
 
     // ---- VM.3i: `zj` / `zk` are motions ----

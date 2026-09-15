@@ -24,6 +24,10 @@ tracing = { workspace = true }
 # marks (0), so a reflowed line would not land where the margin says.
 # Already a workspace dependency (lattice-mode, lattice-ui-tui).
 unicode-width = { workspace = true }
+# VM.3d-2: `n` / `N` / `*` / `#` are motions, so the grammar compiles the
+# search pattern itself. The same engine `lattice-core::search` and the
+# host's `/` use; already a workspace dependency.
+fancy-regex = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1.0"

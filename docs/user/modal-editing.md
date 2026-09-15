@@ -249,6 +249,11 @@ current-match highlight. Move off it (`j`, an edit, a click) and only the
 ordinary match highlight remains; land on another match and it becomes
 current. `:nohlsearch` clears both.
 
+`n`, `N`, `*` and `#` are motions, so they compose like any other: `dn`
+deletes up to the next match, `y*` yanks up to the next occurrence of the
+word under the cursor, and `vN` extends a selection back to the previous
+match. A search that finds nothing deletes nothing and says `E486`.
+
 ---
 
 ## Operators

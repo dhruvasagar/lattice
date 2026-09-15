@@ -198,6 +198,7 @@ pub fn execute_motion_only(
         syntax: env.syntax,
         last_find: env.last_find,
         fold_resolver: env.fold_resolver,
+        last_search: env.last_search,
     };
     let result = (motion.apply)(&ctx)?;
     Ok(result.target)
@@ -260,6 +261,7 @@ fn execute_motion(
         syntax: env.syntax,
         last_find: env.last_find,
         fold_resolver: env.fold_resolver,
+        last_search: env.last_search,
     };
     let result = (motion.apply)(&ctx)?;
     // Motions emit a cursor-only jump — the modal engine's caller
@@ -267,7 +269,30 @@ fn execute_motion(
     // position via Effect::CursorMove, the semantically-clean
     // cursor-jump primitive (replaces the former SelectionChange-
     // with-collapsed-cursor pattern).
-    Ok(Effect::CursorMove(result.target))
+    Ok(with_notice(
+        Effect::CursorMove(result.target),
+        result.notice,
+    ))
+}
+
+/// VM.3d-2: attach a motion's notice to the effect it produced, as an
+/// `Effect::Echo` alongside it. `None` returns the effect untouched, so every
+/// motion without a notice produces exactly the effect it always did.
+fn with_notice(effect: Effect, notice: Option<crate::registry::MotionNotice>) -> Effect {
+    let Some(notice) = notice else {
+        return effect;
+    };
+    let text = match notice {
+        crate::registry::MotionNotice::SearchHitBottom => "search hit BOTTOM, continuing at TOP",
+        crate::registry::MotionNotice::SearchHitTop => "search hit TOP, continuing at BOTTOM",
+    };
+    Effect::Many(vec![
+        effect,
+        Effect::Echo {
+            level: crate::effect::EchoLevel::Warn,
+            text: text.to_string(),
+        },
+    ])
 }
 
 fn execute_text_object(
@@ -348,24 +373,28 @@ fn execute_operator(
     let motion_count = invocation.count_or_default();
     // VM.3L: a motion target reports whether it moved linewise (or became
     // linewise by `:h exclusive-linewise`); a grammar range says so below.
-    let (target_range, target_linewise): (ProtoRange, bool) =
-        match (&invocation.range, &invocation.target) {
-            (Some(grammar_range), _) => (
-                resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?,
-                false,
-            ),
-            (None, Some(target)) => resolve_target(
-                registry,
-                document,
-                buffer_id,
-                cursor,
-                target,
-                motion_count,
-                cancel,
-                env,
-            )?,
-            (None, None) => return Err(CommandError::MissingTarget),
-        };
+    let (target_range, target_linewise, target_notice): (
+        ProtoRange,
+        bool,
+        Option<crate::registry::MotionNotice>,
+    ) = match (&invocation.range, &invocation.target) {
+        (Some(grammar_range), _) => (
+            resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?,
+            false,
+            None,
+        ),
+        (None, Some(target)) => resolve_target(
+            registry,
+            document,
+            buffer_id,
+            cursor,
+            target,
+            motion_count,
+            cancel,
+            env,
+        )?,
+        (None, None) => return Err(CommandError::MissingTarget),
+    };
 
     let visual_linewise = matches!(invocation.range, Some(Range::Selection))
         && matches!(
@@ -390,7 +419,9 @@ fn execute_operator(
         comment_syntax: env.comment_syntax,
         native_format: env.native_format,
     };
-    (operator.apply)(&mut ctx)
+    // VM.3d-2: a motion target's notice (the search wrap in `dn`) is echoed
+    // with the operator's effect, as vim shows it.
+    (operator.apply)(&mut ctx).map(|effect| with_notice(effect, target_notice))
 }
 
 /// Per-row dispatch for blockwise visual operators. Vim's `Ctrl-V`
@@ -673,7 +704,7 @@ fn resolve_target(
     count: crate::command::Count,
     cancel: &CancellationToken,
     env: crate::registry::GrammarEnv<'_>,
-) -> GrammarResult<(ProtoRange, bool)> {
+) -> GrammarResult<(ProtoRange, bool, Option<crate::registry::MotionNotice>)> {
     match target {
         Target::Motion(motion_id, args) => {
             let entry = registry
@@ -693,6 +724,7 @@ fn resolve_target(
                 syntax: env.syntax,
                 last_find: env.last_find,
                 fold_resolver: env.fold_resolver,
+                last_search: env.last_search,
             };
             let r = (motion.apply)(&ctx)?;
             let mut target = r.target;
@@ -708,7 +740,7 @@ fn resolve_target(
                 let buffer = document.buffer();
                 target = Position::new(cursor.line, line_byte_len(buffer, cursor.line));
             }
-            Ok(motion_to_range(
+            let (range, linewise) = motion_to_range(
                 document.buffer(),
                 cursor,
                 target,
@@ -718,7 +750,8 @@ fn resolve_target(
                 // reads its own flag, exactly as before.
                 r.exclusive.unwrap_or(motion.exclusive),
                 r.linewise,
-            ))
+            );
+            Ok((range, linewise, r.notice))
         }
         Target::TextObject(tobj_id, args) => {
             let entry = registry
@@ -736,11 +769,10 @@ fn resolve_target(
                 path: document.path(),
                 syntax: env.syntax,
             };
-            (tobj.apply)(&ctx).map(|range| (range, false))
+            (tobj.apply)(&ctx).map(|range| (range, false, None))
         }
-        Target::Range(grammar_range) => {
-            resolve_grammar_range(document, grammar_range, cursor, 1).map(|range| (range, false))
-        }
+        Target::Range(grammar_range) => resolve_grammar_range(document, grammar_range, cursor, 1)
+            .map(|range| (range, false, None)),
     }
 }
 
@@ -1176,6 +1208,7 @@ mod tests {
                         target: p,
                         linewise: false,
                         exclusive: None,
+                        notice: None,
                     })
                 }),
             },

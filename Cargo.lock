@@ -5484,6 +5484,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "criterion",
+ "fancy-regex",
  "lattice-core",
  "lattice-protocol",
  "serde",

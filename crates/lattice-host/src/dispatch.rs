@@ -21091,6 +21091,9 @@ impl Editor {
                         foldenable: self.foldenable(),
                     }) as lattice_runtime::FoldResolverHandle
                 }),
+                // VM.3d-2: `n` / `N` / `*` / `#` are motions; the search they
+                // repeat. Same reasoning as `last_find`.
+                last_search: self.last_search.clone(),
                 // OT.4: the same `h.snapshot()` bump the Action gate takes —
                 // O(1) `ArcSwap` load, no parse on the dispatch thread — so
                 // a PLUGIN motion or text object can mint a `tree-snapshot`
@@ -27026,6 +27029,44 @@ impl Editor {
         self.refresh_hlsearch_from_last();
     }
 
+    /// VM.3d-2: `*` / `#` are motions that repeat the search, so the WORD has
+    /// to be the search before they run. Called by both motion runners before
+    /// dispatch, for a bare `*` and for an operator targeting it (`d*`). Records
+    /// `last_search` (`#` searching backward) and resolves `all_matches` for
+    /// hlsearch. Anything else passes through untouched.
+    ///
+    /// Returns `false`, after echoing why, when there's no word, so the caller
+    /// doesn't dispatch a search for a pattern that was never set.
+    pub(crate) fn capture_search_word(&mut self, inv: &lattice_grammar::CommandInvocation) -> bool {
+        let motion = match &inv.target {
+            Some(lattice_grammar::target::Target::Motion(id, _)) => id.0,
+            _ => inv.command,
+        };
+        let direction = if motion == self.builtins.search_word_forward.0 {
+            lattice_grammar::SearchDirection::Forward
+        } else if motion == self.builtins.search_word_backward.0 {
+            lattice_grammar::SearchDirection::Backward
+        } else {
+            return true;
+        };
+        let buffer = self.active_text();
+        let Some(word) = word_at_or_after_cursor(&buffer, self.cursor) else {
+            self.set_message(EchoLevel::Error, "no word under cursor".to_string());
+            return false;
+        };
+        let pattern = fancy_regex::escape(&word).into_owned();
+        if let Ok(regex) = compile_search_pattern(&pattern) {
+            self.all_matches = lattice_core::search::find_all(
+                &buffer,
+                &regex,
+                &lattice_runtime::CancellationToken::never(),
+            )
+            .unwrap_or_default();
+        }
+        self.last_search = Some(crate::state::LastSearch { pattern, direction });
+        true
+    }
+
     /// `*` / `#` -- extract the word at the cursor, store as
     /// `last_search`, jump to the next (or previous) occurrence.
     ///
@@ -27038,34 +27079,10 @@ impl Editor {
     pub fn do_search_word_under_cursor(&mut self, direction: lattice_grammar::SearchDirection) {
         let pre_jump = self.cursor;
         let buffer = self.active_text();
-        let text = buffer.as_string();
-        let bytes = text.as_bytes();
-        let cursor_byte = match buffer.position_to_byte(self.cursor) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let mut start = cursor_byte;
-        if start >= bytes.len() || !is_word_char_byte(bytes[start]) {
-            while start < bytes.len() && bytes[start] != b'\n' && !is_word_char_byte(bytes[start]) {
-                start += 1;
-            }
-            if start >= bytes.len() || bytes[start] == b'\n' {
-                self.set_message(EchoLevel::Error, "no word under cursor".to_string());
-                return;
-            }
-        }
-        while start > 0 && is_word_char_byte(bytes[start - 1]) {
-            start -= 1;
-        }
-        let mut end = start;
-        while end < bytes.len() && is_word_char_byte(bytes[end]) {
-            end += 1;
-        }
-        let word = String::from_utf8_lossy(&bytes[start..end]).into_owned();
-        if word.is_empty() {
+        let Some(word) = word_at_or_after_cursor(&buffer, self.cursor) else {
             self.set_message(EchoLevel::Error, "no word under cursor".to_string());
             return;
-        }
+        };
         let dir = match direction {
             lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
             lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
@@ -27116,6 +27133,37 @@ impl Editor {
             Err(_) => {}
         }
     }
+}
+
+/// VM.3d-2: the `*` / `#` word — the keyword under the cursor, or the next one
+/// on the cursor's line. `None` when the rest of the line has none. Shared by
+/// `do_search_word_under_cursor` (the WIT action path) and
+/// `Editor::capture_search_word` (the motion path), so both find the same word.
+fn word_at_or_after_cursor(
+    buffer: &lattice_core::Buffer,
+    cursor: lattice_protocol::position::Position,
+) -> Option<String> {
+    let text = buffer.as_string();
+    let bytes = text.as_bytes();
+    let cursor_byte = buffer.position_to_byte(cursor).ok()?;
+    let mut start = cursor_byte;
+    if start >= bytes.len() || !is_word_char_byte(bytes[start]) {
+        while start < bytes.len() && bytes[start] != b'\n' && !is_word_char_byte(bytes[start]) {
+            start += 1;
+        }
+        if start >= bytes.len() || bytes[start] == b'\n' {
+            return None;
+        }
+    }
+    while start > 0 && is_word_char_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = start;
+    while end < bytes.len() && is_word_char_byte(bytes[end]) {
+        end += 1;
+    }
+    let word = String::from_utf8_lossy(&bytes[start..end]).into_owned();
+    (!word.is_empty()).then_some(word)
 }
 
 /// 5.5.G.10: pure regex compile wrapper. Mirrors the App-side
@@ -43255,12 +43303,16 @@ impl Editor {
         // Only a BARE motion reaches here as `inv.command`. An operator
         // targeting a motion arrives as the operator's id, so `d}` correctly
         // records nothing — vim does not treat an operator+motion as a jump.
-        let is_jump_motion = self.registry.load().motion_is_jump(inv.command);
-        if is_jump_motion {
-            // Before dispatch, so the entry holds where the user WAS.
-            let cur = self.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
+        // VM.3d-2: `*` / `#` record the word under the cursor as the search
+        // before their motion runs, bare or as an operator's target (`d*`).
+        if !self.capture_search_word(&inv) {
+            return;
         }
+        let is_jump_motion = self.registry.load().motion_is_jump(inv.command);
+        // VM.3d-2: the jump is recorded where the user WAS, but only once the
+        // motion has SUCCEEDED (below): a failed `n` (E486) leaves no jump
+        // behind, as in vim.
+        let jump_from = self.cursor;
         // Capture find/till invocations for `;` / `,` repeat.
         if let lattice_grammar::Args::Char(c) = inv.args {
             let kind = if inv.command == self.builtins.find_char_forward.0 {
@@ -43311,6 +43363,9 @@ impl Editor {
         let prev_cursor_line = self.cursor.line;
         match self.dispatch_blocking(inv) {
             Ok(effect) => {
+                if is_jump_motion {
+                    self.push_position_history(jump_from, PositionSource::AutoJump);
+                }
                 // Visual exits on any operator-class effect (mutation OR
                 // yank-only); dot-repeat only records buffer mutations.
                 should_exit_visual = effect_mutates_or_yanks(&effect);
@@ -43323,6 +43378,13 @@ impl Editor {
                 } else {
                     self.snap_cursor_past_closed_folds(prev_cursor_line);
                 }
+            }
+            // VM.3d-2: a failure the user should see (`E486`, `E35`). No effect
+            // was committed, so an operator it fed did nothing, as in vim.
+            Err(lattice_runtime::RuntimeError::Grammar(
+                lattice_grammar::error::CommandError::User(message),
+            )) => {
+                self.set_message(EchoLevel::Error, message);
             }
             Err(_) => {
                 // TODO(error-surface): publish to a notification once
@@ -43379,6 +43441,27 @@ impl Editor {
         // B3b: owned registry snapshot (`load_full`) for this dispatch — the
         // motion/operator arms below mutate self while reading the registry.
         let reg = self.registry.load_full();
+        // VM.3d-2: `n` / `N` / `*` / `#` are motions now, but a terminal pane's
+        // search runs against its SyntheticDoc and mirrors hits into the grid,
+        // which the host's search methods already do. Route there, ahead of
+        // both the Visual and the plain motion arms, rather than through the
+        // generic motion path, which has no grid mirror.
+        if cmd == self.builtins.search_next.0 {
+            self.repeat_search(false);
+            return true;
+        }
+        if cmd == self.builtins.search_prev.0 {
+            self.repeat_search(true);
+            return true;
+        }
+        if cmd == self.builtins.search_word_forward.0 {
+            self.do_search_word_under_cursor(lattice_grammar::SearchDirection::Forward);
+            return true;
+        }
+        if cmd == self.builtins.search_word_backward.0 {
+            self.do_search_word_under_cursor(lattice_grammar::SearchDirection::Backward);
+            return true;
+        }
         // T3.b.2 / T3.b.2.b: handle Visual-active state first.
         // Visual entry / no-Visual scrollback nav fall through
         // below.
@@ -43790,26 +43873,42 @@ impl Editor {
         // `goto_first_line || goto_last_line` pair. Fixing one and leaving the
         // other would mean `}` records a jump in a file and not in `:help`,
         // which is the kind of split nobody discovers deliberately.
-        let is_jump_motion = self.registry.load().motion_is_jump(inv.command);
-        if is_jump_motion {
-            let cur = self.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
+        // VM.3d-2: as `run_document_invocation` does.
+        if !self.capture_search_word(&inv) {
+            return true;
         }
+        let is_jump_motion = self.registry.load().motion_is_jump(inv.command);
+        let jump_from = self.cursor;
         self.pending_count = 0;
         self.op_count = 0;
         let prev_cursor_line = self.cursor.line;
         let buffer = self.active_text();
         let cancel = lattice_protocol::CancellationToken::never();
-        if let Ok(target) = lattice_grammar::execute_motion_only(
+        // VM.3d-2: `n` / `N` / `*` / `#` are motions, so a read-only buffer
+        // (`:help`, the dashboard) hands them the search too.
+        let env = lattice_grammar::GrammarEnv {
+            last_search: self.last_search.as_ref(),
+            ..Default::default()
+        };
+        match lattice_grammar::execute_motion_only(
             &reg,
             &buffer,
             self.document_buffer_id,
             self.cursor,
             inv,
             &cancel,
-            lattice_grammar::GrammarEnv::default(),
+            env,
         ) {
-            self.cursor = target;
+            Ok(target) => {
+                if is_jump_motion {
+                    self.push_position_history(jump_from, PositionSource::AutoJump);
+                }
+                self.cursor = target;
+            }
+            Err(lattice_grammar::error::CommandError::User(message)) => {
+                self.set_message(EchoLevel::Error, message);
+            }
+            Err(_) => {}
         }
         // Fold-aware landing (bug fix): read-only buffers — help, the
         // dashboard — fold markdown sections too, so a vertical motion must

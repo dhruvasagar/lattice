@@ -149,6 +149,9 @@ pub struct DispatchEnv {
     /// `last_find`: they're motions on the keystroke path, so they come
     /// through the actor. `None` for a buffer with no folds.
     pub fold_resolver: Option<FoldResolverHandle>,
+    /// VM.3d-2: the last search, for `n` / `N` / `*` / `#`, which are motions
+    /// on the keystroke path and so come through the actor too.
+    pub last_search: Option<lattice_grammar::LastSearch>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

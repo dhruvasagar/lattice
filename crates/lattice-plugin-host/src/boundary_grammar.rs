@@ -103,6 +103,7 @@ impl WitBoundary for NativeMotionResult {
             // are repeating. If a guest ever needs it, it is a WIT addition,
             // and this line is where it lands.
             exclusive: None,
+            notice: None,
         })
     }
 }
@@ -239,6 +240,7 @@ mod tests {
             // back `None` — that is the contract, not an oversight, and a
             // `None` here would have asserted nothing either way.
             exclusive: Some(true),
+            notice: None,
         };
         let back = NativeMotionResult::from_wit(native.to_wit().unwrap()).unwrap();
         assert_eq!(back.target, native.target);
@@ -268,6 +270,7 @@ mod tests {
             syntax: None,
             last_find: None,
             fold_resolver: None,
+            last_search: None,
         };
         let wit = project_motion_context(&ctx).unwrap();
         assert_eq!(wit.buffer_id, 9);

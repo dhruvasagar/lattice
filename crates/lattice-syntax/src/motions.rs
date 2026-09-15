@@ -204,6 +204,7 @@ fn reg(
                     target,
                     linewise: false,
                     exclusive: None,
+                    notice: None,
                 })
             }),
         },

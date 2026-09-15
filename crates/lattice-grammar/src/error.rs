@@ -24,6 +24,13 @@ pub enum CommandError {
     #[error("motion failed")]
     MotionFailed,
 
+    /// VM.3d-2: a command failed with a message the user should see — vim's
+    /// `E486: Pattern not found`, `E35: no previous regular expression`. Like
+    /// every error, no effect is committed (an operator fed by a failing `n`
+    /// deletes nothing, as in vim); unlike the others, the host echoes it.
+    #[error("{0}")]
+    User(String),
+
     #[error("invalid args for command: {0}")]
     InvalidArgs(&'static str),
 

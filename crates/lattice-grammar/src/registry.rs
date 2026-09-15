@@ -115,6 +115,9 @@ pub struct MotionContext<'a> {
     /// [`GrammarEnv::fold_resolver`]. Borrowed, so a motion that ignores it
     /// pays nothing.
     pub fold_resolver: Option<&'a dyn FoldResolver>,
+    /// VM.3d-2: the search `n` / `N` / `*` / `#` repeat, copied from
+    /// [`GrammarEnv::last_search`]. Borrowed; every other motion ignores it.
+    pub last_search: Option<&'a LastSearch>,
 }
 
 /// What a motion's evaluator returned.
@@ -143,6 +146,10 @@ pub struct MotionResult {
     /// own answer, so `from_wit` decodes this as `None` deliberately rather
     /// than for want of a field to read.
     pub exclusive: Option<bool>,
+    /// VM.3d-2: a notice for the user, which the dispatcher echoes alongside
+    /// the motion's effect — the search wrap. Not on the WIT boundary: a
+    /// plugin motion reports none.
+    pub notice: Option<MotionNotice>,
 }
 
 /// Implementation of a motion. Boxed because evaluator closures capture
@@ -425,6 +432,26 @@ pub struct LastFind {
     pub target: char,
 }
 
+/// VM.3d-2: the last completed `/` / `?` / `*` / `#` search, which is all `n`
+/// and `N` need to repeat it. Moved here from the host (which re-exports the
+/// name, so no call site moved) for the reason [`LastFind`] was: `n` is a
+/// motion now, and the state it repeats has to reach the grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastSearch {
+    pub pattern: String,
+    pub direction: crate::modal::SearchDirection,
+}
+
+/// VM.3d-2: something a motion wants the user told, alongside where it moved.
+/// `Copy`, so [`MotionResult`] stays `Copy`; the dispatcher renders the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotionNotice {
+    /// vim's "search hit BOTTOM, continuing at TOP".
+    SearchHitBottom,
+    /// vim's "search hit TOP, continuing at BOTTOM".
+    SearchHitTop,
+}
+
 ///
 /// It has widened twice, and the name followed on the second:
 ///
@@ -506,6 +533,11 @@ pub struct GrammarEnv<'a> {
     /// here is one the motion never sees. `None` — no folds, or a caller
     /// with no fold table — leaves `zj` / `zk` where they are.
     pub fold_resolver: Option<&'a dyn FoldResolver>,
+    /// VM.3d-2: the last search, so `n` / `N` / `*` / `#` can be motions.
+    /// Carried for the reason `last_find` is: they reach the grammar through
+    /// the ACTOR path on every real keystroke. `None` makes `n` fail with
+    /// E35, as vim does before any search.
+    pub last_search: Option<&'a LastSearch>,
 }
 
 /// Context passed to a text-object's evaluator.
@@ -1352,6 +1384,7 @@ mod tests {
                     target: ctx.from,
                     linewise: false,
                     exclusive: None,
+                    notice: None,
                 })
             }),
             args_schema: vec![],

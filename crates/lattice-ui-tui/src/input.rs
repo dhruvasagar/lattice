@@ -924,21 +924,21 @@ mod tests {
 
     #[test]
     fn n_in_normal_repeats_search_forward() {
+        // VM.3d-2: a motion, so `dn` / `vn` compose.
         let (_, b) = fixture();
-        let a = shared_actions();
         match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('n'))) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.search_next),
-            other => panic!("expected Invoke(search_next), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, b.search_next.0),
+            other => panic!("expected Invoke(search_next motion), got {other:?}"),
         }
     }
 
     #[test]
     fn capital_n_in_normal_repeats_search_reverse() {
+        // VM.3d-2: a motion, so `dn` / `vn` compose.
         let (_, b) = fixture();
-        let a = shared_actions();
         match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('N'))) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.search_previous),
-            other => panic!("expected Invoke(search_previous), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, b.search_prev.0),
+            other => panic!("expected Invoke(search_prev motion), got {other:?}"),
         }
     }
 
@@ -2612,25 +2612,21 @@ mod tests {
 
     #[test]
     fn star_emits_search_word_forward() {
+        // VM.3d-2: a motion, so `d*` / `v*` compose.
         let (_, b) = fixture();
-        let a = shared_actions();
         match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('*'))) {
-            Action::Invoke(inv) => {
-                assert_eq!(inv.command, a.search_word_under_cursor_forward)
-            }
-            other => panic!("expected Invoke(search_word_under_cursor_forward), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, b.search_word_forward.0),
+            other => panic!("expected Invoke(search_word_forward motion), got {other:?}"),
         }
     }
 
     #[test]
     fn hash_emits_search_word_backward() {
+        // VM.3d-2: a motion, so `d*` / `v*` compose.
         let (_, b) = fixture();
-        let a = shared_actions();
         match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('#'))) {
-            Action::Invoke(inv) => {
-                assert_eq!(inv.command, a.search_word_under_cursor_backward)
-            }
-            other => panic!("expected Invoke(search_word_under_cursor_backward), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, b.search_word_backward.0),
+            other => panic!("expected Invoke(search_word_backward motion), got {other:?}"),
         }
     }
 

@@ -1744,12 +1744,12 @@ fn register_find_char_paths(
 /// routes in this file, so a Visual surface built by re-walking this table was
 /// missing every one of them, and had no route to a plugin's motions at all.
 ///
-/// What is actually single-source is the DERIVATION:
-/// [`expand_grammar_rows`] walks each layer's finished Normal trie and gives
-/// every `CommandKind::Motion` binding — however it got there, builtin or
-/// contributed — its Visual, Select and operator-pending peers. Adding a row
-/// here is one convenient way to bind a motion in Normal; it is not what makes
-/// the motion work everywhere else.
+/// What is actually single-source is the DERIVATION, from the command's kind.
+/// The keymap mirrors every `CommandKind::Motion` binding, however it got there
+/// (builtin or contributed), into Visual, and into Select when its first chord
+/// can't be typed (VM.4). [`expand_grammar_rows`] adds its operator-pending
+/// peers. Adding a row here is one convenient way to bind a motion in Normal;
+/// it is not what makes the motion work everywhere else.
 ///
 /// Argument motions (`f` / `F` / `t` / `T` find-char) are NOT here —
 /// they ride a separate wildcard-capture path
@@ -1794,9 +1794,10 @@ pub(crate) fn motion_rows(
 
 /// The sixteen tree-sitter structural motions as full 2-key sequences
 /// (TSM.4). Walked by the Normal binder ([`register_normal_bindings`]) and by
-/// the operator-pending resolver ([`register_operator_bindings`]); Visual and
-/// Select get them from [`expand_grammar_rows`] like every other motion, so
-/// this table no longer has a third and fourth consumer to drift against. Same
+/// the operator-pending resolver ([`register_operator_bindings`]); Visual gets
+/// them from the keymap's motion mirror like every other motion (Select
+/// doesn't, since `]` is typed text there), so this table no longer has a third
+/// and fourth consumer to drift against. Same
 /// caveat as [`motion_rows`]: convenient, not canonical.
 ///
 /// Keyed on a full chord sequence instead of a single chord — each entry is
@@ -2232,19 +2233,25 @@ fn composable_operators(builtins: &Builtins) -> [lattice_grammar::registry::Oper
 ///
 /// So the mode-set stops being a list and becomes a DERIVATION: whatever the
 /// command *is* decides where it is live, uniformly for builtin, host-mode and
-/// plugin bindings.
+/// plugin bindings. Two mechanisms carry it (keymap-architecture.md §15): the
+/// keymap mirrors a motion's Visual and Select rows at every write (VM.4), and
+/// this pass adds the rows that need the operator vocabulary.
 ///
-/// ## Why here and not at bind time
+/// ## Why the operator half is here and not at bind time
 ///
-/// The derivation needs `Builtins` — the host-resolved operator ids — which
-/// lives downstream of `lattice-plugin-host`, and `push_layer` installs
-/// pre-built tries without passing through `bind` at all, so the registry has
-/// no single write choke point to hang this on. The host runs the pass instead,
-/// once per layer, after that layer's bindings exist. That framing is also the
-/// honest one: the host applies its UNIVERSAL operator vocabulary to a
-/// contribution, exactly as it does for builtins, while the contributor still
-/// declares only chord + command. `register_operator_bindings` is `pub` for the
-/// same shape of reason (N.1.3, the provider-contributed `zn` operator).
+/// Operator rows need `Builtins`, the host-resolved operator ids, which live
+/// downstream of `lattice-plugin-host`, so `lattice-keymap` can't produce them.
+/// The host runs the pass instead, once per layer, after that layer's bindings
+/// exist. That framing is also the honest one: the host applies its UNIVERSAL
+/// operator vocabulary to a contribution, exactly as it does for builtins,
+/// while the contributor still declares only chord + command.
+/// `register_operator_bindings` is `pub` for the same shape of reason (N.1.3,
+/// the provider-contributed `zn` operator).
+///
+/// A motion's Visual and Select rows used to be written here too. They need
+/// only the command's kind, which the keymap can ask, and a pass that runs at
+/// two moments missed every write outside them: a re-pushed mode layer,
+/// `init.rs`, plugin `register-binding`. VM.4 moved them into the keymap.
 ///
 /// ## What it does per binding
 ///
@@ -2252,11 +2259,13 @@ fn composable_operators(builtins: &Builtins) -> [lattice_grammar::registry::Oper
 /// resolves in `commands` to:
 ///
 /// * **`Motion`** — keeps the Normal binding (`]]` still moves on its own) and
-///   adds a Visual row, a Select row, and `<op-prefix><chord>` for every
-///   composable operator.
+///   adds `<op-prefix><chord>` for every composable operator. Its Visual and
+///   Select rows come from the keymap itself (VM.4).
 /// * **`TextObject`** — REPLACES the Normal binding, because a text object
-///   invoked standalone in Normal means nothing, and adds Visual + Select rows
-///   (`var` extends the selection) plus `<op-prefix><chord>`.
+///   invoked standalone in Normal means nothing, and adds a Visual row (`var`
+///   extends the selection) plus `<op-prefix><chord>`. No Select row: a
+///   text-object path starts with a printable, and in Select a printable
+///   overtypes (select-mode.md §4).
 /// * anything else — left alone. Note that a cursor-moving command registered
 ///   as `CommandKind::Action` is NOT a motion as far as this pass is concerned;
 ///   that is a statement about the command, not about the keymap.
@@ -2280,11 +2289,7 @@ pub fn expand_grammar_rows(
     // Snapshot BEFORE any write: "already bound" must mean "bound by someone
     // else", not "bound by this loop two iterations ago".
     let mut occupied: HashMap<BindingMode, HashSet<Vec<ChordPattern>>> = HashMap::new();
-    for mode in [
-        BindingMode::Normal,
-        BindingMode::Visual,
-        BindingMode::Select,
-    ] {
+    for mode in [BindingMode::Normal, BindingMode::Visual] {
         occupied.insert(
             mode,
             handle
@@ -2338,19 +2343,20 @@ pub fn expand_grammar_rows(
             );
         }
 
-        // Visual + Select carry the binding VERBATIM — the same
-        // `CommandInvocation` the Normal row holds, count and all, so
-        // `<C-d>`'s baked `Count(10)` survives into Visual. The dispatcher
-        // returns `Action::Invoke`, the motion moves `Editor::cursor`, and
-        // `write_through_caret` re-derives the selection from the anchor. A
-        // bare text object goes through `execute_text_object` instead and
-        // yields a `SelectionChange` spanning the object; either way there is
-        // nothing Visual-specific to encode here.
-        for mode in [BindingMode::Visual, BindingMode::Select] {
-            added += bind_if_absent(mode, &path, bound.command.clone());
-        }
-
         if is_text_object {
+            // A text object's Visual row. A motion's Visual and Select rows
+            // aren't written here any more (VM.4): the keymap mirrors them at
+            // every write, because they depend only on the command's kind.
+            // Text objects stay here because this pass also REMOVES their
+            // Normal row, and that's host policy, not a property of the kind.
+            //
+            // Visual only. A text-object path starts with a printable (`iw`,
+            // `ar`), so a Select row would take the key meant to overtype the
+            // selection (select-mode.md §4). The row is the Normal binding's
+            // `CommandInvocation` verbatim; a bare text object goes through
+            // `execute_text_object` and yields a `SelectionChange`.
+            added += bind_if_absent(BindingMode::Visual, &path, bound.command.clone());
+
             // Drop the Normal terminal binding `bind_mode_keymap` wrote: `ar`
             // alone in Normal is not a command a user can mean. Kind-driven,
             // not layer-driven — the builtin catalog binds no bare text object
@@ -2590,7 +2596,11 @@ mod syntax_motion_tests {
         let action_ids = crate::actions::populate(&mut registry, &builtins);
         let syntax_textobjects = lattice_syntax::register_syntax_text_objects(&mut registry);
         let syntax_motions = lattice_syntax::register_syntax_motions(&mut registry);
+        let registry = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(registry));
         let h = KeymapHandle::new();
+        // VM.4: as boot does, so Visual and Select get their motions from the
+        // keymap's mirror at every write below.
+        h.set_command_registry(registry.clone());
         crate::keymap_visual::register_visual_bindings(
             &h,
             &builtins,
@@ -2604,8 +2614,8 @@ mod syntax_motion_tests {
             &syntax_textobjects,
             &syntax_motions,
         );
-        // VM.1: Visual's motion rows are derived, not listed — mirror boot.
-        expand_grammar_rows(&h, &registry, &builtins, KeymapLayer::Builtin);
+        // The operator-pending rows, as boot adds them.
+        expand_grammar_rows(&h, &registry.load(), &builtins, KeymapLayer::Builtin);
         (h, syntax_motions)
     }
 

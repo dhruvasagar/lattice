@@ -461,13 +461,15 @@ fn production_keymap() -> (
     let so = lattice_syntax::register_syntax_text_objects(&mut r);
     let sm = lattice_syntax::register_syntax_motions(&mut r);
     let h = KeymapHandle::new();
+    // VM.4: as boot does, so the translate benches below dispatch against the
+    // trie the editor actually builds, with motions mirrored into Visual.
+    h.set_command_registry(Arc::new(arc_swap::ArcSwap::from_pointee(r.clone())));
     lattice_ui_tui::keymap_replace::register_replace_bindings(&h, &a);
     lattice_ui_tui::keymap_visual::register_visual_bindings(&h, &b, &a, &so);
     lattice_ui_tui::keymap_insert::register_insert_bindings(&h, &a);
     lattice_ui_tui::keymap_normal::register_normal_bindings(&h, &b, &a, &so, &sm);
-    // VM.1: the Visual / Select / operator-pending motion rows are derived
-    // from the Normal catalog, so the bench must derive them to measure the
-    // trie the editor actually dispatches against.
+    // VM.1: the operator-pending rows, derived as boot derives them, so the
+    // bench measures the trie the editor actually dispatches against.
     lattice_ui_tui::keymap_normal::expand_grammar_rows(
         &h,
         &r,
@@ -764,6 +766,66 @@ fn which_key_partial_chord_publish_unchanged(c: &mut Criterion) {
     });
 }
 
+/// VM.4: the startup registration burst, end to end: every production
+/// `register_*_bindings` call, the operator-row pass, and the derived-state
+/// rebuild that one lookup forces.
+///
+/// **Nothing measured this before.** `bind_bound`'s own comment records that
+/// rebuilding derived state on every bind once made `register_normal_bindings`
+/// alone cost 734.8 ms of a 1.4 s `Editor::boot`. A regression of that shape
+/// would have shipped without any bench noticing.
+///
+/// **Two rows, with and without the motion mirror,** so the mirror's cost is
+/// visible on its own instead of folded into a total nobody can attribute. The
+/// rows aren't like-for-like catalogs, deliberately: without the mirror, Visual
+/// lacks its motion rows. The difference between them is what the mirror
+/// costs, which is what they're for.
+///
+/// **`sample_size(10)`.** One iteration builds the whole catalog, so criterion's
+/// default of 100 samples would keep the machine busy for minutes and say
+/// nothing ten samples don't.
+fn keymap_register_production_catalog(c: &mut Criterion) {
+    let mut r = lattice_grammar::CommandRegistry::new();
+    let b = lattice_grammar::builtins::populate(&mut r);
+    let _ex = lattice_grammar::ex_commands::populate(&mut r);
+    let a = lattice_ui_tui::actions::populate(&mut r, &b);
+    let so = lattice_syntax::register_syntax_text_objects(&mut r);
+    let sm = lattice_syntax::register_syntax_motions(&mut r);
+    let registry = Arc::new(arc_swap::ArcSwap::from_pointee(r.clone()));
+
+    let build = |mirror: bool| {
+        let h = KeymapHandle::new();
+        if mirror {
+            h.set_command_registry(registry.clone());
+        }
+        lattice_ui_tui::keymap_replace::register_replace_bindings(&h, &a);
+        lattice_ui_tui::keymap_visual::register_visual_bindings(&h, &b, &a, &so);
+        lattice_ui_tui::keymap_insert::register_insert_bindings(&h, &a);
+        lattice_ui_tui::keymap_normal::register_normal_bindings(&h, &b, &a, &so, &sm);
+        lattice_ui_tui::keymap_normal::expand_grammar_rows(
+            &h,
+            &r,
+            &b,
+            lattice_host::keymap_trie::KeymapLayer::Builtin,
+        );
+        // `bind_bound` defers the merged-trie rebuild to the next read, so
+        // force it here, or the cost that once dominated startup would never
+        // be measured.
+        black_box(h.lookup(BindingMode::Normal, &[KeyChord::char('j')]));
+        h
+    };
+
+    let mut group = c.benchmark_group("keymap_register_production_catalog");
+    group.sample_size(10);
+    group.bench_function("with_motion_mirror", |bench| {
+        bench.iter(|| black_box(build(true)))
+    });
+    group.bench_function("without_motion_mirror", |bench| {
+        bench.iter(|| black_box(build(false)))
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     which_key_continuations_no_modes,
@@ -786,6 +848,7 @@ criterion_group!(
     keymap_trie_lookup_unbound,
     keymap_trie_lookup_wildcard,
     keymap_trie_merge_overlay,
+    keymap_register_production_catalog,
     keymap_handle_lookup_single,
     keymap_handle_lookup_two_chord,
     keymap_handle_lookup_three_chord,

@@ -2341,7 +2341,7 @@ See the slice plan
 ([mode-activation](../operations/slice-plans/archive/mode-activation.md), SN.3c.2b)
 for sequencing and the landed commit.
 
-## 15. A motion's binding-modes are derived, not listed (VM.1)
+## 15. A motion's binding-modes are derived, not listed (VM.1, VM.4)
 
 A motion is an **`nvo` command** — vim's word for one that fires in Normal,
 Visual and operator-pending. That is not a property of any particular chord; it
@@ -2391,8 +2391,12 @@ command's kind out of the `CommandRegistry`:
   operator expansion.
 - anything else — untouched.
 
-Visual and Select carry the binding **verbatim**, the same `CommandInvocation`
-the Normal row holds, so `<C-d>`'s baked `Count(10)` survives into Visual.
+That was VM.1. VM.4 moved the Visual and Select rows for a motion out of this
+pass and into the keymap, and dropped Select rows that can be typed; see
+[Two mechanisms](#two-mechanisms-split-by-what-each-one-needs) below.
+
+Visual carries the binding **verbatim**, the same `CommandInvocation` the
+Normal row holds, so `<C-d>`'s baked `Count(10)` survives into Visual.
 
 Two properties make it safe to run over a layer somebody else populated:
 
@@ -2404,42 +2408,129 @@ Two properties make it safe to run over a layer somebody else populated:
 - **Idempotent.** Re-running adds nothing, so a plugin reload cannot accumulate
   rows and boot order stops being load-bearing.
 
-### Why a host pass and not the bind seam
+### Two mechanisms, split by what each one needs
 
-The obvious alternative is to mirror inside `KeymapRegistry::bind`. Two things
-argue against it. The operator half of the expansion needs `Builtins` — the
-host-resolved operator ids — which lives downstream of `lattice-plugin-host`,
-so the registry would either carry an incomplete derivation or drag the
-operator vocabulary two crates down. And `push_layer` installs pre-built tries
-without passing through `bind` at all, so there is no single write choke point
-to hang it on; a mirror at `bind` would quietly miss every mode layer that
-arrives that way.
+VM.1 put the whole derivation in one host pass. VM.4 split it, because the
+two halves need different things and only one of them belongs in the host:
 
-The lookup-time alternative — retry a Visual miss against the Normal trie — was
-rejected on UX rather than on plumbing: `:describe-key`, `:keymap`, which-key
-and the reverse cache all read the trie, so every one of them would report the
-chord unbound while it worked. It also strands the `f`-prefix `Partial` case
-mid-sequence and fixes nothing operator-pending.
+| Half | Needs | Lives in |
+| --- | --- | --- |
+| Visual rows for a motion, and Select rows when its first chord can't be typed | the command's **kind**, and the chord's shape | `lattice-keymap`, at the write seam |
+| `<op-prefix><chord>` rows for a motion or text object | the **operator vocabulary** (`Builtins`) | the host's `expand_grammar_rows` |
 
-### Where it runs
+"A motion is live in Visual" is a property of what a motion *is*, and the
+keymap can ask a command registry that question. "A motion composes with
+every operator" is a property of which operators *exist*, and that vocabulary
+is host-resolved and lives downstream of this crate. Dragging it two crates
+down would buy nothing.
 
-- `editor_boot.rs`, after every builtin binder and after
-  `translate_mode_keymaps` — over `KeymapLayer::Builtin` and over each
-  registered mode's layer. Last, deliberately: it fills gaps, so it must see
-  the deliberate bindings first.
-- the `PluginLoaded` subscriber, over every mode layer, so a plugin's motions
-  get their rows the moment the plugin lands.
+### Why the pass alone was not a guarantee (VM.4)
+
+As a pass, the Visual half ran at two points: once at boot, and on
+`PluginLoaded`. Anything that wrote a binding outside those two moments
+escaped:
+
+- **A re-pushed mode layer.** `push_layer` for a `MajorMode` / `MinorMode`
+  **replaces** that layer's tries wholesale (K.1.b), which dropped the derived
+  Visual rows until something re-ran the pass.
+- **`init.rs` and plugin `register-binding`.** Both bind through
+  `try_bind_chord_string` at arbitrary times, and neither re-ran the pass.
+- **A binder added to boot after the pass.** It was silently missed, and
+  nothing failed.
+
+The drift test enumerated `KeymapLayer::Builtin` only, so it could catch none
+of these.
+
+### The mirror
+
+`KeymapHandle::set_command_registry` gives the keymap the live
+`CommandRegistryHandle`. From then on, every write into a layer's per-mode
+tries reconciles that path's Visual row, and its Select row when the path's
+first chord can't be typed (see below). There are exactly four
+such writes — `bind_bound`, `bind_modes`, `push_layer`, `unbind` — and every
+other binding API funnels into one of them: `bind` and `try_bind` go through
+`bind_bound`, and `try_bind_chord_string` goes through `try_bind`. So plugin
+modes, plugin `register-binding` and the user's `init.rs` are all covered by
+construction, not by remembering to re-run anything.
+
+The mirror writes into the **layer's own** Visual and Select tries, not into
+the merged trie. That is what keeps `:describe-key`, `:keymap`, which-key and
+the reverse cache truthful. Lookup-time derivation was rejected on exactly
+that point.
+
+**Identity is how the mirror knows its own rows.** In a layer's Visual or
+Select trie, a binding shares the Normal row's `Arc` at the same path *if and
+only if* it is the mirror. Every write path that would otherwise share an
+`Arc` — `bind_modes` naming Normal and Visual together, a caller-built trie
+handed to `push_layer`, an explicit Visual write that happens to reuse the
+Normal allocation — gives the explicit copy its own allocation. With that
+invariant held, reconciliation has three rules:
+
+1. **A mirror follows its source.** If the slot holds the old Normal binding
+   by identity, it is replaced when the new binding is a motion and removed
+   otherwise. Bind-if-absent alone would leave a stale mirror pointing at a
+   motion the Normal row no longer binds.
+2. **A deliberate binding is never touched.** Visual's `x` / `s` aliases and a
+   mode's own Visual override are statements someone made on purpose.
+3. **An empty slot is filled** when the new binding is a motion. For Select,
+   the path's first chord must also not overtype.
+
+**Select only takes what can't be typed.** In Select mode a printable key
+replaces the selection (select-mode.md §1, §4). But `dispatch_select` consults
+the trie first, and a bound printable, or the prefix of a binding, takes the
+key instead. So a motion is mirrored into Select only when its first chord
+wouldn't overtype: arrows, Home/End, PageUp/PageDown, `<C-d>` / `<C-u>`.
+`w`, `f{char}`, `%`, `;` and `[[` are Visual-only. There is one definition of
+"would overtype", `lattice_keymap::overtypes_in_select`, and the dispatcher's
+fallback and the mirror both call it, so the Select table and Select typing
+can't disagree again.
+
+They did disagree before VM.4. Select's table bound every printable in
+`motion_rows` from the start, and VM.1–VM.3c extended that to `f` / `t` / `g` /
+`%` / `;` / `,` and to every plugin motion. So text typed over a snippet
+placeholder was taken whenever it started with one of about 30 characters.
+Two tests hid it: one ran against an empty table, and one asserted the
+printables were bound.
+
+Setting the registry **rescans every existing layer**, so the order in which
+boot sets it relative to the first bind is not load-bearing. The property the
+mechanism guarantees must not depend on one line staying above another.
+
+**The tradeoff, stated rather than hidden.** A user cannot permanently remove
+a motion from Visual by unbinding it there. The next write to that Normal
+path, a re-push of the layer, or a registry rescan puts the mirror back. That
+follows from "a motion is live in Visual" being a property of the motion.
+Shadowing it takes a Visual binding to something else, which rule 2 then
+protects.
+
+### Where each half runs
+
+- **The mirror:** at every keymap write, once `set_command_registry` has been
+  called. Boot calls it in `editor_boot.rs` immediately after creating the
+  handle.
+- **The operator half:** `editor_boot.rs`, after every builtin binder and after
+  `translate_mode_keymaps`, over `KeymapLayer::Builtin` and each registered
+  mode's layer; and the `PluginLoaded` subscriber, over every mode layer. It
+  still fills gaps and is still idempotent. It no longer writes Visual or
+  Select rows for motions, because the keymap already has. For text objects,
+  whose Normal row it replaces (host policy, not a property of the kind), it
+  writes the Visual row only. A text-object path starts with a printable, so a
+  Select row would take the key meant to overtype the selection.
+
+The drift test in `a_motion_is_live_in_visual.rs` now walks
+`KeymapHandle::layers()` — every layer, not just `Builtin` — so the next hole
+of the re-push kind fails CI instead of shipping.
 
 ### What it does not cover
 
 A cursor-moving command registered as `CommandKind::Action` is not a motion as
-far as this pass is concerned — that is a statement about the command, not
-about the keymap. `<C-f>` / `<C-b>`, `%`, `;` / `,`, `H` / `M` / `L`, `n` / `N`,
-`*` / `#`, `` `x `` / `'x` and `gj` / `gk` / `g0` / `g$` are all typed as
-actions today, and several of them are genuine motions in vim (`d%`, `dn`,
-`dH`, `d;` all work there and are unbound here). Re-typing them is tracked in
-the [visual-motions slice plan](../operations/slice-plans/visual-motions.md),
-VM.3.
+far as either mechanism is concerned — that is a statement about the command,
+not about the keymap. `<C-f>` / `<C-b>`, `H` / `M` / `L`, `n` / `N`, `*` / `#`,
+`` `x `` / `'x` and `gj` / `gk` / `g0` / `g$` are typed as actions today, and
+several of them are genuine motions in vim (`dn`, `dH` work there and are
+unbound here). `%` (VM.3b) and `;` / `,` (VM.3c) were re-typed as motions.
+The rest is tracked in the
+[visual-motions slice plan](../operations/slice-plans/visual-motions.md), VM.3.
 
 ## See also
 

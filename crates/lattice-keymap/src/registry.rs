@@ -350,6 +350,17 @@ pub struct KeymapRegistry {
     /// cleared by [`Self::ensure_derived_fresh`] on the next read.
     /// See that method for the measurement that motivated it.
     derived_dirty: std::sync::atomic::AtomicBool,
+    /// VM.4: the command registry the motion mirror asks "is this a motion?".
+    ///
+    /// `None` until the host sets it, and harmless while `None`: nothing is
+    /// mirrored, which is what a bare `KeymapHandle::new()` in a unit test
+    /// wants. Setting it RESCANS every existing layer, so it doesn't matter
+    /// when boot sets it relative to the first bind. The guarantee this exists
+    /// for must not depend on one line staying above another.
+    ///
+    /// Held as the live `ArcSwap` handle rather than a snapshot, so a motion a
+    /// plugin registers at runtime is visible to the next bind of its keymap.
+    commands: arc_swap::ArcSwapOption<lattice_grammar::CommandRegistryHandle>,
     /// MARG.2 (2026-06-03): reverse cache for the keybinding
     /// annotator surface. Indexes Normal-mode bindings by
     /// [`CommandId`] so `:` line command completion can show
@@ -390,6 +401,7 @@ impl KeymapRegistry {
         Arc::new(Self {
             inner: Mutex::new(RegistryInner::new()),
             derived_dirty: std::sync::atomic::AtomicBool::new(false),
+            commands: arc_swap::ArcSwapOption::empty(),
             leader: ArcSwap::from_pointee(DEFAULT_LEADER.to_string()),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
             gated_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
@@ -508,6 +520,7 @@ impl Default for KeymapRegistry {
             inner: Mutex::new(RegistryInner::new()),
             leader: ArcSwap::from_pointee(DEFAULT_LEADER.to_string()),
             derived_dirty: std::sync::atomic::AtomicBool::new(false),
+            commands: arc_swap::ArcSwapOption::empty(),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
             gated_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             reverse_cache: Arc::new(ArcSwap::from_pointee(HashMap::new())),
@@ -600,6 +613,201 @@ fn mode_order(mode: BindingMode) -> usize {
         .iter()
         .position(|&m| m == mode)
         .unwrap_or(usize::MAX)
+}
+
+/// Does `chord` overtype a Select-mode selection when nothing binds it?
+///
+/// The ONE definition of the rule. Select's overtype fallback calls it, and so
+/// does the motion mirror when deciding what may be bound in Select. Two copies
+/// of "what counts as typing" would drift apart, and a keymap that disagrees
+/// with its dispatcher is exactly the bug VM.4 fixed.
+///
+/// Vim's rule (visual.txt, Select mode): "Printable characters, <NL> and <CR>
+/// cause the selection to be deleted, and Vim enters Insert mode."
+///
+/// - A bare `Char` overtypes: any character, space and non-ASCII included.
+/// - `<CR>` is `Special(Enter)`.
+/// - `<NL>` has no key of its own; a terminal sends it as Ctrl-J.
+///
+/// Ctrl, Alt or Super otherwise make it a chord, not typing. Shift doesn't
+/// count: Select strips it before the lookup, and a shifted letter arrives as
+/// its uppercase `Char` anyway.
+pub fn overtypes_in_select(chord: &KeyChord) -> bool {
+    use lattice_protocol::chord::{KeyKind, SpecialKey};
+    let (ctrl, alt, super_) = (chord.mods.ctrl(), chord.mods.alt(), chord.mods.super_());
+    match chord.key {
+        KeyKind::Char(_) | KeyKind::Special(SpecialKey::Enter) if !ctrl && !alt && !super_ => true,
+        KeyKind::Char('j') => ctrl && !alt && !super_,
+        _ => false,
+    }
+}
+
+/// May a binding at `path` live in Select without stealing typed text?
+///
+/// In Select a key that overtypes replaces the selection (select-mode.md §1,
+/// §4), but the dispatcher consults the trie first, and a bound key, or the
+/// prefix of a binding, takes the keystroke instead. Only the FIRST chord
+/// matters, because that's the one looked up on a fresh keystroke. A `{char}`
+/// wildcard in first position matches every printable, so it's never safe.
+fn select_safe(path: &[ChordPattern]) -> bool {
+    match path.first() {
+        None | Some(ChordPattern::CharLiteral) => false,
+        Some(ChordPattern::Literal(chord)) => !overtypes_in_select(chord),
+    }
+}
+
+// ── VM.4: a motion is live in Visual (and, when it can't be typed, Select) ──
+//
+// THE INVARIANT: in a layer's Visual or Select trie, a binding shares the
+// Normal row's `Arc` at the same path IF AND ONLY IF it is the motion mirror.
+//
+// Identity is how the mirror recognises its own rows, so every write that
+// would otherwise share an `Arc` gives the explicit copy its own allocation:
+// an explicit Visual/Select write reusing the Normal row, a Normal write whose
+// `Arc` an explicit Visual/Select row already holds, `bind_modes` naming Normal
+// with a mirror mode, and a caller-built trie handed to `push_layer`.
+
+/// The binding-modes a motion is live in beyond Normal.
+///
+/// Operator-pending is deliberately NOT here. A motion's operator rows are
+/// `<op-prefix><chord>` expansions over the operator vocabulary (`Builtins`),
+/// which lives downstream of this crate, so the host's `expand_grammar_rows`
+/// applies it. Visual and Select need only the command's KIND, which this crate
+/// can ask for, so they are a property of the keymap.
+const MOTION_MIRROR_MODES: [BindingMode; 2] = [BindingMode::Visual, BindingMode::Select];
+
+fn is_motion(commands: &lattice_grammar::CommandRegistry, bound: &BoundCommand) -> bool {
+    commands
+        .lookup(bound.command.command)
+        .is_some_and(|spec| matches!(spec.kind, lattice_grammar::CommandKind::Motion))
+}
+
+/// Reconcile the Visual and Select mirrors of ONE Normal path after its Normal
+/// binding changed from `old` to `new`.
+///
+/// Three rules, and each is something a naive "insert if absent" gets wrong:
+///
+/// 1. **A mirror follows its source.** A slot holding `old` BY IDENTITY is our
+///    mirror, so it's replaced by `new` when `new` is a motion and removed
+///    otherwise. Bind-if-absent alone would see the slot occupied and leave a
+///    stale mirror pointing at a motion the Normal row no longer binds.
+/// 2. **A deliberate binding is never touched.** A slot holding anything else
+///    was written on purpose (Visual's `x` / `s` aliases, a mode's own Visual
+///    override) and survives.
+/// 3. **An empty slot is filled** when `new` is a motion, and, for Select,
+///    when the path's first chord wouldn't overtype.
+fn reconcile_motion_mirrors(
+    layer: &mut RegistryLayer,
+    commands: &lattice_grammar::CommandRegistry,
+    path: &[ChordPattern],
+    old: Option<&Arc<BoundCommand>>,
+    new: Option<&Arc<BoundCommand>>,
+) {
+    let new_motion = new.filter(|b| is_motion(commands, b));
+    for mode in MOTION_MIRROR_MODES {
+        // Select only takes a motion whose first chord wouldn't overtype:
+        // `w`, `f{char}`, `%` and `[[` stay Visual-only, while arrows,
+        // Home/End, PageUp/PageDown and `<C-d>` / `<C-u>` extend in Select too.
+        let mirrored = new_motion.filter(|_| mode != BindingMode::Select || select_safe(path));
+        let (occupied, ours) = match layer.modes.get(&mode).and_then(|t| t.get(path)) {
+            Some(held) => (true, old.is_some_and(|o| Arc::ptr_eq(held, o))),
+            None => (false, false),
+        };
+        match (occupied, ours, mirrored) {
+            (true, true, Some(n)) | (false, _, Some(n)) => {
+                layer
+                    .modes
+                    .entry(mode)
+                    .or_default()
+                    .insert(path, Arc::clone(n));
+            }
+            (true, true, None) => {
+                if let Some(trie) = layer.modes.get_mut(&mode) {
+                    trie.remove(path);
+                }
+            }
+            (true, false, _) | (false, _, None) => {}
+        }
+    }
+}
+
+/// Mirror every motion in a layer's Normal trie. For `push_layer`, which
+/// installs caller-built tries without passing through `bind`, and for
+/// `set_command_registry`'s rescan.
+fn mirror_layer_motions(layer: &mut RegistryLayer, commands: &lattice_grammar::CommandRegistry) {
+    let Some(normal) = layer.modes.get(&BindingMode::Normal) else {
+        return;
+    };
+    let mut motions: Vec<(Vec<ChordPattern>, Arc<BoundCommand>)> = Vec::new();
+    normal.walk_bindings(|path, bound| {
+        if is_motion(commands, bound) {
+            motions.push((path.to_vec(), Arc::clone(bound)));
+        }
+    });
+    for (path, bound) in &motions {
+        reconcile_motion_mirrors(layer, commands, path, None, Some(bound));
+    }
+}
+
+/// An explicit Visual / Select write gets its own allocation when it would
+/// otherwise share the Normal row's `Arc` (see THE INVARIANT above).
+fn distinct_from_normal(
+    layer: &RegistryLayer,
+    path: &[ChordPattern],
+    bound: &Arc<BoundCommand>,
+) -> Arc<BoundCommand> {
+    let shares = layer
+        .modes
+        .get(&BindingMode::Normal)
+        .and_then(|t| t.get(path))
+        .is_some_and(|normal| Arc::ptr_eq(normal, bound));
+    if shares {
+        Arc::new(BoundCommand::clone(bound))
+    } else {
+        Arc::clone(bound)
+    }
+}
+
+/// A Normal write of `bound` at `path`: any Visual / Select row already holding
+/// that same `Arc` got there by an explicit earlier write, not by the mirror,
+/// so it gets its own allocation before the mirror looks at identity.
+fn unshare_explicit_at(
+    layer: &mut RegistryLayer,
+    path: &[ChordPattern],
+    bound: &Arc<BoundCommand>,
+) {
+    for mode in MOTION_MIRROR_MODES {
+        let Some(trie) = layer.modes.get_mut(&mode) else {
+            continue;
+        };
+        if trie.get(path).is_some_and(|held| Arc::ptr_eq(held, bound)) {
+            trie.insert(path, Arc::new(BoundCommand::clone(bound)));
+        }
+    }
+}
+
+/// `push_layer`: a caller-built trie set contains no registry mirrors, because
+/// the mirror only ever runs inside this registry. So any Visual / Select row
+/// sharing its Normal row's `Arc` is an explicit multi-mode declaration, and is
+/// unshared before the mirror runs.
+fn unshare_explicit_mirror_modes(layer: &mut RegistryLayer) {
+    let Some(normal) = layer.modes.get(&BindingMode::Normal) else {
+        return;
+    };
+    let mut shared: Vec<(BindingMode, Vec<ChordPattern>, Arc<BoundCommand>)> = Vec::new();
+    for mode in MOTION_MIRROR_MODES {
+        let Some(trie) = layer.modes.get(&mode) else {
+            continue;
+        };
+        trie.walk_bindings(|path, bound| {
+            if normal.get(path).is_some_and(|n| Arc::ptr_eq(n, bound)) {
+                shared.push((mode, path.to_vec(), Arc::new(BoundCommand::clone(bound))));
+            }
+        });
+    }
+    for (mode, path, fresh) in shared {
+        layer.modes.entry(mode).or_default().insert(&path, fresh);
+    }
 }
 
 /// Editor-facing handle to the keymap registry.
@@ -829,7 +1037,10 @@ impl KeymapHandle {
     /// Equivalent to calling [`Self::bind`] once per mode, but inserts
     /// into every mode's trie under one lock and rebuilds the merged
     /// trie + reverse cache ONCE (not per mode). The same
-    /// `Arc<BoundCommand>` is shared across the modes' tries.
+    /// `Arc<BoundCommand>` is shared across the modes' tries, except that a
+    /// Visual or Select entry named alongside Normal gets its own copy: it's
+    /// an explicit declaration, and the motion mirror tells its own rows apart
+    /// by identity (VM.4).
     ///
     /// This is the imperative multi-mode primitive `init.rs` / plugins /
     /// host helpers use directly (the declarative peer is
@@ -849,15 +1060,36 @@ impl KeymapHandle {
         }
         let bound = Arc::new(BoundCommand::from_invocation(command, source, layer));
         let label = default_label(layer);
+        let commands = self.registry.commands.load_full();
+        let binds_normal = modes.contains(&BindingMode::Normal);
         let (merged, minors) = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let layer_ref = inner.layer_mut(layer, &label);
+            let old_normal = layer_ref
+                .modes
+                .get(&BindingMode::Normal)
+                .and_then(|t| t.get(path))
+                .cloned()
+                .filter(|_| binds_normal);
             for &mode in modes {
-                layer_ref
-                    .modes
-                    .entry(mode)
-                    .or_default()
-                    .insert(path, bound.clone());
+                // VM.4: one `Arc` across the named modes, EXCEPT a mirror mode
+                // named alongside Normal. That's an explicit declaration, so it
+                // gets its own allocation and identity keeps meaning "mirror".
+                let entry = if binds_normal && MOTION_MIRROR_MODES.contains(&mode) {
+                    Arc::new(BoundCommand::clone(&bound))
+                } else {
+                    Arc::clone(&bound)
+                };
+                layer_ref.modes.entry(mode).or_default().insert(path, entry);
+            }
+            if binds_normal && let Some(commands) = commands.as_deref() {
+                reconcile_motion_mirrors(
+                    layer_ref,
+                    &commands.load(),
+                    path,
+                    old_normal.as_ref(),
+                    Some(&bound),
+                );
             }
             (
                 inner.build_always_on_merged(),
@@ -883,10 +1115,45 @@ impl KeymapHandle {
         bound: Arc<BoundCommand>,
     ) {
         let label = default_label(layer);
+        // VM.4: loaded before the lock. `ArcSwap` reads are wait-free, so the
+        // mutex still covers nothing but trie writes.
+        let commands = self.registry.commands.load_full();
         {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let layer_ref = inner.layer_mut(layer, &label);
-            layer_ref.modes.entry(mode).or_default().insert(path, bound);
+            if MOTION_MIRROR_MODES.contains(&mode) {
+                // An explicit Visual / Select write must not pass for the mirror
+                // by reusing the Normal row's allocation.
+                let own = distinct_from_normal(layer_ref, path, &bound);
+                layer_ref.modes.entry(mode).or_default().insert(path, own);
+            } else if mode == BindingMode::Normal {
+                let old = layer_ref
+                    .modes
+                    .get(&mode)
+                    .and_then(|t| t.get(path))
+                    .cloned();
+                layer_ref
+                    .modes
+                    .entry(mode)
+                    .or_default()
+                    .insert(path, Arc::clone(&bound));
+                // Re-binding the identical `Arc` is the one case where a Visual /
+                // Select row holding it genuinely IS the mirror.
+                if !old.as_ref().is_some_and(|o| Arc::ptr_eq(o, &bound)) {
+                    unshare_explicit_at(layer_ref, path, &bound);
+                }
+                if let Some(commands) = commands.as_deref() {
+                    reconcile_motion_mirrors(
+                        layer_ref,
+                        &commands.load(),
+                        path,
+                        old.as_ref(),
+                        Some(&bound),
+                    );
+                }
+            } else {
+                layer_ref.modes.entry(mode).or_default().insert(path, bound);
+            }
         }
         // (C′) Touch only this layer's trie and mark the derived state
         // stale; `ensure_derived_fresh` rebuilds once on the next read.
@@ -910,12 +1177,21 @@ impl KeymapHandle {
         mode: BindingMode,
         path: &[ChordPattern],
     ) -> Option<Arc<BoundCommand>> {
+        let commands = self.registry.commands.load_full();
         let (dropped, merged, minors) = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let pos = inner.layers.iter().position(|l| l.layer == layer)?;
             let layer_ref = &mut inner.layers[pos];
-            let trie = layer_ref.modes.get_mut(&mode)?;
-            let dropped = trie.remove(path);
+            let dropped = layer_ref.modes.get_mut(&mode)?.remove(path);
+            // VM.4: the mirror follows its source out. `new = None` removes only
+            // the Visual / Select rows that are this binding BY IDENTITY; a
+            // deliberate binding at the same path stays.
+            if mode == BindingMode::Normal
+                && let Some(gone) = dropped.as_ref()
+                && let Some(commands) = commands.as_deref()
+            {
+                reconcile_motion_mirrors(layer_ref, &commands.load(), path, Some(gone), None);
+            }
             (
                 dropped,
                 inner.build_always_on_merged(),
@@ -961,6 +1237,7 @@ impl KeymapHandle {
         bindings: HashMap<BindingMode, KeymapTrie>,
     ) -> LayerId {
         let label = label.into();
+        let commands = self.registry.commands.load_full();
         let (id, merged, minors) = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let layer = match kind {
@@ -974,11 +1251,11 @@ impl KeymapHandle {
             // Buffer always mints fresh (Buffer layer is a
             // singleton in practice but we don't enforce that
             // here).
-            let id = if let Some(pos) = inner.layers.iter().position(|l| l.layer == layer) {
+            let (id, pos) = if let Some(pos) = inner.layers.iter().position(|l| l.layer == layer) {
                 let existing_id = inner.layers[pos].id;
                 inner.layers[pos].label = label;
                 inner.layers[pos].modes = bindings;
-                existing_id
+                (existing_id, pos)
             } else {
                 let id = LayerId(inner.next_layer_id);
                 inner.next_layer_id += 1;
@@ -994,8 +1271,17 @@ impl KeymapHandle {
                     .position(|l| l.layer > layer)
                     .unwrap_or(inner.layers.len());
                 inner.layers.insert(pos, new);
-                id
+                (id, pos)
             };
+            // VM.4: `push_layer` installs caller-built tries without passing
+            // through `bind`. That's why a mirror hung only on `bind` would miss
+            // every mode layer, and why a RE-push used to drop a plugin's Visual
+            // motions until something re-ran a host pass.
+            let layer_ref = &mut inner.layers[pos];
+            unshare_explicit_mirror_modes(layer_ref);
+            if let Some(commands) = commands.as_deref() {
+                mirror_layer_motions(layer_ref, &commands.load());
+            }
             (
                 id,
                 inner.build_always_on_merged(),
@@ -1063,6 +1349,42 @@ impl KeymapHandle {
         self.registry.merged.store(Arc::new(merged));
         self.registry.gated_mode_tries.store(Arc::new(minors));
         self.registry.rebuild_reverse_cache();
+    }
+
+    /// VM.4: give the keymap the command registry it asks "is this a motion?".
+    ///
+    /// From here on every write mirrors motions into Visual, and into Select
+    /// when their first chord can't be typed (keymap-architecture.md §15).
+    /// Rescans every existing layer, so calling this after bindings have landed
+    /// is exactly as good as calling it first. Boot calls it the moment the
+    /// handle exists.
+    pub fn set_command_registry(&self, commands: lattice_grammar::CommandRegistryHandle) {
+        let snapshot = commands.load_full();
+        self.registry.commands.store(Some(Arc::new(commands)));
+        {
+            let mut inner = self.registry.inner.lock().expect("registry mutex");
+            for layer in inner.layers.iter_mut() {
+                mirror_layer_motions(layer, &snapshot);
+            }
+        }
+        self.registry
+            .derived_dirty
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// VM.4: every registered layer, lowest priority first.
+    ///
+    /// Exists so an invariant can be asserted across ALL layers rather than
+    /// the one a test happens to name. The "a motion is live in Visual" drift
+    /// test used to check `Builtin` only, so it could never have noticed a
+    /// re-pushed mode layer losing its mirror.
+    pub fn layers(&self) -> Vec<KeymapLayer> {
+        let inner = self
+            .registry
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        inner.layers.iter().map(|l| l.layer).collect()
     }
 
     /// Total binding count across all layers. Telemetry +
@@ -2908,6 +3230,461 @@ mod tests {
                 );
             }
             other => panic!("expected Bound, got {other:?}"),
+        }
+    }
+
+    // ── VM.4: a motion is live in Visual (and Select) by construction ──────
+
+    fn stub_motion() -> lattice_grammar::MotionSpec {
+        lattice_grammar::MotionSpec {
+            jump: false,
+            exclusive: true,
+            apply: Arc::new(|ctx| {
+                Ok(lattice_grammar::registry::MotionResult {
+                    target: ctx.from,
+                    linewise: false,
+                    exclusive: None,
+                })
+            }),
+            args_schema: vec![],
+        }
+    }
+
+    /// A registry holding one motion and one action, as the live handle the
+    /// keymap expects. Two kinds, because every mirror rule is a statement
+    /// about the difference between them.
+    fn motion_and_action() -> (lattice_grammar::CommandRegistryHandle, CommandId, CommandId) {
+        let mut r = lattice_grammar::CommandRegistry::new();
+        let motion = r.register_motion("motion:vm4-test", "mirror test motion", stub_motion());
+        let action = r.register_action(
+            "action:vm4-test",
+            "mirror test action",
+            lattice_grammar::ActionSpec {
+                apply: Arc::new(|_| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
+        );
+        (Arc::new(ArcSwap::from_pointee(r)), motion.0, action)
+    }
+
+    fn special(k: SpecialKey) -> ChordPattern {
+        ChordPattern::Literal(KeyChord::special(k))
+    }
+
+    fn slot(
+        h: &KeymapHandle,
+        layer: KeymapLayer,
+        mode: BindingMode,
+        path: &[ChordPattern],
+    ) -> Option<Arc<BoundCommand>> {
+        h.layer_bindings(layer, mode)
+            .into_iter()
+            .find(|(p, _)| p.as_slice() == path)
+            .map(|(_, b)| b)
+    }
+
+    fn command_at(
+        h: &KeymapHandle,
+        layer: KeymapLayer,
+        mode: BindingMode,
+        path: &[ChordPattern],
+    ) -> Option<CommandId> {
+        slot(h, layer, mode, path).map(|b| b.command.command)
+    }
+
+    fn bind_normal(h: &KeymapHandle, path: &[ChordPattern], id: CommandId) {
+        h.bind(
+            KeymapLayer::Builtin,
+            BindingMode::Normal,
+            path,
+            CommandInvocation::of(id),
+            src("t"),
+        );
+    }
+
+    /// `]]` is printable. It extends the selection in Visual, but in Select
+    /// it must stay unbound so `]` overtypes.
+    #[test]
+    fn a_printable_motion_is_live_in_visual_but_not_select() {
+        let (commands, motion, _) = motion_and_action();
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands);
+        let path = [lit(']'), lit(']')];
+        bind_normal(&h, &path, motion);
+
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Visual, &path),
+            Some(motion),
+            "a motion is live in Visual without anyone binding it there"
+        );
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Select, &path),
+            None,
+            "a printable motion in Select would take the key meant to overtype"
+        );
+    }
+
+    #[test]
+    fn a_non_printable_motion_is_live_in_visual_and_select() {
+        let (commands, motion, _) = motion_and_action();
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands);
+        for path in [
+            vec![ChordPattern::Literal(ctrl('d'))],
+            vec![special(SpecialKey::PageDown)],
+        ] {
+            bind_normal(&h, &path, motion);
+            for mode in [BindingMode::Visual, BindingMode::Select] {
+                assert_eq!(
+                    command_at(&h, KeymapLayer::Builtin, mode, &path),
+                    Some(motion),
+                    "{path:?} can't be typed, so it extends in {mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_action_bound_in_normal_is_not_mirrored() {
+        let (commands, _, action) = motion_and_action();
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands);
+        let path = [special(SpecialKey::PageDown)];
+        bind_normal(&h, &path, action);
+
+        for mode in [BindingMode::Visual, BindingMode::Select] {
+            assert_eq!(command_at(&h, KeymapLayer::Builtin, mode, &path), None);
+        }
+    }
+
+    /// The hole VM.4 exists to close. `push_layer` REPLACES a mode layer's
+    /// tries wholesale, so under the host-pass design a re-pushed mode layer
+    /// lost its Visual motions until something re-ran the pass.
+    #[test]
+    fn a_re_pushed_mode_layer_keeps_its_visual_motion() {
+        let (commands, motion, _) = motion_and_action();
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands);
+        let mode_id = ModeId::new("vm4-repush");
+        let layer = KeymapLayer::MinorMode(mode_id);
+        let path = [lit(']'), lit(']')];
+
+        let tries = || {
+            let mut normal = KeymapTrie::new();
+            normal.insert(
+                &path,
+                Arc::new(BoundCommand::from_invocation(
+                    CommandInvocation::of(motion),
+                    src("t"),
+                    layer,
+                )),
+            );
+            HashMap::from([(BindingMode::Normal, normal)])
+        };
+        h.push_layer(PushLayerKind::MinorMode(mode_id), "vm4", tries());
+        h.push_layer(PushLayerKind::MinorMode(mode_id), "vm4", tries());
+
+        assert_eq!(
+            command_at(&h, layer, BindingMode::Visual, &path),
+            Some(motion),
+            "a re-push must not strip the mirror"
+        );
+    }
+
+    /// A caller-built trie that names Visual explicitly, sharing one `Arc`
+    /// with Normal (the natural way to build one), keeps that Visual row when
+    /// Normal is unbound. Select, which it didn't name, was the mirror and
+    /// follows Normal out.
+    #[test]
+    fn a_pushed_layer_that_names_visual_keeps_it_after_normal_goes() {
+        let (commands, motion, _) = motion_and_action();
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands);
+        let mode_id = ModeId::new("vm4-explicit-push");
+        let layer = KeymapLayer::MinorMode(mode_id);
+        let path = [special(SpecialKey::PageDown)];
+        let shared = Arc::new(BoundCommand::from_invocation(
+            CommandInvocation::of(motion),
+            src("t"),
+            layer,
+        ));
+        let mut normal = KeymapTrie::new();
+        normal.insert(&path, Arc::clone(&shared));
+        let mut visual = KeymapTrie::new();
+        visual.insert(&path, shared);
+        h.push_layer(
+            PushLayerKind::MinorMode(mode_id),
+            "vm4",
+            HashMap::from([(BindingMode::Normal, normal), (BindingMode::Visual, visual)]),
+        );
+        assert_eq!(
+            command_at(&h, layer, BindingMode::Select, &path),
+            Some(motion),
+            "test premise: Select got the mirror"
+        );
+
+        h.unbind(layer, BindingMode::Normal, &path);
+        assert_eq!(
+            command_at(&h, layer, BindingMode::Visual, &path),
+            Some(motion),
+            "Visual was declared by the caller, so it isn't the mirror's to remove"
+        );
+        assert_eq!(command_at(&h, layer, BindingMode::Select, &path), None);
+    }
+
+    #[test]
+    fn setting_the_registry_after_binding_mirrors_what_already_exists() {
+        let (commands, motion, _) = motion_and_action();
+        let h = KeymapHandle::new();
+        let path = [lit(']'), lit(']')];
+        bind_normal(&h, &path, motion);
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Visual, &path),
+            None,
+            "test premise: nothing to ask 'is this a motion?', so nothing mirrored"
+        );
+
+        h.set_command_registry(commands);
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Visual, &path),
+            Some(motion),
+            "the order boot sets the registry in must not matter"
+        );
+        assert!(
+            matches!(
+                h.lookup(BindingMode::Visual, &[pressed(']'), pressed(']')]),
+                LookupResult::Bound { .. }
+            ),
+            "the rescan must reach the merged trie a keystroke reads"
+        );
+    }
+
+    #[test]
+    fn a_deliberate_visual_binding_survives_whichever_order_it_lands_in() {
+        let (commands, motion, action) = motion_and_action();
+        let path = [lit(']'), lit(']')];
+        let bind_visual = |h: &KeymapHandle| {
+            h.bind(
+                KeymapLayer::Builtin,
+                BindingMode::Visual,
+                &path,
+                CommandInvocation::of(action),
+                src("t"),
+            );
+        };
+
+        // Visual first, then the Normal motion.
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands.clone());
+        bind_visual(&h);
+        bind_normal(&h, &path, motion);
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Visual, &path),
+            Some(action)
+        );
+
+        // The Normal motion first, then Visual.
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands);
+        bind_normal(&h, &path, motion);
+        bind_visual(&h);
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Visual, &path),
+            Some(action)
+        );
+    }
+
+    /// Bind-if-absent alone gets this wrong: the slot is occupied, so the old
+    /// mirror would stay, pointing at a motion the Normal row no longer binds.
+    #[test]
+    fn rebinding_a_normal_path_moves_its_mirror_with_it() {
+        let mut r = lattice_grammar::CommandRegistry::new();
+        let first = r
+            .register_motion("motion:vm4-first", "first", stub_motion())
+            .0;
+        let second = r
+            .register_motion("motion:vm4-second", "second", stub_motion())
+            .0;
+        let h = KeymapHandle::new();
+        h.set_command_registry(Arc::new(ArcSwap::from_pointee(r)));
+        let path = [special(SpecialKey::PageDown)];
+        bind_normal(&h, &path, first);
+        bind_normal(&h, &path, second);
+
+        for mode in [BindingMode::Visual, BindingMode::Select] {
+            assert_eq!(
+                command_at(&h, KeymapLayer::Builtin, mode, &path),
+                Some(second),
+                "the {mode:?} mirror must follow the Normal row it mirrors"
+            );
+        }
+    }
+
+    #[test]
+    fn rebinding_a_normal_motion_to_an_action_removes_the_mirror() {
+        let (commands, motion, action) = motion_and_action();
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands);
+        let path = [special(SpecialKey::PageDown)];
+        bind_normal(&h, &path, motion);
+        bind_normal(&h, &path, action);
+
+        for mode in [BindingMode::Visual, BindingMode::Select] {
+            assert_eq!(
+                command_at(&h, KeymapLayer::Builtin, mode, &path),
+                None,
+                "an action is not live in {mode:?} just because a motion used to be"
+            );
+        }
+    }
+
+    #[test]
+    fn unbinding_normal_removes_the_mirror_but_not_a_deliberate_binding() {
+        let (commands, motion, action) = motion_and_action();
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands);
+        let mirrored = [lit(']'), lit(']')];
+        let deliberate = [lit('['), lit('[')];
+        bind_normal(&h, &mirrored, motion);
+        h.bind(
+            KeymapLayer::Builtin,
+            BindingMode::Visual,
+            &deliberate,
+            CommandInvocation::of(action),
+            src("t"),
+        );
+        bind_normal(&h, &deliberate, motion);
+
+        h.unbind(KeymapLayer::Builtin, BindingMode::Normal, &mirrored);
+        h.unbind(KeymapLayer::Builtin, BindingMode::Normal, &deliberate);
+
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Visual, &mirrored),
+            None
+        );
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Visual, &deliberate),
+            Some(action),
+            "unbinding Normal must not take a binding someone wrote in Visual"
+        );
+    }
+
+    /// `bind_modes` shares one `Arc` across the modes it names. A Visual copy
+    /// named alongside Normal is an explicit declaration, and must survive an
+    /// unbind of Normal that removes a mirror.
+    #[test]
+    fn bind_modes_normal_and_visual_declares_visual_explicitly() {
+        let (commands, motion, _) = motion_and_action();
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands);
+        let path = [special(SpecialKey::PageDown)];
+        h.bind_modes(
+            KeymapLayer::Builtin,
+            &[BindingMode::Normal, BindingMode::Visual],
+            &path,
+            CommandInvocation::of(motion),
+            src("t"),
+        );
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Select, &path),
+            Some(motion),
+            "test premise: Select, which wasn't named, got the mirror"
+        );
+
+        h.unbind(KeymapLayer::Builtin, BindingMode::Normal, &path);
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Visual, &path),
+            Some(motion),
+            "Visual was named explicitly, so it isn't the mirror's to remove"
+        );
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Select, &path),
+            None,
+            "Select was the mirror, and followed Normal out"
+        );
+    }
+
+    #[test]
+    fn no_registry_means_no_mirror_and_no_panic() {
+        let (_, motion, _) = motion_and_action();
+        let h = KeymapHandle::new();
+        let path = [special(SpecialKey::PageDown)];
+        bind_normal(&h, &path, motion);
+        h.unbind(KeymapLayer::Builtin, BindingMode::Normal, &path);
+        for mode in [BindingMode::Visual, BindingMode::Select] {
+            assert_eq!(command_at(&h, KeymapLayer::Builtin, mode, &path), None);
+        }
+    }
+
+    /// `f{char}`: the exact-pattern slot is `[f, {char}]`, which `lookup`
+    /// can't address. It's mirrored into Visual exactly and resolves from a
+    /// real keystroke there. In Select `f` stays unbound, so it overtypes.
+    #[test]
+    fn a_wildcard_motion_path_is_mirrored_exactly() {
+        let (commands, motion, _) = motion_and_action();
+        let h = KeymapHandle::new();
+        h.set_command_registry(commands);
+        let path = [lit('f'), ChordPattern::CharLiteral];
+        bind_normal(&h, &path, motion);
+
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Visual, &path),
+            Some(motion)
+        );
+        assert!(matches!(
+            h.lookup(BindingMode::Visual, &[pressed('f'), pressed('x')]),
+            LookupResult::Bound { .. }
+        ));
+        assert_eq!(
+            command_at(&h, KeymapLayer::Builtin, BindingMode::Select, &path),
+            None
+        );
+        assert!(matches!(
+            h.lookup(BindingMode::Select, &[pressed('f')]),
+            LookupResult::Unbound
+        ));
+    }
+
+    /// The single definition of "would overtype", pinned case by case. Select's
+    /// fallback and the mirror both call it, so this is what they agree on.
+    #[test]
+    fn overtypes_in_select_matches_the_dispatcher_rule() {
+        use lattice_protocol::chord::{KeyKind, KeyMods};
+        let with = |key: KeyKind, mods: KeyMods| KeyChord::new(key, mods);
+
+        for c in ['a', 'A', ' ', 'é', '%', '['] {
+            assert!(overtypes_in_select(&pressed(c)), "{c:?} is typed text");
+        }
+        assert!(
+            overtypes_in_select(&with(KeyKind::Char('a'), KeyMods::SHIFT)),
+            "Shift doesn't make a chord"
+        );
+        // Vim: "Printable characters, <NL> and <CR> cause the selection to be
+        // deleted". <NL> arrives as Ctrl-J.
+        let enter = KeyKind::Special(SpecialKey::Enter);
+        assert!(overtypes_in_select(&with(enter, KeyMods::NONE)), "<CR>");
+        assert!(overtypes_in_select(&with(enter, KeyMods::SHIFT)), "<S-CR>");
+        assert!(overtypes_in_select(&ctrl('j')), "<NL> is <C-j>");
+
+        for (label, chord) in [
+            ("<C-a>", ctrl('a')),
+            ("<M-a>", with(KeyKind::Char('a'), KeyMods::ALT)),
+            ("<D-a>", with(KeyKind::Char('a'), KeyMods::SUPER)),
+            ("<C-CR>", with(enter, KeyMods::CTRL)),
+            ("<M-CR>", with(enter, KeyMods::ALT)),
+            (
+                "<M-C-j>",
+                with(KeyKind::Char('j'), KeyMods::CTRL | KeyMods::ALT),
+            ),
+            ("<Left>", KeyChord::special(SpecialKey::Left)),
+            ("<PageDown>", KeyChord::special(SpecialKey::PageDown)),
+            ("<Esc>", KeyChord::special(SpecialKey::Esc)),
+            ("<Tab>", KeyChord::special(SpecialKey::Tab)),
+        ] {
+            assert!(
+                !overtypes_in_select(&chord),
+                "{label} is a chord, not typing"
+            );
         }
     }
 }

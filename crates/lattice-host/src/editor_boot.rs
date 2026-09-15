@@ -1118,6 +1118,13 @@ impl Editor {
         // `marginalia.md` §6 + the wiring rationale in the
         // picker-marginalia slice plan (MP.2b).
         let keymap_handle = crate::keymap_registry::KeymapHandle::new();
+        // VM.4: hand the keymap the live command registry, so "a motion is live
+        // in Visual" is enforced at every keymap write rather than by a pass
+        // someone has to remember to re-run. Set before any binder runs, though
+        // correctness doesn't depend on that: setting it later rescans every
+        // existing layer. The operator-pending half stays in
+        // `expand_grammar_rows`, which needs `Builtins`.
+        keymap_handle.set_command_registry(registry.clone());
         let keybinding_reverse: Arc<dyn lattice_completion::KeymapReverseLookup> =
             crate::keymap_registry::KeymapReverseLookupHandle::new(
                 &keymap_handle,
@@ -2358,20 +2365,20 @@ impl Editor {
                     &mode_registry.load(),
                     &registry.load(),
                 );
-                // VM.1 (2026-09-15): derive every grammar row a binding
-                // implies but nobody wrote — a motion's Visual / Select /
-                // operator-pending peers, a text object's the same. Runs
+                // VM.1 (2026-09-15): derive every OPERATOR-PENDING row a
+                // binding implies but nobody wrote (`dgg`, `d]]`, `dar`), plus a
+                // text object's Visual row. A motion's Visual / Select rows come
+                // from the keymap itself since VM.4. Runs
                 // LAST, over the Builtin layer and over every mode layer
                 // registered so far, because it fills gaps and must see the
                 // deliberate bindings first: `keymap_visual`'s `x` / `s` / `r`
                 // aliases and the find-char paths' `Args::Char` routing are
                 // explicit statements the derivation must not clobber.
                 //
-                // This is what makes `vgg`, `vf)`, `v<C-d>` and `dgg` work,
-                // and what makes org's `[[` a motion in Visual without the
-                // plugin declaring `binding-mode: visual` a second time. The
-                // four hand-kept copies of `motion_rows` are gone with it;
-                // see `expand_grammar_rows`. Plugin layers are re-walked on
+                // This is what makes `dgg`, `d<C-d>` and org's `d]]` work. The
+                // Visual half (`vgg`, `vf)`, org's `[[` in Visual) is the
+                // keymap's mirror, armed by `set_command_registry` where the
+                // handle is created. Plugin layers are re-walked on
                 // `PluginLoaded` by the subscriber spawned above.
                 {
                     let cmds = registry.load();

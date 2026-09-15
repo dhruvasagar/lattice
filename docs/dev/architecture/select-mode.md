@@ -109,7 +109,8 @@ Exit / within:
 | Select(k) | printable `c` | delete selection → enter `Insert` → insert `c` (one undo step) |
 | Select(k) | `<Esc>` | collapse selection → `Normal` |
 | Select(k) | `<C-g>` | toggle back to `Visual(k)` |
-| Select(k) | motion (`w`, `j`, …) | extend the selection (Visual-identical), stay in Select |
+| Select(k) | `<CR>` / `<C-j>` | delete selection → enter `Insert` → a newline with its auto-indent (one undo step) |
+| Select(k) | motion that can't be typed (`<Right>`, `<C-d>`, …) | extend the selection (Visual-identical), stay in Select |
 | Select(k) | `<C-o>` | one-shot Normal command, return to Select (vim parity — optional, post-MVP) |
 
 The **printable → replace + Insert** step is the load-bearing new behaviour
@@ -133,6 +134,18 @@ printable in Visual is a no-op). The right reference for the fallthrough is
 edit above.
 
 ## 4. Keymap + dispatch
+
+> **Superseded in part (VM.1, VM.4, 2026-09-15).** The duplicated
+> registration and its parity test below are gone. Select's motion rows come
+> from the keymap's motion mirror (keymap-architecture.md §15), which admits a
+> motion only when its first chord can't be typed, using
+> `lattice_keymap::overtypes_in_select`, the same predicate the overtype
+> fallback calls. Vim's Select rule names `<NL>` and `<CR>` alongside
+> printables, so the predicate admits those too. Until VM.4 the code
+> contradicted the rule that bare printables aren't individually bound: Select's
+> table bound every printable motion, so text typed over a snippet placeholder
+> was taken whenever it began with one of about 30 characters. `o` and the
+> `i` / `a` text-object prefixes are the last printables still bound (VM.5).
 
 - A `BindingMode::Select` chord table. Motions and selection-extending chords
   are conceptually shared with Visual but must be registered under the Select

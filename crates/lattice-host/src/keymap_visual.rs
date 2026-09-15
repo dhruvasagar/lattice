@@ -151,9 +151,10 @@ pub fn register_visual_bindings(
 
     // VM.1 (2026-09-15): motions are NOT listed here any more, neither the
     // builtin ones nor TSM.4's sixteen structural ones. They are DERIVED from
-    // the Normal catalog by `keymap_normal::expand_grammar_rows`, which walks
-    // every layer's Normal trie and gives each `CommandKind::Motion` binding
-    // its Visual, Select and operator-pending peers.
+    // each binding's command kind: since VM.4 the keymap mirrors every
+    // `CommandKind::Motion` Normal binding into Visual at the write
+    // (keymap-architecture.md §15), and `keymap_normal::expand_grammar_rows`
+    // adds the operator-pending peers.
     //
     // The list that used to live here was a re-registration of
     // `keymap_normal::motion_rows`, and its doc comment claimed to be a single

@@ -35688,17 +35688,50 @@ impl Editor {
             let sels = self.document.selections();
             crate::visual::selection_extent(sels.primary())
         };
-        let mut buf = [0u8; 4];
-        let s: &str = c.encode_utf8(&mut buf);
-        match self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(range, s)) {
+        // `<CR>` / `<NL>` over a selection TYPES a newline (vim: "the typed
+        // character is inserted" after entering Insert), and a typed newline
+        // carries its auto-indent (IN.1). It's computed from the line split at
+        // the selection's edges, as though the selection were already gone,
+        // and lands in the SAME replace edit, so a single `u` still undoes the
+        // whole overtype (select-mode.md §3).
+        let (s, indent) = if c == '\n' {
+            let line_text = |line: u32| {
+                self.active_text()
+                    .line(line)
+                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .unwrap_or_default()
+            };
+            // The byte can land mid-codepoint after some edits; walk back to a
+            // boundary rather than panicking on the slice.
+            let boundary = |s: &str, byte: u32| {
+                (0..=(byte as usize).min(s.len()))
+                    .rev()
+                    .find(|i| s.is_char_boundary(*i))
+                    .unwrap_or(0)
+            };
+            let (head, tail) = (line_text(range.start.line), line_text(range.end.line));
+            let head = &head[..boundary(&head, range.start.byte)];
+            let tail = &tail[boundary(&tail, range.end.byte)..];
+            // `auto_indent_for_split` reads the cursor for the tree lookup, and
+            // the newline is typed where the selection starts.
+            self.cursor = range.start;
+            let indent = self.auto_indent_for_split(head, tail);
+            (format!("\n{indent}"), Some(indent))
+        } else {
+            (c.to_string(), None)
+        };
+        match self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(range, &s)) {
             Ok(applied) => self.cursor = applied.inserted_range.end,
             Err(_) => {
                 if let Ok(applied) =
-                    self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, s))
+                    self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, &s))
                 {
                     self.cursor = applied.inserted_range.end;
                 }
             }
+        }
+        if let Some(indent) = indent {
+            self.note_auto_indent(self.cursor.line, &indent);
         }
         // Collapse the selection and land in Insert at the new cursor.
         self.visual_anchor = None;

@@ -453,8 +453,7 @@ reverts the entire block edit.
 ## Select mode
 
 Select is Visual's twin: identical selection geometry (same
-anchor/head, same three sub-modes, same motions and text
-objects extend it), but **inverted typing**. In Visual you
+anchor/head, same three sub-modes), but **inverted typing**. In Visual you
 press an operator (`d`, `c`, `y`); in Select you just type, and
 the typed character *replaces* the whole selection and drops
 you into Insert. It mirrors the "type-to-replace selection"
@@ -469,12 +468,18 @@ snippet expansion uses to highlight an editable placeholder.
 
 Once in Select:
 
-- Any motion or text object extends the selection — exactly as
-  in Visual (`w`, `e`, `}`, `iw`, `af`, …).
+- A motion you can't type extends the selection, exactly as in
+  Visual: the arrow keys, `<Home>` / `<End>`, `<PageUp>` /
+  `<PageDown>`, `<C-d>` / `<C-u>`. A motion that starts with a
+  printable key (`w`, `e`, `}`, `f`) types that key instead;
+  press `<C-g>` to switch to Visual when you want it. This
+  holds for motions a plugin adds, too.
+- Text objects (`iw`, `af`, …) set the selection, as in Visual.
 - Typing any **printable** character replaces the selection
-  with that character and switches to Insert. The replace +
-  insert is a **single undo unit** — one `u` restores the
-  original span.
+  with that character and switches to Insert. So do `<CR>` and
+  `<C-j>`, which replace it with a newline, indented like any
+  newline you type. The replace + insert is a **single undo
+  unit** — one `u` restores the original span.
 - `o` swaps anchor and cursor (extend from the other end).
 - `<C-g>` toggles back to Visual without losing the selection;
   from Visual, `<C-g>` toggles *into* Select. The selection is

@@ -169,10 +169,11 @@ fn percent_does_not_leave_the_line_looking_for_a_bracket() {
     assert_eq!(editor.cursor.byte, 0);
 }
 
-/// Being a motion is what puts it in the Visual and Select tries at all — the
-/// binding is written by `expand_grammar_rows`, not by `keymap_visual`.
+/// Being a motion is what puts it in the Visual trie at all: the keymap's
+/// motion mirror writes it, not `keymap_visual`. Not in Select, where `%` is
+/// typed text and overtypes the selection (VM.4).
 #[test]
-fn percent_is_a_motion_in_every_mode_that_takes_one() {
+fn percent_is_a_motion_in_normal_and_visual() {
     let editor = Editor::boot(CoreDocument::from_text("(x)\n"));
     let commands = editor.registry.load();
 
@@ -193,15 +194,20 @@ fn percent_is_a_motion_in_every_mode_that_takes_one() {
         spec.name
     );
 
-    for mode in [BindingMode::Visual, BindingMode::Select] {
-        assert!(
-            matches!(
-                editor.keymap.lookup(mode, &[ch('%')]),
-                LookupResult::Bound { .. }
-            ),
-            "`%` must be Bound in {mode:?}"
-        );
-    }
+    assert!(
+        matches!(
+            editor.keymap.lookup(BindingMode::Visual, &[ch('%')]),
+            LookupResult::Bound { .. }
+        ),
+        "`%` must be Bound in Visual"
+    );
+    assert!(
+        matches!(
+            editor.keymap.lookup(BindingMode::Select, &[ch('%')]),
+            LookupResult::Unbound
+        ),
+        "`%` must stay Unbound in Select, so it overtypes"
+    );
 }
 
 // ── VM.3c: `;` and `,` are motions ────────────────────────────────────────
@@ -262,10 +268,11 @@ fn semicolon_with_no_previous_find_does_nothing() {
     assert_eq!(editor.cursor.byte, 0);
 }
 
-/// And, being motions, they are live in Visual and Select without either mode
-/// naming them — the whole point of VM.1's derivation.
+/// And, being motions, they are live in Visual without Visual naming them,
+/// which is the whole point of the derivation. Select leaves them unbound, so
+/// they overtype (VM.4).
 #[test]
-fn semicolon_and_comma_are_motions_in_every_mode_that_takes_one() {
+fn semicolon_and_comma_are_motions_in_normal_and_visual() {
     let editor = Editor::boot(CoreDocument::from_text("a.b\n"));
     let commands = editor.registry.load();
 
@@ -286,14 +293,19 @@ fn semicolon_and_comma_are_motions_in_every_mode_that_takes_one() {
             spec.kind,
             spec.name
         );
-        for mode in [BindingMode::Visual, BindingMode::Select] {
-            assert!(
-                matches!(
-                    editor.keymap.lookup(mode, &[ch(c)]),
-                    LookupResult::Bound { .. }
-                ),
-                "`{c}` must be Bound in {mode:?}"
-            );
-        }
+        assert!(
+            matches!(
+                editor.keymap.lookup(BindingMode::Visual, &[ch(c)]),
+                LookupResult::Bound { .. }
+            ),
+            "`{c}` must be Bound in Visual"
+        );
+        assert!(
+            matches!(
+                editor.keymap.lookup(BindingMode::Select, &[ch(c)]),
+                LookupResult::Unbound
+            ),
+            "`{c}` must stay Unbound in Select, so it overtypes"
+        );
     }
 }

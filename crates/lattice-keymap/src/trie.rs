@@ -286,6 +286,27 @@ impl KeymapTrie {
         node.binding.take()
     }
 
+    /// VM.4: the binding registered at EXACTLY `path`, if any.
+    ///
+    /// Not [`Self::lookup`], and the difference is why this exists. `lookup`
+    /// answers "what does this sequence of PRESSED chords resolve to", and
+    /// falls back to the `{char}` wildcard when no exact child matches, so it
+    /// can't tell the registration `[f, {char}]` from `[f, x]`, and it can't
+    /// be asked about a pattern path at all. The motion mirror needs "is this
+    /// exact registration slot occupied", which is a question about PATTERNS.
+    /// Here a `CharLiteral` segment walks the wildcard slot and only that slot,
+    /// never as a fallback.
+    pub fn get(&self, path: &[ChordPattern]) -> Option<&Arc<BoundCommand>> {
+        let mut node = &self.root;
+        for seg in path {
+            node = match seg {
+                ChordPattern::Literal(chord) => node.children.get(chord)?,
+                ChordPattern::CharLiteral => node.char_wildcard.as_deref()?,
+            };
+        }
+        node.binding.as_ref()
+    }
+
     /// Walk the input chord sequence and return what we found.
     ///
     /// Lookup precedence at each depth: exact `children` match
@@ -791,6 +812,28 @@ mod tests {
         t.insert(&[lit('j')], fake_bound("j"));
         let r = t.lookup(&[]);
         assert!(matches!(r, LookupResult::Partial), "got {r:?}");
+    }
+
+    /// `get` addresses REGISTRATIONS, not keystrokes. A `{char}` segment walks
+    /// the wildcard slot only, so `[f, {char}]` and `[f, x]` give different
+    /// answers, which is exactly the distinction `lookup`'s fallback erases.
+    #[test]
+    fn get_addresses_pattern_paths_exactly() {
+        let mut t = KeymapTrie::new();
+        let wild = [lit('f'), ChordPattern::CharLiteral];
+        let exact = [lit('f'), lit('x')];
+        let bound = fake_bound("get");
+        t.insert(&wild, Arc::clone(&bound));
+
+        assert!(t.get(&wild).is_some_and(|b| Arc::ptr_eq(b, &bound)));
+        assert!(
+            t.get(&exact).is_none(),
+            "the wildcard is not a fallback for get"
+        );
+        assert!(
+            t.get(&[lit('f')]).is_none(),
+            "a prefix is not a registration"
+        );
     }
 
     #[test]

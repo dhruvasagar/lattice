@@ -52,6 +52,12 @@ mod tests {
         sm: &SyntaxMotionIds,
     ) -> KeymapHandle {
         let h = KeymapHandle::new();
+        // VM.4: the keymap mirrors motions into Visual at every write once it
+        // has a registry. Without this, every motion chord below would
+        // dispatch to `Action::None` in Visual.
+        h.set_command_registry(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+            r.clone(),
+        )));
         register_visual_bindings(&h, b, a, so);
         // Operators (`d` / `c` / `y` / `>` / `<`) bind into Visual via
         // `register_operator_bindings` (called by `register_normal_bindings`), not
@@ -60,9 +66,8 @@ mod tests {
         // so the Normal catalog must be registered too. The `x` / `s`
         // Visual-only aliases still come from `register_visual_bindings`.
         crate::keymap_normal::register_normal_bindings(&h, b, a, so, sm);
-        // VM.1: Visual's motions are DERIVED from the Normal catalog now —
-        // nobody lists them twice. Without this the handle dispatches every
-        // motion chord to `Action::None`.
+        // VM.1: operator-pending rows. Visual's motions come from the keymap's
+        // mirror (VM.4), armed by `set_command_registry` above.
         crate::keymap_normal::expand_grammar_rows(
             &h,
             r,

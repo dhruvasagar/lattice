@@ -115,6 +115,13 @@ mod tests {
     /// this and pushes the relevant minor-mode overlays.
     fn build_base_keymap() -> KeymapHandle {
         let h = KeymapHandle::new();
+        // VM.4: as boot does. Once the keymap can ask the registry for a
+        // command's kind, it mirrors each motion into Visual and Select at the
+        // write. The handle wants an owned, swappable registry, so this clones
+        // the shared one once per base keymap.
+        h.set_command_registry(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+            shared_registry().clone(),
+        )));
         let b = shared_builtins();
         let a = shared_actions();
         let so = shared_syntax_textobjects();
@@ -123,7 +130,8 @@ mod tests {
         crate::keymap_visual::register_visual_bindings(&h, b, a, so);
         crate::keymap_insert::register_insert_bindings(&h, a);
         crate::keymap_normal::register_normal_bindings(&h, b, a, so, sm);
-        // VM.1: Visual's motion rows are derived from the Normal catalog.
+        // VM.1: operator-pending rows (`d]]`, `y%`, ...). Visual and Select
+        // motion rows come from the keymap itself as of VM.4.
         crate::keymap_normal::expand_grammar_rows(
             &h,
             shared_registry(),

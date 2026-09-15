@@ -3,8 +3,8 @@
 //! Select mode (`ModalState::Select(VisualKind)`) is Visual's sibling:
 //! the same selection *geometry*, inverted *typing* semantics. A bare
 //! printable key **replaces the whole selection with that char and
-//! drops into Insert** ([`Action::SelectOvertype`]); motions and
-//! text-objects extend the selection exactly as in Visual. See
+//! drops into Insert** ([`Action::SelectOvertype`]); motions that can't be
+//! typed extend the selection exactly as in Visual. See
 //! `docs/dev/architecture/select-mode.md`.
 //!
 //! ## Why this is genuinely new dispatch, not "`dispatch_visual` + a flag"
@@ -25,21 +25,21 @@
 //!    preserved); `<C-o>` → one-shot Normal — *recognised but post-MVP*
 //!    per select-mode.md §3, swallowed (`Action::None`) so a stray
 //!    `<C-o>` never overtypes a literal char.
-//! 2. **Any other CONTROL-bearing chord** → `Action::None` (mirrors
-//!    `dispatch_visual`'s CONTROL short-circuit).
-//! 3. **Mid-sequence** (a text-object prefix `i` / `a` already absorbed
+//! 2. **Mid-sequence** (a text-object prefix `i` / `a` already absorbed
 //!    into `partial_chord`) → resolve `[partial..., chord]` against the
 //!    `BindingMode::Select` table — the same partial-chord machinery
 //!    Normal/Visual use.
-//! 4. **Fresh chord** → `BindingMode::Select` lookup. `Bound` →
+//! 3. **Fresh chord** → `BindingMode::Select` lookup. `Bound` →
 //!    its action (motion extends / exit); `Partial` → absorb;
-//!    `Unbound` → the printable overtype fallthrough.
+//!    `Unbound` → the overtype fallthrough.
 //!
-//! The `BindingMode::Select` chord table itself (motions, text-objects,
-//! exits) is registered in SN.3d.2 (`register_select_bindings`, guarded
-//! by a Visual≡Select parity test). Until then every lookup here is
-//! `Unbound`, so a fresh printable overtypes and the control chords
-//! work — which is exactly d.1's testable surface.
+//! A bound key wins over the fallthrough, so what the Select table binds
+//! decides what can be typed. The table holds only keys that can't be:
+//! the keymap's motion mirror (VM.4) admits a motion only when its first
+//! chord wouldn't overtype, using [`lattice_keymap::overtypes_in_select`],
+//! the same predicate the fallthrough calls. `register_select_bindings`
+//! still binds `o` and the `i` / `a` text-object prefixes, which take
+//! those three letters until VM.5 removes them.
 
 use lattice_grammar::SourceLocation;
 use lattice_grammar::VisualKind;
@@ -56,24 +56,15 @@ use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
 use crate::keymap_trie::{ChordPattern, KeymapLayer, LookupResult};
 
-/// Register the Select-mode chord table: the **motion / extension /
-/// text-object** subset of Visual, under `BindingMode::Select`.
+/// Register the Select-mode chord table's explicit rows, under
+/// `BindingMode::Select`.
 ///
-/// **Decision (LOCKED, select-mode.md §4): duplicate the registration**
-/// (this parallels [`crate::keymap_visual::register_visual_bindings`])
-/// **guarded by a parity test** — `visual_and_select_share_every_motion`
-/// below — rather than a shared source list. The test is the drift
-/// guard; it fails loudly the moment the two layers diverge, keeps each
-/// registration readable on its own, and avoids a speculative shared-list
-/// abstraction before a second consumer exists (heuristic #1).
-///
-/// What Select registers vs. Visual:
-/// - **Motions** (`motion_rows`) — extend the selection, **identical** to
-///   Visual. The shared `motion_rows` table means a motion added there
-///   lights up in both; the parity test pins it.
-/// - **Tree-sitter structural motions** (`syntax_motion_rows`, TSM.4) —
-///   `]f`/`[f`/… extend the selection, **identical** to Visual, from the
-///   same shared table; the parity test walks these too.
+/// What Select holds vs. Visual:
+/// - **Motions** — not listed here. The keymap mirrors every Normal motion
+///   whose first chord can't be typed (arrows, Home/End, PageUp/PageDown,
+///   `<C-d>` / `<C-u>`) into Select at the write (VM.4,
+///   keymap-architecture.md §15). A printable motion (`w`, `f{char}`, `]f`)
+///   is Visual-only, because in Select that key overtypes.
 /// - **`o`** — swap selection ends (same as Visual).
 /// - **Text objects** (`text_object_rows`) — set the selection span,
 ///   identical to Visual.
@@ -102,13 +93,10 @@ pub fn register_select_bindings(
         select_source(),
     );
 
-    // VM.1 (2026-09-15): motions are not listed here, for the same reason they
-    // are no longer listed in `keymap_visual` — see the note there.
-    // `keymap_normal::expand_grammar_rows` derives Select's motion rows from
-    // the Normal catalog, which is what makes Select≡Visual motion parity
-    // (select-mode.md §4) a property of the mechanism instead of a property of
-    // two lists staying in step. The parity test below now runs the derivation
-    // and asserts against its output.
+    // Motions are not listed here. Since VM.4 the keymap mirrors them into
+    // Select at every write, and only the ones whose first chord can't be
+    // typed (`lattice_keymap::overtypes_in_select`), so Select's table and
+    // Select's typing are decided by one predicate instead of two lists.
 
     // Text objects: `i<obj>` / `a<obj>` set the selection to the object's
     // span — same SHARED `text_object_rows` table Visual + the Normal
@@ -170,7 +158,7 @@ pub fn translate_select(
 /// SN.3d.4: the native (minor-free) Select dispatch — the original
 /// `translate_select` body. Resolves the hardcoded mode-control chords,
 /// the base `BindingMode::Select` motion / text-object table, and the
-/// printable-overtype fallthrough. Used both as the normal path (when
+/// overtype fallthrough. Used both as the normal path (when
 /// no active minor binding claims the chord) AND as the `fall_through`
 /// continuation for a minor `<Esc>` (mode action THEN `ExitSelect`).
 /// Being minor-free, it cannot re-enter `minor_select_action`, so the
@@ -210,7 +198,7 @@ fn native_select_action(
         }
     }
 
-    // 3. Mid-sequence text-object resolution against the Select table.
+    // 2. Mid-sequence text-object resolution against the Select table.
     if !partial_chord.is_empty() {
         let chord = normalize_for_select_lookup(*chord);
         let mut path: Vec<KeyChord> = partial_chord.to_vec();
@@ -224,8 +212,8 @@ fn native_select_action(
         };
     }
 
-    // 4. Fresh chord. A bound motion / exit / text-object prefix wins;
-    //    an UNBOUND printable falls through to overtype.
+    // 3. Fresh chord. A bound motion / exit / text-object prefix wins;
+    //    an UNBOUND key that overtypes falls through to overtype.
     let looked_up = normalize_for_select_lookup(*chord);
     match handle.lookup(BindingMode::Select, &[looked_up]) {
         LookupResult::Bound { command, captured } => {
@@ -289,26 +277,32 @@ fn minor_select_action(
     ))
 }
 
-/// The Select fallthrough: a bare printable overtypes the selection.
+/// The Select fallthrough: a key that overtypes replaces the selection.
 /// Mirrors [`crate::keymap_insert`]'s `literal_text_fallback`, but maps
-/// `Char(c)` to [`Action::SelectOvertype`] (replace-and-insert) instead
-/// of a plain insert. CONTROL was already filtered by the caller.
+/// the key to [`Action::SelectOvertype`] (replace-and-insert) instead of a
+/// plain insert.
+///
+/// Which keys overtype is [`lattice_keymap::overtypes_in_select`], the ONE
+/// definition the keymap's motion mirror also calls (VM.4), so the Select
+/// table and Select typing can't disagree about it. Vim's rule: "Printable
+/// characters, <NL> and <CR> cause the selection to be deleted, and Vim
+/// enters Insert mode." Both `<CR>` and `<NL>` (Ctrl-J) type a newline.
 fn printable_overtype_fallback(chord: &KeyChord) -> Action {
-    // CG.1: the CONTROL check is HERE, not in the caller. Select's
-    // inverted semantics say a **bare printable** overtypes the
-    // selection — `<C-w>` is a chord, not a printable, and typing it
-    // must never replace the user's selection with a `w`.
-    //
-    // That used to be enforced by a blanket `return Action::None` for
-    // every CTRL chord at the top of `native_select_action`, which also
-    // made the Select trie unreachable for CTRL bindings (see the
-    // comment there). Moving the rule down here keeps the guarantee and
-    // lets a real binding win first — same shape as Replace mode, whose
-    // wildcard only matches bare printable chars.
-    if chord.mods.ctrl() || chord.mods.alt() || chord.mods.super_() {
+    // CG.1: the modifier check lives in the predicate, not in the caller.
+    // `<C-w>` is a chord, not typing, and must never replace the user's
+    // selection with a `w`. That used to be a blanket `return Action::None`
+    // for every CTRL chord at the top of `native_select_action`, which also
+    // made the Select trie unreachable for CTRL bindings (see the comment
+    // there). Checking here keeps the guarantee and lets a real binding win
+    // first — same shape as Replace mode, whose wildcard only matches bare
+    // printable chars.
+    if !lattice_keymap::overtypes_in_select(chord) {
         return Action::None;
     }
     match chord.key {
+        KeyKind::Special(SpecialKey::Enter) => Action::SelectOvertype('\n'),
+        // `<NL>`: the predicate admits `j` with Ctrl only as Ctrl-J.
+        KeyKind::Char('j') if chord.mods.ctrl() => Action::SelectOvertype('\n'),
         KeyKind::Char(c) => Action::SelectOvertype(c),
         _ => Action::None,
     }
@@ -332,16 +326,11 @@ fn normalize_for_select_lookup(chord: KeyChord) -> KeyChord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // TSM.4: Select binds the sixteen tree-sitter structural motions
-    // (`syntax_motion_rows`) identically to Visual — the Select≡Visual
-    // motion-parity contract (select-mode.md §4) requires it, and the
-    // `visual_and_select_share_every_motion` parity test below now walks
-    // `syntax_motion_rows` in addition to `motion_rows` to pin it.
 
     fn empty_handle() -> KeymapHandle {
         // The dispatch tests below run against an EMPTY Select table, so
         // every lookup is `Unbound` — a fresh printable overtypes and the
-        // control chords fire. The parity test uses a fully POPULATED
+        // control chords fire. The parity tests use a fully POPULATED
         // handle (`populated_handle`).
         KeymapHandle::new()
     }
@@ -357,7 +346,12 @@ mod tests {
         let action_ids = crate::actions::populate(&mut registry, &builtins);
         let syntax_textobjects = lattice_syntax::register_syntax_text_objects(&mut registry);
         let syntax_motions = lattice_syntax::register_syntax_motions(&mut registry);
+        let registry = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(registry));
         let h = KeymapHandle::new();
+        // VM.4: as boot does. With a registry the keymap mirrors motions into
+        // Visual and Select at every write. Without one, Select would hold no
+        // motions and the sweep below would pass vacuously.
+        h.set_command_registry(registry.clone());
         crate::keymap_visual::register_visual_bindings(
             &h,
             &builtins,
@@ -378,10 +372,13 @@ mod tests {
             &syntax_motions,
         );
         register_select_bindings(&h, &builtins, &action_ids, &syntax_textobjects);
-        // VM.1: the derivation is now part of the boot path this helper
-        // mirrors — without it the handle has no motions in Visual or Select,
-        // because nobody lists them any more.
-        crate::keymap_normal::expand_grammar_rows(&h, &registry, &builtins, KeymapLayer::Builtin);
+        // The operator-pending rows, as boot adds them.
+        crate::keymap_normal::expand_grammar_rows(
+            &h,
+            &registry.load(),
+            &builtins,
+            KeymapLayer::Builtin,
+        );
         h
     }
 
@@ -412,6 +409,30 @@ mod tests {
         assert!(matches!(
             translate_select(&h, &KeyChord::char('d'), VisualKind::Charwise, &[], &[]),
             Action::SelectOvertype('d')
+        ));
+    }
+
+    /// Vim's Select rule names `<NL>` and `<CR>` alongside printables. Both
+    /// type a newline over the selection. A modified `<CR>` is a chord.
+    #[test]
+    fn enter_and_ctrl_j_overtype_with_a_newline() {
+        let h = empty_handle();
+        for (label, chord) in [
+            ("<CR>", KeyChord::special(SpecialKey::Enter)),
+            ("<C-j>", KeyChord::ctrl('j')),
+        ] {
+            assert!(
+                matches!(
+                    translate_select(&h, &chord, VisualKind::Charwise, &[], &[]),
+                    Action::SelectOvertype('\n')
+                ),
+                "{label} must overtype with a newline"
+            );
+        }
+        let ctrl_enter = KeyChord::new(KeyKind::Special(SpecialKey::Enter), KeyMods::CTRL);
+        assert!(matches!(
+            translate_select(&h, &ctrl_enter, VisualKind::Charwise, &[], &[]),
+            Action::None
         ));
     }
 
@@ -474,89 +495,104 @@ mod tests {
         ));
     }
 
-    // ── SN.3d.2: Visual≡Select parity (the drift guard, select-mode.md §4) ──
+    // ── Visual / Select parity, as select-mode.md §4 now states it ──
 
-    /// Every Visual MOTION binds to the same command in Select.
+    /// VM.4: Visual takes every motion; Select takes only the ones that can't
+    /// be typed.
     ///
-    /// VM.1 changed what this guards. There is no duplicated registration to
-    /// drift any more — both tables come out of
-    /// `keymap_normal::expand_grammar_rows`, which walks the Normal trie once
-    /// and writes both. So the guard is now that the derivation treats the two
-    /// modes identically, which is the Select≡Visual contract of
-    /// select-mode.md §4 stated directly rather than inferred from two lists
-    /// happening to agree.
-    ///
-    /// Walking `motion_rows` / `syntax_motion_rows` for the CHORDS is still
-    /// the right premise — they are the motions whose Visual behaviour users
-    /// depend on — but it is no longer an exhaustive sweep. The exhaustive
-    /// one lives in `tests/a_motion_is_live_in_visual.rs`, which enumerates
-    /// the Normal trie by command KIND and so also covers `gg`, `f`, `<C-d>`
-    /// and everything a plugin contributes.
+    /// This replaces `visual_and_select_share_every_motion`, which asserted
+    /// the opposite for printable motions and so held a Select bug in place:
+    /// a bound printable takes the keystroke before the overtype fallback
+    /// runs. `motion_rows` mixes printables (`w`, `0`, `$`) with
+    /// non-printables (arrows, Home, End), so one walk exercises both halves
+    /// of the rule. The tree-sitter structural motions (`]f`, …) start with a
+    /// printable and are Visual-only; the all-layers drift test in
+    /// `tests/a_motion_is_live_in_visual.rs` covers them.
     #[test]
-    fn visual_and_select_share_every_motion() {
+    fn select_takes_only_motions_that_cannot_be_typed() {
         use lattice_grammar::CommandRegistry;
         use lattice_grammar::builtins::populate as grammar_builtins_populate;
-        // A throwaway registry yields the motion CHORD lists (the chords
-        // are literal keys, registry-independent). The command identity
-        // is compared WITHIN `populated_handle` (Visual vs Select), so
-        // the two registries' differing CommandIds don't matter — the
-        // drift guard is "Visual and Select agree", not a cross-registry
-        // id match.
+        // A throwaway registry yields the motion CHORD lists; the chords are
+        // literal keys, independent of any registry's ids.
         let mut throwaway = CommandRegistry::new();
         let builtins = grammar_builtins_populate(&mut throwaway);
-        let syntax_motions = lattice_syntax::register_syntax_motions(&mut throwaway);
         let h = populated_handle();
-
-        // (a) builtin single-key motions.
-        let mut checked = 0usize;
+        let (mut printable, mut non_printable) = (0usize, 0usize);
         for (chord, _motion) in crate::keymap_normal::motion_rows(&builtins) {
-            let path = match chord {
-                ChordPattern::Literal(c) => [c],
-                _ => continue, // motion_rows is all literals today
+            let ChordPattern::Literal(c) = chord else {
+                continue;
             };
-            let v = bound_command_id(&h, BindingMode::Visual, &path);
-            let s = bound_command_id(&h, BindingMode::Select, &path);
+            let path = [c];
             assert!(
-                v.is_some(),
-                "Visual must bind motion {:?} (test premise)",
-                path[0]
+                bound_command_id(&h, BindingMode::Visual, &path).is_some(),
+                "Visual must bind motion {c:?}"
             );
-            assert_eq!(v, s, "Visual and Select disagree on motion {:?}", path[0]);
-            checked += 1;
+            let in_select = bound_command_id(&h, BindingMode::Select, &path).is_some();
+            if lattice_keymap::overtypes_in_select(&c) {
+                printable += 1;
+                assert!(
+                    !in_select,
+                    "printable motion {c:?} is bound in Select, so it would take typed text"
+                );
+            } else {
+                non_printable += 1;
+                assert!(
+                    in_select,
+                    "non-printable motion {c:?} must extend in Select"
+                );
+            }
         }
         assert!(
-            checked >= 20,
-            "expected the full motion table, got {checked}"
+            printable >= 10 && non_printable >= 4,
+            "test premise: both halves exercised ({printable} printable / {non_printable} not)"
+        );
+    }
+
+    /// Every printable character overtypes a Select selection when run
+    /// against the POPULATED table, as boot builds it.
+    ///
+    /// `bare_printable_overtypes` uses an EMPTY table, so it could never
+    /// notice a printable being bound. `visual_and_select_share_every_motion`
+    /// went further and ASSERTED the printable motions were bound in Select,
+    /// which locked the bug in. This sweep is the replacement.
+    ///
+    /// `NOT_YET` is the explicit `o` / `i` / `a` bindings that
+    /// `register_select_bindings` still makes. VM.5 removes those and deletes
+    /// this list; until then it names exactly what is left.
+    #[test]
+    fn every_printable_overtypes_against_the_populated_table() {
+        const NOT_YET: &[char] = &['a', 'i', 'o'];
+        let h = populated_handle();
+        assert!(
+            bound_command_id(
+                &h,
+                BindingMode::Select,
+                &[KeyChord::special(SpecialKey::PageDown)]
+            )
+            .is_some(),
+            "test premise: the mirror populated Select, so an empty table isn't passing this"
         );
 
-        // (b) TSM.4 tree-sitter structural motions (`]f`/`[f`/… two-key
-        // sequences). Same drift guard: every one must resolve identically
-        // in Visual and Select.
-        let mut ts_checked = 0usize;
-        for (seq, _motion) in crate::keymap_normal::syntax_motion_rows(&syntax_motions) {
-            // `syntax_motion_rows` is all literals today; filter_map keeps
-            // the full sequence and skips any hypothetical non-literal
-            // (mirrors the `_ => continue` the motion_rows walk above uses,
-            // and avoids a `clippy::panic` warning in this shared module).
-            let path: Vec<KeyChord> = seq
-                .iter()
-                .filter_map(|p| match p {
-                    ChordPattern::Literal(c) => Some(*c),
-                    _ => None,
-                })
-                .collect();
-            let v = bound_command_id(&h, BindingMode::Visual, &path);
-            let s = bound_command_id(&h, BindingMode::Select, &path);
-            assert!(
-                v.is_some(),
-                "Visual must bind syntax motion {path:?} (test premise)"
-            );
-            assert_eq!(v, s, "Visual and Select disagree on syntax motion {path:?}");
-            ts_checked += 1;
+        let mut stolen = Vec::new();
+        for c in (' '..='~').filter(|c| !NOT_YET.contains(c)) {
+            match translate_select(&h, &KeyChord::char(c), VisualKind::Charwise, &[], &[]) {
+                Action::SelectOvertype(got) if got == c => {}
+                other => stolen.push(format!("{c:?} -> {other:?}")),
+            }
         }
-        assert_eq!(
-            ts_checked, 16,
-            "expected all 16 tree-sitter structural motions, got {ts_checked}"
+        for (label, chord) in [
+            ("<CR>", KeyChord::special(SpecialKey::Enter)),
+            ("<C-j>", KeyChord::ctrl('j')),
+        ] {
+            match translate_select(&h, &chord, VisualKind::Charwise, &[], &[]) {
+                Action::SelectOvertype('\n') => {}
+                other => stolen.push(format!("{label} -> {other:?}")),
+            }
+        }
+        assert!(
+            stolen.is_empty(),
+            "keys that don't overtype in Select:\n{}",
+            stolen.join("\n")
         );
     }
 

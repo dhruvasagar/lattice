@@ -23,6 +23,21 @@
 //! shape here for the same reason `gr_is_declared_once` is: the bug was not a
 //! broken chord, it was a LIST that silently lost entries, and a test of any
 //! particular chord would have passed on the broken build.
+//!
+//! ## VM.4: by construction, in every layer
+//!
+//! VM.1 derived the Visual rows in a host pass that ran at boot and on
+//! `PluginLoaded`. A re-pushed mode layer, `init.rs` and plugin
+//! `register-binding` all wrote bindings outside those two moments, and this
+//! file's drift test walked `KeymapLayer::Builtin` only, so it couldn't have
+//! noticed. The keymap now mirrors motions at every write, and the drift test
+//! walks every layer.
+//!
+//! Select takes only the motions that can't be typed. In Select a printable
+//! replaces the selection, and a bound printable would take the key first, so
+//! `gg`, `f`, `%` and `[[` are Visual-only while `<C-d>` and `<PageDown>`
+//! extend in both. The "not in Select" half is asserted as firmly as the rest,
+//! because a printable in Select is the bug.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -41,83 +56,93 @@ fn boot() -> Editor {
     ))
 }
 
+/// Does a binding at `path` overtype in Select, and so belong in Visual only?
+/// Only the first chord matters: it's the one looked up on a fresh keystroke.
+fn typed_in_select(path: &[ChordPattern]) -> bool {
+    match path.first() {
+        Some(ChordPattern::CharLiteral) | None => true,
+        Some(ChordPattern::Literal(c)) => lattice_keymap::overtypes_in_select(c),
+    }
+}
+
 /// THE property. Every terminal Normal binding whose command is a `Motion`
-/// resolves to the same command in Visual and in Select, in the same layer.
-///
-/// Scoped to `KeymapLayer::Builtin` because that is the layer a test can
-/// enumerate without standing up plugins; the derivation itself is
-/// layer-agnostic (`expand_grammar_rows` takes the layer as a parameter and
-/// boot runs it over every mode layer too), and
-/// `a_mode_layer_motion_gets_its_visual_peer` below covers the mode-layer
-/// case directly.
+/// has a row at the same path in Visual, in the same layer, and has one in
+/// Select exactly when its first chord can't be typed. Every layer, not just
+/// `Builtin`.
 #[test]
-fn every_builtin_motion_is_live_in_visual_and_select() {
+fn every_motion_is_live_in_visual_and_only_non_printables_in_select() {
     let editor = boot();
     let commands = editor.registry.load();
-    let layer = KeymapLayer::Builtin;
-
-    let visual: Vec<Vec<ChordPattern>> = editor
-        .keymap
-        .layer_bindings(layer, BindingMode::Visual)
-        .into_iter()
-        .map(|(path, _)| path)
-        .collect();
-    let select: Vec<Vec<ChordPattern>> = editor
-        .keymap
-        .layer_bindings(layer, BindingMode::Select)
-        .into_iter()
-        .map(|(path, _)| path)
-        .collect();
 
     let mut checked = 0usize;
     let mut missing: Vec<String> = Vec::new();
-    for (path, bound) in editor.keymap.layer_bindings(layer, BindingMode::Normal) {
-        let Some(spec) = commands.lookup(bound.command.command) else {
-            continue;
+    for layer in editor.keymap.layers() {
+        let paths = |mode| -> Vec<Vec<ChordPattern>> {
+            editor
+                .keymap
+                .layer_bindings(layer, mode)
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect()
         };
-        if !matches!(spec.kind, CommandKind::Motion) {
-            continue;
-        }
-        checked += 1;
-        if !visual.contains(&path) {
-            missing.push(format!(
-                "Visual is missing {} -> {}",
-                render(&path),
-                spec.name
-            ));
-        }
-        if !select.contains(&path) {
-            missing.push(format!(
-                "Select is missing {} -> {}",
-                render(&path),
-                spec.name
-            ));
+        let (visual, select) = (paths(BindingMode::Visual), paths(BindingMode::Select));
+        for (path, bound) in editor.keymap.layer_bindings(layer, BindingMode::Normal) {
+            let Some(spec) = commands.lookup(bound.command.command) else {
+                continue;
+            };
+            if !matches!(spec.kind, CommandKind::Motion) {
+                continue;
+            }
+            checked += 1;
+            if !visual.contains(&path) {
+                missing.push(format!(
+                    "{layer:?}: Visual is missing {} -> {}",
+                    render(&path),
+                    spec.name
+                ));
+            }
+            match (typed_in_select(&path), select.contains(&path)) {
+                (false, false) => missing.push(format!(
+                    "{layer:?}: Select is missing non-printable {} -> {}",
+                    render(&path),
+                    spec.name
+                )),
+                (true, true) => missing.push(format!(
+                    "{layer:?}: Select binds PRINTABLE {} -> {}, which would take typed text",
+                    render(&path),
+                    spec.name
+                )),
+                _ => {}
+            }
         }
     }
 
     assert!(
         checked >= 40,
-        "test premise: expected the builtin motion table, walked only {checked} motions"
+        "test premise: expected at least the builtin motion table, walked only {checked} motions"
     );
     assert!(
         missing.is_empty(),
-        "a motion bound in Normal must be live in Visual and Select:\n{}",
+        "a Normal motion must be live in Visual, and in Select iff it can't be typed:\n{}",
         missing.join("\n")
     );
 }
 
-/// The four families that were dead before VM.1, named individually so a
+/// The families that were dead before VM.1, named individually so a
 /// regression reads as the chord the user pressed rather than as a count.
 ///
 /// `f` and `t` are the wildcard-capture shape (`[f, CharLiteral]`), so the
-/// bare prefix must come back `Partial` — that is what `dispatch_visual`
-/// absorbs into `partial_chord` before the target char resolves the pair.
+/// bare prefix must come back `Partial` in Visual — that is what
+/// `dispatch_visual` absorbs into `partial_chord` before the target char
+/// resolves the pair.
+///
+/// Select differs on purpose. `g`, `f`, `F`, `t` and `T` are typed text there,
+/// so they must stay `Unbound` for the overtype fallback to see them.
 #[test]
 fn the_motions_that_were_dead_in_visual_resolve_now() {
     let editor = boot();
 
     for (label, path) in [
-        ("gg", vec![KeyChord::char('g'), KeyChord::char('g')]),
         ("<C-d>", vec![KeyChord::ctrl('d')]),
         ("<C-u>", vec![KeyChord::ctrl('u')]),
         ("<PageDown>", vec![KeyChord::special(SpecialKey::PageDown)]),
@@ -134,18 +159,39 @@ fn the_motions_that_were_dead_in_visual_resolve_now() {
         }
     }
 
+    assert!(
+        matches!(
+            editor.keymap.lookup(
+                BindingMode::Visual,
+                &[KeyChord::char('g'), KeyChord::char('g')]
+            ),
+            LookupResult::Bound { .. }
+        ),
+        "gg must be Bound in Visual"
+    );
     for (label, prefix) in [
+        ("g", KeyChord::char('g')),
         ("f", KeyChord::char('f')),
         ("F", KeyChord::char('F')),
         ("t", KeyChord::char('t')),
         ("T", KeyChord::char('T')),
     ] {
-        for mode in [BindingMode::Visual, BindingMode::Select] {
+        if label != "g" {
             assert!(
-                matches!(editor.keymap.lookup(mode, &[prefix]), LookupResult::Partial),
-                "{label} must be a Partial in {mode:?} (the CharLiteral resolves it)"
+                matches!(
+                    editor.keymap.lookup(BindingMode::Visual, &[prefix]),
+                    LookupResult::Partial
+                ),
+                "{label} must be a Partial in Visual (the CharLiteral resolves it)"
             );
         }
+        assert!(
+            matches!(
+                editor.keymap.lookup(BindingMode::Select, &[prefix]),
+                LookupResult::Unbound
+            ),
+            "{label} must stay Unbound in Select, so it overtypes"
+        );
     }
 }
 
@@ -208,86 +254,168 @@ fn a_derived_visual_motion_extends_the_selection() {
     assert_eq!(region.end.line, editor.cursor.line);
 }
 
-/// The plugin case, without a plugin: a motion bound into a mode layer's
-/// Normal trie — the exact shape `bind_mode_keymap` produces for org's `[[`
-/// — gets its Visual, Select and operator rows from the same pass.
+/// The plugin case, without a plugin: motions bound into a mode layer's Normal
+/// trie, the exact shape `bind_mode_keymap` produces for org's `[[`.
 ///
-/// `register_plugin_motion` rather than a builtin id so the test proves the
-/// derivation keys on the command's KIND, not on membership of any host-side
-/// table.
+/// `register_plugin_motion` rather than a builtin id, so the test proves the
+/// mirror keys on the command's KIND and not on membership of any host-side
+/// table. A fresh keymap handed the registry those motions live in, as boot
+/// hands its keymap the editor's own. Each half is proved by its actual
+/// mechanism: Visual and Select by the keymap at the write, `d]]` by the host
+/// pass.
 #[test]
 fn a_mode_layer_motion_gets_its_visual_peer() {
     use lattice_grammar::command::CommandInvocation;
     use lattice_grammar::registry::{CommandRegistry, MotionResult, MotionSpec};
+    use lattice_host::keymap_registry::KeymapHandle;
     use lattice_mode::ModeId;
     use std::sync::Arc;
 
-    let editor = boot();
-    let mode = ModeId::new("vm1-fake-org-mode");
-    let layer = KeymapLayer::MajorMode(mode);
-
-    // A fresh registry carrying one plugin motion. `expand_grammar_rows`
-    // resolves kinds against whatever registry it is handed, so a throwaway
-    // is enough — and keeps the editor's own catalog untouched.
+    let spec = || MotionSpec {
+        jump: true,
+        exclusive: true,
+        apply: Arc::new(|ctx| {
+            Ok(MotionResult {
+                target: ctx.from,
+                linewise: false,
+                exclusive: None,
+            })
+        }),
+        args_schema: Vec::new(),
+    };
     let mut registry = CommandRegistry::new();
     let builtins = lattice_grammar::builtins::populate(&mut registry);
-    let motion = registry.register_plugin_motion(
+    let headline = registry.register_plugin_motion(
         7,
         "fake-org-next-headline",
         "Move to the next headline",
-        MotionSpec {
-            jump: true,
-            exclusive: true,
-            apply: Arc::new(|ctx| {
-                Ok(MotionResult {
-                    target: ctx.from,
-                    linewise: false,
-                    exclusive: None,
-                })
-            }),
-            args_schema: Vec::new(),
-        },
+        spec(),
     );
+    let link =
+        registry.register_plugin_motion(7, "fake-org-next-link", "Move to the next link", spec());
+    let registry = Arc::new(arc_swap::ArcSwap::from_pointee(registry));
 
-    let path = [
+    let keymap = KeymapHandle::new();
+    keymap.set_command_registry(registry.clone());
+
+    let mode = ModeId::new("vm1-fake-org-mode");
+    let layer = KeymapLayer::MajorMode(mode);
+    let printable = [
         ChordPattern::Literal(KeyChord::char(']')),
         ChordPattern::Literal(KeyChord::char(']')),
     ];
-    editor.keymap.bind(
-        layer,
-        BindingMode::Normal,
-        &path,
-        CommandInvocation::of(motion.0),
-        lattice_grammar::SourceLocation::plugin(7),
-    );
-
-    lattice_host::keymap_normal::expand_grammar_rows(&editor.keymap, &registry, &builtins, layer);
-
-    for mode_kind in [BindingMode::Visual, BindingMode::Select] {
-        let bound = editor
-            .keymap
-            .layer_bindings(layer, mode_kind)
-            .into_iter()
-            .find(|(p, _)| p.as_slice() == path.as_slice());
-        let (_, bound) =
-            bound.unwrap_or_else(|| panic!("a plugin motion must be live in {mode_kind:?}"));
-        assert_eq!(
-            bound.command.command, motion.0,
-            "{mode_kind:?} must invoke the motion itself, not a rewritten command"
+    let non_printable = [ChordPattern::Literal(KeyChord::ctrl(']'))];
+    for (path, motion) in [(&printable[..], headline), (&non_printable[..], link)] {
+        keymap.bind(
+            layer,
+            BindingMode::Normal,
+            path,
+            CommandInvocation::of(motion.0),
+            lattice_grammar::SourceLocation::plugin(7),
         );
     }
 
-    // And `d]]` — the operator half.
+    let at = |mode_kind: BindingMode, path: &[ChordPattern]| {
+        keymap
+            .layer_bindings(layer, mode_kind)
+            .into_iter()
+            .find(|(p, _)| p.as_slice() == path)
+            .map(|(_, b)| b.command.command)
+    };
+    assert_eq!(
+        at(BindingMode::Visual, &printable),
+        Some(headline.0),
+        "a plugin motion must be live in Visual the moment it's bound, as the motion itself"
+    );
+    assert_eq!(
+        at(BindingMode::Select, &printable),
+        None,
+        "`]]` is typed text in Select"
+    );
+    for mode_kind in [BindingMode::Visual, BindingMode::Select] {
+        assert_eq!(
+            at(mode_kind, &non_printable),
+            Some(link.0),
+            "a plugin motion that can't be typed must be live in {mode_kind:?}"
+        );
+    }
+
+    // `d]]`: the operator half is still the host pass's job.
+    lattice_host::keymap_normal::expand_grammar_rows(&keymap, &registry.load(), &builtins, layer);
     let op_path: Vec<ChordPattern> = std::iter::once(ChordPattern::Literal(KeyChord::char('d')))
-        .chain(path.iter().cloned())
+        .chain(printable.iter().cloned())
         .collect();
     assert!(
-        editor
-            .keymap
+        keymap
             .layer_bindings(layer, BindingMode::Normal)
             .into_iter()
             .any(|(p, _)| p == op_path),
         "a plugin motion must compose with `d`"
+    );
+}
+
+/// The gap VM.4 closed, driven through the real editor rather than a bare
+/// handle. A mode layer re-pushed after boot (K.1.b replaces its tries
+/// wholesale) keeps its Visual motions, and its Select one where the chord
+/// can't be typed, without any host pass re-running.
+#[test]
+fn a_re_pushed_mode_layer_keeps_its_visual_motions() {
+    use lattice_grammar::command::CommandInvocation;
+    use lattice_host::keymap_registry::PushLayerKind;
+    use lattice_host::keymap_trie::{BoundCommand, KeymapTrie};
+    use lattice_mode::ModeId;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let editor = boot();
+    let word_forward = editor.builtins.word_forward.0;
+    let mode = ModeId::new("vm4-repush-editor");
+    let layer = KeymapLayer::MinorMode(mode);
+    let printable = vec![
+        ChordPattern::Literal(KeyChord::char('g')),
+        ChordPattern::Literal(KeyChord::char('W')),
+    ];
+    let non_printable = vec![ChordPattern::Literal(KeyChord::ctrl(']'))];
+    let tries = || {
+        let mut normal = KeymapTrie::new();
+        for path in [&printable, &non_printable] {
+            normal.insert(
+                path,
+                Arc::new(BoundCommand::from_invocation(
+                    CommandInvocation::of(word_forward),
+                    lattice_grammar::SourceLocation::builtin_file(file!(), line!()),
+                    layer,
+                )),
+            );
+        }
+        HashMap::from([(BindingMode::Normal, normal)])
+    };
+
+    editor
+        .keymap
+        .push_layer(PushLayerKind::MinorMode(mode), "vm4", tries());
+    editor
+        .keymap
+        .push_layer(PushLayerKind::MinorMode(mode), "vm4", tries());
+
+    let has = |mode_kind: BindingMode, path: &[ChordPattern]| {
+        editor
+            .keymap
+            .layer_bindings(layer, mode_kind)
+            .into_iter()
+            .any(|(p, _)| p.as_slice() == path)
+    };
+    assert!(
+        has(BindingMode::Visual, &printable),
+        "a re-pushed layer must keep its Visual motion"
+    );
+    assert!(
+        has(BindingMode::Visual, &non_printable) && has(BindingMode::Select, &non_printable),
+        "a re-pushed layer must keep a non-printable motion in Visual and Select"
+    );
+    assert!(
+        !has(BindingMode::Select, &printable),
+        "`gW` is typed text in Select"
     );
 }
 

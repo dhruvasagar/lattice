@@ -295,7 +295,7 @@ mod tests {
     use crate::app::completion_kind_glyph;
     use crate::app::test_helpers::{
         app_in_command_mode, app_with, app_with_path, fresh_path_workspace, install_snippet,
-        open_popup_with_top_text, press, set_rust_syntax,
+        open_popup_with_top_text, press, press_chars, set_rust_syntax,
     };
     use crate::app::*;
 
@@ -506,6 +506,87 @@ mod tests {
             matches!(a.editor.modal, ModalState::Insert),
             "overtype drops to Insert, got {:?}",
             a.editor.modal
+        );
+    }
+
+    /// VM.4 / decision (A): typing over a snippet placeholder with REAL
+    /// keystrokes replaces it, even when the text starts with a motion key.
+    ///
+    /// The test above calls `a.apply(Action::SelectOvertype('x'))`, which
+    /// skips the keymap lookup, so it could never catch the bug: in Select a
+    /// BOUND printable takes the key before the overtype fallback runs. `f` was
+    /// a find-char prefix there, so `foo` extended the placeholder instead of
+    /// replacing it, and `w` was a motion. The keymap's mirror no longer puts a
+    /// printable motion in Select, which fixes both.
+    #[test]
+    fn typing_over_a_snippet_placeholder_replaces_it_even_with_motion_keys() {
+        for typed in ["foo", "work"] {
+            let mut a = app_with("for", 10);
+            a.editor.modal = ModalState::Insert;
+            a.editor.cursor = Position::new(0, 3);
+            install_snippet(&mut a, "*", "for-loop", "for", "for ${1:iter} {}");
+            a.editor
+                .expand_snippet_from_range(lattice_protocol::position::Range::new(
+                    Position::new(0, 0),
+                    Position::new(0, 3),
+                ));
+            // Publish the post-expansion state (Select) that `press` translates
+            // against, as the snippet <Tab> test does.
+            a.sync_keymap_overlays();
+            assert!(
+                matches!(a.editor.modal, ModalState::Select(_)),
+                "test premise: the placeholder is selected in Select"
+            );
+
+            press_chars(&mut a, typed);
+
+            assert_eq!(
+                a.editor.document.snapshot().buffer.as_string(),
+                format!("for {typed} {{}}"),
+                "typing {typed:?} must replace the placeholder"
+            );
+        }
+    }
+
+    /// Vim's Select rule: "Printable characters, <NL> and <CR> cause the
+    /// selection to be deleted, and Vim enters Insert mode." A typed newline
+    /// carries its auto-indent (IN.1), so `<CR>` over a placeholder on an
+    /// indented line lands on an indented line, in the same single replace
+    /// edit the overtype always was.
+    #[test]
+    fn enter_over_a_snippet_placeholder_types_an_indented_newline() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with("    for", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(0, 7);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:iter} {}");
+        a.editor
+            .expand_snippet_from_range(lattice_protocol::position::Range::new(
+                Position::new(0, 4),
+                Position::new(0, 7),
+            ));
+        a.sync_keymap_overlays();
+        assert!(
+            matches!(a.editor.modal, ModalState::Select(_)),
+            "test premise: the placeholder is selected in Select"
+        );
+
+        press(&mut a, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let text = a.editor.document.snapshot().buffer.as_string();
+        assert!(
+            matches!(a.editor.modal, ModalState::Insert),
+            "<CR> overtypes and lands in Insert, got {:?}",
+            a.editor.modal
+        );
+        assert_eq!(
+            a.editor.cursor,
+            Position::new(1, 4),
+            "the cursor lands after the carried indent, in {text:?}"
+        );
+        assert!(
+            text.lines().nth(1).is_some_and(|l| l.starts_with("    ")),
+            "the new line carries the head's indent: {text:?}"
         );
     }
 

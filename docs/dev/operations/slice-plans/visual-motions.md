@@ -168,6 +168,115 @@ Two behaviour notes:
   composed view that line IS the composed one. `dispatch_composed` was widened
   to carry it rather than let a new field silently kill `;` there.
 
+### VM.4 ✅ — the guarantee: a motion is live in Visual by construction
+
+Asked for directly: "any new motions that are registered by plugins / builtin
+will be available for visual mode without any change."
+
+As implemented in VM.1, that was a convention with two trigger points, not a
+guarantee. `expand_grammar_rows` ran at boot and on `PluginLoaded`, and three
+things got past it:
+
+- **A re-pushed mode layer.** `push_layer` replaces a mode layer's tries
+  wholesale (K.1.b), which dropped its derived Visual rows until the pass ran
+  again.
+- **`init.rs` and plugin `register-binding`.** Both bind through
+  `try_bind_chord_string` at any time, and neither re-ran the pass.
+- **A binder added to boot after the pass.** It was missed without any error.
+
+The drift test only enumerated `KeymapLayer::Builtin`, so it would have caught
+none of these.
+
+**Mechanism** (design: keymap-architecture.md §15): mirror at the four
+writes into a layer's per-mode tries in `lattice-keymap`, which are
+`bind_bound`, `bind_modes`, `push_layer` and `unbind`. Every binding API
+reaches one of them: `bind` and `try_bind` go through `bind_bound`, and
+`try_bind_chord_string` goes through `try_bind`. The mirror asks
+`KeymapHandle::set_command_registry`'s live handle whether a command is a
+motion. It writes into the layer's own tries, so `:describe-key`, which-key
+and the reverse cache all stay accurate. It tells its own rows apart by
+`Arc` identity: a Visual or Select binding shares the Normal row's `Arc` only
+when it is the mirror, and every explicit multi-mode write gets its own copy.
+
+**What stays in the host:** the operator-pending expansion, which needs
+`Builtins`, plus the text-object rows, since that pass also removes the Normal
+row and that removal is host policy.
+
+**Accepted tradeoff:** a user can't permanently remove a motion from Visual by
+unbinding it there. The next write to its Normal path, a re-push, or a rescan
+restores it. Shadowing it means binding something else in Visual, and an
+explicit binding like that is never overwritten.
+
+**Accepted UX cost (decision (A), 2026-09-15):** printable motions no longer
+extend a selection from inside Select mode. That means `w`, `e`, `f{char}`,
+`%`, `;`, `[[` and every other motion whose first key types a character; in
+Select they overtype, which is what select-mode.md §1 and §4 always
+specified. Arrows, Home/End, PageUp/PageDown and `<C-d>` / `<C-u>` still
+extend, and `<C-g>` flips to Visual, where every motion works. The payoff is
+that text typed over a snippet placeholder is never taken by a motion.
+
+**Gate scope, and why it's narrow.** VM.4 changes what lands in every
+layer's Visual and Select tries, so every test that inspects keymap contents
+was checked before choosing the gates (2026-09-15):
+
+- `binding_count()` sums every trie in every layer and mode, so mirror rows
+  WOULD change an exact count. But every exact-count test (plugin-host
+  `keymap_source.rs`, `keymap_host.rs`, `teardown.rs`; plugin-loader
+  `keymap_drain.rs`, `init_config.rs`) builds a bare `KeymapHandle::new()`
+  and never boots an `Editor`. With no command registry, the mirror never
+  runs there. Production is still covered: the loader shares boot's handle,
+  and the registry lives on the shared `Arc<KeymapRegistry>`.
+- Magit's Visual-chord tests (`every_visual_chord_is_classified` and the
+  tests next to it, `lib.rs`'s s/u/x pairing) and surround's Visual `S` read
+  the modes' DECLARED `KeymapEntry` lists, not the registry. Magit registers
+  no motions.
+- `project_plugin_modes.rs` reads a mode layer's Normal trie, and VM.4 never
+  writes to Normal.
+
+So the gates are the three touched crates: `lattice-keymap`, `lattice-host`,
+`lattice-ui-tui`. The plugin crates aren't skipped; their tests can't observe
+the change.
+
+Touches:
+
+- `lattice-keymap`: `trie.rs` gets `KeymapTrie::get`; `registry.rs` gets the
+  mirror, `overtypes_in_select`, `set_command_registry`, `layers()`, and 14
+  registry tests plus a `get` test.
+- `lattice-host`: `editor_boot.rs` sets the registry; `expand_grammar_rows`
+  keeps the Visual branch for text objects only; `keymap_normal.rs` and
+  `keymap_select.rs` test harnesses are updated;
+  `a_motion_is_live_in_visual.rs` now walks every layer, gets a rewritten
+  mode-layer test, and gains a new end-to-end re-push test. `keymap_select.rs`
+  replaces `visual_and_select_share_every_motion`, which asserted the bug, and
+  adds a sweep of every printable against the populated table.
+  `do_select_overtype` gives `<CR>` its auto-indent.
+- `lattice-ui-tui`: `input.rs`, the `keymap_visual.rs` harness, and the
+  `production_keymap()` bench, plus the new
+  `keymap_register_production_catalog` bench with and without the mirror.
+  `completion.rs` types `foo`, `work` and `<CR>` over a snippet placeholder
+  through real keystrokes.
+- Docs: keymap-architecture.md §15 rewritten; a benchmarks.md row.
+
+**`<CR>` and `<NL>` overtype too.** Vim's Select rule is "Printable
+characters, <NL> and <CR> cause the selection to be deleted, and Vim enters
+Insert mode". Lattice overtyped printables only, so `<CR>` over a snippet
+placeholder did nothing. `overtypes_in_select` now admits `<CR>` and Ctrl-J
+(how a terminal sends `<NL>`), and both type a newline. Because vim *types*
+the key after entering Insert, the newline carries its auto-indent (IN.1).
+`do_select_overtype` computes the indent from the line split at the
+selection's edges, and lands newline and indent in the same replace edit, so
+one `u` still undoes the overtype (select-mode.md §3).
+
+### VM.5 📝 — Select binds no bare printables
+
+VM.4 removed the printable motions, which came from the mirror.
+`register_select_bindings` still binds `o` (swap ends) and the `i` / `a`
+text-object prefixes explicitly, so those three letters still can't start text
+typed over a selection. VM.5 deletes the function, rewrites the two tests that
+assert those bindings, removes the sweep's `NOT_YET` list, and adds an
+`aim` / `info` / `owl` snippet test. UX cost: inside Select, `o` and `iw` type;
+`<C-g>` flips to Visual for both, as in vim.
+
 ### VM.3d 📝 — `n` / `N` / `*` / `#`, and where `current_match` belongs
 
 **Not the same shape as `%` and `;`, and worth reading before starting.**
@@ -227,3 +336,10 @@ One lattice deviation worth recording: `<C-d>` / `<C-u>` are typed here as
 scrolling commands. VM.1's derivation therefore makes `d<C-d>` bound, which vim
 leaves unbound. A superset, and harmless — noted so a future reader does not
 read it as a bug.
+
+### VM.3i 📝 — `zj` / `zk` are motions
+
+Vim's `zj` / `zk` move to the start of the next fold / the end of the previous
+one and compose with an operator (`dzj`). They're typed as actions here, so
+they're dead in Visual and after an operator. Re-type them as motions, like
+`%` and `;` / `,`.

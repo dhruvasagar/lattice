@@ -699,198 +699,80 @@ pub fn register_normal_bindings(
     // `lookup_normal` converts it to
     // `SetPending(Pending::AfterZ)`.
     let z = lit_char('z');
+    // VM.3h: the `z` family works in Visual, as in vim. Two binds rather than
+    // `bind_modes`, which rebuilds the merged trie per call. Not Select: `z`
+    // is printable there and must overtype. The fold commands decide for
+    // themselves what a selection means (range for `zo`/`zc`/`zd`/`zO`/`zC`/
+    // `zD`, the cursor for `za`); scrolls and jumps act at the cursor, and a
+    // jump extends the selection like any cursor move.
+    let bind_nv = |path: &[ChordPattern], action: lattice_grammar::CommandId| {
+        for m in [mode, BindingMode::Visual] {
+            handle.bind(layer, m, path, CommandInvocation::of(action), source());
+        }
+    };
 
     // Center-cursor scrolls. `zz` and `z.` both center.
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('z')],
-        CommandInvocation::of(actions.scroll_cursor_to_center),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('.')],
-        CommandInvocation::of(actions.scroll_cursor_to_center),
-        source(),
-    );
+    bind_nv(&[z.clone(), lit_char('z')], actions.scroll_cursor_to_center);
+    bind_nv(&[z.clone(), lit_char('.')], actions.scroll_cursor_to_center);
     // Top-of-viewport scrolls. `zt` and `z<CR>` both align top.
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('t')],
-        CommandInvocation::of(actions.scroll_cursor_to_top),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
+    bind_nv(&[z.clone(), lit_char('t')], actions.scroll_cursor_to_top);
+    bind_nv(
         &[z.clone(), lit_special(SpecialKey::Enter)],
-        CommandInvocation::of(actions.scroll_cursor_to_top),
-        source(),
+        actions.scroll_cursor_to_top,
     );
     // Bottom-of-viewport scrolls. `zb` and `z-` both align bottom.
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('b')],
-        CommandInvocation::of(actions.scroll_cursor_to_bottom),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('-')],
-        CommandInvocation::of(actions.scroll_cursor_to_bottom),
-        source(),
-    );
+    bind_nv(&[z.clone(), lit_char('b')], actions.scroll_cursor_to_bottom);
+    bind_nv(&[z.clone(), lit_char('-')], actions.scroll_cursor_to_bottom);
 
     // HS.2: horizontal scroll (wrap off). zl/zh scroll [count]
     // columns, zL/zH half the body width, zs/ze put the cursor's
     // column at the left / right edge.
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('l')],
-        CommandInvocation::of(actions.h_scroll_right),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('h')],
-        CommandInvocation::of(actions.h_scroll_left),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('L')],
-        CommandInvocation::of(actions.h_scroll_half_right),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('H')],
-        CommandInvocation::of(actions.h_scroll_half_left),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
+    bind_nv(&[z.clone(), lit_char('l')], actions.h_scroll_right);
+    bind_nv(&[z.clone(), lit_char('h')], actions.h_scroll_left);
+    bind_nv(&[z.clone(), lit_char('L')], actions.h_scroll_half_right);
+    bind_nv(&[z.clone(), lit_char('H')], actions.h_scroll_half_left);
+    bind_nv(
         &[z.clone(), lit_char('s')],
-        CommandInvocation::of(actions.h_scroll_cursor_left_edge),
-        source(),
+        actions.h_scroll_cursor_left_edge,
     );
-    handle.bind(
-        layer,
-        mode,
+    bind_nv(
         &[z.clone(), lit_char('e')],
-        CommandInvocation::of(actions.h_scroll_cursor_right_edge),
-        source(),
+        actions.h_scroll_cursor_right_edge,
     );
 
     // Folds.
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('f')],
-        CommandInvocation::of(actions.create_fold_from_visual),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('o')],
-        CommandInvocation::of(actions.open_fold_at_cursor),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('c')],
-        CommandInvocation::of(actions.close_fold_at_cursor),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('a')],
-        CommandInvocation::of(actions.toggle_fold_at_cursor),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('R')],
-        CommandInvocation::of(actions.open_all_folds),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('M')],
-        CommandInvocation::of(actions.close_all_folds),
-        source(),
-    );
+    // `zf` is an operator (VM.3h), registered with the others below. The action
+    // it used to bind here required Visual but was bound in Normal only, so it
+    // could never succeed.
+    bind_nv(&[z.clone(), lit_char('o')], actions.open_fold_at_cursor);
+    bind_nv(&[z.clone(), lit_char('c')], actions.close_fold_at_cursor);
+    bind_nv(&[z.clone(), lit_char('a')], actions.toggle_fold_at_cursor);
+    bind_nv(&[z.clone(), lit_char('R')], actions.open_all_folds);
+    bind_nv(&[z.clone(), lit_char('M')], actions.close_all_folds);
     // org-cycle: `z<Space>` cycles the fold under the cursor
     // (FOLDED→CHILDREN→SUBTREE); `z<Tab>` cycles the whole buffer
     // (OVERVIEW→CONTENTS→SHOW-ALL). Both also reachable as `:fold-cycle` /
     // `:fold-cycle-global`. `<Tab>` here is a `z`-prefixed chord, distinct
     // from the bare `<Tab>` jump-list-forward binding.
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char(' ')],
-        CommandInvocation::of(actions.cycle_fold_at_cursor),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
+    bind_nv(&[z.clone(), lit_char(' ')], actions.cycle_fold_at_cursor);
+    bind_nv(
         &[z.clone(), lit_special(SpecialKey::Tab)],
-        CommandInvocation::of(actions.cycle_folds_global),
-        source(),
+        actions.cycle_folds_global,
     );
     // `zp`: go to the parent heading (one level up the fold hierarchy) —
     // emacs `outline-up-heading`. Distinct from `zj`/`zk` (next/prev fold edge).
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('p')],
-        CommandInvocation::of(actions.goto_parent_fold),
-        source(),
+    bind_nv(&[z.clone(), lit_char('p')], actions.goto_parent_fold);
+    bind_nv(&[z.clone(), lit_char('d')], actions.delete_fold_at_cursor);
+    // VM.3h: vim's recursive fold commands, previously unbound.
+    bind_nv(&[z.clone(), lit_char('O')], actions.open_folds_recursively);
+    bind_nv(&[z.clone(), lit_char('C')], actions.close_folds_recursively);
+    bind_nv(
+        &[z.clone(), lit_char('D')],
+        actions.delete_folds_recursively,
     );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('d')],
-        CommandInvocation::of(actions.delete_fold_at_cursor),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('j')],
-        CommandInvocation::of(actions.goto_next_fold),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z.clone(), lit_char('k')],
-        CommandInvocation::of(actions.goto_prev_fold),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[z, lit_char('i')],
-        CommandInvocation::of(actions.toggle_fold_enable),
-        source(),
-    );
+    bind_nv(&[z.clone(), lit_char('j')], actions.goto_next_fold);
+    bind_nv(&[z.clone(), lit_char('k')], actions.goto_prev_fold);
+    bind_nv(&[z, lit_char('i')], actions.toggle_fold_enable);
 
     // ---- Slice 8.g.iii: operator-pending resolution.
     //
@@ -909,7 +791,7 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('d')],
         builtins.delete,
-        ChordPattern::Literal(KeyChord::char('d')),
+        Some(ChordPattern::Literal(KeyChord::char('d'))),
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -919,7 +801,7 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('c')],
         builtins.change,
-        ChordPattern::Literal(KeyChord::char('c')),
+        Some(ChordPattern::Literal(KeyChord::char('c'))),
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -929,7 +811,7 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('y')],
         builtins.yank,
-        ChordPattern::Literal(KeyChord::char('y')),
+        Some(ChordPattern::Literal(KeyChord::char('y'))),
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -939,7 +821,7 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('>')],
         builtins.indent_right,
-        ChordPattern::Literal(KeyChord::char('>')),
+        Some(ChordPattern::Literal(KeyChord::char('>'))),
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -949,7 +831,7 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('<')],
         builtins.indent_left,
-        ChordPattern::Literal(KeyChord::char('<')),
+        Some(ChordPattern::Literal(KeyChord::char('<'))),
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -962,7 +844,7 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('=')],
         builtins.reindent,
-        ChordPattern::Literal(KeyChord::char('=')),
+        Some(ChordPattern::Literal(KeyChord::char('='))),
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -984,7 +866,7 @@ pub fn register_normal_bindings(
             handle,
             &[lit_char('g'), lit_char(prefix_char)],
             builtins.reflow,
-            ChordPattern::Literal(KeyChord::char(doubled)),
+            Some(ChordPattern::Literal(KeyChord::char(doubled))),
             builtins,
             syntax_textobjects,
             syntax_motions,
@@ -1002,7 +884,7 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('g'), lit_char('=')],
         builtins.reformat,
-        ChordPattern::Literal(KeyChord::char('=')),
+        Some(ChordPattern::Literal(KeyChord::char('='))),
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -1015,7 +897,7 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('g'), lit_char('U')],
         builtins.upper,
-        ChordPattern::Literal(KeyChord::char('U')),
+        Some(ChordPattern::Literal(KeyChord::char('U'))),
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -1025,7 +907,7 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('g'), lit_char('u')],
         builtins.lower,
-        ChordPattern::Literal(KeyChord::char('u')),
+        Some(ChordPattern::Literal(KeyChord::char('u'))),
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -1035,7 +917,7 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('g'), lit_char('~')],
         builtins.toggle_case,
-        ChordPattern::Literal(KeyChord::char('~')),
+        Some(ChordPattern::Literal(KeyChord::char('~'))),
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -1049,7 +931,20 @@ pub fn register_normal_bindings(
         handle,
         &[lit_char('g'), lit_char('/')],
         builtins.search,
-        ChordPattern::Literal(KeyChord::char('/')),
+        Some(ChordPattern::Literal(KeyChord::char('/'))),
+        builtins,
+        syntax_textobjects,
+        syntax_motions,
+        false,
+    );
+
+    // VM.3h: `zf` — vim's fold operator. `zf{motion}`, `zfip`, `zff{char}`, and
+    // `{Visual}zf` from the same call. No doubled form (see `doubled_self`).
+    register_operator_bindings(
+        handle,
+        &[lit_char('z'), lit_char('f')],
+        builtins.create_fold,
+        None,
         builtins,
         syntax_textobjects,
         syntax_motions,
@@ -1271,34 +1166,26 @@ pub fn register_normal_bindings(
 
     // Viewport / scroll / undo-tree / jump history / tag stack /
     // redraw / blockwise visual.
-    handle.bind(
-        layer,
-        mode,
-        &[lit(KeyChord::ctrl('f'))],
-        CommandInvocation::of(actions.page_down),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[lit(KeyChord::ctrl('b'))],
-        CommandInvocation::of(actions.page_up),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[lit(KeyChord::ctrl('e'))],
-        CommandInvocation::of(actions.scroll_line_down),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[lit(KeyChord::ctrl('y'))],
-        CommandInvocation::of(actions.scroll_line_up),
-        source(),
-    );
+    // VM.3h: vim scrolls with these in Visual and Select too. They're
+    // scrolling commands, not motions, so the motion mirror doesn't reach them;
+    // a Ctrl chord never overtypes, so Select takes them. Separate binds rather
+    // than `bind_modes`, which rebuilds the merged trie per call.
+    for (key, action) in [
+        ('f', actions.page_down),
+        ('b', actions.page_up),
+        ('e', actions.scroll_line_down),
+        ('y', actions.scroll_line_up),
+    ] {
+        for m in [mode, BindingMode::Visual, BindingMode::Select] {
+            handle.bind(
+                layer,
+                m,
+                &[lit(KeyChord::ctrl(key))],
+                CommandInvocation::of(action),
+                source(),
+            );
+        }
+    }
     handle.bind(
         layer,
         mode,
@@ -1512,7 +1399,10 @@ fn lit(chord: KeyChord) -> ChordPattern {
 ///
 /// `doubled_self` is the chord that triggers the linewise form
 /// (e.g. `'d'` for `dd`, `'U'` for `gUU`). It's the trailing key
-/// of the doubled form, not the prefix.
+/// of the doubled form, not the prefix. `None` binds no doubled form:
+/// vim has no `zff`, and a bound `[z, f, f]` would shadow `zff{char}`
+/// (fold to the next `{char}`), because a bound prefix kills its longer
+/// chords.
 ///
 /// N.1.3 (2026-06-10): `pub` so boot can wire a *provider-contributed*
 /// operator's chord (the narrow `zn`) into this universal
@@ -1523,7 +1413,7 @@ pub fn register_operator_bindings(
     handle: &KeymapHandle,
     op_prefix: &[ChordPattern],
     op: lattice_grammar::registry::OperatorId,
-    doubled_self: ChordPattern,
+    doubled_self: Option<ChordPattern>,
     builtins: &Builtins,
     syntax_textobjects: &SyntaxTextObjectIds,
     syntax_motions: &SyntaxMotionIds,
@@ -1605,7 +1495,7 @@ pub fn register_operator_bindings(
     // ---- OPERATOR rather than to the motion it is targeting. A doubled
     // ---- operator has no target, so the capture lands on the
     // ---- invocation's own args with no disambiguation needed.
-    {
+    if let Some(doubled_self) = doubled_self {
         let mut path: Vec<ChordPattern> = op_prefix.to_vec();
         path.push(doubled_self);
         if post_motion_char {
@@ -2186,6 +2076,8 @@ pub fn operator_prefix(
         vec![KeyChord::char('g'), KeyChord::char('~')]
     } else if op == builtins.search {
         vec![KeyChord::char('g'), KeyChord::char('/')]
+    } else if op == builtins.create_fold {
+        vec![KeyChord::char('z'), KeyChord::char('f')]
     } else {
         Vec::new()
     }
@@ -2195,7 +2087,7 @@ pub fn operator_prefix(
 /// with. `search` (`g/`) is absent deliberately — it is an operator in the
 /// registry but its Normal-mode surface is the search prompt, not a
 /// composable prefix.
-fn composable_operators(builtins: &Builtins) -> [lattice_grammar::registry::OperatorId; 9] {
+fn composable_operators(builtins: &Builtins) -> [lattice_grammar::registry::OperatorId; 10] {
     [
         builtins.delete,
         builtins.change,
@@ -2206,6 +2098,8 @@ fn composable_operators(builtins: &Builtins) -> [lattice_grammar::registry::Oper
         builtins.upper,
         builtins.lower,
         builtins.toggle_case,
+        // VM.3h: a plugin motion folds too (`zf]]`).
+        builtins.create_fold,
     ]
 }
 

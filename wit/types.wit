@@ -922,7 +922,8 @@ interface types {
         half-screen(bool),
         cursor-to-edge(bool),
     }
-    /// Mirrors `AppEffect::NarrowLines` (pre-resolved inclusive 0-based span).
+    /// Mirrors `AppEffect::NarrowLines` and `AppEffect::CreateFold`: a
+    /// pre-resolved inclusive 0-based line span.
     record narrow-lines-payload {
         start-line: u32,
         end-line: u32,
@@ -1012,6 +1013,9 @@ interface types {
         goto-next-fold,
         goto-prev-fold,
         toggle-fold-enable,
+        open-folds-recursively,
+        close-folds-recursively,
+        delete-folds-recursively,
         undo,
         redo,
         repeat-last-change,
@@ -1108,6 +1112,8 @@ interface types {
         multibuffer-expand(s32),
         narrow-widen,
         narrow-lines(narrow-lines-payload),
+        /// VM.3h: vim's `zf` operator. A closed fold over the span.
+        create-fold(narrow-lines-payload),
         /// RF.5b: hand a resolved line range to the buffer's
         /// `format.{indent,reflow,reformat}` chain. Emitted by `=`, `gq`
         /// and `g=` when the winning rung is not `native`; the host runs

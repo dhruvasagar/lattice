@@ -321,27 +321,56 @@ the linewise gap for full fidelity.
 Display-line motions. Same `ViewportResolver` seam as VM.3f; the resolver
 answers "the position N display lines from here". Hardest of the set.
 
-### VM.3h 📝 — the scrollers, which are NOT motions
+### VM.3h ✅ — fold and scroll commands in Visual, matching vim
 
-`<C-f>` / `<C-b>` / `<C-e>` / `<C-y>` are *scrolling* commands in vim, not
-motions — `d<C-f>` is not a valid operator target there, and `<C-e>` / `<C-y>`
-do not move the cursor at all unless it would leave the window. They still need
-to be reachable in Visual and Select, so they get their mode-set declared at
-their own registration site (three `handle.bind` calls, NOT `bind_modes`, which
-rebuilds the merged trie per call and would reintroduce the O(N²) burst
-`bind_bound`'s comment records).
+`<C-f>` / `<C-b>` / `<C-e>` / `<C-y>` and the `z` family are scrolling and
+fold commands in vim, not motions, so the motion mirror can't reach them and
+they were Normal-only. The first draft of this slice bound the cursor-only fold
+handlers in Visual and called it acceptable; it wasn't vim. Every rule below
+was then checked in vim 9.2, run headless (`-u NONE`, `foldmethod=manual`),
+rather than read off the help text, which gets two of them wrong.
 
-Same treatment for the `z` viewport family (`zz` / `z.` / `zt` / `z<CR>` /
-`zb` / `z-`, the horizontal `zl` / `zh` / `zL` / `zH` / `zs` / `ze`, and the
-fold toggles). This also picks up **`zf`**, which is bound in Normal only
-despite being `action:create-fold-from-visual` — "create fold from the most
-recent Visual selection", unreachable from Visual.
+- **`zf` is an operator**, as in vim: `zf{motion}`, `zfip`, `zff{char}` and
+  `{Visual}zf`. `operator:create-fold` emits a new `AppEffect::CreateFold`
+  (and WIT `create-fold`, reusing `narrow-lines-payload`). The old
+  `action:create-fold-from-visual` required Visual but was bound in Normal
+  only, so it could never succeed; it stays registered for the WIT boundary.
+  `register_operator_bindings`' doubled form is now optional: `zff` would
+  have shadowed `zff{char}`. The host exits Visual after a fold itself,
+  because it leaves Visual after an operator only when the effect edits or
+  yanks. Whole lines come from `lattice_grammar::range::span_to_whole_lines`,
+  moved out of the narrow provider so `zn` and `zf` share it.
+- **Visual `zo` `zc` `zd` act on every selected line** and end Visual. `zo`
+  opens one level (inner fold stays closed); `zc` closes the innermost.
+- **`zO` `zC` `zD` are new** (Normal and Visual), and not symmetric:
+  - `zO`: folds containing the target lines plus every fold nested inside them
+    (the help says nested-but-not-containing folds are unchanged; vim opens
+    them);
+  - `zC`: only folds containing the target lines, so in Visual it closes an
+    enclosing, partly selected fold;
+  - `zD`: Normal deletes the innermost fold plus its nested folds; Visual
+    deletes folds inside the selection and keeps an enclosing one.
+- **Visual `za` acts at the cursor and keeps Visual** (vim checked).
+- **The rest of the `z` family** (scrolls, `zR`/`zM`/`zi`, `zj`/`zk`, and the
+  org-cycle `z<Space>` / `z<Tab>` / `zp`) works in Visual at the cursor. None of
+  it is bound in Select, where `z` is typed text.
+- **`<C-f>` `<C-b>` `<C-e>` `<C-y>`** scroll in Visual and Select; a Ctrl chord
+  never overtypes.
+
+Known gap, pinned rather than fixed: `zfk` from column 0 creates no fold.
+`k` is exclusive and lattice has no linewise operator targets yet, so the span
+ends at byte 0 of the cursor's own line; `dk` and narrow's `znk` share the
+limitation.
 
 One lattice deviation worth recording: `<C-d>` / `<C-u>` are typed here as
 `motion:line-down` / `-up` with a baked `Count(10)`, where vim treats them as
-scrolling commands. VM.1's derivation therefore makes `d<C-d>` bound, which vim
-leaves unbound. A superset, and harmless — noted so a future reader does not
-read it as a bug.
+scrolling commands, so `d<C-d>` is bound here and not in vim. A superset, and
+harmless.
+
+Tests: `crates/lattice-host/tests/visual_fold_commands_match_vim.rs` (one per
+vim row, Visual and Normal), `lattice-ui-tui`'s `folds.rs` (`zf` as an operator
+and the scrolls, over real keystrokes), grammar tests for the operator's line
+span, and a WIT round-trip for `CreateFold` with non-default values.
 
 ### VM.3i 📝 — `zj` / `zk` are motions
 

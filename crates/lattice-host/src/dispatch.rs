@@ -2453,6 +2453,9 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::OpenAllFolds
             | Action::CloseAllFolds
             | Action::DeleteFoldAtCursor
+            | Action::OpenFoldsRecursively
+            | Action::CloseFoldsRecursively
+            | Action::DeleteFoldsRecursively
             // PIC.2: the org-cycle fold ops (`z<Space>` / `z<Tab>`) were
             // absent here, so they skipped the read-only-help guard and
             // their handlers mutated `self.folds` — a hot-slot keyed to
@@ -2784,6 +2787,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::CycleFoldsGlobal => editor.do_cycle_folds_global(),
         Action::GotoParentFold => editor.do_goto_parent_fold(),
         Action::DeleteFoldAtCursor => editor.do_delete_fold_at_cursor(),
+        Action::OpenFoldsRecursively => editor.do_set_folds_recursively(false),
+        Action::CloseFoldsRecursively => editor.do_set_folds_recursively(true),
+        Action::DeleteFoldsRecursively => editor.do_delete_folds_recursively(),
         Action::MouseScroll { pane, down } => editor.do_mouse_scroll(pane, down),
         Action::MouseGoto {
             pane,
@@ -10332,6 +10338,13 @@ impl Editor {
             AppEffect::CycleFoldsGlobal => out.next_actions.push(Action::CycleFoldsGlobal),
             AppEffect::GotoParentFold => out.next_actions.push(Action::GotoParentFold),
             AppEffect::DeleteFoldAtCursor => out.next_actions.push(Action::DeleteFoldAtCursor),
+            AppEffect::OpenFoldsRecursively => out.next_actions.push(Action::OpenFoldsRecursively),
+            AppEffect::CloseFoldsRecursively => {
+                out.next_actions.push(Action::CloseFoldsRecursively)
+            }
+            AppEffect::DeleteFoldsRecursively => {
+                out.next_actions.push(Action::DeleteFoldsRecursively)
+            }
             AppEffect::GotoNextFold => out.next_actions.push(Action::GotoNextFold),
             AppEffect::GotoPrevFold => out.next_actions.push(Action::GotoPrevFold),
             AppEffect::ToggleFoldEnable => out.next_actions.push(Action::ToggleFoldEnable),
@@ -10401,6 +10414,11 @@ impl Editor {
             AppEffect::DisplayLineStart => out.next_actions.push(Action::DisplayLineStart),
             AppEffect::DisplayLineEnd => out.next_actions.push(Action::DisplayLineEnd),
             AppEffect::CreateFoldFromVisual => out.next_actions.push(Action::CreateFoldFromVisual),
+            // VM.3h: `zf` is an operator; the grammar resolved its span.
+            AppEffect::CreateFold {
+                start_line,
+                end_line,
+            } => self.do_create_fold(start_line, end_line),
             AppEffect::DeleteCharBackward => out.next_actions.push(Action::DeleteCharBackward),
             AppEffect::InsertLineEdit(kind) => out.next_actions.push(Action::InsertLineEdit(kind)),
             AppEffect::CompletionTrigger => out.next_actions.push(Action::CompletionTrigger),
@@ -22059,6 +22077,14 @@ impl Editor {
     /// `Some(false)` = `zo` open, `None` = `za` toggle. Selection
     /// rules mirror the App-side helper retired in this slice.
     pub fn do_set_fold_state_at_cursor(&mut self, state: Option<bool>) {
+        // VM.3h: `{Visual}zo` / `{Visual}zc` act on every selected line and
+        // end Visual. `za` has no Visual form in vim: it acts at the cursor and
+        // Visual stays (both checked in vim 9.2), so it falls through.
+        if let (Some(close), Some(region)) = (state, self.active_region()) {
+            self.set_fold_state_in_lines(region.start.line, region.end.line, close);
+            self.exit_visual_after_fold_command();
+            return;
+        }
         let line = self.cursor.line;
         let target = match state {
             Some(true) => fold_to_close_at(&self.folds, line),
@@ -22440,12 +22466,169 @@ impl Editor {
 
     /// 5.5.G.1: vim's `zd` -- delete the innermost fold containing
     /// the cursor. E490 when the cursor isn't inside any fold.
+    ///
+    /// VM.3h: `{Visual}zd` deletes one level for every selected line (the
+    /// innermost fold at each) and ends Visual. Vim 9.2 over lines 3–4 of
+    /// outer 2–7 ⊃ inner 3–4 deletes inner and keeps outer.
     pub fn do_delete_fold_at_cursor(&mut self) {
+        if let Some(region) = self.active_region() {
+            let targets: Vec<usize> = (region.start.line..=region.end.line)
+                .filter_map(|line| innermost_fold_idx(&self.folds, line, |_| true))
+                .collect();
+            self.remove_folds(targets);
+            self.exit_visual_after_fold_command();
+            return;
+        }
         let line = self.cursor.line;
         if let Some(idx) = innermost_fold_idx(&self.folds, line, |_| true) {
             self.folds.remove(idx);
         } else {
             self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+        }
+    }
+
+    /// VM.3h: vim's `zO` (`close = false`) and `zC` (`close = true`).
+    ///
+    /// The rules are NOT symmetric, and come from vim 9.2 rather than its help
+    /// text, which describes both as "folds that don't contain the cursor line
+    /// are unchanged" (`scratchpad/vimcheck_normal_zOC*.vim`):
+    ///
+    /// - `zO` opens every fold containing a target line AND every fold nested
+    ///   inside those. On line 3 of outer 2–9 ⊃ mid 3–6 ⊃ inner 4–5, inner opens
+    ///   although it doesn't contain the cursor.
+    /// - `zC` closes every fold containing a target line, and nothing else. On
+    ///   line 3 of the same layout, inner stays open.
+    ///
+    /// The target lines are the cursor line in Normal, and every selected line
+    /// in Visual, where the command also ends Visual. In Visual that makes `zC`
+    /// close an enclosing fold that's only partly selected, which vim does too.
+    pub fn do_set_folds_recursively(&mut self, close: bool) {
+        let region = self.active_region();
+        let (lo, hi) = match region {
+            Some(r) => (r.start.line, r.end.line),
+            None => (self.cursor.line, self.cursor.line),
+        };
+        let containing: Vec<usize> = self
+            .folds
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| (lo..=hi).any(|line| fold_contains_line(f, line)))
+            .map(|(i, _)| i)
+            .collect();
+        let targets: Vec<usize> = if close {
+            containing
+        } else {
+            self.folds
+                .iter()
+                .enumerate()
+                .filter(|(i, f)| {
+                    containing
+                        .iter()
+                        .any(|&c| c == *i || fold_nests_in(f, &self.folds[c]))
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        if targets.is_empty() {
+            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+        } else {
+            for idx in targets {
+                self.folds[idx].closed = close;
+            }
+        }
+        if region.is_some() {
+            self.exit_visual_after_fold_command();
+        }
+    }
+
+    /// VM.3h: vim's `zD`.
+    ///
+    /// Normal: the innermost fold containing the cursor line, plus every fold
+    /// nested inside it. Vim 9.2 on line 3 of outer 2–9 ⊃ mid 3–6 ⊃ inner 4–5
+    /// deletes mid and inner and keeps outer; on line 4 it deletes inner only,
+    /// the same as `zd`.
+    ///
+    /// Visual: every fold lying inside the selected lines, and NOT a fold that
+    /// merely encloses them (vim 9.2 over 3–4 of outer 2–7 ⊃ inner 3–4 keeps
+    /// outer). Ends Visual.
+    pub fn do_delete_folds_recursively(&mut self) {
+        let region = self.active_region();
+        let targets: Vec<usize> = match region {
+            Some(r) => {
+                let (lo, hi) = (r.start.line, r.end.line);
+                self.folds
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.start_line >= lo && f.end_line <= hi)
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+            None => match innermost_fold_idx(&self.folds, self.cursor.line, |_| true) {
+                Some(root) => {
+                    let root = self.folds[root];
+                    self.folds
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, f)| fold_nests_in(f, &root))
+                        .map(|(i, _)| i)
+                        .collect()
+                }
+                None => Vec::new(),
+            },
+        };
+        self.remove_folds(targets);
+        if region.is_some() {
+            self.exit_visual_after_fold_command();
+        }
+    }
+
+    /// VM.3h: `{Visual}zo` (`close = false`) opens, per selected line, the
+    /// outermost closed fold containing it; `{Visual}zc` closes the fold `zc`
+    /// would close at that line. One level each, deduplicated, all chosen
+    /// before any is changed. Vim 9.2: `zo` over 1–4 of outer 2–7 ⊃ inner 3–4
+    /// opens outer and leaves inner closed; `zc` over 3–4 closes inner only.
+    fn set_fold_state_in_lines(&mut self, lo: u32, hi: u32, close: bool) {
+        let mut targets: Vec<usize> = (lo..=hi)
+            .filter_map(|line| {
+                if close {
+                    fold_to_close_at(&self.folds, line)
+                } else {
+                    outermost_fold_idx(&self.folds, line, |f| f.closed)
+                }
+            })
+            .collect();
+        targets.sort_unstable();
+        targets.dedup();
+        if targets.is_empty() {
+            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+            return;
+        }
+        for idx in targets {
+            self.folds[idx].closed = close;
+        }
+    }
+
+    /// Remove the folds at `targets`, E490 when there are none. Indices are
+    /// deduplicated and removed highest first, so an earlier removal can't
+    /// shift a later index.
+    fn remove_folds(&mut self, mut targets: Vec<usize>) {
+        targets.sort_unstable();
+        targets.dedup();
+        if targets.is_empty() {
+            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+            return;
+        }
+        for idx in targets.into_iter().rev() {
+            self.folds.remove(idx);
+        }
+    }
+
+    /// Every Visual-form fold command ends Visual in vim (`za` excepted, which
+    /// never gets here). Select never binds the `z` family, so only Visual
+    /// needs leaving.
+    fn exit_visual_after_fold_command(&mut self) {
+        if matches!(self.modal, ModalState::Visual(_)) {
+            self.do_exit_visual();
         }
     }
 
@@ -22546,6 +22729,17 @@ fn outermost_fold_idx<F: Fn(&lattice_core::Fold) -> bool>(
         .filter(|(_, f)| pred(f) && line >= f.start_line && line <= f.end_line)
         .min_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
         .map(|(i, _)| i)
+}
+
+/// VM.3h: does `fold` cover `line`?
+fn fold_contains_line(fold: &lattice_core::Fold, line: u32) -> bool {
+    line >= fold.start_line && line <= fold.end_line
+}
+
+/// VM.3h: does `inner` lie within `outer` (inclusive, so a fold nests in
+/// itself)? Folds are line spans, so nesting is containment.
+fn fold_nests_in(inner: &lattice_core::Fold, outer: &lattice_core::Fold) -> bool {
+    outer.start_line <= inner.start_line && inner.end_line <= outer.end_line
 }
 
 /// 5.5.G.3: pure-editor edit-cluster helpers (line operations,
@@ -25025,6 +25219,27 @@ impl Editor {
         });
         self.cursor = lattice_protocol::position::Position::new(start_line, 0);
         self.do_exit_visual();
+    }
+
+    /// VM.3h: `zf{motion}` / `{Visual}zf`, with the span the operator
+    /// resolved. A CLOSED fold over `start_line..=end_line`, cursor at its first
+    /// line, as the Visual-only handler above always did; a one-line span
+    /// creates nothing, as in vim.
+    ///
+    /// Ends Visual itself. The host leaves Visual after an operator only when
+    /// its effect mutates or yanks (`effect_mutates_or_yanks`), and a fold does
+    /// neither, so `vjzf` would otherwise stay in Visual. Vim ends it.
+    pub fn do_create_fold(&mut self, start_line: u32, end_line: u32) {
+        if end_line > start_line {
+            self.folds.push(Fold {
+                start_line,
+                end_line,
+                closed: true,
+                identity: None,
+            });
+            self.cursor = lattice_protocol::position::Position::new(start_line, 0);
+        }
+        self.exit_visual_after_fold_command();
     }
 }
 

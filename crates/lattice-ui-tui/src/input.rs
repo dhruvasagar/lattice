@@ -1247,16 +1247,39 @@ mod tests {
 
     // ---- Folds: zf zo zc za zR zM zd ----
 
+    /// VM.3h: `zf` is vim's fold OPERATOR, so after `z` the `f` is absorbed as
+    /// a pending prefix, and a motion completes it. It used to resolve straight
+    /// to `action:create-fold-from-visual`, which required Visual but was bound
+    /// in Normal only and so always errored.
     #[test]
-    fn zf_after_z_emits_create_fold_from_visual() {
+    fn zf_after_z_is_the_fold_operator_prefix() {
         let (_, b) = fixture();
-        let a = shared_actions();
         match translate(
             ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('z')], &b),
             key(KeyCode::Char('f')),
         ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.create_fold_from_visual),
-            other => panic!("expected Invoke(create_fold_from_visual), got {other:?}"),
+            Action::AbsorbPartialChord(c) => assert_eq!(c, crate::chord::KeyChord::char('f')),
+            other => panic!("expected `f` absorbed as the `zf` operator prefix, got {other:?}"),
+        }
+        match translate(
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('z'),
+                    crate::chord::KeyChord::char('f'),
+                ],
+                &b,
+            ),
+            key(KeyCode::Char('j')),
+        ) {
+            Action::Invoke(inv) => {
+                assert_eq!(
+                    inv.command, b.create_fold.0,
+                    "`zfj` invokes the fold operator"
+                );
+                assert!(inv.target.is_some(), "with `j` as its motion target");
+            }
+            other => panic!("expected Invoke(operator:create-fold), got {other:?}"),
         }
     }
 

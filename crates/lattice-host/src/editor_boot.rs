@@ -2241,9 +2241,9 @@ impl Editor {
                         ),
                     ],
                     narrow_operator_id,
-                    lattice_protocol::chord::ChordPattern::Literal(
+                    Some(lattice_protocol::chord::ChordPattern::Literal(
                         lattice_protocol::chord::KeyChord::char('n'),
-                    ),
+                    )),
                     &builtins,
                     &syntax_textobject_ids,
                     &syntax_motion_ids,
@@ -2332,9 +2332,9 @@ impl Editor {
                         ),
                     ],
                     surround_operators.add,
-                    lattice_protocol::chord::ChordPattern::Literal(
+                    Some(lattice_protocol::chord::ChordPattern::Literal(
                         lattice_protocol::chord::KeyChord::char('s'),
-                    ),
+                    )),
                     &builtins,
                     &syntax_textobject_ids,
                     &syntax_motion_ids,

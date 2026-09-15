@@ -40,6 +40,40 @@ pub enum RangeBound {
     Offset { base: Box<RangeBound>, delta: i32 },
 }
 
+/// The inclusive whole lines an operator's byte span covers, given its start
+/// and end `(line, byte)` in either order.
+///
+/// A span ending at byte 0 of a later line is half-open: nothing on that line
+/// is covered, so the last covered line is the one before. That's the shape a
+/// forward exclusive motion leaves (`}`, `G`), and vim agrees:
+/// `:h exclusive-linewise`, "the end is moved to the end of the previous line".
+///
+/// Known gap: a BACKWARD exclusive motion (`k` from column 0) also ends at byte
+/// 0 of the cursor's own line, and from the span alone that can't be told apart,
+/// so the cursor's line is dropped. Lattice has no linewise operator targets
+/// yet (`dk` is charwise too); threading the cursor through is the fix when it
+/// matters.
+///
+/// Shared by the narrow operator (`zn`) and the fold operator (`zf`), which is
+/// why it lives here rather than in either.
+pub fn span_to_whole_lines(
+    start_line: u32,
+    start_byte: u32,
+    end_line: u32,
+    end_byte: u32,
+) -> (u32, u32) {
+    let ((lo_line, _lo_byte), (hi_line, hi_byte)) = if start_line <= end_line {
+        ((start_line, start_byte), (end_line, end_byte))
+    } else {
+        ((end_line, end_byte), (start_line, start_byte))
+    };
+    let mut end = hi_line;
+    if hi_byte == 0 && end > lo_line {
+        end -= 1;
+    }
+    (lo_line, end)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -79,5 +113,30 @@ mod tests {
             }
             _ => panic!("expected Offset"),
         }
+    }
+
+    #[test]
+    fn span_to_whole_lines_mid_line_end_is_inclusive() {
+        // `j`-like: next line, end mid-line → both lines covered.
+        assert_eq!(span_to_whole_lines(0, 0, 3, 5), (0, 3));
+    }
+
+    #[test]
+    fn span_to_whole_lines_half_open_end_at_col0_drops_trailing_line() {
+        // Forward exclusive motions end at column 0 of the line AFTER the
+        // last content line → the last covered line is the previous one.
+        assert_eq!(span_to_whole_lines(0, 0, 3, 0), (0, 2));
+    }
+
+    #[test]
+    fn span_to_whole_lines_single_line() {
+        assert_eq!(span_to_whole_lines(2, 0, 2, 4), (2, 2));
+    }
+
+    #[test]
+    fn span_to_whole_lines_reversed_is_ordered() {
+        // A backward span (end before start) is ordered first. This also pins
+        // the documented `k`-from-column-0 gap: line 5 is dropped.
+        assert_eq!(span_to_whole_lines(5, 0, 2, 0), (2, 4));
     }
 }

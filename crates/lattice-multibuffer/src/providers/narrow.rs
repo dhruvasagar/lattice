@@ -274,7 +274,7 @@ pub fn register_narrow_operator(registry: &mut CommandRegistry) -> lattice_gramm
             post_motion_char: false,
             args_schema: vec![],
             apply: Arc::new(|ctx: &mut OperatorContext| {
-                let (start_line, end_line) = range_to_narrow_lines(
+                let (start_line, end_line) = lattice_grammar::range::span_to_whole_lines(
                     ctx.range.start.line,
                     ctx.range.start.byte,
                     ctx.range.end.line,
@@ -289,64 +289,9 @@ pub fn register_narrow_operator(registry: &mut CommandRegistry) -> lattice_gramm
     )
 }
 
-/// Map an operator's resolved range (start/end `line`+`byte`) to an
-/// inclusive whole-line span for narrowing. A half-open end at column
-/// 0 means the last covered line is the previous one — the common shape
-/// for *forward* linewise / paragraph motions (`znip`, `znj`, `znG`),
-/// which is what this heuristic is tuned for.
-///
-/// Known v1 edge (review-flagged): a *backward* motion (`znk`, `zn{`)
-/// whose cursor — the higher endpoint after ordering — lands at column 0
-/// drops the cursor line, because given only `(start, end)` the function
-/// can't distinguish the cursor anchor from a half-open motion end.
-/// Backward narrows are rare; if they matter, the operator should thread
-/// the anchor through explicitly. `range_to_lines_reversed_is_ordered`
-/// pins the current behaviour.
-fn range_to_narrow_lines(
-    start_line: u32,
-    start_byte: u32,
-    end_line: u32,
-    end_byte: u32,
-) -> (u32, u32) {
-    let ((lo_line, _lo_byte), (hi_line, hi_byte)) = if start_line <= end_line {
-        ((start_line, start_byte), (end_line, end_byte))
-    } else {
-        ((end_line, end_byte), (start_line, start_byte))
-    };
-    let mut end = hi_line;
-    if hi_byte == 0 && end > lo_line {
-        end -= 1;
-    }
-    (lo_line, end)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn range_to_lines_mid_line_end_is_inclusive() {
-        // `znj`-like: cursor line + 1, end mid-line → covers both lines.
-        assert_eq!(range_to_narrow_lines(0, 0, 3, 5), (0, 3));
-    }
-
-    #[test]
-    fn range_to_lines_half_open_end_at_col0_drops_trailing_line() {
-        // Linewise / paragraph motions end at column 0 of the line
-        // AFTER the last content line → last covered line is the prev.
-        assert_eq!(range_to_narrow_lines(0, 0, 3, 0), (0, 2));
-    }
-
-    #[test]
-    fn range_to_lines_single_line() {
-        assert_eq!(range_to_narrow_lines(2, 0, 2, 4), (2, 2));
-    }
-
-    #[test]
-    fn range_to_lines_reversed_is_ordered() {
-        // Backwards motion (e.g. `znk`): end before start.
-        assert_eq!(range_to_narrow_lines(5, 0, 2, 0), (2, 4));
-    }
 
     #[test]
     fn register_narrow_operator_registers_the_operator() {

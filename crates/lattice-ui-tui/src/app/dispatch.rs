@@ -311,6 +311,9 @@ impl App {
             | Action::CycleFoldAtCursor
             | Action::CycleFoldsGlobal
             | Action::DeleteFoldAtCursor
+            | Action::OpenFoldsRecursively
+            | Action::CloseFoldsRecursively
+            | Action::DeleteFoldsRecursively
             | Action::GotoNextFold
             | Action::GotoPrevFold
             | Action::GotoParentFold

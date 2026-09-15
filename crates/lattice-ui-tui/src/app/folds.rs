@@ -187,7 +187,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::compute_fold_hash;
-    use crate::app::test_helpers::{app_with, attach_test_syntax, invoke_motion, press};
+    use crate::app::test_helpers::{
+        app_with, attach_test_syntax, invoke_motion, press, press_chars,
+    };
     use crate::app::*;
     use lattice_grammar::{ModalState, VisualKind};
     use lattice_protocol::edit::Edit;
@@ -347,6 +349,150 @@ mod tests {
         a.apply(Action::CreateFoldFromVisual);
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    // ---- VM.3h: `zf` is an operator; scrolls reach Visual and Select ----
+
+    /// `zfj` folds the cursor line and the next, over real keystrokes (an
+    /// operator needs the real path). vim: `zfj` folds two lines, closed.
+    #[test]
+    fn zf_j_folds_two_lines() {
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        press_chars(&mut a, "zfj");
+        assert_eq!(a.editor.folds.len(), 1, "folds: {:?}", a.editor.folds);
+        let f = &a.editor.folds[0];
+        assert_eq!((f.start_line, f.end_line, f.closed), (0, 1, true));
+    }
+
+    /// `zfip` folds a paragraph, not the blank line after it.
+    #[test]
+    fn zf_ip_folds_a_paragraph() {
+        let mut a = app_with("a\nb\n\nc\nd", 10);
+        press_chars(&mut a, "zfip");
+        assert_eq!(a.editor.folds.len(), 1, "folds: {:?}", a.editor.folds);
+        let f = &a.editor.folds[0];
+        assert_eq!((f.start_line, f.end_line), (0, 1));
+    }
+
+    /// vim: charwise `vjzf` folds WHOLE lines 1–2 and ends Visual. The end
+    /// matters: the host leaves Visual after an operator only when it edits
+    /// or yanks, and a fold does neither.
+    #[test]
+    fn visual_zf_folds_whole_lines_and_ends_visual() {
+        let mut a = app_with("abc\ndef\nghi", 10);
+        a.editor.cursor = Position::new(0, 1);
+        press_chars(&mut a, "vjzf");
+        assert_eq!(a.editor.folds.len(), 1, "folds: {:?}", a.editor.folds);
+        let f = &a.editor.folds[0];
+        assert_eq!((f.start_line, f.end_line, f.closed), (0, 1, true));
+        assert_eq!(a.editor.modal, ModalState::Normal);
+    }
+
+    /// `zf` alone waits for a motion instead of erroring, as an operator does.
+    #[test]
+    fn zf_alone_waits_for_a_motion() {
+        let mut a = app_with("a\nb\nc", 10);
+        press_chars(&mut a, "zf");
+        assert!(a.editor.folds.is_empty());
+        assert_eq!(a.editor.partial_chord.len(), 2, "`zf` is a pending prefix");
+    }
+
+    /// No doubled form: `zff` must stay a prefix, or it would shadow
+    /// `zff{char}` (fold to the next `{char}`).
+    #[test]
+    fn zff_is_a_prefix_not_a_doubled_operator() {
+        let a = app_with("a", 10);
+        let path = [
+            crate::chord::KeyChord::char('z'),
+            crate::chord::KeyChord::char('f'),
+            crate::chord::KeyChord::char('f'),
+        ];
+        assert!(
+            matches!(
+                a.editor
+                    .keymap
+                    .lookup(crate::keymap::BindingMode::Normal, &path),
+                crate::keymap_trie::LookupResult::Partial
+            ),
+            "`zff` must wait for the find-char target"
+        );
+    }
+
+    /// vim scrolls with `<C-f>` in Visual, and the selection follows the
+    /// cursor.
+    #[test]
+    fn ctrl_f_in_visual_pages_and_grows_the_selection() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let text: String = (0..80).map(|n| format!("line {n}\n")).collect();
+        let mut a = app_with(&text, 10);
+        press_chars(&mut a, "v");
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(a.editor.modal, ModalState::Visual(_)));
+        assert!(a.editor.cursor.line > 0, "<C-f> pages the cursor down");
+        assert_eq!(
+            a.editor.visual_anchor.map(|p| p.line),
+            Some(0),
+            "the anchor stays, so the selection grows"
+        );
+    }
+
+    /// In Select a Ctrl chord never overtypes: `<C-f>` pages, the buffer is
+    /// untouched, and Select stays.
+    #[test]
+    fn ctrl_f_in_select_pages_rather_than_overtyping() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let text: String = (0..80).map(|n| format!("line {n}\n")).collect();
+        let mut a = app_with(&text, 10);
+        press_chars(&mut a, "gh");
+        assert!(
+            matches!(a.editor.modal, ModalState::Select(_)),
+            "test premise"
+        );
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(a.editor.modal, ModalState::Select(_)));
+        assert!(a.editor.cursor.line > 0);
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), text);
+    }
+
+    /// The `z` family is Normal + Visual only: in Select `z` is typed text.
+    #[test]
+    fn z_in_select_still_overtypes() {
+        let mut a = app_with("abc", 10);
+        press_chars(&mut a, "gh");
+        assert!(
+            matches!(a.editor.modal, ModalState::Select(_)),
+            "test premise"
+        );
+        press_chars(&mut a, "z");
+        assert!(
+            a.editor
+                .document
+                .snapshot()
+                .buffer
+                .as_string()
+                .starts_with('z')
+        );
+        assert_eq!(a.editor.modal, ModalState::Insert);
+    }
+
+    /// `zz` in Visual scrolls and leaves the selection exactly as it was.
+    #[test]
+    fn zz_in_visual_scrolls_without_touching_the_selection() {
+        let text: String = (0..80).map(|n| format!("line {n}\n")).collect();
+        let mut a = app_with(&text, 10);
+        a.editor.cursor = Position::new(30, 0);
+        press_chars(&mut a, "vj");
+        let (anchor, cursor) = (a.editor.visual_anchor, a.editor.cursor);
+        press_chars(&mut a, "zz");
+        assert!(matches!(a.editor.modal, ModalState::Visual(_)));
+        assert_eq!(a.editor.visual_anchor, anchor);
+        assert_eq!(a.editor.cursor, cursor);
     }
 
     #[test]

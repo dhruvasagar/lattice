@@ -363,6 +363,20 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             post_motion_char: false,
         },
     );
+    let create_fold = registry.register_operator(
+        "operator:create-fold",
+        "Create a closed fold over the whole lines the {motion} or selection \
+         covers (vim's `zf`).",
+        OperatorSpec {
+            // Vim's `.` doesn't repeat fold creation.
+            repeatable: false,
+            apply: Arc::new(operator_create_fold),
+            args_schema: vec![],
+            // A fold is whole lines, so a blockwise selection is one range.
+            blockwise_per_row: false,
+            post_motion_char: false,
+        },
+    );
     let reflow = registry.register_operator(
         "operator:reflow",
         "Reflow each paragraph in the range to `textwidth`, keeping indentation \
@@ -743,6 +757,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         reindent,
         reflow,
         reformat,
+        create_fold,
         indent_right,
         upper,
         lower,
@@ -826,6 +841,8 @@ pub struct Builtins {
     /// RF.6: `g=` — the operator form of `:format`. Not a vim chord;
     /// see `operator_reformat` for why it exists.
     pub reformat: OperatorId,
+    /// VM.3h: vim's `zf`, as the operator it is in vim.
+    pub create_fold: OperatorId,
     pub upper: OperatorId,
     pub lower: OperatorId,
     pub toggle_case: OperatorId,
@@ -2862,6 +2879,31 @@ fn operator_reflow(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
 /// LSP round-trip, a process spawn), so there is nothing for the grammar
 /// layer to do but hand back the range. That is why this has no native
 /// branch where `=` and `gq` do.
+/// VM.3h: `zf{motion}` / `{Visual}zf` — a closed fold over the whole lines the
+/// range covers. Vim folds whole lines even for a charwise `v` selection.
+///
+/// A Visual selection or a linewise range already names whole lines, so its
+/// lines are taken as they are. A `V` selection ends at its last line's
+/// length, which is byte 0 when that line is empty, and the half-open rule
+/// would wrongly drop it. A motion's span goes through
+/// [`crate::range::span_to_whole_lines`], whose byte-0 rule is vim's
+/// exclusive-linewise rule (`zf}` stops before the blank line).
+fn operator_create_fold(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    let (s, e) = (ctx.range.start, ctx.range.end);
+    let whole_lines = ctx.linewise || ctx.document.selections().primary().visual.is_some();
+    let (start_line, end_line) = if whole_lines {
+        (s.line.min(e.line), s.line.max(e.line))
+    } else {
+        crate::range::span_to_whole_lines(s.line, s.byte, e.line, e.byte)
+    };
+    Ok(Effect::AppAction(
+        crate::app_effect::AppEffect::CreateFold {
+            start_line,
+            end_line,
+        },
+    ))
+}
+
 fn operator_reformat(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     if ctx.range.is_empty() {
         return Ok(Effect::None);
@@ -3205,6 +3247,91 @@ mod tests {
                 assert_eq!(intent, lattice_core::FormatIntent::Reformat);
             }
             other => panic!("expected FormatRange even with a native env, got {other:?}"),
+        }
+    }
+
+    // ---- VM.3h: `zf` is an operator ----
+
+    /// Run `operator:create-fold` from `from` with a motion target and return
+    /// the fold span it asks the host for.
+    fn fold_span_for_motion(
+        text: &str,
+        from: Position,
+        pick: impl Fn(&Builtins) -> crate::registry::MotionId,
+    ) -> (u32, u32) {
+        let (registry, b, mut doc) = fixture(text);
+        let cancel = CancellationToken::never();
+        let inv = CommandInvocation::of(b.create_fold.0).with_target(
+            crate::target::Target::Motion(pick(&b), crate::args::Args::None),
+        );
+        let eff = crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            from,
+            inv,
+            &cancel,
+            crate::registry::GrammarEnv::default(),
+        )
+        .expect("zf dispatches");
+        match eff {
+            Effect::AppAction(crate::app_effect::AppEffect::CreateFold {
+                start_line,
+                end_line,
+            }) => (start_line, end_line),
+            other => panic!("expected CreateFold, got {other:?}"),
+        }
+    }
+
+    /// `zfj` folds the cursor line and the next, from column 0 as well as
+    /// mid-line. Vim ground truth: `zfj` folds two lines.
+    #[test]
+    fn zf_j_folds_two_whole_lines() {
+        let text = "one\ntwo\nthree\n";
+        assert_eq!(
+            fold_span_for_motion(text, Position::new(0, 0), |b| b.line_down),
+            (0, 1)
+        );
+        assert_eq!(
+            fold_span_for_motion(text, Position::new(0, 2), |b| b.line_down),
+            (0, 1)
+        );
+    }
+
+    /// `zf}` stops before the blank line: `}` is exclusive and ends at byte 0
+    /// of it, which is vim's exclusive-linewise rule.
+    #[test]
+    fn zf_paragraph_forward_stops_before_the_blank_line() {
+        let text = "a\nb\n\nc\n";
+        assert_eq!(
+            fold_span_for_motion(text, Position::new(0, 0), |b| b.paragraph_forward),
+            (0, 1)
+        );
+    }
+
+    /// A linewise range names whole lines, so an empty last line isn't read
+    /// as a half-open end.
+    #[test]
+    fn zf_over_a_linewise_range_keeps_an_empty_last_line() {
+        let (registry, b, mut doc) = fixture("a\n\n");
+        let cancel = CancellationToken::never();
+        let inv = CommandInvocation::of(b.create_fold.0).with_range(crate::Range::Whole);
+        let eff = crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 0),
+            inv,
+            &cancel,
+            crate::registry::GrammarEnv::default(),
+        )
+        .expect("zf dispatches");
+        match eff {
+            Effect::AppAction(crate::app_effect::AppEffect::CreateFold {
+                start_line,
+                end_line,
+            }) => assert_eq!((start_line, end_line), (0, 1)),
+            other => panic!("expected CreateFold, got {other:?}"),
         }
     }
 

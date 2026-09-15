@@ -205,6 +205,9 @@ impl WitBoundary for NativeAppEffect {
             NativeAppEffect::CycleFoldsGlobal => WitAppEffect::CycleFoldsGlobal,
             NativeAppEffect::GotoParentFold => WitAppEffect::GotoParentFold,
             NativeAppEffect::DeleteFoldAtCursor => WitAppEffect::DeleteFoldAtCursor,
+            NativeAppEffect::OpenFoldsRecursively => WitAppEffect::OpenFoldsRecursively,
+            NativeAppEffect::CloseFoldsRecursively => WitAppEffect::CloseFoldsRecursively,
+            NativeAppEffect::DeleteFoldsRecursively => WitAppEffect::DeleteFoldsRecursively,
             NativeAppEffect::GotoNextFold => WitAppEffect::GotoNextFold,
             NativeAppEffect::GotoPrevFold => WitAppEffect::GotoPrevFold,
             NativeAppEffect::ToggleFoldEnable => WitAppEffect::ToggleFoldEnable,
@@ -383,6 +386,14 @@ impl WitBoundary for NativeAppEffect {
                 start_line,
                 end_line,
             } => WitAppEffect::NarrowLines(WitNarrowLinesPayload {
+                start_line: *start_line,
+                end_line: *end_line,
+            }),
+            // VM.3h: the same pre-resolved span shape as `NarrowLines`.
+            NativeAppEffect::CreateFold {
+                start_line,
+                end_line,
+            } => WitAppEffect::CreateFold(WitNarrowLinesPayload {
                 start_line: *start_line,
                 end_line: *end_line,
             }),
@@ -618,6 +629,9 @@ impl WitBoundary for NativeAppEffect {
             WitAppEffect::CycleFoldsGlobal => NativeAppEffect::CycleFoldsGlobal,
             WitAppEffect::GotoParentFold => NativeAppEffect::GotoParentFold,
             WitAppEffect::DeleteFoldAtCursor => NativeAppEffect::DeleteFoldAtCursor,
+            WitAppEffect::OpenFoldsRecursively => NativeAppEffect::OpenFoldsRecursively,
+            WitAppEffect::CloseFoldsRecursively => NativeAppEffect::CloseFoldsRecursively,
+            WitAppEffect::DeleteFoldsRecursively => NativeAppEffect::DeleteFoldsRecursively,
             WitAppEffect::GotoNextFold => NativeAppEffect::GotoNextFold,
             WitAppEffect::GotoPrevFold => NativeAppEffect::GotoPrevFold,
             WitAppEffect::ToggleFoldEnable => NativeAppEffect::ToggleFoldEnable,
@@ -747,6 +761,10 @@ impl WitBoundary for NativeAppEffect {
                 start_line: p.start_line,
                 end_line: p.end_line,
             },
+            WitAppEffect::CreateFold(p) => NativeAppEffect::CreateFold {
+                start_line: p.start_line,
+                end_line: p.end_line,
+            },
             WitAppEffect::FormatRange(p) => NativeAppEffect::FormatRange {
                 intent: native_format_intent(p.intent),
                 start_line: p.start_line,
@@ -835,6 +853,12 @@ mod tests {
                 start_line: 3,
                 end_line: 9,
             },
+            // Different values from `NarrowLines` above, so a decode that
+            // crossed the two arms can't pass.
+            NativeAppEffect::CreateFold {
+                start_line: 4,
+                end_line: 11,
+            },
             NativeAppEffect::SearchTrigger {
                 query: "TODO".into(),
             },
@@ -864,6 +888,9 @@ mod tests {
             NativeAppEffect::NarrowWiden,
             NativeAppEffect::SearchRefresh,
             NativeAppEffect::PlayLastMacro,
+            NativeAppEffect::OpenFoldsRecursively,
+            NativeAppEffect::CloseFoldsRecursively,
+            NativeAppEffect::DeleteFoldsRecursively,
         ] {
             assert_round_trips(e);
         }

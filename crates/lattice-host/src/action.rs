@@ -198,6 +198,12 @@ pub enum Action {
     GotoParentFold,
     /// Vim's `zd` -- delete the fold containing the cursor.
     DeleteFoldAtCursor,
+    /// Vim's `zO` -- open the folds containing the cursor, recursively.
+    OpenFoldsRecursively,
+    /// Vim's `zC` -- close the folds containing the cursor.
+    CloseFoldsRecursively,
+    /// Vim's `zD` -- delete the innermost fold at the cursor and its nested folds.
+    DeleteFoldsRecursively,
     /// Vim's `zj` -- move cursor to the start of the next fold.
     GotoNextFold,
     /// Vim's `zk` -- move cursor to the end of the previous fold.

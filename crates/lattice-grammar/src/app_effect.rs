@@ -285,6 +285,17 @@ pub enum AppEffect {
     /// reappear on the next reparse). Promoted from
     /// `Action::DeleteFoldAtCursor` in slice 8.i.1.c.
     DeleteFoldAtCursor,
+    /// VM.3h: vim's `zO`. Open every fold containing the cursor line and every
+    /// fold nested inside those. In Visual, the same over each selected line.
+    OpenFoldsRecursively,
+    /// VM.3h: vim's `zC`. Close every fold containing the cursor line, and
+    /// nothing nested below the cursor. In Visual, every fold containing a
+    /// selected line, enclosing ones included.
+    CloseFoldsRecursively,
+    /// VM.3h: vim's `zD`. Delete the innermost fold containing the cursor line
+    /// and every fold nested inside it. In Visual, the folds inside the
+    /// selection, not the ones that merely enclose it.
+    DeleteFoldsRecursively,
     /// Vim's `zj`. Move cursor to the start of the next fold.
     /// Promoted from `Action::GotoNextFold` in slice 8.i.1.c.
     GotoNextFold,
@@ -443,6 +454,10 @@ pub enum AppEffect {
     /// selection. Promoted from `Action::CreateFoldFromVisual`
     /// in slice 8.i.1.g.
     CreateFoldFromVisual,
+    /// VM.3h: vim's `zf` operator (`zf{motion}`, `{Visual}zf`). A CLOSED fold
+    /// over the pre-resolved inclusive 0-based lines. Carries the span, so it
+    /// crosses WIT like `NarrowLines`.
+    CreateFold { start_line: u32, end_line: u32 },
     /// Insert mode's `<BS>`. Delete the byte before the cursor.
     /// Promoted from `Action::DeleteCharBackward` in slice
     /// 8.i.1.g.

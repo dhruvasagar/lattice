@@ -80,6 +80,9 @@ pub struct ActionIds {
     pub cycle_folds_global: CommandId,
     pub goto_parent_fold: CommandId,
     pub delete_fold_at_cursor: CommandId,
+    pub open_folds_recursively: CommandId,
+    pub close_folds_recursively: CommandId,
+    pub delete_folds_recursively: CommandId,
     pub goto_next_fold: CommandId,
     pub goto_prev_fold: CommandId,
     pub toggle_fold_enable: CommandId,
@@ -546,6 +549,27 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:delete-fold-at-cursor",
             "Vim's `zd`: delete the fold containing the cursor.",
             AppEffect::DeleteFoldAtCursor,
+        ),
+        open_folds_recursively: register_simple(
+            registry,
+            "action:open-folds-recursively",
+            "Vim's `zO`: open every fold containing the cursor and the folds \
+             nested inside them. In Visual, over every selected line.",
+            AppEffect::OpenFoldsRecursively,
+        ),
+        close_folds_recursively: register_simple(
+            registry,
+            "action:close-folds-recursively",
+            "Vim's `zC`: close every fold containing the cursor. In Visual, \
+             every fold containing a selected line.",
+            AppEffect::CloseFoldsRecursively,
+        ),
+        delete_folds_recursively: register_simple(
+            registry,
+            "action:delete-folds-recursively",
+            "Vim's `zD`: delete the innermost fold containing the cursor and the \
+             folds nested inside it. In Visual, the folds inside the selection.",
+            AppEffect::DeleteFoldsRecursively,
         ),
         goto_next_fold: register_simple(
             registry,
@@ -1821,6 +1845,15 @@ mod tests {
             (ids.cycle_folds_global, "action:fold-cycle-global"),
             (ids.goto_parent_fold, "action:fold-goto-parent"),
             (ids.delete_fold_at_cursor, "action:delete-fold-at-cursor"),
+            (ids.open_folds_recursively, "action:open-folds-recursively"),
+            (
+                ids.close_folds_recursively,
+                "action:close-folds-recursively",
+            ),
+            (
+                ids.delete_folds_recursively,
+                "action:delete-folds-recursively",
+            ),
             (ids.goto_next_fold, "action:goto-next-fold"),
             (ids.goto_prev_fold, "action:goto-prev-fold"),
             (ids.toggle_fold_enable, "action:toggle-fold-enable"),

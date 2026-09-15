@@ -226,7 +226,7 @@ mod tests {
             &h,
             &[z, n.clone()],
             b.delete,
-            n,
+            Some(n),
             &b,
             &so,
             &sm,

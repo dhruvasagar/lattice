@@ -21,7 +21,7 @@ detection.
 > operator semantics described here are the **planned** v1
 > behavior tracked under task C.2 in
 > [`../dev/operations/implementation.md`](../dev/operations/implementation.md). Manual folds
-> (`zf` / `zo` / `zc` / `za` / `zR` / `zM` / `zd`) are
+> (`zf` / `zo` / `zc` / `za` / `zR` / `zM` / `zd` / `zO` / `zC` / `zD`) are
 > shipped today; the rest of this doc is the contract for
 > the rollout.
 
@@ -31,7 +31,8 @@ detection.
 
 | Keystroke / command | Meaning                                                                    |
 |---------------------|----------------------------------------------------------------------------|
-| `zf` (visual)       | Create a manual fold over the visual selection                             |
+| `zf{motion}`        | Create a closed manual fold over the lines the motion covers (`zfj`, `zfip`) |
+| `zf` (Visual)       | Create a closed manual fold over the selected lines                        |
 | `za`                | Toggle the fold under cursor (open ↔ closed)                               |
 | `zo`                | Open the fold under cursor                                                 |
 | `zc`                | Close the fold under cursor                                                |
@@ -40,10 +41,21 @@ detection.
 | `z<Space>` / `:fold-cycle` | **Org-cycle**: the heading under the cursor (FOLDED → CHILDREN → SUBTREE), or — when not on a fold — the whole buffer |
 | `z<Tab>` / `:fold-cycle-global` | **Org-cycle** the whole buffer explicitly: OVERVIEW → CONTENTS → SHOW-ALL |
 | `zd`                | Delete the fold under cursor (manual folds only; computed folds re-emerge) |
+| `zO`                | Open the folds under the cursor, and every fold nested inside them         |
+| `zC`                | Close every fold containing the cursor line                                |
+| `zD`                | Delete the innermost fold at the cursor and every fold nested inside it    |
 | `zj` / `zk`         | Jump to the next / previous **visible** fold start / end                   |
 | `zp` / `:fold-goto-parent` | Jump to the **parent** heading (one level up the fold hierarchy)    |
 | `:set foldmethod=X` | Pick the fold provider: `manual` / `indent` / `markdown` / `syntax`        |
 | `:set nofoldenable` | Hide all fold affordances (folds still exist, all lines render)            |
+
+In **Visual**, `zo` / `zc` / `zd` / `zO` / `zC` / `zD` act on every selected
+line and end Visual, as in vim: `zo` opens one level, `zC` also closes a fold
+that encloses the selection, and `zD` leaves such a fold alone. `za` still
+toggles the fold at the cursor and keeps Visual. The scrolls (`zz`, `zt`,
+`zb`, `zl`, ...) and `zj` / `zk` work in Visual too, and `<C-f>` / `<C-b>` /
+`<C-e>` / `<C-y>` scroll in Visual and Select. None of the `z` commands
+work in Select, where `z` is typed text.
 
 ---
 

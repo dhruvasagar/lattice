@@ -2212,6 +2212,7 @@ impl Document for MultibufferDocumentHandle {
             cancel,
             lattice_core::IndentUnit::default(),
             None,
+            None,
         )
     }
 
@@ -2238,7 +2239,16 @@ impl Document for MultibufferDocumentHandle {
         // front of the user, and in a composed view that line IS the composed
         // one — so defaulting it to `None` would make `;` dead here for no
         // reason other than the field being new.
-        self.dispatch_composed(invocation, cursor, cancel, env.indent, env.last_find)
+        // VM.3i: so is the fold resolver. The host's folds for a composed
+        // view are composed-view lines, which are the lines `zj` walks here.
+        self.dispatch_composed(
+            invocation,
+            cursor,
+            cancel,
+            env.indent,
+            env.last_find,
+            env.fold_resolver,
+        )
     }
 }
 
@@ -2357,6 +2367,7 @@ impl MultibufferDocumentHandle {
         cancel: CancellationToken,
         indent: lattice_core::IndentUnit,
         last_find: Option<lattice_grammar::LastFind>,
+        fold_resolver: Option<lattice_runtime::FoldResolverHandle>,
     ) -> Pending<Effect> {
         // K.4.11 (2026-06-02): the multibuffer now owns grammar
         // dispatch directly. Pre-K.4.11 this returned
@@ -2469,6 +2480,8 @@ impl MultibufferDocumentHandle {
                 selection: None,
                 // VM.3c: forwarded, not deferred — see `dispatch_with_env`.
                 last_find,
+                // VM.3i: forwarded, not deferred — see `dispatch_with_env`.
+                fold_resolver: fold_resolver.as_deref().map(|r| r as _),
             },
         )
         .map_err(RuntimeError::Grammar);

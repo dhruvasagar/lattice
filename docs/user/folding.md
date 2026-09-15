@@ -44,7 +44,7 @@ detection.
 | `zO`                | Open the folds under the cursor, and every fold nested inside them         |
 | `zC`                | Close every fold containing the cursor line                                |
 | `zD`                | Delete the innermost fold at the cursor and every fold nested inside it    |
-| `zj` / `zk`         | Jump to the next / previous **visible** fold start / end                   |
+| `zj` / `zk`         | Move to the next / previous **visible** fold start / end. Motions: `dzj`, `yzk`, and `zj` in Visual work |
 | `zp` / `:fold-goto-parent` | Jump to the **parent** heading (one level up the fold hierarchy)    |
 | `:set foldmethod=X` | Pick the fold provider: `manual` / `indent` / `markdown` / `syntax`        |
 | `:set nofoldenable` | Hide all fold affordances (folds still exist, all lines render)            |

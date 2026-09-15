@@ -124,6 +124,25 @@ impl lattice_grammar::IndentResolver for SnapshotIndentResolver {
     }
 }
 
+/// VM.3i: `zj` / `zk`'s view of the fold table for one dispatch.
+///
+/// Owned, because the handle crosses the actor channel. It snapshots the fold
+/// SPANS (a `Copy` slice, one allocation) and builds the fold index only when
+/// `zj` / `zk` actually ask, so a keystroke that isn't a fold motion pays for
+/// the copy and nothing more. The render-state publish already copies the
+/// same slice every keystroke; reusing that one was rejected because it can
+/// lag the table (a macro replays `zc` then `zj` before any publish).
+pub struct HostFoldResolver {
+    folds: std::sync::Arc<[lattice_core::Fold]>,
+    foldenable: bool,
+}
+
+impl lattice_grammar::FoldResolver for HostFoldResolver {
+    fn fold_edge(&self, line: u32, forward: bool) -> Option<u32> {
+        crate::folds::visible_fold_edge(&self.folds, self.foldenable, line, forward)
+    }
+}
+
 /// IN.2: where predictive indent gets its answer for one keystroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndentSource {
@@ -21058,6 +21077,15 @@ impl Editor {
                 // path, so a `None` here is a `;` that never works no matter
                 // how well the motion itself is tested.
                 last_find: self.last_find,
+                // VM.3i: `zj` / `zk` are motions and come through this path, so
+                // the fold table has to. None at all for a buffer without folds,
+                // so the common keystroke copies nothing.
+                fold_resolver: (!self.folds.is_empty()).then(|| {
+                    std::sync::Arc::new(HostFoldResolver {
+                        folds: std::sync::Arc::from(self.folds.as_slice()),
+                        foldenable: self.foldenable(),
+                    }) as lattice_runtime::FoldResolverHandle
+                }),
                 // OT.4: the same `h.snapshot()` bump the Action gate takes —
                 // O(1) `ArcSwap` load, no parse on the dispatch thread — so
                 // a PLUGIN motion or text object can mint a `tree-snapshot`
@@ -22400,22 +22428,15 @@ impl Editor {
     /// Nearest-first is preserved by picking the min / max LINE among the
     /// surviving candidates; anchors decide eligibility, not ordering.
     pub fn do_goto_fold(&mut self, forward: bool) {
-        let line = self.cursor.line;
-        let idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
-        let here = idx.visible_anchor(line);
-        let target = if forward {
-            self.folds
-                .iter()
-                .map(|f| f.start_line)
-                .filter(|&s| s > line && idx.visible_anchor(s) > here)
-                .min()
-        } else {
-            self.folds
-                .iter()
-                .map(|f| f.end_line)
-                .filter(|&e| e < line && idx.visible_anchor(e) < here)
-                .max()
-        };
+        // VM.3i: `zj` / `zk` are motions now (`motion:goto-next-fold`). This
+        // stays for `AppEffect::GotoNextFold` / `GotoPrevFold`, which cross
+        // WIT, and shares the motion's edge rule rather than keeping a copy.
+        let target = crate::folds::visible_fold_edge(
+            &self.folds,
+            self.foldenable(),
+            self.cursor.line,
+            forward,
+        );
         if let Some(t) = target {
             self.cursor = lattice_protocol::position::Position::new(t, 0);
         } else {

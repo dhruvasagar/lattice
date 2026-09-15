@@ -372,9 +372,34 @@ vim row, Visual and Normal), `lattice-ui-tui`'s `folds.rs` (`zf` as an operator
 and the scrolls, over real keystrokes), grammar tests for the operator's line
 span, and a WIT round-trip for `CreateFold` with non-default values.
 
-### VM.3i 📝 — `zj` / `zk` are motions
+### VM.3i ✅ — `zj` / `zk` are motions
 
 Vim's `zj` / `zk` move to the start of the next fold / the end of the previous
-one and compose with an operator (`dzj`). They're typed as actions here, so
-they're dead in Visual and after an operator. Re-type them as motions, like
-`%` and `;` / `,`.
+one and "can be used after an operator". They were host actions, so `dzj`,
+`yzk` and `zj` in Visual were all unbound.
+
+Checked in vim 9.2 (headless, folds on 4–6 and 9–10): both are charwise and
+exclusive, land on column 1, repeat with a count, count a closed fold as one,
+and leave the cursor where it is when there's no fold that way. `dzk` from
+12,3 deletes `line 10\nline 11\nli`.
+
+**Mechanism:** a `FoldResolver` seam, the `IndentResolver` pattern. Folds and
+their visibility are host state, so the grammar asks the host for the next
+edge (`GrammarEnv::fold_resolver` → `MotionContext`, owned as
+`FoldResolverHandle` in `DispatchEnv` across the actor) and the motions
+(`motion:goto-next-fold` / `-prev-fold`) walk the answers. The host snapshots
+the fold spans only when the buffer has folds, and builds the fold index only
+when `zj` / `zk` ask. `folds::visible_fold_edge` is the one edge rule, shared
+with `do_goto_fold`, which stays for the WIT `goto-next-fold` / `goto-prev-fold`
+effects. The multibuffer forwards the resolver like `last_find`. Not on WIT:
+a plugin motion has no fold table to ask.
+
+**Known gap, engine-wide:** `dzj` from 1,3 in vim deletes `ne 1\nline 2\nline 3`
+and keeps line 3's newline, by `:h exclusive-linewise` ("the end is moved to
+the end of the previous line"). Lattice doesn't implement that rule for any
+motion (`d}` shares it), so `dzj` also takes the newline. Fixing it belongs in
+`motion_to_range`, for every exclusive motion, not in this slice.
+
+UX note: `zj` with no fold ahead used to echo "no more folds"; as a motion it
+is silent, which is what vim does.
+

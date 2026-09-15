@@ -111,6 +111,10 @@ pub struct MotionContext<'a> {
     /// reverse; every other motion ignores it. `Copy`, so carrying it costs
     /// nothing on the keystroke path.
     pub last_find: Option<LastFind>,
+    /// VM.3i: the fold edges `zj` / `zk` step between, copied from
+    /// [`GrammarEnv::fold_resolver`]. Borrowed, so a motion that ignores it
+    /// pays nothing.
+    pub fold_resolver: Option<&'a dyn FoldResolver>,
 }
 
 /// What a motion's evaluator returned.
@@ -304,6 +308,22 @@ pub trait IndentResolver {
     fn levels_for_line(&self, line: u32) -> Option<i32>;
 }
 
+/// VM.3i: where `zj` / `zk` find the next fold edge.
+///
+/// Folds, and which of them are visible, are host state: the fold table and
+/// `foldenable` live on the editor, and "a closed fold is counted as one fold"
+/// needs the host's fold index. So the grammar asks this, the way `=` asks
+/// [`IndentResolver`], and the motion itself stays a pure function of the
+/// answer.
+///
+/// `None` from `fold_edge` means there's no edge that way, and the motion
+/// leaves the cursor where it is, as vim does.
+pub trait FoldResolver {
+    /// The nearest visible fold START after `line` (`forward`), or the
+    /// nearest visible fold END before it (`!forward`).
+    fn fold_edge(&self, line: u32, forward: bool) -> Option<u32>;
+}
+
 pub trait ScopeResolver {
     fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
 
@@ -479,6 +499,13 @@ pub struct GrammarEnv<'a> {
     /// before the user has pressed any `f` — makes `;` a no-op, which is what
     /// vim does.
     pub last_find: Option<LastFind>,
+    /// VM.3i: the buffer's fold edges, so `zj` / `zk` can be motions.
+    ///
+    /// Carried here for the reason `last_find` is: `zj` reaches the grammar
+    /// through the ACTOR path on every real keystroke, so a field missing
+    /// here is one the motion never sees. `None` — no folds, or a caller
+    /// with no fold table — leaves `zj` / `zk` where they are.
+    pub fold_resolver: Option<&'a dyn FoldResolver>,
 }
 
 /// Context passed to a text-object's evaluator.

@@ -495,6 +495,55 @@ mod tests {
         assert_eq!(a.editor.cursor, cursor);
     }
 
+    /// VM.3i: `zk` composes with an operator. vim 9.2, folds on 4–6 and 9–10,
+    /// `dzk` from 12,3 deletes "line 10\nline 11\nli" charwise, landing on
+    /// 10,1. (`dzj` differs from vim by one newline: vim's exclusive-linewise
+    /// rule, which lattice's engine doesn't implement for any motion; see the
+    /// slice plan.)
+    /// VM.3i: a count repeats `zj`, over real keystrokes (the host's
+    /// `dispatch_chord` harness doesn't carry counts). vim 9.2: `2zj` from 1,3,
+    /// folds on 4–6 and 9–10, lands on 9,1.
+    #[test]
+    fn a_count_repeats_zj() {
+        let text: String = (1..=14).map(|n| format!("line {n}\n")).collect();
+        let mut a = app_with(&text, 20);
+        for (start_line, end_line) in [(3, 5), (8, 9)] {
+            a.editor.folds.push(Fold {
+                start_line,
+                end_line,
+                closed: false,
+                identity: None,
+            });
+        }
+        a.editor.cursor = Position::new(0, 2);
+        press_chars(&mut a, "2zj");
+        assert_eq!(a.editor.cursor, Position::new(8, 0));
+    }
+
+    #[test]
+    fn dzk_deletes_back_to_the_previous_fold_end() {
+        let text: String = (1..=14).map(|n| format!("line {n}\n")).collect();
+        let mut a = app_with(&text, 20);
+        for (start_line, end_line) in [(3, 5), (8, 9)] {
+            a.editor.folds.push(Fold {
+                start_line,
+                end_line,
+                closed: false,
+                identity: None,
+            });
+        }
+        a.editor.cursor = Position::new(11, 2);
+        press_chars(&mut a, "dzk");
+        let after = a.editor.document.snapshot().buffer.as_string();
+        assert_eq!(
+            after.lines().nth(9),
+            Some("ne 12"),
+            "lines 10-12 join at the deleted span: {after:?}"
+        );
+        assert_eq!(after.lines().count(), 12);
+        assert_eq!(a.editor.cursor, Position::new(9, 0));
+    }
+
     #[test]
     fn zo_opens_fold_at_cursor() {
         let mut a = app_with("a\nb\nc", 10);

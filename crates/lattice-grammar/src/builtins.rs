@@ -722,6 +722,29 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             args_schema: vec![],
         },
     );
+    // VM.3i: vim's `zj` / `zk`. Charwise and exclusive (vim 9.2: `dzk` from
+    // 12,3 deletes "line 10\nline 11\nli"), not jumps, and "can be used after
+    // an operator". They were host actions, so `dzj` and `vzj` were unbound.
+    let goto_next_fold = registry.register_motion(
+        "motion:goto-next-fold",
+        "Move to the start of the next fold; a closed fold counts as one (vim's `zj`).",
+        MotionSpec {
+            jump: false,
+            exclusive: true,
+            apply: Arc::new(motion_goto_next_fold),
+            args_schema: vec![],
+        },
+    );
+    let goto_prev_fold = registry.register_motion(
+        "motion:goto-prev-fold",
+        "Move to the end of the previous fold; a closed fold counts as one (vim's `zk`).",
+        MotionSpec {
+            jump: false,
+            exclusive: true,
+            apply: Arc::new(motion_goto_prev_fold),
+            args_schema: vec![],
+        },
+    );
 
     Builtins {
         word_forward,
@@ -750,6 +773,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         find_repeat,
         find_repeat_reverse,
         match_pair,
+        goto_next_fold,
+        goto_prev_fold,
         delete,
         change,
         yank,
@@ -827,6 +852,9 @@ pub struct Builtins {
     /// (`d%` deletes a bracketed span, `v%` selects one), and it took being
     /// typed as an action for `d%` and `v%` to be silently unbound here.
     pub match_pair: MotionId,
+    /// VM.3i: vim's `zj` / `zk`, as the motions they are in vim.
+    pub goto_next_fold: MotionId,
+    pub goto_prev_fold: MotionId,
     pub delete: OperatorId,
     pub change: OperatorId,
     pub yank: OperatorId,
@@ -1192,6 +1220,42 @@ fn scan_backward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Op
         }
         i -= 1;
     }
+}
+
+/// VM.3i: `zj` (`forward`) / `zk` — the next fold start / previous fold end,
+/// `count` times. The host decides which folds are visible (a closed fold
+/// counts as one, vim's rule); this only walks the answers.
+///
+/// No resolver, or no edge that way, leaves the cursor where it is: vim moves
+/// nothing and says nothing. A count that runs out of folds stops at the last
+/// edge it reached.
+fn motion_goto_fold(ctx: &MotionContext, forward: bool) -> Result<MotionResult, CommandError> {
+    let mut target = ctx.from;
+    if let Some(folds) = ctx.fold_resolver {
+        let mut line = ctx.from.line;
+        for _ in 0..ctx.count.get().max(1) {
+            match folds.fold_edge(line, forward) {
+                Some(edge) => {
+                    line = edge;
+                    target = Position::new(edge, 0);
+                }
+                None => break,
+            }
+        }
+    }
+    Ok(MotionResult {
+        target,
+        linewise: false,
+        exclusive: None,
+    })
+}
+
+fn motion_goto_next_fold(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    motion_goto_fold(ctx, true)
+}
+
+fn motion_goto_prev_fold(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    motion_goto_fold(ctx, false)
 }
 
 fn motion_paragraph_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
@@ -1683,6 +1747,7 @@ fn find_repeat(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, Comma
         path: ctx.path,
         syntax: ctx.syntax,
         last_find: ctx.last_find,
+        fold_resolver: ctx.fold_resolver,
     };
     let mut result = match kind {
         FindKind::Forward => motion_find_char_forward(&sub)?,
@@ -3573,6 +3638,108 @@ mod tests {
             &cancel,
         );
         assert!(result.is_ok());
+    }
+
+    // ---- VM.3i: `zj` / `zk` are motions ----
+
+    /// Every fold open, so edges are plain starts / ends: which folds are
+    /// VISIBLE is the host's rule and is tested there.
+    struct OpenFolds(Vec<(u32, u32)>);
+
+    impl crate::registry::FoldResolver for OpenFolds {
+        fn fold_edge(&self, line: u32, forward: bool) -> Option<u32> {
+            if forward {
+                self.0.iter().map(|f| f.0).filter(|&s| s > line).min()
+            } else {
+                self.0.iter().map(|f| f.1).filter(|&e| e < line).max()
+            }
+        }
+    }
+
+    /// The layout of the vim 9.2 check: folds on lines 4–6 and 9–10 (1-based),
+    /// in a 14-line buffer.
+    fn vim_folds() -> OpenFolds {
+        OpenFolds(vec![(3, 5), (8, 9)])
+    }
+
+    fn fold_motion(
+        from: Position,
+        count: Option<u32>,
+        forward: bool,
+        folds: Option<&OpenFolds>,
+    ) -> Position {
+        let text: String = (1..=14).map(|n| format!("line {n}\n")).collect();
+        let (registry, b, mut doc) = fixture(&text);
+        let id = if forward {
+            b.goto_next_fold
+        } else {
+            b.goto_prev_fold
+        };
+        let mut inv = CommandInvocation::of(id.0);
+        if let Some(n) = count {
+            inv = inv.with_count(crate::command::Count(n));
+        }
+        let env = crate::registry::GrammarEnv {
+            fold_resolver: folds.map(|f| f as &dyn crate::registry::FoldResolver),
+            ..Default::default()
+        };
+        let effect = crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            from,
+            inv,
+            &CancellationToken::never(),
+            env,
+        )
+        .expect("zj / zk dispatch");
+        match effect {
+            Effect::CursorMove(pos) => pos,
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+    }
+
+    /// vim: `zj` from 1,3 → 4,1; `2zj` → 9,1; `zk` from 12,3 → 10,1.
+    #[test]
+    fn zj_and_zk_step_to_fold_edges_at_column_zero() {
+        let folds = vim_folds();
+        assert_eq!(
+            fold_motion(Position::new(0, 2), None, true, Some(&folds)),
+            Position::new(3, 0)
+        );
+        assert_eq!(
+            fold_motion(Position::new(0, 2), Some(2), true, Some(&folds)),
+            Position::new(8, 0)
+        );
+        assert_eq!(
+            fold_motion(Position::new(11, 2), None, false, Some(&folds)),
+            Position::new(9, 0)
+        );
+    }
+
+    /// vim: `zj` with no fold ahead leaves the cursor where it is. So does a
+    /// caller with no fold table at all.
+    #[test]
+    fn zj_without_an_edge_stays_put() {
+        let folds = vim_folds();
+        assert_eq!(
+            fold_motion(Position::new(11, 2), None, true, Some(&folds)),
+            Position::new(11, 2)
+        );
+        assert_eq!(
+            fold_motion(Position::new(0, 2), None, true, None),
+            Position::new(0, 2)
+        );
+    }
+
+    /// A count larger than the folds available stops at the last edge reached.
+    #[test]
+    fn a_count_past_the_last_fold_stops_at_the_last_edge() {
+        let folds = vim_folds();
+        assert_eq!(
+            fold_motion(Position::new(0, 2), Some(9), true, Some(&folds)),
+            Position::new(8, 0)
+        );
     }
 
     fn repro_word_motion_punct(

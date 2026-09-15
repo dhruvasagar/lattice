@@ -197,6 +197,7 @@ pub fn execute_motion_only(
         path: None,
         syntax: env.syntax,
         last_find: env.last_find,
+        fold_resolver: env.fold_resolver,
     };
     let result = (motion.apply)(&ctx)?;
     Ok(result.target)
@@ -258,6 +259,7 @@ fn execute_motion(
         path: document.path(),
         syntax: env.syntax,
         last_find: env.last_find,
+        fold_resolver: env.fold_resolver,
     };
     let result = (motion.apply)(&ctx)?;
     // Motions emit a cursor-only jump — the modal engine's caller
@@ -685,6 +687,7 @@ fn resolve_target(
                 path: document.path(),
                 syntax: env.syntax,
                 last_find: env.last_find,
+                fold_resolver: env.fold_resolver,
             };
             let r = (motion.apply)(&ctx)?;
             let mut target = r.target;

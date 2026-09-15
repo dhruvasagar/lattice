@@ -280,3 +280,62 @@ fn normal_z_upper_d_deletes_the_innermost_fold_and_what_it_contains() {
     assert_eq!(state(&e, 2, 5), Some(false));
     assert_eq!(state(&e, 1, 8), Some(false));
 }
+
+// ── VM.3i: `zj` / `zk` are motions ────────────────────────────────────────
+
+/// The vim 9.2 layout for `zj` / `zk`: folds on 4–6 and 9–10 (1-based).
+fn zj_layout(editor: &mut Editor, closed: bool) {
+    editor.folds = vec![fold(3, 5, closed), fold(8, 9, closed)];
+}
+
+/// vim: `zj` from 1,3 → 4,1, again → 9,1, `zk` from 12,3 → 10,1. Through real
+/// chords, so this proves the host hands the motion its fold table on the
+/// actor path, which a grammar test can't.
+#[test]
+fn zj_and_zk_move_through_real_chords() {
+    let mut e = boot();
+    zj_layout(&mut e, false);
+    e.cursor = lattice_protocol::position::Position::new(0, 2);
+    press(&mut e, "zj");
+    assert_eq!((e.cursor.line, e.cursor.byte), (3, 0));
+
+    // A second `zj`, not `2zj`: this harness's `dispatch_chord` doesn't carry
+    // counts. The count form is tested over real keystrokes in lattice-ui-tui.
+    press(&mut e, "zj");
+    assert_eq!((e.cursor.line, e.cursor.byte), (8, 0));
+
+    e.cursor = lattice_protocol::position::Position::new(11, 2);
+    press(&mut e, "zk");
+    assert_eq!((e.cursor.line, e.cursor.byte), (9, 0));
+}
+
+/// vim: "a closed fold is counted as one fold". A fold nested inside a closed
+/// one isn't a stop, because it's on the closed fold's row.
+#[test]
+fn zj_counts_a_closed_fold_as_one() {
+    let mut e = boot();
+    e.folds = vec![fold(3, 7, true), fold(4, 5, true), fold(10, 11, false)];
+    e.cursor = lattice_protocol::position::Position::new(0, 0);
+    press(&mut e, "zj");
+    assert_eq!(e.cursor.line, 3, "test premise: the closed fold's start");
+    press(&mut e, "zj");
+    assert_eq!(
+        e.cursor.line, 10,
+        "the nested fold at 4 is not a second stop"
+    );
+}
+
+/// Being a motion is what makes `zj` live in Visual: the selection grows to
+/// the fold edge and Visual stays.
+#[test]
+fn zj_in_visual_extends_the_selection() {
+    let mut e = boot();
+    zj_layout(&mut e, false);
+    e.cursor = lattice_protocol::position::Position::new(0, 2);
+    press(&mut e, "v");
+    let anchor = e.visual_anchor.expect("`v` arms the anchor");
+    press(&mut e, "zj");
+    assert!(matches!(e.modal, ModalState::Visual(_)));
+    assert_eq!(e.visual_anchor, Some(anchor));
+    assert_eq!((e.cursor.line, e.cursor.byte), (3, 0));
+}

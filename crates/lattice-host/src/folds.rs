@@ -486,6 +486,40 @@ pub fn compute_fold_hash(folds: &[Fold]) -> u64 {
     h.finish()
 }
 
+/// VM.3i: vim's `zj` / `zk` edge from `line` — the nearest fold START after
+/// it (`forward`) or fold END before it — among edges that are VISIBLE.
+///
+/// "A closed fold is counted as one fold": folds nested inside a closed one
+/// render on its row, so they aren't stops. Candidates are compared by the row
+/// they're displayed on ([`FoldIndex::visible_anchor`]), and an edge on the
+/// cursor's own row isn't a destination. The edges returned are still line
+/// numbers, so `zk` from below a collapsed section lands on its last line.
+///
+/// One rule for both callers: the `zj` / `zk` motions (through the host's
+/// fold resolver) and `Editor::do_goto_fold` (the WIT action path).
+pub fn visible_fold_edge(
+    folds: &[Fold],
+    foldenable: bool,
+    line: u32,
+    forward: bool,
+) -> Option<u32> {
+    let idx = FoldIndex::from_folds(folds, foldenable);
+    let here = idx.visible_anchor(line);
+    if forward {
+        folds
+            .iter()
+            .map(|f| f.start_line)
+            .filter(|&s| s > line && idx.visible_anchor(s) > here)
+            .min()
+    } else {
+        folds
+            .iter()
+            .map(|f| f.end_line)
+            .filter(|&e| e < line && idx.visible_anchor(e) < here)
+            .max()
+    }
+}
+
 /// O(log folds) lookup index built once per frame (or per publish) over
 /// a snapshot of the active document's folds.
 ///

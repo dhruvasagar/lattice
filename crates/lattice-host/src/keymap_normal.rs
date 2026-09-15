@@ -770,8 +770,21 @@ pub fn register_normal_bindings(
         &[z.clone(), lit_char('D')],
         actions.delete_folds_recursively,
     );
-    bind_nv(&[z.clone(), lit_char('j')], actions.goto_next_fold);
-    bind_nv(&[z.clone(), lit_char('k')], actions.goto_prev_fold);
+    // VM.3i: `zj` / `zk` are motions, so Normal is the only mode named here:
+    // the keymap's mirror puts them in Visual (not Select, `z` is typed text),
+    // and `expand_grammar_rows` gives them `dzj` / `yzk`.
+    for (key, motion) in [
+        ('j', builtins.goto_next_fold),
+        ('k', builtins.goto_prev_fold),
+    ] {
+        handle.bind(
+            layer,
+            mode,
+            &[z.clone(), lit_char(key)],
+            CommandInvocation::of(motion.0),
+            source(),
+        );
+    }
     bind_nv(&[z, lit_char('i')], actions.toggle_fold_enable);
 
     // ---- Slice 8.g.iii: operator-pending resolution.

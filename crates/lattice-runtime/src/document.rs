@@ -71,6 +71,11 @@ pub type ScopeResolverHandle = Arc<dyn lattice_grammar::ScopeResolver + Send + S
 /// channel; the grammar side sees a bare `&dyn IndentResolver`.
 pub type IndentResolverHandle = Arc<dyn lattice_grammar::IndentResolver + Send + Sync>;
 
+/// VM.3i: the same handle convention for `zj` / `zk`'s fold edges. The host
+/// builds one from its fold table for a dispatch; the grammar sees a bare
+/// `&dyn FoldResolver`.
+pub type FoldResolverHandle = Arc<dyn lattice_grammar::FoldResolver + Send + Sync>;
+
 /// N.1.6 (2026-06-10): the owned, thread-safe per-dispatch environment
 /// for text objects, carried across the actor channel. Bundles the
 /// inputs a text object's `apply` may read — the tree-sitter
@@ -140,6 +145,10 @@ pub struct DispatchEnv {
     /// needs has to travel with the dispatch. `None` is the pre-first-`f`
     /// state and makes `;` a no-op, which is what vim does.
     pub last_find: Option<lattice_grammar::LastFind>,
+    /// VM.3i: the fold edges `zj` / `zk` step between. Same reasoning as
+    /// `last_find`: they're motions on the keystroke path, so they come
+    /// through the actor. `None` for a buffer with no folds.
+    pub fold_resolver: Option<FoldResolverHandle>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

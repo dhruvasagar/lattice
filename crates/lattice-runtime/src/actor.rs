@@ -252,6 +252,9 @@ impl DocumentActor {
                 // the grammar sees, mirroring `scope_resolver` above.
                 let indent_resolver: Option<&dyn lattice_grammar::IndentResolver> =
                     env.indent_resolver.as_deref().map(|r| r as _);
+                // VM.3i: deref the owned fold handle, like `indent_resolver`.
+                let fold_resolver: Option<&dyn lattice_grammar::FoldResolver> =
+                    env.fold_resolver.as_deref().map(|r| r as _);
                 let to_env = lattice_grammar::GrammarEnv {
                     scope_resolver,
                     comment_syntax: env.comment_syntax.as_deref(),
@@ -270,6 +273,7 @@ impl DocumentActor {
                     native_format: env.native_format,
                     selection: env.selection,
                     last_find: env.last_find,
+                    fold_resolver,
                 };
                 // B3b: snapshot the registry wait-free for this dispatch. A
                 // plugin registered at runtime (loader RCU-store into the

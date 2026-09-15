@@ -75,7 +75,8 @@ pub mod snapshot;
 
 pub use actor::DocumentActor;
 pub use document::{
-    ActiveDocument, DispatchEnv, Document, IndentResolverHandle, ScopeResolverHandle,
+    ActiveDocument, DispatchEnv, Document, FoldResolverHandle, IndentResolverHandle,
+    ScopeResolverHandle,
 };
 pub use events::{
     EventAck, EventBus, EventFilter, EventPredicate, PluginEventSink, SubscriptionId,

@@ -743,4 +743,86 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
+
+    // ── VM.3d-1: the current-match highlight follows the cursor ──
+    //
+    // Over real keystrokes on purpose. The rule runs at the end of
+    // `Editor::dispatch`, which `App::apply` reaches on every key; the host's
+    // `dispatch_chord` harness calls `handle_action` directly and skips every
+    // end-of-dispatch step, so a test there sees `current_match` never move.
+
+    /// `foo` on lines 0 and 2, searched for, cursor at 0,0.
+    fn searched_for_foo() -> App {
+        let mut a = app_with("foo bar\nbaz qux\nfoo end\n", 10);
+        a.editor.last_search = Some(lattice_host::state::LastSearch {
+            pattern: "foo".into(),
+            direction: SearchDirection::Forward,
+        });
+        a.editor.refresh_hlsearch_from_last();
+        assert_eq!(
+            a.editor.all_matches.len(),
+            2,
+            "test premise: both matches resolved"
+        );
+        a
+    }
+
+    fn span(line: u32, start: u32, end: u32) -> lattice_protocol::position::Range {
+        lattice_protocol::position::Range::new(Position::new(line, start), Position::new(line, end))
+    }
+
+    /// On a match, anywhere inside it, that match is current.
+    #[test]
+    fn the_match_under_the_cursor_is_current() {
+        let mut a = searched_for_foo();
+        crate::app::test_helpers::press_chars(&mut a, "l");
+        assert_eq!(
+            a.editor.cursor,
+            Position::new(0, 1),
+            "test premise: inside the first `foo`"
+        );
+        assert_eq!(a.editor.current_match, Some(span(0, 0, 3)));
+    }
+
+    /// Moving off a match clears the highlight; moving onto another sets it.
+    /// Under the old rule, `j` left the first match highlighted.
+    #[test]
+    fn the_highlight_follows_the_cursor_between_matches() {
+        let mut a = searched_for_foo();
+        crate::app::test_helpers::press_chars(&mut a, "l");
+        assert_eq!(a.editor.current_match, Some(span(0, 0, 3)));
+
+        crate::app::test_helpers::press_chars(&mut a, "j");
+        assert_eq!(a.editor.cursor.line, 1);
+        assert_eq!(
+            a.editor.current_match, None,
+            "no match on line 1, so nothing is current"
+        );
+
+        crate::app::test_helpers::press_chars(&mut a, "j");
+        assert_eq!(a.editor.cursor.line, 2);
+        assert_eq!(a.editor.current_match, Some(span(2, 0, 3)));
+    }
+
+    /// Just past a match's end is not on it.
+    #[test]
+    fn the_byte_after_a_match_is_not_on_it() {
+        let mut a = searched_for_foo();
+        crate::app::test_helpers::press_chars(&mut a, "lll");
+        assert_eq!(
+            a.editor.cursor,
+            Position::new(0, 3),
+            "test premise: the space after `foo`"
+        );
+        assert_eq!(a.editor.current_match, None);
+    }
+
+    /// With no resolved matches (no search, or after `:nohlsearch`, which
+    /// empties them) nothing is current, wherever the cursor is.
+    #[test]
+    fn no_matches_means_no_current_match() {
+        let mut a = app_with("foo bar\n", 10);
+        crate::app::test_helpers::press_chars(&mut a, "l");
+        assert_eq!(a.editor.current_match, None);
+    }
 }

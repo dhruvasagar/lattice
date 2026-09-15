@@ -559,6 +559,11 @@ impl Editor {
         // transform uses the correct base position.
         self.write_through_caret();
 
+        // VM.3d-1: the current-match highlight follows the cursor. Here, at
+        // the end of every dispatch and before the publish below, so the frame
+        // a keystroke produces already shows the match the cursor is on.
+        self.follow_current_match_to_cursor();
+
         // Phase 5.8.AF.5 / Slice 3a: publish the renderer's read
         // contract at the end of every dispatch. Naive rebuild
         // (every sub-state Arc is fresh); sub-states 3b/3c
@@ -26943,6 +26948,35 @@ impl Editor {
             &lattice_runtime::CancellationToken::never(),
         )
         .unwrap_or_default();
+    }
+
+    /// VM.3d-1: `current_match` is the match the cursor is on, or none.
+    ///
+    /// It used to change only on `/` / `n` / `N` / `*` / `#`, so after a `j`
+    /// or an edit the strong current-match highlight stayed on a match the
+    /// cursor had left. Decided 2026-09-15: derive it from the cursor after
+    /// every dispatch, which is also the convention (Neovim's `CurSearch`
+    /// marks the match under the cursor). `n` / `N` / `*` still land the
+    /// cursor on their match, so they highlight it through this same rule.
+    ///
+    /// Reads `all_matches`, which is already resolved and sorted by start: by
+    /// the search itself, by `refresh_hlsearch_from_last` after an edit, and
+    /// per buffer on a swap. So this is a binary search, not a scan, on every
+    /// keystroke. `:nohlsearch` empties `all_matches`, so it can't bring the
+    /// highlight back. While the `/`·`?` line is open, the live preview owns
+    /// both fields and this leaves them alone.
+    pub fn follow_current_match_to_cursor(&mut self) {
+        if self.search_line_active() {
+            return;
+        }
+        let cursor = self.cursor;
+        // Matches don't overlap (`find_all` advances past each one), so the
+        // only candidate is the last match starting at or before the cursor.
+        let after = self.all_matches.partition_point(|m| m.start <= cursor);
+        self.current_match = after
+            .checked_sub(1)
+            .map(|i| self.all_matches[i])
+            .filter(|m| cursor < m.end || cursor == m.start);
     }
 
     /// Re-resolve the hlsearch overlay against whatever buffer just

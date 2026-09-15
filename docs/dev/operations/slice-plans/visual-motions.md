@@ -283,7 +283,26 @@ Checked in vim 9.2 before landing (headless, `ve<C-g>` over `beta`): `o`, `iw`
 and `aw` each replace the selection and enter Insert. UX cost: inside Select,
 `o` and `iw` type; `<C-g>` flips to Visual for both, as in vim.
 
-### VM.3d 📝 — `n` / `N` / `*` / `#`, and where `current_match` belongs
+### VM.3d-1 ✅ — the current-match highlight follows the cursor
+
+Decided 2026-09-15 (user). `current_match` drives the strong current-match
+highlight and was set only by `/` / `n` / `N` / `*` / `#`, so it stayed on a
+match after a `j` or an edit moved the cursor off it. It's now derived after
+every dispatch: `Editor::follow_current_match_to_cursor`, called at the end of
+`dispatch_chord_with_outcome` right after `write_through_caret` and before the
+publish, binary-searches the already-resolved `all_matches` for the match
+containing the cursor. That's the Neovim `CurSearch` convention.
+
+`:nohlsearch` empties `all_matches`, so it can't resurrect the highlight; the
+`/`·`?` live preview owns both fields while that line is open. Renderers read
+`current_match` from render state as before, so neither changed. Terminal
+panes mirror search hits into their grid separately, so they keep the
+old behaviour until VM.3d-2 routes `n` / `N` there through the same motion.
+
+This is the first half of VM.3d on its own because it's UX-visible and
+independent of making `n` a motion.
+
+### VM.3d-2 📝 — `n` / `N` / `*` / `#`, and where `current_match` belongs
 
 **Not the same shape as `%` and `;`, and worth reading before starting.**
 `repeat_search` does far more than compute a position: it sets
@@ -292,13 +311,11 @@ and `aw` each replace the selection and enter Insert. UX cost: inside Select,
 refreshes the terminal search mirror. A motion returns only a `Position`, so
 converting `n` naively drops all of it silently.
 
-The way out is that `current_match` should not be `n`'s job at all — it is
-"the match the cursor is sitting on", so the host can recompute it after ANY
-dispatch from `last_search` + cursor. That is kind-free, and strictly more
-correct than today: `current_match` currently updates only on `n` / `N` / `/`
-and goes stale after a `j` or an edit. It also touches hlsearch painting,
-which is UX-visible, so it is the FIRST step of this slice rather than a
-side effect of it.
+`current_match` is no longer `n`'s job: VM.3d-1 derives it from the cursor
+after every dispatch, so a search motion only has to move the cursor. What's
+left is the wrap echo, E486 (with the operator cancelled, as vim does), and
+recording the pattern for `*` / `#`, via motion feedback in the grammar
+(decided 2026-09-15; see `scratchpad/vm3L_vm3d_draft.md` for vim's results).
 
 The pattern itself reaches the grammar the same way `last_find` does.
 

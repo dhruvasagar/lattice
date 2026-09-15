@@ -244,6 +244,11 @@ nothing.
 | `*`         | Search forward for word under cursor            |
 | `#`         | Search backward for word under cursor           |
 
+With a search active, the match the cursor is on gets the stronger
+current-match highlight. Move off it (`j`, an edit, a click) and only the
+ordinary match highlight remains; land on another match and it becomes
+current. `:nohlsearch` clears both.
+
 ---
 
 ## Operators

@@ -23662,60 +23662,28 @@ impl Editor {
         }
     }
 
-    /// Vim's `%` -- jump to the matching bracket. Scans the
-    /// current line from `cursor.byte` for the first
-    /// `()[]{}` and jumps to its match.
+    /// `AppEffect::MatchBracket` — the plugin-boundary spelling of `%`.
+    ///
+    /// VM.3b moved the scan itself into `motion:match-pair`, so the `%` chord
+    /// no longer comes through here: it dispatches the motion like every other
+    /// motion, which is what gives it `d%` / `v%` / `y%` and a Visual row for
+    /// free. This arm survives because `AppEffect::MatchBracket` crosses the
+    /// WIT boundary (`boundary_app_effect.rs`) and a guest may still emit it —
+    /// and it delegates rather than keeping a second copy of the scan, because
+    /// two implementations of `%` is exactly the drift VM.1 spent a slice
+    /// removing from the keymap.
+    ///
+    /// The jump-list entry and the fold-open come from the motion path's
+    /// `is_jump_motion` handling (VM.3a), so they are not repeated here.
     pub fn do_match_bracket(&mut self) {
-        let text = self.document.text();
-        let bytes = text.as_bytes();
-        let cursor_byte = match self
-            .document
-            .snapshot()
-            .buffer
-            .position_to_byte(self.cursor)
-        {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let mut idx = cursor_byte;
-        let mut bracket = None;
-        while idx < bytes.len() && bytes[idx] != b'\n' {
-            if matches!(bytes[idx], b'(' | b')' | b'[' | b']' | b'{' | b'}') {
-                bracket = Some((idx, bytes[idx]));
-                break;
-            }
-            idx += 1;
-        }
-        let Some((start, b)) = bracket else {
-            self.set_message(EchoLevel::Error, "no bracket on this line".to_string());
-            return;
-        };
-        let (open, close, forward) = match b {
-            b'(' => (b'(', b')', true),
-            b')' => (b'(', b')', false),
-            b'[' => (b'[', b']', true),
-            b']' => (b'[', b']', false),
-            b'{' => (b'{', b'}', true),
-            b'}' => (b'{', b'}', false),
-            _ => return,
-        };
-        let pre_jump = self.cursor;
-        let target = if forward {
-            scan_forward_for_match(bytes, start, open, close)
-        } else {
-            scan_backward_for_match(bytes, start, open, close)
-        };
-        match target {
-            Some(t) => {
-                if let Ok(pos) = self.document.snapshot().buffer.byte_to_position(t) {
-                    self.push_position_history(pre_jump, PositionSource::AutoJump);
-                    self.cursor = pos;
-                    self.auto_open_folds_at_cursor();
-                }
-            }
-            None => {
-                self.set_message(EchoLevel::Error, "unmatched bracket".to_string());
-            }
+        let inv = lattice_grammar::CommandInvocation::of(self.builtins.match_pair.0);
+        let before = self.cursor;
+        let mut out = DispatchOutcome::default();
+        self.run_document_invocation(inv, &mut out);
+        if self.cursor == before {
+            // The motion returns the cursor unmoved when there is no bracket
+            // on the line or its partner is missing; vim beeps, we echo.
+            self.set_message(EchoLevel::Error, "no matching bracket".to_string());
         }
     }
 
@@ -35500,48 +35468,6 @@ impl Editor {
     }
 }
 
-/// 5.5.G.4: bracket-match scan helpers — co-moved from
-/// `lattice_ui_tui::app::motions` alongside `do_match_bracket`.
-fn scan_forward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut i = from;
-    loop {
-        if i >= bytes.len() {
-            return None;
-        }
-        let b = bytes[i];
-        if b == open {
-            depth += 1;
-        } else if b == close {
-            depth -= 1;
-            if depth == 0 {
-                return Some(i);
-            }
-        }
-        i += 1;
-    }
-}
-
-fn scan_backward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut i = from;
-    loop {
-        let b = bytes[i];
-        if b == close {
-            depth += 1;
-        } else if b == open {
-            depth -= 1;
-            if depth == 0 {
-                return Some(i);
-            }
-        }
-        if i == 0 {
-            return None;
-        }
-        i -= 1;
-    }
-}
-
 /// 5.5.G.2: pure-editor visual-mode helpers.
 impl Editor {
     /// `v` / `V` / `<C-v>` from Normal -- enter Visual mode at the
@@ -43012,11 +42938,23 @@ impl Editor {
         {
             inv = inv.with_register(reg);
         }
-        // Jump-class motions (gg, G) push history before dispatch so
-        // Ctrl-O can return.
-        if inv.command == self.builtins.goto_first_line.0
-            || inv.command == self.builtins.goto_last_line.0
-        {
+        // VM.3a: is this a JUMP — one of the motions vim records so `<C-o>`
+        // can come back, and opens a fold at the far end of?
+        //
+        // Asked of the registry, not of a hardcoded pair. This used to read
+        // `inv.command == goto_first_line || inv.command == goto_last_line`,
+        // which meant `gg` and `G` were jumps and `}` / `{` / `(` / `)` /
+        // `]f` / `[c` and every plugin motion were not — all of them declaring
+        // `jump: true` into a field nothing read. Org's headline motions set
+        // it with a source comment saying a headline jump "is somewhere you
+        // want `<C-o>` to bring you back from"; it was not.
+        //
+        // Only a BARE motion reaches here as `inv.command`. An operator
+        // targeting a motion arrives as the operator's id, so `d}` correctly
+        // records nothing — vim does not treat an operator+motion as a jump.
+        let is_jump_motion = self.registry.load().motion_is_jump(inv.command);
+        if is_jump_motion {
+            // Before dispatch, so the entry holds where the user WAS.
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
@@ -43063,8 +43001,10 @@ impl Editor {
         let was_visual = matches!(self.modal, ModalState::Visual(_));
         let mut should_exit_visual = false;
         let inv_for_repeat = inv.clone();
-        let is_vertical_jump = inv.command == self.builtins.goto_first_line.0
-            || inv.command == self.builtins.goto_last_line.0;
+        // The same question decides folds. A jump lands somewhere the user
+        // asked for by name, so a closed fold there opens (vim's `foldopen`
+        // ships with `block,mark,percent,search,tag,jump` for exactly this);
+        // an ordinary `j` / `w` crossing a fold snaps past it instead.
         let prev_cursor_line = self.cursor.line;
         match self.dispatch_blocking(inv) {
             Ok(effect) => {
@@ -43075,7 +43015,7 @@ impl Editor {
                     self.last_change = Some(inv_for_repeat);
                 }
                 apply_effect_host(self, effect, out);
-                if is_vertical_jump {
+                if is_jump_motion {
                     self.auto_open_folds_at_cursor();
                 } else {
                     self.snap_cursor_past_closed_folds(prev_cursor_line);
@@ -43542,9 +43482,13 @@ impl Editor {
             // for Action and ExCommand above.
             return false;
         }
-        let is_vertical_jump = inv.command == self.builtins.goto_first_line.0
-            || inv.command == self.builtins.goto_last_line.0;
-        if is_vertical_jump {
+        // VM.3a: the read-only peer of `run_document_invocation`'s jump
+        // handling, and the SECOND copy of the hardcoded
+        // `goto_first_line || goto_last_line` pair. Fixing one and leaving the
+        // other would mean `}` records a jump in a file and not in `:help`,
+        // which is the kind of split nobody discovers deliberately.
+        let is_jump_motion = self.registry.load().motion_is_jump(inv.command);
+        if is_jump_motion {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
@@ -43567,12 +43511,13 @@ impl Editor {
         // Fold-aware landing (bug fix): read-only buffers — help, the
         // dashboard — fold markdown sections too, so a vertical motion must
         // not settle inside a closed fold's hidden body. Mirror
-        // `run_document_invocation`: a vertical jump (`gg` / `G`) auto-opens
-        // the fold at the target; an ordinary motion (`j` / `k`) snaps past
-        // it to the next visible line. Previously this runner skipped the
-        // snap, so `j` on the dashboard walked line-by-line through the
-        // hidden fold body instead of stepping over the closed section.
-        if is_vertical_jump {
+        // `run_document_invocation`: a JUMP (`gg` / `G` / `}` / `]f` / a
+        // plugin's headline motion) auto-opens the fold at the target; an
+        // ordinary motion (`j` / `k`) snaps past it to the next visible line.
+        // Previously this runner skipped the snap, so `j` on the dashboard
+        // walked line-by-line through the hidden fold body instead of
+        // stepping over the closed section.
+        if is_jump_motion {
             self.auto_open_folds_at_cursor();
         } else {
             self.snap_cursor_past_closed_folds(prev_cursor_line);

@@ -2598,13 +2598,18 @@ mod tests {
         }
     }
 
+    /// VM.3b: `%` resolves to the MOTION, not `action:match-bracket`.
+    ///
+    /// The change is the point of the test, not incidental to it. As an
+    /// action `%` could not take an operator and could not be mirrored into
+    /// Visual, so `d%` / `y%` / `v%` were all unbound — vim calls `%` a
+    /// motion and composes all three.
     #[test]
-    fn percent_emits_match_bracket() {
+    fn percent_emits_the_match_pair_motion() {
         let (_, b) = fixture();
-        let a = shared_actions();
         match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('%'))) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.match_bracket),
-            other => panic!("expected Invoke(match_bracket), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, b.match_pair.0),
+            other => panic!("expected Invoke(match_pair), got {other:?}"),
         }
     }
 

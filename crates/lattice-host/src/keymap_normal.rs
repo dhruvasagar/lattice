@@ -368,11 +368,16 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.search_word_under_cursor_backward),
         source(),
     );
+    // VM.3b: `%` is the MOTION, not `action:match-bracket`. Binding the
+    // action left `d%` and `v%` unbound — an action does not compose with an
+    // operator and VM.1's derivation only mirrors motions into Visual. The
+    // action id stays registered because `AppEffect::MatchBracket` crosses the
+    // plugin boundary and a guest may still emit it.
     handle.bind(
         layer,
         mode,
         &[lit_char('%')],
-        CommandInvocation::of(actions.match_bracket),
+        CommandInvocation::of(builtins.match_pair.0),
         source(),
     );
     handle.bind(

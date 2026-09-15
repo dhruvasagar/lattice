@@ -1096,6 +1096,27 @@ impl CommandRegistry {
         self.by_id.get(&id)
     }
 
+    /// Is `id` a motion that vim would call a **jump**?
+    ///
+    /// `MotionSpec::jump` has been declared since the grammar's first slice
+    /// and, until VM.3a, read by nobody: the host decided what counted as a
+    /// jump with a hardcoded `goto_first_line || goto_last_line` in
+    /// `run_document_invocation`. So `}`, `{`, `(`, `)`, the sixteen
+    /// tree-sitter structural motions and every plugin motion declared
+    /// `jump: true` and silently got neither a position-history entry nor a
+    /// fold-open at the destination — org's headline motions say in their own
+    /// source comment that a headline jump "is somewhere you want `<C-o>` to
+    /// bring you back from", and it was not.
+    ///
+    /// `false` for a non-motion or an unregistered id, so a caller can ask
+    /// about any `CommandId` without pre-checking the kind.
+    pub fn motion_is_jump(&self, id: CommandId) -> bool {
+        match self.by_id.get(&id).map(|e| &e.registration) {
+            Some(CommandRegistration::Motion(spec)) => spec.jump,
+            _ => false,
+        }
+    }
+
     /// Borrow the [`ExCommandSpec`] body for an ex-command id. Returns
     /// `None` for ids that aren't ex-commands or aren't registered.
     /// Used by the `:`-line parser front-end so it can call the

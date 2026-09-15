@@ -150,6 +150,8 @@ mod macros;
 mod magit_bindings;
 mod messages;
 mod mode;
+/// VM.3: operator+motion composition, driven through the real keystroke path.
+mod motion_composition;
 mod motions;
 mod oil;
 mod operators;

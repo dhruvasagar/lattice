@@ -807,12 +807,22 @@ fn resolve_grammar_range(
 ///
 /// - **Exclusive** motions (`w`, `b`, `0`, ...) delete up to but not
 ///   including the target: `[min, max)`.
-/// - **Inclusive** motions (`e`, `f`, `t`, `$`, ...) also cover the
-///   character *at* the target. For a forward motion that means extending
-///   the end one character past the target (so `de` deletes through the
-///   last letter of the word, matching vim -- previously the target char
-///   was left behind). For a backward inclusive motion the target already
-///   is the range start, so the range is `[target, cursor)` unchanged.
+/// - **Inclusive** motions (`e`, `f`, `t`, `$`, `%`, ...) also cover the
+///   character at the far end of the range. Vim's rule (`:h exclusive`) is
+///   about the buffer, not about the direction of travel: "the last character
+///   towards the end of the buffer" is included. So a FORWARD inclusive motion
+///   extends one character past the target (`de` deletes through the last
+///   letter of the word), and a BACKWARD one extends one character past the
+///   CURSOR — the range is `[target, cursor + 1)`.
+///
+/// VM.3b fixed the backward half, which used to read `[target, cursor)` — the
+/// exclusive answer wearing the inclusive branch. Nothing noticed because its
+/// only users were `F` and `T`, which vim calls exclusive and which were
+/// registered here as inclusive: two compensating errors that produced the
+/// right range for the wrong reason, and the wrong range the moment a
+/// genuinely-inclusive bidirectional motion arrived. `d%` from the CLOSING
+/// bracket deleted `(abc` and left the `)` behind. `F` / `T` are registered
+/// `exclusive: true` now, so their ranges are bit-identical and say why.
 fn motion_to_range(
     buffer: &lattice_core::Buffer,
     from: Position,
@@ -832,9 +842,10 @@ fn motion_to_range(
         // Forward inclusive: cover the character under the target.
         ProtoRange::new(from, advance_one_char(buffer, to))
     } else {
-        // Backward inclusive: target is the range start; the character
-        // under the original cursor is not part of the operation.
-        ProtoRange::new(to, from)
+        // Backward inclusive: the target is the range start, and the far end
+        // is the character under the ORIGINAL cursor — included, because that
+        // is what inclusive means.
+        ProtoRange::new(to, advance_one_char(buffer, from))
     }
 }
 

@@ -82,7 +82,12 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to the previous occurrence of `args.char` on the current line (vim's `F`).",
         MotionSpec {
             jump: false,
-            exclusive: false,
+            // EXCLUSIVE, which is what vim says (`:h F`) and what `dF` has
+            // always DONE here. It was registered inclusive, and the
+            // backward-inclusive branch of `motion_to_range` happened to
+            // produce the exclusive range anyway — two errors cancelling.
+            // VM.3b fixed that branch, so this has to say what it means.
+            exclusive: true,
             apply: Arc::new(motion_find_char_backward),
             args_schema: vec![],
         },
@@ -102,7 +107,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move to one byte after the previous occurrence of `args.char` (vim's `T`).",
         MotionSpec {
             jump: false,
-            exclusive: false,
+            // Exclusive, per `:h T` — see `find_char_backward` above.
+            exclusive: true,
             apply: Arc::new(motion_till_char_backward),
             args_schema: vec![],
         },
@@ -215,7 +221,17 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Move one line up.",
         MotionSpec {
             jump: false,
-            exclusive: false,
+            // `k` only ever travels backward, so exclusive here reproduces
+            // exactly the range `dk` / `d<C-u>` / `d<PageUp>` produced before
+            // VM.3b fixed the backward-inclusive branch.
+            //
+            // The honest answer is that `k` is LINEWISE in vim and `dk` should
+            // take both whole lines. The engine has no linewise-motion-target
+            // expansion yet (see `motion_rows`' note), and `MotionSpec` has no
+            // flag for it — `linewise` is decided per RESULT. Until that gap
+            // closes, `exclusive` is the only knob and this is the value that
+            // does not silently change what `dk` deletes.
+            exclusive: true,
             apply: Arc::new(motion_line_up),
             args_schema: vec![],
         },
@@ -649,6 +665,22 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         },
     );
 
+    let match_pair = registry.register_motion(
+        "motion:match-pair",
+        "Move to the bracket matching the first one at or after the cursor on this line (vim's `%`).",
+        MotionSpec {
+            // A jump: vim records `%` on the jump list and opens a fold at the
+            // far end (`foldopen` ships with `percent`).
+            jump: true,
+            // INCLUSIVE. `d%` deletes both brackets and everything between —
+            // the defining behaviour, and the reason `exclusive: false` here is
+            // load-bearing rather than a default.
+            exclusive: false,
+            apply: Arc::new(motion_match_pair),
+            args_schema: vec![],
+        },
+    );
+
     Builtins {
         word_forward,
         word_backward,
@@ -673,6 +705,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         line_end,
         goto_first_line,
         goto_last_line,
+        match_pair,
         delete,
         change,
         yank,
@@ -740,6 +773,10 @@ pub struct Builtins {
     pub line_end: MotionId,
     pub goto_first_line: MotionId,
     pub goto_last_line: MotionId,
+    /// VM.3b: vim's `%`. A MOTION, not an action — vim composes it
+    /// (`d%` deletes a bracketed span, `v%` selects one), and it took being
+    /// typed as an action for `d%` and `v%` to be silently unbound here.
+    pub match_pair: MotionId,
     pub delete: OperatorId,
     pub change: OperatorId,
     pub yank: OperatorId,
@@ -986,6 +1023,117 @@ fn buffer_last_line(text: &str) -> u32 {
         lc.saturating_sub(2)
     } else {
         lc.saturating_sub(1)
+    }
+}
+
+/// Vim's `%` — from the cursor, find the first bracket at or after it **on
+/// this line**, then jump to its partner.
+///
+/// Two details that look like implementation choices and are actually vim's
+/// semantics:
+///
+/// - The search for the *starting* bracket stops at the newline. `%` on a line
+///   with no bracket does nothing; it does not go hunting down the buffer.
+/// - Nesting is counted, not pattern-matched, so the partner of the outer `(`
+///   in `(a(b)c)` is the last `)`, not the first.
+///
+/// Byte-indexed on the raw bytes: every bracket is ASCII, and a multi-byte
+/// char cannot contain a byte that equals one, so scanning bytes can neither
+/// miss a bracket nor invent one inside a UTF-8 sequence.
+///
+/// Finding nothing returns the cursor unmoved rather than an error — vim
+/// beeps and stays put, and a `%` that failed should not make `d%` delete
+/// something surprising.
+fn motion_match_pair(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let unmoved = Ok(MotionResult {
+        target: ctx.from,
+        linewise: false,
+    });
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let Ok(cursor_byte) = ctx.buffer.position_to_byte(ctx.from) else {
+        return unmoved;
+    };
+
+    // The starting bracket: first one at or after the cursor, same line.
+    let mut idx = cursor_byte;
+    let mut found = None;
+    while idx < bytes.len() && bytes[idx] != b'\n' {
+        if matches!(bytes[idx], b'(' | b')' | b'[' | b']' | b'{' | b'}') {
+            found = Some((idx, bytes[idx]));
+            break;
+        }
+        idx += 1;
+    }
+    let Some((start, b)) = found else {
+        return unmoved;
+    };
+    let (open, close, forward) = match b {
+        b'(' => (b'(', b')', true),
+        b')' => (b'(', b')', false),
+        b'[' => (b'[', b']', true),
+        b']' => (b'[', b']', false),
+        b'{' => (b'{', b'}', true),
+        b'}' => (b'{', b'}', false),
+        _ => return unmoved,
+    };
+
+    let target = if forward {
+        scan_forward_for_match(bytes, start, open, close)
+    } else {
+        scan_backward_for_match(bytes, start, open, close)
+    };
+    match target.and_then(|t| ctx.buffer.byte_to_position(t).ok()) {
+        Some(pos) => Ok(MotionResult {
+            target: pos,
+            linewise: false,
+        }),
+        None => unmoved,
+    }
+}
+
+/// Walk forward from an opening bracket to its partner, counting nesting.
+/// `from` must index the opening bracket itself, so depth starts at 1 on the
+/// first iteration and the partner is where it returns to 0.
+fn scan_forward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = from;
+    loop {
+        if i >= bytes.len() {
+            return None;
+        }
+        let b = bytes[i];
+        if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+}
+
+/// The backward peer. Walks down to index 0 and checks `i == 0` before
+/// decrementing, because `usize` has no -1 to detect the end with.
+fn scan_backward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = from;
+    loop {
+        let b = bytes[i];
+        if b == close {
+            depth += 1;
+        } else if b == open {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
     }
 }
 

@@ -206,7 +206,15 @@ A motion moves the cursor. After an operator (`d`, `y`, `c`,
 
 | Key   | Motion                                              |
 |-------|-----------------------------------------------------|
-| `%`   | Jump to matching `(`/`)`, `[`/`]`, `{`/`}`, `<`/`>` |
+| `%`   | Jump to matching `(`/`)`, `[`/`]`, `{`/`}`          |
+
+`%` finds the first bracket at or after the cursor **on the
+current line**, then jumps to its partner, counting nesting. It
+is a real motion, so it composes: `d%` deletes the bracketed
+span *including both brackets*, `y%` yanks it, `v%` selects it.
+With no bracket on the line it does nothing rather than hunting
+down the buffer — which also means a failed `d%` deletes
+nothing.
 
 ### Viewport
 

@@ -57,6 +57,7 @@ fn grammar_marshalling(c: &mut Criterion) {
         scope_resolver: None,
         path: None,
         syntax: None,
+        last_find: None,
     };
     c.bench_function("grammar_project_motion_context", |b| {
         b.iter(|| {
@@ -68,6 +69,7 @@ fn grammar_marshalling(c: &mut Criterion) {
     let result = MotionResult {
         target: pos(2, 0),
         linewise: true,
+        exclusive: None,
     };
     c.bench_function("grammar_motion_result_round_trip", |b| {
         b.iter(|| {

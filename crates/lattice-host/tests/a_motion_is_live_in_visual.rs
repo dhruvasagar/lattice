@@ -242,6 +242,7 @@ fn a_mode_layer_motion_gets_its_visual_peer() {
                 Ok(MotionResult {
                     target: ctx.from,
                     linewise: false,
+                    exclusive: None,
                 })
             }),
             args_schema: Vec::new(),

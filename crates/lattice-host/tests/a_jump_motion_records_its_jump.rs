@@ -203,3 +203,97 @@ fn percent_is_a_motion_in_every_mode_that_takes_one() {
         );
     }
 }
+
+// ── VM.3c: `;` and `,` are motions ────────────────────────────────────────
+
+/// `;` repeats the last `f` / `F` / `t` / `T`.
+///
+/// Driven through real chords so the `f`-then-char wildcard capture runs and
+/// `last_find` is populated the way a keystroke populates it — asserting
+/// against a hand-set `editor.last_find` would pass on a build where nothing
+/// ever writes it.
+#[test]
+fn semicolon_repeats_the_last_find() {
+    let mut editor = Editor::boot(CoreDocument::from_text("a.b.c.d\n"));
+    let mut partial = Vec::new();
+    let _ = editor.dispatch_chord(ch('f'), &mut partial);
+    let _ = editor.dispatch_chord(ch('.'), &mut partial);
+    assert_eq!(
+        editor.cursor.byte, 1,
+        "test premise: `f.` lands on the first dot"
+    );
+
+    let _ = editor.dispatch_chord(ch(';'), &mut partial);
+    assert_eq!(editor.cursor.byte, 3, "`;` walks to the next dot");
+    let _ = editor.dispatch_chord(ch(';'), &mut partial);
+    assert_eq!(editor.cursor.byte, 5);
+}
+
+/// `,` repeats it the other way, and — unlike the old host-side action, which
+/// re-dispatched a find-char invocation and so re-captured `last_find` — it
+/// does not change what the NEXT `;` repeats. Vim agrees: `,` reverses the
+/// travel, not the memory.
+#[test]
+fn comma_reverses_without_rewriting_the_memory() {
+    let mut editor = Editor::boot(CoreDocument::from_text("a.b.c.d\n"));
+    let mut partial = Vec::new();
+    for c in ['f', '.', ';'] {
+        let _ = editor.dispatch_chord(ch(c), &mut partial);
+    }
+    assert_eq!(editor.cursor.byte, 3);
+
+    let _ = editor.dispatch_chord(ch(','), &mut partial);
+    assert_eq!(editor.cursor.byte, 1, "`,` walks back to the previous dot");
+
+    let _ = editor.dispatch_chord(ch(';'), &mut partial);
+    assert_eq!(
+        editor.cursor.byte, 3,
+        "`;` still means forward — `,` must not have flipped the remembered kind"
+    );
+}
+
+/// No previous find: the motion returns the cursor rather than erroring, so a
+/// stray `;` is inert and `d;` deletes nothing.
+#[test]
+fn semicolon_with_no_previous_find_does_nothing() {
+    let mut editor = Editor::boot(CoreDocument::from_text("a.b.c\n"));
+    let mut partial = Vec::new();
+    let _ = editor.dispatch_chord(ch(';'), &mut partial);
+    assert_eq!(editor.cursor.byte, 0);
+}
+
+/// And, being motions, they are live in Visual and Select without either mode
+/// naming them — the whole point of VM.1's derivation.
+#[test]
+fn semicolon_and_comma_are_motions_in_every_mode_that_takes_one() {
+    let editor = Editor::boot(CoreDocument::from_text("a.b\n"));
+    let commands = editor.registry.load();
+
+    for c in [';', ','] {
+        let bound = editor
+            .keymap
+            .layer_bindings(KeymapLayer::Builtin, BindingMode::Normal)
+            .into_iter()
+            .find(|(p, _)| p.as_slice() == [ChordPattern::Literal(ch(c))])
+            .map(|(_, b)| b)
+            .unwrap_or_else(|| panic!("`{c}` is bound in Normal"));
+        let spec = commands
+            .lookup(bound.command.command)
+            .unwrap_or_else(|| panic!("`{c}` resolves"));
+        assert!(
+            matches!(spec.kind, lattice_grammar::CommandKind::Motion),
+            "`{c}` must be a Motion, got {:?} ({})",
+            spec.kind,
+            spec.name
+        );
+        for mode in [BindingMode::Visual, BindingMode::Select] {
+            assert!(
+                matches!(
+                    editor.keymap.lookup(mode, &[ch(c)]),
+                    LookupResult::Bound { .. }
+                ),
+                "`{c}` must be Bound in {mode:?}"
+            );
+        }
+    }
+}

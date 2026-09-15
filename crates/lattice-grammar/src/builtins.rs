@@ -17,7 +17,7 @@ use crate::cancel::CheckCancelled;
 use crate::effect::{Effect, YankKind};
 use crate::error::CommandError;
 use crate::registry::{
-    CommandRegistry, MotionContext, MotionId, MotionResult, MotionSpec, OperatorContext,
+    CommandRegistry, FindKind, MotionContext, MotionId, MotionResult, MotionSpec, OperatorContext,
     OperatorId, OperatorSpec, TextObjectContext, TextObjectId, TextObjectSpec,
 };
 
@@ -665,6 +665,34 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         },
     );
 
+    let find_repeat = registry.register_motion(
+        "motion:find-repeat",
+        "Repeat the last `f` / `F` / `t` / `T` in the same direction (vim's `;`).",
+        MotionSpec {
+            // Not a jump: vim does not put `;` on the jump list, and it
+            // usually moves only a few columns.
+            jump: false,
+            // Never read: `motion_find_repeat` always sets
+            // `MotionResult::exclusive`, because the honest answer depends on
+            // which of `f` / `F` / `t` / `T` is being repeated. Kept
+            // `false` so `:describe-command` shows the common case (`;` after
+            // an `f`) rather than a coin-flip.
+            exclusive: false,
+            apply: Arc::new(motion_find_repeat),
+            args_schema: vec![],
+        },
+    );
+    let find_repeat_reverse = registry.register_motion(
+        "motion:find-repeat-reverse",
+        "Repeat the last `f` / `F` / `t` / `T` in the opposite direction (vim's `,`).",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Arc::new(motion_find_repeat_reverse),
+            args_schema: vec![],
+        },
+    );
+
     let match_pair = registry.register_motion(
         "motion:match-pair",
         "Move to the bracket matching the first one at or after the cursor on this line (vim's `%`).",
@@ -705,6 +733,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         line_end,
         goto_first_line,
         goto_last_line,
+        find_repeat,
+        find_repeat_reverse,
         match_pair,
         delete,
         change,
@@ -773,6 +803,11 @@ pub struct Builtins {
     pub line_end: MotionId,
     pub goto_first_line: MotionId,
     pub goto_last_line: MotionId,
+    /// VM.3c: vim's `;` and `,` — repeat the last `f` / `F` / `t` / `T` in
+    /// the same or the opposite direction. Motions for the same reason `%` is:
+    /// vim composes them (`d;`) and extends a selection with them.
+    pub find_repeat: MotionId,
+    pub find_repeat_reverse: MotionId,
     /// VM.3b: vim's `%`. A MOTION, not an action — vim composes it
     /// (`d%` deletes a bracketed span, `v%` selects one), and it took being
     /// typed as an action for `d%` and `v%` to be silently unbound here.
@@ -869,6 +904,7 @@ fn motion_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError
     Ok(MotionResult {
         target,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -957,6 +993,7 @@ fn motion_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandErro
     Ok(MotionResult {
         target,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1000,6 +1037,7 @@ fn motion_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     Ok(MotionResult {
         target,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1048,6 +1086,7 @@ fn motion_match_pair(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
     let unmoved = Ok(MotionResult {
         target: ctx.from,
         linewise: false,
+        exclusive: None,
     });
     let text = ctx.buffer.as_string();
     let bytes = text.as_bytes();
@@ -1087,6 +1126,7 @@ fn motion_match_pair(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
         Some(pos) => Ok(MotionResult {
             target: pos,
             linewise: false,
+            exclusive: None,
         }),
         None => unmoved,
     }
@@ -1161,6 +1201,7 @@ fn motion_paragraph_forward(ctx: &MotionContext) -> Result<MotionResult, Command
     Ok(MotionResult {
         target: Position::new(line, 0),
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1180,6 +1221,7 @@ fn motion_paragraph_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
     Ok(MotionResult {
         target: Position::new(line, 0),
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1265,6 +1307,7 @@ fn motion_sentence_forward(ctx: &MotionContext) -> Result<MotionResult, CommandE
     Ok(MotionResult {
         target,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1290,6 +1333,7 @@ fn motion_sentence_backward(ctx: &MotionContext) -> Result<MotionResult, Command
     Ok(MotionResult {
         target,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1378,6 +1422,7 @@ fn motion_big_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandE
     Ok(MotionResult {
         target,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1409,6 +1454,7 @@ fn motion_big_word_backward(ctx: &MotionContext) -> Result<MotionResult, Command
     Ok(MotionResult {
         target,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1445,6 +1491,7 @@ fn motion_big_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError
     Ok(MotionResult {
         target,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1484,6 +1531,7 @@ fn motion_find_char_forward(ctx: &MotionContext) -> Result<MotionResult, Command
             return Ok(MotionResult {
                 target: Position::new(ctx.from.line, idx as u32),
                 linewise: false,
+                exclusive: None,
             });
         }
         idx += 1;
@@ -1492,6 +1540,7 @@ fn motion_find_char_forward(ctx: &MotionContext) -> Result<MotionResult, Command
     Ok(MotionResult {
         target: ctx.from,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1507,6 +1556,7 @@ fn motion_find_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
         return Ok(MotionResult {
             target: ctx.from,
             linewise: false,
+            exclusive: None,
         });
     }
     let mut idx = (ctx.from.byte as usize) - nlen;
@@ -1515,6 +1565,7 @@ fn motion_find_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
             return Ok(MotionResult {
                 target: Position::new(ctx.from.line, idx as u32),
                 linewise: false,
+                exclusive: None,
             });
         }
         if idx == 0 {
@@ -1525,6 +1576,7 @@ fn motion_find_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
     Ok(MotionResult {
         target: ctx.from,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1538,6 +1590,7 @@ fn motion_till_char_forward(ctx: &MotionContext) -> Result<MotionResult, Command
     Ok(MotionResult {
         target: Position::new(result.target.line, target_byte),
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1554,7 +1607,78 @@ fn motion_till_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
     Ok(MotionResult {
         target: Position::new(result.target.line, line_len),
         linewise: false,
+        exclusive: None,
     })
+}
+
+// ---- Motions: find-repeat (vim's `;` and `,`) ----
+
+/// Repeat the last `f` / `F` / `t` / `T`, in the same direction.
+///
+/// VM.3c: a MOTION, not an action. Vim composes `;` (`d;` repeats the last
+/// find under an operator) and extends a selection with it, and VM.1's
+/// derivation only mirrors motions — so as an action it was unreachable from
+/// both.
+///
+/// Delegates by rebuilding the context with `args` set to the remembered
+/// character, rather than by re-implementing the four searches. That keeps one
+/// implementation of "find a char on this line": a fix to `t`'s
+/// one-byte-before rule lands in `;` for free, which is the property the old
+/// host-side `do_find_repeat` had (it synthesised a `CommandInvocation`
+/// against the find-char motion) and the one worth preserving across the move.
+fn motion_find_repeat(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    find_repeat(ctx, false)
+}
+
+/// `,` — repeat the last find in the OPPOSITE direction.
+fn motion_find_repeat_reverse(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    find_repeat(ctx, true)
+}
+
+fn find_repeat(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, CommandError> {
+    let Some(last) = ctx.last_find else {
+        // No previous find. Vim bells; a motion that has nowhere to go
+        // returns the cursor, so `d;` deletes nothing rather than something
+        // arbitrary.
+        return Ok(MotionResult {
+            target: ctx.from,
+            linewise: false,
+            exclusive: None,
+        });
+    };
+    let kind = if reverse {
+        last.kind.reversed()
+    } else {
+        last.kind
+    };
+    // Re-enter the real find with the remembered character in `args`. Built
+    // field-by-field because `MotionContext` borrows and is neither `Clone`
+    // nor constructible by struct-update from a reference.
+    let sub = MotionContext {
+        buffer: ctx.buffer,
+        buffer_id: ctx.buffer_id,
+        from: ctx.from,
+        count: ctx.count,
+        has_explicit_count: ctx.has_explicit_count,
+        args: crate::args::Args::Char(last.target),
+        cancel: ctx.cancel,
+        scope_resolver: ctx.scope_resolver,
+        path: ctx.path,
+        syntax: ctx.syntax,
+        last_find: ctx.last_find,
+    };
+    let mut result = match kind {
+        FindKind::Forward => motion_find_char_forward(&sub)?,
+        FindKind::Backward => motion_find_char_backward(&sub)?,
+        FindKind::TillForward => motion_till_char_forward(&sub)?,
+        FindKind::TillBackward => motion_till_char_backward(&sub)?,
+    };
+    // The whole reason `MotionResult::exclusive` exists. `;` and `,` take the
+    // exclusivity of the motion they REPEAT, and the spec cannot know which
+    // that is: `f` / `t` are inclusive, `F` / `T` are not. Without this,
+    // `d,` after an `f` deleted one character too many.
+    result.exclusive = Some(matches!(kind, FindKind::Backward | FindKind::TillBackward));
+    Ok(result)
 }
 
 // ---- Motion: first-non-blank (vim's `^`) ----
@@ -1574,6 +1698,7 @@ fn motion_first_non_blank(ctx: &MotionContext) -> Result<MotionResult, CommandEr
     Ok(MotionResult {
         target: Position::new(ctx.from.line, col as u32),
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1602,6 +1727,7 @@ fn motion_char_left(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     Ok(MotionResult {
         target: pos,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1630,6 +1756,7 @@ fn motion_char_right(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
     Ok(MotionResult {
         target: pos,
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1643,6 +1770,7 @@ fn motion_line_up(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     Ok(MotionResult {
         target: Position::new(line, byte),
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1655,6 +1783,7 @@ fn motion_line_down(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     Ok(MotionResult {
         target: Position::new(line, byte),
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1664,6 +1793,7 @@ fn motion_line_start(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
     Ok(MotionResult {
         target: Position::new(ctx.from.line, 0),
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1672,6 +1802,7 @@ fn motion_line_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     Ok(MotionResult {
         target: Position::new(ctx.from.line, len),
         linewise: false,
+        exclusive: None,
     })
 }
 
@@ -1688,6 +1819,7 @@ fn motion_goto_first_line(ctx: &MotionContext) -> Result<MotionResult, CommandEr
     Ok(MotionResult {
         target: Position::new(target_line, 0),
         linewise: true,
+        exclusive: None,
     })
 }
 
@@ -1702,6 +1834,7 @@ fn motion_goto_last_line(ctx: &MotionContext) -> Result<MotionResult, CommandErr
     Ok(MotionResult {
         target: Position::new(target_line, 0),
         linewise: true,
+        exclusive: None,
     })
 }
 

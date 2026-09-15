@@ -106,15 +106,39 @@ pub struct MotionContext<'a> {
     /// Acquired the same instant as `buffer`, so tree and text versions agree
     /// (`plugin-treesitter-seam.md` §7). `None` when the buffer has no parse.
     pub syntax: Option<&'a Arc<dyn std::any::Any + Send + Sync>>,
+    /// VM.3c: the last `f` / `F` / `t` / `T`, copied from
+    /// [`GrammarEnv::last_find`]. Read by `motion:find-repeat` and its
+    /// reverse; every other motion ignores it. `Copy`, so carrying it costs
+    /// nothing on the keystroke path.
+    pub last_find: Option<LastFind>,
 }
 
 /// What a motion's evaluator returned.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct MotionResult {
     pub target: Position,
     /// `true` if the motion is linewise (ranges expand to whole lines on
     /// resolution).
     pub linewise: bool,
+    /// VM.3c: override [`MotionSpec::exclusive`] for THIS invocation.
+    /// `None` — the overwhelming default — means "use the spec's flag".
+    ///
+    /// ## Why the axis had to move
+    ///
+    /// `linewise` has always travelled with the RESULT and `exclusive` with
+    /// the SPEC, and nothing needed the asymmetry resolved until a motion
+    /// existed whose exclusivity is not knowable until it runs. `;` is that
+    /// motion: it repeats whatever `f` / `F` / `t` / `T` came last, and vim
+    /// gives it that motion's exclusivity — `f` and `t` are inclusive, `F`
+    /// and `T` are not. A single flag on the `;` spec has to be wrong half
+    /// the time, and it was: `d,` after an `f` deleted one character too
+    /// many, because `,` acts as `F` while the spec said inclusive.
+    ///
+    /// Not on the WIT boundary. A plugin declares exclusivity on its
+    /// `MotionSpec`, which is the right place for every motion that knows its
+    /// own answer, so `from_wit` decodes this as `None` deliberately rather
+    /// than for want of a field to read.
+    pub exclusive: Option<bool>,
 }
 
 /// Implementation of a motion. Boxed because evaluator closures capture
@@ -337,6 +361,50 @@ pub struct CommentSyntax {
 /// over parallel params). `Copy`; `default()` is the no-input case, and
 /// commands that read nothing from the env (`iw`, `ap`, `i{`) are
 /// unaffected by what it carries.
+/// `f` / `F` / `t` / `T` — which direction, and whether the target character
+/// is included.
+///
+/// VM.3c moved this down from `lattice_host::action` so `;` and `,` can be
+/// MOTIONS. They have to be: vim composes them (`d;` repeats the last find
+/// under an operator) and VM.1's derivation only mirrors motions into Visual,
+/// so as actions they were unreachable from a selection and from an operator
+/// both. The host re-exports this name, so no call site moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindKind {
+    /// `f` — forward to the next occurrence, landing ON it.
+    Forward,
+    /// `F` — backward to the previous occurrence, landing ON it.
+    Backward,
+    /// `t` — forward, landing one byte BEFORE it.
+    TillForward,
+    /// `T` — backward, landing one byte AFTER it.
+    TillBackward,
+}
+
+impl FindKind {
+    /// The kind `,` repeats — this one, reversed. `;` repeats `self`.
+    ///
+    /// A method rather than a `match` at the two call sites, because the
+    /// pairing is a property of the enum: adding a fifth variant should break
+    /// here, once, rather than silently repeat in the wrong direction.
+    pub fn reversed(self) -> Self {
+        match self {
+            FindKind::Forward => FindKind::Backward,
+            FindKind::Backward => FindKind::Forward,
+            FindKind::TillForward => FindKind::TillBackward,
+            FindKind::TillBackward => FindKind::TillForward,
+        }
+    }
+}
+
+/// The last `f` / `F` / `t` / `T` the user ran, which is all `;` and `,` need
+/// to repeat it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastFind {
+    pub kind: FindKind,
+    pub target: char,
+}
+
 ///
 /// It has widened twice, and the name followed on the second:
 ///
@@ -401,6 +469,16 @@ pub struct GrammarEnv<'a> {
     /// `None` (the default) means no region, so the ~40 call sites that build a
     /// `default()` env keep behaving exactly as they did.
     pub selection: Option<lattice_protocol::position::Range>,
+    /// VM.3c: the last `f` / `F` / `t` / `T`, so `;` and `,` can be motions
+    /// rather than host actions.
+    ///
+    /// Carried here for the reason `syntax` and `selection` had to be: `;`
+    /// reaches the grammar through the ACTOR path on every real keystroke, so
+    /// a field missing here is a field the motion never sees no matter how
+    /// well the direct path is tested. `None` — the default, and the state
+    /// before the user has pressed any `f` — makes `;` a no-op, which is what
+    /// vim does.
+    pub last_find: Option<LastFind>,
 }
 
 /// Context passed to a text-object's evaluator.
@@ -1246,6 +1324,7 @@ mod tests {
                 Ok(MotionResult {
                     target: ctx.from,
                     linewise: false,
+                    exclusive: None,
                 })
             }),
             args_schema: vec![],

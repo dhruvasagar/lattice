@@ -2211,6 +2211,7 @@ impl Document for MultibufferDocumentHandle {
             cursor,
             cancel,
             lattice_core::IndentUnit::default(),
+            None,
         )
     }
 
@@ -2232,7 +2233,12 @@ impl Document for MultibufferDocumentHandle {
         cancel: CancellationToken,
         env: lattice_runtime::DispatchEnv,
     ) -> Pending<Effect> {
-        self.dispatch_composed(invocation, cursor, cancel, env.indent)
+        // VM.3c: `last_find` is forwarded, unlike the composed-coordinate
+        // fields below. It needs no source mapping — `;` searches the line in
+        // front of the user, and in a composed view that line IS the composed
+        // one — so defaulting it to `None` would make `;` dead here for no
+        // reason other than the field being new.
+        self.dispatch_composed(invocation, cursor, cancel, env.indent, env.last_find)
     }
 }
 
@@ -2350,6 +2356,7 @@ impl MultibufferDocumentHandle {
         cursor: Position,
         cancel: CancellationToken,
         indent: lattice_core::IndentUnit,
+        last_find: Option<lattice_grammar::LastFind>,
     ) -> Pending<Effect> {
         // K.4.11 (2026-06-02): the multibuffer now owns grammar
         // dispatch directly. Pre-K.4.11 this returned
@@ -2460,6 +2467,8 @@ impl MultibufferDocumentHandle {
                 // `None` is the honest answer, and matches the `syntax` and
                 // `indent_resolver` deferrals either side of it.
                 selection: None,
+                // VM.3c: forwarded, not deferred — see `dispatch_with_env`.
+                last_find,
             },
         )
         .map_err(RuntimeError::Grammar);

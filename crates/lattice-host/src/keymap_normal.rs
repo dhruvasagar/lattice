@@ -305,18 +305,23 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.join_lines_with_space),
         source(),
     );
+    // VM.3c: `;` / `,` are the MOTIONS, not `action:find-repeat*`. As actions
+    // they could not take an operator (`d;`) and VM.1's derivation could not
+    // mirror them into Visual, so both were unreachable from a selection.
+    // The action ids stay registered — `AppEffect::FindRepeat` crosses the
+    // plugin boundary.
     handle.bind(
         layer,
         mode,
         &[lit_char(';')],
-        CommandInvocation::of(actions.find_repeat_forward),
+        CommandInvocation::of(builtins.find_repeat.0),
         source(),
     );
     handle.bind(
         layer,
         mode,
         &[lit_char(',')],
-        CommandInvocation::of(actions.find_repeat_reverse),
+        CommandInvocation::of(builtins.find_repeat_reverse.0),
         source(),
     );
     handle.bind(

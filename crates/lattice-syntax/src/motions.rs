@@ -203,6 +203,7 @@ fn reg(
                 Ok(MotionResult {
                     target,
                     linewise: false,
+                    exclusive: None,
                 })
             }),
         },

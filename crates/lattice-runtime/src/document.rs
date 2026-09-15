@@ -133,6 +133,13 @@ pub struct DispatchEnv {
     /// That is the OT.4 failure verbatim, and it is cheaper to carry the field
     /// than to rediscover it.
     pub selection: Option<lattice_protocol::position::Range>,
+    /// VM.3c: the last `f` / `F` / `t` / `T`, so `;` and `,` can be motions.
+    ///
+    /// Same reasoning as every field above it: `;` is an ordinary motion on
+    /// the keystroke path, so it comes through the actor, so the state it
+    /// needs has to travel with the dispatch. `None` is the pre-first-`f`
+    /// state and makes `;` a no-op, which is what vim does.
+    pub last_find: Option<lattice_grammar::LastFind>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

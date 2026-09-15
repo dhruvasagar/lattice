@@ -1091,22 +1091,27 @@ mod tests {
         }
     }
 
+    /// VM.3c: `;` resolves to the MOTION, not `action:find-repeat-forward`.
+    ///
+    /// The change is the point of the test. As an action, `;` could take no
+    /// operator (`d;`) and could not be mirrored into Visual, so both were
+    /// unbound. Vim treats `;` as a motion.
     #[test]
-    fn semicolon_emits_find_repeat_no_reverse() {
+    fn semicolon_emits_the_find_repeat_motion() {
         let (_, b) = fixture();
-        let a = shared_actions();
         match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char(';'))) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.find_repeat_forward),
-            other => panic!("expected Invoke(find_repeat_forward), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, b.find_repeat.0),
+            other => panic!("expected Invoke(find_repeat), got {other:?}"),
         }
     }
 
+    /// VM.3c: `,` resolves to the reverse find-repeat MOTION, for the same
+    /// reason `;` does.
     #[test]
-    fn comma_emits_find_repeat_reverse() {
+    fn comma_emits_the_find_repeat_reverse_motion() {
         let (_, b) = fixture();
-        let a = shared_actions();
         match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char(','))) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.find_repeat_reverse),
+            Action::Invoke(inv) => assert_eq!(inv.command, b.find_repeat_reverse.0),
             other => panic!("expected Invoke(find_repeat_reverse), got {other:?}"),
         }
     }

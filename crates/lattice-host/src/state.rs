@@ -15,7 +15,7 @@ use lattice_grammar::{ModalState, SearchDirection, VisualKind, YankKind};
 use lattice_protocol::CancellationToken;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use crate::action::{Action, FindKind};
+use crate::action::Action;
 
 /// In-progress `/` or `?` search state (MB.5a). The pattern text is
 /// NOT stored here — it lives in the focused `*search-line*` buffer
@@ -207,12 +207,12 @@ impl Default for OptionCache {
     }
 }
 
-/// Capture of the most recent find/till for `;`/`,` repeat.
-#[derive(Debug, Clone, Copy)]
-pub struct LastFind {
-    pub kind: FindKind,
-    pub target: char,
-}
+/// Capture of the most recent find/till for `;` / `,` repeat.
+///
+/// VM.3c: moved down to `lattice-grammar` alongside [`FindKind`], because the
+/// `;` motion reads it out of `MotionContext` and the grammar cannot depend on
+/// the host. Re-exported here so existing call sites keep their import.
+pub use lattice_grammar::LastFind;
 
 /// In-progress macro recording. `q<reg>` starts; `q` again
 /// stops and persists into the register table.

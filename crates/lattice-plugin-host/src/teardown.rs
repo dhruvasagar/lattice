@@ -485,6 +485,7 @@ mod tests {
                 Ok(MotionResult {
                     target: ctx.from,
                     linewise: false,
+                    exclusive: None,
                 })
             }),
             args_schema: vec![],

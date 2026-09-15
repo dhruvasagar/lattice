@@ -196,6 +196,7 @@ pub fn execute_motion_only(
         // is no file to name.
         path: None,
         syntax: env.syntax,
+        last_find: env.last_find,
     };
     let result = (motion.apply)(&ctx)?;
     Ok(result.target)
@@ -256,6 +257,7 @@ fn execute_motion(
         scope_resolver: env.scope_resolver,
         path: document.path(),
         syntax: env.syntax,
+        last_find: env.last_find,
     };
     let result = (motion.apply)(&ctx)?;
     // Motions emit a cursor-only jump — the modal engine's caller
@@ -682,6 +684,7 @@ fn resolve_target(
                 scope_resolver: env.scope_resolver,
                 path: document.path(),
                 syntax: env.syntax,
+                last_find: env.last_find,
             };
             let r = (motion.apply)(&ctx)?;
             let mut target = r.target;
@@ -701,7 +704,11 @@ fn resolve_target(
                 document.buffer(),
                 cursor,
                 target,
-                motion.exclusive,
+                // VM.3c: the RESULT may override the spec. Only `;` / `,` do —
+                // they inherit the exclusivity of whatever they repeat, which
+                // the spec cannot know. Everything else answers `None` and
+                // reads its own flag, exactly as before.
+                r.exclusive.unwrap_or(motion.exclusive),
                 r.linewise,
             ))
         }
@@ -1119,6 +1126,7 @@ mod tests {
                     Ok(crate::registry::MotionResult {
                         target: p,
                         linewise: false,
+                        exclusive: None,
                     })
                 }),
             },

@@ -96,6 +96,35 @@ mod tests {
         assert_eq!(body(&a), "abgh\n", "`dk` must delete exactly what it did");
     }
 
+    /// VM.3c: `;` composes. `d;` under an operator is the reason `;` had to be
+    /// a motion — as `action:find-repeat-forward` it took no operator at all.
+    #[test]
+    fn d_semicolon_deletes_to_the_repeated_find() {
+        let mut a = app_with("a.b.c.d\n", 10);
+        press_chars(&mut a, "f.");
+        press_chars(&mut a, "d;");
+        // `f.` sits on the dot at 1; `;` targets the dot at 3. `;` repeating
+        // `f` is INCLUSIVE, so both dots and the `b` between them go.
+        assert_eq!(body(&a), "ac.d\n");
+    }
+
+    /// And `,` under an operator, the other direction — the case that forced
+    /// `MotionResult::exclusive` to exist.
+    ///
+    /// `,` after an `f` acts as `F`, which vim calls EXCLUSIVE, so the
+    /// character under the cursor survives. With exclusivity read from the
+    /// `;` spec instead of from the repeat, this deleted one character too
+    /// many and left `a.bd`.
+    #[test]
+    fn d_comma_takes_the_exclusivity_of_the_motion_it_repeats() {
+        let mut a = app_with("a.b.c.d\n", 10);
+        press_chars(&mut a, "f.;;");
+        // Now on the dot at 5. `,` targets the dot at 3; exclusive, so the
+        // dot at 5 stays.
+        press_chars(&mut a, "d,");
+        assert_eq!(body(&a), "a.b.d\n");
+    }
+
     /// VM.3a's negative half, on the path where the operator actually arms:
     /// `d}` is an edit, not a jump. The invocation carries the OPERATOR's id,
     /// so `motion_is_jump` answers `false` with no special-casing — but only

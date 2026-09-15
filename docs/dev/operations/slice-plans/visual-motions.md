@@ -130,19 +130,62 @@ composition tests live in `lattice-ui-tui/src/app/motion_composition.rs` over
 `test_helpers::press_chars`. See `app/edit.rs`'s prose warning, which predates
 this and says the same thing.
 
-### VM.3c 📝 — `;` / `,`
+### VM.3c ✅ — `;` / `,`, and the exclusivity axis they forced
 
-Needs the last `f`/`F`/`t`/`T` (`Editor::last_find`) to reach the grammar.
-`GrammarEnv` is the established seam for host state (it already carries
-`selection`, `indent`, `textwidth`, `indent_resolver`, `native_format`), so
-`FindKind` + `LastFind` move down into `lattice-grammar`, `DispatchEnv` and
-`MotionContext` carry them, and the host re-exports. `do_find_repeat` already
-synthesises a `CommandInvocation` against the find-char motion, so the body is
-nearly a motion already.
+`FindKind` and `LastFind` moved down into `lattice-grammar` (the host
+re-exports both, so no call site moved), and `last_find` now travels
+`DispatchEnv` → `GrammarEnv` → `MotionContext`. `motion:find-repeat` and
+`motion:find-repeat-reverse` delegate to the existing find-char bodies by
+rebuilding the context with the remembered character in `args`, so there is
+still exactly one implementation of "find a char on this line".
 
-### VM.3d 📝 — `n` / `N` / `*` / `#`
+`do_find_repeat` survives for `AppEffect::FindRepeat` (the WIT boundary) and
+delegates, like `do_match_bracket`.
 
-Needs the session search pattern + direction in the env. Same shape as VM.3c.
+**`MotionResult::exclusive: Option<bool>`.** `linewise` has always travelled
+with the RESULT and `exclusive` with the SPEC, and nothing needed the
+asymmetry resolved until a motion existed whose exclusivity is not knowable
+until it runs. `;` is that motion: it repeats whatever `f` / `F` / `t` / `T`
+came last, and vim gives it that motion's exclusivity — `f` and `t` are
+inclusive, `F` and `T` are not. One flag on the `;` spec has to be wrong half
+the time, and it was: `d,` after an `f` deleted one character too many.
+
+`None` — every motion but these two — means "read the spec", so nothing else
+changed. NOT on the WIT boundary: a plugin declares exclusivity on its
+`MotionSpec`, which is right for any motion that knows its own answer, so
+`from_wit` decodes `None` deliberately rather than for want of a field.
+
+Two behaviour notes:
+
+- **`,` no longer rewrites the memory.** The old action re-dispatched a
+  *find-char* invocation, which re-captured `last_find`, so `,` flipped the
+  remembered direction and a following `;` went backwards. Vim reverses the
+  travel, not the memory. Pinned.
+- **The multibuffer forwards `last_find`.** Its `dispatch_with_env` discards
+  every other env field, and for `selection` / `syntax` / `indent_resolver`
+  that is honest — they need a composed→source mapping that does not exist.
+  `last_find` needs none: `;` searches the line in front of the user, and in a
+  composed view that line IS the composed one. `dispatch_composed` was widened
+  to carry it rather than let a new field silently kill `;` there.
+
+### VM.3d 📝 — `n` / `N` / `*` / `#`, and where `current_match` belongs
+
+**Not the same shape as `%` and `;`, and worth reading before starting.**
+`repeat_search` does far more than compute a position: it sets
+`current_match` (which drives hlsearch painting), emits vim's wrap echoes
+("search hit BOTTOM, continuing at TOP"), emits `E486: Pattern not found`, and
+refreshes the terminal search mirror. A motion returns only a `Position`, so
+converting `n` naively drops all of it silently.
+
+The way out is that `current_match` should not be `n`'s job at all — it is
+"the match the cursor is sitting on", so the host can recompute it after ANY
+dispatch from `last_search` + cursor. That is kind-free, and strictly more
+correct than today: `current_match` currently updates only on `n` / `N` / `/`
+and goes stale after a `j` or an edit. It also touches hlsearch painting,
+which is UX-visible, so it is the FIRST step of this slice rather than a
+side effect of it.
+
+The pattern itself reaches the grammar the same way `last_find` does.
 
 ### VM.3e 📝 — `` `x `` / `'x ``
 

@@ -12129,29 +12129,23 @@ impl Editor {
     /// `CommandInvocation` against the appropriate builtin and
     /// routes through `run_invocation`.
     pub fn do_find_repeat(&mut self, reverse: bool, out: &mut DispatchOutcome) {
-        let Some(last) = self.last_find else {
+        // VM.3c: the `;` / `,` CHORDS no longer come through here — they
+        // dispatch `motion:find-repeat` like any other motion, which is what
+        // gives them `d;`, `v;` and a Visual row. This arm survives because
+        // `AppEffect::FindRepeat` crosses the WIT boundary and a guest may
+        // still emit it, and it delegates rather than keeping a second copy
+        // of "which find does `;` repeat" — the duplicate would drift the
+        // first time `t`'s one-byte-before rule changed.
+        if self.last_find.is_none() {
             self.set_message(EchoLevel::Error, "no previous find".to_string());
             return;
-        };
-        let kind = if reverse {
-            match last.kind {
-                FindKind::Forward => FindKind::Backward,
-                FindKind::Backward => FindKind::Forward,
-                FindKind::TillForward => FindKind::TillBackward,
-                FindKind::TillBackward => FindKind::TillForward,
-            }
+        }
+        let id = if reverse {
+            self.builtins.find_repeat_reverse.0
         } else {
-            last.kind
+            self.builtins.find_repeat.0
         };
-        let cmd_id = match kind {
-            FindKind::Forward => self.builtins.find_char_forward.0,
-            FindKind::Backward => self.builtins.find_char_backward.0,
-            FindKind::TillForward => self.builtins.till_char_forward.0,
-            FindKind::TillBackward => self.builtins.till_char_backward.0,
-        };
-        let inv = lattice_grammar::CommandInvocation::of(cmd_id)
-            .with_args(lattice_grammar::Args::Char(last.target));
-        self.dispatch_invocation(inv, out);
+        self.dispatch_invocation(lattice_grammar::CommandInvocation::of(id), out);
     }
 
     /// 5.5.G.23.insert: host-side text insertion at the cursor (the
@@ -21040,6 +21034,12 @@ impl Editor {
                 // "because actions go through the gate" -- is the OT.4 mistake
                 // this file already records one field down.
                 selection: self.active_region(),
+                // VM.3c: the last `f` / `F` / `t` / `T`, so `;` and `,`
+                // resolve as motions. Same reasoning as `selection` above —
+                // `;` is an ordinary keystroke motion and comes through this
+                // path, so a `None` here is a `;` that never works no matter
+                // how well the motion itself is tested.
+                last_find: self.last_find,
                 // OT.4: the same `h.snapshot()` bump the Action gate takes —
                 // O(1) `ArcSwap` load, no parse on the dispatch thread — so
                 // a PLUGIN motion or text object can mint a `tree-snapshot`

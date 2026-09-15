@@ -96,6 +96,13 @@ impl WitBoundary for NativeMotionResult {
         Ok(NativeMotionResult {
             target: lattice_protocol::position::Position::from_wit(wit.target)?,
             linewise: wit.linewise,
+            // VM.3c: `None` on purpose, not for want of a field. A plugin
+            // declares exclusivity on its `MotionSpec`, which is the right
+            // place for any motion that knows its own answer; the per-result
+            // override exists for `;` / `,`, whose answer depends on what they
+            // are repeating. If a guest ever needs it, it is a WIT addition,
+            // and this line is where it lands.
+            exclusive: None,
         })
     }
 }
@@ -227,10 +234,21 @@ mod tests {
         let native = NativeMotionResult {
             target: pos(3, 7),
             linewise: true,
+            // VM.3c: set to a NON-default so the round-trip below says
+            // something. The WIT mirror has no field for it, so it must come
+            // back `None` — that is the contract, not an oversight, and a
+            // `None` here would have asserted nothing either way.
+            exclusive: Some(true),
         };
         let back = NativeMotionResult::from_wit(native.to_wit().unwrap()).unwrap();
         assert_eq!(back.target, native.target);
         assert_eq!(back.linewise, native.linewise);
+        assert_eq!(
+            back.exclusive, None,
+            "`exclusive` is host-side only: a plugin declares exclusivity on \
+             its MotionSpec, so the WIT mirror carries no field and the decode \
+             must not invent one"
+        );
     }
 
     #[test]
@@ -248,6 +266,7 @@ mod tests {
             scope_resolver: None,
             path: None,
             syntax: None,
+            last_find: None,
         };
         let wit = project_motion_context(&ctx).unwrap();
         assert_eq!(wit.buffer_id, 9);

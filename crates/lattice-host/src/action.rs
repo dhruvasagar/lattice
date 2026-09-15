@@ -44,19 +44,14 @@ pub enum EchoLevel {
     Error,
 }
 
-/// `f` / `F` / `t` / `T` direction-and-stop discriminant for
-/// the inline find family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FindKind {
-    /// `f` -- move to next occurrence of the char on the current line.
-    Forward,
-    /// `F` -- move to previous occurrence of the char on the current line.
-    Backward,
-    /// `t` -- move to one byte before the next occurrence (inclusive of arg).
-    TillForward,
-    /// `T` -- move to one byte after the previous occurrence.
-    TillBackward,
-}
+/// `f` / `F` / `t` / `T` direction-and-stop discriminant for the inline find
+/// family.
+///
+/// VM.3c: the definition moved down to `lattice-grammar` so `;` and `,` could
+/// become motions — a motion's evaluator has to name the kind, and the grammar
+/// cannot depend upward on the host. Re-exported under the old path so the
+/// keymap and dispatch call sites did not have to move with it.
+pub use lattice_grammar::FindKind;
 
 #[derive(Debug, Clone)]
 pub enum Action {

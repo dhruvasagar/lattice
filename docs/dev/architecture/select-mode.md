@@ -144,8 +144,9 @@ edit above.
 > printables, so the predicate admits those too. Until VM.4 the code
 > contradicted the rule that bare printables aren't individually bound: Select's
 > table bound every printable motion, so text typed over a snippet placeholder
-> was taken whenever it began with one of about 30 characters. `o` and the
-> `i` / `a` text-object prefixes are the last printables still bound (VM.5).
+> was taken whenever it began with one of about 30 characters. VM.5 removed the
+> last explicit ones, `o` (swap ends) and the `i` / `a` text-object prefixes,
+> so Select's table now binds no bare printable; vim's Select has neither.
 
 - A `BindingMode::Select` chord table. Motions and selection-extending chords
   are conceptually shared with Visual but must be registered under the Select

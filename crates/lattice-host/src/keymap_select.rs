@@ -25,10 +25,10 @@
 //!    preserved); `<C-o>` → one-shot Normal — *recognised but post-MVP*
 //!    per select-mode.md §3, swallowed (`Action::None`) so a stray
 //!    `<C-o>` never overtypes a literal char.
-//! 2. **Mid-sequence** (a text-object prefix `i` / `a` already absorbed
-//!    into `partial_chord`) → resolve `[partial..., chord]` against the
-//!    `BindingMode::Select` table — the same partial-chord machinery
-//!    Normal/Visual use.
+//! 2. **Mid-sequence** (the prefix of a multi-key Select binding a mode
+//!    contributed, already absorbed into `partial_chord`) → resolve
+//!    `[partial..., chord]` against the `BindingMode::Select` table — the
+//!    same partial-chord machinery Normal/Visual use.
 //! 3. **Fresh chord** → `BindingMode::Select` lookup. `Bound` →
 //!    its action (motion extends / exit); `Partial` → absorb;
 //!    `Unbound` → the overtype fallthrough.
@@ -37,99 +37,25 @@
 //! decides what can be typed. The table holds only keys that can't be:
 //! the keymap's motion mirror (VM.4) admits a motion only when its first
 //! chord wouldn't overtype, using [`lattice_keymap::overtypes_in_select`],
-//! the same predicate the fallthrough calls. `register_select_bindings`
-//! still binds `o` and the `i` / `a` text-object prefixes, which take
-//! those three letters until VM.5 removes them.
+//! the same predicate the fallthrough calls. Nothing else binds a bare
+//! printable here (VM.5): vim's Select has no swap-ends `o` and no text
+//! objects either, because those keys are typed text. `<C-g>` flips to
+//! Visual for both.
 
-use lattice_grammar::SourceLocation;
 use lattice_grammar::VisualKind;
-use lattice_grammar::builtins::Builtins;
-use lattice_grammar::command::CommandInvocation;
-use lattice_syntax::SyntaxTextObjectIds;
 
 use lattice_mode::mode::ModeId;
 
 use crate::action::Action;
-use crate::actions::ActionIds;
 use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
-use crate::keymap_trie::{ChordPattern, KeymapLayer, LookupResult};
-
-/// Register the Select-mode chord table's explicit rows, under
-/// `BindingMode::Select`.
-///
-/// What Select holds vs. Visual:
-/// - **Motions** — not listed here. The keymap mirrors every Normal motion
-///   whose first chord can't be typed (arrows, Home/End, PageUp/PageDown,
-///   `<C-d>` / `<C-u>`) into Select at the write (VM.4,
-///   keymap-architecture.md §15). A printable motion (`w`, `f{char}`, `]f`)
-///   is Visual-only, because in Select that key overtypes.
-/// - **`o`** — swap selection ends (same as Visual).
-/// - **Text objects** (`text_object_rows`) — set the selection span,
-///   identical to Visual.
-/// - **NO operators** (`d` / `x` / `c` / `s` / `y` / `>` / `<`). In
-///   Select a printable overtypes (`translate_select`'s fallthrough), so
-///   binding operators would shadow the defining behaviour. The parity
-///   test asserts these resolve in Visual but stay UNBOUND in Select.
-/// - **NO exits.** `<Esc>` / `<C-g>` are hardcoded mode-control chords in
-///   [`translate_select`], not table entries (`v` / `V` are printables
-///   that overtype in Select, so they cannot be exit bindings).
-pub fn register_select_bindings(
-    handle: &KeymapHandle,
-    builtins: &Builtins,
-    actions: &ActionIds,
-    syntax_textobjects: &SyntaxTextObjectIds,
-) {
-    let layer = KeymapLayer::Builtin;
-    let mode = BindingMode::Select;
-
-    // `o` — swap to the other end of the selection (vim Visual `o`).
-    handle.bind(
-        layer,
-        mode,
-        &[ChordPattern::Literal(KeyChord::char('o'))],
-        CommandInvocation::of(actions.swap_visual_ends),
-        select_source(),
-    );
-
-    // Motions are not listed here. Since VM.4 the keymap mirrors them into
-    // Select at every write, and only the ones whose first chord can't be
-    // typed (`lattice_keymap::overtypes_in_select`), so Select's table and
-    // Select's typing are decided by one predicate instead of two lists.
-
-    // Text objects: `i<obj>` / `a<obj>` set the selection to the object's
-    // span — same SHARED `text_object_rows` table Visual + the Normal
-    // operator-pending resolver consume, so `viw` / `gh`-then-`iw` can
-    // never drift. ZERO per-object code.
-    for (chord_aliases, inner_id, around_id) in
-        crate::keymap_normal::text_object_rows(builtins, syntax_textobjects)
-    {
-        for (prefix_char, tobj) in [('i', inner_id), ('a', around_id)] {
-            for chord in &chord_aliases {
-                handle.bind(
-                    layer,
-                    mode,
-                    &[
-                        ChordPattern::Literal(KeyChord::char(prefix_char)),
-                        chord.clone(),
-                    ],
-                    CommandInvocation::of(tobj.0),
-                    select_source(),
-                );
-            }
-        }
-    }
-}
-
-fn select_source() -> SourceLocation {
-    SourceLocation::builtin_file(file!(), line!())
-}
+use crate::keymap_trie::{KeymapLayer, LookupResult};
 
 /// Dispatch a Select-mode key event. See the module docs for the
 /// ordering contract. `partial_chord` is the host's running multi-key
-/// prefix (empty on a fresh chord; holds an absorbed `[i]` / `[a]`
-/// mid-text-object), identical to the Visual path.
+/// prefix (empty on a fresh chord; holds an absorbed prefix mid-sequence),
+/// identical to the Visual path.
 pub fn translate_select(
     handle: &KeymapHandle,
     chord: &KeyChord,
@@ -198,7 +124,7 @@ fn native_select_action(
         }
     }
 
-    // 2. Mid-sequence text-object resolution against the Select table.
+    // 2. Mid-sequence resolution against the Select table.
     if !partial_chord.is_empty() {
         let chord = normalize_for_select_lookup(*chord);
         let mut path: Vec<KeyChord> = partial_chord.to_vec();
@@ -326,6 +252,7 @@ fn normalize_for_select_lookup(chord: KeyChord) -> KeyChord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap_trie::ChordPattern;
 
     fn empty_handle() -> KeymapHandle {
         // The dispatch tests below run against an EMPTY Select table, so
@@ -335,9 +262,9 @@ mod tests {
         KeymapHandle::new()
     }
 
-    /// Build a handle with BOTH the Visual and Select tables registered
-    /// from a real, populated command registry — the same path boot
-    /// takes (`editor_boot.rs`).
+    /// Build a handle from a real, populated command registry, the same path
+    /// boot takes (`editor_boot.rs`). Select has no binder of its own: its
+    /// table is whatever the keymap's motion mirror writes.
     fn populated_handle() -> KeymapHandle {
         use lattice_grammar::CommandRegistry;
         use lattice_grammar::builtins::populate as grammar_builtins_populate;
@@ -371,7 +298,6 @@ mod tests {
             &syntax_textobjects,
             &syntax_motions,
         );
-        register_select_bindings(&h, &builtins, &action_ids, &syntax_textobjects);
         // The operator-pending rows, as boot adds them.
         crate::keymap_normal::expand_grammar_rows(
             &h,
@@ -555,13 +481,8 @@ mod tests {
     /// notice a printable being bound. `visual_and_select_share_every_motion`
     /// went further and ASSERTED the printable motions were bound in Select,
     /// which locked the bug in. This sweep is the replacement.
-    ///
-    /// `NOT_YET` is the explicit `o` / `i` / `a` bindings that
-    /// `register_select_bindings` still makes. VM.5 removes those and deletes
-    /// this list; until then it names exactly what is left.
     #[test]
     fn every_printable_overtypes_against_the_populated_table() {
-        const NOT_YET: &[char] = &['a', 'i', 'o'];
         let h = populated_handle();
         assert!(
             bound_command_id(
@@ -574,7 +495,7 @@ mod tests {
         );
 
         let mut stolen = Vec::new();
-        for c in (' '..='~').filter(|c| !NOT_YET.contains(c)) {
+        for c in ' '..='~' {
             match translate_select(&h, &KeyChord::char(c), VisualKind::Charwise, &[], &[]) {
                 Action::SelectOvertype(got) if got == c => {}
                 other => stolen.push(format!("{c:?} -> {other:?}")),
@@ -596,29 +517,48 @@ mod tests {
         );
     }
 
-    /// `o` (swap ends) is present in both modes.
+    /// VM.5: `o` swaps the selection's ends in Visual, and types an `o` in
+    /// Select. Vim's Select has no swap-ends; `<C-g>` to Visual, then `o`.
+    ///
+    /// Replaces `visual_and_select_share_swap_ends`, which asserted that
+    /// Select bound `o`, so a placeholder couldn't be replaced by text
+    /// starting with it.
     #[test]
-    fn visual_and_select_share_swap_ends() {
+    fn o_overtypes_in_select_but_swaps_ends_in_visual() {
         let h = populated_handle();
-        let o = [KeyChord::char('o')];
-        assert!(bound_command_id(&h, BindingMode::Visual, &o).is_some());
-        assert_eq!(
-            bound_command_id(&h, BindingMode::Select, &o),
-            bound_command_id(&h, BindingMode::Visual, &o),
-            "`o` must swap ends identically in Visual and Select"
-        );
+        let o = KeyChord::char('o');
+        assert!(bound_command_id(&h, BindingMode::Visual, &[o]).is_some());
+        assert!(matches!(
+            translate_select(&h, &o, VisualKind::Charwise, &[], &[]),
+            Action::SelectOvertype('o')
+        ));
     }
 
-    /// Text objects parity: `iw` resolves to the same command in both
-    /// (representative of the shared `text_object_rows` table).
+    /// VM.5: `iw` selects a word in Visual; in Select `i` and `a` are typed
+    /// text, so they must not be a text-object prefix waiting for a second
+    /// key.
+    ///
+    /// Replaces `visual_and_select_share_text_objects`, which asserted that
+    /// Select bound `iw`. A bound prefix returns `Partial` and absorbs the key,
+    /// so `info` typed over a placeholder lost its `i`.
     #[test]
-    fn visual_and_select_share_text_objects() {
+    fn a_text_object_prefix_overtypes_in_select() {
         let h = populated_handle();
-        let iw = [KeyChord::char('i'), KeyChord::char('w')];
-        let v = bound_command_id(&h, BindingMode::Visual, &iw);
-        let s = bound_command_id(&h, BindingMode::Select, &iw);
-        assert!(v.is_some(), "Visual must bind `iw`");
-        assert_eq!(v, s, "Select `iw` must match Visual `iw`");
+        assert!(
+            bound_command_id(
+                &h,
+                BindingMode::Visual,
+                &[KeyChord::char('i'), KeyChord::char('w')]
+            )
+            .is_some(),
+            "Visual must bind `iw`"
+        );
+        for c in ['i', 'a'] {
+            match translate_select(&h, &KeyChord::char(c), VisualKind::Charwise, &[], &[]) {
+                Action::SelectOvertype(got) if got == c => {}
+                other => panic!("`{c}` must overtype in Select, got {other:?}"),
+            }
+        }
     }
 
     /// **Operators are Visual-ONLY.** In Select a printable overtypes, so

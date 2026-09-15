@@ -2197,15 +2197,8 @@ impl Editor {
                     &action_ids,
                     &syntax_textobject_ids,
                 );
-                // SN.3d.2: Select mode's motion/text-object table —
-                // duplicated from Visual, kept honest by the parity test
-                // in `keymap_select` (select-mode.md §4).
-                crate::keymap_select::register_select_bindings(
-                    &h,
-                    &builtins,
-                    &action_ids,
-                    &syntax_textobject_ids,
-                );
+                // Select has no binder: it binds no bare printable, and its
+                // motions come from the keymap's mirror (select-mode.md §4).
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
                 // CG.1: `<C-g>` → `action:cancel`. Builtin, so it does
                 // not depend on `:set emacs-keys`.

@@ -90,8 +90,8 @@ leaves alone, and why `<C-c>` is not the cancel key.
 
 | From Select | To                                                                              |
 |-------------|---------------------------------------------------------------------------------|
-| any printable key | Replace the selection with that char → Insert                             |
-| `o`             | Swap selection anchor and cursor                                            |
+| any printable key | Replace the selection with that char → Insert (`o` and `i` included)      |
+| `<CR>` / `<C-j>` | Replace the selection with an indented newline → Insert                   |
 | `<C-g>`         | Toggle back to Visual (same selection)                                      |
 | `<Esc>`         | Drop selection → Normal                                                     |
 
@@ -473,14 +473,14 @@ Once in Select:
   `<PageDown>`, `<C-d>` / `<C-u>`. A motion that starts with a
   printable key (`w`, `e`, `}`, `f`) types that key instead;
   press `<C-g>` to switch to Visual when you want it. This
-  holds for motions a plugin adds, too.
-- Text objects (`iw`, `af`, …) set the selection, as in Visual.
+  holds for motions a plugin adds, too. The same goes for
+  `o` (swap ends) and text objects (`iw`, `af`): in Select
+  those keys type, as in vim.
 - Typing any **printable** character replaces the selection
   with that character and switches to Insert. So do `<CR>` and
   `<C-j>`, which replace it with a newline, indented like any
   newline you type. The replace + insert is a **single undo
   unit** — one `u` restores the original span.
-- `o` swaps anchor and cursor (extend from the other end).
 - `<C-g>` toggles back to Visual without losing the selection;
   from Visual, `<C-g>` toggles *into* Select. The selection is
   preserved across the toggle either way.

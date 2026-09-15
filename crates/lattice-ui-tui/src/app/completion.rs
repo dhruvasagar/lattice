@@ -520,7 +520,10 @@ mod tests {
     /// printable motion in Select, which fixes both.
     #[test]
     fn typing_over_a_snippet_placeholder_replaces_it_even_with_motion_keys() {
-        for typed in ["foo", "work"] {
+        // `foo` / `work`: `f` and `w` were printable motions in Select (VM.4).
+        // `aim` / `info` / `owl`: `a` / `i` were text-object prefixes and `o`
+        // was swap-ends, all bound explicitly until VM.5.
+        for typed in ["foo", "work", "aim", "info", "owl"] {
             let mut a = app_with("for", 10);
             a.editor.modal = ModalState::Insert;
             a.editor.cursor = Position::new(0, 3);

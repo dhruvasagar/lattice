@@ -267,15 +267,21 @@ the key after entering Insert, the newline carries its auto-indent (IN.1).
 selection's edges, and lands newline and indent in the same replace edit, so
 one `u` still undoes the overtype (select-mode.md §3).
 
-### VM.5 📝 — Select binds no bare printables
+### VM.5 ✅ — Select binds no bare printables
 
 VM.4 removed the printable motions, which came from the mirror.
-`register_select_bindings` still binds `o` (swap ends) and the `i` / `a`
-text-object prefixes explicitly, so those three letters still can't start text
-typed over a selection. VM.5 deletes the function, rewrites the two tests that
-assert those bindings, removes the sweep's `NOT_YET` list, and adds an
-`aim` / `info` / `owl` snippet test. UX cost: inside Select, `o` and `iw` type;
-`<C-g>` flips to Visual for both, as in vim.
+`register_select_bindings` still bound `o` (swap ends) and the `i` / `a`
+text-object prefixes explicitly, so those three letters still couldn't start
+text typed over a selection. VM.5 deletes the function and its boot call, so
+Select has no binder of its own. It replaces the two tests that asserted those
+bindings (`visual_and_select_share_swap_ends`,
+`visual_and_select_share_text_objects`) with tests that `o`, `i` and `a`
+overtype, drops the sweep's `NOT_YET` list so all of `' '..='~'` is checked,
+and adds `aim` / `info` / `owl` to the real-keystroke snippet test.
+
+Checked in vim 9.2 before landing (headless, `ve<C-g>` over `beta`): `o`, `iw`
+and `aw` each replace the selection and enter Insert. UX cost: inside Select,
+`o` and `iw` type; `<C-g>` flips to Visual for both, as in vim.
 
 ### VM.3d 📝 — `n` / `N` / `*` / `#`, and where `current_match` belongs
 

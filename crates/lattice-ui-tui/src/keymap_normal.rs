@@ -707,8 +707,9 @@ mod tests {
     }
 
     #[test]
-    fn apostrophe_a_resolves_to_jump_mark_line_a() {
-        let (h, _, a) = populated_handle();
+    fn apostrophe_a_resolves_to_the_mark_line_motion() {
+        // VM.3e: the motion, so `d'a` / `v'a` compose.
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('\'')],
@@ -716,16 +717,17 @@ mod tests {
         );
         match r {
             Action::Invoke(inv) => {
-                assert_eq!(inv.command, a.jump_to_mark_line);
+                assert_eq!(inv.command, b.mark_line.0);
                 assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
             }
-            other => panic!("expected Invoke(jump_to_mark_line, Char('a')), got {other:?}"),
+            other => panic!("expected Invoke(mark_line, Char('a')), got {other:?}"),
         }
     }
 
     #[test]
-    fn backtick_a_resolves_to_jump_mark_exact_a() {
-        let (h, _, a) = populated_handle();
+    fn backtick_a_resolves_to_the_mark_exact_motion() {
+        // VM.3e: the motion, so `` d`a `` / `` v`a `` compose.
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('`')],
@@ -733,10 +735,10 @@ mod tests {
         );
         match r {
             Action::Invoke(inv) => {
-                assert_eq!(inv.command, a.jump_to_mark_exact);
+                assert_eq!(inv.command, b.mark_exact.0);
                 assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
             }
-            other => panic!("expected Invoke(jump_to_mark_exact, Char('a')), got {other:?}"),
+            other => panic!("expected Invoke(mark_exact, Char('a')), got {other:?}"),
         }
     }
 

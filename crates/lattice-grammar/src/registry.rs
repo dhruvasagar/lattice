@@ -118,6 +118,9 @@ pub struct MotionContext<'a> {
     /// VM.3d-2: the search `n` / `N` / `*` / `#` repeat, copied from
     /// [`GrammarEnv::last_search`]. Borrowed; every other motion ignores it.
     pub last_search: Option<&'a LastSearch>,
+    /// VM.3e: the marks `'x` / `` `x `` jump to, copied from
+    /// [`GrammarEnv::marks`]. Borrowed; every other motion ignores it.
+    pub marks: Option<&'a dyn MarkResolver>,
 }
 
 /// What a motion's evaluator returned.
@@ -331,6 +334,21 @@ pub trait FoldResolver {
     fn fold_edge(&self, line: u32, forward: bool) -> Option<u32>;
 }
 
+/// VM.3e: the mark table `'x` / `` `x `` read, so they can be motions. The
+/// host owns the marks (`m` writes them); the grammar only asks where one is.
+/// `None` means the mark isn't set, which fails the motion with E20.
+pub trait MarkResolver {
+    fn mark(&self, name: char) -> Option<Position>;
+}
+
+/// The host's table is a plain map, so it is its own resolver: a read-only
+/// buffer borrows it as is, and the actor path carries an `Arc` of a clone.
+impl MarkResolver for std::collections::HashMap<char, Position> {
+    fn mark(&self, name: char) -> Option<Position> {
+        self.get(&name).copied()
+    }
+}
+
 pub trait ScopeResolver {
     fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
 
@@ -538,6 +556,9 @@ pub struct GrammarEnv<'a> {
     /// the ACTOR path on every real keystroke. `None` makes `n` fail with
     /// E35, as vim does before any search.
     pub last_search: Option<&'a LastSearch>,
+    /// VM.3e: the mark table, so `'x` / `` `x `` can be motions. Carried for
+    /// the reason `last_search` is. `None` makes every mark unset (E20).
+    pub marks: Option<&'a dyn MarkResolver>,
 }
 
 /// Context passed to a text-object's evaluator.

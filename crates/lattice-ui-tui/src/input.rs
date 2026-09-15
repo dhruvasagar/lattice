@@ -2932,8 +2932,8 @@ mod tests {
 
     #[test]
     fn jump_mark_line_routes_correctly() {
+        // VM.3e: the motion, so `d'a` / `v'a` compose.
         let (_, b) = fixture();
-        let a = shared_actions();
         let action = translate(
             ctx_partial(
                 ModalState::Normal,
@@ -2944,27 +2944,27 @@ mod tests {
         );
         match action {
             Action::Invoke(inv) => {
-                assert_eq!(inv.command, a.jump_to_mark_line);
+                assert_eq!(inv.command, b.mark_line.0);
                 assert!(matches!(inv.args, lattice_grammar::args::Args::Char('z')));
             }
-            other => panic!("expected Invoke(jump_to_mark_line, Char('z')), got {other:?}"),
+            other => panic!("expected Invoke(mark_line, Char('z')), got {other:?}"),
         }
     }
 
     #[test]
     fn jump_mark_exact_routes_correctly() {
+        // VM.3e: the motion, so `` d`a `` / `` v`a `` compose.
         let (_, b) = fixture();
-        let a = shared_actions();
         let action = translate(
             ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('`')], &b),
             key(KeyCode::Char('A')),
         );
         match action {
             Action::Invoke(inv) => {
-                assert_eq!(inv.command, a.jump_to_mark_exact);
+                assert_eq!(inv.command, b.mark_exact.0);
                 assert!(matches!(inv.args, lattice_grammar::args::Args::Char('A')));
             }
-            other => panic!("expected Invoke(jump_to_mark_exact, Char('A')), got {other:?}"),
+            other => panic!("expected Invoke(mark_exact, Char('A')), got {other:?}"),
         }
     }
 

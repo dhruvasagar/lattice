@@ -778,6 +778,31 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Search backward for the word under the cursor (vim's `#`).",
         search_spec(motion_search_next),
     );
+    // VM.3e: vim's `'x` / `` `x ``, which were actions, so `d'a` / `v`a` were
+    // unbound. `'x` is linewise and lands on the mark line's first non-blank;
+    // `` `x `` is charwise and exclusive (vim 9.2: `d'a` deletes whole lines,
+    // `` d`a `` stops before the mark). Both jump. The mark name arrives as
+    // `Args::Char`, captured by the keymap's `{char}` wildcard as `f`'s is.
+    let mark_line = registry.register_motion(
+        "motion:mark-line",
+        "Go to the first non-blank of the line of mark `args.char` (vim's `'`).",
+        MotionSpec {
+            jump: true,
+            exclusive: false,
+            apply: Arc::new(motion_mark_line),
+            args_schema: vec![],
+        },
+    );
+    let mark_exact = registry.register_motion(
+        "motion:mark-exact",
+        "Go to the exact position of mark `args.char` (vim's `` ` ``).",
+        MotionSpec {
+            jump: true,
+            exclusive: true,
+            apply: Arc::new(motion_mark_exact),
+            args_schema: vec![],
+        },
+    );
 
     Builtins {
         word_forward,
@@ -812,6 +837,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         search_prev,
         search_word_forward,
         search_word_backward,
+        mark_line,
+        mark_exact,
         delete,
         change,
         yank,
@@ -897,6 +924,9 @@ pub struct Builtins {
     pub search_prev: MotionId,
     pub search_word_forward: MotionId,
     pub search_word_backward: MotionId,
+    /// VM.3e: vim's `'x` / `` `x ``, as the motions they are in vim.
+    pub mark_line: MotionId,
+    pub mark_exact: MotionId,
     pub delete: OperatorId,
     pub change: OperatorId,
     pub yank: OperatorId,
@@ -1267,6 +1297,56 @@ fn scan_backward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Op
         }
         i -= 1;
     }
+}
+
+/// VM.3e: where mark `args.char` is, clamped into the buffer (a mark on a line
+/// since deleted still resolves, as the host's jump always has). vim 9.2: an
+/// unset mark is E20, and the motion failing cancels an operator it feeds.
+fn mark_position(ctx: &MotionContext) -> Result<Position, CommandError> {
+    let name = match &ctx.args {
+        crate::args::Args::Char(c) if c.is_ascii_alphanumeric() => *c,
+        crate::args::Args::Char(_) => {
+            return Err(CommandError::User("E78: Unknown mark".to_string()));
+        }
+        _ => return Err(CommandError::InvalidArgs("'/` require Args::Char")),
+    };
+    let Some(pos) = ctx.marks.and_then(|marks| marks.mark(name)) else {
+        return Err(CommandError::User("E20: Mark not set".to_string()));
+    };
+    let line = pos.line.min(last_addressable_line(ctx.buffer));
+    Ok(Position::new(
+        line,
+        pos.byte.min(line_byte_len(ctx.buffer, line)),
+    ))
+}
+
+/// VM.3e: `'x` — the first non-blank of the mark's line, linewise. A count is
+/// ignored, as in vim (`3'a` is `'a`).
+fn motion_mark_line(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let mark = mark_position(ctx)?;
+    let line_text = ctx.buffer.line(mark.line).unwrap_or_default();
+    let bytes = line_text.as_bytes();
+    let mut col = 0usize;
+    while col < bytes.len() && is_blank_byte(bytes[col]) {
+        col += 1;
+    }
+    let col = (col as u32).min(line_byte_len(ctx.buffer, mark.line));
+    Ok(MotionResult {
+        target: Position::new(mark.line, col),
+        linewise: true,
+        exclusive: None,
+        notice: None,
+    })
+}
+
+/// VM.3e: `` `x `` — the mark's exact position, charwise and exclusive.
+fn motion_mark_exact(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    Ok(MotionResult {
+        target: mark_position(ctx)?,
+        linewise: false,
+        exclusive: None,
+        notice: None,
+    })
 }
 
 /// VM.3d-2: `n` (`reverse = false`) / `N` — the last search again, `count`
@@ -1915,6 +1995,7 @@ fn find_repeat(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, Comma
         last_find: ctx.last_find,
         fold_resolver: ctx.fold_resolver,
         last_search: ctx.last_search,
+        marks: ctx.marks,
     };
     let mut result = match kind {
         FindKind::Forward => motion_find_char_forward(&sub)?,
@@ -3927,6 +4008,78 @@ mod tests {
         match search_effect(Position::new(0, 0), false, None, None) {
             Err(CommandError::User(msg)) => assert_eq!(msg, "E35: no previous regular expression"),
             other => panic!("expected E35, got {other:?}"),
+        }
+    }
+
+    // ---- VM.3e: `'x` / `` `x `` are motions ----
+
+    const MARKS: &str = "  one a\n  two b\n\n  four d\n  five e\n  six f\n";
+
+    fn mark_effect(
+        exact: bool,
+        name: char,
+        marks: Option<&std::collections::HashMap<char, Position>>,
+    ) -> Result<Effect, CommandError> {
+        let (registry, b, mut doc) = fixture(MARKS);
+        let id = if exact { b.mark_exact } else { b.mark_line };
+        let inv = CommandInvocation::of(id.0).with_args(crate::args::Args::Char(name));
+        let env = crate::registry::GrammarEnv {
+            marks: marks.map(|m| m as &dyn crate::registry::MarkResolver),
+            ..Default::default()
+        };
+        crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 4),
+            inv,
+            &CancellationToken::never(),
+            env,
+        )
+    }
+
+    fn mark_a_at(line: u32, byte: u32) -> std::collections::HashMap<char, Position> {
+        std::collections::HashMap::from([('a', Position::new(line, byte))])
+    }
+
+    /// vim: `'a` lands on the first non-blank of the mark's line; `` `a `` on
+    /// the mark itself.
+    #[test]
+    fn a_mark_motion_targets_its_line_or_its_exact_position() {
+        let marks = mark_a_at(4, 5);
+        match mark_effect(false, 'a', Some(&marks)).unwrap() {
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(4, 2)),
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+        match mark_effect(true, 'a', Some(&marks)).unwrap() {
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(4, 5)),
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+    }
+
+    /// vim: an unset mark is E20 — no table, or a table without that mark.
+    #[test]
+    fn an_unset_mark_is_e20() {
+        let marks = mark_a_at(4, 5);
+        for result in [
+            mark_effect(false, 'b', Some(&marks)),
+            mark_effect(true, 'a', None),
+        ] {
+            match result {
+                Err(CommandError::User(msg)) => assert_eq!(msg, "E20: Mark not set"),
+                other => panic!("expected E20, got {other:?}"),
+            }
+        }
+    }
+
+    /// A mark past the end of a buffer that has since shrunk resolves to the
+    /// last position there is, rather than failing or landing out of range.
+    #[test]
+    fn a_mark_past_the_end_is_clamped_into_the_buffer() {
+        let marks = mark_a_at(40, 9);
+        match mark_effect(true, 'a', Some(&marks)).unwrap() {
+            Effect::CursorMove(pos) => assert_eq!(pos.line, 5),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 

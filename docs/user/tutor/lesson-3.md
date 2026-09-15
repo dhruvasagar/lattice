@@ -238,6 +238,10 @@ Special marks (read-only, set automatically):
 
 Run `:marks` to list all current marks.
 
+Both jumps are motions, so they take an operator: `d'a` deletes every line
+from here to mark `a`, `` y`a `` yanks up to (not including) its exact
+position, and `v'a` extends a selection to it.
+
 **Exercise:** Type `ma` on the first practice line to set mark `a`.
 Move to a different part of this document, then type `` `a `` to
 jump back to the exact character.

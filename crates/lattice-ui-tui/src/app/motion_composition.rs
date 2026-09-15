@@ -405,4 +405,103 @@ mod tests {
             "E486 is not a jump"
         );
     }
+
+    // ── VM.3e: `'x` / `` `x `` are motions (vim 9.2, `vimcheck_marks*.vim`) ──
+
+    const MARKED: &str = "  one a\n  two b\n\n  four d\n  five e\n  six f";
+
+    fn marked(mark: (u32, u32), cursor: (u32, u32)) -> crate::app::App {
+        use lattice_protocol::position::Position;
+        let mut a = app_with(MARKED, 20);
+        a.editor.marks.insert('a', Position::new(mark.0, mark.1));
+        a.editor.cursor = Position::new(cursor.0, cursor.1);
+        a
+    }
+
+    /// vim: `d'a` from 1,5 (mark 5,3) deletes lines 1–5, linewise.
+    #[test]
+    fn d_quote_mark_deletes_whole_lines_to_the_mark() {
+        let mut a = marked((4, 2), (0, 4));
+        press_chars(&mut a, "d'a");
+        assert_eq!(body(&a), "  six f");
+        assert_eq!(
+            register(&a).map(|r| r.0).as_deref(),
+            Some("  one a\n  two b\n\n  four d\n  five e\n")
+        );
+    }
+
+    /// vim: `` d`a `` from 1,5 (mark 5,3) is charwise and exclusive.
+    #[test]
+    fn d_backtick_mark_deletes_up_to_the_mark() {
+        let mut a = marked((4, 2), (0, 4));
+        press_chars(&mut a, "d`a");
+        assert_eq!(body(&a), "  onfive e\n  six f");
+        assert_eq!(
+            register(&a).map(|r| r.0).as_deref(),
+            Some("e a\n  two b\n\n  four d\n  ")
+        );
+    }
+
+    /// vim: `y'a` from 5,3 back to a mark at 2,5 yanks lines 2–5.
+    #[test]
+    fn y_quote_mark_backward_yanks_whole_lines() {
+        let mut a = marked((1, 4), (4, 2));
+        press_chars(&mut a, "y'a");
+        assert_eq!(body(&a), MARKED);
+        assert_eq!(
+            register(&a).map(|r| r.0).as_deref(),
+            Some("  two b\n\n  four d\n  five e\n")
+        );
+    }
+
+    /// vim: `v'ay` from 1,5 (mark 5,3) extends a charwise selection to the
+    /// first non-blank of the mark's line, inclusive.
+    #[test]
+    fn v_quote_mark_extends_the_selection_to_the_mark_line() {
+        let mut a = marked((4, 2), (0, 4));
+        press_chars(&mut a, "v'ay");
+        assert_eq!(
+            register(&a).map(|r| r.0).as_deref(),
+            Some("e a\n  two b\n\n  four d\n  f")
+        );
+    }
+
+    /// vim: `c'aX` from 1,5 (mark 2,5) changes lines 1–2 linewise.
+    #[test]
+    fn c_quote_mark_changes_whole_lines() {
+        let mut a = marked((1, 4), (0, 4));
+        press_chars(&mut a, "c'aX");
+        assert_eq!(body(&a), "X\n\n  four d\n  five e\n  six f");
+    }
+
+    /// vim: `d'a` with no mark says E20 and deletes nothing; `'a` records no
+    /// jump.
+    #[test]
+    fn an_unset_mark_echoes_e20_and_changes_nothing() {
+        let mut a = app_with(MARKED, 20);
+        press_chars(&mut a, "d'a");
+        assert_eq!(body(&a), MARKED);
+        assert_eq!(
+            a.editor.last_message.as_ref().expect("an echo").text,
+            "E20: Mark not set"
+        );
+
+        let mut b = app_with(MARKED, 20);
+        let before = b.editor.position_history.len();
+        press_chars(&mut b, "'a");
+        assert_eq!(b.editor.position_history.len(), before, "E20 is not a jump");
+    }
+
+    /// vim: `3'a` ignores the count; a successful jump records one entry.
+    #[test]
+    fn a_count_before_a_mark_is_ignored_and_the_jump_is_recorded() {
+        let mut a = marked((4, 2), (0, 4));
+        let before = a.editor.position_history.len();
+        press_chars(&mut a, "3'a");
+        assert_eq!(
+            a.editor.cursor,
+            lattice_protocol::position::Position::new(4, 2)
+        );
+        assert_eq!(a.editor.position_history.len(), before + 1);
+    }
 }

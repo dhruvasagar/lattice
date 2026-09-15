@@ -980,23 +980,8 @@ pub fn register_normal_bindings(
         source(),
     );
 
-    // `'<X>` -- jump to mark X (line).
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('\''), ChordPattern::CharLiteral],
-        CommandInvocation::of(actions.jump_to_mark_line),
-        source(),
-    );
-
-    // `` `<X> `` -- jump to mark X (exact).
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('`'), ChordPattern::CharLiteral],
-        CommandInvocation::of(actions.jump_to_mark_exact),
-        source(),
-    );
+    // `'<X>` / `` `<X> `` are motions now (VM.3e): see
+    // [`register_mark_paths`], which binds them beside `f` / `t`.
 
     // `"<X>` -- select register X for the next operator / paste.
     handle.bind(
@@ -1065,6 +1050,7 @@ pub fn register_normal_bindings(
     // state; `[f, CharLiteral]` resolves to a typed
     // `Invoke(find_char_*, Args::Char(captured))`.
     register_find_char_paths(handle, &[], None, builtins);
+    register_mark_paths(handle, &[], None, builtins);
 
     // `r<X>` -- replace the char(s) under the cursor with X (vim's
     // `r{char}`). The affected span is `char_right x count`, exactly
@@ -1543,6 +1529,7 @@ pub fn register_operator_bindings(
     // ---- resolves to a typed `Invoke(op,
     // ---- Target::Motion(find_char_*, Args::Char(captured)))`.
     register_find_char_paths(handle, op_prefix, Some(op), builtins);
+    register_mark_paths(handle, op_prefix, Some(op), builtins);
 
     // ---- Visual mode: an operator acts on the active selection BY
     // ---- DESIGN. Pressing the operator's trigger chord in Visual
@@ -1626,6 +1613,38 @@ fn register_find_char_paths(
             }
         };
         handle.bind(layer, mode, &wild_path, invocation, source());
+    }
+}
+
+/// VM.3e: `'{mark}` / `` `{mark} `` as motions, bare and under an operator
+/// (`d'a`, `` y`a ``). The same `{char}` wildcard shape as
+/// [`register_find_char_paths`]: `substitute_invocation_char_arg` puts the
+/// mark name in the motion's args. Visual gets both from the keymap's motion
+/// mirror, which carries wildcard paths exactly. They were actions, so none of
+/// `d'a`, `` c`a `` or `v'a` was bound, though vim composes all of them.
+fn register_mark_paths(
+    handle: &KeymapHandle,
+    prefix: &[ChordPattern],
+    operator: Option<lattice_grammar::registry::OperatorId>,
+    builtins: &Builtins,
+) {
+    for (key, motion_id) in [('\'', builtins.mark_line), ('`', builtins.mark_exact)] {
+        let mut path: Vec<ChordPattern> = prefix.to_vec();
+        path.push(lit_char(key));
+        path.push(ChordPattern::CharLiteral);
+        let invocation = match operator {
+            None => CommandInvocation::of(motion_id.0),
+            Some(op) => {
+                CommandInvocation::of(op.0).with_target(Target::Motion(motion_id, Args::None))
+            }
+        };
+        handle.bind(
+            KeymapLayer::Builtin,
+            BindingMode::Normal,
+            &path,
+            invocation,
+            source(),
+        );
     }
 }
 

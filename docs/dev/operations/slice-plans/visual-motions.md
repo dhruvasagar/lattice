@@ -342,10 +342,24 @@ characters); lattice's has always searched the plain escaped word, and existing
 tests pin that pattern. A vim-parity fix of its own, not part of making the keys
 motions.
 
-### VM.3e 📝 — `` `x `` / `'x ``
+### VM.3e ✅ — `` `x `` / `'x `` are motions
 
-Needs the mark table. `'x` is linewise, which runs into the same missing
-`MotionSpec` flag VM.3b documented — likely blocked on that.
+Checked in vim 9.2 (`vimcheck_marks.vim`, `vimcheck_marks2.vim`): `d'a`
+deletes whole lines to the mark, `` d`a `` stops before it (charwise,
+exclusive), `y'a` works backward, `v'a` extends a charwise selection to the
+first non-blank of the mark's line, `c'a` is a linewise change, a count is
+ignored, and an unset mark is `E20` with nothing changed and no jump.
+
+`motion:mark-line` (linewise) and `motion:mark-exact` (exclusive) jump and take
+the mark name as `Args::Char`, bound by `register_mark_paths` beside `f` / `t`
+for bare and operator forms; Visual gets them from the mirror. VM.3L's linewise
+targets were the blocker and are in. The table reaches the grammar as a
+`MarkResolver` (`GrammarEnv` → `MotionContext`, an `Arc` clone in `DispatchEnv`
+only when a mark is set, forwarded by the multibuffer); the host's
+`HashMap<char, Position>` is its own resolver, so a read-only buffer borrows
+it. A mark past the end of a shrunk buffer clamps. Terminal panes route both
+ids to `do_jump_mark`, which mirrors the jump into the grid. The action ids
+stay registered for WIT.
 
 ### VM.3m 📝 — where an operator leaves the cursor
 

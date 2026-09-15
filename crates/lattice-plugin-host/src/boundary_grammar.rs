@@ -271,6 +271,7 @@ mod tests {
             last_find: None,
             fold_resolver: None,
             last_search: None,
+            marks: None,
         };
         let wit = project_motion_context(&ctx).unwrap();
         assert_eq!(wit.buffer_id, 9);

@@ -75,6 +75,8 @@ pub type IndentResolverHandle = Arc<dyn lattice_grammar::IndentResolver + Send +
 /// builds one from its fold table for a dispatch; the grammar sees a bare
 /// `&dyn FoldResolver`.
 pub type FoldResolverHandle = Arc<dyn lattice_grammar::FoldResolver + Send + Sync>;
+/// VM.3e: owned mark table for `'x` / `` `x ``, like [`FoldResolverHandle`].
+pub type MarkResolverHandle = Arc<dyn lattice_grammar::MarkResolver + Send + Sync>;
 
 /// N.1.6 (2026-06-10): the owned, thread-safe per-dispatch environment
 /// for text objects, carried across the actor channel. Bundles the
@@ -152,6 +154,9 @@ pub struct DispatchEnv {
     /// VM.3d-2: the last search, for `n` / `N` / `*` / `#`, which are motions
     /// on the keystroke path and so come through the actor too.
     pub last_search: Option<lattice_grammar::LastSearch>,
+    /// VM.3e: the mark table, for `'x` / `` `x ``, which come through the
+    /// actor like every keystroke motion. `None` when no mark is set.
+    pub marks: Option<MarkResolverHandle>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

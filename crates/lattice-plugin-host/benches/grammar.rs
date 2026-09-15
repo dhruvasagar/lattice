@@ -60,6 +60,7 @@ fn grammar_marshalling(c: &mut Criterion) {
         last_find: None,
         fold_resolver: None,
         last_search: None,
+        marks: None,
     };
     c.bench_function("grammar_project_motion_context", |b| {
         b.iter(|| {

@@ -21094,6 +21094,12 @@ impl Editor {
                 // VM.3d-2: `n` / `N` / `*` / `#` are motions; the search they
                 // repeat. Same reasoning as `last_find`.
                 last_search: self.last_search.clone(),
+                // VM.3e: `'x` / `` `x `` are motions; the marks they jump to.
+                // None at all with no mark set, so the common keystroke copies
+                // nothing.
+                marks: (!self.marks.is_empty()).then(|| {
+                    std::sync::Arc::new(self.marks.clone()) as lattice_runtime::MarkResolverHandle
+                }),
                 // OT.4: the same `h.snapshot()` bump the Action gate takes —
                 // O(1) `ArcSwap` load, no parse on the dispatch thread — so
                 // a PLUGIN motion or text object can mint a `tree-snapshot`
@@ -43462,6 +43468,14 @@ impl Editor {
             self.do_search_word_under_cursor(lattice_grammar::SearchDirection::Backward);
             return true;
         }
+        // VM.3e: likewise `'x` / `` `x ``, whose jump the host mirrors into
+        // the grid.
+        if cmd == self.builtins.mark_line.0 || cmd == self.builtins.mark_exact.0 {
+            if let lattice_grammar::args::Args::Char(name) = inv.args {
+                self.do_jump_mark(name, cmd == self.builtins.mark_exact.0);
+            }
+            return true;
+        }
         // T3.b.2 / T3.b.2.b: handle Visual-active state first.
         // Visual entry / no-Visual scrollback nav fall through
         // below.
@@ -43888,6 +43902,7 @@ impl Editor {
         // (`:help`, the dashboard) hands them the search too.
         let env = lattice_grammar::GrammarEnv {
             last_search: self.last_search.as_ref(),
+            marks: Some(&self.marks as &dyn lattice_grammar::MarkResolver),
             ..Default::default()
         };
         match lattice_grammar::execute_motion_only(

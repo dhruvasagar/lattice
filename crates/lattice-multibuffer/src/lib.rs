@@ -2367,6 +2367,7 @@ impl MultibufferDocumentHandle {
             last_find,
             fold_resolver,
             last_search,
+            marks,
             ..
         } = env;
         // K.4.11 (2026-06-02): the multibuffer now owns grammar
@@ -2485,6 +2486,7 @@ impl MultibufferDocumentHandle {
                 // VM.3d-2: forwarded, like `last_find`: `n` searches the text in
                 // front of the user, which in a composed view is the composed text.
                 last_search: last_search.as_ref(),
+                marks: marks.as_deref().map(|m| m as _),
             },
         )
         .map_err(RuntimeError::Grammar);

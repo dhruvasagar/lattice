@@ -148,6 +148,14 @@ These rules emerged from prior architectural debates and corrections. They are L
 
   **The one legitimate exception is a slice that cannot compile without its neighbour.** EP.3's diagnostics feed reads the option EP.4 was specified to add, so the option had to ship with EP.3 or EP.3 would not build. When that happens: land them together, and say in the message which slice absorbed what and why. Do not split a commit into a state that fails to build merely to match the plan's numbering.
 
+- **Verify with TARGETED tests; whole-crate gates are a batch operation, not a per-slice one.** Run the test file(s) the change actually touches, plus `cargo check` (with `--tests`, and `--features window` when `lattice-ui-gpui` is in scope). That is the default loop, and it answers in seconds: WK.12's own suite settled the whole slice in **6.6 s**, including catching a fix that did not fix the bug.
+
+  Whole-crate suites are big — `lattice-host` is ~1670 tests, `lattice-ui-tui` ~1860 — and each gate recompiles the graph before running them. Per slice that is 30–45 minutes of machine time per crate to re-prove code the slice never touched. Run them **once per batch of commits**, when Dhruva is not using the machine, or leave them to CI.
+
+  **Never launch a multi-crate gate without asking first** — it makes the MacBook unusable while it runs. And never re-run a whole gate to re-check a single failing test: run that test (`cargo test -p <crate> --test <file> -- --test-threads=1`, which also rules out the parallel-thread flakes this workspace has).
+
+  Decided 2026-09-16, after per-slice gating consumed most of a session's wall clock across nine slices and left the machine unusable. Prior to that this section read as though the scoped gate were the per-commit default; it is not.
+
 - **A commit is fmt-clean, warning-clean and green — verified BEFORE committing, not after.** Three gates, in this order, every time:
 
   ```

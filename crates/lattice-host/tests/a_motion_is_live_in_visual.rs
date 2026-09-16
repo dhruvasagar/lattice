@@ -143,6 +143,10 @@ fn the_motions_that_were_dead_in_visual_resolve_now() {
     let editor = boot();
 
     for (label, path) in [
+        // VM.3j-2: `<C-d>` / `<C-u>` are scroll COMMANDS now rather than
+        // motions, and still bound in Visual — vim scrolls there too, so the
+        // requirement this row encodes is unchanged even though the mechanism
+        // that satisfies it is.
         ("<C-d>", vec![KeyChord::ctrl('d')]),
         ("<C-u>", vec![KeyChord::ctrl('u')]),
         ("<PageDown>", vec![KeyChord::special(SpecialKey::PageDown)]),
@@ -195,8 +199,13 @@ fn the_motions_that_were_dead_in_visual_resolve_now() {
     }
 }
 
-/// The operator half of `nvo`. `dgg` and `d<C-d>` were unbound for the same
-/// reason `vgg` was, so the derivation writes those rows too.
+/// The operator half of `nvo`. `dgg` was unbound for the same reason `vgg`
+/// was, so the derivation writes those rows too.
+///
+/// VM.3j-2 removed the `y<C-d>` row: `<C-d>` was bound to the `j` MOTION with a
+/// baked count, which is what made `y<C-d>` resolve at all. It is a scroll
+/// command now, and vim composes no operator with it — `y<C-d>` and `d<C-d>`
+/// do nothing there.
 #[test]
 fn the_same_motions_compose_with_an_operator() {
     let editor = boot();
@@ -209,7 +218,6 @@ fn the_same_motions_compose_with_an_operator() {
                 KeyChord::char('g'),
             ],
         ),
-        ("y<C-d>", vec![KeyChord::char('y'), KeyChord::ctrl('d')]),
         (
             "c<PageDown>",
             vec![KeyChord::char('c'), KeyChord::special(SpecialKey::PageDown)],
@@ -229,8 +237,20 @@ fn the_same_motions_compose_with_an_operator() {
 /// AND leave the selection spanning what it crossed.
 ///
 /// Worth asserting separately because reachability alone would pass on a
-/// build where the motion fired but the anchor was dropped — and the anchor
+/// build where the command fired but the anchor was dropped — and the anchor
 /// is the half that makes it a *selection* rather than a jump.
+///
+/// VM.3j-2: the second step goes through `Editor::dispatch` rather than
+/// `dispatch_chord`, and that is load-bearing rather than incidental.
+/// `dispatch_chord` calls `handle_action` directly, so it skips the
+/// end-of-dispatch `write_through_caret` that rebuilds the document's
+/// selection from `visual_anchor` + `cursor` — which is the very step this
+/// test is about. It passed on the chord path only while `<C-d>` was a
+/// MOTION, because a motion writes the selection inside its own application;
+/// as a scroll command it relies on the write-through, exactly as `<C-f>` and
+/// every other reachable cursor-mover does (see this file's header). That
+/// `<C-d>` reaches the command at all is the drift test above, so nothing is
+/// lost by naming the action here.
 #[test]
 fn a_derived_visual_motion_extends_the_selection() {
     let mut editor = Editor::boot(CoreDocument::from_text(&"line\n".repeat(60)));
@@ -239,7 +259,7 @@ fn a_derived_visual_motion_extends_the_selection() {
     let _ = editor.dispatch_chord(KeyChord::char('v'), &mut partial);
     let anchor = editor.visual_anchor.expect("`v` arms the anchor");
 
-    let _ = editor.dispatch_chord(KeyChord::ctrl('d'), &mut partial);
+    let _ = editor.dispatch(lattice_host::action::Action::HalfPageDown);
 
     assert!(
         editor.cursor.line > anchor.line,

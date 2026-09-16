@@ -1021,6 +1021,8 @@ interface types {
         repeat-last-change,
         page-down,
         page-up,
+        half-page-down,
+        half-page-up,
         scroll-line-up,
         scroll-line-down,
         redraw-screen,

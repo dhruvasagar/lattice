@@ -319,6 +319,11 @@ pub enum AppEffect {
     /// Vim's `<C-f>`. Page-down: scroll the viewport down one
     /// page. Promoted from `Action::PageDown` in slice 8.i.1.d.
     PageDown,
+    /// VM.3j-2: vim's `<C-d>` / `<C-u>` — scroll the view and the cursor
+    /// together by `scroll` lines (half the window by default). SCROLL
+    /// commands, not motions: vim composes no operator with them.
+    HalfPageDown,
+    HalfPageUp,
     /// Vim's `<C-b>`. Page-up: scroll the viewport up one page.
     /// Promoted from `Action::PageUp` in slice 8.i.1.d.
     PageUp,
@@ -457,7 +462,10 @@ pub enum AppEffect {
     /// VM.3h: vim's `zf` operator (`zf{motion}`, `{Visual}zf`). A CLOSED fold
     /// over the pre-resolved inclusive 0-based lines. Carries the span, so it
     /// crosses WIT like `NarrowLines`.
-    CreateFold { start_line: u32, end_line: u32 },
+    CreateFold {
+        start_line: u32,
+        end_line: u32,
+    },
     /// Insert mode's `<BS>`. Delete the byte before the cursor.
     /// Promoted from `Action::DeleteCharBackward` in slice
     /// 8.i.1.g.
@@ -537,13 +545,17 @@ pub enum AppEffect {
     /// slice 8.i.2.d. Bool payload rides in the AppEffect:
     /// distinct `CommandId` per binding (`J` -> with-space=true,
     /// `gJ` -> with-space=false).
-    JoinLines { with_space: bool },
+    JoinLines {
+        with_space: bool,
+    },
     /// Vim's `;` (forward) / `,` (reverse). Repeat the most
     /// recent `f` / `F` / `t` / `T` find on the current line
     /// in the originally-typed direction (`reverse: false`) or
     /// the opposite direction (`reverse: true`). Promoted from
     /// `Action::FindRepeat` in slice 8.i.2.d.
-    FindRepeat { reverse: bool },
+    FindRepeat {
+        reverse: bool,
+    },
     /// Insert / Replace mode's `<CR>`. Inserts a literal newline
     /// at the cursor. Promoted from
     /// `Action::Insert("\n".into())` in slice 8.i.2.e. Distinct
@@ -792,7 +804,9 @@ pub enum AppEffect {
     /// Routed to the active multibuffer view's `expand_excerpt_at`
     /// from the dispatch path. No-op when the active buffer
     /// isn't a multibuffer.
-    MultibufferExpand { delta: i32 },
+    MultibufferExpand {
+        delta: i32,
+    },
     /// N.1.1 (2026-06-10): `:narrow [{range}]` ex-command. The host
     /// arm resolves `range` against the active document to a line
     /// span, fetches the active buffer's `Arc<dyn Document>`, and
@@ -801,7 +815,9 @@ pub enum AppEffect {
     /// `range == None` (bare `:narrow`) narrows the current line in
     /// N.1.1 (N.1.2 widens this to the current paragraph / Visual
     /// selection).
-    NarrowTrigger { range: Option<crate::range::Range> },
+    NarrowTrigger {
+        range: Option<crate::range::Range>,
+    },
     /// N.1.1 (2026-06-10): `:widen` ex-command. The host arm closes
     /// the active narrow view (an editable one-excerpt multibuffer),
     /// restoring the full source buffer. No-op + echo when the
@@ -813,7 +829,10 @@ pub enum AppEffect {
     /// `[start_line, end_line]` (unlike `NarrowTrigger`, which carries
     /// an unresolved `Range`); the host arm narrows the active buffer
     /// to that span via the same `create_narrow_view` sink.
-    NarrowLines { start_line: u32, end_line: u32 },
+    NarrowLines {
+        start_line: u32,
+        end_line: u32,
+    },
     /// M.6 (2026-06-01): `:search <query>` ex-command. M.10.6
     /// (2026-06-03) inlined the work into the host's
     /// apply_effect arm — it calls
@@ -821,7 +840,9 @@ pub enum AppEffect {
     /// against the active editor as the activator. No longer
     /// trampolines through `Action::SearchTrigger` /
     /// `Editor::do_search` (both deleted).
-    SearchTrigger { query: String },
+    SearchTrigger {
+        query: String,
+    },
     /// M.6.1 (2026-06-01): `<CR>` chord in project-search-mode.
     /// Resolves the excerpt under cursor → source path → opens
     /// the file at the matched row. M.10.3 (2026-06-03) made
@@ -845,7 +866,9 @@ pub enum AppEffect {
     /// the host arm is generic apply-effect routing. `cmdline`:
     /// `Some(cmd)` for `:compile`; `None` for `:recompile` / bare
     /// `:make` (reuse the last command).
-    CompileRun { cmdline: Option<String> },
+    CompileRun {
+        cmdline: Option<String>,
+    },
     /// CM.3b (2026-07-22): `<CR>` on a location line in the
     /// `*compilation*` buffer. The `compilation-mode` action handler
     /// parses the cursor line's text (`parse_location_line`) into a
@@ -868,7 +891,9 @@ pub enum AppEffect {
     /// `jump_to_file_line_col`). On an empty list `Next`/`Prev` fall
     /// back to today's active-buffer diagnostic hopping; `Jump`/
     /// `First`/`Last` echo "no error list".
-    ErrorNav { target: ErrorTarget },
+    ErrorNav {
+        target: ErrorTarget,
+    },
     /// CM.3a (2026-07-22): parsed error entries from the compilation
     /// stderr reader — the off-thread → host-state seam. The reader
     /// accumulates entries and sends the FULL list through the
@@ -934,7 +959,10 @@ pub enum AppEffect {
     /// — published by the mode during activation so the renderer
     /// reads `compilation.location` bg/fg from the theme rather than
     /// hardcoding RGB values.
-    CompilationThemeColors { bg: u32, fg: u32 },
+    CompilationThemeColors {
+        bg: u32,
+        fg: u32,
+    },
     /// CM.3d (2026-07-22): kill the running compilation child
     /// process. The host arm calls `CompilationService::kill()`.
     CompilationKill,

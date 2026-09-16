@@ -354,6 +354,8 @@ impl App {
             | Action::ScrollCursorTo(_)
             | Action::HorizontalScroll(_)
             | Action::PageDown
+            | Action::HalfPageDown
+            | Action::HalfPageUp
             | Action::PageUp
             | Action::ScrollLineUp
             | Action::ScrollLineDown

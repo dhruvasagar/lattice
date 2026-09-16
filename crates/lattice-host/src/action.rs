@@ -438,6 +438,10 @@ pub enum Action {
     /// Move cursor down / up by one viewport-page (vim's Ctrl-F / Ctrl-B).
     PageDown,
     PageUp,
+    /// VM.3j-2: vim's `<C-d>` / `<C-u>` — view and cursor together by
+    /// `scroll` lines. Scroll commands, so no operator composes with them.
+    HalfPageDown,
+    HalfPageUp,
     /// Scroll the viewport one line up (Ctrl-Y) or down (Ctrl-E),
     /// nudging the cursor to keep it on-screen.
     ScrollLineUp,

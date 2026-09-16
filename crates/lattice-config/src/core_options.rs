@@ -545,6 +545,11 @@ crate::options! {
     #[validate(validate_scrolloff)]
     pub Scrolloff: i64 = 0;
 
+    /// Lines `<C-d>` / `<C-u>` scroll. `0` (vim's default) means half the
+    /// window, recomputed as the window resizes.
+    #[aliases("scr")]
+    pub Scroll: i64 = 0;
+
     /// Whether `H` / `M` / `L` land on the first non-blank of their line
     /// (vim's default) or keep the cursor's column (`nostartofline`).
     #[aliases("sol")]

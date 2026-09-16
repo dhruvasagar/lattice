@@ -134,6 +134,9 @@ pub struct OptionCache {
     pub foldenable: bool,
     pub foldmethod: FoldMethod,
     pub scrolloff: u32,
+    /// VM.3j-2 (`:set scroll`): lines `<C-d>` / `<C-u>` move. `0` means
+    /// half the window.
+    pub scroll_lines: u32,
     /// VM.3f (`:set startofline`): `H` / `M` / `L` land on the first
     /// non-blank; off keeps the cursor's column.
     pub startofline: bool,
@@ -189,6 +192,7 @@ impl Default for OptionCache {
             foldenable: true,
             foldmethod: FoldMethod::Manual,
             scrolloff: 0,
+            scroll_lines: 0,
             startofline: true,
             sidescroll: 0,
             sidescrolloff: 0,

@@ -35,8 +35,8 @@ option, its `:set` surface, and its default:
 | [`current-line-highlight-mode`](help:current-line-highlight-mode) | `cursorline` |
 
 This page covers the display surface as a whole, including options
-that have no mode of their own (`tabstop`, `scrolloff`, `startofline`, `sidescroll`,
-`ui.ligatures`).
+that have no mode of their own (`tabstop`, `scrolloff`, `scroll`, `startofline`,
+`sidescroll`, `ui.ligatures`).
 
 ## Quick reference
 
@@ -51,7 +51,8 @@ that have no mode of their own (`tabstop`, `scrolloff`, `startofline`, `sidescro
 | `:set ui.window.start-maximized` | off | Open maximized — resizable windows fill the work area; a borderless (`none`) window fills the whole display (GPUI only) |
 | `:set tabstop=N`  (`:set ts=N`)  | `4`     | Columns a hard tab occupies                                    |
 | `:set scrolloff=N` (`:set so=N`) | `0`     | Minimum lines kept above/below the cursor                      |
-| `:set startofline` (`:set sol`) / `:set nostartofline` | on | `gg` / `G` / `H` / `M` / `L` / `<C-f>` / `<C-b>` land on the first non-blank; off keeps the cursor's column |
+| `:set scroll=N` (`:set scr=N`) | `0`       | Lines `<C-d>` / `<C-u>` move (`0` = half the window, recomputed as it resizes) |
+| `:set startofline` (`:set sol`) / `:set nostartofline` | on | `gg` / `G` / `H` / `M` / `L` / `<C-f>` / `<C-b>` / `<C-d>` / `<C-u>` land on the first non-blank; off keeps the cursor's column |
 | `:set sidescroll=N` (`:set ss=N`) | `0`    | Columns to scroll when the cursor crosses the edge (`0` = jump to centre) |
 | `:set sidescrolloff=N` (`:set siso=N`) | `0` | Minimum columns kept left/right of the cursor (`nowrap`)     |
 | `zl` `zh` / `zL` `zH` / `zs` `ze` | —      | Scroll right/left N cols · half-screen · cursor to left/right edge |

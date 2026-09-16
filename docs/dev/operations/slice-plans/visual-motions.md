@@ -432,7 +432,7 @@ One rule, two peers: `startofline_target` in the grammar (`gg` / `G` / `H` /
 call the helper. Only the COLUMN changes; the line each command walks to is
 untouched.
 
-### VM.3j-2 📝 — `<C-d>` / `<C-u>` are half-window scrolls, and `scroll`
+### VM.3j-2 ✅ — `<C-d>` / `<C-u>` are half-window scrolls, and `scroll`
 
 `<C-d>` / `<C-u>` are bound to the `j` / `k` MOTIONS with a baked `Count(10)`,
 so they move a fixed ten lines regardless of window size, and — because a
@@ -455,6 +455,25 @@ builds every fixture guest as its own standalone workspace, `wasm32-wasip2` is
 installed, and the gate's plugin-host run prints no SKIP lines — so the cost is
 rebuild TIME on a slice that already takes the longest gate in the workspace,
 not a hole in the checking.
+
+**Landed without one measured row**, which VM.3j-3 carries.
+
+### VM.3j-3 📝 — `{count}<C-d>` sets `scroll` and persists
+
+`do_half_page` takes no count, and `Action::HalfPageDown` carries none — so
+`3<C-d>` moves half a window, not three lines, and a following bare `<C-d>` has
+nothing to remember. vim (`vimcheck_ctrl_d.vim`) treats the count as an
+assignment to the `scroll` OPTION: `3<C-d>` moves three AND sets `scroll=3`, so
+every later `<C-d>` moves three until something changes it again.
+
+That is a write to option state from a scroll command, which no other scroll
+command does — `do_page` and `do_scroll_line` ignore counts too, but for them
+vim does as well. So this is not "thread a count through"; it is one command
+that mutates a buffer-local option as a side effect, and it wants its own slice
+rather than being smuggled into the one that made `<C-d>` a scroll command.
+
+Written down rather than rounded off, the same way VM.3g-3 is: narrow, real,
+and invisible until someone types a count.
 
 ### VM.3g-1 ✅ — `j` and `k` remember the column they aim for
 

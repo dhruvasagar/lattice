@@ -2941,6 +2941,8 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::HorizontalScroll(k) => editor.do_horizontal_scroll(k),
         Action::PageDown => editor.do_page(true),
         Action::PageUp => editor.do_page(false),
+        Action::HalfPageDown => editor.do_half_page(true),
+        Action::HalfPageUp => editor.do_half_page(false),
         Action::ScrollLineUp => editor.do_scroll_line(false),
         Action::ScrollLineDown => editor.do_scroll_line(true),
         Action::MatchBracket => editor.do_match_bracket(),
@@ -10453,6 +10455,8 @@ impl Editor {
             AppEffect::Redo => out.next_actions.push(Action::Redo),
             AppEffect::RepeatLastChange => out.next_actions.push(Action::RepeatLastChange),
             AppEffect::PageDown => out.next_actions.push(Action::PageDown),
+            AppEffect::HalfPageDown => out.next_actions.push(Action::HalfPageDown),
+            AppEffect::HalfPageUp => out.next_actions.push(Action::HalfPageUp),
             AppEffect::PageUp => out.next_actions.push(Action::PageUp),
             AppEffect::ScrollLineUp => out.next_actions.push(Action::ScrollLineUp),
             AppEffect::ScrollLineDown => out.next_actions.push(Action::ScrollLineDown),
@@ -24037,6 +24041,47 @@ impl Editor {
     /// Fold-aware: walks visible (non-fold-hidden) lines so closed
     /// folds don't cause the cursor to skip too far or land inside
     /// hidden fold bodies.
+    /// VM.3j-2: vim's `<C-d>` / `<C-u>` — move the VIEW and the cursor together
+    /// by `scroll` lines (half the window when the option is 0, vim's default).
+    ///
+    /// A scroll command, not a motion. `<C-d>` was bound to the `j` MOTION with
+    /// a baked count of ten, which moved a fixed ten lines whatever the window
+    /// height and — because a motion composes — made `d<C-d>` delete eleven
+    /// lines where vim deletes nothing at all.
+    ///
+    /// Measured in vim 9.2 (`vimcheck_ctrl_d.vim`): from 3,6 in a 22-row window
+    /// the view goes 1 → 12 and the cursor 3 → 14, i.e. both by `scroll`; near
+    /// the end the cursor stops on the last line; on the last line nothing
+    /// moves.
+    pub fn do_half_page(&mut self, down: bool) {
+        let height = self.viewport_height.max(1);
+        let n = if self.option_cache.scroll_lines > 0 {
+            self.option_cache.scroll_lines
+        } else {
+            (height / 2).max(1)
+        };
+        let buffer = self.active_text();
+        let last = last_addressable_line(&buffer);
+        // The topmost line that still fills the window; scrolling past it would
+        // leave blank rows below the buffer.
+        let top_max = last.saturating_sub(height.saturating_sub(1));
+        if down {
+            self.cursor.line = self.cursor.line.saturating_add(n).min(last);
+            self.scroll = self.scroll.saturating_add(n).min(top_max);
+        } else {
+            self.cursor.line = self.cursor.line.saturating_sub(n);
+            self.scroll = self.scroll.saturating_sub(n);
+        }
+        // VM.3j-1: and the landing column follows `startofline`, as every other
+        // scroll and jump does.
+        self.cursor.byte = self.startofline_byte(self.cursor.line);
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            let buf_id = self.active_pane_buffer_id();
+            self.sync_terminal_nav_cursor_from_doc(buf_id);
+        }
+        self.ensure_cursor_visible();
+    }
+
     pub fn do_page(&mut self, down: bool) {
         let height = self.viewport_height.max(1);
         let step = height.saturating_sub(2).max(1);
@@ -36734,7 +36779,7 @@ impl Editor {
         use lattice_config::core_options::{IndentGuidesActive, IndentGuidesChar};
         use lattice_config::{
             CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
-            Number, RelativeNumber, Scrollbind, Scrolloff, Sidescroll, Sidescrolloff,
+            Number, RelativeNumber, Scroll, Scrollbind, Scrolloff, Sidescroll, Sidescrolloff,
             SignColumnOption, StartOfLine, Tabstop, TerminalEscExits, Whitespace, WhitespaceEol,
             WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
         };
@@ -36765,6 +36810,7 @@ impl Editor {
             foldenable: *self.resolved_option::<FoldEnable>(buffer),
             foldmethod: *self.resolved_option::<FoldMethodOption>(buffer),
             scrolloff: *self.resolved_option::<Scrolloff>(buffer) as u32,
+            scroll_lines: *self.resolved_option::<Scroll>(buffer) as u32,
             startofline: *self.resolved_option::<StartOfLine>(buffer),
             sidescroll: *self.resolved_option::<Sidescroll>(buffer) as u32,
             sidescrolloff: *self.resolved_option::<Sidescrolloff>(buffer) as u32,
@@ -49309,6 +49355,57 @@ mod tests {
             e.scroll, 17,
             "6 line-heights up from 20: 19, 18(=4) spends 5, then 17 spends 6"
         );
+    }
+
+    /// VM.3j-2: `<C-d>` / `<C-u>` move the VIEW and the CURSOR together by
+    /// `scroll` lines — half the window when the option is 0, vim's default.
+    ///
+    /// vim 9.2 (`vimcheck_ctrl_d.vim`), 22-row window, `<C-d>` from 3,6: the
+    /// view goes 1 → 12 and the cursor 3 → 14. Both by 11, which is half of 22.
+    #[test]
+    fn a_half_page_moves_the_view_and_the_cursor_together() {
+        let mut e = crate::editor::Editor::boot(doc_with_lines(80));
+        e.viewport_height = 22;
+        e.scroll = 0;
+        e.cursor = lattice_protocol::position::Position::new(2, 0);
+        e.do_half_page(true);
+        assert_eq!(e.cursor.line, 13, "the cursor by half the window");
+        assert_eq!(e.scroll, 11, "and the view by the same amount");
+
+        // And back up again.
+        e.do_half_page(false);
+        assert_eq!(e.cursor.line, 2);
+        assert_eq!(e.scroll, 0);
+    }
+
+    /// vim: near the end the cursor stops on the last line; ON the last line
+    /// nothing moves at all.
+    #[test]
+    fn a_half_page_clamps_at_the_end_of_the_buffer() {
+        let mut e = crate::editor::Editor::boot(doc_with_lines(80));
+        e.viewport_height = 22;
+        e.scroll = 40;
+        e.cursor = lattice_protocol::position::Position::new(77, 0);
+        e.do_half_page(true);
+        assert_eq!(e.cursor.line, 79, "clamped to the last line");
+
+        let before = e.scroll;
+        e.do_half_page(true);
+        assert_eq!(e.cursor.line, 79, "already there: nothing moves");
+        assert_eq!(e.scroll, before);
+    }
+
+    /// `:set scroll=N` overrides the half-window default, as in vim.
+    #[test]
+    fn the_scroll_option_sets_the_half_page_distance() {
+        let mut e = crate::editor::Editor::boot(doc_with_lines(80));
+        e.viewport_height = 22;
+        e.option_cache.scroll_lines = 3;
+        e.scroll = 0;
+        e.cursor = lattice_protocol::position::Position::new(2, 0);
+        e.do_half_page(true);
+        assert_eq!(e.cursor.line, 5, "three lines, not eleven");
+        assert_eq!(e.scroll, 3);
     }
 
     /// The parity guard for IM.1b: with no overrides the weighted walks must

@@ -90,6 +90,9 @@ pub struct ActionIds {
     pub redo: CommandId,
     pub repeat_last_change: CommandId,
     pub page_down: CommandId,
+    /// VM.3j-2: vim's `<C-d>` / `<C-u>` — SCROLL commands, not motions.
+    pub half_page_down: CommandId,
+    pub half_page_up: CommandId,
     pub page_up: CommandId,
     pub scroll_line_up: CommandId,
     pub scroll_line_down: CommandId,
@@ -612,6 +615,18 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:page-down",
             "Vim's `<C-f>`: scroll the viewport down one page.",
             AppEffect::PageDown,
+        ),
+        half_page_down: register_simple(
+            registry,
+            "action:half-page-down",
+            "Vim's `<C-d>`: scroll the view and the cursor down by `scroll` lines.",
+            AppEffect::HalfPageDown,
+        ),
+        half_page_up: register_simple(
+            registry,
+            "action:half-page-up",
+            "Vim's `<C-u>`: scroll the view and the cursor up by `scroll` lines.",
+            AppEffect::HalfPageUp,
         ),
         page_up: register_simple(
             registry,
@@ -1861,6 +1876,8 @@ mod tests {
             (ids.redo, "action:redo"),
             (ids.repeat_last_change, "action:repeat-last-change"),
             (ids.page_down, "action:page-down"),
+            (ids.half_page_down, "action:half-page-down"),
+            (ids.half_page_up, "action:half-page-up"),
             (ids.page_up, "action:page-up"),
             (ids.scroll_line_up, "action:scroll-line-up"),
             (ids.scroll_line_down, "action:scroll-line-down"),

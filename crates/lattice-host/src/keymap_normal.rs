@@ -1134,20 +1134,23 @@ pub fn register_normal_bindings(
     // `<C-d>` / `<C-u>` -- half-page scroll. Bake `Count(10)`
     // into the invocation so 8.g.iv's `attach_count` honours it
     // when no user-typed prefix is in flight.
-    handle.bind(
-        layer,
-        mode,
-        &[lit(KeyChord::ctrl('d'))],
-        CommandInvocation::of(builtins.line_down.0).with_count(lattice_grammar::command::Count(10)),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[lit(KeyChord::ctrl('u'))],
-        CommandInvocation::of(builtins.line_up.0).with_count(lattice_grammar::command::Count(10)),
-        source(),
-    );
+    // VM.3j-2: `<C-d>` / `<C-u>` are SCROLL commands, like `<C-f>` / `<C-b>`
+    // below — not motions. They were bound to the `j` / `k` motions with a baked
+    // `Count(10)`, which moved ten lines whatever the window height and, because
+    // a motion composes, made `d<C-d>` delete eleven lines where vim deletes
+    // nothing. Bound in Visual and Select too, for the reason VM.3h gives: vim
+    // scrolls in those modes and a Ctrl chord never overtypes.
+    for (key, action) in [('d', actions.half_page_down), ('u', actions.half_page_up)] {
+        for m in [mode, BindingMode::Visual, BindingMode::Select] {
+            handle.bind(
+                layer,
+                m,
+                &[lit(KeyChord::ctrl(key))],
+                CommandInvocation::of(action),
+                source(),
+            );
+        }
+    }
 
     // Viewport / scroll / undo-tree / jump history / tag stack /
     // redraw / blockwise visual.

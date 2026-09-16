@@ -7322,9 +7322,11 @@ Two shapes worth knowing about elsewhere:
   is the bespoke instance it exists to replace; that migration is deferred
   (it needs a `CursorSettled` event that does not exist), so the actor
   currently carries both arms.
-- **`PopupPlacement::PaneBottom`** (WK.5) — full pane width, bottom-anchored,
-  capped at half the pane. Available to plugins too: the WIT mirror gained
-  `pane-bottom` rather than collapsing it at the boundary.
+- **`PopupPlacement::MinibufferBand`** (WK.5 as `PaneBottom`; renamed and
+  re-homed by WK.12) — full width, below every pane and above the `:` line,
+  capped at half the body. Routed to its own slot, so it never evicts the
+  popup. Available to plugins too: the WIT mirror gained the case rather than
+  collapsing it at the boundary.
 
 The popup is `PopupFocus::Passive`, so no chord's meaning changes while
 it is up — the property that makes it safe under paramount #3. Design

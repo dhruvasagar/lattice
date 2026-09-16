@@ -90,7 +90,7 @@ async fn fire_gate(editor: &mut Editor) {
 }
 
 fn popup_text(editor: &Editor) -> Option<String> {
-    let id = editor.popup_buffer?;
+    let id = editor.band_buffer?;
     Some(
         editor
             .buffers
@@ -111,7 +111,7 @@ async fn holding_a_prefix_opens_the_popup_without_another_keystroke() {
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
     settle_arming_to(&mut editor, true).await;
     assert!(
-        editor.popup_buffer.is_none(),
+        editor.band_buffer.is_none(),
         "the popup must not appear before the delay elapses — that would be \
          a stutter, not a hint"
     );
@@ -156,7 +156,7 @@ async fn a_chord_completed_before_the_delay_never_shows_a_popup() {
     );
     fire_gate(&mut editor).await;
     assert!(
-        editor.popup_buffer.is_none(),
+        editor.band_buffer.is_none(),
         "and nothing opens even after the delay passes"
     );
 }
@@ -174,7 +174,7 @@ async fn the_popup_is_passive_and_leaves_the_document_focused() {
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
     settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
-    assert!(editor.popup_buffer.is_some(), "popup open");
+    assert!(editor.band_buffer.is_some(), "popup open");
 
     assert_eq!(
         editor.document_buffer_id, doc_before,
@@ -209,7 +209,7 @@ async fn disabling_the_option_never_arms_the_gate() {
         "disabled means no timer at all"
     );
     fire_gate(&mut editor).await;
-    assert!(editor.popup_buffer.is_none());
+    assert!(editor.band_buffer.is_none());
 }
 
 /// An unbound prefix has no continuations, so there is nothing to show —
@@ -228,7 +228,7 @@ async fn a_prefix_with_no_continuations_opens_nothing() {
     fire_gate(&mut editor).await;
 
     assert!(
-        editor.popup_buffer.is_none(),
+        editor.band_buffer.is_none(),
         "no continuations ⇒ no popup, rather than an empty grid"
     );
 }
@@ -249,7 +249,7 @@ async fn the_keys_in_the_popup_are_highlighted() {
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
     settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
-    let popup = editor.popup_buffer.expect("popup open");
+    let popup = editor.band_buffer.expect("popup open");
 
     // The drain that moves stored spans into the buffer local runs on the
     // tick, exactly as it does for magit's buffers.
@@ -320,7 +320,7 @@ async fn resolving_a_chord_dismisses_an_open_popup() {
     settle_arming_to(&mut editor, false).await;
 
     assert!(
-        editor.popup_buffer.is_none(),
+        editor.band_buffer.is_none(),
         "the popup describes a prefix that no longer exists"
     );
 }
@@ -371,51 +371,92 @@ async fn a_fast_chord_leaves_someone_elses_popup_alone() {
 /// resolves. A fix that simply stopped dismissing would pass the test above
 /// and leave a hint describing a prefix that no longer exists.
 #[tokio::test]
-async fn which_keys_own_popup_is_still_dismissed_when_the_chord_resolves() {
+async fn which_keys_own_band_is_still_dismissed_when_the_chord_resolves() {
     let mut editor = booted();
     quiesce(&editor).await;
 
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
     settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
-    assert!(editor.popup_buffer.is_some(), "the hint opened");
+    assert!(editor.band_buffer.is_some(), "the hint opened");
 
     let _ = editor.dispatch(Action::ScrollLineDown);
     settle_arming_to(&mut editor, false).await;
 
     assert!(
-        editor.popup_buffer.is_none(),
+        editor.band_buffer.is_none(),
         "resolving the chord closes the hint it was describing"
     );
 }
 
-/// And if someone else's popup REPLACED which-key's between opening and
-/// resolving, the dismissal finds a stranger in the slot and leaves it.
+/// WK.12: a popup opened while the hint is up no longer REPLACES it — they are
+/// different surfaces now — and the hint's dismissal still cannot reach it.
 ///
-/// There is one popup slot, so this is reachable whenever any other subsystem
-/// opens one while a prefix is pending — exactly the race an untargeted
-/// dismiss cannot see.
+/// Under WK.11 this was a race worth testing because there was one slot. The
+/// slot is no longer shared, so the same scenario asserts something stronger:
+/// both are open at once, and only which-key's closes.
 #[tokio::test]
-async fn a_popup_that_replaced_the_hint_survives_the_dismissal() {
+async fn a_popup_opened_over_the_band_survives_the_bands_dismissal() {
     let mut editor = booted();
     quiesce(&editor).await;
 
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
     settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
-    assert!(editor.popup_buffer.is_some(), "the hint opened");
+    assert!(editor.band_buffer.is_some(), "the hint opened");
 
-    // Something else takes the slot while the prefix is still pending.
+    // Something else opens a popup while the prefix is still pending.
     let content = lattice_help::parse_help_lines("hover", vec!["int foo(void)".to_string()]);
     editor.open_popup(content, lattice_host::popup::PopupPlacement::Centered);
-    let theirs = editor.popup_buffer.expect("their popup took the slot");
+    let theirs = editor.popup_buffer.expect("their popup opened");
+    assert!(
+        editor.band_buffer.is_some(),
+        "and the band is still up — one does not displace the other"
+    );
 
     let _ = editor.dispatch(Action::ScrollLineDown);
     settle_arming_to(&mut editor, false).await;
 
+    assert!(
+        editor.band_buffer.is_none(),
+        "the hint closed with its chord"
+    );
     assert_eq!(
         editor.popup_buffer,
         Some(theirs),
         "which-key's dismissal must not reach a popup it did not open"
+    );
+}
+
+/// The reported bug (2026-09-16): "which key popup also automatically dismisses
+/// any other popup". The dismissal half was WK.11; this is the OPEN half, which
+/// a targeted dismissal cannot help with — `open_popup_named` began by closing
+/// whatever was showing, because there was a single slot.
+///
+/// So: a popup is open, the user starts a chord, the gate fires. The popup must
+/// still be there, and the hint must appear anyway — neither surface loses.
+#[tokio::test]
+async fn the_band_opening_does_not_evict_a_popup_the_user_asked_for() {
+    let mut editor = booted();
+    quiesce(&editor).await;
+
+    let content = lattice_help::parse_help_lines("hover", vec!["int foo(void)".to_string()]);
+    editor.open_popup(content, lattice_host::popup::PopupPlacement::Centered);
+    let theirs = editor
+        .popup_buffer
+        .expect("their popup is open to begin with");
+
+    let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
+    settle_arming_to(&mut editor, true).await;
+    fire_gate(&mut editor).await;
+
+    assert!(
+        editor.band_buffer.is_some(),
+        "the hint still appears — the fix is not to suppress it"
+    );
+    assert_eq!(
+        editor.popup_buffer,
+        Some(theirs),
+        "and the popup the user asked for is untouched"
     );
 }

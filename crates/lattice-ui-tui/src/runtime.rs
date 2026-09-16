@@ -638,6 +638,7 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
     // the popup's inner rect. Push only on change so a steady-state popup
     // costs zero actor RPCs per frame.
     let mut last_popup_dims: Option<(u32, u32)> = None;
+    let mut last_band_dims: Option<(u32, u32)> = None;
     // PU.5c: diff-then-send cache for the completion-docs popup geometry.
     let mut last_completion_docs_dims: Option<(u32, u32)> = None;
     // Opt-in keystroke→glyph timer (set env `LATTICE_PERF_INPUT=1`). Measures
@@ -862,6 +863,14 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         // buffer area minus tabline/cmdline/candidate rows), so the matrix
         // and the painted box agree on width. Diff-then-send: a steady-state
         // popup fires zero RPCs; closing the popup pushes `None` once.
+        // WK.12: the band's geometry hand-off, beside the popup's.
+        let band_dims = crate::render::band_feedback_inner_dims(&app, size.width, buffer_height);
+        if last_band_dims != band_dims {
+            if let Some((rows, cols)) = band_dims {
+                app.set_band_viewport(rows, cols);
+            }
+            last_band_dims = band_dims;
+        }
         let popup_dims = crate::render::popup_feedback_inner_dims(&app, size.width, buffer_height);
         if last_popup_dims != popup_dims {
             if let Some((rows, cols)) = popup_dims {

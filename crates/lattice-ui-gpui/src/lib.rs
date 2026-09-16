@@ -684,6 +684,17 @@ impl GpuiApp {
         });
     }
 
+    /// WK.12: the minibuffer band's inner-geometry hand-off — the peer of
+    /// [`Self::set_popup_viewport`] for `PaneId::MINIBUFFER_BAND`.
+    /// `build_cells_panes` reads `Editor::band_viewport_{height,width}` to size
+    /// the band's matrix; without this the band paints unstyled fallback text.
+    pub fn set_band_viewport(&mut self, rows: u32, cols: u32) {
+        self.mutate_editor(move |e| {
+            e.band_viewport_height = rows.max(1);
+            e.band_viewport_width = cols.max(1);
+        });
+    }
+
     /// PU.5d: completion-docs side-popup inner-geometry hand-off — the peer
     /// of [`Self::set_popup_viewport`] for the second synthetic popup
     /// (`PaneId::COMPLETION_DOCS`). `build_cells_panes` reads

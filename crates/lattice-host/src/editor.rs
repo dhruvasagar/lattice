@@ -768,6 +768,17 @@ pub struct Editor {
     /// `completion_docs_viewport_width > 0`.
     pub completion_docs_viewport_height: u32,
     pub completion_docs_viewport_width: u32,
+    /// WK.12: the minibuffer band's buffer — a popup opened with
+    /// `PopupPlacement::MinibufferBand` lands HERE rather than in
+    /// [`Self::popup_buffer`], and the two are independent: opening the band
+    /// never dismisses a popup, which is the bug this slot exists to remove.
+    /// Never focused, so it has no anchor, scroll or focus-stack frame.
+    pub band_buffer: Option<BufferId>,
+    /// Renderer-fed inner geometry for the band, exactly as
+    /// `completion_docs_viewport_*` is fed. The synthetic
+    /// `PaneId::MINIBUFFER_BAND` pane is gated on `band_viewport_width > 0`.
+    pub band_viewport_height: u32,
+    pub band_viewport_width: u32,
     /// FS.1: the focus **stack** — one frame per surface that has taken
     /// focus away from the pane's own buffer, innermost last.
     ///

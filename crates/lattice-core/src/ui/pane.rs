@@ -107,6 +107,16 @@ impl PaneId {
     /// docs content routes through the same `compose_pane_lines` seam.
     /// `u32::MAX - 1` — still far above any `next()`-allocated leaf.
     pub const COMPLETION_DOCS: Self = Self(u32::MAX - 1);
+
+    /// WK.12: reserved synthetic id for the minibuffer BAND — the advisory
+    /// surface below all panes (which-key's grid). A THIRD simultaneous
+    /// overlay: it coexists with [`Self::POPUP`] by design, which is the whole
+    /// point of the band. A popup and a band are different mechanisms — the
+    /// popup slot is exclusive and the user asked for what is in it, while the
+    /// band is advisory and timer-driven — so sharing one slot meant the band
+    /// evicted whatever the user had open. `u32::MAX - 2`, still far above any
+    /// `next()`-allocated leaf.
+    pub const MINIBUFFER_BAND: Self = Self(u32::MAX - 2);
 }
 
 /// D.4.a (2026-05-29): process-monotonic id for a scroll-binding

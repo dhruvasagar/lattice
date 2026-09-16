@@ -1114,6 +1114,13 @@ impl App {
         self.render_state.load().popup.clone()
     }
 
+    /// WK.12: the minibuffer band's published sub-state. Separate from
+    /// [`Self::popup`] because both can be open at once — that independence is
+    /// the point of the band.
+    pub fn band(&self) -> std::sync::Arc<lattice_host::render_state::PopupRenderState> {
+        self.render_state.load().band.clone()
+    }
+
     /// Slice 3c.final.B.7: published echo-area state. Replaces
     /// `read_editor(|e| e.last_message.clone())` in render.rs.
     pub fn messages(&self) -> std::sync::Arc<lattice_host::render_state::MessagesRenderState> {
@@ -1218,6 +1225,17 @@ impl App {
         self.mutate_editor(move |e| {
             e.popup_viewport_height = rows.max(1);
             e.popup_viewport_width = cols.max(1);
+        });
+    }
+
+    /// WK.12: the band's inner-geometry hand-off, the peer of
+    /// [`Self::set_popup_viewport`] for `PaneId::MINIBUFFER_BAND`. Without it
+    /// `build_cells_panes` never sizes the band's matrix and the band paints
+    /// nothing.
+    pub fn set_band_viewport(&mut self, rows: u32, cols: u32) {
+        self.mutate_editor(move |e| {
+            e.band_viewport_height = rows.max(1);
+            e.band_viewport_width = cols.max(1);
         });
     }
 

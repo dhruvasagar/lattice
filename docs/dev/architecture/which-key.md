@@ -64,7 +64,7 @@ Four pieces. No new crate, and no `Editor::` method added anywhere —
 | Resolver | `lattice-keymap/src/which_key.rs` | Prefix → continuation model; grid layout. Pure, sync. |
 | Idle-gate primitive | `lattice-mode/src/idle_gate.rs`, `SubsystemBoot::idle_gate` | Generic armed-deadline registry. |
 | Subsystem | `lattice-mode/src/modes/which_key.rs` | `install(boot)`, options, arming, `Effect::OpenPopup`. |
-| Placement | `lattice-core/src/ui/popup.rs` + both renderers | `PopupPlacement::PaneBottom`. |
+| Placement | `lattice-core/src/ui/popup.rs` + both renderers | `PopupPlacement::MinibufferBand` (WK.12; `PaneBottom` before that). |
 
 The split follows the substrate-vs-mode-helper rule in `CLAUDE.md`:
 the resolver's only consumer is which-key's own handler, so it is a
@@ -204,7 +204,14 @@ it. For a transient hint that is the right trade.
 The gate elapses, the handler builds the model from its stashed payload
 and its captured `KeymapHandle`, and emits the buffer write plus
 `Effect::OpenPopup { name: "*which-key*", mode_id: "which-key-mode",
-placement: PaneBottom, focus: Passive }`.
+placement: MinibufferBand, focus: Passive }`.
+
+WK.12 moved that placement from the pane's bottom edge to the **minibuffer
+band** — a second surface below every pane, above the `:` line, with its own
+slot (`Editor::band_buffer`) and its own synthetic pane
+(`PaneId::MINIBUFFER_BAND`). The hint no longer competes for the single popup
+slot, so it cannot evict a hover, diagnostic or completion popup, and one is no
+longer hidden by the other.
 
 `PopupFocus::Passive` is State A in `popup-api.md` §4.1: the document
 keeps focus, the caret, and the modal state. **Every keystroke

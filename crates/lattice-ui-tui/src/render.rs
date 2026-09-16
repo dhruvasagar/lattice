@@ -320,6 +320,71 @@ impl<'a> FrameView<'a> {
 /// `visible_highlights`, and `show_line_numbers` go through that
 /// snapshot rather than the live App fields. `lsp_diagnostics`
 /// stays wait-free behind its own `ArcSwap` (audit slice 2).
+/// WK.12: how many rows the minibuffer band claims — its content, capped at
+/// half the body so an advisory hint can never swallow the buffer it describes
+/// (the same cap the pane-bottom popup carried). `0` when no band is open.
+pub(crate) fn band_row_count(app: &crate::app::App, body_height: u16) -> u16 {
+    let Some(id) = app.band().buffer_id else {
+        return 0;
+    };
+    let Some(handle) = app.buffers().registry.document_handle(id) else {
+        return 0;
+    };
+    let lines = handle.snapshot().buffer.content_line_count() as u16;
+    lines.min((body_height / 2).max(1))
+}
+
+/// WK.12: the band's inner `(rows, cols)` for the host's cells worker — the
+/// peer of [`popup_feedback_inner_dims`]. Without this hand-off
+/// `build_cells_panes` never sizes `PaneId::MINIBUFFER_BAND` and the band
+/// paints nothing at all.
+pub fn band_feedback_inner_dims(
+    app: &crate::app::App,
+    terminal_width: u16,
+    buffer_height: u32,
+) -> Option<(u32, u32)> {
+    let rows = band_row_count(app, buffer_height.min(u16::MAX as u32) as u16);
+    (rows > 0).then(|| (rows as u32, terminal_width.max(1) as u32))
+}
+
+/// WK.12: paint the minibuffer band — which-key's grid today. Borderless and
+/// full width: it is a strip of the frame, not a floating box, and it never
+/// takes focus, so no cursor is placed inside it and no interaction overlay
+/// (hlsearch, current line) applies.
+fn draw_minibuffer_band(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &crate::app::App,
+) {
+    let Some(band_id) = app.band().buffer_id else {
+        return;
+    };
+    let Some(handle) = app.buffers().registry.document_handle(band_id) else {
+        return;
+    };
+    let content_snap = handle.snapshot();
+    let view = FrameView::for_buffer(app, band_id);
+    let ctx = PaneComposeCtx {
+        is_active: false,
+        pane_id: lattice_core::ui::pane::PaneId::MINIBUFFER_BAND,
+        buffer_id: band_id,
+        cursor_line: 0,
+        cursor_line_highlight: false,
+        scroll: 0,
+        leftcol: 0,
+        // A band shows a grid, never a file: no gutter.
+        display_line_numbers: None,
+    };
+    let lines = compose_pane_lines(
+        &view,
+        &content_snap,
+        area.height as u32,
+        area.width as u32,
+        &ctx,
+    );
+    frame.render_widget(ratatui::widgets::Paragraph::new(lines), area);
+}
+
 /// Returns the completion-docs side popup's inner `(rows, cols)` when it is
 /// shown this frame (PU.5c) — `None` otherwise. The runtime loop feeds this
 /// back via `App::set_completion_docs_viewport` so `build_cells_panes` sizes
@@ -418,7 +483,25 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     if tabline_visible {
         draw_tabline(frame, chunks[0], app);
     }
-    draw_panes(frame, chunks[1], app, snap);
+    // WK.12: the minibuffer band claims rows from the BOTTOM of the pane area —
+    // below every pane, directly above the `:` line. Carved out here rather
+    // than added as a layout constraint so the `chunks[N]` indices below keep
+    // their meaning; everything that paints over the panes gets `body`, so the
+    // band is never overdrawn and never overdraws a popup.
+    let band_rows = band_row_count(app, chunks[1].height);
+    let body = ratatui::layout::Rect {
+        height: chunks[1].height.saturating_sub(band_rows),
+        ..chunks[1]
+    };
+    draw_panes(frame, body, app, snap);
+    if band_rows > 0 {
+        let band_area = ratatui::layout::Rect {
+            y: chunks[1].y + body.height,
+            height: band_rows,
+            ..chunks[1]
+        };
+        draw_minibuffer_band(frame, band_area, app);
+    }
     // Picker query claims the cmdline row only in minibuffer
     // mode. In popup mode the cmdline / echo content stays
     // visible and the picker query renders inside the overlay
@@ -456,7 +539,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // `app.panes()` instead of `app.editor.pane_tree.X()`.
     let active_pane_kind = app.panes().tree.active().buffer;
     if app.popup().is_open() && active_pane_kind != crate::buffers::BufferKind::Help {
-        draw_help_overlay(frame, chunks[1], app, snap);
+        draw_help_overlay(frame, body, app, snap);
     }
     // Picker candidate list (precedence over completion popup --
     // only one is interactive at a time). Only the minibuffer
@@ -491,15 +574,15 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     if picker_state.state.is_some() && !picker_is_minibuffer {
         let p = picker_state.state.as_deref().unwrap();
         if p.transient.is_some() {
-            draw_transient_overlay(frame, chunks[1], app);
+            draw_transient_overlay(frame, body, app);
         } else {
-            draw_picker_overlay(frame, chunks[1], app);
+            draw_picker_overlay(frame, body, app);
         }
     }
     // NOTIF.1b: painted after every other overlay so a picker or a
     // transient cannot cover it — a notification hidden exactly when
     // the user is busy is the case it exists for.
-    draw_notifications(frame, chunks[1], app);
+    draw_notifications(frame, body, app);
     // Slice 3c.gpui-cmdline-completion: cmdline-completion popup
     // overlay. Mutually exclusive with the picker (picker doesn't
     // open during `:` typing).
@@ -510,7 +593,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
             .as_deref()
             .is_some_and(|s| !s.candidates.is_empty())
     {
-        draw_completion_overlay(frame, chunks[1], app);
+        draw_completion_overlay(frame, body, app);
     }
     // Insert-mode completion popup overlay (Phase 4.2.g.1).
     // Anchored at the cursor; floats over the buffer; doesn't
@@ -518,7 +601,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // Painted last so it sits on top of any pane-area widgets.
     let mut completion_docs_dims: Option<(u32, u32)> = None;
     if app.completion_popup_active() {
-        draw_insert_completion_popup(frame, chunks[1], app, snap);
+        draw_insert_completion_popup(frame, body, app, snap);
         // Side documentation popup (Phase 4.2.g.3) -- only
         // rendered when the user has flipped it on with
         // `<C-d>`. Anchored right of the candidate popup
@@ -526,7 +609,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
         if let Some(state) = app.completion().insert.as_deref()
             && state.doc_popup.is_some()
         {
-            draw_insert_completion_docs_popup(frame, chunks[1], app, snap);
+            draw_insert_completion_docs_popup(frame, body, app, snap);
             // PU.5c: feed the docs popup's inner geometry back to the host
             // (computed here with the exact `chunks[1]` it painted into).
             completion_docs_dims = completion_docs_feedback_inner_dims(app, snap, chunks[1]);
@@ -2784,7 +2867,7 @@ fn position_help_popup(
     // `popup_outer_size`, so the only work here is the anchor.
     if matches!(
         app.popup().placement,
-        crate::popup::PopupPlacement::PaneBottom
+        crate::popup::PopupPlacement::MinibufferBand
     ) {
         let h = height.min(pane_area.height);
         return Rect {

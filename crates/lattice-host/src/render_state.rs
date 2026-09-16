@@ -82,6 +82,9 @@ pub struct RenderState {
     pub picker: Arc<PickerRenderState>,
     pub completion: Arc<CompletionRenderState>,
     pub popup: Arc<PopupRenderState>,
+    /// WK.12: the minibuffer band, published beside the popup rather than
+    /// instead of it — both can be open at once.
+    pub band: Arc<PopupRenderState>,
     pub messages: Arc<MessagesRenderState>,
     /// NOTIF.1b: corner-anchored notifications.
     pub notifications: Arc<NotificationsRenderState>,
@@ -245,6 +248,7 @@ impl Default for RenderState {
             picker: Arc::new(PickerRenderState::default()),
             completion: Arc::new(CompletionRenderState::default()),
             popup: Arc::new(PopupRenderState::default()),
+            band: Arc::new(PopupRenderState::default()),
             messages: Arc::new(MessagesRenderState::default()),
             notifications: Arc::new(NotificationsRenderState::default()),
             modeline: Arc::new(ModelineRenderState::default()),

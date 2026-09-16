@@ -195,3 +195,43 @@ gate emitting a renderer-coupled effect inherits it.
 The two tests that caught this are the two that assert without a
 follow-up keystroke; the three that check arming state passed on the
 broken build.
+
+### WK.12 — the hint lives in the minibuffer band ✅
+
+Reported 2026-09-16: "which key popup also automatically dismisses any other
+popup, this is not acceptable." The second bug of this class in this subsystem:
+WK.11 fixed the *dismissal* half two days earlier, and this is the *open* half,
+which a named dismissal cannot reach.
+
+Direction chosen by the user — put which-key in the minibuffer rather than
+arbitrate who may evict whom — and the mechanism too: an explicit
+`PopupPlacement::MinibufferBand` replacing `PaneBottom` (which-key was its only
+caller), so the value describes where the surface actually draws and a plugin
+can ask for a band deliberately. The alternative considered and rejected was
+routing on `(PaneBottom, Passive)` implicitly: no WIT change, but the placement
+would then lie about its own meaning.
+
+- **core** — `PaneId::MINIBUFFER_BAND` (`u32::MAX - 2`), following
+  `COMPLETION_DOCS`'s precedent for a second simultaneous overlay.
+- **host** — `Editor::band_buffer` + `band_viewport_{height,width}`, published
+  beside the popup; its own synthetic pane; `open_popup_buffer` routes bands to
+  the band slot; `dismiss_band` / `dismiss_stale_band_registry`;
+  `dismiss_popup_named` checks the band first. Reopen-safety in
+  `open_popup_named` is now popup-slot-only — **that line was the bug**.
+- **TUI** — the band carves rows off the bottom of the pane area (above the `:`
+  line); every pane-area consumer takes the shrunk body so nothing overpaints
+  it.
+- **GPUI** — the band renders through the existing overlay path, popup
+  preferred when both are open (see WK.13).
+- **tests** — 14 slot references retargeted; WK.11's three slot-interaction
+  tests rewritten for two independent surfaces; a regression test for the
+  reported bug, which failed on the first implementation and drove the fix.
+
+### WK.13 — GPUI paints the band and a popup together 📝
+
+GPUI builds its overlay in one ~250-line closure keyed to `PaneId::POPUP`, so
+it can paint one surface per frame; with a popup open, the hint does not appear
+there. That is strictly better than the reported bug (the popup is never
+evicted) but short of the TUI, which draws both. The work is parameterising
+that builder over `(buffer_id, pane_id, scroll, rows, focused)` and building it
+twice — mechanical, but too large to carry inside WK.12.

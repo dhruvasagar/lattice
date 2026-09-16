@@ -1484,6 +1484,16 @@ impl Editor {
                 anchor: self.popup_anchor,
                 doc_scroll_at_anchor: self.popup_doc_scroll_at_anchor,
             }),
+            // WK.12: the band is published beside the popup, never in place of
+            // it. It never focuses and never anchors to the caret, so only the
+            // buffer and its placement carry meaning here.
+            band: std::sync::Arc::new(PopupRenderState {
+                buffer_id: self.band_buffer,
+                scroll: 0,
+                placement: lattice_core::ui::popup::PopupPlacement::MinibufferBand,
+                anchor: None,
+                doc_scroll_at_anchor: 0,
+            }),
             // Phase 5.8.AF.5 / Slice X2: syntax inputs the overlay
             // worker reads. display-line B4.2 (gut + rename) deleted
             // the dead `visible_spans` / `visible_rows` prepaint cells
@@ -8004,6 +8014,20 @@ impl Editor {
     /// `open_floating_popup` rather than by name) matches nothing, which is
     /// right: it has no identity for a mode to claim.
     pub fn dismiss_popup_named(&mut self, name: &str) -> bool {
+        // WK.12: the band is checked FIRST and by the same name the open was
+        // given, so a mode closes its own surface wherever it lives. Falling
+        // through to the popup slot is what makes this safe: a stale band
+        // dismissal cannot reach a popup, because the names differ.
+        if self.band_buffer.is_some()
+            && self
+                .buffers
+                .name_of(self.band_buffer.unwrap_or_default())
+                .as_deref()
+                == Some(name)
+        {
+            self.dismiss_band();
+            return true;
+        }
         let Some(id) = self.popup_buffer else {
             return false;
         };
@@ -8016,6 +8040,31 @@ impl Editor {
         }
         self.dismiss_popup();
         true
+    }
+
+    /// WK.12: close the minibuffer band and drop its buffer's registry entry.
+    /// Deliberately NOT a peer of `dismiss_popup`'s focus unwinding — a band
+    /// never took focus, so there is nothing to give back.
+    pub fn dismiss_band(&mut self) {
+        self.dismiss_stale_band_registry();
+        self.band_buffer = None;
+    }
+
+    /// The band's peer of [`Self::dismiss_stale_popup_registry`]: the same
+    /// per-buffer side tables, keyed on the band slot, plus the renderer-fed
+    /// geometry so `synthetic_popup_panes` stops emitting the band's pane.
+    pub fn dismiss_stale_band_registry(&mut self) {
+        let Some(prev) = self.band_buffer else {
+            return;
+        };
+        self.buffers.remove(prev);
+        self.active_modes.remove(&prev);
+        self.deferred_mode_activations.retain(|(b, _)| *b != prev);
+        self.buffer_locals.remove(&prev);
+        self.resolved_options.remove(&prev);
+        self.on_disk_fingerprints.remove(&prev);
+        self.band_viewport_height = 0;
+        self.band_viewport_width = 0;
     }
 
     pub fn dismiss_popup(&mut self) {
@@ -16756,6 +16805,23 @@ impl Editor {
                 viewport_height: self.completion_docs_viewport_height,
                 viewport_width: self.completion_docs_viewport_width,
                 wrap: true,
+            });
+        }
+        // WK.12: the band's own synthetic pane, gated on the renderer having
+        // fed its geometry back, exactly like the two above.
+        if let Some(band_id) = self.band_buffer
+            && self.band_viewport_width > 0
+        {
+            specs.push(PopupPaneSpec {
+                pane_id: PaneId::MINIBUFFER_BAND,
+                buffer_id: band_id,
+                scroll: 0,
+                // The band shows a whole grid and is never scrolled or
+                // navigated: its top IS its anchor.
+                cursor_line: 0,
+                viewport_height: self.band_viewport_height,
+                viewport_width: self.band_viewport_width,
+                wrap: false,
             });
         }
         specs
@@ -30792,6 +30858,17 @@ impl Editor {
         focus: crate::popup::PopupFocus,
     ) -> Vec<RendererSignal> {
         use crate::popup::PopupFocus;
+        // WK.12: a band is not a popup. It goes to its own slot and touches
+        // NONE of the popup machinery below — no registry teardown of the
+        // popup's buffer, no focus stack, no caret anchor, no jump record.
+        // That separation is the fix: which-key opening on a timer used to
+        // evict whatever hover, diagnostic or completion popup was showing,
+        // because there was one slot and opening it dismissed the occupant.
+        if matches!(placement, crate::popup::PopupPlacement::MinibufferBand) {
+            self.dismiss_stale_band_registry();
+            self.band_buffer = Some(buffer);
+            return Vec::new();
+        }
         // Tear down any PRIOR popup's registry entry. `self.popup_buffer`
         // still points at it here; the incoming `buffer` has a distinct id,
         // so this never removes the new one.
@@ -30890,7 +30967,17 @@ impl Editor {
         // Otherwise the idempotent `ensure_named_popup_buffer` could hand back
         // the currently-open buffer, which `open_popup_buffer` then tears down
         // (`dismiss_stale_popup_registry`) and immediately re-references.
-        if self.popup_buffer.is_some() {
+        //
+        // WK.12: that reasoning is about the POPUP slot's own reuse hazard, so
+        // it must not fire for a band — a band opens into a different slot and
+        // has its own stale-registry teardown. This line WAS the reported bug:
+        // which-key's timer-driven open closed whatever the user had showing
+        // before the placement was ever consulted, so the band routing in
+        // `open_popup_buffer` alone did not fix it. Caught by
+        // `the_band_opening_does_not_evict_a_popup_the_user_asked_for`.
+        if self.popup_buffer.is_some()
+            && !matches!(placement, crate::popup::PopupPlacement::MinibufferBand)
+        {
             self.dismiss_popup();
         }
         let id = self.ensure_named_popup_buffer(

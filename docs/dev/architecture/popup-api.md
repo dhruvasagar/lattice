@@ -199,6 +199,37 @@ with nothing in the type to warn it.
 **Rule of thumb:** a dismissal the user asked for is `DismissPopup`; a
 dismissal a mode decided on is `DismissPopupNamed`.
 
+#### The open half — the band (WK.12)
+
+A targeted dismissal cannot help with the other direction: **opening**.
+`open_popup_named` began with reopen-safety — "if a popup is already showing,
+dismiss it cleanly first" — which is right for the popup slot's own reuse
+hazard and wrong for anything else. There is one slot, so every open evicted
+whatever was in it, and which-key, which opens on a TIMER while the user is
+mid-chord, evicted a hover or completion popup that the user had deliberately
+asked for. Reported 2026-09-16.
+
+The fix is a second surface rather than a rule about who may evict whom. A
+popup and a band are different mechanisms:
+
+| | popup | band |
+|---|---|---|
+| occupancy | exclusive — opening evicts | independent; never touches the popup slot |
+| focus | `Steal` or `Passive` | never focuses: no caret, no jump, no focus frame |
+| place | centred / cursor-anchored | below every pane, above the `:` line |
+| origin | the user asked for it | advisory, timer-driven |
+
+`PopupPlacement::MinibufferBand` selects it, so a plugin can request one
+deliberately; `open_popup_buffer` routes it to `Editor::band_buffer` and skips
+the popup slot's teardown, focus stack and anchor entirely. `DismissPopupNamed`
+checks the band first and falls through, so a mode still closes its own surface
+by name wherever it lives.
+
+**Both halves of the reopen-safety guard matter.** Routing inside
+`open_popup_buffer` alone left the bug alive, because `open_popup_named`
+dismissed the popup *before* the placement was ever consulted — caught by
+`the_band_opening_does_not_evict_a_popup_the_user_asked_for`, not by review.
+
 A popup opened by content rather than by name (`open_floating_popup`) has no
 synthetic name and so matches nothing — correct, since it has no identity for
 a mode to claim.

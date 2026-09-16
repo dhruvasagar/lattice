@@ -343,7 +343,7 @@ pub fn wire(boot: &mut impl SubsystemBoot, grid: WhichKeyGrid) {
                 vec![Effect::OpenPopup {
                     name: WHICH_KEY_BUFFER_NAME.to_string(),
                     mode_id: WhichKeyMode::mode_id().as_str().to_string(),
-                    placement: PopupPlacement::PaneBottom,
+                    placement: PopupPlacement::MinibufferBand,
                     // State A: the document keeps focus and every keystroke
                     // still resolves against the trie. See the module docs.
                     focus: PopupFocus::Passive,

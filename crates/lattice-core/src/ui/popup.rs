@@ -36,7 +36,7 @@ pub enum PopupPlacement {
     ///
     /// Height is content + border, hard-capped at half the pane so the
     /// hint can never swallow the buffer it is describing.
-    PaneBottom,
+    MinibufferBand,
 }
 
 /// Whether opening a popup moves focus into it. Names the distinction
@@ -105,7 +105,7 @@ pub fn popup_outer_size(
         // The half-pane cap is the hard one: a hint that covers the code
         // it describes has defeated itself, and a prefix with a hundred
         // continuations would otherwise ask for exactly that.
-        PopupPlacement::PaneBottom => {
+        PopupPlacement::MinibufferBand => {
             let max_h = (buffer_height / 2).max(1);
             (max_h, buffer_width.max(1))
         }
@@ -113,7 +113,7 @@ pub fn popup_outer_size(
     // A pane-bottom popup sizes to its content and has no floor: a
     // two-row hint is two rows. The 5-row floor is for reading surfaces,
     // where a box smaller than that reads as broken rather than terse.
-    let height = if matches!(placement, PopupPlacement::PaneBottom) {
+    let height = if matches!(placement, PopupPlacement::MinibufferBand) {
         (line_count.saturating_add(2)).min(max_h)
     } else {
         (line_count.saturating_add(2)).clamp(5, max_h)
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn pane_bottom_is_full_width_and_sizes_to_its_content() {
         // 8 content rows in a 100x40 pane → full width, 10 rows.
-        let (w, h) = popup_outer_size(100, 40, 8, PopupPlacement::PaneBottom);
+        let (w, h) = popup_outer_size(100, 40, 8, PopupPlacement::MinibufferBand);
         assert_eq!(w, 100, "full pane width — the grid was laid out to it");
         assert_eq!(h, 10, "content + border, no 5-row floor padding it out");
     }
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn pane_bottom_never_takes_more_than_half_the_pane() {
         // 100 rows of continuations in a 40-row pane.
-        let (_w, h) = popup_outer_size(100, 40, 100, PopupPlacement::PaneBottom);
+        let (_w, h) = popup_outer_size(100, 40, 100, PopupPlacement::MinibufferBand);
         assert_eq!(
             h, 20,
             "a hint that covers the code it describes has defeated itself"
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn a_two_row_pane_bottom_popup_stays_two_rows() {
-        let (_w, h) = popup_outer_size(100, 40, 1, PopupPlacement::PaneBottom);
+        let (_w, h) = popup_outer_size(100, 40, 1, PopupPlacement::MinibufferBand);
         assert_eq!(
             h, 3,
             "one row plus border — the 5-row floor is for reading surfaces, \

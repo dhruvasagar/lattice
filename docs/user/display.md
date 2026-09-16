@@ -51,7 +51,7 @@ that have no mode of their own (`tabstop`, `scrolloff`, `startofline`, `sidescro
 | `:set ui.window.start-maximized` | off | Open maximized — resizable windows fill the work area; a borderless (`none`) window fills the whole display (GPUI only) |
 | `:set tabstop=N`  (`:set ts=N`)  | `4`     | Columns a hard tab occupies                                    |
 | `:set scrolloff=N` (`:set so=N`) | `0`     | Minimum lines kept above/below the cursor                      |
-| `:set startofline` (`:set sol`) / `:set nostartofline` | on | `H` / `M` / `L` land on the first non-blank; off keeps the cursor's column |
+| `:set startofline` (`:set sol`) / `:set nostartofline` | on | `gg` / `G` / `H` / `M` / `L` / `<C-f>` / `<C-b>` land on the first non-blank; off keeps the cursor's column |
 | `:set sidescroll=N` (`:set ss=N`) | `0`    | Columns to scroll when the cursor crosses the edge (`0` = jump to centre) |
 | `:set sidescrolloff=N` (`:set siso=N`) | `0` | Minimum columns kept left/right of the cursor (`nowrap`)     |
 | `zl` `zh` / `zL` `zH` / `zs` `ze` | —      | Scroll right/left N cols · half-screen · cursor to left/right edge |

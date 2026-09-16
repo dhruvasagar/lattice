@@ -415,11 +415,46 @@ short buffers; the IM.1b test pinned that and now pins vim's number.
 
 Not done: vim adjusts `H` / `L` for `scrolloff` (lattice's default is 0).
 
-### VM.3j 📝 — `gg` / `G` / `<C-d>` / `<C-u>` / `<C-f>` / `<C-b>` follow `startofline`
+### VM.3j-1 ✅ — `gg` / `G` / `<C-f>` / `<C-b>` follow `startofline`
 
-vim 9.2: `G` → 40,3 and `gg` → 1,3 with `startofline`, 40,6 with
-`nostartofline`; `<C-d>` lands on the first non-blank. Lattice lands `gg` / `G`
-at column 0 and matches neither. Same option, now that VM.3f added it.
+Split from VM.3j on 2026-09-16 (user): the column rule costs nothing, while
+`<C-d>` / `<C-u>` need a WIT-bearing change (VM.3j-2), and the two do not belong
+in one commit.
+
+vim 9.2 (`vimcheck_sol_pages.vim`, 80 lines of `"  line N"`): with
+`startofline` — the default — `gg` → 1,3, `G` → 40,3, `5G` → 5,3, `<C-f>` from
+3,6 → 21,3, `<C-b>` from 60,6 → 51,3; with `nostartofline` the same lines at
+column 6. Lattice landed `gg` / `G` at column 0, matching neither.
+
+One rule, two peers: `startofline_target` in the grammar (`gg` / `G` / `H` /
+`M` / `L`) and `Editor::startofline_byte` in the host (the page scrolls and the
+`JumpViewport` action). `H` / `M` / `L` had an inline copy from VM.3f and now
+call the helper. Only the COLUMN changes; the line each command walks to is
+untouched.
+
+### VM.3j-2 📝 — `<C-d>` / `<C-u>` are half-window scrolls, and `scroll`
+
+`<C-d>` / `<C-u>` are bound to the `j` / `k` MOTIONS with a baked `Count(10)`,
+so they move a fixed ten lines regardless of window size, and — because a
+motion composes — `d<C-d>` deletes eleven lines where vim deletes nothing.
+They also cannot honour `startofline` while they are `j` / `k`, since plain `j`
+must keep its column.
+
+vim 9.2 (`vimcheck_ctrl_d.vim`): `<C-d>` scrolls the view and the cursor
+together by half a window; `{count}<C-d>` sets the `scroll` option and persists
+(`3<C-d>` then `<C-d>` moves 3 again); `d<C-d>` and `y<C-d>` do nothing;
+`v<C-d>` extends the selection; on the last line it beeps.
+
+So they become scroll COMMANDS like `<C-f>` / `<C-b>` (Normal, Visual and
+Select; no operator rows), with a new `scroll` option (`#[aliases("scr")]`,
+default 0 = half the window). That needs a new `AppEffect` variant, which means
+`wit/types.wit`, both directions of `boundary_app_effect.rs` plus its
+round-trip list, and rebuilding the 30 guest components (27 fixture crates +
+3 in `plugins/`). Those do get verified: `lattice-plugin-host`'s `build.rs`
+builds every fixture guest as its own standalone workspace, `wasm32-wasip2` is
+installed, and the gate's plugin-host run prints no SKIP lines — so the cost is
+rebuild TIME on a slice that already takes the longest gate in the workspace,
+not a hole in the checking.
 
 ### VM.3g 📝 — `gj` / `gk` / `g0` / `g$`
 

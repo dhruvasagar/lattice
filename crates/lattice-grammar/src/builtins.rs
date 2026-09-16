@@ -1344,15 +1344,9 @@ fn motion_viewport(
         .and_then(|viewport| viewport.viewport_line(pos, ctx.count.get()))
         .ok_or(CommandError::MotionFailed)?
         .min(last_addressable_line(ctx.buffer));
-    let len = line_byte_len(ctx.buffer, line);
-    let byte = if ctx.nostartofline {
-        ctx.from.byte.min(len)
-    } else {
-        let text = ctx.buffer.line(line).unwrap_or_default();
-        (text.bytes().take_while(|&b| is_blank_byte(b)).count() as u32).min(len)
-    };
     Ok(MotionResult {
-        target: Position::new(line, byte),
+        // VM.3j-1: the same helper `gg` / `G` use — this was an inline copy.
+        target: startofline_target(ctx, line),
         linewise: true,
         exclusive: None,
         notice: None,
@@ -2241,7 +2235,9 @@ fn motion_goto_first_line(ctx: &MotionContext) -> Result<MotionResult, CommandEr
         0
     };
     Ok(MotionResult {
-        target: Position::new(target_line, 0),
+        // VM.3j-1: the first non-blank, as vim does under `startofline`. This
+        // was a hard column 0, which matched neither of vim's settings.
+        target: startofline_target(ctx, target_line),
         linewise: true,
         exclusive: None,
         notice: None,
@@ -2257,7 +2253,8 @@ fn motion_goto_last_line(ctx: &MotionContext) -> Result<MotionResult, CommandErr
         last
     };
     Ok(MotionResult {
-        target: Position::new(target_line, 0),
+        // VM.3j-1: as `gg` above.
+        target: startofline_target(ctx, target_line),
         linewise: true,
         exclusive: None,
         notice: None,
@@ -2280,6 +2277,22 @@ fn line_byte_len(buffer: &lattice_core::Buffer, line: u32) -> u32 {
 fn clamp_into_buffer(buffer: &lattice_core::Buffer, pos: Position) -> Position {
     let line = pos.line.min(last_addressable_line(buffer));
     Position::new(line, pos.byte.min(line_byte_len(buffer, line)))
+}
+
+/// VM.3j-1: where a `startofline` jump lands on the line it reached — the
+/// first non-blank, or the cursor's column when the user set `nostartofline`.
+///
+/// vim's rule for `gg` / `G` / `H` / `M` / `L` and the page scrolls, checked in
+/// 9.2 (`vimcheck_sol_pages.vim`): `G` → 40,3 with `startofline` and 40,6 with
+/// `nostartofline` on a 2-indented buffer. One function so the motions can't
+/// drift apart — `H` / `M` / `L` (VM.3f) answered from their own copy of it.
+fn startofline_target(ctx: &MotionContext, line: u32) -> Position {
+    if ctx.nostartofline {
+        let len = line_byte_len(ctx.buffer, line);
+        Position::new(line, ctx.from.byte.min(len))
+    } else {
+        first_non_blank_position(ctx.buffer, line)
+    }
 }
 
 /// VM.3m: the first non-blank of `line`, where vim leaves the cursor after a
@@ -4114,6 +4127,61 @@ mod tests {
         match search_effect(Position::new(0, 0), false, None, None) {
             Err(CommandError::User(msg)) => assert_eq!(msg, "E35: no previous regular expression"),
             other => panic!("expected E35, got {other:?}"),
+        }
+    }
+
+    // ---- VM.3j-1: `gg` / `G` honour `startofline` ----
+
+    /// `first_line` picks `gg`, else `G`. The motion id comes from THIS
+    /// fixture's registry: command ids are globally unique, so an id taken from
+    /// a second `fixture()` call is unknown to this one.
+    fn sol_effect(first_line: bool, from: Position, nostartofline: bool) -> Effect {
+        let (registry, b, mut doc) = fixture("  one a\n    two b\n  three c\n");
+        let motion = if first_line {
+            b.goto_first_line
+        } else {
+            b.goto_last_line
+        };
+        let env = crate::registry::GrammarEnv {
+            nostartofline,
+            ..Default::default()
+        };
+        crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            from,
+            CommandInvocation::of(motion.0),
+            &CancellationToken::never(),
+            env,
+        )
+        .unwrap()
+    }
+
+    /// vim 9.2 (`vimcheck_sol_pages.vim`): with `startofline` — the default —
+    /// `gg` and `G` land on the first non-blank of their line, not column 0.
+    #[test]
+    fn gg_and_g_land_on_the_first_non_blank() {
+        match sol_effect(true, Position::new(2, 5), false) {
+            Effect::CursorMove(p) => assert_eq!(p, Position::new(0, 2)),
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+        match sol_effect(false, Position::new(0, 5), false) {
+            Effect::CursorMove(p) => assert_eq!(p, Position::new(2, 2)),
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+    }
+
+    /// vim: with `nostartofline` both keep the cursor's column, clamped.
+    #[test]
+    fn nostartofline_keeps_the_column_on_gg_and_g() {
+        match sol_effect(true, Position::new(2, 5), true) {
+            Effect::CursorMove(p) => assert_eq!(p, Position::new(0, 5)),
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+        match sol_effect(false, Position::new(1, 8), true) {
+            Effect::CursorMove(p) => assert_eq!(p, Position::new(2, 8)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 

@@ -628,4 +628,41 @@ mod tests {
         press_chars(&mut a, "yip");
         assert_eq!(cursor(&a), (3, 0));
     }
+
+    // ── VM.3j-1: `gg` / `G` / `<C-f>` follow `startofline` (vim 9.2,
+    // `vimcheck_sol_pages.vim`) ──
+
+    /// vim: `gg` and `G` land on the first non-blank; `nostartofline` keeps the
+    /// column. Lattice put them at column 0, which is neither.
+    #[test]
+    fn gg_and_g_follow_startofline() {
+        let mut a = at(SIXI, 1, 7);
+        press_chars(&mut a, "gg");
+        assert_eq!(cursor(&a), (0, 2));
+
+        let mut a = at(SIXI, 0, 5);
+        press_chars(&mut a, "G");
+        assert_eq!(cursor(&a), (5, 2));
+
+        let mut a = at(SIXI, 1, 5);
+        a.editor.option_cache.startofline = false;
+        press_chars(&mut a, "gg");
+        assert_eq!(cursor(&a), (0, 5), "column kept, not the first non-blank");
+    }
+
+    /// vim: a page scroll lands on the first non-blank too. Only the column is
+    /// this slice's business — the line is whatever the page walk already gave.
+    #[test]
+    fn a_page_scroll_follows_startofline() {
+        let mut a = at(SIXI, 0, 5);
+        a.editor.do_page(true);
+        let landed = a.editor.cursor.line;
+        assert_eq!(a.editor.cursor.byte, 2, "first non-blank of line {landed}");
+
+        let mut b = at(SIXI, 0, 5);
+        b.editor.option_cache.startofline = false;
+        b.editor.do_page(true);
+        assert_eq!(b.editor.cursor.line, landed, "same line either way");
+        assert_eq!(b.editor.cursor.byte, 5, "column kept");
+    }
 }

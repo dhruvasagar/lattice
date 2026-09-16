@@ -23780,6 +23780,25 @@ impl Editor {
         .any(|id| id.0 == motion)
     }
 
+    /// VM.3j-1: which column a jump lands on — the first non-blank under
+    /// `startofline` (vim's default), else the cursor's column, both clamped to
+    /// the line. The host's peer of the grammar's `startofline_target`, shared
+    /// by `H` / `M` / `L` and the page scrolls so they cannot disagree.
+    fn startofline_byte(&self, line: u32) -> u32 {
+        let buffer = self.active_text();
+        let len = buffer.line_byte_len(line);
+        if self.option_cache.startofline {
+            let text = buffer.line(line).unwrap_or_default();
+            (text
+                .bytes()
+                .take_while(|b| *b == b' ' || *b == b'\t')
+                .count() as u32)
+                .min(len)
+        } else {
+            self.cursor.byte.min(len)
+        }
+    }
+
     pub fn do_jump_viewport(&mut self, vpos: lattice_grammar::ViewportPos) {
         use lattice_grammar::ViewportResolver as _;
         // VM.3f: the SAME rule as the `H` / `M` / `L` motions (`ShownLines`,
@@ -23789,18 +23808,7 @@ impl Editor {
         let Some(line) = self.shown_lines().viewport_line(vpos, 1) else {
             return;
         };
-        let buffer = self.active_text();
-        let len = buffer.line_byte_len(line);
-        let byte = if self.option_cache.startofline {
-            let text = buffer.line(line).unwrap_or_default();
-            (text
-                .bytes()
-                .take_while(|b| *b == b' ' || *b == b'\t')
-                .count() as u32)
-                .min(len)
-        } else {
-            self.cursor.byte.min(len)
-        };
+        let byte = self.startofline_byte(line);
         self.cursor = lattice_protocol::position::Position::new(line, byte);
         if matches!(
             self.active_buffer,
@@ -23897,8 +23905,10 @@ impl Editor {
             self.line_backward_by_budget(self.cursor.line, step as f32)
         }
         .min(last);
-        let len = buffer.line_byte_len(new_line);
-        let byte = self.cursor.byte.min(len);
+        // VM.3j-1: vim's `<C-f>` / `<C-b>` land on the first non-blank under
+        // `startofline` (9.2: `<C-f>` from 3,6 → 21,3; 21,6 with the option
+        // off). The line this walks to is unchanged — only the column is.
+        let byte = self.startofline_byte(new_line);
         self.cursor = lattice_protocol::position::Position::new(new_line, byte);
         // 2026-05-28: terminal pane needs an explicit alacritty
         // viewport scroll for the new cursor row to be visible

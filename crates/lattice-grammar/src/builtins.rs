@@ -28,6 +28,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:word-forward",
         "Move to the start of the next word.",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: true,
             apply: Arc::new(motion_word_forward),
@@ -38,6 +39,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:word-backward",
         "Move to the start of the previous word (vim's `b`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: true,
             apply: Arc::new(motion_word_backward),
@@ -48,6 +50,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:word-end",
         "Move to the last byte of the current or next word (vim's `e`). Inclusive.",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: false,
             apply: Arc::new(motion_word_end),
@@ -58,6 +61,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:first-non-blank",
         "Move to the first non-whitespace byte of the current line (vim's `^`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             // `^` is exclusive in vim. (Was mis-registered inclusive while
             // the dispatcher ignored the flag; now honoured, so it must be
@@ -71,6 +75,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:find-char-forward",
         "Move to the next occurrence of `args.char` on the current line (vim's `f`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: false,
             apply: Arc::new(motion_find_char_forward),
@@ -81,6 +86,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:find-char-backward",
         "Move to the previous occurrence of `args.char` on the current line (vim's `F`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             // EXCLUSIVE, which is what vim says (`:h F`) and what `dF` has
             // always DONE here. It was registered inclusive, and the
@@ -96,6 +102,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:till-char-forward",
         "Move to one byte before the next occurrence of `args.char` (vim's `t`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: false,
             apply: Arc::new(motion_till_char_forward),
@@ -106,6 +113,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:till-char-backward",
         "Move to one byte after the previous occurrence of `args.char` (vim's `T`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             // Exclusive, per `:h T` — see `find_char_backward` above.
             exclusive: true,
@@ -117,6 +125,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:big-word-forward",
         "Move to the start of the next WORD (vim's `W` -- whitespace-delimited).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: true,
             apply: Arc::new(motion_big_word_forward),
@@ -134,6 +143,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:big-word-backward",
         "Move to the start of the previous WORD (vim's `B`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: true,
             apply: Arc::new(motion_big_word_backward),
@@ -144,6 +154,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:big-word-end",
         "Move to the last byte of the current or next WORD (vim's `E`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: false,
             apply: Arc::new(motion_big_word_end),
@@ -154,6 +165,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:paragraph-forward",
         "Move to the next paragraph boundary -- the next blank line at or after the cursor (vim's `}`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: true,
             // `}` is exclusive in vim (`d}` does not include the blank line).
             exclusive: true,
@@ -165,6 +177,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:paragraph-backward",
         "Move to the previous paragraph boundary (vim's `{`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: true,
             // `{` is exclusive in vim.
             exclusive: true,
@@ -176,6 +189,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:sentence-forward",
         "Move to the start of the next sentence (vim's `)`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: true,
             // `)` is exclusive in vim.
             exclusive: true,
@@ -187,6 +201,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:sentence-backward",
         "Move to the start of the previous sentence (vim's `(`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: true,
             // `(` is exclusive in vim.
             exclusive: true,
@@ -198,6 +213,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:char-left",
         "Move one byte to the left within the current line.",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             // `h` is exclusive in vim. (Backward motion, so behaviour is
             // unchanged either way, but the registration should be correct.)
@@ -210,6 +226,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:char-right",
         "Move one byte to the right within the current line.",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: true,
             apply: Arc::new(motion_char_right),
@@ -220,6 +237,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:line-up",
         "Move one line up.",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::Keep,
             jump: false,
             // `k` only ever travels backward, so exclusive here reproduces
             // exactly the range `dk` / `d<C-u>` / `d<PageUp>` produced before
@@ -240,6 +258,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:line-down",
         "Move one line down.",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::Keep,
             jump: false,
             exclusive: false,
             apply: Arc::new(motion_line_down),
@@ -250,6 +269,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:line-start",
         "Move to the first byte of the current line.",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             // `0` is exclusive in vim.
             exclusive: true,
@@ -261,6 +281,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:line-end",
         "Move to the last byte of the current line.",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::PinToEnd,
             jump: false,
             exclusive: false,
             apply: Arc::new(motion_line_end),
@@ -271,6 +292,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:goto-first-line",
         "Jump to the first line of the buffer (vim's `gg`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: true,
             exclusive: false,
             apply: Arc::new(motion_goto_first_line),
@@ -281,6 +303,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:goto-last-line",
         "Jump to the last line of the buffer (vim's `G`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: true,
             exclusive: false,
             apply: Arc::new(motion_goto_last_line),
@@ -683,6 +706,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:find-repeat",
         "Repeat the last `f` / `F` / `t` / `T` in the same direction (vim's `;`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             // Not a jump: vim does not put `;` on the jump list, and it
             // usually moves only a few columns.
             jump: false,
@@ -700,6 +724,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:find-repeat-reverse",
         "Repeat the last `f` / `F` / `t` / `T` in the opposite direction (vim's `,`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: false,
             apply: Arc::new(motion_find_repeat_reverse),
@@ -711,6 +736,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:match-pair",
         "Move to the bracket matching the first one at or after the cursor on this line (vim's `%`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             // A jump: vim records `%` on the jump list and opens a fold at the
             // far end (`foldopen` ships with `percent`).
             jump: true,
@@ -729,6 +755,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:goto-next-fold",
         "Move to the start of the next fold; a closed fold counts as one (vim's `zj`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: true,
             apply: Arc::new(motion_goto_next_fold),
@@ -739,6 +766,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:goto-prev-fold",
         "Move to the end of the previous fold; a closed fold counts as one (vim's `zk`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: true,
             apply: Arc::new(motion_goto_prev_fold),
@@ -753,6 +781,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
     // were unbound.
     let search_spec =
         |apply: fn(&MotionContext) -> Result<MotionResult, CommandError>| MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: true,
             exclusive: true,
             apply: Arc::new(apply),
@@ -787,6 +816,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:mark-line",
         "Go to the first non-blank of the line of mark `args.char` (vim's `'`).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: true,
             exclusive: false,
             apply: Arc::new(motion_mark_line),
@@ -797,6 +827,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "motion:mark-exact",
         "Go to the exact position of mark `args.char` (vim's `` ` ``).",
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: true,
             exclusive: true,
             apply: Arc::new(motion_mark_exact),
@@ -808,6 +839,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
     // bottom of the window).
     let viewport_spec =
         |apply: fn(&MotionContext) -> Result<MotionResult, CommandError>| MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: true,
             exclusive: false,
             apply: Arc::new(apply),
@@ -2064,6 +2096,7 @@ fn find_repeat(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, Comma
         marks: ctx.marks,
         viewport: ctx.viewport,
         nostartofline: ctx.nostartofline,
+        curswant: ctx.curswant,
     };
     let mut result = match kind {
         FindKind::Forward => motion_find_char_forward(&sub)?,
@@ -2173,8 +2206,7 @@ fn motion_line_up(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     }
     let count = ctx.count.get().max(1);
     let line = ctx.from.line.saturating_sub(count);
-    let max_byte = line_byte_len(ctx.buffer, line);
-    let byte = ctx.from.byte.min(max_byte);
+    let byte = curswant_byte(ctx, line);
     Ok(MotionResult {
         target: Position::new(line, byte),
         linewise: true,
@@ -2193,8 +2225,7 @@ fn motion_line_down(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     }
     let count = ctx.count.get().max(1);
     let line = ctx.from.line.saturating_add(count).min(last);
-    let max_byte = line_byte_len(ctx.buffer, line);
-    let byte = ctx.from.byte.min(max_byte);
+    let byte = curswant_byte(ctx, line);
     Ok(MotionResult {
         target: Position::new(line, byte),
         linewise: true,
@@ -2277,6 +2308,22 @@ fn line_byte_len(buffer: &lattice_core::Buffer, line: u32) -> u32 {
 fn clamp_into_buffer(buffer: &lattice_core::Buffer, pos: Position) -> Position {
     let line = pos.line.min(last_addressable_line(buffer));
     Position::new(line, pos.byte.min(line_byte_len(buffer, line)))
+}
+
+/// VM.3g-1: the column a vertical motion lands on in `line` — vim's
+/// `curswant`, clamped to that line. With no goal recorded the cursor's own
+/// column is the goal, which is what the first `j` after an edit does in vim.
+///
+/// The clamp is the whole reason the goal must be REMEMBERED rather than read
+/// back off the cursor: `jj` from column 9 across a 2-column line has to return
+/// to 9, and on the middle line the cursor is at 2.
+fn curswant_byte(ctx: &MotionContext, line: u32) -> u32 {
+    let len = line_byte_len(ctx.buffer, line);
+    match ctx.curswant {
+        Some(crate::registry::Curswant::EndOfLine) => len,
+        Some(crate::registry::Curswant::Col(c)) => c.min(len),
+        None => ctx.from.byte.min(len),
+    }
 }
 
 /// VM.3j-1: where a `startofline` jump lands on the line it reached — the
@@ -4128,6 +4175,116 @@ mod tests {
             Err(CommandError::User(msg)) => assert_eq!(msg, "E35: no previous regular expression"),
             other => panic!("expected E35, got {other:?}"),
         }
+    }
+
+    // ---- VM.3g-1: the goal column (vim's `curswant`) ----
+
+    const RAGGED: &str = "abcdefghijkl\nab\nabcdefghijkl\n";
+
+    fn vertical(
+        down: bool,
+        from: Position,
+        curswant: Option<crate::registry::Curswant>,
+    ) -> Position {
+        let (registry, b, mut doc) = fixture(RAGGED);
+        let motion = if down { b.line_down } else { b.line_up };
+        let env = crate::registry::GrammarEnv {
+            curswant,
+            ..Default::default()
+        };
+        match crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            from,
+            CommandInvocation::of(motion.0),
+            &CancellationToken::never(),
+            env,
+        )
+        .unwrap()
+        {
+            Effect::CursorMove(p) => p,
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+    }
+
+    /// vim 9.2: `j` onto a SHORT line clamps to it, but the goal column is
+    /// remembered — so the next `j` returns to column 9, not to 2. The motion's
+    /// half of that is aiming at the goal rather than at the cursor.
+    #[test]
+    fn a_vertical_motion_aims_at_the_goal_column_not_the_cursor() {
+        use crate::registry::Curswant;
+        // Onto the short line: clamped.
+        assert_eq!(
+            vertical(true, Position::new(0, 8), Some(Curswant::Col(8))),
+            Position::new(1, 2)
+        );
+        // Off it again, FROM the clamped column: the goal wins.
+        assert_eq!(
+            vertical(true, Position::new(1, 2), Some(Curswant::Col(8))),
+            Position::new(2, 8)
+        );
+        // And upward, the same.
+        assert_eq!(
+            vertical(false, Position::new(1, 2), Some(Curswant::Col(8))),
+            Position::new(0, 8)
+        );
+    }
+
+    /// vim: after `$` the goal is MAXCOL, so every line it passes through is
+    /// entered at its own end — `$jj` is at each line's end, not at a column.
+    #[test]
+    fn an_end_of_line_goal_lands_on_each_lines_end() {
+        use crate::registry::Curswant;
+        assert_eq!(
+            vertical(true, Position::new(0, 12), Some(Curswant::EndOfLine)),
+            Position::new(1, 2),
+            "the short line's end"
+        );
+        assert_eq!(
+            vertical(true, Position::new(1, 2), Some(Curswant::EndOfLine)),
+            Position::new(2, 12),
+            "and the long line's end, not the short one's column"
+        );
+    }
+
+    /// With no goal recorded the cursor's own column is the goal — what the
+    /// first `j` after an edit does.
+    #[test]
+    fn no_goal_yet_means_the_cursors_own_column() {
+        assert_eq!(
+            vertical(true, Position::new(0, 5), None),
+            Position::new(1, 2)
+        );
+        assert_eq!(
+            vertical(true, Position::new(1, 1), None),
+            Position::new(2, 1)
+        );
+    }
+
+    /// The three motions that do not simply set the goal from where they land.
+    #[test]
+    fn j_k_keep_the_goal_and_dollar_pins_it() {
+        use crate::registry::CurswantEffect;
+        let (registry, b, _doc) = fixture(RAGGED);
+        assert_eq!(
+            registry.motion_curswant(b.line_down.0),
+            CurswantEffect::Keep
+        );
+        assert_eq!(registry.motion_curswant(b.line_up.0), CurswantEffect::Keep);
+        assert_eq!(
+            registry.motion_curswant(b.line_end.0),
+            CurswantEffect::PinToEnd
+        );
+        // Everything else, and everything that is not a motion at all.
+        assert_eq!(
+            registry.motion_curswant(b.word_forward.0),
+            CurswantEffect::SetFromTarget
+        );
+        assert_eq!(
+            registry.motion_curswant(b.delete.0),
+            CurswantEffect::SetFromTarget
+        );
     }
 
     // ---- VM.3j-1: `gg` / `G` honour `startofline` ----

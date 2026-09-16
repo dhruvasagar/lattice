@@ -64,10 +64,11 @@ pub use crate::modal::{ModalState, SearchDirection, VisualKind};
 pub use crate::range::{Range, RangeBound};
 pub use crate::register::Register;
 pub use crate::registry::{
-    ActionContext, ActionSpec, CommandRegistration, CommandRegistry, CommentSyntax,
-    ExCommandContext, ExCommandSpec, FindKind, FoldResolver, GrammarEnv, IndentResolver, LastFind,
-    LastSearch, MarkResolver, MotionNotice, MotionSpec, NavBoundary, NavDir, OperatorContext,
-    OperatorSpec, ScopeResolver, ShownLines, SurfaceForm, TextObjectSpec, ViewportResolver,
+    ActionContext, ActionSpec, CommandRegistration, CommandRegistry, CommentSyntax, Curswant,
+    CurswantEffect, ExCommandContext, ExCommandSpec, FindKind, FoldResolver, GrammarEnv,
+    IndentResolver, LastFind, LastSearch, MarkResolver, MotionNotice, MotionSpec, NavBoundary,
+    NavDir, OperatorContext, OperatorSpec, ScopeResolver, ShownLines, SurfaceForm, TextObjectSpec,
+    ViewportResolver,
 };
 pub use crate::registry::{ExCommandId, MotionId, OperatorId, TextObjectId};
 pub use crate::source::{SourceKind, SourceLayer, SourceLocation};

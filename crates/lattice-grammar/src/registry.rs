@@ -127,6 +127,8 @@ pub struct MotionContext<'a> {
     /// VM.3f: vim's `nostartofline` — `H` / `M` / `L` keep the cursor's column
     /// instead of landing on the first non-blank.
     pub nostartofline: bool,
+    /// VM.3g-1: the goal column, copied from [`GrammarEnv::curswant`].
+    pub curswant: Option<Curswant>,
 }
 
 /// What a motion's evaluator returned.
@@ -165,10 +167,42 @@ pub struct MotionResult {
 /// configuration; cheap to call.
 type MotionFn = Arc<dyn Fn(&MotionContext) -> GrammarResult<MotionResult> + Send + Sync>;
 
+/// VM.3g-1: vim's `curswant` — the column a vertical motion aims for, which
+/// survives passing through a SHORT line. `jj` from column 9 over a 2-column
+/// line lands back on 9, not on 2 (vim 9.2, `vimcheck_curswant2.vim`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Curswant {
+    /// Aim for this byte column, clamped to whatever line is reached.
+    Col(u32),
+    /// vim's MAXCOL: `$` sticks to the END of every line it lands on, so
+    /// `$jj` sits at each line's end rather than at a fixed column.
+    EndOfLine,
+}
+
+/// VM.3g-1: what a motion does to the goal column. A property of the MOTION
+/// (vim's `j` always keeps it, `$` always pins it), so it lives on the spec
+/// rather than the result — and [`Self::SetFromTarget`] is the default, so
+/// every motion that has never heard of `curswant`, plugin motions included,
+/// behaves as vim's ordinary motions do.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CurswantEffect {
+    /// The landing column becomes the goal: every horizontal motion, and by
+    /// the same rule every edit, Insert and yank the host routes through it.
+    #[default]
+    SetFromTarget,
+    /// Aim at the existing goal and leave it untouched: `j` / `k`, and later
+    /// `gj` / `gk`, which vim gives the SAME goal column.
+    Keep,
+    /// Pin to end-of-line: `$`, and later `g$`.
+    PinToEnd,
+}
+
 #[derive(Clone)]
 pub struct MotionSpec {
     pub jump: bool,
     pub exclusive: bool,
+    /// VM.3g-1: this motion's effect on the goal column. See [`CurswantEffect`].
+    pub curswant: CurswantEffect,
     pub apply: MotionFn,
     /// Per-positional-argument metadata (DESIGN.md §B.1). Empty for
     /// motions without args (the common case).
@@ -626,6 +660,10 @@ pub struct GrammarEnv<'a> {
     /// VM.3f: `!startofline`. Named for the vim option that turns the rule
     /// OFF so that `Default` (false) is vim's default.
     pub nostartofline: bool,
+    /// VM.3g-1: the goal column `j` / `k` aim for. `None` — nothing has set one
+    /// yet — means "use the cursor's own column", which is what the first `j`
+    /// after any edit does in vim.
+    pub curswant: Option<Curswant>,
 }
 
 /// Context passed to a text-object's evaluator.
@@ -1342,6 +1380,17 @@ impl CommandRegistry {
         }
     }
 
+    /// VM.3g-1: what this command does to the goal column. Anything that is NOT
+    /// a motion — an operator, an action, an ex-command — answers
+    /// `SetFromTarget`, which is what vim does after an edit, an Insert exit or
+    /// a yank: the column it leaves the cursor on becomes the new goal.
+    pub fn motion_curswant(&self, id: CommandId) -> CurswantEffect {
+        match self.by_id.get(&id).map(|e| &e.registration) {
+            Some(CommandRegistration::Motion(spec)) => spec.curswant,
+            _ => CurswantEffect::SetFromTarget,
+        }
+    }
+
     /// Borrow the [`ExCommandSpec`] body for an ex-command id. Returns
     /// `None` for ids that aren't ex-commands or aren't registered.
     /// Used by the `:`-line parser front-end so it can call the
@@ -1465,6 +1514,7 @@ mod tests {
 
     fn dummy_motion() -> MotionSpec {
         MotionSpec {
+            curswant: crate::registry::CurswantEffect::default(),
             jump: false,
             exclusive: false,
             apply: Arc::new(|ctx| {

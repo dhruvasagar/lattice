@@ -280,6 +280,12 @@ fn build_motion_spec(
     Ok(MotionSpec {
         jump: spec.jump,
         exclusive: spec.exclusive,
+        // VM.3g-1: a guest motion takes the default goal-column rule — its
+        // landing column becomes the goal, which is what every vim motion but
+        // `j` / `k` / `$` does. The WIT `motion-spec` carries no `curswant`
+        // case yet; when a plugin needs a vertical motion that keeps the goal,
+        // that is the field to add, and this is the one line that reads it.
+        curswant: lattice_grammar::CurswantEffect::default(),
         args_schema,
         apply: Arc::new(move |ctx: &MotionContext| -> GrammarResult<MotionResult> {
             let wit_ctx = project_motion_context(ctx).map_err(CommandError::Plugin)?;

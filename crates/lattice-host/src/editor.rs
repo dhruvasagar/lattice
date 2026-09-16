@@ -779,6 +779,14 @@ pub struct Editor {
     /// `PaneId::MINIBUFFER_BAND` pane is gated on `band_viewport_width > 0`.
     pub band_viewport_height: u32,
     pub band_viewport_width: u32,
+    /// VM.3g-1: vim's `curswant` — the column `j` / `k` aim for, which survives
+    /// a short line in between. `None` until something sets one.
+    pub curswant: Option<lattice_grammar::Curswant>,
+    /// VM.3g-1: set when THIS dispatch was a motion that keeps or pins the goal
+    /// column (`j` / `k` / `$`). Everything else — every other motion, every
+    /// edit, Insert exit and yank — lets the dispatch tail set the goal from
+    /// wherever the cursor ended up, which is vim's rule.
+    pub curswant_claimed: bool,
     /// FS.1: the focus **stack** — one frame per surface that has taken
     /// focus away from the pane's own buffer, innermost last.
     ///

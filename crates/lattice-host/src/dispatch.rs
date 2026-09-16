@@ -564,6 +564,14 @@ impl Editor {
         // a keystroke produces already shows the match the cursor is on.
         self.follow_current_match_to_cursor();
 
+        // VM.3g-1: vim's `curswant`. `j` / `k` / `$` claimed it during the
+        // dispatch; for everything else — other motions, edits, Insert, yanks,
+        // a mouse click — the column the cursor ended on becomes the new goal.
+        // vim 9.2: `j x j` returns to `x`'s column, not the one `j` aimed at.
+        if !std::mem::take(&mut self.curswant_claimed) {
+            self.curswant = Some(lattice_grammar::Curswant::Col(self.cursor.byte));
+        }
+
         // Phase 5.8.AF.5 / Slice 3a: publish the renderer's read
         // contract at the end of every dispatch. Naive rebuild
         // (every sub-state Arc is fresh); sub-states 3b/3c
@@ -21174,6 +21182,7 @@ impl Editor {
                 }),
                 viewport,
                 nostartofline: !self.option_cache.startofline,
+                curswant: self.curswant,
                 // OT.4: the same `h.snapshot()` bump the Action gate takes —
                 // O(1) `ArcSwap` load, no parse on the dispatch thread — so
                 // a PLUGIN motion or text object can mint a `tree-snapshot`
@@ -43464,6 +43473,11 @@ impl Editor {
             return;
         }
         let is_jump_motion = self.registry.load().motion_is_jump(inv.command);
+        // VM.3g-1: read before dispatch, from the invocation's own command — an
+        // OPERATOR answers `SetFromTarget` even when its target is `j`, which
+        // is right: `dj` leaves the cursor somewhere new and that column
+        // becomes the goal.
+        let curswant_effect = self.registry.load().motion_curswant(inv.command);
         // VM.3d-2: the jump is recorded where the user WAS, but only once the
         // motion has SUCCEEDED (below): a failed `n` (E486) leaves no jump
         // behind, as in vim.
@@ -43531,6 +43545,29 @@ impl Editor {
             Ok(effect) => {
                 if is_jump_motion {
                     self.push_position_history(jump_from, PositionSource::AutoJump);
+                }
+                // VM.3g-1: `j` / `k` keep the goal column, `$` pins it to the
+                // line end. Read from the SPEC, so a plugin's vertical motion
+                // can say the same. Only on SUCCESS: a motion that failed
+                // leaves the goal alone, as vim does (an `fb` that finds no
+                // `b` does not disturb it).
+                match curswant_effect {
+                    lattice_grammar::CurswantEffect::Keep => {
+                        // The FIRST vertical motion adopts the column it started
+                        // from as the goal. Without this the goal would stay
+                        // unset — `j` claims it rather than setting it — and the
+                        // second `j` would aim at whatever short line the first
+                        // one landed on, which is the exact drift this slice
+                        // removes.
+                        self.curswant
+                            .get_or_insert(lattice_grammar::Curswant::Col(jump_from.byte));
+                        self.curswant_claimed = true;
+                    }
+                    lattice_grammar::CurswantEffect::PinToEnd => {
+                        self.curswant = Some(lattice_grammar::Curswant::EndOfLine);
+                        self.curswant_claimed = true;
+                    }
+                    lattice_grammar::CurswantEffect::SetFromTarget => {}
                 }
                 // Visual exits on any operator-class effect (mutation OR
                 // yank-only); dot-repeat only records buffer mutations.
@@ -44098,6 +44135,7 @@ impl Editor {
                 .as_ref()
                 .map(|s| s as &dyn lattice_grammar::ViewportResolver),
             nostartofline: !self.option_cache.startofline,
+            curswant: self.curswant,
             ..Default::default()
         };
         match lattice_grammar::execute_motion_only(

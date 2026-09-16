@@ -274,6 +274,7 @@ mod tests {
             marks: None,
             viewport: None,
             nostartofline: false,
+            curswant: None,
         };
         let wit = project_motion_context(&ctx).unwrap();
         assert_eq!(wit.buffer_id, 9);

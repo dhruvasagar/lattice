@@ -272,6 +272,7 @@ fn a_mode_layer_motion_gets_its_visual_peer() {
     use std::sync::Arc;
 
     let spec = || MotionSpec {
+        curswant: lattice_grammar::CurswantEffect::default(),
         jump: true,
         exclusive: true,
         apply: Arc::new(|ctx| {

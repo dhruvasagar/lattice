@@ -202,6 +202,7 @@ pub fn execute_motion_only(
         marks: env.marks,
         viewport: env.viewport,
         nostartofline: env.nostartofline,
+        curswant: env.curswant,
     };
     let result = (motion.apply)(&ctx)?;
     Ok(result.target)
@@ -268,6 +269,7 @@ fn execute_motion(
         marks: env.marks,
         viewport: env.viewport,
         nostartofline: env.nostartofline,
+        curswant: env.curswant,
     };
     let result = (motion.apply)(&ctx)?;
     // Motions emit a cursor-only jump — the modal engine's caller
@@ -750,6 +752,7 @@ fn resolve_target(
                 marks: env.marks,
                 viewport: env.viewport,
                 nostartofline: env.nostartofline,
+                curswant: env.curswant,
             };
             let r = (motion.apply)(&ctx)?;
             let mut target = r.target;
@@ -1214,6 +1217,7 @@ mod tests {
             "motion:test-nav",
             "test",
             crate::registry::MotionSpec {
+                curswant: crate::registry::CurswantEffect::default(),
                 jump: false,
                 exclusive: true,
                 args_schema: Vec::new(),

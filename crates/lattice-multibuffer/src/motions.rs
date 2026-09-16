@@ -64,6 +64,7 @@ pub fn register_multibuffer_motions(
         "multibuffer.next-excerpt-start",
         "Move cursor to the first row of the next excerpt (`]e`).",
         MotionSpec {
+            curswant: lattice_grammar::CurswantEffect::default(),
             jump: true,
             exclusive: false,
             apply: Arc::new(move |ctx| handle_next_excerpt_start(ctx, &mb_a)),
@@ -76,6 +77,7 @@ pub fn register_multibuffer_motions(
         "multibuffer.prev-excerpt-start",
         "Move cursor to the first row of the previous excerpt (`[e`).",
         MotionSpec {
+            curswant: lattice_grammar::CurswantEffect::default(),
             jump: true,
             exclusive: false,
             apply: Arc::new(move |ctx| handle_prev_excerpt_start(ctx, &mb_b)),
@@ -88,6 +90,7 @@ pub fn register_multibuffer_motions(
         "multibuffer.next-file-boundary",
         "Move cursor to the next excerpt whose `source` BufferId differs from the current excerpt's (`]E`).",
         MotionSpec {
+            curswant: lattice_grammar::CurswantEffect::default(),
             jump: true,
             exclusive: false,
             apply: Arc::new(move |ctx| handle_next_file_boundary(ctx, &mb_c)),
@@ -100,6 +103,7 @@ pub fn register_multibuffer_motions(
         "multibuffer.prev-file-boundary",
         "Move cursor to the previous excerpt whose `source` BufferId differs from the current excerpt's (`[E`).",
         MotionSpec {
+            curswant: lattice_grammar::CurswantEffect::default(),
             jump: true,
             exclusive: false,
             apply: Arc::new(move |ctx| handle_prev_file_boundary(ctx, &mb_d)),

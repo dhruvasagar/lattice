@@ -3237,6 +3237,7 @@ mod tests {
 
     fn stub_motion() -> lattice_grammar::MotionSpec {
         lattice_grammar::MotionSpec {
+            curswant: lattice_grammar::CurswantEffect::default(),
             jump: false,
             exclusive: true,
             apply: Arc::new(|ctx| {

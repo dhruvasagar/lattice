@@ -665,4 +665,53 @@ mod tests {
         assert_eq!(b.editor.cursor.line, landed, "same line either way");
         assert_eq!(b.editor.cursor.byte, 5, "column kept");
     }
+
+    // ── VM.3g-1: the goal column survives a short line (vim 9.2,
+    // `vimcheck_curswant2.vim`) ──
+
+    /// `['abcdefghijkl', 'ab', 'abcdefghijkl']` — a short line between two long
+    /// ones, which is the only shape that can tell a remembered goal column
+    /// from a re-read cursor column.
+    const RAGGED: &str = "abcdefghijkl\nab\nabcdefghijkl";
+
+    /// `at()` plants the cursor by ASSIGNMENT, outside any dispatch — and the
+    /// goal column is maintained BY dispatch, so it would still hold the column
+    /// boot left it on (0) and every `j` would aim there. Real input cannot do
+    /// that: every cursor move is a dispatch, which sets the goal on its way
+    /// out. Clearing it here is the harness admitting it skipped that step;
+    /// `None` then means "the cursor's own column", which is where the user
+    /// would be.
+    fn at_ragged(line: u32, byte: u32) -> crate::app::App {
+        let mut a = at(RAGGED, line, byte);
+        a.editor.curswant = None;
+        a
+    }
+
+    /// vim: `jj` from column 9 comes back to column 9, though the line between
+    /// is two columns wide. Lattice used to land on column 2 and stay there.
+    #[test]
+    fn jj_across_a_short_line_returns_to_the_goal_column() {
+        let mut a = at_ragged(0, 8);
+        press_chars(&mut a, "j");
+        assert_eq!(cursor(&a), (1, 2), "clamped to the short line");
+        press_chars(&mut a, "j");
+        assert_eq!(cursor(&a), (2, 8), "and back to the column we started in");
+    }
+
+    /// vim: and upward too — `k` shares the goal with `j`.
+    #[test]
+    fn kk_across_a_short_line_returns_to_the_goal_column() {
+        let mut a = at_ragged(2, 8);
+        press_chars(&mut a, "kk");
+        assert_eq!(cursor(&a), (0, 8));
+    }
+
+    /// vim: any horizontal move re-sets the goal — `j h j` lands on `h`'s
+    /// column, not on the one `j` was aiming at.
+    #[test]
+    fn a_horizontal_motion_resets_the_goal_column() {
+        let mut a = at_ragged(0, 8);
+        press_chars(&mut a, "jhj");
+        assert_eq!(cursor(&a), (2, 1));
+    }
 }

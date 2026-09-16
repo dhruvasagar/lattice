@@ -479,6 +479,7 @@ mod tests {
 
     fn dummy_motion() -> MotionSpec {
         MotionSpec {
+            curswant: lattice_grammar::CurswantEffect::default(),
             jump: false,
             exclusive: false,
             apply: Arc::new(|ctx| {

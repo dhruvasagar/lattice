@@ -189,6 +189,7 @@ fn reg(
         name,
         doc,
         MotionSpec {
+            curswant: lattice_grammar::CurswantEffect::default(),
             jump: true,
             exclusive,
             args_schema: Vec::new(),

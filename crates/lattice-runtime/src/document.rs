@@ -164,6 +164,10 @@ pub struct DispatchEnv {
     pub viewport: Option<ViewportResolverHandle>,
     /// VM.3f: `!startofline` — `H` / `M` / `L` keep the cursor's column.
     pub nostartofline: bool,
+    /// VM.3g-1: vim's `curswant`, the column `j` / `k` aim for across short
+    /// lines. Carried like every other keystroke input: `j` comes through the
+    /// actor on every press.
+    pub curswant: Option<lattice_grammar::Curswant>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

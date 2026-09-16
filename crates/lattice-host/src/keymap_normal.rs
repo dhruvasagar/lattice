@@ -186,28 +186,23 @@ pub fn register_normal_bindings(
     // ---- Legacy-action bindings (no `CommandInvocation` peer
     // ---- today; bridge stays until 8.i).
 
-    // Viewport jumps.
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('H')],
-        CommandInvocation::of(actions.jump_viewport_top),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('M')],
-        CommandInvocation::of(actions.jump_viewport_middle),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('L')],
-        CommandInvocation::of(actions.jump_viewport_bottom),
-        source(),
-    );
+    // VM.3f: `H` / `M` / `L` are MOTIONS, as in vim (`dL`, `yH`, `vM` all work
+    // there; checked in 9.2). As actions they composed with nothing and were
+    // dead in Visual. The action ids stay registered for the WIT
+    // `JumpViewport` effect.
+    for (key, motion) in [
+        ('H', builtins.viewport_top),
+        ('M', builtins.viewport_middle),
+        ('L', builtins.viewport_bottom),
+    ] {
+        handle.bind(
+            layer,
+            mode,
+            &[lit_char(key)],
+            CommandInvocation::of(motion.0),
+            source(),
+        );
+    }
 
     // Paste.
     handle.bind(

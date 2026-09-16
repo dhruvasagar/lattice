@@ -504,4 +504,66 @@ mod tests {
         );
         assert_eq!(a.editor.position_history.len(), before + 1);
     }
+
+    // ── VM.3f: `H` / `M` / `L` are motions (vim 9.2, `vimcheck_hml4.vim`) ──
+
+    /// Forty `"  line N"` lines, a 21-row window showing lines 6–26 (1-based),
+    /// cursor on 8,6 — the layout of the vim check.
+    fn windowed() -> crate::app::App {
+        let text = (1..=40)
+            .map(|n| format!("  line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut a = app_with(&text, 21);
+        a.editor.scroll = 5;
+        a.editor.cursor = lattice_protocol::position::Position::new(7, 5);
+        a
+    }
+
+    fn lines(from: u32, to: u32) -> String {
+        (from..=to).map(|n| format!("  line {n}\n")).collect()
+    }
+
+    /// vim: `H` 6,3 · `M` 16,3 · `L` 26,3 · `3H` 8,3 · `3L` 24,3.
+    #[test]
+    fn h_m_and_l_land_on_the_first_non_blank_of_window_lines() {
+        for (keys, line) in [("H", 5), ("M", 15), ("L", 25), ("3H", 7), ("3L", 23)] {
+            let mut a = windowed();
+            press_chars(&mut a, keys);
+            assert_eq!(
+                a.editor.cursor,
+                lattice_protocol::position::Position::new(line, 2),
+                "{keys}"
+            );
+        }
+    }
+
+    /// vim: `dL` from 8,6 deletes lines 8–26, linewise.
+    #[test]
+    fn d_l_deletes_whole_lines_to_the_bottom_of_the_window() {
+        let mut a = windowed();
+        press_chars(&mut a, "dL");
+        assert_eq!(register(&a).map(|r| r.0), Some(lines(8, 26)));
+        assert_eq!(body(&a).lines().count(), 21);
+    }
+
+    /// vim: `yH` from 8,6 yanks lines 6–8, linewise.
+    #[test]
+    fn y_h_yanks_whole_lines_up_to_the_top_of_the_window() {
+        let mut a = windowed();
+        press_chars(&mut a, "yH");
+        assert_eq!(register(&a).map(|r| r.0), Some(lines(6, 8)));
+    }
+
+    /// vim: with `nostartofline`, `L` from 8,6 keeps column 6.
+    #[test]
+    fn nostartofline_keeps_the_column() {
+        let mut a = windowed();
+        a.editor.option_cache.startofline = false;
+        press_chars(&mut a, "L");
+        assert_eq!(
+            a.editor.cursor,
+            lattice_protocol::position::Position::new(25, 5)
+        );
+    }
 }

@@ -2368,6 +2368,8 @@ impl MultibufferDocumentHandle {
             fold_resolver,
             last_search,
             marks,
+            viewport,
+            nostartofline,
             ..
         } = env;
         // K.4.11 (2026-06-02): the multibuffer now owns grammar
@@ -2487,6 +2489,8 @@ impl MultibufferDocumentHandle {
                 // front of the user, which in a composed view is the composed text.
                 last_search: last_search.as_ref(),
                 marks: marks.as_deref().map(|m| m as _),
+                viewport: viewport.as_deref().map(|v| v as _),
+                nostartofline,
             },
         )
         .map_err(RuntimeError::Grammar);

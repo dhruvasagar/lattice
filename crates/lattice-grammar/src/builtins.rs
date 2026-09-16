@@ -803,6 +803,31 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             args_schema: vec![],
         },
     );
+    // VM.3f: vim's `H` / `M` / `L`, which were actions, so `dL` / `yH` / `vM`
+    // were unbound. Linewise jumps (vim 9.2: `dL` deletes whole lines to the
+    // bottom of the window).
+    let viewport_spec =
+        |apply: fn(&MotionContext) -> Result<MotionResult, CommandError>| MotionSpec {
+            jump: true,
+            exclusive: false,
+            apply: Arc::new(apply),
+            args_schema: vec![],
+        };
+    let viewport_top = registry.register_motion(
+        "motion:viewport-top",
+        "Go to the `count`-th line from the top of the window (vim's `H`).",
+        viewport_spec(motion_viewport_top),
+    );
+    let viewport_middle = registry.register_motion(
+        "motion:viewport-middle",
+        "Go to the middle line of the window (vim's `M`).",
+        viewport_spec(motion_viewport_middle),
+    );
+    let viewport_bottom = registry.register_motion(
+        "motion:viewport-bottom",
+        "Go to the `count`-th line from the bottom of the window (vim's `L`).",
+        viewport_spec(motion_viewport_bottom),
+    );
 
     Builtins {
         word_forward,
@@ -839,6 +864,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         search_word_backward,
         mark_line,
         mark_exact,
+        viewport_top,
+        viewport_middle,
+        viewport_bottom,
         delete,
         change,
         yank,
@@ -927,6 +955,10 @@ pub struct Builtins {
     /// VM.3e: vim's `'x` / `` `x ``, as the motions they are in vim.
     pub mark_line: MotionId,
     pub mark_exact: MotionId,
+    /// VM.3f: vim's `H` / `M` / `L`, as the motions they are in vim.
+    pub viewport_top: MotionId,
+    pub viewport_middle: MotionId,
+    pub viewport_bottom: MotionId,
     pub delete: OperatorId,
     pub change: OperatorId,
     pub yank: OperatorId,
@@ -1297,6 +1329,46 @@ fn scan_backward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Op
         }
         i -= 1;
     }
+}
+
+/// VM.3f: `H` / `M` / `L` — a line of the window, linewise. Where on it follows
+/// `startofline`: the first non-blank (vim's default) or, with
+/// `nostartofline`, the cursor's column clamped to the line. With no window the
+/// motion fails and moves nothing.
+fn motion_viewport(
+    ctx: &MotionContext,
+    pos: crate::app_effect::ViewportPos,
+) -> Result<MotionResult, CommandError> {
+    let line = ctx
+        .viewport
+        .and_then(|viewport| viewport.viewport_line(pos, ctx.count.get()))
+        .ok_or(CommandError::MotionFailed)?
+        .min(last_addressable_line(ctx.buffer));
+    let len = line_byte_len(ctx.buffer, line);
+    let byte = if ctx.nostartofline {
+        ctx.from.byte.min(len)
+    } else {
+        let text = ctx.buffer.line(line).unwrap_or_default();
+        (text.bytes().take_while(|&b| is_blank_byte(b)).count() as u32).min(len)
+    };
+    Ok(MotionResult {
+        target: Position::new(line, byte),
+        linewise: true,
+        exclusive: None,
+        notice: None,
+    })
+}
+
+fn motion_viewport_top(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    motion_viewport(ctx, crate::app_effect::ViewportPos::Top)
+}
+
+fn motion_viewport_middle(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    motion_viewport(ctx, crate::app_effect::ViewportPos::Middle)
+}
+
+fn motion_viewport_bottom(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    motion_viewport(ctx, crate::app_effect::ViewportPos::Bottom)
 }
 
 /// VM.3e: where mark `args.char` is, clamped into the buffer (a mark on a line
@@ -1996,6 +2068,8 @@ fn find_repeat(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, Comma
         fold_resolver: ctx.fold_resolver,
         last_search: ctx.last_search,
         marks: ctx.marks,
+        viewport: ctx.viewport,
+        nostartofline: ctx.nostartofline,
     };
     let mut result = match kind {
         FindKind::Forward => motion_find_char_forward(&sub)?,
@@ -4009,6 +4083,81 @@ mod tests {
             Err(CommandError::User(msg)) => assert_eq!(msg, "E35: no previous regular expression"),
             other => panic!("expected E35, got {other:?}"),
         }
+    }
+
+    // ---- VM.3f: `H` / `M` / `L` are motions ----
+
+    fn shown(first: u32, count: u32) -> crate::registry::ShownLines {
+        crate::registry::ShownLines((first..first + count).map(|l| (l, 1.0)).collect())
+    }
+
+    /// vim 9.2, a 21-row window showing lines 6–26 (1-based): `H` 6, `M` 16,
+    /// `L` 26, `3H` 8, `3L` 24, and a count past the window clamps to the far
+    /// edge.
+    #[test]
+    fn shown_lines_answer_h_m_and_l_as_vim_does() {
+        use crate::app_effect::ViewportPos::{Bottom, Middle, Top};
+        use crate::registry::ViewportResolver;
+        let window = shown(5, 21);
+        assert_eq!(window.viewport_line(Top, 1), Some(5));
+        assert_eq!(window.viewport_line(Middle, 1), Some(15));
+        assert_eq!(window.viewport_line(Bottom, 1), Some(25));
+        assert_eq!(window.viewport_line(Top, 3), Some(7));
+        assert_eq!(window.viewport_line(Bottom, 3), Some(23));
+        assert_eq!(window.viewport_line(Top, 99), Some(25));
+        assert_eq!(window.viewport_line(Bottom, 99), Some(5));
+    }
+
+    /// vim: `M` is top + (shown − 1) / 2 — 22 rows → +10, 23 → +11, a 6-line
+    /// buffer → its 3rd line — and a tall row spends its height.
+    #[test]
+    fn middle_is_half_the_lines_shown_less_one() {
+        use crate::app_effect::ViewportPos::Middle;
+        use crate::registry::{ShownLines, ViewportResolver};
+        assert_eq!(shown(0, 22).viewport_line(Middle, 1), Some(10));
+        assert_eq!(shown(0, 23).viewport_line(Middle, 1), Some(11));
+        assert_eq!(shown(0, 6).viewport_line(Middle, 1), Some(2));
+        let mut rows: Vec<(u32, f32)> = (0..9).map(|l| (l, 1.0)).collect();
+        rows[2].1 = 4.0;
+        assert_eq!(ShownLines(rows).viewport_line(Middle, 1), Some(2));
+        assert_eq!(ShownLines::default().viewport_line(Middle, 1), None);
+    }
+
+    fn viewport_effect(nostartofline: bool, with_window: bool) -> Result<Effect, CommandError> {
+        let (registry, b, mut doc) = fixture("  one\n  two\n  three\n");
+        let window = shown(1, 2);
+        let env = crate::registry::GrammarEnv {
+            viewport: with_window.then_some(&window as &dyn crate::registry::ViewportResolver),
+            nostartofline,
+            ..Default::default()
+        };
+        crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(2, 4),
+            CommandInvocation::of(b.viewport_top.0),
+            &CancellationToken::never(),
+            env,
+        )
+    }
+
+    /// `H` lands on the first non-blank, keeps the column with `nostartofline`,
+    /// and with no window fails rather than guessing.
+    #[test]
+    fn a_viewport_motion_follows_startofline() {
+        match viewport_effect(false, true).unwrap() {
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(1, 2)),
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+        match viewport_effect(true, true).unwrap() {
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(1, 4)),
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+        assert!(matches!(
+            viewport_effect(false, false),
+            Err(CommandError::MotionFailed)
+        ));
     }
 
     // ---- VM.3e: `'x` / `` `x `` are motions ----

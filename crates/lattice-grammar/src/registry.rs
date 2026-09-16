@@ -121,6 +121,12 @@ pub struct MotionContext<'a> {
     /// VM.3e: the marks `'x` / `` `x `` jump to, copied from
     /// [`GrammarEnv::marks`]. Borrowed; every other motion ignores it.
     pub marks: Option<&'a dyn MarkResolver>,
+    /// VM.3f: the window's lines for `H` / `M` / `L`, copied from
+    /// [`GrammarEnv::viewport`].
+    pub viewport: Option<&'a dyn ViewportResolver>,
+    /// VM.3f: vim's `nostartofline` — `H` / `M` / `L` keep the cursor's column
+    /// instead of landing on the first non-blank.
+    pub nostartofline: bool,
 }
 
 /// What a motion's evaluator returned.
@@ -349,6 +355,53 @@ impl MarkResolver for std::collections::HashMap<char, Position> {
     }
 }
 
+/// VM.3f: which line of the window `H` / `M` / `L` mean. The layout — folds,
+/// row heights, window size — stays on the host; the grammar only asks.
+pub trait ViewportResolver {
+    /// `Top`: the `count`-th line from the top (`H`); `Bottom`: the `count`-th
+    /// from the bottom (`L`); `Middle`: the middle line (`M`, count ignored).
+    /// `None` when the window shows nothing.
+    fn viewport_line(&self, pos: crate::app_effect::ViewportPos, count: u32) -> Option<u32>;
+}
+
+/// VM.3f: the window's lines, top to bottom, each with its height in
+/// line-heights (1.0 for an ordinary row). The host builds it from the walk it
+/// paints with; this type owns vim's rule for which of them `H` / `M` / `L`
+/// mean, so the keyboard motion and the host's `JumpViewport` action answer
+/// from one place. Checked in vim 9.2: a count past the window clamps to the
+/// far edge, and `M` is top + (lines shown − 1) / 2 — half the lines SHOWN, so
+/// a short buffer's middle, not the window's.
+#[derive(Debug, Clone, Default)]
+pub struct ShownLines(pub Vec<(u32, f32)>);
+
+impl ViewportResolver for ShownLines {
+    fn viewport_line(&self, pos: crate::app_effect::ViewportPos, count: u32) -> Option<u32> {
+        use crate::app_effect::ViewportPos;
+        let lines = &self.0;
+        let last = lines.len().checked_sub(1)?;
+        let n = (count.max(1) - 1) as usize;
+        Some(match pos {
+            ViewportPos::Top => lines[n.min(last)].0,
+            ViewportPos::Bottom => lines[last - n.min(last)].0,
+            ViewportPos::Middle => {
+                // (shown − 1) / 2, spent in line-heights so a tall row pulls
+                // `M` up to the line actually drawn mid-window.
+                let budget = (lines.iter().map(|l| l.1).sum::<f32>() - 1.0) / 2.0;
+                let mut used = 0.0;
+                let mut at = lines[0].0;
+                for &(line, cost) in &lines[1..] {
+                    if used + cost > budget {
+                        break;
+                    }
+                    used += cost;
+                    at = line;
+                }
+                at
+            }
+        })
+    }
+}
+
 pub trait ScopeResolver {
     fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
 
@@ -559,6 +612,13 @@ pub struct GrammarEnv<'a> {
     /// VM.3e: the mark table, so `'x` / `` `x `` can be motions. Carried for
     /// the reason `last_search` is. `None` makes every mark unset (E20).
     pub marks: Option<&'a dyn MarkResolver>,
+    /// VM.3f: the lines the window shows, so `H` / `M` / `L` can be motions.
+    /// `None` — no window, or an invocation that isn't one of them — makes
+    /// them fail without moving.
+    pub viewport: Option<&'a dyn ViewportResolver>,
+    /// VM.3f: `!startofline`. Named for the vim option that turns the rule
+    /// OFF so that `Default` (false) is vim's default.
+    pub nostartofline: bool,
 }
 
 /// Context passed to a text-object's evaluator.

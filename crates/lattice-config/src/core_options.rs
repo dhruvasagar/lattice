@@ -545,6 +545,12 @@ crate::options! {
     #[validate(validate_scrolloff)]
     pub Scrolloff: i64 = 0;
 
+    /// Whether `H` / `M` / `L` land on the first non-blank of their line
+    /// (vim's default) or keep the cursor's column (`nostartofline`).
+    #[aliases("sol")]
+    #[name("startofline")]
+    pub StartOfLine: bool = true;
+
     /// Columns to scroll horizontally when the cursor moves off the
     /// edge with `wrap` off. `0` (vim default) jumps so the cursor
     /// lands in the middle of the window; a positive value scrolls

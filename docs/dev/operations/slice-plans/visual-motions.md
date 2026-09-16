@@ -384,14 +384,33 @@ text operated upon", with linewise delete then going to the first non-blank.
 Yank needs the operated region's start BEFORE linewise expansion (`yk` keeps
 the column, `yip` doesn't), which `OperatorContext` doesn't carry today.
 
-### VM.3f 📝 — `H` / `M` / `L`
+### VM.3f ✅ — `H` / `M` / `L` are motions, and `startofline`
 
-Viewport-relative, and fold- and line-height-aware
-(`Editor::line_forward_by_budget`). Layout knowledge must NOT move into
-`lattice-grammar`; the seam is a **`ViewportResolver`** trait in `GrammarEnv`,
-exactly as `ScopeResolver` and `IndentResolver` already are — the host
-implements it, the grammar calls it. Linewise motions in vim, so also gated on
-the linewise gap for full fidelity.
+Decided 2026-09-15 (user): a typed `startofline` option, **default on** as in
+vim 9.2 — `H` / `M` / `L` land on the first non-blank; off keeps the column.
+
+Checked in vim 9.2 on a real screen (`vimcheck_hml4.vim`,
+`vimcheck_m_even.vim`): `3H` / `3L` count from the edges and a count past the
+window clamps to the far one; `M` is top + (lines shown − 1) / 2, so a short
+buffer's middle; `dL` / `yH` are linewise, `vL` charwise.
+
+`motion:viewport-top` / `-middle` / `-bottom` are linewise jumps. The layout
+stays on the host: `Editor::shown_lines` walks the window's lines and their
+heights (the IM.1b budget walk), built only when the invocation is `H` / `M` /
+`L`, and hands the grammar a `ViewportResolver`. The grammar's `ShownLines`
+owns vim's rule over those lines, and the host's `JumpViewport` action path
+answers from the same type, so the two can't disagree. `nostartofline` rides
+`GrammarEnv` (named so `Default` is vim's default). Fixed on the way: `M` used
+to spend `height / 2`, one line past vim on every even height, and ignored
+short buffers; the IM.1b test pinned that and now pins vim's number.
+
+Not done: vim adjusts `H` / `L` for `scrolloff` (lattice's default is 0).
+
+### VM.3j 📝 — `gg` / `G` / `<C-d>` / `<C-u>` / `<C-f>` / `<C-b>` follow `startofline`
+
+vim 9.2: `G` → 40,3 and `gg` → 1,3 with `startofline`, 40,6 with
+`nostartofline`; `<C-d>` lands on the first non-blank. Lattice lands `gg` / `G`
+at column 0 and matches neither. Same option, now that VM.3f added it.
 
 ### VM.3g 📝 — `gj` / `gk` / `g0` / `g$`
 

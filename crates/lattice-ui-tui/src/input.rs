@@ -2648,35 +2648,35 @@ mod tests {
     // ---- Viewport motions: H, M, L, z*, Ctrl-F/B/Y/E ----
 
     #[test]
-    fn capital_h_emits_jump_viewport_top() {
+    fn capital_h_emits_the_viewport_top_motion() {
+        // VM.3f: a motion, so `d{key}` / `v{key}` compose.
         let (_, b) = fixture();
-        let a = shared_actions();
         let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('H')));
         match action {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.jump_viewport_top),
-            other => panic!("expected Invoke(jump_viewport_top), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, b.viewport_top.0),
+            other => panic!("expected Invoke(viewport_top motion), got {other:?}"),
         }
     }
 
     #[test]
-    fn capital_m_emits_jump_viewport_middle() {
+    fn capital_m_emits_the_viewport_middle_motion() {
+        // VM.3f: a motion, so `d{key}` / `v{key}` compose.
         let (_, b) = fixture();
-        let a = shared_actions();
         let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('M')));
         match action {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.jump_viewport_middle),
-            other => panic!("expected Invoke(jump_viewport_middle), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, b.viewport_middle.0),
+            other => panic!("expected Invoke(viewport_middle motion), got {other:?}"),
         }
     }
 
     #[test]
-    fn capital_l_emits_jump_viewport_bottom() {
+    fn capital_l_emits_the_viewport_bottom_motion() {
+        // VM.3f: a motion, so `d{key}` / `v{key}` compose.
         let (_, b) = fixture();
-        let a = shared_actions();
         let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('L')));
         match action {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.jump_viewport_bottom),
-            other => panic!("expected Invoke(jump_viewport_bottom), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, b.viewport_bottom.0),
+            other => panic!("expected Invoke(viewport_bottom motion), got {other:?}"),
         }
     }
 

@@ -272,6 +272,8 @@ mod tests {
             fold_resolver: None,
             last_search: None,
             marks: None,
+            viewport: None,
+            nostartofline: false,
         };
         let wit = project_motion_context(&ctx).unwrap();
         assert_eq!(wit.buffer_id, 9);

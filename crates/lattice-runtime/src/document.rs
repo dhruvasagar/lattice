@@ -77,6 +77,8 @@ pub type IndentResolverHandle = Arc<dyn lattice_grammar::IndentResolver + Send +
 pub type FoldResolverHandle = Arc<dyn lattice_grammar::FoldResolver + Send + Sync>;
 /// VM.3e: owned mark table for `'x` / `` `x ``, like [`FoldResolverHandle`].
 pub type MarkResolverHandle = Arc<dyn lattice_grammar::MarkResolver + Send + Sync>;
+/// VM.3f: owned window lines for `H` / `M` / `L`, like [`FoldResolverHandle`].
+pub type ViewportResolverHandle = Arc<dyn lattice_grammar::ViewportResolver + Send + Sync>;
 
 /// N.1.6 (2026-06-10): the owned, thread-safe per-dispatch environment
 /// for text objects, carried across the actor channel. Bundles the
@@ -157,6 +159,11 @@ pub struct DispatchEnv {
     /// VM.3e: the mark table, for `'x` / `` `x ``, which come through the
     /// actor like every keystroke motion. `None` when no mark is set.
     pub marks: Option<MarkResolverHandle>,
+    /// VM.3f: the lines the window shows, for `H` / `M` / `L`. The host builds
+    /// it only when the invocation is one of them.
+    pub viewport: Option<ViewportResolverHandle>,
+    /// VM.3f: `!startofline` — `H` / `M` / `L` keep the cursor's column.
+    pub nostartofline: bool,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

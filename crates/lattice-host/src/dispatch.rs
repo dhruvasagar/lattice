@@ -21063,6 +21063,12 @@ impl Editor {
                             as lattice_runtime::IndentResolverHandle
                     })
             });
+        // VM.3f: `H` / `M` / `L` are motions and need the lines the window
+        // shows. Walked only when this invocation is one of them, and before
+        // `invocation` moves into the call.
+        let viewport = self.targets_viewport_motion(&invocation).then(|| {
+            std::sync::Arc::new(self.shown_lines()) as lattice_runtime::ViewportResolverHandle
+        });
         lattice_runtime::block_on(self.document.dispatch_with_env(
             invocation,
             self.cursor,
@@ -21100,6 +21106,8 @@ impl Editor {
                 marks: (!self.marks.is_empty()).then(|| {
                     std::sync::Arc::new(self.marks.clone()) as lattice_runtime::MarkResolverHandle
                 }),
+                viewport,
+                nostartofline: !self.option_cache.startofline,
                 // OT.4: the same `h.snapshot()` bump the Action gate takes —
                 // O(1) `ArcSwap` load, no parse on the dispatch thread — so
                 // a PLUGIN motion or text object can mint a `tree-snapshot`
@@ -23728,28 +23736,71 @@ impl Editor {
     /// cursor to a viewport-relative line. Fold-aware: walks visible
     /// (non-fold-hidden) lines from `scroll` instead of raw line
     /// arithmetic, so closed folds don't skew the target position.
-    pub fn do_jump_viewport(&mut self, vpos: lattice_grammar::ViewportPos) {
-        let height = self.viewport_height.max(1);
+    /// VM.3f: the lines the window shows, top to bottom, each with its height
+    /// in line-heights — the same fold- and height-aware walk `<C-f>` and `zz`
+    /// spend (IM.1b). Stops before the first line that doesn't fit, or at the
+    /// end of the buffer. O(window rows), built only for `H` / `M` / `L`.
+    fn shown_lines(&self) -> lattice_grammar::ShownLines {
+        let height = self.viewport_height.max(1) as f32;
         let buffer = self.active_text();
-        let last = last_addressable_line(&buffer);
         let total = buffer.content_line_count();
-        // IM.1b: `H` / `M` / `L` are viewport-RELATIVE, so they walk a
-        // line-height budget down from the top of the window rather than a
-        // fixed number of lines. A tall row between the top and the middle
-        // means `M` lands on an earlier line — which is the line actually
-        // drawn at the middle of the pane.
-        let line = match vpos {
-            lattice_grammar::ViewportPos::Top => self.scroll,
-            lattice_grammar::ViewportPos::Middle => {
-                self.line_forward_by_budget(self.scroll, (height / 2) as f32, total)
+        let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+        let mut at = self.scroll.min(last_addressable_line(&buffer));
+        let mut used = self.weighted_doc_line_cost(at);
+        let mut lines = vec![(at, used)];
+        loop {
+            let next = crate::folds::nth_visible_line_forward(&fold_idx, at, 1, total);
+            if next == at {
+                break;
             }
-            lattice_grammar::ViewportPos::Bottom => {
-                self.line_forward_by_budget(self.scroll, height.saturating_sub(1) as f32, total)
+            let cost = self.weighted_doc_line_cost(next);
+            if used + cost > height {
+                break;
             }
+            used += cost;
+            lines.push((next, cost));
+            at = next;
         }
-        .min(last);
+        lattice_grammar::ShownLines(lines)
+    }
+
+    /// VM.3f: whether `inv` is `H` / `M` / `L`, bare or as an operator's target
+    /// — the only invocations that need [`Self::shown_lines`].
+    fn targets_viewport_motion(&self, inv: &lattice_grammar::CommandInvocation) -> bool {
+        let motion = match &inv.target {
+            Some(lattice_grammar::target::Target::Motion(id, _)) => id.0,
+            _ => inv.command,
+        };
+        [
+            self.builtins.viewport_top,
+            self.builtins.viewport_middle,
+            self.builtins.viewport_bottom,
+        ]
+        .iter()
+        .any(|id| id.0 == motion)
+    }
+
+    pub fn do_jump_viewport(&mut self, vpos: lattice_grammar::ViewportPos) {
+        use lattice_grammar::ViewportResolver as _;
+        // VM.3f: the SAME rule as the `H` / `M` / `L` motions (`ShownLines`,
+        // count 1), so a plugin's `JumpViewport` effect and the key can't land
+        // on different lines. It still spends line-heights (IM.1b), so a tall
+        // row pulls `M` up to the line actually drawn mid-pane.
+        let Some(line) = self.shown_lines().viewport_line(vpos, 1) else {
+            return;
+        };
+        let buffer = self.active_text();
         let len = buffer.line_byte_len(line);
-        let byte = self.cursor.byte.min(len);
+        let byte = if self.option_cache.startofline {
+            let text = buffer.line(line).unwrap_or_default();
+            (text
+                .bytes()
+                .take_while(|b| *b == b' ' || *b == b'\t')
+                .count() as u32)
+                .min(len)
+        } else {
+            self.cursor.byte.min(len)
+        };
         self.cursor = lattice_protocol::position::Position::new(line, byte);
         if matches!(
             self.active_buffer,
@@ -36506,7 +36557,7 @@ impl Editor {
         use lattice_config::{
             CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
             Number, RelativeNumber, Scrollbind, Scrolloff, Sidescroll, Sidescrolloff,
-            SignColumnOption, Tabstop, TerminalEscExits, Whitespace, WhitespaceEol,
+            SignColumnOption, StartOfLine, Tabstop, TerminalEscExits, Whitespace, WhitespaceEol,
             WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
         };
         let buffer = self.document_buffer_id;
@@ -36536,6 +36587,7 @@ impl Editor {
             foldenable: *self.resolved_option::<FoldEnable>(buffer),
             foldmethod: *self.resolved_option::<FoldMethodOption>(buffer),
             scrolloff: *self.resolved_option::<Scrolloff>(buffer) as u32,
+            startofline: *self.resolved_option::<StartOfLine>(buffer),
             sidescroll: *self.resolved_option::<Sidescroll>(buffer) as u32,
             sidescrolloff: *self.resolved_option::<Sidescrolloff>(buffer) as u32,
             completion_auto_insert_single: *self
@@ -43476,6 +43528,27 @@ impl Editor {
             }
             return true;
         }
+        // VM.3f: likewise `H` / `M` / `L`, which the action path already
+        // resolves for a terminal pane.
+        for (id, pos) in [
+            (
+                self.builtins.viewport_top,
+                lattice_grammar::ViewportPos::Top,
+            ),
+            (
+                self.builtins.viewport_middle,
+                lattice_grammar::ViewportPos::Middle,
+            ),
+            (
+                self.builtins.viewport_bottom,
+                lattice_grammar::ViewportPos::Bottom,
+            ),
+        ] {
+            if cmd == id.0 {
+                self.do_jump_viewport(pos);
+                return true;
+            }
+        }
         // T3.b.2 / T3.b.2.b: handle Visual-active state first.
         // Visual entry / no-Visual scrollback nav fall through
         // below.
@@ -43900,9 +43973,17 @@ impl Editor {
         let cancel = lattice_protocol::CancellationToken::never();
         // VM.3d-2: `n` / `N` / `*` / `#` are motions, so a read-only buffer
         // (`:help`, the dashboard) hands them the search too.
+        // VM.3f: `:help` and the dashboard have windows too.
+        let shown = self
+            .targets_viewport_motion(&inv)
+            .then(|| self.shown_lines());
         let env = lattice_grammar::GrammarEnv {
             last_search: self.last_search.as_ref(),
             marks: Some(&self.marks as &dyn lattice_grammar::MarkResolver),
+            viewport: shown
+                .as_ref()
+                .map(|s| s as &dyn lattice_grammar::ViewportResolver),
+            nostartofline: !self.option_cache.startofline,
             ..Default::default()
         };
         match lattice_grammar::execute_motion_only(
@@ -48973,15 +49054,17 @@ mod tests {
             "the 5-line-height row at 3 costs 5 of the 10-line budget"
         );
 
-        // `M` walks half the viewport down from the top of the window.
+        // `M` spends (shown − 1) / 2 line-heights down from the top of the
+        // window. VM.3f: vim's rule, checked in 9.2 (22 rows → top + 10). This
+        // used to spend `height / 2`, one line past vim on every even height.
         let mut e = crate::editor::Editor::boot(doc_with_lines(60));
         e.viewport_height = 12;
         e.scroll = 0;
         tall(&mut e, 2, 4.0);
         e.do_jump_viewport(lattice_grammar::ViewportPos::Middle);
         assert_eq!(
-            e.cursor.line, 3,
-            "half of 12 is 6 line-heights: lines 1,2(=4),3 spends exactly 6"
+            e.cursor.line, 2,
+            "12 line-heights shown, so 5.5 to spend: 1, then 2(=4) is 5, and 3 would be 6"
         );
 
         // `zz` walks half the viewport UP from the cursor.

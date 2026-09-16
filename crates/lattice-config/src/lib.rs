@@ -140,7 +140,7 @@ pub use core_options::{
     MessagesFilter, ModelineCenter, ModelineLeft, ModelinePadding, ModelineRight,
     ModelineSeparator, MouseEnabled, NoFile, Number, PickerResultDisplay, ProjectRootMarkers,
     ReadOnly, RelativeNumber, Scrollbind, Scrolloff, Shiftwidth, Sidescroll, Sidescrolloff,
-    SignColumnOption, SignatureDisplay, TablineShowOption, Tabstop, TerminalEscExits,
+    SignColumnOption, SignatureDisplay, StartOfLine, TablineShowOption, Tabstop, TerminalEscExits,
     TerminalScrollbackLines, TextWidth, TransientMaxRows, Whitespace, WhitespaceEol,
     WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };

@@ -18,8 +18,8 @@ thing in this repo.
 
 | Slice | Tree | What | Status |
 |---|---|---|---|
-| CT.1 | org-plugin | `body-file` becomes a shared body-source seam | 📝 |
-| CT.2 | org-plugin | Tilde-expand the target path before the read | 📝 |
+| CT.1 | org-plugin | `body-file` becomes a shared body-source seam | ✅ |
+| CT.2 | org-plugin | Tilde-expand the target path before the read | ✅ |
 | CT.3 | org-plugin | `target.kind` discriminant; `file+olp` | 📝 |
 | CT.4 | org-plugin | `type` axis; `table-line` resolver + placement | 📝 |
 | CT.5 | org-plugin | `entry` re-levels under a heading target | 📝 |
@@ -38,7 +38,7 @@ last because it is the only breaking migration and wants everything it migrates
 
 ---
 
-## CT.1 — `body-file` becomes a shared body-source seam
+## CT.1 ✅ — `body-file` becomes a shared body-source seam
 
 Design §6. The original request, and it stands alone.
 
@@ -67,7 +67,7 @@ not be rewritten).
 
 ---
 
-## CT.2 — tilde-expand the target path before the read
+## CT.2 ✅ — tilde-expand the target path before the read
 
 Design §6. A live trap, independent of everything else here.
 
@@ -80,11 +80,29 @@ init documents it as a known constraint ("paths are ABSOLUTE rather than `~/…`
 **Fix.** Apply the expansion `roam_templates.rs:213-216` already performs before
 its own read. The helper exists; it is simply not on this path.
 
-**Tests.** A `~/…` `file+headline` target resolves its headline (the assertion
-that pins today's wrong behaviour is inverted here, not deleted); an absolute
-path is unchanged; a path with no `~` is unchanged. Assert the resolved
-**insertion line**, not just the file written — a test that checks only the path
-passes on the broken version.
+**What landed.** `Target::resolved_file()` beside `Target::file()`, expanded
+once where the path is derived — every reader and the writer take it from there.
+Two methods rather than expanding inside `file()`: the DECLARED form is what
+belongs in a message, and echoing an expanded `/Users/…` path back at someone
+who wrote `~/org/x.org` tells them about their home directory rather than their
+config.
+
+**Tests.** A `~/…` target expands for reading and keeps its declared form for
+showing; an absolute path is unchanged; `~user` is left verbatim (expanding it
+against *our* home yields a plausible path to the wrong place).
+
+**The planned "assert the resolved insertion line" could NOT be written, and
+that is a finding rather than a shortcut.** `capture_effects` calls
+`host_services::read_file` and `tree_sitter::parse_file` directly and has no
+injectable seam, so there is no unit test that can observe which path the reads
+were given. The rule is pinned at `resolved_file()`; the one line wiring it in
+is covered by nothing. The place that *could* cover it end-to-end is
+`tests/org_roam_index.rs` — which is why the stale-rename fix that unblocked
+that target shipped alongside this slice.
+
+Giving `capture_effects` a read seam is the real fix and is **not** in this
+plan. CT.4 adds a second resolver over the same read, so the pressure will
+recur; when it does, that is the slice to carve.
 
 **Then delete the warning** from the user init's doc comment in CT.9, rather than
 leaving a stale constraint documented.

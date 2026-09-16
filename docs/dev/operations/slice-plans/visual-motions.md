@@ -335,12 +335,41 @@ none. **Terminal panes** route the four ids to the host's search methods, which
 mirror hits into the grid. A read-only buffer (`:help`) gets the search in its
 motion env; its wrap echo is not shown (that runner returns a position only).
 
-### VM.3d-3 📝 — `*` / `#` match whole words
+### VM.3d-3 ✅ — `*` / `#` match whole words
 
 vim's `*` searches `\<word\>` (whole-word, when the word is keyword
-characters); lattice's has always searched the plain escaped word, and existing
-tests pin that pattern. A vim-parity fix of its own, not part of making the keys
-motions.
+characters); lattice's had always searched the plain escaped word. A vim-parity
+fix of its own, not part of making the keys motions.
+
+**`\<` / `\>` are vim regex and lattice searches with `fancy_regex`**, so the
+landed form is `\b{escaped}\b`. That is an exact translation rather than an
+approximation here: `word_at_or_after_cursor` only ever returns a run of
+keyword characters, so both ends always sit on a word/non-word edge — which is
+what `\b` asserts. The escape stays, as a no-op that keeps the helper correct
+if the word source ever widens.
+
+Measured in vim 9.2 (`vimcheck_star.vim`), and two rows were not in this
+plan's original description:
+
+```text
+*  on `foo`      -> \<foo\>     #  on `foo` -> \<foo\>   (SAME pattern; only the direction differs)
+g* on `foo`      -> foo         g# on `foo` -> foo       (no boundaries)
+*  on `+++ x`    -> \<x\>       (skips non-keyword text to the next KEYWORD word on the line)
+*  on `foo_bar2` -> \<foo_bar2\>
+```
+
+The third row is the one worth keeping: vim does not search for punctuation.
+It looks for a keyword word at or after the cursor and only falls back to a
+non-keyword run when the rest of the line has none — behaviour
+`word_at_or_after_cursor` already had, which is why this slice was a
+two-call-site change.
+
+`g*` / `g#` are unbound; when they land they take the same word and skip the
+`\b`s.
+
+**"existing tests pin that pattern" turned out to be wrong** — no test asserted
+the bare word. The one that looked like it (`search_state_is_session_wide.rs`)
+drives `execute_search`, a `/` search, which this does not touch.
 
 ### VM.3e ✅ — `` `x `` / `'x `` are motions
 

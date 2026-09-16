@@ -241,8 +241,12 @@ nothing.
 | `?pattern`  | Search backward                                 |
 | `n`         | Repeat last search (same direction)             |
 | `N`         | Repeat backward                                 |
-| `*`         | Search forward for word under cursor            |
-| `#`         | Search backward for word under cursor           |
+| `*`         | Search forward for the **whole** word under cursor |
+| `#`         | Search backward for the **whole** word under cursor |
+
+`*` and `#` match the word whole, as vim does: `*` on `foo` stops on `foo`
+and skips `xfoo`, `barfoo` and `foobar`. If the cursor is not on a word, both
+take the next word on the line. Use `/foo` when you do want the loose match.
 
 With a search active, the match the cursor is on gets the stronger
 current-match highlight. Move off it (`j`, an edit, a click) and only the

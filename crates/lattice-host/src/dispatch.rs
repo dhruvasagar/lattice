@@ -27313,7 +27313,7 @@ impl Editor {
             self.set_message(EchoLevel::Error, "no word under cursor".to_string());
             return false;
         };
-        let pattern = fancy_regex::escape(&word).into_owned();
+        let pattern = star_pattern(&word);
         if let Ok(regex) = compile_search_pattern(&pattern) {
             self.all_matches = lattice_core::search::find_all(
                 &buffer,
@@ -27347,8 +27347,8 @@ impl Editor {
             lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
         };
         let from = step_byte(&buffer, self.cursor, direction);
-        let escaped = fancy_regex::escape(&word).into_owned();
-        let regex = match compile_search_pattern(&escaped) {
+        let pattern = star_pattern(&word);
+        let regex = match compile_search_pattern(&pattern) {
             Ok(r) => r,
             Err(_) => {
                 self.set_message(EchoLevel::Error, "regex compile failed".to_string());
@@ -27372,10 +27372,7 @@ impl Editor {
                     &lattice_runtime::CancellationToken::never(),
                 )
                 .unwrap_or_default();
-                self.last_search = Some(crate::state::LastSearch {
-                    pattern: escaped,
-                    direction,
-                });
+                self.last_search = Some(crate::state::LastSearch { pattern, direction });
                 if matches!(
                     self.active_buffer,
                     BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
@@ -27392,6 +27389,39 @@ impl Editor {
             Err(_) => {}
         }
     }
+}
+
+/// VM.3d-3: the `*` / `#` PATTERN — the word, matched whole.
+///
+/// vim's `*` searches `\<word\>`, not the bare word, so `*` on `foo` skips
+/// `xfoo` and `barfoo`. Lattice searched the plain escaped word and therefore
+/// stopped on both, which is the wrong match often enough to be the reason a
+/// user reaches for `/\<foo\>` by hand.
+///
+/// Measured in vim 9.2 (`vimcheck_star.vim`), and the whole rule matters
+/// because two of its arms are easy to get backwards:
+///
+/// ```text
+/// *  on `foo`          -> \<foo\>      #  on `foo`  -> \<foo\>   (same pattern)
+/// g* on `foo`          -> foo          g# on `foo`  -> foo       (no boundaries)
+/// *  on `foo_bar2`     -> \<foo_bar2\>
+/// *  on `+++ x`        -> \<x\>        (skips non-keyword to the next keyword)
+/// ```
+///
+/// **`\<` / `\>` are vim regex; lattice searches with `fancy_regex`**, so the
+/// translation is `\b`. That is not a loose equivalent here: the word can only
+/// be a run of keyword characters ([`word_at_or_after_cursor`] returns nothing
+/// else), so both ends always sit on a word/non-word edge, which is exactly
+/// what `\b` asserts.
+///
+/// The escape stays. For a keyword run it is a no-op — no keyword character is
+/// regex-magic — so it costs nothing and keeps the function correct if the
+/// word source ever widens.
+///
+/// `g*` / `g#` are not bound (vim's no-boundaries variants); when they land
+/// they take the same word and skip the `\b`s.
+fn star_pattern(word: &str) -> String {
+    format!(r"\b{}\b", fancy_regex::escape(word))
 }
 
 /// VM.3d-2: the `*` / `#` word — the keyword under the cursor, or the next one
@@ -56584,6 +56614,67 @@ mod tests {
             ed.cursor,
             lattice_protocol::position::Position::new(0, 4),
             "`n` must advance to the second `│`, not stick on the first"
+        );
+    }
+
+    /// VM.3d-3: `*` searches the word WHOLE — vim's `\<foo\>`, spelled `\b` in
+    /// `fancy_regex`. Without the boundaries `*` on `foo` also stops on `xfoo`
+    /// and `barfoo`, which is the divergence this slice closes.
+    ///
+    /// Asserted through the cursor, not just the stored pattern: a pattern that
+    /// looks right but does not compile would still pass a string comparison,
+    /// and `compile_search_pattern` is between the two.
+    #[test]
+    fn star_matches_the_word_whole() {
+        let mut ed = Editor::boot(lattice_core::Document::from_text(
+            "foo\nxfoo\nbarfoo\nfoobar\nfoo\n",
+        ));
+        ed.cursor = lattice_protocol::position::Position::new(0, 0);
+        ed.do_search_word_under_cursor(lattice_grammar::SearchDirection::Forward);
+        assert_eq!(
+            ed.cursor.line, 4,
+            "`*` must skip xfoo / barfoo / foobar and land on the bare `foo`"
+        );
+        assert_eq!(
+            ed.last_search
+                .as_ref()
+                .expect("`*` records the pattern")
+                .pattern,
+            r"\bfoo\b",
+        );
+    }
+
+    /// The pattern itself, including the escape — vim measures `\<foo_bar2\>`
+    /// for a word with digits and an underscore, all of which are keyword
+    /// characters and none of which are regex-magic.
+    #[test]
+    fn the_star_pattern_wraps_the_escaped_word() {
+        assert_eq!(star_pattern("foo"), r"\bfoo\b");
+        assert_eq!(star_pattern("foo_bar2"), r"\bfoo_bar2\b");
+        // The escape is a no-op for a keyword run, and must stay one: a word
+        // that acquired a magic character would otherwise become a regex.
+        assert_eq!(star_pattern("a.b"), r"\ba\.b\b");
+    }
+
+    /// `#` is the same pattern, searched the other way (vim 9.2: `*` and `#`
+    /// both store `\<foo\>`; only `v:searchforward` differs).
+    #[test]
+    fn hash_searches_the_same_whole_word_backwards() {
+        let mut ed = Editor::boot(lattice_core::Document::from_text(
+            "foo\nbarfoo\nxfoo\nfoo\n",
+        ));
+        ed.cursor = lattice_protocol::position::Position::new(3, 0);
+        ed.do_search_word_under_cursor(lattice_grammar::SearchDirection::Backward);
+        assert_eq!(
+            ed.cursor.line, 0,
+            "`#` must skip barfoo / xfoo and reach the bare `foo`"
+        );
+        assert_eq!(
+            ed.last_search
+                .as_ref()
+                .expect("`#` records the pattern")
+                .pattern,
+            r"\bfoo\b",
         );
     }
 }

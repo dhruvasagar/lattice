@@ -1147,6 +1147,7 @@ fn motion_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
 
     Ok(MotionResult {
+        curswant: None,
         target,
         linewise: false,
         exclusive: None,
@@ -1237,6 +1238,7 @@ fn motion_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandErro
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
     Ok(MotionResult {
+        curswant: None,
         target,
         linewise: false,
         exclusive: None,
@@ -1282,6 +1284,7 @@ fn motion_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
     Ok(MotionResult {
+        curswant: None,
         target,
         linewise: false,
         exclusive: None,
@@ -1332,6 +1335,7 @@ fn buffer_last_line(text: &str) -> u32 {
 /// something surprising.
 fn motion_match_pair(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     let unmoved = Ok(MotionResult {
+        curswant: None,
         target: ctx.from,
         linewise: false,
         exclusive: None,
@@ -1373,6 +1377,7 @@ fn motion_match_pair(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
     };
     match target.and_then(|t| ctx.buffer.byte_to_position(t).ok()) {
         Some(pos) => Ok(MotionResult {
+            curswant: None,
             target: pos,
             linewise: false,
             exclusive: None,
@@ -1441,6 +1446,7 @@ fn motion_viewport(
         .ok_or(CommandError::MotionFailed)?
         .min(last_addressable_line(ctx.buffer));
     Ok(MotionResult {
+        curswant: None,
         // VM.3j-1: the same helper `gg` / `G` use — this was an inline copy.
         target: startofline_target(ctx, line),
         linewise: true,
@@ -1494,6 +1500,7 @@ fn motion_mark_line(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     }
     let col = (col as u32).min(line_byte_len(ctx.buffer, mark.line));
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(mark.line, col),
         linewise: true,
         exclusive: None,
@@ -1504,6 +1511,7 @@ fn motion_mark_line(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
 /// VM.3e: `` `x `` — the mark's exact position, charwise and exclusive.
 fn motion_mark_exact(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     Ok(MotionResult {
+        curswant: None,
         target: mark_position(ctx)?,
         linewise: false,
         exclusive: None,
@@ -1555,6 +1563,7 @@ fn motion_search(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, Com
         }
     }
     Ok(MotionResult {
+        curswant: None,
         target: at,
         linewise: false,
         exclusive: None,
@@ -1636,6 +1645,7 @@ fn motion_goto_fold(ctx: &MotionContext, forward: bool) -> Result<MotionResult, 
         }
     }
     Ok(MotionResult {
+        curswant: None,
         target,
         linewise: false,
         exclusive: None,
@@ -1673,6 +1683,7 @@ fn motion_paragraph_forward(ctx: &MotionContext) -> Result<MotionResult, Command
         }
     }
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(line, 0),
         linewise: false,
         exclusive: None,
@@ -1694,6 +1705,7 @@ fn motion_paragraph_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
         }
     }
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(line, 0),
         linewise: false,
         exclusive: None,
@@ -1781,6 +1793,7 @@ fn motion_sentence_forward(ctx: &MotionContext) -> Result<MotionResult, CommandE
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
     Ok(MotionResult {
+        curswant: None,
         target,
         linewise: false,
         exclusive: None,
@@ -1808,6 +1821,7 @@ fn motion_sentence_backward(ctx: &MotionContext) -> Result<MotionResult, Command
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
     Ok(MotionResult {
+        curswant: None,
         target,
         linewise: false,
         exclusive: None,
@@ -1898,6 +1912,7 @@ fn motion_big_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandE
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
     Ok(MotionResult {
+        curswant: None,
         target,
         linewise: false,
         exclusive: None,
@@ -1931,6 +1946,7 @@ fn motion_big_word_backward(ctx: &MotionContext) -> Result<MotionResult, Command
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
     Ok(MotionResult {
+        curswant: None,
         target,
         linewise: false,
         exclusive: None,
@@ -1969,6 +1985,7 @@ fn motion_big_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
     Ok(MotionResult {
+        curswant: None,
         target,
         linewise: false,
         exclusive: None,
@@ -2010,6 +2027,7 @@ fn motion_find_char_forward(ctx: &MotionContext) -> Result<MotionResult, Command
     while idx + nlen <= bytes.len() {
         if &bytes[idx..idx + nlen] == needle_bytes {
             return Ok(MotionResult {
+                curswant: None,
                 target: Position::new(ctx.from.line, idx as u32),
                 linewise: false,
                 exclusive: None,
@@ -2020,6 +2038,7 @@ fn motion_find_char_forward(ctx: &MotionContext) -> Result<MotionResult, Command
     }
     // No match -- vim no-ops.
     Ok(MotionResult {
+        curswant: None,
         target: ctx.from,
         linewise: false,
         exclusive: None,
@@ -2037,6 +2056,7 @@ fn motion_find_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
     let nlen = needle_bytes.len();
     if (ctx.from.byte as usize) < nlen {
         return Ok(MotionResult {
+            curswant: None,
             target: ctx.from,
             linewise: false,
             exclusive: None,
@@ -2047,6 +2067,7 @@ fn motion_find_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
     loop {
         if idx + nlen <= bytes.len() && &bytes[idx..idx + nlen] == needle_bytes {
             return Ok(MotionResult {
+                curswant: None,
                 target: Position::new(ctx.from.line, idx as u32),
                 linewise: false,
                 exclusive: None,
@@ -2059,6 +2080,7 @@ fn motion_find_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
         idx -= 1;
     }
     Ok(MotionResult {
+        curswant: None,
         target: ctx.from,
         linewise: false,
         exclusive: None,
@@ -2074,6 +2096,7 @@ fn motion_till_char_forward(ctx: &MotionContext) -> Result<MotionResult, Command
     }
     let target_byte = result.target.byte.saturating_sub(1);
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(result.target.line, target_byte),
         linewise: false,
         exclusive: None,
@@ -2092,6 +2115,7 @@ fn motion_till_char_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
         .byte
         .saturating_add(args_to_char(&ctx.args)?.len_utf8() as u32);
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(result.target.line, line_len),
         linewise: false,
         exclusive: None,
@@ -2129,6 +2153,7 @@ fn find_repeat(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, Comma
         // returns the cursor, so `d;` deletes nothing rather than something
         // arbitrary.
         return Ok(MotionResult {
+            curswant: None,
             target: ctx.from,
             linewise: false,
             exclusive: None,
@@ -2192,6 +2217,7 @@ fn motion_first_non_blank(ctx: &MotionContext) -> Result<MotionResult, CommandEr
         col += 1;
     }
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(ctx.from.line, col as u32),
         linewise: false,
         exclusive: None,
@@ -2222,6 +2248,7 @@ fn motion_char_left(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     }
     pos.byte = byte as u32;
     Ok(MotionResult {
+        curswant: None,
         target: pos,
         linewise: false,
         exclusive: None,
@@ -2252,6 +2279,7 @@ fn motion_char_right(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
     }
     pos.byte = byte as u32;
     Ok(MotionResult {
+        curswant: None,
         target: pos,
         linewise: false,
         exclusive: None,
@@ -2273,6 +2301,7 @@ fn motion_line_up(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     let line = ctx.from.line.saturating_sub(count);
     let byte = curswant_byte(ctx, line);
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(line, byte),
         linewise: true,
         exclusive: None,
@@ -2292,6 +2321,7 @@ fn motion_line_down(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     let line = ctx.from.line.saturating_add(count).min(last);
     let byte = curswant_byte(ctx, line);
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(line, byte),
         linewise: true,
         exclusive: None,
@@ -2303,6 +2333,7 @@ fn motion_line_down(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
 
 fn motion_line_start(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(ctx.from.line, 0),
         linewise: false,
         exclusive: None,
@@ -2313,6 +2344,7 @@ fn motion_line_start(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
 fn motion_line_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     let len = line_byte_len(ctx.buffer, ctx.from.line);
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(ctx.from.line, len),
         linewise: false,
         exclusive: None,
@@ -2331,6 +2363,7 @@ fn motion_goto_first_line(ctx: &MotionContext) -> Result<MotionResult, CommandEr
         0
     };
     Ok(MotionResult {
+        curswant: None,
         // VM.3j-1: the first non-blank, as vim does under `startofline`. This
         // was a hard column 0, which matched neither of vim's settings.
         target: startofline_target(ctx, target_line),
@@ -2349,6 +2382,7 @@ fn motion_goto_last_line(ctx: &MotionContext) -> Result<MotionResult, CommandErr
         last
     };
     Ok(MotionResult {
+        curswant: None,
         // VM.3j-1: as `gg` above.
         target: startofline_target(ctx, target_line),
         linewise: true,
@@ -2405,6 +2439,10 @@ fn motion_display_line_down(ctx: &MotionContext) -> Result<MotionResult, Command
     let last = last_addressable_line(ctx.buffer);
     let goal = display_goal(ctx, wrap);
     let mut at = ctx.from;
+    // VM.3g-3: the column the LAST step aimed at, before the row's length
+    // clamped it. That, not the landing, is what vim records — see
+    // `MotionResult::curswant`.
+    let mut aim = at.byte;
     for _ in 0..ctx.count.get().max(1) {
         let seg = at.byte / wrap;
         let segs = display.segments(at.line).max(1);
@@ -2412,18 +2450,22 @@ fn motion_display_line_down(ctx: &MotionContext) -> Result<MotionResult, Command
             // another row on this same line
             let next_start = (seg + 1) * wrap;
             let next_end = ((seg + 2) * wrap).min(line_byte_len(ctx.buffer, at.line));
-            let byte = (next_start + goal).min(next_end.saturating_sub(1).max(next_start));
+            aim = next_start + goal;
+            let byte = aim.min(next_end.saturating_sub(1).max(next_start));
             at = Position::new(at.line, byte);
         } else if at.line < last {
             let next = at.line + 1;
             let len = line_byte_len(ctx.buffer, next);
+            aim = goal;
             at = Position::new(next, goal.min(len.saturating_sub(1)));
         } else {
-            // vim: `gj` on the last display row stays put.
+            // vim: `gj` on the last display row stays put — and leaves the goal
+            // alone with it, so a later `gj` onto a longer row still reaches it.
             break;
         }
     }
     Ok(MotionResult {
+        curswant: Some(crate::registry::Curswant::Col(aim)),
         target: at,
         linewise: false,
         exclusive: None,
@@ -2442,24 +2484,29 @@ fn motion_display_line_up(ctx: &MotionContext) -> Result<MotionResult, CommandEr
     }
     let goal = display_goal(ctx, wrap);
     let mut at = ctx.from;
+    // VM.3g-3: as in `gj` — the aim, not the clamped landing.
+    let mut aim = at.byte;
     for _ in 0..ctx.count.get().max(1) {
         let seg = at.byte / wrap;
         if seg > 0 {
             let prev_start = (seg - 1) * wrap;
             let actual_end = (seg * wrap).min(line_byte_len(ctx.buffer, at.line));
-            let byte = (prev_start + goal).min(actual_end.saturating_sub(1).max(prev_start));
+            aim = prev_start + goal;
+            let byte = aim.min(actual_end.saturating_sub(1).max(prev_start));
             at = Position::new(at.line, byte);
         } else if at.line > 0 {
             let prev = at.line - 1;
             let len = line_byte_len(ctx.buffer, prev);
             let last_start = (display.segments(prev).max(1) - 1) * wrap;
-            let byte = (last_start + goal).min(len.saturating_sub(1).max(last_start));
+            aim = last_start + goal;
+            let byte = aim.min(len.saturating_sub(1).max(last_start));
             at = Position::new(prev, byte);
         } else {
             break;
         }
     }
     Ok(MotionResult {
+        curswant: Some(crate::registry::Curswant::Col(aim)),
         target: at,
         linewise: false,
         exclusive: None,
@@ -2477,6 +2524,7 @@ fn motion_display_line_start(ctx: &MotionContext) -> Result<MotionResult, Comman
         return motion_line_start(ctx);
     }
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(ctx.from.line, (ctx.from.byte / wrap) * wrap),
         linewise: false,
         exclusive: None,
@@ -2498,6 +2546,7 @@ fn motion_display_line_end(ctx: &MotionContext) -> Result<MotionResult, CommandE
     let len = line_byte_len(ctx.buffer, ctx.from.line);
     let seg_end = (((ctx.from.byte / wrap) + 1) * wrap).min(len);
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(ctx.from.line, seg_end.saturating_sub(1)),
         linewise: false,
         exclusive: None,
@@ -4443,6 +4492,100 @@ mod tests {
             display_motion(|b| b.display_line_down, Position::new(1, 4), Some(2), true),
             Position::new(1, 164)
         );
+    }
+
+    /// The goal column a motion REPORTS, which for `gj` / `gk` is not always
+    /// the column it reached.
+    fn display_motion_curswant(
+        pick: impl Fn(&Builtins) -> crate::registry::MotionId,
+        from: Position,
+        curswant_in: Option<crate::registry::Curswant>,
+    ) -> (Position, Option<crate::registry::Curswant>) {
+        let (registry, b, mut doc, display) = wrapped_fixture();
+        let slot = std::sync::Mutex::new(None);
+        let env = crate::registry::GrammarEnv {
+            display: Some(&display as &dyn crate::registry::DisplayResolver),
+            curswant: curswant_in,
+            curswant_out: Some(&slot),
+            ..Default::default()
+        };
+        let landed = match crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            from,
+            CommandInvocation::of(pick(&b).0),
+            &CancellationToken::never(),
+            env,
+        )
+        .unwrap()
+        {
+            Effect::CursorMove(p) => p,
+            other => panic!("expected CursorMove, got {other:?}"),
+        };
+        let reported = *slot.lock().unwrap();
+        (landed, reported)
+    }
+
+    /// VM.3g-3: a CLAMPED `gj` records the column it aimed at, not the one it
+    /// reached.
+    ///
+    /// vim 9.2 (`vimcheck_scroll_curswant.vim`), wrap 80 over a 240-char line
+    /// then a 100-char line: `gj` onto the short second row lands at column 100
+    /// and records `curswant` 160 — the aim. Same shape here on the 200-char
+    /// fixture line: row 3 holds bytes 160..199, so `gj` from byte 159 aims at
+    /// 160 + 79 = 239, lands clamped at 199, and must report 239.
+    ///
+    /// Recording 199 instead would lose the aim permanently: a following `j`
+    /// onto a long line returns to 199 where vim returns to 239.
+    #[test]
+    fn a_clamped_gj_reports_the_aim_not_the_landing() {
+        let (landed, reported) = display_motion_curswant(
+            |b| b.display_line_down,
+            Position::new(1, 159),
+            Some(crate::registry::Curswant::Col(159)),
+        );
+        assert_eq!(landed, Position::new(1, 199), "the row ends at byte 199");
+        assert_eq!(
+            reported,
+            Some(crate::registry::Curswant::Col(239)),
+            "but the aim was 239, and that is what vim keeps"
+        );
+    }
+
+    /// The unclamped case must report too, and there the aim IS the landing —
+    /// which is why the simpler "set from where you landed" rule passed every
+    /// test VM.3g-2 had.
+    #[test]
+    fn an_unclamped_gj_reports_the_column_it_reached() {
+        let (landed, reported) = display_motion_curswant(
+            |b| b.display_line_down,
+            Position::new(1, 4),
+            Some(crate::registry::Curswant::Col(4)),
+        );
+        assert_eq!(landed, Position::new(1, 84));
+        assert_eq!(reported, Some(crate::registry::Curswant::Col(84)));
+    }
+
+    /// `gk` is the mirror, and reports on the same rule.
+    #[test]
+    fn gk_reports_its_aim_too() {
+        let (landed, reported) = display_motion_curswant(
+            |b| b.display_line_up,
+            Position::new(1, 84),
+            Some(crate::registry::Curswant::Col(84)),
+        );
+        assert_eq!(landed, Position::new(1, 4));
+        assert_eq!(reported, Some(crate::registry::Curswant::Col(4)));
+    }
+
+    /// Every other motion reports NOTHING, so the host falls through to the
+    /// spec's `CurswantEffect` exactly as before. A motion that started
+    /// reporting by accident would silently pin the goal column.
+    #[test]
+    fn an_ordinary_motion_reports_no_goal() {
+        let (_, reported) = display_motion_curswant(|b| b.line_down, Position::new(1, 4), None);
+        assert_eq!(reported, None);
     }
 
     /// vim: `gj` on the last display row stays put rather than failing.

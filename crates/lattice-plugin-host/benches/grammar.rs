@@ -74,6 +74,7 @@ fn grammar_marshalling(c: &mut Criterion) {
     });
 
     let result = MotionResult {
+        curswant: None,
         target: pos(2, 0),
         linewise: true,
         exclusive: None,

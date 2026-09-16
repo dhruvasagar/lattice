@@ -484,6 +484,7 @@ mod tests {
             exclusive: false,
             apply: Arc::new(|ctx| {
                 Ok(MotionResult {
+                    curswant: None,
                     target: ctx.from,
                     linewise: false,
                     exclusive: None,

@@ -21214,6 +21214,10 @@ impl Editor {
                 nostartofline: !self.option_cache.startofline,
                 curswant: self.curswant,
                 display,
+                // VM.3g-3: the slot `gj` / `gk` report their unclamped aim
+                // into. An `Arc` clone per dispatch, read by the dispatch tail
+                // which (unlike this `&self` method) can write `self.curswant`.
+                curswant_out: Some(self.curswant_report.clone()),
                 // OT.4: the same `h.snapshot()` bump the Action gate takes —
                 // O(1) `ArcSwap` load, no parse on the dispatch thread — so
                 // a PLUGIN motion or text object can mint a `tree-snapshot`
@@ -43717,6 +43721,24 @@ impl Editor {
                     }
                     lattice_grammar::CurswantEffect::SetFromTarget => {}
                 }
+                // VM.3g-3: a motion that reported its own goal overrides the
+                // spec's effect, the way `MotionResult::exclusive` overrides
+                // `MotionSpec::exclusive`. Only `gj` / `gk` report one.
+                //
+                // AFTER the match on purpose: for `gj` the spec says
+                // `SetFromTarget`, whose whole meaning is "let the dispatch
+                // tail take the goal from where the cursor landed" — which is
+                // exactly the clamped column this exists to discard. Claiming
+                // it here is what suppresses that tail rule.
+                if let Some(aim) = self
+                    .curswant_report
+                    .lock()
+                    .ok()
+                    .and_then(|mut slot| slot.take())
+                {
+                    self.curswant = Some(aim);
+                    self.curswant_claimed = true;
+                }
                 // Visual exits on any operator-class effect (mutation OR
                 // yank-only); dot-repeat only records buffer mutations.
                 should_exit_visual = effect_mutates_or_yanks(&effect);
@@ -54208,6 +54230,70 @@ mod tests {
         editor.do_display_line_down();
         assert_eq!(editor.cursor.line, 1);
         assert_eq!(editor.cursor.byte, 1, "goal=5%4=1");
+    }
+
+    /// VM.3g-3: the HOST half — a reported aim actually reaches
+    /// `Editor::curswant`.
+    ///
+    /// `lattice-grammar` pins that `gj` reports the unclamped aim; this pins
+    /// that the slot carrying it across `DispatchEnv` is read. Both halves are
+    /// needed: the motion could report perfectly into a slot nobody drains, and
+    /// every grammar test would still pass.
+    ///
+    /// Goes through `Editor::dispatch` rather than `do_display_line_down()`,
+    /// and that is the point — the override lives in the dispatch TAIL, which
+    /// the action body (the WIT path the sibling wrap tests use) never reaches.
+    ///
+    /// Wrap 4 over "abcdefgh" gives two display rows, 0..3 and 4..7. From byte
+    /// 3 (row 0, goal 3) `gj` aims at 4 + 3 = 7 and reaches it — unclamped, so
+    /// aim == landing. The value being asserted is that `curswant` is the
+    /// motion's REPORT and not the dispatch tail's "wherever the cursor ended
+    /// up": both are 7 here, so the case below carries the discriminating half.
+    #[test]
+    fn a_reported_goal_column_reaches_the_editor() {
+        let doc = lattice_core::Document::from_text("abcdefgh\n");
+        let mut editor = Editor::boot(doc);
+        enable_wrap(&mut editor, 4);
+        seed_wrap_matrix(&editor, 4, 1);
+        editor.cursor = lattice_protocol::position::Position::new(0, 3);
+        editor.curswant = Some(lattice_grammar::Curswant::Col(3));
+
+        let inv = lattice_grammar::CommandInvocation::of(editor.builtins.display_line_down.0);
+        let _ = editor.dispatch(Action::Invoke(inv));
+
+        assert_eq!(editor.cursor.byte, 7, "row 1 start(4) + goal(3)");
+        assert_eq!(
+            editor.curswant,
+            Some(lattice_grammar::Curswant::Col(7)),
+            "the goal came from the motion's report, not from the tail rule",
+        );
+    }
+
+    /// The discriminating case: a CLAMPED `gj`, where the reported aim and the
+    /// landing differ. Without the override the tail would record the landing
+    /// and the aim would be lost — the divergence VM.3g-3 exists to close.
+    ///
+    /// "abcdefgh" is 8 bytes; `seed_wrap_matrix` gives each line two rows at
+    /// `wrap_width * 2` columns. From byte 3 with a goal of 3 the aim is 7; a
+    /// line one byte shorter clamps the landing to 6 while the aim stays 7.
+    #[test]
+    fn a_clamped_display_motion_keeps_the_aim_in_the_editor() {
+        let doc = lattice_core::Document::from_text("abcdefg\n");
+        let mut editor = Editor::boot(doc);
+        enable_wrap(&mut editor, 4);
+        seed_wrap_matrix(&editor, 4, 1);
+        editor.cursor = lattice_protocol::position::Position::new(0, 3);
+        editor.curswant = Some(lattice_grammar::Curswant::Col(3));
+
+        let inv = lattice_grammar::CommandInvocation::of(editor.builtins.display_line_down.0);
+        let _ = editor.dispatch(Action::Invoke(inv));
+
+        assert_eq!(editor.cursor.byte, 6, "the row is one byte short: clamped");
+        assert_eq!(
+            editor.curswant,
+            Some(lattice_grammar::Curswant::Col(7)),
+            "but the AIM was 7, and losing it is the bug this slice closes",
+        );
     }
 
     #[test]

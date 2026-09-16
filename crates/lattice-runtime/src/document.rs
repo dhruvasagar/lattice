@@ -173,6 +173,20 @@ pub struct DispatchEnv {
     /// VM.3g-2: display geometry for `gj` / `gk` / `g0` / `g$`, built only when
     /// the invocation is one of them.
     pub display: Option<DisplayResolverHandle>,
+    /// VM.3g-3: where a motion reports the goal column it AIMED at, which for
+    /// `gj` / `gk` is not the column it reached — the display row it lands on
+    /// may be too short, and vim keeps the aim (measured: a clamped `gj`
+    /// landing at column 100 records `curswant` 160).
+    ///
+    /// Owned rather than borrowed, unlike its `GrammarEnv` counterpart, and
+    /// that is forced rather than chosen: this struct crosses the `Document`
+    /// trait into a `Pending<Effect>`, so a borrow could not outlive the
+    /// future. The actor borrows it back out at the `execute_with_env` call,
+    /// which is the same shape every other field here already has.
+    ///
+    /// `None` — the default — discards the report, which is right for every
+    /// caller that keeps no goal column.
+    pub curswant_out: Option<Arc<std::sync::Mutex<Option<lattice_grammar::Curswant>>>>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

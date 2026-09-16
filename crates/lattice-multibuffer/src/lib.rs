@@ -2372,6 +2372,7 @@ impl MultibufferDocumentHandle {
             nostartofline,
             curswant,
             display,
+            curswant_out,
             ..
         } = env;
         // K.4.11 (2026-06-02): the multibuffer now owns grammar
@@ -2495,6 +2496,11 @@ impl MultibufferDocumentHandle {
                 nostartofline,
                 curswant,
                 display: display.as_deref().map(|d| d as _),
+                // VM.3g-3: forwarded, like `curswant` and `display` above —
+                // `gj` in a composed view aims and clamps against the COMPOSED
+                // rows, so its goal is the composed one, and dropping the slot
+                // here would make the goal stick in multibuffers only.
+                curswant_out: curswant_out.as_deref(),
             },
         )
         .map_err(RuntimeError::Grammar);

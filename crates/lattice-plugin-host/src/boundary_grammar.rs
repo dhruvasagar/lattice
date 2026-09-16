@@ -104,6 +104,14 @@ impl WitBoundary for NativeMotionResult {
             // and this line is where it lands.
             exclusive: None,
             notice: None,
+            // VM.3g-3: `None` on purpose, on the same reasoning as `exclusive`
+            // above. A plugin's vertical motion declares its `CurswantEffect`
+            // on its `MotionSpec`, which answers for every motion whose goal
+            // rule is fixed; the per-result override exists for `gj` / `gk`,
+            // whose aim is only knowable after the display row is clamped. A
+            // guest that needs it is a WIT addition, and this line is where it
+            // lands.
+            curswant: None,
         })
     }
 }
@@ -233,6 +241,7 @@ mod tests {
     #[test]
     fn motion_result_round_trips() {
         let native = NativeMotionResult {
+            curswant: None,
             target: pos(3, 7),
             linewise: true,
             // VM.3c: set to a NON-default so the round-trip below says

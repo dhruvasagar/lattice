@@ -301,6 +301,7 @@ fn a_mode_layer_motion_gets_its_visual_peer() {
                 linewise: false,
                 exclusive: None,
                 notice: None,
+                curswant: None,
             })
         }),
         args_schema: Vec::new(),

@@ -206,6 +206,7 @@ fn reg(
                     linewise: false,
                     exclusive: None,
                     notice: None,
+                    curswant: None,
                 })
             }),
         },

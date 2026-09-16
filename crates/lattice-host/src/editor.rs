@@ -787,6 +787,21 @@ pub struct Editor {
     /// edit, Insert exit and yank — lets the dispatch tail set the goal from
     /// wherever the cursor ended up, which is vim's rule.
     pub curswant_claimed: bool,
+    /// VM.3g-3: where a motion reports the goal column it AIMED at, when that
+    /// is not the column it reached. Only `gj` / `gk` do: they aim at a screen
+    /// column the landing display row may be too short to hold, and vim keeps
+    /// the aim (measured: a clamped `gj` landing at column 100 records 160).
+    ///
+    /// A long-lived slot on the Editor rather than one built per dispatch
+    /// because `dispatch_blocking` takes `&self` — it can clone this `Arc`
+    /// into the `DispatchEnv` but cannot hand anything back. The dispatch tail,
+    /// which has `&mut self`, `take()`s it.
+    ///
+    /// Taken rather than read: a motion writes it on every motion dispatch
+    /// (`None` for all but two), but an operator or action never touches it,
+    /// so leaving a value behind would let one `gj`'s aim resurface after an
+    /// unrelated command.
+    pub curswant_report: std::sync::Arc<std::sync::Mutex<Option<lattice_grammar::Curswant>>>,
     /// FS.1: the focus **stack** — one frame per surface that has taken
     /// focus away from the pane's own buffer, innermost last.
     ///

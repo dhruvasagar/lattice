@@ -133,6 +133,7 @@ fn handle_next_excerpt_start(
     let target_row =
         next_excerpt_start_row(&excerpts, ctx.from.line, count).unwrap_or(ctx.from.line);
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(target_row, 0),
         linewise: false,
         exclusive: None,
@@ -149,6 +150,7 @@ fn handle_prev_excerpt_start(
     let target_row =
         prev_excerpt_start_row(&excerpts, ctx.from.line, count).unwrap_or(ctx.from.line);
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(target_row, 0),
         linewise: false,
         exclusive: None,
@@ -165,6 +167,7 @@ fn handle_next_file_boundary(
     let target_row =
         next_file_boundary_row(&excerpts, ctx.from.line, count).unwrap_or(ctx.from.line);
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(target_row, 0),
         linewise: false,
         exclusive: None,
@@ -181,6 +184,7 @@ fn handle_prev_file_boundary(
     let target_row =
         prev_file_boundary_row(&excerpts, ctx.from.line, count).unwrap_or(ctx.from.line);
     Ok(MotionResult {
+        curswant: None,
         target: Position::new(target_row, 0),
         linewise: false,
         exclusive: None,

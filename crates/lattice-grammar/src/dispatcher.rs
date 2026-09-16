@@ -274,6 +274,16 @@ fn execute_motion(
         display: env.display,
     };
     let result = (motion.apply)(&ctx)?;
+    // VM.3g-3: a motion that knows its own goal column reports it here. Only
+    // `gj` / `gk` do — they aim at a screen column the reached row may be too
+    // short to hold, and vim records the aim rather than the landing, which
+    // `CurswantEffect` on the spec cannot express. Written only on SUCCESS,
+    // matching the host's rule that a failed motion leaves the goal alone.
+    if let Some(slot) = env.curswant_out {
+        if let Ok(mut g) = slot.lock() {
+            *g = result.curswant;
+        }
+    }
     // Motions emit a cursor-only jump — the modal engine's caller
     // takes the new position and updates state. We surface the
     // position via Effect::CursorMove, the semantically-clean
@@ -1239,6 +1249,7 @@ mod tests {
                         })
                         .unwrap_or(ctx.from);
                     Ok(crate::registry::MotionResult {
+                        curswant: None,
                         target: p,
                         linewise: false,
                         exclusive: None,

@@ -3242,6 +3242,7 @@ mod tests {
             exclusive: true,
             apply: Arc::new(|ctx| {
                 Ok(lattice_grammar::registry::MotionResult {
+                    curswant: None,
                     target: ctx.from,
                     linewise: false,
                     exclusive: None,

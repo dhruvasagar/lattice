@@ -280,6 +280,11 @@ impl DocumentActor {
                     nostartofline: env.nostartofline,
                     curswant: env.curswant,
                     display: env.display.as_deref().map(|d| d as _),
+                    // VM.3g-3: borrowed back out of the owned slot, the same
+                    // way every handle above is. The `Arc` stays alive in
+                    // `env` for the whole dispatch, so the borrow cannot
+                    // outlive it.
+                    curswant_out: env.curswant_out.as_deref(),
                 };
                 // B3b: snapshot the registry wait-free for this dispatch. A
                 // plugin registered at runtime (loader RCU-store into the

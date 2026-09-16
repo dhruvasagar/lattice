@@ -163,6 +163,41 @@ pub struct MotionResult {
     /// the motion's effect — the search wrap. Not on the WIT boundary: a
     /// plugin motion reports none.
     pub notice: Option<MotionNotice>,
+    /// VM.3g-3: override the goal column for THIS invocation, the way
+    /// [`Self::exclusive`] overrides the spec's flag. `None` — the
+    /// overwhelming default — means "apply the spec's [`CurswantEffect`]".
+    ///
+    /// ## Why a motion has to be able to say it
+    ///
+    /// `CurswantEffect` can express "keep the goal", "pin it to the line end"
+    /// and "take it from where I landed", and for every motion in vim except
+    /// two that is the whole story. `gj` / `gk` are the exception: they aim at
+    /// a screen column that the reached display row may be too short to hold,
+    /// and vim records **the aim, not the landing**.
+    ///
+    /// Measured in vim 9.2 (`vimcheck_scroll_curswant.vim`), wrap at 80 over a
+    /// 240-char line then a 100-char line:
+    ///
+    /// ```text
+    /// gj -> line 2 row 1            col=80   curswant=80
+    /// gj -> line 2 row 2 (CLAMPED)  col=100  curswant=160
+    /// ```
+    ///
+    /// 160 is the column the motion *wanted* — `next_start + goal`, before the
+    /// clamp to the row's 100 characters. Recording the landing instead loses
+    /// the aim permanently, so a following `j` onto a long line returns to 100
+    /// where vim returns to 160.
+    ///
+    /// `SetFromTarget` cannot express this because the target IS the clamped
+    /// landing, and `Keep` cannot because the goal genuinely changes on every
+    /// `gj` (it tracks the screen column down the wrapped rows). Only the
+    /// motion knows the unclamped aim, so only the motion can report it.
+    ///
+    /// Not on the WIT boundary, for the same reason `exclusive` is not: a
+    /// plugin motion declares its effect on the spec, which is the right place
+    /// for every motion that knows its own answer. `from_wit` decodes this as
+    /// `None` deliberately rather than for want of a field to read.
+    pub curswant: Option<Curswant>,
 }
 
 /// Implementation of a motion. Boxed because evaluator closures capture
@@ -682,6 +717,24 @@ pub struct GrammarEnv<'a> {
     /// renderer has reported one — leaves them behaving as `j` / `k` / `0` /
     /// `$`, which is also what they do with `wrap` off.
     pub display: Option<&'a dyn DisplayResolver>,
+    /// VM.3g-3: where a motion's [`MotionResult::curswant`] override is
+    /// reported back to the caller. `None` — the default — discards it, which
+    /// is right for every caller that does not maintain a goal column.
+    ///
+    /// The symmetric partner of [`Self::curswant`] above: that field carries
+    /// the goal INTO the motion, this one carries the motion's answer back
+    /// out. It is a slot rather than a return value because a motion's effect
+    /// reaches the host as an `Effect::CursorMove`, a WIT type and the wrong
+    /// place for per-dispatch host state — `exclusive` and `notice` are kept
+    /// off that boundary for the same reason.
+    ///
+    /// A shared slot rather than `&mut` so `GrammarEnv` stays `Copy`, which
+    /// the tree-sitter snapshot field above already depends on; a `Mutex`
+    /// rather than a `Cell` because the owning `DispatchEnv` crosses the
+    /// `Document` trait into an async `Pending<Effect>` and must stay
+    /// `Send + Sync`. The lock is uncontended — one motion writes it once per
+    /// dispatch, on the same thread that reads it.
+    pub curswant_out: Option<&'a std::sync::Mutex<Option<Curswant>>>,
 }
 
 /// Context passed to a text-object's evaluator.
@@ -1537,6 +1590,7 @@ mod tests {
             exclusive: false,
             apply: Arc::new(|ctx| {
                 Ok(MotionResult {
+                    curswant: None,
                     target: ctx.from,
                     linewise: false,
                     exclusive: None,

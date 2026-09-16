@@ -535,15 +535,66 @@ there), unlike `j`, which keeps its goal across a short line. A first
 implementation had `gj` keeping the goal, which matches vim for a single `gj`
 and diverges the moment a plain `j` follows.
 
-### VM.3g-3 📝 — `gj`'s goal when the aim is CLAMPED
+### VM.3g-3 ✅ — `gj`'s goal when the aim is CLAMPED
 
-One measured row is still unmet: `g$` then `gj` on a 200-column line lands at
-200 but vim records `curswant = 240` — the UNCLAMPED aim, not the landing. So a
-following `j` onto a longer line would reach 240 in vim and 200 here. Fixing it
-means a motion reporting its own goal (a `MotionResult::curswant` override,
-mirroring how `exclusive` already overrides the spec). Narrow — it needs a
-clamped `gj` followed by a vertical motion onto a longer line — but it is a
-real divergence, and it is written down rather than rounded off.
+One measured row was unmet: `g$` then `gj` on a 200-column line lands at 200 but
+vim records `curswant = 240` — the UNCLAMPED aim, not the landing. So a
+following `j` onto a longer line reached 240 in vim and 200 here. Narrow — it
+needs a clamped `gj` followed by a vertical motion onto a longer line — but a
+real divergence, and written down rather than rounded off.
+
+Re-measured on the way in (`vimcheck_scroll_curswant.vim`, wrap 80 over a
+240-char line then a 100-char line), which shows the whole rule rather than the
+one row:
+
+```text
+g$  (row 1 of the 240 line)     col=80   curswant=80
+gj  -> row 2                    col=160  curswant=160
+gj  -> row 3                    col=240  curswant=240
+gj  -> line 2 row 1             col=80   curswant=80
+gj  -> line 2 row 2 (CLAMPED)   col=100  curswant=160   <- the aim
+$   on the 240 line             col=240  curswant=2147483647 (MAXCOL)
+```
+
+`gj` / `gk` record **the column they aimed at**. Unclamped, the aim IS the
+landing — which is exactly why VM.3g-2's simpler "set from where you landed"
+rule passed every test it had.
+
+**This plan's stated mechanism was wrong, and the correction is the slice.**
+It said to mirror `MotionResult::exclusive`. `exclusive` is consumed INSIDE the
+grammar dispatcher during range resolution and never leaves it; `curswant` has
+to reach the host. The host's normal-document path runs through
+`DispatchEnv` → `Document::dispatch_with_cancel`, which returns
+`Pending<Effect>` — and `DispatchEnv` deliberately has **no lifetime**, because
+it owns `Arc` handles so it can cross that trait into an async future. A
+borrowed reporting slot cannot ride it. (The `GrammarEnv` path where a borrow
+*would* work, `run_read_only_motion`, serves read-only buffers only.)
+
+So the landed shape is a reporting slot, owned where it must cross the async
+boundary and borrowed where it need not:
+
+```text
+motion   MotionResult { curswant: Some(Col(aim)) }      // only gj / gk
+   |     GrammarEnv::curswant_out: Option<&Mutex<..>>   // Copy preserved
+   |     DispatchEnv::curswant_out: Option<Arc<Mutex<..>>>  // owned, crosses async
+host     Editor::curswant_report, take()n by the dispatch tail
+```
+
+`Editor::curswant_report` is a long-lived slot rather than a per-dispatch one
+because `dispatch_blocking` takes `&self` — it can clone the `Arc` in but
+cannot hand anything back. The tail `take()`s rather than reads: a motion
+writes the slot on every motion dispatch (`None` for all but two), but an
+operator or action never touches it, so a left-behind value would let one
+`gj`'s aim resurface after an unrelated command.
+
+The override is applied AFTER the `CurswantEffect` match, on purpose: `gj`'s
+spec says `SetFromTarget`, whose whole meaning is "let the dispatch tail take
+the goal from where the cursor landed" — the clamped column this slice exists
+to discard. Claiming it is what suppresses that tail rule.
+
+Not on the WIT boundary, like `exclusive` and `notice`: a plugin declares its
+`CurswantEffect` on its `MotionSpec`. `from_wit` decodes `None` deliberately,
+and that line says so.
 
 ### VM.3h ✅ — fold and scroll commands in Visual, matching vim
 

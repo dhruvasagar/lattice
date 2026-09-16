@@ -228,6 +228,7 @@ docs = [
   "architecture/org-mode",
   "architecture/org-todo-keywords",
   "architecture/org-capture",
+  "architecture/org-capture-templates",
   "architecture/org-capture-drafts",
   "architecture/org-agenda",
   "architecture/org-habits",

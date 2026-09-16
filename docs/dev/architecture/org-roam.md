@@ -509,6 +509,13 @@ the draft is not the `:ID:` the note is filed with.
 The file is written on finalize, so an abort has nothing to undo, including the
 minted id. That is the property §5.2's write-on-create could not have.
 
+> **OR.14 generalises, and the "no `target`" rationale below is retired.**
+> `body_file` becomes every template's, not roam's, and a roam template stops
+> being a distinct type: its destination becomes a `file+head` target on the one
+> shared shape. Emacs never forked the type either — `org-roam-capture-templates`
+> documents the same tuple and adds only keywords. See
+> [`org-capture-templates.md`](org-capture-templates.md) §1 and §7.
+
 **OR.14 — a template's body can be a FILE instead of an inline string**,
 emacs org-roam's `(file "…/template.org")`. Ten of Dhruva's own templates are
 declared exactly that way (`~/dotfiles/emacs/ds/init-org.el`), each naming an

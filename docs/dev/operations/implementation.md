@@ -6835,6 +6835,18 @@ the dispatch thread is already inside, so the read has to be host-side. That
 constraint is now in the plugin-authoring guide; it is invisible until it
 panics.
 
+**The template SHAPE is being reworked (CT.1–CT.9, 📝 unbuilt).**
+`Template` and `RoamTemplate` are two hand-maintained declarations of one thing
+— emacs holds `org-capture-templates` and `org-roam-capture-templates` as
+separate variables of the *same* type, and lattice's own pipeline already
+converged on one `CaptureDestination`. Decomposing the declaration into three
+orthogonal axes (`type` / `target` / body source) is what lets `table-line`,
+`file+datetree` and a generalised `body-file` each land once instead of twice.
+No host slice: it is guest-side throughout. Design:
+[`../architecture/org-capture-templates.md`](../architecture/org-capture-templates.md);
+slice plan:
+[`slice-plans/org-capture-templates.md`](slice-plans/org-capture-templates.md).
+
 ---
 
 ## Concealment (H, 2026-08-29 — ✅ complete)

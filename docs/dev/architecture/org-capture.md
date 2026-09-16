@@ -7,6 +7,15 @@
 > method for any of it. What lives in *this* tree is the seams the plugin
 > contributes through — see [`plugin-host.md`](plugin-host.md).
 
+> **§2's template SHAPE is superseded.** `body` / `target` / no entry type is
+> being decomposed into three orthogonal axes — `type` (`entry`, `table-line`),
+> `target` (gaining `file+olp`, `file+datetree`, roam's `file+head`) and a body
+> source (`body` / `body-file`) — with `Template` and `RoamTemplate` collapsed
+> into one type. See
+> [`org-capture-templates.md`](org-capture-templates.md); where this page and
+> that one disagree about what a template *is*, that page is newer. How a
+> template is chosen, expanded and targeted (§§1–7) is unchanged.
+
 > **§8's two "known gaps" are being closed**, and the fix changes the capture
 > buffer's substrate from synthetic to file-backed. See
 > [`org-capture-drafts.md`](org-capture-drafts.md): concurrent captures, savable

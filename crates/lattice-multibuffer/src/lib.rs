@@ -2371,6 +2371,7 @@ impl MultibufferDocumentHandle {
             viewport,
             nostartofline,
             curswant,
+            display,
             ..
         } = env;
         // K.4.11 (2026-06-02): the multibuffer now owns grammar
@@ -2493,6 +2494,7 @@ impl MultibufferDocumentHandle {
                 viewport: viewport.as_deref().map(|v| v as _),
                 nostartofline,
                 curswant,
+                display: display.as_deref().map(|d| d as _),
             },
         )
         .map_err(RuntimeError::Grammar);

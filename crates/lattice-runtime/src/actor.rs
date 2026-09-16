@@ -279,6 +279,7 @@ impl DocumentActor {
                     viewport: env.viewport.as_deref().map(|v| v as _),
                     nostartofline: env.nostartofline,
                     curswant: env.curswant,
+                    display: env.display.as_deref().map(|d| d as _),
                 };
                 // B3b: snapshot the registry wait-free for this dispatch. A
                 // plugin registered at runtime (loader RCU-store into the

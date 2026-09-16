@@ -129,6 +129,8 @@ pub struct MotionContext<'a> {
     pub nostartofline: bool,
     /// VM.3g-1: the goal column, copied from [`GrammarEnv::curswant`].
     pub curswant: Option<Curswant>,
+    /// VM.3g-2: the display geometry `gj` / `gk` / `g0` / `g$` read.
+    pub display: Option<&'a dyn DisplayResolver>,
 }
 
 /// What a motion's evaluator returned.
@@ -443,6 +445,18 @@ impl ViewportResolver for ShownLines {
     }
 }
 
+/// VM.3g-2: what the DISPLAY looks like, for `gj` / `gk` / `g0` / `g$`. Soft
+/// wrap is a rendering decision — the wrap width, and how many rows a line
+/// takes once tabs and wide characters are measured — so the grammar asks
+/// rather than computes, exactly as it does for folds and the viewport.
+pub trait DisplayResolver {
+    /// Soft-wrap width in columns, or `0` when `wrap` is off — which degrades
+    /// `gj` to `j` and `g0` to `0`, as vim does.
+    fn wrap_width(&self) -> u32;
+    /// How many display rows `line` occupies. `1` when wrap is off.
+    fn segments(&self, line: u32) -> u32;
+}
+
 pub trait ScopeResolver {
     fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
 
@@ -664,6 +678,10 @@ pub struct GrammarEnv<'a> {
     /// yet — means "use the cursor's own column", which is what the first `j`
     /// after any edit does in vim.
     pub curswant: Option<Curswant>,
+    /// VM.3g-2: display geometry for `gj` / `gk` / `g0` / `g$`. `None` — no
+    /// renderer has reported one — leaves them behaving as `j` / `k` / `0` /
+    /// `$`, which is also what they do with `wrap` off.
+    pub display: Option<&'a dyn DisplayResolver>,
 }
 
 /// Context passed to a text-object's evaluator.

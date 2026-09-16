@@ -456,10 +456,46 @@ installed, and the gate's plugin-host run prints no SKIP lines — so the cost i
 rebuild TIME on a slice that already takes the longest gate in the workspace,
 not a hole in the checking.
 
-### VM.3g 📝 — `gj` / `gk` / `g0` / `g$`
+### VM.3g-1 ✅ — `j` and `k` remember the column they aim for
 
-Display-line motions. Same `ViewportResolver` seam as VM.3f; the resolver
-answers "the position N display lines from here". Hardest of the set.
+vim's `curswant`. `CurswantEffect` on `MotionSpec` (`SetFromTarget` by default,
+so every other motion and every plugin motion is already right); the host reads
+it back through `CommandRegistry::motion_curswant`, so nothing new crosses
+`Effect` or WIT. `Editor::curswant` holds it, and the rule at the end of every
+dispatch is vim's: unless this dispatch was `j` / `k` / `$`, the column the
+cursor ended on becomes the goal — which covers edits, Insert and yanks without
+each knowing the rule exists.
+
+### VM.3g-2 ✅ — `gj` / `gk` / `g0` / `g$` are motions
+
+Ported from `Editor::do_display_line_*` so the landing is unchanged, with two
+gains: a count walks (vim's `2gj` moves two rows; the actions ignored counts),
+and there is now ONE goal column. `Editor::goal_col` is gone — it was
+maintained by an allow-list ("reset unless the action is DisplayLineDown/Up"),
+which is the shape that breaks silently when someone adds a vertical motion and
+forgets the list.
+
+The seam is a `DisplayResolver` (wrap width + rows per line) built only for
+those four motions, over a window of `count + 1` lines either side of the
+cursor — never the whole buffer, which matters on the keystroke path.
+
+**Measured, not assumed** (`vimcheck_gdollar.vim`, `vimcheck_gj_curswant.vim`):
+`g$` does NOT pin the goal the way `$` does — it records the landing column
+(160), while `$` records MAXCOL. And `gj` / `gk` SET the goal from where they
+land (`gj` from 2,5 records 85; crossing to the next line records the column
+there), unlike `j`, which keeps its goal across a short line. A first
+implementation had `gj` keeping the goal, which matches vim for a single `gj`
+and diverges the moment a plain `j` follows.
+
+### VM.3g-3 📝 — `gj`'s goal when the aim is CLAMPED
+
+One measured row is still unmet: `g$` then `gj` on a 200-column line lands at
+200 but vim records `curswant = 240` — the UNCLAMPED aim, not the landing. So a
+following `j` onto a longer line would reach 240 in vim and 200 here. Fixing it
+means a motion reporting its own goal (a `MotionResult::curswant` override,
+mirroring how `exclusive` already overrides the spec). Narrow — it needs a
+clamped `gj` followed by a vertical motion onto a longer line — but it is a
+real divergence, and it is written down rather than rounded off.
 
 ### VM.3h ✅ — fold and scroll commands in Visual, matching vim
 

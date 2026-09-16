@@ -137,6 +137,26 @@ pub struct HostFoldResolver {
     foldenable: bool,
 }
 
+/// VM.3g-2: the display geometry `gj` / `gk` / `g0` / `g$` read. Owned, because
+/// it crosses the actor — so it carries the wrap width plus row counts for a
+/// BOUNDED window of lines around the cursor, never the whole buffer. A display
+/// motion walks at most `count` lines, so that window is all it can reach; a
+/// line outside answers 1, which is what an unwrapped line occupies anyway.
+pub struct HostDisplayResolver {
+    wrap_width: u32,
+    segments: std::collections::HashMap<u32, u32>,
+}
+
+impl lattice_grammar::DisplayResolver for HostDisplayResolver {
+    fn wrap_width(&self) -> u32 {
+        self.wrap_width
+    }
+
+    fn segments(&self, line: u32) -> u32 {
+        self.segments.get(&line).copied().unwrap_or(1)
+    }
+}
+
 impl lattice_grammar::FoldResolver for HostFoldResolver {
     fn fold_edge(&self, line: u32, forward: bool) -> Option<u32> {
         crate::folds::visible_fold_edge(&self.folds, self.foldenable, line, forward)
@@ -2695,11 +2715,11 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // is still handled by App's match (which runs after this
     // function returns).
     //
-    // goal_col (gj/gk sticky column): preserve only across
-    // display-line vertical moves; any other action resets it.
-    if !matches!(action, Action::DisplayLineDown | Action::DisplayLineUp) {
-        editor.goal_col = None;
-    }
+    // VM.3g-2: the gj/gk sticky column used to be `Editor::goal_col`, reset
+    // here by an allow-list of actions. It is `Editor::curswant` now — ONE goal
+    // column, shared with `j` / `k` as vim shares it — and the rule that
+    // maintains it lives at the end of every dispatch, so no action has to
+    // remember to be on a list.
     match action {
         Action::None => {}
         // CG.1: foreground cancellation. Handled here rather than in a
@@ -21143,6 +21163,12 @@ impl Editor {
         let viewport = self.targets_viewport_motion(&invocation).then(|| {
             std::sync::Arc::new(self.shown_lines()) as lattice_runtime::ViewportResolverHandle
         });
+        // VM.3g-2: display geometry, built only for `gj` / `gk` / `g0` / `g$`.
+        let display = self.targets_display_motion(&invocation).then(|| {
+            let count = invocation.count.map(|c| c.0).unwrap_or(1).max(1);
+            std::sync::Arc::new(self.display_geometry(count))
+                as lattice_runtime::DisplayResolverHandle
+        });
         lattice_runtime::block_on(self.document.dispatch_with_env(
             invocation,
             self.cursor,
@@ -21183,6 +21209,7 @@ impl Editor {
                 viewport,
                 nostartofline: !self.option_cache.startofline,
                 curswant: self.curswant,
+                display,
                 // OT.4: the same `h.snapshot()` bump the Action gate takes —
                 // O(1) `ArcSwap` load, no parse on the dispatch thread — so
                 // a PLUGIN motion or text object can mint a `tree-snapshot`
@@ -23048,7 +23075,15 @@ impl Editor {
         let cur_line = self.cursor.line;
         let cur_byte = self.cursor.byte;
         let cur_seg = cur_byte / wrap_width;
-        let goal = *self.goal_col.get_or_insert(cur_byte % wrap_width);
+        // VM.3g-2: the SAME goal column `j` / `k` use (vim shares it), read
+        // within the display row. This method is the WIT `AppEffect` path; the
+        // keys route through `motion:display-line-*`, which reads the same
+        // field from `MotionContext::curswant`.
+        let goal = match self.curswant {
+            Some(lattice_grammar::Curswant::EndOfLine) => wrap_width.saturating_sub(1),
+            Some(lattice_grammar::Curswant::Col(c)) => c % wrap_width.max(1),
+            None => cur_byte % wrap_width,
+        };
         let seg_count = self.line_segment_count(cur_line);
         if cur_seg + 1 < seg_count {
             // next segment on the same source line
@@ -23066,7 +23101,6 @@ impl Editor {
             self.cursor.line = next_line;
             self.cursor.byte = goal.min(next_len.saturating_sub(1));
         }
-        self.goal_col = Some(goal);
         self.ensure_cursor_visible();
     }
 
@@ -23087,7 +23121,15 @@ impl Editor {
         let cur_line = self.cursor.line;
         let cur_byte = self.cursor.byte;
         let cur_seg = cur_byte / wrap_width;
-        let goal = *self.goal_col.get_or_insert(cur_byte % wrap_width);
+        // VM.3g-2: the SAME goal column `j` / `k` use (vim shares it), read
+        // within the display row. This method is the WIT `AppEffect` path; the
+        // keys route through `motion:display-line-*`, which reads the same
+        // field from `MotionContext::curswant`.
+        let goal = match self.curswant {
+            Some(lattice_grammar::Curswant::EndOfLine) => wrap_width.saturating_sub(1),
+            Some(lattice_grammar::Curswant::Col(c)) => c % wrap_width.max(1),
+            None => cur_byte % wrap_width,
+        };
         if cur_seg > 0 {
             // previous segment on the same source line
             let prev_start = (cur_seg - 1) * wrap_width;
@@ -23109,7 +23151,6 @@ impl Editor {
             self.cursor.byte =
                 (last_seg_start + goal).min(prev_len.saturating_sub(1).max(last_seg_start));
         }
-        self.goal_col = Some(goal);
         self.ensure_cursor_visible();
     }
 
@@ -23837,6 +23878,37 @@ impl Editor {
             at = next;
         }
         lattice_grammar::ShownLines(lines)
+    }
+
+    /// VM.3g-2: whether `inv` is one of the display-line motions, bare or as an
+    /// operator's target — the only invocations that need the geometry below.
+    fn targets_display_motion(&self, inv: &lattice_grammar::CommandInvocation) -> bool {
+        let motion = match &inv.target {
+            Some(lattice_grammar::target::Target::Motion(id, _)) => id.0,
+            _ => inv.command,
+        };
+        [
+            self.builtins.display_line_down,
+            self.builtins.display_line_up,
+            self.builtins.display_line_start,
+            self.builtins.display_line_end,
+        ]
+        .iter()
+        .any(|id| id.0 == motion)
+    }
+
+    /// VM.3g-2: wrap width plus row counts for the lines a display motion with
+    /// this count can reach. Built per dispatch, and only for those four.
+    fn display_geometry(&self, count: u32) -> HostDisplayResolver {
+        let reach = count.saturating_add(1);
+        let buffer = self.active_text();
+        let last = last_addressable_line(&buffer);
+        let lo = self.cursor.line.saturating_sub(reach);
+        let hi = self.cursor.line.saturating_add(reach).min(last);
+        HostDisplayResolver {
+            wrap_width: self.active_wrap_width(),
+            segments: (lo..=hi).map(|l| (l, self.line_segment_count(l))).collect(),
+        }
     }
 
     /// VM.3f: whether `inv` is `H` / `M` / `L`, bare or as an operator's target
@@ -44128,6 +44200,10 @@ impl Editor {
         let shown = self
             .targets_viewport_motion(&inv)
             .then(|| self.shown_lines());
+        let display_geom = self.targets_display_motion(&inv).then(|| {
+            let count = inv.count.map(|c| c.0).unwrap_or(1).max(1);
+            self.display_geometry(count)
+        });
         let env = lattice_grammar::GrammarEnv {
             last_search: self.last_search.as_ref(),
             marks: Some(&self.marks as &dyn lattice_grammar::MarkResolver),
@@ -44136,6 +44212,10 @@ impl Editor {
                 .map(|s| s as &dyn lattice_grammar::ViewportResolver),
             nostartofline: !self.option_cache.startofline,
             curswant: self.curswant,
+            // VM.3g-2: `:help` and the dashboard wrap too.
+            display: display_geom
+                .as_ref()
+                .map(|d| d as &dyn lattice_grammar::DisplayResolver),
             ..Default::default()
         };
         match lattice_grammar::execute_motion_only(
@@ -53944,7 +54024,12 @@ mod tests {
         editor.cursor = lattice_protocol::position::Position::new(0, 1);
         editor.do_display_line_down();
         assert_eq!(editor.cursor.byte, 5, "segment 1 start(4) + goal(1) = 5");
-        assert_eq!(editor.goal_col, Some(1));
+        // VM.3g-2: the goal column is `Editor::curswant` now, shared with
+        // `j` / `k` and maintained at the end of a DISPATCH. This test calls
+        // the action body directly, which is the WIT path and bypasses that —
+        // so there is nothing to assert here. The goal column's own behaviour
+        // is pinned in `lattice-grammar` and over real keys in
+        // `lattice-ui-tui`'s `motion_composition`.
     }
 
     /// CV.4: the display-line motions against the cache state a **real**
@@ -54031,7 +54116,6 @@ mod tests {
         editor.cursor = lattice_protocol::position::Position::new(0, 6); // seg 1
         editor.do_display_line_start();
         assert_eq!(editor.cursor.byte, 4, "seg 1 start = 4");
-        assert_eq!(editor.goal_col, None, "g0 resets goal_col");
     }
 
     #[test]
@@ -54057,23 +54141,13 @@ mod tests {
         assert_eq!(editor.cursor.byte, 2);
     }
 
-    #[test]
-    fn goal_col_reset_on_non_display_line_action() {
-        let doc = lattice_core::Document::from_text("abcdefgh\nABCD\n");
-        let mut editor = Editor::boot(doc);
-        enable_wrap(&mut editor, 4);
-        seed_wrap_matrix(&editor, 4, 2);
-        editor.cursor = lattice_protocol::position::Position::new(0, 1);
-        editor.do_display_line_down();
-        assert!(editor.goal_col.is_some(), "goal_col set after gj");
-        // Any non-display-line action via handle_action clears goal_col.
-        let mut out = DispatchOutcome::default();
-        handle_action(&mut editor, Action::None, &mut out);
-        assert_eq!(
-            editor.goal_col, None,
-            "goal_col cleared by non-display action"
-        );
-    }
+    // VM.3g-2: `goal_col_reset_on_non_display_line_action` lived here. It
+    // pinned the old mechanism — a sticky column reset by an allow-list of
+    // actions — and both halves are gone: there is one goal column
+    // (`Editor::curswant`), and the rule that maintains it runs at the end of
+    // every dispatch, so no action can forget to be on the list. What it was
+    // really checking (a horizontal move re-aims the next `j`) is pinned over
+    // real keystrokes by `a_horizontal_motion_resets_the_goal_column`.
 
     #[test]
     fn enter_insert_first_non_blank_moves_to_first_non_blank() {

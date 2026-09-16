@@ -79,6 +79,8 @@ pub type FoldResolverHandle = Arc<dyn lattice_grammar::FoldResolver + Send + Syn
 pub type MarkResolverHandle = Arc<dyn lattice_grammar::MarkResolver + Send + Sync>;
 /// VM.3f: owned window lines for `H` / `M` / `L`, like [`FoldResolverHandle`].
 pub type ViewportResolverHandle = Arc<dyn lattice_grammar::ViewportResolver + Send + Sync>;
+/// VM.3g-2: owned display geometry for `gj` / `gk` / `g0` / `g$`.
+pub type DisplayResolverHandle = Arc<dyn lattice_grammar::DisplayResolver + Send + Sync>;
 
 /// N.1.6 (2026-06-10): the owned, thread-safe per-dispatch environment
 /// for text objects, carried across the actor channel. Bundles the
@@ -168,6 +170,9 @@ pub struct DispatchEnv {
     /// lines. Carried like every other keystroke input: `j` comes through the
     /// actor on every press.
     pub curswant: Option<lattice_grammar::Curswant>,
+    /// VM.3g-2: display geometry for `gj` / `gk` / `g0` / `g$`, built only when
+    /// the invocation is one of them.
+    pub display: Option<DisplayResolverHandle>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

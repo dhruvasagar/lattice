@@ -64,6 +64,7 @@ fn grammar_marshalling(c: &mut Criterion) {
         viewport: None,
         nostartofline: false,
         curswant: None,
+        display: None,
     };
     c.bench_function("grammar_project_motion_context", |b| {
         b.iter(|| {

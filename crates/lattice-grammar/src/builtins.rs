@@ -812,6 +812,61 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
     // `` `x `` is charwise and exclusive (vim 9.2: `d'a` deletes whole lines,
     // `` d`a `` stops before the mark). Both jump. The mark name arrives as
     // `Args::Char`, captured by the keymap's `{char}` wildcard as `f`'s is.
+    // VM.3g-2: vim's `gj` / `gk` / `g0` / `g$`. They were host ACTIONS, so
+    // `dgj`, `yg$` and `vgj` were unbound; vim composes all of them. `gj` / `gk`
+    // keep the shared goal column (vim gives `j` and `gj` the same one); `g$` is
+    // INCLUSIVE, the others exclusive; none is a jump.
+    let display_line_down = registry.register_motion(
+        "motion:display-line-down",
+        "Move one display row down, keeping the screen column (vim's `gj`).",
+        MotionSpec {
+            jump: false,
+            exclusive: true,
+            // Measured in vim 9.2 (`vimcheck_gj_curswant.vim`): `gj` SETS the
+            // goal from where it lands — 2,5 → 2,85 records 85, and crossing to
+            // the next line records the column there — unlike `j`, which keeps
+            // its goal across a short line. The asymmetry is real: `gj` recomputes
+            // the virtual column for the row it reached.
+            curswant: crate::registry::CurswantEffect::default(),
+            apply: Arc::new(motion_display_line_down),
+            args_schema: vec![],
+        },
+    );
+    let display_line_up = registry.register_motion(
+        "motion:display-line-up",
+        "Move one display row up, keeping the screen column (vim's `gk`).",
+        MotionSpec {
+            jump: false,
+            exclusive: true,
+            // As `gj` above: vim records the landing column (`gk` from 2,165 →
+            // 2,85 records 85).
+            curswant: crate::registry::CurswantEffect::default(),
+            apply: Arc::new(motion_display_line_up),
+            args_schema: vec![],
+        },
+    );
+    let display_line_start = registry.register_motion(
+        "motion:display-line-start",
+        "Move to the first column of the display row (vim's `g0`).",
+        MotionSpec {
+            jump: false,
+            exclusive: true,
+            curswant: crate::registry::CurswantEffect::default(),
+            apply: Arc::new(motion_display_line_start),
+            args_schema: vec![],
+        },
+    );
+    let display_line_end = registry.register_motion(
+        "motion:display-line-end",
+        "Move to the last column of the display row (vim's `g$`).",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            curswant: crate::registry::CurswantEffect::default(),
+            apply: Arc::new(motion_display_line_end),
+            args_schema: vec![],
+        },
+    );
     let mark_line = registry.register_motion(
         "motion:mark-line",
         "Go to the first non-blank of the line of mark `args.char` (vim's `'`).",
@@ -895,6 +950,10 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         search_word_forward,
         search_word_backward,
         mark_line,
+        display_line_down,
+        display_line_up,
+        display_line_start,
+        display_line_end,
         mark_exact,
         viewport_top,
         viewport_middle,
@@ -986,6 +1045,11 @@ pub struct Builtins {
     pub search_word_backward: MotionId,
     /// VM.3e: vim's `'x` / `` `x ``, as the motions they are in vim.
     pub mark_line: MotionId,
+    /// VM.3g-2: vim's `gj` / `gk` / `g0` / `g$`, as the motions they are.
+    pub display_line_down: MotionId,
+    pub display_line_up: MotionId,
+    pub display_line_start: MotionId,
+    pub display_line_end: MotionId,
     pub mark_exact: MotionId,
     /// VM.3f: vim's `H` / `M` / `L`, as the motions they are in vim.
     pub viewport_top: MotionId,
@@ -2097,6 +2161,7 @@ fn find_repeat(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, Comma
         viewport: ctx.viewport,
         nostartofline: ctx.nostartofline,
         curswant: ctx.curswant,
+        display: ctx.display,
     };
     let mut result = match kind {
         FindKind::Forward => motion_find_char_forward(&sub)?,
@@ -2308,6 +2373,136 @@ fn line_byte_len(buffer: &lattice_core::Buffer, line: u32) -> u32 {
 fn clamp_into_buffer(buffer: &lattice_core::Buffer, pos: Position) -> Position {
     let line = pos.line.min(last_addressable_line(buffer));
     Position::new(line, pos.byte.min(line_byte_len(buffer, line)))
+}
+
+/// VM.3g-2: the goal column WITHIN a display row. vim shares `curswant`
+/// between `j` and `gj` (9.2: `j gj j` keeps it), so this is the same goal read
+/// modulo the wrap width.
+fn display_goal(ctx: &MotionContext, wrap: u32) -> u32 {
+    let wrap = wrap.max(1);
+    match ctx.curswant {
+        Some(crate::registry::Curswant::EndOfLine) => wrap - 1,
+        Some(crate::registry::Curswant::Col(c)) => c % wrap,
+        None => ctx.from.byte % wrap,
+    }
+}
+
+/// VM.3g-2: vim's `gj` — one display ROW down, keeping the screen column.
+/// With `wrap` off, or no renderer geometry, it IS `j`, as in vim.
+///
+/// Ported from `Editor::do_display_line_down` so the landing is unchanged; what
+/// is new is that a count walks (vim's `2gj` moves two rows; the host action
+/// ignored counts) and the goal column is the shared `curswant` rather than a
+/// second, display-only one.
+fn motion_display_line_down(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let Some(display) = ctx.display else {
+        return motion_line_down(ctx);
+    };
+    let wrap = display.wrap_width();
+    if wrap == 0 {
+        return motion_line_down(ctx);
+    }
+    let last = last_addressable_line(ctx.buffer);
+    let goal = display_goal(ctx, wrap);
+    let mut at = ctx.from;
+    for _ in 0..ctx.count.get().max(1) {
+        let seg = at.byte / wrap;
+        let segs = display.segments(at.line).max(1);
+        if seg + 1 < segs {
+            // another row on this same line
+            let next_start = (seg + 1) * wrap;
+            let next_end = ((seg + 2) * wrap).min(line_byte_len(ctx.buffer, at.line));
+            let byte = (next_start + goal).min(next_end.saturating_sub(1).max(next_start));
+            at = Position::new(at.line, byte);
+        } else if at.line < last {
+            let next = at.line + 1;
+            let len = line_byte_len(ctx.buffer, next);
+            at = Position::new(next, goal.min(len.saturating_sub(1)));
+        } else {
+            // vim: `gj` on the last display row stays put.
+            break;
+        }
+    }
+    Ok(MotionResult {
+        target: at,
+        linewise: false,
+        exclusive: None,
+        notice: None,
+    })
+}
+
+/// VM.3g-2: vim's `gk`, the mirror of [`motion_display_line_down`].
+fn motion_display_line_up(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let Some(display) = ctx.display else {
+        return motion_line_up(ctx);
+    };
+    let wrap = display.wrap_width();
+    if wrap == 0 {
+        return motion_line_up(ctx);
+    }
+    let goal = display_goal(ctx, wrap);
+    let mut at = ctx.from;
+    for _ in 0..ctx.count.get().max(1) {
+        let seg = at.byte / wrap;
+        if seg > 0 {
+            let prev_start = (seg - 1) * wrap;
+            let actual_end = (seg * wrap).min(line_byte_len(ctx.buffer, at.line));
+            let byte = (prev_start + goal).min(actual_end.saturating_sub(1).max(prev_start));
+            at = Position::new(at.line, byte);
+        } else if at.line > 0 {
+            let prev = at.line - 1;
+            let len = line_byte_len(ctx.buffer, prev);
+            let last_start = (display.segments(prev).max(1) - 1) * wrap;
+            let byte = (last_start + goal).min(len.saturating_sub(1).max(last_start));
+            at = Position::new(prev, byte);
+        } else {
+            break;
+        }
+    }
+    Ok(MotionResult {
+        target: at,
+        linewise: false,
+        exclusive: None,
+        notice: None,
+    })
+}
+
+/// VM.3g-2: vim's `g0` — the first column of the display row. `0` without wrap.
+fn motion_display_line_start(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let Some(display) = ctx.display else {
+        return motion_line_start(ctx);
+    };
+    let wrap = display.wrap_width();
+    if wrap == 0 {
+        return motion_line_start(ctx);
+    }
+    Ok(MotionResult {
+        target: Position::new(ctx.from.line, (ctx.from.byte / wrap) * wrap),
+        linewise: false,
+        exclusive: None,
+        notice: None,
+    })
+}
+
+/// VM.3g-2: vim's `g$` — the LAST column of the display row, and inclusive, so
+/// `dg$` takes that column with it (9.2: `dg$` from 2,85 deletes 85–160).
+/// `$` without wrap.
+fn motion_display_line_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let Some(display) = ctx.display else {
+        return motion_line_end(ctx);
+    };
+    let wrap = display.wrap_width();
+    if wrap == 0 {
+        return motion_line_end(ctx);
+    }
+    let len = line_byte_len(ctx.buffer, ctx.from.line);
+    let seg_end = (((ctx.from.byte / wrap) + 1) * wrap).min(len);
+    Ok(MotionResult {
+        target: Position::new(ctx.from.line, seg_end.saturating_sub(1)),
+        linewise: false,
+        exclusive: None,
+        notice: None,
+    })
 }
 
 /// VM.3g-1: the column a vertical motion lands on in `line` — vim's
@@ -4175,6 +4370,143 @@ mod tests {
             Err(CommandError::User(msg)) => assert_eq!(msg, "E35: no previous regular expression"),
             other => panic!("expected E35, got {other:?}"),
         }
+    }
+
+    // ---- VM.3g-2: `gj` / `gk` / `g0` / `g$` (vim 9.2, `vimcheck_gj.vim`) ----
+
+    /// The vim check's buffer: a short line, a 200-column line, a short line,
+    /// wrapped at 80. Byte columns here are 0-based; the vim rows quoted in the
+    /// test names are 1-based, so they differ by one.
+    fn wrapped_fixture() -> (CommandRegistry, Builtins, Document, WrapAt80) {
+        let long: String = std::iter::repeat_n("abcdefghij", 20).collect();
+        let text = format!("  short one\n{long}\n  short three");
+        let (r, b, d) = fixture(&text);
+        (r, b, d, WrapAt80)
+    }
+
+    struct WrapAt80;
+
+    impl crate::registry::DisplayResolver for WrapAt80 {
+        fn wrap_width(&self) -> u32 {
+            80
+        }
+        fn segments(&self, line: u32) -> u32 {
+            // 11, 200, 13 columns → 1, 3, 1 rows at width 80.
+            if line == 1 { 3 } else { 1 }
+        }
+    }
+
+    fn display_motion(
+        pick: impl Fn(&Builtins) -> crate::registry::MotionId,
+        from: Position,
+        count: Option<u32>,
+        wrapped: bool,
+    ) -> Position {
+        let (registry, b, mut doc, display) = wrapped_fixture();
+        let mut inv = CommandInvocation::of(pick(&b).0);
+        if let Some(n) = count {
+            inv = inv.with_count(crate::command::Count(n));
+        }
+        let env = crate::registry::GrammarEnv {
+            display: wrapped.then_some(&display as &dyn crate::registry::DisplayResolver),
+            ..Default::default()
+        };
+        match crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            from,
+            inv,
+            &CancellationToken::never(),
+            env,
+        )
+        .unwrap()
+        {
+            Effect::CursorMove(p) => p,
+            other => panic!("expected CursorMove, got {other:?}"),
+        }
+    }
+
+    /// vim: `gj` from 2,5 → 2,85 — the same screen column, one row down; `gk`
+    /// comes back; `2gj` walks two rows (the host action ignored counts).
+    #[test]
+    fn gj_and_gk_move_by_display_row() {
+        assert_eq!(
+            display_motion(|b| b.display_line_down, Position::new(1, 4), None, true),
+            Position::new(1, 84)
+        );
+        assert_eq!(
+            display_motion(|b| b.display_line_up, Position::new(1, 84), None, true),
+            Position::new(1, 4)
+        );
+        assert_eq!(
+            display_motion(|b| b.display_line_down, Position::new(1, 4), Some(2), true),
+            Position::new(1, 164)
+        );
+    }
+
+    /// vim: `gj` on the last display row stays put rather than failing.
+    #[test]
+    fn gj_on_the_last_display_row_stays() {
+        assert_eq!(
+            display_motion(|b| b.display_line_down, Position::new(2, 4), None, true),
+            Position::new(2, 4)
+        );
+    }
+
+    /// vim: `g0` → 2,81 (the row's first column) and `g$` → 2,160 (its last).
+    #[test]
+    fn g0_and_g_dollar_bound_the_display_row() {
+        assert_eq!(
+            display_motion(|b| b.display_line_start, Position::new(1, 84), None, true),
+            Position::new(1, 80)
+        );
+        assert_eq!(
+            display_motion(|b| b.display_line_end, Position::new(1, 84), None, true),
+            Position::new(1, 159)
+        );
+    }
+
+    /// With `wrap` off — or no renderer geometry at all — they ARE `j` / `k` /
+    /// `0`, as vim does.
+    #[test]
+    fn without_wrap_they_degrade_to_the_line_motions() {
+        assert_eq!(
+            display_motion(|b| b.display_line_down, Position::new(0, 4), None, false),
+            Position::new(1, 4),
+            "`gj` is `j`"
+        );
+        assert_eq!(
+            display_motion(|b| b.display_line_start, Position::new(1, 84), None, false),
+            Position::new(1, 0),
+            "`g0` is `0`"
+        );
+    }
+
+    /// All four SET the goal from where they land — measured in vim 9.2, and
+    /// the opposite of `j` / `k`, which keep theirs across a short line. `gj`
+    /// recomputes the virtual column for the row it reached, so "keep" would be
+    /// wrong: after `gj` from 2,5 vim records 85, not 5.
+    #[test]
+    fn the_display_motions_set_the_goal_from_where_they_land() {
+        use crate::registry::CurswantEffect;
+        let (registry, b, _d, _w) = wrapped_fixture();
+        for id in [
+            b.display_line_down,
+            b.display_line_up,
+            b.display_line_start,
+            b.display_line_end,
+        ] {
+            assert_eq!(
+                registry.motion_curswant(id.0),
+                CurswantEffect::SetFromTarget
+            );
+        }
+        // `j` is the contrast, and it is not a display motion.
+        assert_eq!(
+            registry.motion_curswant(b.line_down.0),
+            CurswantEffect::Keep
+        );
     }
 
     // ---- VM.3g-1: the goal column (vim's `curswant`) ----

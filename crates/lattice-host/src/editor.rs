@@ -1499,7 +1499,6 @@ pub struct Editor {
     /// Stores the byte offset within the current wrap segment so
     /// consecutive display-line moves try to land at the same column.
     /// `None` between any non-display-line motion.
-    pub goal_col: Option<u32>,
     /// First visible line in the viewport (0-based).
     pub scroll: u32,
     /// First visible display column in the viewport (0-based) —

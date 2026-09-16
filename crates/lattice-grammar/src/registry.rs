@@ -188,6 +188,13 @@ impl std::fmt::Debug for MotionSpec {
 pub struct OperatorContext<'a> {
     pub document: &'a mut Document,
     pub range: ProtoRange,
+    /// VM.3m: the start of the operated text BEFORE linewise expansion —
+    /// `min(cursor, motion target)` for a motion, the object's or selection's
+    /// start otherwise, the cursor for a count / current-line / ex range.
+    /// vim leaves the cursor here after a yank, which is why the expanded
+    /// `range` can't answer: `yk` keeps its column (`k`'s target has it) and
+    /// `yy` doesn't move at all, though both expand to whole lines.
+    pub origin: Position,
     /// Whether the range was produced by a linewise source (vim's
     /// `Range::CurrentLine` / `Range::Whole`, or a linewise visual
     /// selection). Yank uses this to tag the unnamed register so paste

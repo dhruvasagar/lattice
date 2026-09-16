@@ -361,7 +361,7 @@ it. A mark past the end of a shrunk buffer clamps. Terminal panes route both
 ids to `do_jump_mark`, which mirrors the jump into the grid. The action ids
 stay registered for WIT.
 
-### VM.3m 📝 — where an operator leaves the cursor
+### VM.3m ✅ — where an operator leaves the cursor
 
 Found while gating VM.3L; older than it. Checked in vim 9.2
 (`vimcheck_opcursor.vim`, buffer
@@ -378,11 +378,20 @@ Found while gating VM.3L; older than it. Checked in vim 9.2
 | `y{` | 5,5 | 3,1 |
 | `yip` | 5,5 | 4,1 — start of the object |
 
-Lattice: a linewise delete lands on column 0 (the edit's start), and no yank
-moves the cursor. The rule is vim's "the cursor is left at the start of the
-text operated upon", with linewise delete then going to the first non-blank.
-Yank needs the operated region's start BEFORE linewise expansion (`yk` keeps
-the column, `yip` doesn't), which `OperatorContext` doesn't carry today.
+Lattice landed a linewise delete on column 0 (the edit's start) and no yank
+moved the cursor at all. The rule is vim's "the cursor is left at the start of
+the text operated upon", with a linewise delete then going to the first
+non-blank.
+
+`OperatorContext::origin` carries the operated region's start BEFORE linewise
+expansion — `min(cursor, motion target)` for a motion, the object's or
+selection's start otherwise, and the cursor for a count / current-line / ex
+range. That distinction is the whole point: `yk` keeps its column because `k`'s
+target does, `yy` doesn't move at all, and `yip` goes to its object's line
+start, though all three expand to whole lines. `resolve_target` returns the
+pre-expansion target (one caller), so nothing else had to change.
+`operator_yank` appends the cursor move; `operator_delete` appends one only
+when linewise. Not done: `>` / `<` / `=` also go to the first non-blank in vim.
 
 ### VM.3f ✅ — `H` / `M` / `L` are motions, and `startofline`
 

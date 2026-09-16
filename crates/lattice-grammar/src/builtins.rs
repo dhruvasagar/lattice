@@ -2274,6 +2274,22 @@ fn line_byte_len(buffer: &lattice_core::Buffer, line: u32) -> u32 {
         .unwrap_or(0)
 }
 
+/// VM.3m: `pos` brought inside the buffer it addresses — the line clamped to
+/// the last one, the byte to that line's length. A yank's origin can point past
+/// both after the operator ran.
+fn clamp_into_buffer(buffer: &lattice_core::Buffer, pos: Position) -> Position {
+    let line = pos.line.min(last_addressable_line(buffer));
+    Position::new(line, pos.byte.min(line_byte_len(buffer, line)))
+}
+
+/// VM.3m: the first non-blank of `line`, where vim leaves the cursor after a
+/// linewise delete (`dd`, `dk`, `2dj`).
+fn first_non_blank_position(buffer: &lattice_core::Buffer, line: u32) -> Position {
+    let text = buffer.line(line).unwrap_or_default();
+    let col = text.bytes().take_while(|&b| is_blank_byte(b)).count() as u32;
+    Position::new(line, col.min(line_byte_len(buffer, line)))
+}
+
 /// CV.3: the last line a motion or range may address — content
 /// space. One of three hand-rolled copies of this before the rename;
 /// all three now sit on the accessor, and this one no longer
@@ -2883,7 +2899,7 @@ fn operator_delete(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     } else {
         YankKind::Charwise
     };
-    Ok(Effect::Many(vec![
+    let mut effects = vec![
         Effect::Edits(vec![applied]),
         Effect::Yank {
             register: ctx.register,
@@ -2893,7 +2909,18 @@ fn operator_delete(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
             // it must not mirror to the system clipboard (yank-only rule).
             explicit_yank: false,
         },
-    ]))
+    ];
+    // VM.3m: after a LINEWISE delete vim puts the cursor on the first non-blank
+    // of the line that moved up (`dd` from 1,6 lands on 1,5 of a 4-indented
+    // line; `dk` and `2dj` likewise). A charwise delete leaves it at the edit's
+    // start, which the host already does from `Effect::Edits`, so only the
+    // linewise case needs saying. The buffer here is the one after the edit.
+    if ctx.linewise {
+        let buffer = ctx.document.buffer();
+        let line = ctx.range.start.line.min(last_addressable_line(buffer));
+        effects.push(Effect::CursorMove(first_non_blank_position(buffer, line)));
+    }
+    Ok(Effect::Many(effects))
 }
 
 // ---- Operator: change ----
@@ -3027,6 +3054,11 @@ fn operator_yank(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
             // primary write above already handled the clipboard.
             explicit_yank: false,
         },
+        // VM.3m: vim leaves the cursor at the start of what was yanked — which
+        // for `yy` / `2yy` / `yj` is where it already was, and for `yk` / `yb` /
+        // `y{` / `yip` is the start of the region. `origin` is that start before
+        // linewise expansion, so `yk` keeps its column.
+        Effect::CursorMove(clamp_into_buffer(ctx.document.buffer(), ctx.origin)),
     ]))
 }
 
@@ -4082,6 +4114,57 @@ mod tests {
         match search_effect(Position::new(0, 0), false, None, None) {
             Err(CommandError::User(msg)) => assert_eq!(msg, "E35: no previous regular expression"),
             other => panic!("expected E35, got {other:?}"),
+        }
+    }
+
+    // ---- VM.3m: where an operator leaves the cursor ----
+
+    /// vim: `dd` from 1,6 lands on the first non-blank of the line that moved
+    /// up (1,5 when that line is indented four).
+    #[test]
+    fn a_linewise_delete_lands_on_the_first_non_blank() {
+        let (registry, b, mut doc) = fixture("  one a\n    two b\n  three c\n");
+        let inv = CommandInvocation::of(b.delete.0).with_range(crate::range::Range::CurrentLine);
+        let effect = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match effect {
+            Effect::Many(parts) => assert!(matches!(
+                parts[parts.len() - 1],
+                Effect::CursorMove(p) if p == Position::new(0, 4)
+            )),
+            other => panic!("expected Many, got {other:?}"),
+        }
+    }
+
+    /// vim: `yk` from 2,8 lands on 1,7 — the start line, column kept. The
+    /// expanded range starts at column 0, so this is `origin`, not `range`.
+    #[test]
+    fn a_yank_lands_on_the_start_of_what_it_yanked() {
+        let (registry, b, mut doc) = fixture("  one a\n    two b\n  three c\n");
+        let inv = CommandInvocation::of(b.yank.0)
+            .with_target(Target::Motion(b.line_up, crate::args::Args::None));
+        let effect = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(1, 6),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match effect {
+            Effect::Many(parts) => assert!(matches!(
+                parts[parts.len() - 1],
+                Effect::CursorMove(p) if p == Position::new(0, 6)
+            )),
+            other => panic!("expected Many, got {other:?}"),
         }
     }
 
@@ -6723,10 +6806,10 @@ mod tests {
         .unwrap();
         // Yank does NOT touch the buffer.
         assert_eq!(doc.text(), original_text);
-        // Yank emits Many([requested-register, "0]).
+        // Yank emits Many([requested-register, "0, cursor-to-origin]).
         match effect {
             Effect::Many(parts) => {
-                assert_eq!(parts.len(), 2);
+                assert_eq!(parts.len(), 3);
                 match &parts[0] {
                     Effect::Yank {
                         content,
@@ -6750,6 +6833,9 @@ mod tests {
                     }
                     other => panic!("expected Yank(\"0) at [1], got {other:?}"),
                 }
+                // VM.3m: the cursor goes to the start of the yanked text, which
+                // for a forward motion from 0,0 is where it already is.
+                assert!(matches!(parts[2], Effect::CursorMove(p) if p == Position::ZERO));
             }
             other => panic!("expected Many, got {other:?}"),
         }

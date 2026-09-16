@@ -236,15 +236,15 @@ mod tests {
         assert_eq!(register(&a).map(|r| r.1), Some(LINEWISE));
     }
 
-    /// vim: `2dj` from 1,5 deletes three lines. (vim then puts the cursor on
-    /// the first non-blank; lattice's linewise delete lands on column 0, as `dd`
-    /// always has — VM.3m.)
+    /// vim: `2dj` from 1,5 deletes three lines; cursor on the first non-blank
+    /// of the line that replaces them (VM.3m).
     #[test]
     fn a_count_on_dj_deletes_more_lines() {
         let mut a = at(SIX, 0, 4);
         press_chars(&mut a, "2dj");
         assert_eq!(body(&a), "  four d\n  five e\n  six f");
         assert_eq!(register(&a).map(|r| r.1), Some(LINEWISE));
+        assert_eq!(cursor(&a), (0, 2));
     }
 
     /// vim: `d}` from 1,1 becomes linewise (`:h exclusive-linewise`): lines 1–2
@@ -284,14 +284,14 @@ mod tests {
         assert_eq!(register(&a).map(|r| r.1), Some(LINEWISE));
     }
 
-    /// vim: `yk` from 2,6 yanks lines 1–2 linewise. (vim also moves the cursor
-    /// to the start of what it yanked; no lattice yank moves the cursor yet —
-    /// VM.3m.)
+    /// vim: `yk` from 2,6 yanks lines 1–2 linewise and moves the cursor to the
+    /// start line, keeping the column (VM.3m).
     #[test]
     fn yk_yanks_the_line_above_and_this_one() {
         let mut a = at(THREE, 1, 5);
         press_chars(&mut a, "yk");
         assert_eq!(register(&a), Some(("  one a\n  two b\n".into(), LINEWISE)));
+        assert_eq!(cursor(&a), (0, 5));
     }
 
     /// vim: `cjX` replaces two lines with one holding `X`.
@@ -565,5 +565,67 @@ mod tests {
             a.editor.cursor,
             lattice_protocol::position::Position::new(25, 5)
         );
+    }
+
+    // ── VM.3m: where an operator leaves the cursor (vim 9.2,
+    // `vimcheck_opcursor.vim`) ──
+
+    /// The buffer of the vim check: line 2 is indented four, so "first
+    /// non-blank" and "column 0" can't be confused.
+    const SIXI: &str = "  one a\n    two b\n\n  four d\n  five e\n  six f";
+
+    /// vim: `dd` from 1,6 → 1,5, the first non-blank of the line that moved up.
+    #[test]
+    fn dd_lands_on_the_first_non_blank_of_the_line_that_moved_up() {
+        let mut a = at(SIXI, 0, 5);
+        press_chars(&mut a, "dd");
+        assert_eq!(body(&a), "    two b\n\n  four d\n  five e\n  six f");
+        assert_eq!(cursor(&a), (0, 4));
+    }
+
+    /// vim: `dk` from 5,5 → 4,3, likewise the first non-blank.
+    #[test]
+    fn dk_lands_on_the_first_non_blank() {
+        let mut a = at(SIXI, 4, 4);
+        press_chars(&mut a, "dk");
+        assert_eq!(body(&a), "  one a\n    two b\n\n  six f");
+        assert_eq!(cursor(&a), (3, 2));
+    }
+
+    /// vim: `yy` and `2yy` leave the cursor exactly where it was.
+    #[test]
+    fn a_linewise_yank_of_this_line_does_not_move_the_cursor() {
+        let mut a = at(SIXI, 1, 7);
+        press_chars(&mut a, "yy");
+        assert_eq!(cursor(&a), (1, 7));
+
+        let mut a = at(SIXI, 1, 7);
+        press_chars(&mut a, "2yy");
+        assert_eq!(cursor(&a), (1, 7));
+    }
+
+    /// vim: `yb` from 2,8 → 2,5, the start of the yanked text.
+    #[test]
+    fn yb_lands_on_the_start_of_the_yanked_text() {
+        let mut a = at(SIXI, 1, 7);
+        press_chars(&mut a, "yb");
+        assert_eq!(register(&a).map(|r| r.0), Some("two".into()));
+        assert_eq!(cursor(&a), (1, 4));
+    }
+
+    /// vim: `y{` from 5,5 → 3,1 — the start of the range, not the cursor.
+    #[test]
+    fn y_brace_lands_on_the_start_of_the_range() {
+        let mut a = at(SIXI, 4, 4);
+        press_chars(&mut a, "y{");
+        assert_eq!(cursor(&a), (2, 0));
+    }
+
+    /// vim: `yip` from 5,5 → 4,1 — the start of the object.
+    #[test]
+    fn yip_lands_on_the_start_of_the_object() {
+        let mut a = at(SIXI, 4, 4);
+        press_chars(&mut a, "yip");
+        assert_eq!(cursor(&a), (3, 0));
     }
 }

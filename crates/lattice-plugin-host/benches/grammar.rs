@@ -110,6 +110,7 @@ fn grammar_marshalling(c: &mut Criterion) {
             start: pos(0, 0),
             end: pos(1, 5),
         },
+        origin: pos(0, 0),
         linewise: false,
         register: Register::Named('a'),
         count: Count(1),

@@ -109,6 +109,11 @@ mod tests {
             CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.modal, ModalState::Normal);
+        // VM.3m: vim leaves the cursor at the start of the yanked text — and
+        // `gv` still reselects the full extent, because the two are
+        // independent. Pinned together: deriving `gv` from the post-yank
+        // selection is what broke it.
+        assert_eq!(a.editor.cursor, Position::ZERO);
         a.apply(Action::ReselectLastVisual);
         assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Charwise));
         let sels = a.editor.document.selections();

@@ -43412,6 +43412,17 @@ impl Editor {
         self.pending_count = 0;
         self.op_count = 0;
         let was_visual = matches!(self.modal, ModalState::Visual(_));
+        // VM.3m: `gv` reselects what the user HAD selected, so capture the
+        // extent here, before any effect runs. `do_exit_visual` reads the live
+        // selections, and an operator that moves the cursor — which VM.3m gave
+        // yank, to match vim's landing — collapses them first, so `gv` after
+        // `vwy` restored a zero-width range. vim keeps `'<` / `'>` independent
+        // of the cursor for exactly this reason.
+        let pre_visual = was_visual.then(|| {
+            let sels = self.document.selections();
+            let sel = sels.primary();
+            (sel.anchor, sel.head)
+        });
         let mut should_exit_visual = false;
         let inv_for_repeat = inv.clone();
         // The same question decides folds. A jump lands somewhere the user
@@ -43451,6 +43462,12 @@ impl Editor {
         }
         if was_visual && should_exit_visual && matches!(self.modal, ModalState::Visual(_)) {
             self.do_exit_visual();
+            // VM.3m: `do_exit_visual` just recorded the post-effect selection;
+            // replace it with the extent the user actually had.
+            if let (Some((anchor, head)), Some(last)) = (pre_visual, self.last_visual.as_mut()) {
+                last.anchor = anchor;
+                last.head = head;
+            }
         }
         self.clamp_cursor_to_buffer();
     }

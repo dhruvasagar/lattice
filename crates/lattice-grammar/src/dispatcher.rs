@@ -379,16 +379,24 @@ fn execute_operator(
     let motion_count = invocation.count_or_default();
     // VM.3L: a motion target reports whether it moved linewise (or became
     // linewise by `:h exclusive-linewise`); a grammar range says so below.
-    let (target_range, target_linewise, target_notice): (
+    let (target_range, target_linewise, target_notice, origin): (
         ProtoRange,
         bool,
         Option<crate::registry::MotionNotice>,
+        Position,
     ) = match (&invocation.range, &invocation.target) {
-        (Some(grammar_range), _) => (
-            resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?,
-            false,
-            None,
-        ),
+        (Some(grammar_range), _) => {
+            let range = resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?;
+            // VM.3m: vim moves the cursor to the start of a Visual selection
+            // (`Vjjy` lands on its first line) but leaves it alone for a count
+            // or ex range (`yy`, `2yy`, `:%y` all keep it).
+            let origin = if matches!(grammar_range, Range::Selection) {
+                range.start
+            } else {
+                cursor
+            };
+            (range, false, None, origin)
+        }
         (None, Some(target)) => resolve_target(
             registry,
             document,
@@ -410,6 +418,7 @@ fn execute_operator(
     let mut ctx = OperatorContext {
         document,
         range: target_range,
+        origin,
         linewise: matches!(
             invocation.range,
             Some(Range::CurrentLine) | Some(Range::Whole)
@@ -507,6 +516,8 @@ fn execute_operator_blockwise(
         let mut ctx = OperatorContext {
             document,
             range: *r,
+            // VM.3m: each blockwise row starts at its own left edge.
+            origin: r.start,
             linewise: false,
             register,
             count,
@@ -710,7 +721,12 @@ fn resolve_target(
     count: crate::command::Count,
     cancel: &CancellationToken,
     env: crate::registry::GrammarEnv<'_>,
-) -> GrammarResult<(ProtoRange, bool, Option<crate::registry::MotionNotice>)> {
+) -> GrammarResult<(
+    ProtoRange,
+    bool,
+    Option<crate::registry::MotionNotice>,
+    Position,
+)> {
     match target {
         Target::Motion(motion_id, args) => {
             let entry = registry
@@ -760,7 +776,9 @@ fn resolve_target(
                 r.exclusive.unwrap_or(motion.exclusive),
                 r.linewise,
             );
-            Ok((range, linewise, r.notice))
+            // VM.3m: the target BEFORE `motion_to_range` expanded it, so a
+            // yank can land where vim leaves it.
+            Ok((range, linewise, r.notice, cursor.min(target)))
         }
         Target::TextObject(tobj_id, args) => {
             let entry = registry
@@ -778,10 +796,10 @@ fn resolve_target(
                 path: document.path(),
                 syntax: env.syntax,
             };
-            (tobj.apply)(&ctx).map(|range| (range, false, None))
+            (tobj.apply)(&ctx).map(|range| (range, false, None, range.start))
         }
         Target::Range(grammar_range) => resolve_grammar_range(document, grammar_range, cursor, 1)
-            .map(|range| (range, false, None)),
+            .map(|range| (range, false, None, range.start)),
     }
 }
 

@@ -293,6 +293,7 @@ mod tests {
                 start: pos(0, 0),
                 end: pos(0, 3),
             },
+            origin: pos(0, 0),
             linewise: false,
             register: Register::Named('a'),
             count: Count(1),

@@ -568,12 +568,15 @@ mod tests {
     }
 
     #[test]
-    fn jump_viewport_middle_lands_at_half_height() {
+    fn jump_viewport_middle_lands_at_vims_middle() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 6);
         a.editor.scroll = 0;
         a.apply(Action::JumpViewport(ViewportPos::Middle));
-        // height/2 = 3, so cursor goes to line 3.
-        assert_eq!(a.editor.cursor.line, 3);
+        // VM.3f: vim's `M` is top + (lines shown - 1) / 2, NOT half the window
+        // height — a 6-row window puts it on line 2 (checked in vim 9.2, where
+        // a 22-row window lands top + 10). The action path answers from the
+        // same `ShownLines` rule as the `M` motion, so the two can't diverge.
+        assert_eq!(a.editor.cursor.line, 2);
     }
 
     #[test]

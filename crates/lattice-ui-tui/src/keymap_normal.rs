@@ -152,12 +152,13 @@ mod tests {
     }
 
     #[test]
-    fn viewport_h_jumps_to_top() {
-        let (h, _, a) = populated_handle();
+    fn viewport_h_resolves_to_the_viewport_top_motion() {
+        // VM.3f: `H` is a motion, so `dH` / `vH` compose.
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('H'), KeyModifiers::NONE));
         match r {
-            Some(Action::Invoke(inv)) => assert_eq!(inv.command, a.jump_viewport_top),
-            other => panic!("expected Invoke(jump_viewport_top), got {other:?}"),
+            Some(Action::Invoke(inv)) => assert_eq!(inv.command, b.viewport_top.0),
+            other => panic!("expected Invoke(viewport_top motion), got {other:?}"),
         }
     }
 

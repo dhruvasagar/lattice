@@ -69,7 +69,14 @@ else
 fi
 
 say "2/3  warnings in $SCOPE"
-json=$(cargo clippy "${PKGS[@]}" ${FEATURES[@]+"${FEATURES[@]}"} --all-targets --message-format=json 2>/dev/null)
+# Clippy builds through its own driver, so its artefacts are not
+# interchangeable with the test build's. Sharing one `target/` made each phase
+# evict the other, and every gate then recompiled the whole graph twice.
+# Measured 2026-09-16: a lattice-host gate ran 29 minutes wall-clock for 83
+# SECONDS of tests (ui-tui: 188s) — the rest was that double compile. A
+# separate dir lets both caches stay warm across runs. Override with
+# CLIPPY_TARGET_DIR (e.g. to share one dir in CI, where nothing is warm).
+json=$(CARGO_TARGET_DIR="${CLIPPY_TARGET_DIR:-target/clippy}" cargo clippy "${PKGS[@]}" ${FEATURES[@]+"${FEATURES[@]}"} --all-targets --message-format=json 2>/dev/null)
 printf '%s' "$json" | ONLY="$ONLY" python3 -c '
 import sys, json, collections, os
 # Restrict to the named crates own files when a scope was given.

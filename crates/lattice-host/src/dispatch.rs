@@ -2738,7 +2738,23 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         }
         // ---- Slice 3c.final.C: renderer non-dispatch mutations ----
         Action::SetViewportHeight(h) => {
-            editor.viewport_height = h.max(1);
+            let h = h.max(1);
+            // VM.3j-3: vim resets `scroll` to half the window whenever the
+            // window size changes, so a `3<C-d>` does not outlive the window it
+            // was typed in (measured: `:split` took `&scroll` 3 → 5, `:only`
+            // took it 5 → 11, each half the new height).
+            //
+            // `0` rather than `h / 2` because `0` is already this option's
+            // "half the window, computed at use" sentinel — storing the
+            // sentinel keeps it correct through later resizes instead of
+            // freezing a number that was right once. The user-visible
+            // difference is what `:set scroll?` reports: `0` here, the concrete
+            // half in vim.
+            if editor.viewport_height != h && editor.option_cache.scroll_lines != 0 {
+                let _ = editor.config.set_typed::<lattice_config::Scroll>(0);
+                editor.option_cache.scroll_lines = 0;
+            }
+            editor.viewport_height = h;
             editor.ensure_cursor_visible();
         }
         Action::EnsureCursorVisible => {
@@ -2941,8 +2957,18 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::HorizontalScroll(k) => editor.do_horizontal_scroll(k),
         Action::PageDown => editor.do_page(true),
         Action::PageUp => editor.do_page(false),
-        Action::HalfPageDown => editor.do_half_page(true),
-        Action::HalfPageUp => editor.do_half_page(false),
+        // VM.3j-3: vim treats a count on `<C-d>` / `<C-u>` as an ASSIGNMENT to
+        // the `scroll` option, not as a one-off distance — `3<C-d>` moves three
+        // AND makes every later bare `<C-d>` move three. The `pending_count`
+        // slot is consumed here, as the pane-resize arms above consume it.
+        Action::HalfPageDown => {
+            let count = std::mem::take(&mut editor.pending_count);
+            editor.do_half_page(true, count);
+        }
+        Action::HalfPageUp => {
+            let count = std::mem::take(&mut editor.pending_count);
+            editor.do_half_page(false, count);
+        }
         Action::ScrollLineUp => editor.do_scroll_line(false),
         Action::ScrollLineDown => editor.do_scroll_line(true),
         Action::MatchBracket => editor.do_match_bracket(),
@@ -24057,8 +24083,26 @@ impl Editor {
     /// the view goes 1 → 12 and the cursor 3 → 14, i.e. both by `scroll`; near
     /// the end the cursor stops on the last line; on the last line nothing
     /// moves.
-    pub fn do_half_page(&mut self, down: bool) {
+    pub fn do_half_page(&mut self, down: bool, count: u32) {
         let height = self.viewport_height.max(1);
+        // VM.3j-3: a count is an ASSIGNMENT to `scroll`, not a one-off
+        // distance. vim 9.2 (`vimcheck_scroll_curswant.vim`), 23-row window:
+        // `3<C-d>` leaves `&scroll=3` and a following bare `<C-d>` moves 3;
+        // `2<C-u>` sets it too (both keys write the same option); `99<C-d>`
+        // leaves `&scroll=23`, so the count is CLAMPED to the window height
+        // rather than scrolling 99 lines.
+        //
+        // Written through `config`, not just the cache: `option_cache` is
+        // refreshed from `resolved_option::<Scroll>` on the next dispatch, so
+        // a cache-only write would be forgotten before the next keystroke —
+        // which is exactly the persistence this slice is about. The cache is
+        // updated alongside so the move below uses the new value in THIS call
+        // without waiting for the refresh.
+        if count > 0 {
+            let n = count.min(height);
+            let _ = self.config.set_typed::<lattice_config::Scroll>(n as i64);
+            self.option_cache.scroll_lines = n;
+        }
         let n = if self.option_cache.scroll_lines > 0 {
             self.option_cache.scroll_lines
         } else {
@@ -49420,12 +49464,12 @@ mod tests {
         e.viewport_height = 22;
         e.scroll = 0;
         e.cursor = lattice_protocol::position::Position::new(2, 0);
-        e.do_half_page(true);
+        e.do_half_page(true, 0);
         assert_eq!(e.cursor.line, 13, "the cursor by half the window");
         assert_eq!(e.scroll, 11, "and the view by the same amount");
 
         // And back up again.
-        e.do_half_page(false);
+        e.do_half_page(false, 0);
         assert_eq!(e.cursor.line, 2);
         assert_eq!(e.scroll, 0);
     }
@@ -49438,11 +49482,11 @@ mod tests {
         e.viewport_height = 22;
         e.scroll = 40;
         e.cursor = lattice_protocol::position::Position::new(77, 0);
-        e.do_half_page(true);
+        e.do_half_page(true, 0);
         assert_eq!(e.cursor.line, 79, "clamped to the last line");
 
         let before = e.scroll;
-        e.do_half_page(true);
+        e.do_half_page(true, 0);
         assert_eq!(e.cursor.line, 79, "already there: nothing moves");
         assert_eq!(e.scroll, before);
     }
@@ -49455,9 +49499,87 @@ mod tests {
         e.option_cache.scroll_lines = 3;
         e.scroll = 0;
         e.cursor = lattice_protocol::position::Position::new(2, 0);
-        e.do_half_page(true);
+        e.do_half_page(true, 0);
         assert_eq!(e.cursor.line, 5, "three lines, not eleven");
         assert_eq!(e.scroll, 3);
+    }
+
+    /// VM.3j-3: a count is an ASSIGNMENT to `scroll`, not a one-off distance.
+    ///
+    /// vim 9.2 (`vimcheck_scroll_curswant.vim`), 23-row window: `3<C-d>` leaves
+    /// `&scroll=3`, and the NEXT bare `<C-d>` moves 3 rather than reverting to
+    /// half the window. That persistence is the whole feature — a test that
+    /// only checked the first move would pass on a one-off count.
+    #[test]
+    fn a_count_on_a_half_page_sets_the_scroll_option_and_persists() {
+        let mut e = crate::editor::Editor::boot(doc_with_lines(80));
+        e.viewport_height = 22;
+        e.scroll = 0;
+        e.cursor = lattice_protocol::position::Position::new(0, 0);
+
+        e.do_half_page(true, 3);
+        assert_eq!(e.cursor.line, 3, "the count moves three");
+        assert_eq!(e.option_cache.scroll_lines, 3, "and sets the option");
+        assert_eq!(
+            *e.config
+                .get_typed::<lattice_config::Scroll>()
+                .expect("scroll is registered"),
+            3,
+            "written through to the option, not only the cache — the cache is \
+             rebuilt from it on the next dispatch",
+        );
+
+        e.do_half_page(true, 0);
+        assert_eq!(e.cursor.line, 6, "a later bare <C-d> moves three, not 11");
+    }
+
+    /// vim: `<C-u>` writes the same option — `2<C-u>` leaves `&scroll=2`.
+    #[test]
+    fn a_count_on_a_half_page_up_sets_the_same_option() {
+        let mut e = crate::editor::Editor::boot(doc_with_lines(80));
+        e.viewport_height = 22;
+        e.scroll = 40;
+        e.cursor = lattice_protocol::position::Position::new(50, 0);
+        e.do_half_page(false, 2);
+        assert_eq!(e.option_cache.scroll_lines, 2);
+        assert_eq!(e.cursor.line, 48);
+    }
+
+    /// vim: `99<C-d>` in a 23-row window leaves `&scroll=23` — the count is
+    /// clamped to the window height rather than scrolling 99 lines.
+    #[test]
+    fn a_count_larger_than_the_window_clamps_to_it() {
+        let mut e = crate::editor::Editor::boot(doc_with_lines(80));
+        e.viewport_height = 22;
+        e.scroll = 0;
+        e.cursor = lattice_protocol::position::Position::new(0, 0);
+        e.do_half_page(true, 99);
+        assert_eq!(e.option_cache.scroll_lines, 22, "clamped to the window");
+        assert_eq!(e.cursor.line, 22);
+    }
+
+    /// vim resets `scroll` when the window is resized, so a count typed in one
+    /// geometry does not outlive it (`:split` took `&scroll` 3 → 5, `:only`
+    /// 5 → 11 — each half the new height).
+    #[test]
+    fn resizing_the_window_forgets_a_counted_scroll() {
+        let mut e = crate::editor::Editor::boot(doc_with_lines(80));
+        e.viewport_height = 22;
+        e.cursor = lattice_protocol::position::Position::new(0, 0);
+        e.do_half_page(true, 3);
+        assert_eq!(e.option_cache.scroll_lines, 3);
+
+        let mut out = DispatchOutcome::default();
+        handle_action(&mut e, Action::SetViewportHeight(40), &mut out);
+        assert_eq!(
+            e.option_cache.scroll_lines, 0,
+            "back to the half-the-window sentinel",
+        );
+
+        e.cursor = lattice_protocol::position::Position::new(0, 0);
+        e.scroll = 0;
+        e.do_half_page(true, 0);
+        assert_eq!(e.cursor.line, 20, "half of the NEW height, not the old 3");
     }
 
     /// The parity guard for IM.1b: with no overrides the weighted walks must

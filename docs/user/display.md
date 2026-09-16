@@ -52,6 +52,7 @@ that have no mode of their own (`tabstop`, `scrolloff`, `scroll`, `startofline`,
 | `:set tabstop=N`  (`:set ts=N`)  | `4`     | Columns a hard tab occupies                                    |
 | `:set scrolloff=N` (`:set so=N`) | `0`     | Minimum lines kept above/below the cursor                      |
 | `:set scroll=N` (`:set scr=N`) | `0`       | Lines `<C-d>` / `<C-u>` move (`0` = half the window, recomputed as it resizes) |
+| `{count}<C-d>` / `{count}<C-u>` | —       | Move by `count` **and** set `scroll` to it, so later presses keep that distance (vim's rule) |
 | `:set startofline` (`:set sol`) / `:set nostartofline` | on | `gg` / `G` / `H` / `M` / `L` / `<C-f>` / `<C-b>` / `<C-d>` / `<C-u>` land on the first non-blank; off keeps the cursor's column |
 | `:set sidescroll=N` (`:set ss=N`) | `0`    | Columns to scroll when the cursor crosses the edge (`0` = jump to centre) |
 | `:set sidescrolloff=N` (`:set siso=N`) | `0` | Minimum columns kept left/right of the cursor (`nowrap`)     |

@@ -487,22 +487,47 @@ not a hole in the checking.
 
 **Landed without one measured row**, which VM.3j-3 carries.
 
-### VM.3j-3 📝 — `{count}<C-d>` sets `scroll` and persists
+### VM.3j-3 ✅ — `{count}<C-d>` sets `scroll` and persists
 
-`do_half_page` takes no count, and `Action::HalfPageDown` carries none — so
-`3<C-d>` moves half a window, not three lines, and a following bare `<C-d>` has
-nothing to remember. vim (`vimcheck_ctrl_d.vim`) treats the count as an
-assignment to the `scroll` OPTION: `3<C-d>` moves three AND sets `scroll=3`, so
-every later `<C-d>` moves three until something changes it again.
+`do_half_page` took no count and `Action::HalfPageDown` carried none, so
+`3<C-d>` moved half a window and a following bare `<C-d>` had nothing to
+remember. vim treats the count as an assignment to the `scroll` OPTION.
 
-That is a write to option state from a scroll command, which no other scroll
-command does — `do_page` and `do_scroll_line` ignore counts too, but for them
-vim does as well. So this is not "thread a count through"; it is one command
-that mutates a buffer-local option as a side effect, and it wants its own slice
-rather than being smuggled into the one that made `<C-d>` a scroll command.
+Measured in vim 9.2 (`vimcheck_scroll_curswant.vim`), 23-row window:
 
-Written down rather than rounded off, the same way VM.3g-3 is: narrow, real,
-and invisible until someone types a count.
+```text
+default                &scroll=11          (half of 23)
+3<C-d>                 &scroll=3
+then bare <C-d>        cursor +3, top +3   (persists)
+2<C-u>                 &scroll=2           (<C-u> writes the SAME option)
+99<C-d>                &scroll=23          (CLAMPED to the window height)
+:split  (height 11)    &scroll=5           (reset, half the new window)
+:only   (height 23)    &scroll=11          (reset again)
+```
+
+Three rows were not in this plan's original description, and two of them cost
+real code: `<C-u>` writes the option too; a count is clamped to the window
+height rather than scrolling that far; and **`scroll` is reset whenever the
+window is resized**, so a counted value never outlives the geometry it was
+typed in. The last one is why this could not be "thread a count through" — it
+needs a hook on `Action::SetViewportHeight`.
+
+**No WIT change, unlike VM.3j-2.** The count comes from `Editor::pending_count`,
+the slot the `<C-w>` pane-resize arms already consume, so `AppEffect` stays a
+unit variant and nothing crosses the boundary.
+
+The reset stores `0` rather than `height / 2`: `0` is already this option's
+"half the window, computed at use" sentinel, so storing it stays correct through
+later resizes instead of freezing a number that was right once. The only
+user-visible difference from vim is what `:set scroll?` reports — `0` here, the
+concrete half there.
+
+**Known divergence: vim's `scroll` is window-local, lattice's is not.** vim
+keeps a separate value per window, so `3<C-d>` in one split leaves the other
+alone; lattice has no window-local option mechanism, so the write is global and
+both splits move by three. Narrow (it needs a count typed with a split open),
+recorded rather than silently accepted, and it wants a window-local option
+substrate rather than a patch here.
 
 ### VM.3g-1 ✅ — `j` and `k` remember the column they aim for
 

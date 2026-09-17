@@ -429,6 +429,11 @@ origin on the way through.
 
 ### Aborting creates nothing
 
+> **Superseded in part by [`org-capture-drafts.md`](org-capture-drafts.md) §2
+> (CD.4).** A capture is now a draft *file*. Aborting one that was never saved
+> still touches no disk; aborting one that was saved deletes it. The text below
+> is kept as the record of the synthetic-buffer design.
+
 `C-c C-k` writes no file, and that **falls out of the buffer model** rather
 than being cleaned up: the file is written on finalize, so an abort has nothing
 to undo. It is the property OR.6's `WriteToFile`-on-create did not have, and a
@@ -436,6 +441,12 @@ large part of what the ABI addition bought — org-roam inherited it wholesale a
 OR.11b, including the discarding of an id already minted for the note.
 
 ### Known gaps
+
+> **Both gaps below are closed by [`org-capture-drafts.md`](org-capture-drafts.md)
+> (CD.4).** A capture records the buffer it was fired from and returns there on
+> commit and on discard (`focus-buffer`, CD.1). Any number of captures can be
+> open, each a draft file whose state is in the plugin store. Kept as written
+> so the reasoning that was replaced stays readable.
 
 - **The pane does not return to where the capture was fired from.** Finalize
   closes the buffer and lands on whatever the host falls back to. A guest

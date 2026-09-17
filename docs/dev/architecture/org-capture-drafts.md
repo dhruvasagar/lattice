@@ -597,10 +597,16 @@ lands, which is when it becomes a node.
 | `org.capture-drafts-directory` | `{org.directory}/captures` | Where drafts live. |
 | `org.roam-capture-reference-origin` | on | §9's backward link. Off means the two no-write-back cases produce no connection at all, which is a legitimate preference. |
 
-With `org.directory` unset, fall back to the directory holding
+With `org.directory` unset, fall back to `captures/` beside
 `org.capture-file`. With neither set, a draft still captures — it just cannot be
 *saved*, and the first `:w` **says why** rather than writing somewhere
-surprising.
+surprising. Built as an unwritable sentinel directory,
+`/set-org.directory-to-save-capture-drafts/`, rather than a synthetic buffer:
+the draft keeps a path (so identity-by-path still works), `:w` fails naming
+that path, and the capture echoes the fix when it opens.
+
+The drafts directory has to lie inside the plugin's `fs:write` grant, or
+`delete-file` refuses and cleanup says the draft was left behind.
 
 This reverses nothing. `org-capture.md` §2 rejected `org.directory` as a way to
 *find a templates file* — "config belongs where the user's config is". A drafts

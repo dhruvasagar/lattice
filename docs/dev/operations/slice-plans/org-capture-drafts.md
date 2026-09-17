@@ -17,7 +17,7 @@ that unblocks one deferred row of the design's §8 table.
 | CD.3b | lattice | `host-services.can-write-file` (design H5) | ✅ |
 | CD.3c | lattice | A failed or denied `WriteToFile` stops the rest of its action (H6) | ✅ |
 | CD.3d | lattice | `Effect::InvokeCommand(command-ref)` (H7) | ✅ |
-| CD.4 | org-plugin | File-backed captures; state in the store; simultaneity; **the caller**; target checked at open, cleanup after the write | 📝 |
+| CD.4 | org-plugin | File-backed captures; state in the store; simultaneity; **the caller**; target checked at open, cleanup after the write | ✅ |
 | CD.5 | org-plugin | `:org-capture-drafts` picker + `<leader>od` | 📝 |
 | CD.6 | org-plugin | `create-and-insert` opens a child capture; write-back; regions | 📝 |
 | CD.7 | org-plugin | `${origin}` back-reference for the no-write-back verbs | 📝 |
@@ -195,6 +195,38 @@ cleans up directly and focuses the caller without filing.
 **Docs.** Amend `org-capture.md` §8 — "One capture in flight" and "Aborting
 creates nothing" are now wrong. Point them at the new page rather than editing
 them into agreement, so the history stays readable.
+
+**Landed** (`lattice-org-plugin`).
+- `capture_drafts.rs` holds the pure half: the id (FNV-1a over prefix, key,
+  title, a per-seam counter and the clock, re-rolled while the store or the
+  disk has it), drafts-directory resolution, the path test, and the msgpack
+  encoding.
+- `CaptureState` replaced `PENDING_CAPTURE`, and the `Target` family is
+  serde.
+- **Drafts directory:** `capture-drafts-directory`, else
+  `{org.directory}/captures`, else `captures/` beside `capture-file`. With
+  none set, drafts go to an unwritable sentinel,
+  `/set-org.directory-to-save-capture-drafts/`. The capture works, `:w`
+  fails with that path in the error, and opening echoes the fix. It is a
+  path rather than a synthetic buffer, so identity-by-path holds everywhere.
+- **Grant requirement:** the drafts directory must sit inside the plugin's
+  `fs:write` grant, or cleanup reports it could not delete the draft.
+  Capture also needs `state:write`, which the shipped manifest already has.
+  Without it the capture refuses to open rather than opening something it
+  could never file.
+- **Roam creates** go through the same drafts with no caller yet (CD.6/CD.7).
+- **Buffer names** in the tests became path lookups (`*org-capture:t*` no
+  longer exists). The roam harness stopped applying host-applied effects a
+  second time; it had been closing two buffers per commit.
+- **OC.7d:** the archived `org-capture` plan has no OC.7d row to mark, so
+  there was nothing to update there. The inverted assertion in
+  `the_prompt_the_menu_opens_actually_files_the_note` is the record.
+
+Tests added (`org_structure.rs`): two captures of one template committed in
+either order; save → close → reopen → commit; discard before and after `:w`;
+discard returns to the caller; a target outside the grant refused at open;
+a commit whose target directory vanished keeps the draft, its file and its
+state, and succeeds on retry.
 
 ---
 

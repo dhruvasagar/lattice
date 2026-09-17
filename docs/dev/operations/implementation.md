@@ -6835,7 +6835,8 @@ the dispatch thread is already inside, so the read has to be host-side. That
 constraint is now in the plugin-authoring guide; it is invisible until it
 panics.
 
-**The template SHAPE is being reworked (CT.1–CT.9, 📝 unbuilt).**
+**The template SHAPE was reworked (CT.1–CT.8, CT.10 ✅; CT.9, the user's own
+`init.rs`, 🚧).**
 `Template` and `RoamTemplate` are two hand-maintained declarations of one thing
 — emacs holds `org-capture-templates` and `org-roam-capture-templates` as
 separate variables of the *same* type, and lattice's own pipeline already
@@ -6846,6 +6847,18 @@ No host slice: it is guest-side throughout. Design:
 [`../architecture/org-capture-templates.md`](../architecture/org-capture-templates.md);
 slice plan:
 [`slice-plans/org-capture-templates.md`](slice-plans/org-capture-templates.md).
+
+**Captures are draft files (CD.1–CD.8 ✅; CD.9 ⛔ deferred).** Any number at
+once, saved with `:w`, resumed from `<leader>oC`, filed back to where they were
+started. A roam note created inside a capture links into it (`C-c n i`) or back
+to it (`${origin}`). The target is checked at open, and a write that does not
+land stops the rest of its action, so a failed commit keeps the draft. Host
+seams added: `effect.focus-buffer`, `open-buffer-at` `content` /
+`activate-minor`, `host-services.delete-file` / `can-write-file` /
+`clamp-position`, `effect.invoke-command`, and `open-picker` `query`. Design:
+[`../architecture/org-capture-drafts.md`](../architecture/org-capture-drafts.md);
+slice plan:
+[`slice-plans/org-capture-drafts.md`](slice-plans/org-capture-drafts.md).
 
 ---
 

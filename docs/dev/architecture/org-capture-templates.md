@@ -147,6 +147,41 @@ existing addressing vocabulary and composes with every future entry type,
 whereas a `table-line`-only selector would need re-inventing the moment `item`
 lands.
 
+### 4.1.1 `seed`: the day a `sub-olp` capture needs
+
+A `sub-olp` names a section that lives *inside* the day's own body, so it exists
+only once something has filed that body. On the first capture of a day the
+section is missing by construction. Without a remedy, a row captured before the
+day's sheet is filed goes under the bare date node — no table, no header — and
+the sheet filed later lands *below* the stray row.
+
+`seed` is the key of another template in the same list. When the date node is
+missing, the seed's body becomes the day and the capture goes into the section
+that body brings with it: **one write**, placed by the same resolvers a capture
+into an existing day uses, so the two cannot disagree about where a row goes.
+
+- **Only a missing day seeds.** A day that exists but lacks the section is not
+  re-seeded — that would put a second sheet under the same date. The capture is
+  kept under the date node with a warning, as is a missing day with no `seed`
+  (whose warning names `seed` as the fix).
+- **The seed's `%^{…}` questions are left blank**; `%U`, `%<fmt>` and the rest
+  expand as usual. A day sheet's questions (an overall rating for the day) have
+  no answer at its first capture, and asking them in the middle of another
+  capture is the wrong moment. They are filled in later, by hand.
+- **Validated at read.** A `seed` on a target without a datetree `sub-olp`, one
+  naming a missing key or itself, or one whose template does not file to a
+  datetree in the same file, skips the declaring template by name. Skipping is
+  repeated to a fixed point, since a skipped template can strand one that seeds
+  from it.
+- **Both lists.** Roam fills the seed's `${…}` over the same node.
+
+Org has no equivalent: emacs would need a `(file+function …)` locator that
+builds the day itself. This is the second place the design goes past org, and
+for the same reason as `sub-olp` — the tracker shape is not expressible
+otherwise. The alternative, asking the user to run the day template first, was
+rejected on the UX court: the capture that exposes the gap is the one made in
+the moment an urge happens, which is exactly when a two-step ritual is skipped.
+
 ### 4.2 Datetree shape, and the re-levelling it forces
 
 `org-datetree.el:138-158` builds three levels, and the day node carries a weekday
@@ -321,6 +356,8 @@ Template {
 		..Default::default()
 	},
 	r#type: Some("table-line".into()),
+	// The first episode of a day creates the day's sheet from `H` (§4.1.1).
+	seed: Some("H".into()),
 	body: Some("| %^{Time / Situation} | %^{Thoughts / Assumptions} | … | %^{After 0-10} |".into()),
 	..Default::default()
 }

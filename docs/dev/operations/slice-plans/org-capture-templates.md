@@ -28,6 +28,7 @@ thing in this repo.
 | CT.8 | org-plugin | Roam adopts the shape; `file+head`; `RoamTemplate` removed | ✅ |
 | CT.9 | user config | `init.rs` declaration + the tracker file's conversion | 🚧 |
 | CT.4b | org-plugin | Table-location bench over a year-long tracker | ⛔ |
+| CT.10 | org-plugin | `seed` — a `sub-olp` capture creates the day it needs | ✅ |
 
 **Ordering rationale.** CT.1 and CT.2 are independently useful and unblock
 nothing else, so they go first and deliver the original request on their own.
@@ -320,7 +321,8 @@ node collapses to one line.
 **What landed.** The init `Target` gained `tree_type` / `sub_olp`, `Template`
 gained `r#type`; the tracker templates are `H` (day) and `u` (episode row) —
 `h` is the habit entry template and would shadow `he`, so read those as `H` and
-`u` in the verification above. There is no vocab template in the init, so that
+`u` in the verification above. `u` declares `seed = "H"` (CT.10), so the manual
+check also covers a `u` on a day with no sheet yet. There is no vocab template in the init, so that
 item is moot. The "paths are ABSOLUTE" warning was replaced by a note that `~/`
 works. The body is `org-files/templates/habit-episode-tracker.org` (keywords
 dropped; the empty episode row dropped so captured rows are not preceded by a
@@ -329,6 +331,29 @@ blank one), and `org-files/habit-tracker.org` carries the keywords and
 headline cannot carry one. The original `roam/templates/habit-episode-tracker.org`
 is left in place for the user to delete. **The manual verification above has
 not been run** — it needs the editor; this slice turns ✅ when it has.
+
+
+---
+
+## CT.10 ✅ — `seed`: a `sub-olp` capture creates the day it needs
+
+Design §4.1.1. Carved after CT.9's walkthrough asked what `u` does on a new
+day: it wrote the row under a bare date node, with no warning, and a later `H`
+filed the sheet below it.
+
+**Behaviour.** `Template::seed` names another template; validated at read
+(datetree `sub-olp` only; the key exists, is not self, and files to a datetree
+in the same file; skipping repeats to a fixed point). `CaptureDestination`
+carries the seed body expanded at open with blank `%^{…}`. In the datetree
+branch a missing day with a seed builds the day block and places the capture
+inside it with `place_in_section` — the helper the existing-day path now also
+uses. A missing section otherwise warns; the missing-day warning names `seed`.
+
+**Tests.** Seeded day with the row in the episode table (full text asserted,
+including the cue table after it); an existing day is not re-seeded; unseeded
+first capture warns and names `seed`; a day without the section warns without
+the hint; a seed lacking the section files both and warns; a seeded `entry`
+files under the new section; four validation skips and the fixed-point strand.
 
 ---
 

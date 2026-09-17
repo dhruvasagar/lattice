@@ -15,7 +15,7 @@ that unblocks one deferred row of the design's §8 table.
 | CD.2 | lattice | `open-buffer-at-payload` += `content`, `activate-minor` | ✅ |
 | CD.3 | lattice | `host-services.delete-file` | ✅ |
 | CD.3b | lattice | `host-services.can-write-file` (design H5) | ✅ |
-| CD.3c | lattice | A failed or denied `WriteToFile` stops the rest of its action (H6) | 📝 |
+| CD.3c | lattice | A failed or denied `WriteToFile` stops the rest of its action (H6) | ✅ |
 | CD.3d | lattice | `Effect::InvokeCommand(command-ref)` (H7) | 📝 |
 | CD.4 | org-plugin | File-backed captures; state in the store; simultaneity; **the caller**; target checked at open, cleanup after the write | 📝 |
 | CD.5 | org-plugin | `:org-capture-drafts` picker + `<leader>od` | 📝 |
@@ -147,6 +147,9 @@ finalize. Decided with Dhruva: take both halves.
   failed write leaves a following `BufferDelete` unapplied; a denied write drops
   its later siblings; effects *before* the write still apply; a successful write
   changes nothing.
+  *Landed:* a failed **save** does not stop the batch. The text has landed
+  in the target buffer, which `:q` guards, and a retry would file the entry
+  twice.
 - **CD.3d** — `Effect::InvokeCommand { id, args }`, host-applied through the
   picker's invoke path (action with typed args, else ex line). Tests: an action
   and an ex-command each run from an effect; one after a failed write does not.

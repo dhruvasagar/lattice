@@ -344,6 +344,31 @@ Every path degrades to "the user's text is still where it was".
   skipped with a `warn!`. Duplicated text is recoverable by hand; lost text is
   not, so this asymmetry is deliberate.
 
+### 8.0 A write that does not land stops the rest of its action (CD.3c)
+
+Every refusal above — outside the grant, unresolvable, insert failed — also
+**stops the effects after the write in the same action**, both at the boundary
+(the authorizer drops the rest of the `Many`) and in the applier
+(`apply_effect_host` returns early). The effects before it stand.
+
+The rule "degrades to the user's text is still where it was" was only half true
+without this. A producer that files and then *moves on* — capture's
+`[write, close the buffer]` — closed its buffer over a failed write, and the
+text was in neither place. That happened live whenever a capture target was
+outside the grant. emacs has the same shape and the same answer:
+`org-capture-finalize` calls `save-buffer`, and an error there unwinds the
+rest of finalize, so the capture buffer is still on screen.
+
+The boundary used to do the opposite, deliberately: "one denied write must not
+silently cancel the other things an action did". That is right for independent
+effects and wrong for a commit, and a producer whose effects really are
+independent does not put a write first.
+
+**A failed *save* does not stop the batch.** With `save: true` the text has
+already landed in the target buffer when the save fails, and the dirty-buffer
+guard protects it. Stopping would leave the producer's state saying "not
+filed" about text that is filed, and a retry would file it twice.
+
 ### 8.1 `create_parents`, and why it is opt-in rather than the default
 
 Creating directories is a larger authority than creating a file, and a typo'd

@@ -238,6 +238,10 @@ pub fn choose_indent_source(fresh: bool) -> IndentSource {
 /// `lattice_grammar::Effect::Many` already aggregates inner effects.
 #[derive(Debug, Default)]
 pub struct DispatchOutcome {
+    /// CD.3c: a `WriteToFile` in the effects being applied did not land.
+    /// Transient: [`apply_effect_host`] clears it as soon as it has stopped
+    /// the batch, so it never reaches a caller.
+    pub write_failed: bool,
     /// Host-to-renderer side-effects. Empty for the vast majority
     /// of dispatches (state changed; renderer just refreshes its
     /// per-frame caches on the next tick).
@@ -291,6 +295,13 @@ impl DispatchOutcome {
     /// next_actions; OR the consumed flag. Used by picker-accept
     /// paths that delegate to `apply_picker_outcome` and need to
     /// forward the full outcome upward.
+    /// CD.3c: set by a `WriteToFile` that did not land, and read (and
+    /// cleared) by the effect flattener, which then applies nothing more from
+    /// the batch the write was in. See [`apply_effect_host`].
+    pub fn take_write_failure(&mut self) -> bool {
+        std::mem::take(&mut self.write_failed)
+    }
+
     pub fn merge(&mut self, other: DispatchOutcome) {
         self.renderer_signals.extend(other.renderer_signals);
         self.effects.extend(other.effects);
@@ -4492,7 +4503,11 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             create_parents,
             save,
         } => {
-            editor.apply_write_to_file(path, anchor, text, cut, create_parents, save);
+            // CD.3c: a write that did not land stops the rest of its batch —
+            // `apply_effect_host` reads this.
+            if !editor.apply_write_to_file(path, anchor, text, cut, create_parents, save) {
+                out.write_failed = true;
+            }
         }
         Effect::EnterMode(mode) => {
             // 5.5.G.23.macros: operators that flip mode (`c` ->
@@ -24612,7 +24627,7 @@ impl Editor {
         cut: Option<lattice_protocol::position::Range>,
         create_parents: bool,
         save: bool,
-    ) {
+    ) -> bool {
         // Captured BEFORE resolving: opening the target must not move focus
         // (XF.2), but reading the source id first means this is correct even
         // if that ever changes.
@@ -24622,7 +24637,7 @@ impl Editor {
             Ok(id) => id,
             Err(reason) => {
                 self.set_message(EchoLevel::Warn, format!("write-to-file: {reason}"));
-                return;
+                return false;
             }
         };
 
@@ -24631,7 +24646,7 @@ impl Editor {
                 EchoLevel::Warn,
                 format!("write-to-file: {} could not be opened", path.display()),
             );
-            return;
+            return false;
         };
         let snap = handle.snapshot();
         let line_count = snap.buffer.content_line_count();
@@ -24680,7 +24695,7 @@ impl Editor {
                 EchoLevel::Warn,
                 format!("write-to-file: could not write to {}", path.display()),
             );
-            return;
+            return false;
         }
 
         if let Some(range) = cut {
@@ -24710,9 +24725,14 @@ impl Editor {
         // the target's copy is correct either way, and refusing to save it
         // would turn "the text is in two places" into "the text is in two
         // places and one of them is only in memory".
+        // CD.3c: a failed SAVE still counts as landed. The text is in the
+        // target buffer, which the dirty-buffer guard protects, so nothing is
+        // lost — and treating it as a failure would make a retried capture
+        // file its entry twice.
         if save {
             self.save_target_to_disk(target, &path);
         }
+        true
     }
 
     /// OC.9: persist a cross-file write's TARGET — a buffer that is, by
@@ -43205,16 +43225,30 @@ pub fn folding_range_to_fold(r: lattice_lsp::lsp_types::FoldingRange) -> lattice
 /// `handle_effect` pass commits its state mutation in order, and the
 /// renderer-coupled drain on App side sees a flat sequence — no Many
 /// recursion needed twice.
+///
+/// **CD.3c: a `WriteToFile` that does not land stops the batch.** Nothing after
+/// it in the same effect tree is applied — neither host-side nor pushed for the
+/// renderer — while everything before it stands. This is emacs's
+/// `org-capture-finalize`, where a failed `save-buffer` unwinds the rest, and it
+/// is what lets a producer put a write first and rely on the effects after it
+/// meaning "the write happened": a capture closes its buffer and deletes its
+/// draft only after the entry is filed. Returns `false` when it stopped.
+///
+/// Only a failed *write* stops a batch. A failed `ApplyEdit` does not — those
+/// are independent edits, and XF.0's tests pin that a list keeps going past one.
 fn apply_effect_host(
     editor: &mut Editor,
     effect: lattice_grammar::Effect,
     out: &mut DispatchOutcome,
-) {
+) -> bool {
     match effect {
         lattice_grammar::Effect::Many(parts) => {
             for p in parts {
-                apply_effect_host(editor, p, out);
+                if !apply_effect_host(editor, p, out) {
+                    return false;
+                }
             }
+            true
         }
         other => {
             handle_effect(editor, other.clone(), out);
@@ -43224,6 +43258,11 @@ fn apply_effect_host(
             if !matches!(other, lattice_grammar::Effect::None) {
                 out.effects.push(other);
             }
+            if out.take_write_failure() {
+                tracing::debug!("a write-to-file did not land; the rest of its batch is skipped");
+                return false;
+            }
+            true
         }
     }
 }
@@ -43715,7 +43754,9 @@ impl Editor {
                 // `dispatch_chord` re-resolves the chord at the next keymap layer
                 // (fall through), rather than applying an effect.
                 Ok(lattice_grammar::Effect::Declined) => out.declined = true,
-                Ok(effect) => apply_effect_host(self, effect, out),
+                Ok(effect) => {
+                    apply_effect_host(self, effect, out);
+                }
                 Err(e) => {
                     self.set_message(EchoLevel::Error, format!("action dispatch failed: {e:?}"));
                 }
@@ -44887,6 +44928,124 @@ mod tests {
             lattice_grammar::Effect::Many(vec![xf0_doomed(), xf0_doomed()]),
         );
         assert_eq!(xf0_text(&editor), before);
+    }
+
+    // ── CD.3c: a write that does not land stops its batch ──
+
+    /// An editor on a scratch document with a second file open and showing;
+    /// returns the scratch document's id, the file's id and the tempdir.
+    fn cd3c_editor() -> (
+        Editor,
+        lattice_core::BufferId,
+        lattice_core::BufferId,
+        tempfile::TempDir,
+    ) {
+        let mut editor = xf0_editor();
+        let first = editor.active_pane_buffer_id();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("second.txt");
+        std::fs::write(&path, "second\n").unwrap();
+        let _ = editor.do_edit(Some(path), false);
+        let second = editor.active_pane_buffer_id();
+        (editor, first, second, dir)
+    }
+
+    fn cd3c_write(path: std::path::PathBuf) -> lattice_grammar::Effect {
+        lattice_grammar::Effect::WriteToFile {
+            path,
+            anchor: lattice_grammar::FileAnchor::End,
+            text: "* filed\n".to_string(),
+            cut: None,
+            create_parents: false,
+            save: true,
+        }
+    }
+
+    /// The capture shape: file, then move on. A write that cannot land — its
+    /// directory does not exist — leaves everything after it unapplied, and
+    /// unannounced to the renderer.
+    #[test]
+    fn a_failed_write_stops_the_rest_of_its_batch() {
+        let (mut editor, first, second, dir) = cd3c_editor();
+        let mut out = DispatchOutcome::default();
+        let completed = apply_effect_host(
+            &mut editor,
+            lattice_grammar::Effect::Many(vec![
+                cd3c_write(dir.path().join("missing").join("inbox.org")),
+                lattice_grammar::Effect::FocusBuffer(first.0),
+            ]),
+            &mut out,
+        );
+        assert!(!completed);
+        assert_eq!(
+            editor.active_pane_buffer_id(),
+            second,
+            "the focus did not run"
+        );
+        assert!(
+            !out.effects
+                .iter()
+                .any(|e| matches!(e, lattice_grammar::Effect::FocusBuffer(_))),
+            "nor was it handed to the renderer: {:?}",
+            out.effects
+        );
+        assert!(
+            !out.write_failed,
+            "the flag is consumed, not leaked to the caller"
+        );
+    }
+
+    #[test]
+    fn effects_before_a_failed_write_still_apply() {
+        let (mut editor, first, _second, dir) = cd3c_editor();
+        let mut out = DispatchOutcome::default();
+        let _ = apply_effect_host(
+            &mut editor,
+            lattice_grammar::Effect::Many(vec![
+                lattice_grammar::Effect::FocusBuffer(first.0),
+                cd3c_write(dir.path().join("missing").join("inbox.org")),
+            ]),
+            &mut out,
+        );
+        assert_eq!(editor.active_pane_buffer_id(), first);
+    }
+
+    /// The stop reaches the enclosing batch, not only the write's siblings.
+    #[test]
+    fn a_failed_write_nested_one_level_stops_the_outer_batch() {
+        let (mut editor, first, second, dir) = cd3c_editor();
+        let mut out = DispatchOutcome::default();
+        let _ = apply_effect_host(
+            &mut editor,
+            lattice_grammar::Effect::Many(vec![
+                lattice_grammar::Effect::Many(vec![cd3c_write(
+                    dir.path().join("missing").join("inbox.org"),
+                )]),
+                lattice_grammar::Effect::FocusBuffer(first.0),
+            ]),
+            &mut out,
+        );
+        assert_eq!(editor.active_pane_buffer_id(), second);
+    }
+
+    /// A write that lands changes nothing about the batch — and the target
+    /// file holds the entry.
+    #[test]
+    fn a_landed_write_lets_the_batch_continue() {
+        let (mut editor, first, _second, dir) = cd3c_editor();
+        let target = dir.path().join("inbox.org");
+        let mut out = DispatchOutcome::default();
+        let completed = apply_effect_host(
+            &mut editor,
+            lattice_grammar::Effect::Many(vec![
+                cd3c_write(target.clone()),
+                lattice_grammar::Effect::FocusBuffer(first.0),
+            ]),
+            &mut out,
+        );
+        assert!(completed);
+        assert_eq!(editor.active_pane_buffer_id(), first);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "* filed\n");
     }
 
     // ── RF.5b / RF.6: delegation ──

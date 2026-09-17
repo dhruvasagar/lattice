@@ -25,8 +25,17 @@
 //!
 //! Replaces the effect with an `Echo`, so the user is told rather than left
 //! wondering why a key did nothing — the same reasoning as
-//! `ProviderViewOutcome::Declined`. The rest of a `Many` is preserved: one
-//! denied write must not silently cancel the other things an action did.
+//! `ProviderViewOutcome::Declined`.
+//!
+//! **And drops what came after it in the batch** (CD.3c). This used to keep
+//! the rest of a `Many`, on the reasoning that "one denied write must not
+//! silently cancel the other things an action did". That holds for independent
+//! effects and is wrong for a commit, where what follows a write presumes it
+//! happened: org's capture returned `[write, close the buffer]`, so a denied
+//! target closed the capture and the user's text went with it. The host's
+//! applier stops a batch after a write that fails for any other reason
+//! (`apply_effect_host`); a denial is the same failure, found earlier, and is
+//! handled the same way. Effects *before* the write are kept.
 
 use std::path::{Path, PathBuf};
 
@@ -96,9 +105,23 @@ impl EffectAuthorizer {
     /// too — an unchecked path there would be the whole gate, bypassed by
     /// wrapping.
     pub fn authorize(&self, effect: NativeEffect) -> NativeEffect {
+        self.authorize_batch(effect).0
+    }
+
+    /// [`Self::authorize`], also reporting whether a write was denied — the
+    /// signal that truncates every enclosing `Many`, not only the innermost.
+    fn authorize_batch(&self, effect: NativeEffect) -> (NativeEffect, bool) {
         match effect {
             NativeEffect::Many(parts) => {
-                NativeEffect::Many(parts.into_iter().map(|p| self.authorize(p)).collect())
+                let mut kept = Vec::with_capacity(parts.len());
+                for part in parts {
+                    let (part, denied) = self.authorize_batch(part);
+                    kept.push(part);
+                    if denied {
+                        return (NativeEffect::Many(kept), true);
+                    }
+                }
+                (NativeEffect::Many(kept), false)
             }
             NativeEffect::WriteToFile { ref path, .. } if !self.permits_write(path) => {
                 // `info!`: one-shot and user-actionable ("a plugin was denied
@@ -109,16 +132,19 @@ impl EffectAuthorizer {
                     path = %path.display(),
                     "write-to-file denied: outside the plugin's fs:write grant"
                 );
-                NativeEffect::Echo {
-                    level: EchoLevel::Warn,
-                    text: format!(
-                        "{}: write denied — {} is outside the plugin's granted paths",
-                        self.plugin,
-                        path.display()
-                    ),
-                }
+                (
+                    NativeEffect::Echo {
+                        level: EchoLevel::Warn,
+                        text: format!(
+                            "{}: write denied — {} is outside the plugin's granted paths",
+                            self.plugin,
+                            path.display()
+                        ),
+                    },
+                    true,
+                )
             }
-            other => other,
+            other => (other, false),
         }
     }
 }
@@ -396,28 +422,72 @@ mod tests {
         }
     }
 
-    /// One denied write does not cancel the rest of a compound effect — the
-    /// action's other work still happens, which is the graceful-degradation
-    /// rule rather than an all-or-nothing refusal.
+    /// CD.3c: a denied write drops what follows it — the effects after a write
+    /// presume it happened (capture closes its buffer after filing) — and
+    /// keeps what came before it. This reverses the earlier "the rest of a
+    /// `Many` survives" rule; see the module doc.
     #[test]
-    fn the_rest_of_a_many_survives_a_denial() {
+    fn a_denied_write_drops_the_rest_of_its_batch_and_keeps_the_start() {
         let granted = tmp("survive-granted");
         let other = tmp("survive-other");
         let auth = EffectAuthorizer::new(&grant(&granted, true), "org");
 
         let effect = NativeEffect::Many(vec![
+            NativeEffect::CursorMove(lattice_protocol::position::Position::new(1, 0)),
             write_effect(&other.join("a.org")),
-            NativeEffect::CursorMove(lattice_protocol::position::Position::new(3, 0)),
+            NativeEffect::BufferDelete { force: true },
         ]);
 
         match auth.authorize(effect) {
             NativeEffect::Many(parts) => {
-                assert!(matches!(parts[0], NativeEffect::Echo { .. }));
+                assert_eq!(
+                    parts.len(),
+                    2,
+                    "the close after the write is dropped: {parts:?}"
+                );
                 assert!(
-                    matches!(parts[1], NativeEffect::CursorMove(_)),
-                    "the cursor move still happens"
+                    matches!(parts[0], NativeEffect::CursorMove(_)),
+                    "before: kept"
+                );
+                assert!(
+                    matches!(parts[1], NativeEffect::Echo { .. }),
+                    "the denial is said"
                 );
             }
+            other => panic!("expected a Many, got {other:?}"),
+        }
+    }
+
+    /// The truncation reaches the enclosing batch too — a write nested one
+    /// level down stops its parent's later effects, not only its siblings.
+    #[test]
+    fn a_nested_denial_truncates_the_enclosing_batch() {
+        let granted = tmp("outer-granted");
+        let other = tmp("outer-other");
+        let auth = EffectAuthorizer::new(&grant(&granted, true), "org");
+
+        let effect = NativeEffect::Many(vec![
+            NativeEffect::Many(vec![write_effect(&other.join("a.org"))]),
+            NativeEffect::BufferDelete { force: true },
+        ]);
+
+        match auth.authorize(effect) {
+            NativeEffect::Many(parts) => assert_eq!(parts.len(), 1, "{parts:?}"),
+            other => panic!("expected a Many, got {other:?}"),
+        }
+    }
+
+    /// A permitted write changes nothing about the batch.
+    #[test]
+    fn a_permitted_write_keeps_the_whole_batch() {
+        let granted = tmp("whole-granted");
+        let auth = EffectAuthorizer::new(&grant(&granted, true), "org");
+        let effect = NativeEffect::Many(vec![
+            write_effect(&granted.join("a.org")),
+            NativeEffect::BufferDelete { force: true },
+        ]);
+        match auth.authorize(effect) {
+            NativeEffect::Many(parts) => assert_eq!(parts.len(), 2),
             other => panic!("expected a Many, got {other:?}"),
         }
     }

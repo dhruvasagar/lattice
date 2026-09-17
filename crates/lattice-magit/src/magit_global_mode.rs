@@ -600,7 +600,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 return None;
             }
             spawn_bisect(ctx, "start", move |repo| {
-                lattice_vcs::Bisect::start(repo, Some(&bad), Some(&good))
+                lattice_vcs::Bisect::start(repo, Some(&bad), Some(&good)).map(Some)
             });
             Some(Effect::Echo {
                 level: EchoLevel::Info,
@@ -624,16 +624,16 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         };
     }
     bisect_mark!("action:magit-global-bisect-good", "good", |repo| {
-        lattice_vcs::Bisect::good(repo, None)
+        lattice_vcs::Bisect::good(repo, None).map(Some)
     });
     bisect_mark!("action:magit-global-bisect-bad", "bad", |repo| {
-        lattice_vcs::Bisect::bad(repo, None)
+        lattice_vcs::Bisect::bad(repo, None).map(Some)
     });
     bisect_mark!("action:magit-global-bisect-skip", "skip", |repo| {
-        lattice_vcs::Bisect::skip(repo, None)
+        lattice_vcs::Bisect::skip(repo, None).map(Some)
     });
     bisect_mark!("action:magit-global-bisect-reset", "reset", |repo| {
-        lattice_vcs::Bisect::reset(repo)
+        lattice_vcs::Bisect::reset(repo).map(|()| None)
     });
 
     // MG.23c1: prompt-backed rows. The first action opens the prompt;
@@ -4090,7 +4090,9 @@ pub(crate) fn bad_from_bisect_start_buffer_name(buffer_name: &str) -> Option<Str
 fn spawn_bisect(
     ctx: &ActionContext<'_>,
     what: &'static str,
-    op: impl FnOnce(&lattice_vcs::Repository) -> lattice_vcs::Result<()> + Send + 'static,
+    op: impl FnOnce(&lattice_vcs::Repository) -> lattice_vcs::Result<Option<lattice_vcs::BisectStep>>
+    + Send
+    + 'static,
 ) {
     let Some(views) = ctx.services.get::<crate::buffer_state::MagitViewsHandle>() else {
         return;
@@ -4108,14 +4110,11 @@ fn spawn_bisect(
             })
             .await;
         // MG.41g: bisect marks check out a different commit — a
-        // completion the user very much wants to see. NC.4: and the
-        // commit it checked out is the news, so the summary names it.
+        // completion the user very much wants to see. NC.6: git's own
+        // report says which, or that the search is over.
         let label = bisect_label(what);
         let result = match outcome {
-            Ok(Ok(())) if what == "reset" => Ok(String::new()),
-            Ok(Ok(())) => Ok(head_summary(&workdir)
-                .map(|head| format!("now at {head}"))
-                .unwrap_or_default()),
+            Ok(Ok(step)) => Ok(step.map(|s| bisect_summary(&s)).unwrap_or_default()),
             Ok(Err(e)) => Err(e.to_string()),
             Err(e) => Err(format!("panicked: {e}")),
         };
@@ -4135,17 +4134,34 @@ fn bisect_label(what: &str) -> String {
     }
 }
 
-/// `HEAD` as a notification names it: short sha and subject. Runs on
-/// the caller's thread — called from a spawned task, never the actor.
-fn head_summary(workdir: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .args(["log", "-1", "--format=%h %s"])
-        .current_dir(workdir)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
-    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!line.is_empty()).then_some(line)
+/// NC.6: what a bisect step did, in one line.
+///
+/// The culprit is the message a bisect exists to produce, so it leads;
+/// an in-progress step names the commit to test next and how far is
+/// left, the same numbers `git bisect` prints.
+fn bisect_summary(step: &lattice_vcs::BisectStep) -> String {
+    use lattice_vcs::BisectStep;
+    match step {
+        BisectStep::Found { commit, subject } => {
+            format!("first bad commit is {} {subject}", short_rev(commit))
+        }
+        BisectStep::Testing {
+            commit,
+            subject,
+            revisions_left,
+            steps,
+        } => {
+            let mut s = format!("now testing {} {subject}", short_rev(commit));
+            if let Some(left) = revisions_left {
+                s.push_str(&format!(", {left} left"));
+            }
+            if let Some(steps) = steps {
+                s.push_str(&format!(" (about {steps} more)"));
+            }
+            s
+        }
+        BisectStep::Other(line) => line.clone(),
+    }
 }
 
 fn path_from_prompt_buffer_name(buffer_name: &str, prefix: &str) -> Option<String> {
@@ -6162,6 +6178,31 @@ mod task_labels {
         let sha = "3f2a1c09b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3";
         assert_eq!(rebase_verb_label("edit", sha), "rebase to edit 3f2a1c0");
         assert_eq!(rebase_verb_label("drop", sha), "drop 3f2a1c0 from history");
+    }
+
+    /// NC.6: the culprit is named; an ongoing step names the next
+    /// commit and how far is left.
+    #[test]
+    fn a_bisect_summary_names_the_commit() {
+        use super::bisect_summary;
+        use lattice_vcs::BisectStep;
+        let sha = "4408d81987933a1275554215cacb0eb9b26df0ce".to_string();
+        assert_eq!(
+            bisect_summary(&BisectStep::Found {
+                commit: sha.clone(),
+                subject: "c5".into()
+            }),
+            "first bad commit is 4408d81 c5"
+        );
+        assert_eq!(
+            bisect_summary(&BisectStep::Testing {
+                commit: sha,
+                subject: "c6".into(),
+                revisions_left: Some(1),
+                steps: Some(1),
+            }),
+            "now testing 4408d81 c6, 1 left (about 1 more)"
+        );
     }
 
     #[test]

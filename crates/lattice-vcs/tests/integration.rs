@@ -9,8 +9,8 @@ use std::path::Path;
 use std::process::Command;
 
 use lattice_vcs::{
-    Bisect, Branch, Commit, GitBlob, Index, PathChange, PathStatus, Reference, Remote, Repository,
-    Stash, Submodule, SubmoduleState, WorkingTree,
+    Bisect, BisectStep, Branch, Commit, GitBlob, Index, PathChange, PathStatus, Reference, Remote,
+    Repository, Stash, Submodule, SubmoduleState, WorkingTree,
 };
 
 /// Create a temporary directory, initialise a git repo in it, and
@@ -1194,6 +1194,39 @@ fn the_reported_count_agrees_with_gits_own_message() {
         Some(from_git),
         "we report {:?}, git printed {from_git}",
         state.revisions_left
+    );
+}
+
+/// NC.6: a real bisect, driven to the end, names the culprit. The
+/// culprit is `commit 5` (the first "bad" one); every step before the
+/// last reports the commit git checked out next.
+#[test]
+fn a_bisect_driven_to_the_end_reports_the_first_bad_commit() {
+    let (_dir, repo, shas) = repo_with_linear_history(8);
+    let mut step = Bisect::start(&repo, Some(&shas[7]), Some(&shas[0])).expect("start");
+    for _ in 0..8 {
+        // Anything but `Testing` ends the walk; the assertion below
+        // then says whether it ended in the right place.
+        let BisectStep::Testing { commit, .. } = &step else {
+            break;
+        };
+        let index = shas
+            .iter()
+            .position(|s| s == commit)
+            .expect("a known commit");
+        step = if index >= 5 {
+            Bisect::bad(&repo, None)
+        } else {
+            Bisect::good(&repo, None)
+        }
+        .expect("mark");
+    }
+    assert_eq!(
+        step,
+        BisectStep::Found {
+            commit: shas[5].clone(),
+            subject: "commit 5".into(),
+        }
     );
 }
 

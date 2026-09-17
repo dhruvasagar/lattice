@@ -279,7 +279,7 @@ a real bug, reported against the first build.
 
 ## Icons and the success level
 
-> Slice plan: [`../operations/slice-plans/notification-clarity.md`](../operations/slice-plans/notification-clarity.md) (NC.1).
+> Slice plan: [`../operations/slice-plans/archive/notification-clarity.md`](../operations/slice-plans/archive/notification-clarity.md) (NC.1).
 
 Colour alone was not enough to scan a stack, and "success" did not
 exist: a finished push was posted as Info, so it looked the same as any
@@ -310,7 +310,7 @@ fixed ANSI colours and GPUI borrowed `cursor_background` for info.
 
 ## Scope, and saying what happened
 
-> Slice plan: [`../operations/slice-plans/notification-clarity.md`](../operations/slice-plans/notification-clarity.md) (NC.2–NC.5).
+> Slice plan: [`../operations/slice-plans/archive/notification-clarity.md`](../operations/slice-plans/archive/notification-clarity.md) (NC.2–NC.6).
 
 The first consumer's notifications were individually terse and
 collectively ambiguous. An audit of magit's producers found that none

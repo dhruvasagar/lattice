@@ -35,7 +35,7 @@ mod stash;
 mod submodule;
 mod working_tree;
 
-pub use bisect::{Bisect, BisectState, parse_bisect_vars};
+pub use bisect::{Bisect, BisectState, BisectStep, parse_bisect_step, parse_bisect_vars};
 pub use blob::GitBlob;
 pub use branch::Branch;
 pub use commit::Commit;

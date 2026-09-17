@@ -1,6 +1,6 @@
 # Slice plan — notification clarity: icons, scope, and saying what happened
 
-Design: [`../../architecture/notifications.md`](../../architecture/notifications.md)
+Design: [`../../../architecture/notifications.md`](../../../architecture/notifications.md)
 (§"Icons and the success level", §"Scope, and saying what happened").
 
 Built on NOTIF.1a–f. The reported gap had two halves:
@@ -24,7 +24,7 @@ Built on NOTIF.1a–f. The reported gap had two halves:
 | NC.3 | Pick the line that matters: failures prefer `error:` / `fatal:` / `!` / `CONFLICT` and fall back to stdout; push / fetch / pull get their own success summaries | ✅ |
 | NC.4 | magit label rewrite — a human phrase naming what was acted on, no raw flags, no shared labels; partial operations report `Stopped`; the `…ing` echo bug. Landed as NC.4a–d | ✅ |
 | NC.5 | Report the actions that finished silently (file stage/unstage/discard, branch create/checkout/rename/delete, refs-buffer checkout, rebase abort) | ✅ |
-| NC.6 | A bisect mark reports when it has found the first bad commit (needs `lattice_vcs::Bisect` to return git's output) | ⛔ deferred — no consumer beyond this; revisit with the next bisect change |
+| NC.6 | A bisect step reports the next commit to test, or the first bad commit once found | ✅ |
 
 ## NC.1 — icons and the success level ✅
 
@@ -108,10 +108,8 @@ producers.
   notes / clone / gitignore / bisect producer names its object.
   Table-driven ex commands carry `{}` templates. Bisect marks report
   the commit they checked out (`now at <sha> <subject>`).
-  **Not done:** a bisect mark does not say when it has found the
-  culprit, because `lattice_vcs::Bisect` returns `()` and discards the
-  output that says so. That needs a `lattice-vcs` change and is
-  deferred as NC.6.
+  Reporting the culprit needed a `lattice-vcs` change and landed as
+  NC.6.
 - **NC.4c — mode helpers.** The remote and submodule lists no longer
   share "add X" / "remove X". A hunk discard names its file, and stash
   create reads "stash changes".
@@ -144,4 +142,20 @@ test asserting it is classified as a stop.
 Guard: `no_repository_call_discards_its_result` fails on any
 `let _ = lattice_vcs::…` or `let _ = repo.run_git…` in the magit
 mutation sources. That is the shape every one of these sites had.
+
+## NC.6 — a bisect says when it is done ✅
+
+- `lattice_vcs::Bisect::{start, good, bad, skip}` return
+  `BisectStep` (`Testing { commit, subject, revisions_left, steps }`,
+  `Found { commit, subject }`, `Other(line)`), parsed from git's own
+  output by the pure `parse_bisect_step`. They used to return `()` and
+  throw away the only output that says the search is over.
+- magit's bisect summary: "first bad commit is 4408d81 c5", or "now
+  testing e732837 c6, 1 left (about 1 more)". This replaces NC.4b's
+  `head_summary` query, which is removed.
+
+Tests: `parse_bisect_step` against verbatim git 2.39 output (testing,
+found, skipped-only, waiting); a real eight-commit bisect in
+`lattice-vcs/tests/integration.rs` driven to the end, asserting the
+culprit; `a_bisect_summary_names_the_commit` in magit.
 

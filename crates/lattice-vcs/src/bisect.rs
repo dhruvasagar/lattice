@@ -29,6 +29,89 @@ pub struct BisectState {
     pub start_ref: String,
 }
 
+/// NC.6: what one bisect step did, read from git's own report.
+///
+/// A mark's whole result is in what git prints: the commit it checked
+/// out next, or the culprit. Discarding that output — which `mark` did
+/// until NC.6 — left the caller unable to say "found it", which is the
+/// one message a bisect exists to produce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BisectStep {
+    /// git checked out another commit to test.
+    Testing {
+        /// Full sha, as git printed it.
+        commit: String,
+        subject: String,
+        /// "N revisions left to test after this".
+        revisions_left: Option<usize>,
+        /// "(roughly N steps)".
+        steps: Option<usize>,
+    },
+    /// The search is over: this is the first bad commit.
+    Found { commit: String, subject: String },
+    /// Anything else git said — a range still missing an end, only
+    /// skipped commits left, a contradictory mark. The first
+    /// meaningful line, verbatim.
+    Other(String),
+}
+
+/// Parse the stdout of `git bisect start|good|bad|skip`.
+///
+/// Pure, so each shape git prints is pinned without a repository. The
+/// shapes are git's porcelain messages, which have been stable for
+/// years; an unrecognised one falls to [`BisectStep::Other`] rather
+/// than being misread.
+pub fn parse_bisect_step(out: &str) -> BisectStep {
+    let lines: Vec<&str> = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if let Some(found) = lines
+        .iter()
+        .find_map(|l| l.strip_suffix(" is the first bad commit"))
+    {
+        // `git show`-style block follows: the subject is the first
+        // indented line after the headers, which trimming flattened —
+        // so it is the first line after `Date:`.
+        let subject = lines
+            .iter()
+            .skip_while(|l| !l.starts_with("Date:"))
+            .nth(1)
+            .map(|l| l.to_string())
+            .unwrap_or_default();
+        return BisectStep::Found {
+            commit: found.trim().to_string(),
+            subject,
+        };
+    }
+    if let Some(i) = lines.iter().position(|l| l.starts_with("Bisecting: ")) {
+        let head = lines[i];
+        let number_after = |marker: &str| -> Option<usize> {
+            head.split(marker)
+                .nth(1)?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        };
+        let checked_out = lines.get(i + 1).and_then(|l| {
+            let rest = l.strip_prefix('[')?;
+            let (sha, subject) = rest.split_once(']')?;
+            Some((sha.to_string(), subject.trim().to_string()))
+        });
+        if let Some((commit, subject)) = checked_out {
+            return BisectStep::Testing {
+                commit,
+                subject,
+                revisions_left: number_after("Bisecting: "),
+                steps: number_after("(roughly "),
+            };
+        }
+    }
+    BisectStep::Other(lines.first().map(|l| l.to_string()).unwrap_or_default())
+}
+
 /// Parse `git rev-list --bisect-vars` output into
 /// `(revisions_left, steps)`.
 ///
@@ -117,7 +200,7 @@ impl Bisect {
     /// `bad` and `good` are optional: `git bisect start` with neither
     /// begins an unbounded bisect the user then narrows with `good` /
     /// `bad`, which is git's own behaviour and worth preserving.
-    pub fn start(repo: &Repository, bad: Option<&str>, good: Option<&str>) -> Result<()> {
+    pub fn start(repo: &Repository, bad: Option<&str>, good: Option<&str>) -> Result<BisectStep> {
         let mut args: Vec<String> = vec!["bisect".into(), "start".into()];
         // Order matters to git: bad first, then good.
         if let Some(bad) = bad {
@@ -126,34 +209,34 @@ impl Bisect {
         if let Some(good) = good {
             args.push(good.to_string());
         }
-        repo.run_git(args)
-            .map(|_| ())
+        repo.run_git_str(args)
+            .map(|out| parse_bisect_step(&out))
             .map_err(|e| VcsError::Bisect(format!("bisect start: {}", e)))
     }
 
     /// Mark a revision good (`None` = the one checked out).
-    pub fn good(repo: &Repository, rev: Option<&str>) -> Result<()> {
+    pub fn good(repo: &Repository, rev: Option<&str>) -> Result<BisectStep> {
         Self::mark(repo, "good", rev)
     }
 
     /// Mark a revision bad (`None` = the one checked out).
-    pub fn bad(repo: &Repository, rev: Option<&str>) -> Result<()> {
+    pub fn bad(repo: &Repository, rev: Option<&str>) -> Result<BisectStep> {
         Self::mark(repo, "bad", rev)
     }
 
     /// Skip a revision that cannot be tested (`None` = the one checked
     /// out).
-    pub fn skip(repo: &Repository, rev: Option<&str>) -> Result<()> {
+    pub fn skip(repo: &Repository, rev: Option<&str>) -> Result<BisectStep> {
         Self::mark(repo, "skip", rev)
     }
 
-    fn mark(repo: &Repository, verb: &str, rev: Option<&str>) -> Result<()> {
+    fn mark(repo: &Repository, verb: &str, rev: Option<&str>) -> Result<BisectStep> {
         let mut args: Vec<String> = vec!["bisect".into(), verb.to_string()];
         if let Some(rev) = rev {
             args.push(rev.to_string());
         }
-        repo.run_git(args)
-            .map(|_| ())
+        repo.run_git_str(args)
+            .map(|out| parse_bisect_step(&out))
             .map_err(|e| VcsError::Bisect(format!("bisect {}: {}", verb, e)))
     }
 
@@ -185,6 +268,53 @@ mod tests {
                              bisect_bad=2\n\
                              bisect_all=7\n\
                              bisect_steps=2\n";
+
+    /// Verbatim, from git 2.39 on an eight-commit history.
+    const REAL_TESTING: &str = "Bisecting: 1 revision left to test after this (roughly 1 step)\n\
+                                [e73283741f49bb9fa2ad3edd7564e3fbedff4383] c6\n";
+    const REAL_FOUND: &str = "4408d81987933a1275554215cacb0eb9b26df0ce is the first bad commit\n\
+                              commit 4408d81987933a1275554215cacb0eb9b26df0ce\n\
+                              Author: t <t@t>\n\
+                              Date:   Thu Sep 17 10:24:13 2026 +0530\n\
+                              \n    c5\n\n f | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n";
+
+    #[test]
+    fn a_step_that_checks_out_the_next_commit_is_testing() {
+        assert_eq!(
+            parse_bisect_step(REAL_TESTING),
+            BisectStep::Testing {
+                commit: "e73283741f49bb9fa2ad3edd7564e3fbedff4383".into(),
+                subject: "c6".into(),
+                revisions_left: Some(1),
+                steps: Some(1),
+            }
+        );
+    }
+
+    #[test]
+    fn the_last_step_names_the_culprit_and_its_subject() {
+        assert_eq!(
+            parse_bisect_step(REAL_FOUND),
+            BisectStep::Found {
+                commit: "4408d81987933a1275554215cacb0eb9b26df0ce".into(),
+                subject: "c5".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn anything_else_is_passed_through_not_misread() {
+        let skipped = "There are only 'skip'ped commits left to test.\n\
+                       The first bad commit could be any of:\nabc\ndef\n";
+        assert_eq!(
+            parse_bisect_step(skipped),
+            BisectStep::Other("There are only 'skip'ped commits left to test.".into())
+        );
+        assert_eq!(
+            parse_bisect_step("status: waiting for good commit(s), bad commit known\n"),
+            BisectStep::Other("status: waiting for good commit(s), bad commit known".into())
+        );
+    }
 
     #[test]
     fn the_parsed_numbers_are_the_ones_git_prints() {

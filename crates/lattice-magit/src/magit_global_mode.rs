@@ -3337,16 +3337,29 @@ pub(crate) fn invalidates_a_magit_view(event: &lattice_protocol::event::Event) -
     )
 }
 
-/// NC.2: how a magit operation ended. `From<Result<..>>` keeps the
-/// common case a plain result.
+/// NC.2: how a magit operation ended.
+///
+/// Three outcomes, not `Result`'s two: a conflicted merge or a rebase
+/// paused on `edit` has not failed and is not done, and saying either
+/// sends the user the wrong way. `From<Result<..>>` recognises those
+/// from git's own output (`git_report::stopped_reason`), so every
+/// producer gets it without deciding anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TaskResult {
     Done(String),
+    /// The line to show, then git's output.
+    Stopped(String),
     Failed(String),
 }
 
 impl From<Result<String, String>> for TaskResult {
     fn from(result: Result<String, String>) -> Self {
+        if let Some(reason) = crate::git_report::stopped_reason(&result) {
+            let detail = match result {
+                Ok(out) | Err(out) => out,
+            };
+            return TaskResult::Stopped(format!("{reason}\n{detail}"));
+        }
         match result {
             Ok(out) => TaskResult::Done(out),
             Err(err) => TaskResult::Failed(err),
@@ -3413,6 +3426,14 @@ pub(crate) fn finish_task(workdir: &std::path::Path, label: &str, result: impl I
             tracing::debug!(target: "lattice_magit", "magit: {label} succeeded: {out}");
             TaskOutcome::Succeeded {
                 summary: first_line(&out),
+            }
+        }
+        TaskResult::Stopped(why) => {
+            // `warn!`-worthy, but the notification tees at Warn
+            // already; the full output belongs in the debug record.
+            tracing::debug!(target: "lattice_magit", "magit: {label} stopped: {why}");
+            TaskOutcome::Stopped {
+                message: first_line(&why),
             }
         }
         TaskResult::Failed(err) => {
@@ -3509,7 +3530,7 @@ pub fn spawn_rebase_verb(workdir: std::path::PathBuf, verb: &'static str, commit
 pub(crate) fn rebase_verb_label(verb: &str, commit: &str) -> String {
     let commit = short_rev(commit);
     match verb {
-        "edit" => format!("stop at {commit} to edit it"),
+        "edit" => format!("rebase to edit {commit}"),
         "drop" => format!("drop {commit} from history"),
         "reword" => format!("reword {commit}"),
         other => format!("{other} {commit} in a rebase"),
@@ -3533,6 +3554,14 @@ pub fn spawn_rebase_verb_with(
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
+        // NC.4: an `edit` that worked has STOPPED, by design — the user
+        // is meant to amend and continue. "Done" would say otherwise.
+        let result = match result {
+            Ok(_) if verb == "edit" => TaskResult::Stopped(
+                "stopped for editing \u{2014} amend, then continue the rebase".to_string(),
+            ),
+            other => other.into(),
+        };
         finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
@@ -6113,7 +6142,7 @@ mod task_labels {
     fn a_one_commit_rebase_names_the_commit_and_the_verb() {
         use super::rebase_verb_label;
         let sha = "3f2a1c09b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3";
-        assert_eq!(rebase_verb_label("edit", sha), "stop at 3f2a1c0 to edit it");
+        assert_eq!(rebase_verb_label("edit", sha), "rebase to edit 3f2a1c0");
         assert_eq!(rebase_verb_label("drop", sha), "drop 3f2a1c0 from history");
     }
 
@@ -6189,6 +6218,13 @@ mod run_remote_op_reports {
             .expect_err("the merge conflicts");
         let first = err.lines().next().unwrap_or_default();
         assert!(first.starts_with("CONFLICT"), "{err}");
+        // NC.4d: and it is reported as stopped, not failed — the merge
+        // is in progress, waiting for the user.
+        let outcome = super::TaskResult::from(Err(err));
+        assert!(
+            matches!(&outcome, super::TaskResult::Stopped(why) if why.starts_with("CONFLICT")),
+            "a conflict must be a stop, got {outcome:?}"
+        );
     }
 
     /// `resolve_upstream` reads its own stdout: the report shape

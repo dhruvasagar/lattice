@@ -22,8 +22,9 @@ Built on NOTIF.1a–f. The reported gap had two halves:
 | NC.1 | `NotificationLevel::Success`; one shared `glyph(nerd_fonts)` for the TUI, GPUI and the `*notifications*` buffer; theme-sourced colours in both peers; the buffer re-renders on a `ui.nerd_fonts` flip | ✅ |
 | NC.2 | `scope` on `Event::BackgroundTaskFinished` + a `Stopped` outcome; the notification lays out `<icon> <scope> · <text>`; magit passes the repository name | ✅ |
 | NC.3 | Pick the line that matters: failures prefer `error:` / `fatal:` / `!` / `CONFLICT` and fall back to stdout; push / fetch / pull get their own success summaries | ✅ |
-| NC.4 | magit label rewrite — a human phrase naming what was acted on, no raw flags, no shared labels; partial operations report `Stopped`; the `…ing` echo bug. Landed in parts: NC.4a remote/sequencer/commit ops ✅, NC.4b one-shot and computed ops ✅, NC.4c mode helpers ✅, NC.4d `Stopped` | 🚧 |
+| NC.4 | magit label rewrite — a human phrase naming what was acted on, no raw flags, no shared labels; partial operations report `Stopped`; the `…ing` echo bug. Landed as NC.4a–d | ✅ |
 | NC.5 | Report the eight actions that finish silently (file stage/unstage/discard, branch create/checkout/rename/delete) | 📝 |
+| NC.6 | A bisect mark reports when it has found the first bad commit (needs `lattice_vcs::Bisect` to return git's output) | ⛔ deferred — no consumer beyond this; revisit with the next bisect change |
 
 ## NC.1 — icons and the success level ✅
 
@@ -89,4 +90,39 @@ through the real subscriber.
 
 Tests: `git_report` unit tests for every case above; a real-git merge
 conflict and a real upstream resolution (`run_remote_op_reports`).
+
+## NC.4 — labels that name what they touched ✅
+
+One commit per part, because each part touches a different set of
+producers.
+
+- **NC.4a — remote, sequencer and commit ops.** `RemoteOp::what` is now
+  an imperative phrase ("continue rebase") and a new `doing` field
+  replaces the `{what}ing` echo, which had produced "stage alling".
+  `RemoteOp::label(argv)` describes the argv that actually ran, so a
+  force-push, a dry run and a tag push each read differently, and an
+  upstream destination is shown once it resolves. `CommitOp::label` and
+  `short_rev` replace a full-argv label that included a 40-character sha.
+- **NC.4b — one-shot and computed ops.** Every `spawn_git` /
+  `spawn_git_sequence` / `spawn_computed` / rebase-verb / subtree /
+  notes / clone / gitignore / bisect producer names its object.
+  Table-driven ex commands carry `{}` templates. Bisect marks report
+  the commit they checked out (`now at <sha> <subject>`).
+  **Not done:** a bisect mark does not say when it has found the
+  culprit, because `lattice_vcs::Bisect` returns `()` and discards the
+  output that says so. That needs a `lattice-vcs` change and is
+  deferred as NC.6.
+- **NC.4c — mode helpers.** The remote and submodule lists no longer
+  share "add X" / "remove X". A hunk discard names its file, and stash
+  create reads "stash changes".
+- **NC.4d — `Stopped`.** `TaskResult::from(Result)` recognises, from
+  git's own output, a conflict, a patch that would not apply, a merge
+  told not to commit, a squash merge, and a rebase that stopped. A
+  successful `edit` rebase reports `Stopped` explicitly. Each becomes a
+  Warn notification: "merge feature stopped — CONFLICT (content): … —
+  resolve, then continue".
+
+Tests: label tables (plain, distinct, naming their object), the helper
+labels, `patch_path`, `stopped_reason` cases, and the real-git conflict
+test asserting it is classified as a stop.
 

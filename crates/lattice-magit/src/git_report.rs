@@ -215,6 +215,40 @@ fn pull_summary(stdout: &str, stderr: &str) -> String {
     }
 }
 
+/// NC.4: why a git run that ended is **not done**, if it is not.
+///
+/// A conflict, a patch that would not apply, a merge told not to
+/// commit, a rebase paused on `edit` — each leaves the repository
+/// mid-operation, waiting for the user. Reporting those as failures
+/// suggests nothing happened; reporting them as success says "done"
+/// about work that is half-way. Returns the line to show, which leads
+/// the report exactly as a summary does.
+pub(crate) fn stopped_reason(result: &Result<String, String>) -> Option<String> {
+    let text = match result {
+        Ok(out) | Err(out) => out,
+    };
+    let lines: Vec<&str> = meaningful(text).collect();
+    let find = |needle: &str| lines.iter().find(|l| l.contains(needle));
+    // A conflict can end either way: `merge` exits non-zero, a
+    // `stash apply` too, and the line names the file.
+    if let Some(conflict) = find("CONFLICT") {
+        return Some(format!("{conflict} \u{2014} resolve, then continue"));
+    }
+    match result {
+        Err(_) => find("Patch failed at")
+            .map(|l| format!("{l} \u{2014} fix it, then continue applying patches")),
+        Ok(_) => {
+            if find("stopped before committing").is_some() {
+                Some("merged but not committed \u{2014} commit to finish".to_string())
+            } else if find("not updating HEAD").is_some() {
+                Some("changes staged \u{2014} commit to finish the squash".to_string())
+            } else {
+                find("Stopped at").map(|l| format!("{l} \u{2014} continue when ready"))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +416,46 @@ mod tests {
             first(&failure_report(stdout, "", Some(1))),
             "On branch main"
         );
+    }
+
+    #[test]
+    fn a_conflict_is_a_stop_not_a_failure() {
+        let err = failure_report(
+            "Auto-merging a.rs\nCONFLICT (content): Merge conflict in a.rs\n",
+            "",
+            Some(1),
+        );
+        assert_eq!(
+            stopped_reason(&Err(err)).as_deref(),
+            Some("CONFLICT (content): Merge conflict in a.rs \u{2014} resolve, then continue")
+        );
+    }
+
+    #[test]
+    fn a_merge_told_not_to_commit_is_a_stop() {
+        let out = "Automatic merge went well; stopped before committing as requested\n";
+        assert!(stopped_reason(&Ok(out.to_string())).is_some());
+        let squash = "Squash commit -- not updating HEAD\n";
+        assert!(stopped_reason(&Ok(squash.to_string())).is_some());
+    }
+
+    #[test]
+    fn a_patch_that_would_not_apply_is_a_stop() {
+        let err = "error: patch failed: a.rs:1\nPatch failed at 0001 fix\nhint: Use 'git am --show-current-patch=diff'\n";
+        assert!(
+            stopped_reason(&Err(err.to_string()))
+                .is_some_and(|r| r.starts_with("Patch failed at 0001 fix"))
+        );
+    }
+
+    /// A plain failure and a plain success stay what they are.
+    #[test]
+    fn ordinary_outcomes_are_not_stops() {
+        assert_eq!(
+            stopped_reason(&Err("fatal: not a git repository".to_string())),
+            None
+        );
+        assert_eq!(stopped_reason(&Ok("main\n".to_string())), None);
     }
 
     #[test]

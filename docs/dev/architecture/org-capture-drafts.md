@@ -6,7 +6,7 @@
 > host seams (§3) that name no org concept. See
 > [`plugin-host.md`](plugin-host.md).
 
-**Status:** 🚧 CD.1–CD.7 built; CD.8 planned, CD.9 deferred. Extends [`org-capture.md`](org-capture.md) §8 and
+**Status:** 🚧 CD.1–CD.8 built; CD.9 deferred. Extends [`org-capture.md`](org-capture.md) §8 and
 [`org-roam.md`](org-roam.md) §5, both of which this page contradicts in places —
 where they disagree, this page is newer and says so explicitly. Slice plan:
 [`../operations/slice-plans/org-capture-drafts.md`](../operations/slice-plans/org-capture-drafts.md).

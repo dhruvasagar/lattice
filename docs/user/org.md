@@ -42,9 +42,9 @@ Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 | **Lists** | insert, indent, move and cycle list items and checkboxes — under org's own meta-arrows, over a Visual region, and while typing |
 | **TODO workflow** | your own keyword sequences with fast-select keys and `(@)` / `(!)` logging, per-keyword colours |
 | **Agenda** | `:org-agenda` — every dated headline across your files in one editable view, with filters, custom commands, a clock report, and `l` for what you finished |
-| **Capture** | `<leader>oc` — templates that file a note without leaving what you were doing |
+| **Capture** | `<leader>oc` — templates that file a note without leaving what you were doing: into a headline, an outline path, today's date-tree node, or a row of a table. Each capture is a draft file, so several can be open at once, `:w` keeps one for later, and `<leader>oC` brings it back |
 | **Habits** | repeating tasks with a consistency graph under their agenda row |
-| **Roam** | a Zettelkasten layer: id links, backlinks, dailies |
+| **Roam** | a Zettelkasten layer: id links, backlinks, dailies, and notes that nest. A note created while you write another links into it, or back to it |
 | **Clocking** | clock in and out, with the running clock in your modeline |
 
 The agenda is a **multibuffer**: its rows are real excerpts of your files, so
@@ -72,8 +72,8 @@ every command, capture template syntax, the agenda query language, roam, and
 the habit rules. It versions with the code.
 
 - **`doc/org.md`** in the plugin repository — the complete reference.
-- **`doc/org-roam.md`** — roam has its own page: nodes, the index, backlinks,
-  the journal and note templates.
+- **`doc/roam.md`** — roam has its own page: nodes, the index, backlinks,
+  the journal, note templates, and nesting notes inside captures.
 - **`:help`** inside lattice — the plugin contributes its own help topics at
   load (`:help org`, `:help org.roam`), so they describe the version you have
   installed.

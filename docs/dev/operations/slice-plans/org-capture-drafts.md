@@ -23,7 +23,7 @@ that unblocks one deferred row of the design's §8 table.
 | CD.6b | lattice              | `host-services.clamp-position` (design H8)                                                                              | ✅          |
 | CD.6  | org-plugin           | `create-and-insert` opens a child capture; write-back; regions                                                          | ✅          |
 | CD.7  | org-plugin           | `${origin}` back-reference for the no-write-back verbs                                                                  | ✅          |
-| CD.8  | org-plugin           | Roam-scan skip; outstanding-caller warning                                                                              | 📝          |
+| CD.8  | org-plugin           | Roam-scan skip; outstanding-caller warning                                                                              | ✅          |
 | CD.9  | lattice + org-plugin | H4: a `completion-source` accept hook; `[[` → create                                                                    | ⛔ deferred |
 
 **OC.7d does not get a slice.** It is `Caller { on_commit: None }` and lands
@@ -411,7 +411,27 @@ not carried state.
 
 ---
 
-## CD.8 — Scan interaction and the outstanding-caller warning
+## CD.8 — Scan interaction and the outstanding-caller warning ✅
+
+**Landed** (org plugin `635e899`), as planned. `roam_scan::indexable` guards
+both the cold walk and the watcher. The warning fires on discard as well as on
+commit. The agenda pin rides the existing `agenda-files` test. The roam
+harness now sets the drafts directory before the roam directory, since the
+latter starts a scan.
+
+**A load flake to watch:** the roam suite's `pick` helper failed twice under
+concurrent load (once during a `zola build`), after a find-picker create, then
+passed three consecutive full runs. Its panic now reports the picker, the
+chooser, any pending build, the prompt and the open buffers, so the next
+occurrence names its cause.
+
+**Docs:** there is no separate `docs/user` page. `docs/user/org.md` is thin by
+design, since the plugin's `doc/org.md` and `doc/roam.md` are the reference
+and ship as `:help`. Its Capture and Roam rows name the drafts and nesting
+surfaces instead.
+
+---
+
 
 Design §11.
 
@@ -463,10 +483,8 @@ capture open and commit are user-initiated single events.
 - `plugin-host.md` — the seams (CD.1–CD.3, and CD.9 if it lands).
 - `wit/types.wit`, `wit/host-services.wit`, `wit/completion-source.wit` doc
   comments.
-- **A user page** in `docs/user/`, once CD.4–CD.7 have landed: drafts, the
-  picker, and the stacking verb table are user-facing surfaces, not internals.
-  That page — and *only* that page — needs a `site/data/nav.toml` entry plus
-  `site/scripts/sync-docs.sh`; the sync **fails** on a `docs/user/` doc missing
-  from nav, and equally on a nav entry naming a doc that does not exist. The
-  design fragment and this plan live under `docs/dev/` and are correctly absent
-  from nav.
+- ~~A user page in `docs/user/`~~. Settled at CD.8: the user-facing surfaces
+  are documented in the plugin's `doc/org.md` / `doc/roam.md`, which ship as
+  `:help`. `docs/user/org.md` stays thin by design and names them in its
+  Capture and Roam rows, and the site sync and `zola build` were run for that
+  edit.

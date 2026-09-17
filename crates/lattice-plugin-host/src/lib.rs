@@ -1306,6 +1306,12 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         host_services::read_within_grant(&self.grant, &path)
     }
 
+    /// CD.3 `delete-file`: `read-file`'s peer, gated on `fs:write`. Gate +
+    /// logic in [`host_services::delete_within_grant`].
+    fn delete_file(&mut self, path: String) -> Result<(), String> {
+        host_services::delete_within_grant(&self.grant, &path)
+    }
+
     /// `register-event` (PH7.8b.2): declare a plugin-defined event into the
     /// runtime registry under this plugin's `plugin:<id>` provenance. Returns
     /// `false` on a built-in-shadow (the registry refuses it) OR when no emit

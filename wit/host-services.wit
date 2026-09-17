@@ -159,6 +159,25 @@ interface host-services {
     /// file that does not exist yet) checks for it rather than distinguishing.
     read-file: func(path: string) -> result<string, string>;
 
+    /// CD.3: delete a file — `read-file`'s peer, for the same reason.
+    ///
+    /// A grammar action runs on the synchronous linker, where a guest's own
+    /// `std::fs::remove_file` goes through `wasmtime-wasi`'s sync shim and
+    /// takes the plugin down instead of deleting. Discarding a saved capture
+    /// draft is exactly such an action.
+    ///
+    /// Gated on **`fs:write`** — a read grant is not enough — and re-checked
+    /// host-side, since the host runs with ambient authority. The check
+    /// canonicalizes the file itself when it exists, so a symlink inside the
+    /// grant pointing outside it is refused rather than followed. Only regular
+    /// files and symlinks are deleted; a directory is an `err`.
+    ///
+    /// **A path with nothing there is `ok`**, as `store-delete` treats a
+    /// retraction that already happened: the caller wanted the file gone, and
+    /// it is. `err` for a denied path, a directory, or an OS failure, each
+    /// named.
+    delete-file: func(path: string) -> result<_, string>;
+
     /// Declare a plugin-defined event (PH7.8b). Registers `name` + `doc` into
     /// the host's RUNTIME event registry (`event_registry`) under this plugin's
     /// provenance (`plugin:<id>`), so the event surfaces in introspection

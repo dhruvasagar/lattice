@@ -164,6 +164,53 @@ pub fn grant_permits_read(grant: &CapabilityGrant, file: &Path) -> bool {
     }
 }
 
+/// [`grant_permits_read`], restricted to the plugin's **writable** prefixes.
+///
+/// Same ordering, for the same security reason: the file itself is
+/// canonicalized when it exists, so a symlink under a writable prefix that
+/// points outside it is refused.
+pub fn grant_permits_write(grant: &CapabilityGrant, file: &Path) -> bool {
+    let writable = CapabilityGrant {
+        fs: grant.fs.iter().filter(|g| g.write).cloned().collect(),
+        ..Default::default()
+    };
+    grant_permits_read(&writable, file)
+}
+
+/// CD.3: capability-gated file delete (host-side, §5) — [`read_within_grant`]'s
+/// peer, and host-side for its reason: a grammar action cannot use WASI.
+///
+/// Absence is success. A directory is refused rather than removed: the seam
+/// deletes files, and a plugin that wants a directory gone has asked for
+/// something with a much larger blast radius than its name suggests.
+pub(crate) fn delete_within_grant(grant: &CapabilityGrant, path: &str) -> Result<(), String> {
+    let file = PathBuf::from(path);
+    if !grant_permits_write(grant, &file) {
+        // info!, as `read`'s denial: user-actionable, never per-frame.
+        tracing::info!(
+            path = %file.display(),
+            "host-services delete denied: outside the plugin's writable fs grant"
+        );
+        return Err(format!(
+            "fs delete denied: '{path}' is outside the plugin's writable paths"
+        ));
+    }
+    match std::fs::symlink_metadata(&file) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("fs delete failed: '{path}': {e}")),
+        Ok(meta) if meta.is_dir() => {
+            return Err(format!("fs delete refused: '{path}' is a directory"));
+        }
+        Ok(_) => {}
+    }
+    match std::fs::remove_file(&file) {
+        Ok(()) => Ok(()),
+        // Gone between the stat and the remove: still the outcome asked for.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("fs delete failed: '{path}': {e}")),
+    }
+}
+
 /// OC.5a: capability-gated file read (host-side, §5).
 ///
 /// The reason this exists rather than the guest using WASI is structural, not a
@@ -255,6 +302,89 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    fn write_grant(prefix: PathBuf) -> CapabilityGrant {
+        CapabilityGrant {
+            fs: vec![FsGrant {
+                prefix,
+                write: true,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn delete_file_removes_a_file_within_a_writable_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("draft.org");
+        std::fs::write(&file, "x").unwrap();
+        let grant = write_grant(dir.path().to_path_buf());
+        delete_within_grant(&grant, file.to_str().unwrap()).unwrap();
+        assert!(!file.exists());
+    }
+
+    /// Discarding a capture that was never saved deletes nothing, and that
+    /// is success, not an error the guest has to special-case.
+    #[test]
+    fn deleting_an_absent_file_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = write_grant(dir.path().to_path_buf());
+        let absent = dir.path().join("never-saved.org");
+        assert_eq!(
+            delete_within_grant(&grant, absent.to_str().unwrap()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_read_grant_does_not_permit_deleting() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("keep.org");
+        std::fs::write(&file, "x").unwrap();
+        let grant = read_grant(dir.path().to_path_buf());
+        let err = delete_within_grant(&grant, file.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("denied"), "{err}");
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn deleting_outside_the_grant_is_denied() {
+        let granted = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let file = other.path().join("theirs.org");
+        std::fs::write(&file, "x").unwrap();
+        let grant = write_grant(granted.path().to_path_buf());
+        assert!(delete_within_grant(&grant, file.to_str().unwrap()).is_err());
+        assert!(file.exists());
+    }
+
+    /// A link under the writable prefix that points outside it resolves
+    /// outside, and is refused — the target survives.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_writable_grant_is_denied() {
+        let granted = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target = other.path().join("precious.org");
+        std::fs::write(&target, "x").unwrap();
+        let link = granted.path().join("link.org");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let grant = write_grant(granted.path().to_path_buf());
+        assert!(delete_within_grant(&grant, link.to_str().unwrap()).is_err());
+        assert!(target.exists());
+        assert!(link.exists());
+    }
+
+    #[test]
+    fn a_directory_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("captures");
+        std::fs::create_dir(&sub).unwrap();
+        let grant = write_grant(dir.path().to_path_buf());
+        let err = delete_within_grant(&grant, sub.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("directory"), "{err}");
+        assert!(sub.exists());
     }
 
     #[test]

@@ -177,6 +177,16 @@ impl Guest for Component {
             &spec(),
             14,
         );
+        // CD.3: delete a file from the SYNC grammar seam, which is the case
+        // `delete-file` exists for — a guest `std::fs::remove_file` there goes
+        // through WASI's sync shim and takes the plugin down. Echoes `deleted`
+        // or the host's own error text.
+        grammar::register_action(
+            "multiseam-delete-file",
+            "delete a file from the sync grammar seam (CD.3)",
+            &spec(),
+            50,
+        );
         // HB.2b: what `excerpt-source` answers a guest standing on a multibuffer
         // row. Every other test of that seam supplies the resolver's arguments
         // itself; this one takes them from the context the HOST handed the
@@ -510,6 +520,22 @@ impl GrammarCallbacks for Component {
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text: format!("{a}|{b}"),
+                })])
+            }
+            50 => {
+                let path = match &ctx.args {
+                    Args::String(s) => s.clone(),
+                    other => {
+                        return Err(format!("multiseam: delete-file wants a path, got {other:?}"));
+                    }
+                };
+                let text = match host_services::delete_file(&path) {
+                    Ok(()) => "deleted".to_string(),
+                    Err(e) => format!("error: {e}"),
+                };
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text,
                 })])
             }
             // OT.2: parse an off-buffer file and report what came back, so the

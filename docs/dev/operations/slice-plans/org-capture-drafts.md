@@ -13,7 +13,7 @@ that unblocks one deferred row of the design's §8 table.
 |---|---|---|---|
 | CD.1 | lattice | `Effect::FocusBuffer(u32)` | ✅ |
 | CD.2 | lattice | `open-buffer-at-payload` += `content`, `activate-minor` | ✅ |
-| CD.3 | lattice | `host-services.delete-file` | 📝 |
+| CD.3 | lattice | `host-services.delete-file` | ✅ |
 | CD.4 | org-plugin | File-backed captures; state in the store; simultaneity; **the caller** | 📝 |
 | CD.5 | org-plugin | `:org-capture-drafts` picker + `<leader>od` | 📝 |
 | CD.6 | org-plugin | `create-and-insert` opens a child capture; write-back; regions | 📝 |
@@ -98,9 +98,18 @@ active before the first frame. Both renderers, same patch.
 
 ---
 
-## CD.3 — `host-services.delete-file`
+## CD.3 — `host-services.delete-file` ✅
 
 Design §3 H3. `read-file`'s peer, on the same `fs:write` grant.
+
+**Landed.** The design said `read-file`'s grant, but `read-file` accepts
+`fs:read` *or* `fs:write`. Deleting takes a writable prefix specifically, via
+a new `grant_permits_write`. A directory is refused rather than removed.
+Tests: unit tests in `host_services` (writable grant, absent file, read-only
+grant, outside the grant, symlink out, directory), and
+`tests/delete_file_seam.rs` through the multiseam fixture's
+`multiseam-delete-file` action on the sync linker. The generated
+`docs/dev/reference/plugin-api.md` was regenerated.
 
 **Behaviour.** Re-checks the grant host-side. A path outside the grant is `err`
 with the host's own boundary message. An absent path is `ok`.

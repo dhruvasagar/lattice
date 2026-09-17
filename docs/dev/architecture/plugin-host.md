@@ -408,6 +408,15 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   between an action and its effect is a race rather than a guest bug.
   Appended last in the `effect` variant so existing case indices do not move.
   See [`org-capture-drafts.md`](org-capture-drafts.md) §3 H1.
+- **A plugin can DELETE a file it may write (✅ CD.3)**:
+  `host-services.delete-file(path) -> result<_, string>`, `read-file`'s peer
+  and host-side for the same reason: a grammar action runs on the synchronous
+  linker, where a guest `remove_file` panics inside WASI's sync shim. Gated on
+  `fs:write` (a read grant is not enough) with `grant_permits_write`, which
+  canonicalizes the file itself first, so a symlink out of the grant is
+  refused. Absence is `ok`; a directory is refused. The integration test
+  (`tests/delete_file_seam.rs`) runs the delete through the sync trampoline,
+  the only place a guest-side implementation would have failed.
 - **A plugin can SEED a FILE it opens (✅ CD.2)**: `open-buffer-at-payload`
   gained `content` and `activate-minor`, the file-backed peers of the
   synthetic-buffer fields below, for the same OC.7a reason. `content` applies

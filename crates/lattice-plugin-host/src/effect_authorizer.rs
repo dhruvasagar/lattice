@@ -175,7 +175,7 @@ impl EffectAuthorizer {
 /// path at or below a real directory, and `..` inside the tail is normalised
 /// away rather than followed, so a tail cannot climb back out of the prefix
 /// that was just resolved.
-fn resolve_for_compare(path: &Path) -> PathBuf {
+pub(crate) fn resolve_for_compare(path: &Path) -> PathBuf {
     if let Ok(real) = std::fs::canonicalize(path) {
         return real;
     }

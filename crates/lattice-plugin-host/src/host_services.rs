@@ -136,12 +136,19 @@ pub(crate) fn new_uuid() -> Result<String, String> {
 
 /// True if `root` lies within one of the grant's fs prefixes (read *or* write —
 /// a walk only reads). Both sides are canonicalized first so a `..` segment
-/// cannot escape a granted prefix. If canonicalization fails (e.g. the path does
-/// not exist), the raw path is used: that still requires a literal prefix match,
-/// so it can never *widen* the grant — at worst it denies a walk that a
-/// resolvable path would have permitted, which fails safe.
+/// cannot escape a granted prefix. A `root` that does not exist is resolved
+/// through its nearest existing ancestor, with the unresolved tail normalised
+/// rather than followed — the write gate's rule
+/// ([`crate::effect_authorizer::resolve_for_compare`]), so it can place a new
+/// path correctly without ever widening the grant.
 pub(crate) fn grant_permits_walk(grant: &CapabilityGrant, root: &Path) -> bool {
-    let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    // The write gate's resolver, so a path whose directory does not exist yet
+    // is compared in the same (canonical) terms as the prefix. The raw
+    // fallback this used to take refused such a path whenever the grant sat
+    // behind a symlink — macOS's `/var`, or an org directory linked into a
+    // synced folder — and `delete-file` then refused to discard a capture
+    // draft that had never been saved (CD.6).
+    let canon_root = crate::effect_authorizer::resolve_for_compare(root);
     grant.fs.iter().any(|g| {
         let canon_prefix = std::fs::canonicalize(&g.prefix).unwrap_or_else(|_| g.prefix.clone());
         canon_root.starts_with(&canon_prefix)
@@ -463,6 +470,33 @@ mod tests {
         let grant = write_grant(dir.path().to_path_buf());
         delete_within_grant(&grant, file.to_str().unwrap()).unwrap();
         assert!(!file.exists());
+    }
+
+    /// A draft never saved, in a drafts directory not yet created, under a
+    /// grant that is reached through a symlink: nothing to delete, so `ok`.
+    ///
+    /// It was refused. Neither the file nor its directory resolved, so the
+    /// raw path was compared with the CANONICAL prefix and did not match.
+    /// macOS's `/var` → `/private/var` made every temp-dir test hit it, and an
+    /// org directory linked into a synced folder hits it for real.
+    #[cfg(unix)]
+    #[test]
+    fn deleting_under_a_symlinked_grant_with_a_missing_directory_is_ok() {
+        let real = tempfile::tempdir().unwrap();
+        let links = tempfile::tempdir().unwrap();
+        let link = links.path().join("org");
+        std::os::unix::fs::symlink(real.path(), &link).unwrap();
+        let grant = write_grant(link.clone());
+        let draft = link.join("captures").join("a3f9c1.org");
+        assert_eq!(delete_within_grant(&grant, draft.to_str().unwrap()), Ok(()));
+
+        // And the resolution still cannot climb out of the grant.
+        let escape = link
+            .join("captures")
+            .join("..")
+            .join("..")
+            .join("elsewhere.org");
+        assert!(delete_within_grant(&grant, escape.to_str().unwrap()).is_err());
     }
 
     /// Discarding a capture that was never saved deletes nothing, and that

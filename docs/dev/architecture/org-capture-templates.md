@@ -8,7 +8,9 @@
 > `Effect::WriteToFile { anchor: Line(…) }` already exist and already carry
 > everything this needs.
 
-**Status:** 📝 designed, not built. Slice plan:
+**Status:** ✅ built (CT.1–CT.8, CT.10); CT.9, the user's own `init.rs`
+migration, is 🚧. User documentation: the plugin's `doc/org.md` (Capturing)
+and `doc/roam.md` (Templates). Slice plan:
 [`../operations/slice-plans/org-capture-templates.md`](../operations/slice-plans/org-capture-templates.md).
 
 Supersedes the two-shape declaration that
@@ -457,5 +459,5 @@ panics there — `lib.rs:5688-5694`).
 - `:time-prompt` — capturing to a date other than today.
 - `file+regexp`, `clock`, `here`, `function` targets.
 - Savable capture drafts — that is
-  [`org-capture-drafts.md`](org-capture-drafts.md) (CD.1–CD.8, unbuilt), which
-  changes the buffer substrate and is independent of everything here.
+  [`org-capture-drafts.md`](org-capture-drafts.md), which changes the buffer
+  substrate and is independent of everything here.

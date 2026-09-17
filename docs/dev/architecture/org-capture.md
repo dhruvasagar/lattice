@@ -16,8 +16,8 @@
 > that one disagree about what a template *is*, that page is newer. How a
 > template is chosen, expanded and targeted (§§1–7) is unchanged.
 
-> **§8's two "known gaps" are being closed**, and the fix changes the capture
-> buffer's substrate from synthetic to file-backed. See
+> **§8's two "known gaps" are closed (CD.4)**: the capture buffer is now a
+> draft file, any number run at once, and filing returns to the caller. See
 > [`org-capture-drafts.md`](org-capture-drafts.md): concurrent captures, savable
 > drafts, and stacked `org-roam-node-insert`. Where §8 and that page disagree,
 > that page is newer.

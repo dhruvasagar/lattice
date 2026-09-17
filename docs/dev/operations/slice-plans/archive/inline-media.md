@@ -69,7 +69,7 @@ wrong.
 | IM.1a | `RowWeights` + cursor-visibility walks spend a line-height budget | ✅ |
 | IM.1b | Paging / centring (`<C-f>`, `H`/`M`/`L`, `zz`) spend the budget | ✅ |
 | IM.3 | `MediaBlock` descriptor + `VirtualRowKind::MediaBlock` | ✅ |
-| IM.2 | Document-level Fenwick height index | ⛔ not needed |
+| IM.2 | Document-level Fenwick height index | ❌ not needed |
 | IM.4 | Off-thread decode + cache (`lattice-media`) | ✅ |
 | IM.5a | Natural sizing — `height_lh`, `block_geometry`, weight derivation | ✅ |
 | IM.5b-1 | Decode straight into the consumer's pixel layout | ✅ |
@@ -152,7 +152,7 @@ before and after.
 assert cursor visibility with a tall row above and below.
 *bench:* keystroke→glyph unchanged with all-1.0 scales.
 
-### IM.1c — dropped (folded into IM.3 / IM.5) ⛔
+### IM.1c — dropped (folded into IM.3 / IM.5) ❌
 
 Scoped as "publish real weights from GPUI, add `sub_row_px`". Both halves
 turned out to be premature, for the same reason: **nothing is tall yet.**
@@ -183,7 +183,7 @@ against a fixture row that simply declares itself tall. That was the
 point — the scroll rework is now done and testable before any image can
 be blamed for a scrolling bug.
 
-### IM.2 — document-level height index ⛔ NOT NEEDED (2026-08-25)
+### IM.2 — document-level height index ❌ NOT NEEDED (2026-08-25)
 
 Closed without building it, because the audit that resequencing invited
 found it has **no consumer**.

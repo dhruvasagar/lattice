@@ -1,6 +1,12 @@
 # Slice plan: motions in Visual (VM)
 
-Design: [keymap-architecture.md §15](../../architecture/keymap-architecture.md).
+Design: [keymap-architecture.md §15](../../../architecture/keymap-architecture.md).
+
+**Archived 2026-09-17** after an audit confirmed every VM slice in code and
+tests. The vim-parity differences this plan records as "not done" (the `>` /
+`<` / `=` landing, `H` / `L` under `scrolloff`, window-local `scroll`, `g*` /
+`g#`, the read-only wrap echo) and the unpinned `zfk` case are carried in
+`implementation.md` § "Carried over from archived slice plans".
 
 ## Why
 
@@ -657,15 +663,14 @@ rather than read off the help text, which gets two of them wrong.
 - **`<C-f>` `<C-b>` `<C-e>` `<C-y>`** scroll in Visual and Select; a Ctrl chord
   never overtypes.
 
-Known gap, pinned rather than fixed: `zfk` from column 0 creates no fold.
-`k` is exclusive and lattice has no linewise operator targets yet, so the span
-ends at byte 0 of the cursor's own line; `dk` and narrow's `znk` share the
-limitation.
+Known gap at the time, pinned rather than fixed: `zfk` from column 0 created
+no fold, because `k` was exclusive and lattice had no linewise operator
+targets. VM.3L later added those and made `j` / `k` linewise, which should
+resolve it. No test pins `zfk` yet (carried to the ledger).
 
-One lattice deviation worth recording: `<C-d>` / `<C-u>` are typed here as
-`motion:line-down` / `-up` with a baked `Count(10)`, where vim treats them as
-scrolling commands, so `d<C-d>` is bound here and not in vim. A superset, and
-harmless.
+A deviation recorded here, since removed: `<C-d>` / `<C-u>` were typed as
+`motion:line-down` / `-up` with a baked `Count(10)`, so `d<C-d>` was bound. VM.3j-2
+made them the half-page scroll commands vim has, with no operator row.
 
 Tests: `crates/lattice-host/tests/visual_fold_commands_match_vim.rs` (one per
 vim row, Visual and Normal), `lattice-ui-tui`'s `folds.rs` (`zf` as an operator

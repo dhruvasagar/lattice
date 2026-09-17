@@ -2,7 +2,7 @@
 //! through the real bundled component and the real loader.
 //!
 //! Design: `docs/dev/architecture/project-commands.md` §7–§8. Slice plan:
-//! `docs/dev/operations/slice-plans/project-commands.md` PC.6.
+//! `docs/dev/operations/slice-plans/archive/project-commands.md` PC.6.
 //!
 //! ## What this asserts that a guest unit test cannot
 //!

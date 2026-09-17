@@ -1667,6 +1667,13 @@ An empty grep means GPUI was missed.
 
 Added after the phases above. Both landed.
 
+> **ID collision, noted 2026-09-17.** "OA.30" names two different slices:
+> this one (time of day, ✅) and `refresh-decorations` above (🚧, whose guest
+> half — marks, `m` / `M`, the `x` bulk menu — is not built in the org
+> plugin). Both labels are cited in code comments and commit messages, so
+> neither is renamed; read "OA.30" by its title. The plan stays active on the
+> `refresh-decorations` one.
+
 | Slice | Title | Status |
 |---|---|---|
 | OA.30 | A timestamp's TIME survives the scan, and groups the row | ✅ |

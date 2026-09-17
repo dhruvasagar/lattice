@@ -2530,11 +2530,11 @@ not about the keymap. `<C-f>` / `<C-b>`, `H` / `M` / `L`, `n` / `N`, `*` / `#`,
 several of them are genuine motions in vim (`dn`, `dH` work there and are
 unbound here). `%` (VM.3b) and `;` / `,` (VM.3c) were re-typed as motions.
 The rest is tracked in the
-[visual-motions slice plan](../operations/slice-plans/visual-motions.md), VM.3.
+[visual-motions slice plan](../operations/slice-plans/archive/visual-motions.md), VM.3.
 
 ## See also
 
-- [slice plan: visual-motions](../operations/slice-plans/visual-motions.md) -- VM.1--VM.3 sequencing.
+- [slice plan: visual-motions](../operations/slice-plans/archive/visual-motions.md) -- VM.1--VM.3 sequencing.
 - [slice plan: lattice-keymap crate + layer-trace](../archive/keymap-impl-plan.md) -- T1-T13 sequencing.
 - [slice plan: keymap-substrate](../archive/keymap-substrate.md) -- K.2 sequencing.
 - [slice plan: help-prefix](../archive/help-prefix.md) -- K.3 sequencing.

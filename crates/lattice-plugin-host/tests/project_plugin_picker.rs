@@ -1,7 +1,7 @@
 //! PC.5 — the `projects` picker, driven through the real component.
 //!
 //! Design: `docs/dev/architecture/project-commands.md` §5. Slice plan:
-//! `docs/dev/operations/slice-plans/project-commands.md` PC.5.
+//! `docs/dev/operations/slice-plans/archive/project-commands.md` PC.5.
 //!
 //! ## The assertion that matters is cross-seam
 //!

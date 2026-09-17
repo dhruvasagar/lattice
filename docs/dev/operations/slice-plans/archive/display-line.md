@@ -32,7 +32,7 @@ EditDelta, CHUNK_SIZE_WHOLE_DOC, wrap_segments}` until B4.
 
 `docs/dev/architecture/display-line.md` written + signed off.
 
-## B1 — `DisplayLine` + `DisplayMatrix` + machinery  🚧
+## B1 — `DisplayLine` + `DisplayMatrix` + machinery  ✅
 
 - `DisplayLine { source_line, text: Box<str>, runs: Vec<RowRun>, col_map:
   Arc<[(u32,u32)]>, col_count, fold: Option<FoldHead> }` (≈ `RowPrepaint` +
@@ -52,7 +52,7 @@ EditDelta, CHUNK_SIZE_WHOLE_DOC, wrap_segments}` until B4.
   as the current `CellRow`.
 - NOT consumed by renderers yet. Both caches coexist this slice.
 
-## B2 — always-current + TUI cutover  🚧
+## B2 — always-current + TUI cutover  ✅
 
 The flicker is the per-keystroke whole-viewport stale-guard fallback: the async
 worker leaves the matrix one frame behind the snapshot, both renderers detect
@@ -158,7 +158,7 @@ Landed with:
   `sync_rebuild_skips_non_edit_publish`, `worker_projects_lagging_cells_after_sync_rebuild`.
   56 cells_worker + 689 host-lib tests green; TUI + GPUI libs compile.
 
-### B2.4 — TUI cutover  🚧
+### B2.4 — TUI cutover  ✅
 
 Carved into B2.4a (cutover — the flicker fix) + B2.4b (delete the now-dead
 cell→span path). B2.4a lands the user-visible win green; B2.4b is pure dead-code

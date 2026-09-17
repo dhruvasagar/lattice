@@ -5863,6 +5863,31 @@ slice boundary.
 
 ---
 
+## Carried over from archived slice plans
+
+Work a completed plan recorded but did not own. Kept here so archiving a plan
+does not bury it; each line names where the detail lives.
+
+- **Off-renderer effects by allowlist** (from `project-commands` PC.14, and
+  OR.16's report). `drain_pending_picker_accept` and the `FillTarget::Action`
+  arm apply guest effects through `Editor::apply_off_renderer_effect`'s
+  allowlist, which has silently dropped four features so far. The structural
+  fix is for those paths to return their `Effect`s so the renderer applies them
+  through `apply_effect_app_arms`, at the cost of a `Vec<Effect>` threaded
+  through `run_tick_pending`'s return.
+  [`slice-plans/archive/project-commands.md`](slice-plans/archive/project-commands.md) PC.14.
+- **Vim-parity follow-ups** (from `visual-motions`, see
+  [`slice-plans/archive/visual-motions.md`](slice-plans/archive/visual-motions.md)):
+  - `>` / `<` / `=` land on the first non-blank (VM.3m).
+  - `H` / `L` adjust for `scrolloff` (VM.3f).
+  - `scroll` is global here, window-local in vim; needs window-local options (VM.3j-3).
+  - `g*` / `g#` are unbound (VM.3d-3).
+  - The search-wrap echo is not shown in read-only buffers such as `:help` (VM.3d-2).
+  - `zfk` from column 0: probably fixed by VM.3L's linewise targets, but no
+    test pins it; `d<C-d>` doing nothing is likewise untested (VM.3h, VM.3j-2).
+
+---
+
 ## §15 open questions still load-bearing
 
 These are tracked in ../architecture/design.md §15. Items the implementation has resolved

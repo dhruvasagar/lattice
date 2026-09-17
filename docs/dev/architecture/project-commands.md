@@ -9,7 +9,7 @@
 **Status:** ✅ built (PC.1–PC.8). Builds on
 [`project-resolution.md`](project-resolution.md), which already answers *where
 is the project* and explicitly leaves the rest to a plugin. Slice plan:
-[`../operations/slice-plans/project-commands.md`](../operations/slice-plans/project-commands.md).
+[`../operations/slice-plans/archive/project-commands.md`](../operations/slice-plans/archive/project-commands.md).
 
 ## 1. The gap
 

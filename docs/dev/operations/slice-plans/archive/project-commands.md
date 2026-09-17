@@ -1,8 +1,16 @@
 # Slice plan — project commands
 
-Design: [`../../architecture/project-commands.md`](../../architecture/project-commands.md).
-Builds on [`../../architecture/project-resolution.md`](../../architecture/project-resolution.md)
+Design: [`../../architecture/project-commands.md`](../../../architecture/project-commands.md).
+Builds on [`../../architecture/project-resolution.md`](../../../architecture/project-resolution.md)
 (PR.6's `wit/project.wit`), which is already shipped.
+
+**Archived again 2026-09-17** after an audit confirmed PC.1–PC.14, PP.1–PP.5,
+PB.1, PK.1 and PD.1 in code and tests. The one piece of work this plan still
+called open, PC.14's structural fix (off-renderer paths returning their
+effects instead of an allowlist), is not this feature's and is carried in
+`implementation.md` § "Carried over from archived slice plans". PC.6's
+`emacs-keys` gate on `<C-x>p` was ❌ dropped: a plugin has no runtime keymap
+seam, and the binding is unconditional by design (§8).
 
 **Un-archived 2026-09-10.** PC.1–PC.8 are complete and stay so; PC.9–PC.13 are
 new work on the same feature (design §5's `… (choose a dir)` row), so the plan
@@ -308,7 +316,7 @@ never going to be the interesting number; the unconditional write was.
 
 ## PC.9 ✅ — `dir-pick`, the incremental directory source
 
-Design: [`project-commands.md` §9 H5](../../architecture/project-commands.md).
+Design: [`project-commands.md` §9 H5](../../../architecture/project-commands.md).
 
 `DirPickSource` in `crates/lattice-picker/src/picker_sources.rs`, beside
 `FilePickSource` and modelled on it: `live = true`, accept yields
@@ -363,7 +371,7 @@ query with no `/` clears it.
 
 ## PC.11 ✅ — `FillTarget::Action` and the boundary field
 
-Design: [`project-commands.md` §9 H4](../../architecture/project-commands.md).
+Design: [`project-commands.md` §9 H4](../../../architecture/project-commands.md).
 
 `FillTarget::Action { id: CommandId }` in `lattice-picker/src/outcome.rs`, and
 its arm in `Editor::fill_captured_target` — dispatch the command with the
@@ -414,8 +422,8 @@ still present with a query that matches nothing; its routing names the command.
 Host-side integration through the real component: choosing a directory
 remembers it AND opens the switch-commands menu — assert both, because
 remembering without the menu and the menu without remembering are each half the
-feature and each looks fine alone. A directory with no root marker above it
-echoes the existing refusal and remembers nothing.
+feature and each looks fine alone. (A directory with no root marker above it
+was to echo a refusal; PP.4 reversed that, and it is now the project.)
 
 ## PC.13 ✅ — Docs, and the completion that was never wired
 

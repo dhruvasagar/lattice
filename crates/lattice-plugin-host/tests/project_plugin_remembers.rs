@@ -2,7 +2,7 @@
 //! opens, driven through the real component.
 //!
 //! Design: `docs/dev/architecture/project-commands.md` §4. Slice plan:
-//! `docs/dev/operations/slice-plans/project-commands.md` PC.4.
+//! `docs/dev/operations/slice-plans/archive/project-commands.md` PC.4.
 //!
 //! ## Why this test exists in this shape
 //!

@@ -48,9 +48,10 @@ pub struct SwitchCommand {
 /// The rows a user gets without configuring anything.
 ///
 /// Keys follow `project.el`'s own map so the muscle memory transfers: `f`
-/// find-file, `d` dired, `g` find-regexp, `s` shell, `v` vc-dir.
+/// find-file, `d` dired, `g` find-regexp, `s` shell; `m` (project.el's `v`
+/// vc-dir) opens magit.
 ///
-/// **`v` names `magit-status`, not a wrapper**, and that is the extension
+/// **`m` names `magit-status`, not a wrapper**, and that is the extension
 /// contract demonstrating itself. A wrapper existed in the plan only because
 /// `:magit-status` ignored its arguments; PC.3 gave it an optional path, so it
 /// now IS "an ex-command whose first argument is a project root" and needs

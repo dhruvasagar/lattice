@@ -1708,7 +1708,7 @@ Crate skeleton, error, provider config, ACP connection adapter over
 `agent-client-protocol` 1.2.0, session handshake/prompt. Live opencode
 end-to-end test passing. Commits `4f8ddf2a..2943e926`.
 
-### AI‑1b — per-process log buffers (mirror LSP logging) — 🚧 tasks below
+### AI‑1b — per-process log buffers (mirror LSP logging) — ✅ (landed; `lattice-agent/src/log/ai_log.rs`)
 The producer/consumer split from LSP. Interfaces named so tasks compose.
 
 **Task 6 — `AiLogger` producer** (`lattice-ai/src/ai_log.rs`, mirror

@@ -1,7 +1,7 @@
 //! `project` — a `project.el`-style command layer (PC.4).
 //!
 //! Design: `docs/dev/architecture/project-commands.md`. Slice plan:
-//! `docs/dev/operations/slice-plans/project-commands.md`.
+//! `docs/dev/operations/slice-plans/archive/project-commands.md`.
 //!
 //! ## What this plugin is for
 //!
@@ -736,7 +736,7 @@ impl Guest for Component {
             ("s", "project-shell"),
             // Magit's OWN command, not a wrapper — PC.3 made `:magit-status
             // <path>` satisfy the extension contract, so there is nothing for
-            // this plugin to add, and the switch menu's `v` row already names
+            // this plugin to add, and the switch menu's `m` row already names
             // it directly. Safe as a chord because `lattice_magit::install`
             // runs unconditionally at boot; the row has a greyed-with-reason
             // fallback for a missing command and a chord has none, so this

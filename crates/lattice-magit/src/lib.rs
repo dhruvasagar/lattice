@@ -6594,13 +6594,11 @@ mod tests {
         ];
         for (i, a) in ops.iter().enumerate() {
             assert!(!a.args.is_empty(), "`{}` has no argv", a.what);
-            assert_eq!(
-                a.args[0],
-                match a.what {
-                    "stash" => "stash",
-                    other => other,
-                },
-                "argv must lead with the operation it claims to be"
+            assert!(
+                a.what.contains(a.args[0]),
+                "`{}` must name the operation its argv runs (`{}`)",
+                a.what,
+                a.args[0]
             );
             for b in &ops[i + 1..] {
                 assert_ne!(

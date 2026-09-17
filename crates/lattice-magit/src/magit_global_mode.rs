@@ -2713,8 +2713,15 @@ pub fn resolve_upstream(workdir: &std::path::Path) -> Option<String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteOp {
-    /// Verb for the echo + logs, in `-ing` form ("pull" → "pulling…").
+    /// NC.4: what this does, as an imperative phrase a user reads
+    /// ("continue rebase", not "rebase --continue"). The notification
+    /// label is built from it — see [`Self::label`] — and must read
+    /// correctly before "failed" as well as before a summary.
     pub what: &'static str,
+    /// The same, in progress, for the fire-time echo ("continuing
+    /// rebase…"). Spelled out rather than derived: appending "ing" to
+    /// `what` produced "stage alling" and "cherry-pick --continueing".
+    pub doing: &'static str,
     /// Base argv passed to `git`, before flags.
     pub args: &'static [&'static str],
     /// Toggleable flags, in `args_schema` order.
@@ -2724,6 +2731,7 @@ pub struct RemoteOp {
 impl RemoteOp {
     pub const PULL: Self = Self {
         what: "pull",
+        doing: "pulling",
         // `--ff-only` stays the default: a pull that can create a merge
         // commit behind your back is the wrong default. `--rebase`
         // REPLACES it (see `argv`) — it solves the same problem a
@@ -2748,6 +2756,7 @@ impl RemoteOp {
     };
     pub const PUSH: Self = Self {
         what: "push",
+        doing: "pushing",
         args: &["push"],
         flags: &[
             RemoteFlag {
@@ -2796,6 +2805,7 @@ impl RemoteOp {
     };
     pub const FETCH: Self = Self {
         what: "fetch",
+        doing: "fetching",
         args: &["fetch"],
         flags: &[
             RemoteFlag {
@@ -2844,32 +2854,38 @@ impl RemoteOp {
     // `git cherry-pick --continue` and `git revert --continue` are
     // different commands and each errors during the other's sequence.
     pub const CHERRY_PICK_CONTINUE: Self = Self {
-        what: "cherry-pick --continue",
+        what: "continue cherry-pick",
+        doing: "continuing cherry-pick",
         args: &["cherry-pick", "--continue"],
         flags: &[],
     };
     pub const CHERRY_PICK_SKIP: Self = Self {
-        what: "cherry-pick --skip",
+        what: "skip commit in cherry-pick",
+        doing: "skipping commit in cherry-pick",
         args: &["cherry-pick", "--skip"],
         flags: &[],
     };
     pub const CHERRY_PICK_ABORT: Self = Self {
-        what: "cherry-pick --abort",
+        what: "abort cherry-pick",
+        doing: "aborting cherry-pick",
         args: &["cherry-pick", "--abort"],
         flags: &[],
     };
     pub const REVERT_CONTINUE: Self = Self {
-        what: "revert --continue",
+        what: "continue revert",
+        doing: "continuing revert",
         args: &["revert", "--continue"],
         flags: &[],
     };
     pub const REVERT_SKIP: Self = Self {
-        what: "revert --skip",
+        what: "skip commit in revert",
+        doing: "skipping commit in revert",
         args: &["revert", "--skip"],
         flags: &[],
     };
     pub const REVERT_ABORT: Self = Self {
-        what: "revert --abort",
+        what: "abort revert",
+        doing: "aborting revert",
         args: &["revert", "--abort"],
         flags: &[],
     };
@@ -2878,30 +2894,35 @@ impl RemoteOp {
     /// git refuses it while unmerged paths remain, which is the right
     /// answer and is reported rather than swallowed.
     pub const MERGE_CONTINUE: Self = Self {
-        what: "merge --continue",
+        what: "conclude merge",
+        doing: "concluding merge",
         args: &["merge", "--continue"],
         flags: &[],
     };
     /// Throw the merge away and restore the branch.
     pub const MERGE_ABORT: Self = Self {
-        what: "merge --abort",
+        what: "abort merge",
+        doing: "aborting merge",
         args: &["merge", "--abort"],
         flags: &[],
     };
     pub const REBASE_CONTINUE: Self = Self {
-        what: "rebase --continue",
+        what: "continue rebase",
+        doing: "continuing rebase",
         args: &["rebase", "--continue"],
         flags: &[],
     };
     pub const REBASE_SKIP: Self = Self {
-        what: "rebase --skip",
+        what: "skip commit in rebase",
+        doing: "skipping commit in rebase",
         args: &["rebase", "--skip"],
         flags: &[],
     };
     /// The abort `C-c C-k` runs, reachable when there is no todo buffer
     /// open — which is the case once the rebase has actually started.
     pub const REBASE_ABORT: Self = Self {
-        what: "rebase --abort",
+        what: "abort rebase",
+        doing: "aborting rebase",
         args: &["rebase", "--abort"],
         flags: &[],
     };
@@ -2910,7 +2931,8 @@ impl RemoteOp {
     /// shape — one bounded argv, off-thread, notify — fits them for the
     /// same reason it fits the rebase sequencer.
     pub const NOTES_PRUNE: Self = Self {
-        what: "notes prune",
+        what: "prune notes",
+        doing: "pruning notes",
         args: &["notes", "prune"],
         flags: &[RemoteFlag {
             name: "dry-run",
@@ -2921,12 +2943,14 @@ impl RemoteOp {
         }],
     };
     pub const NOTES_MERGE_COMMIT: Self = Self {
-        what: "notes merge --commit",
+        what: "conclude notes merge",
+        doing: "concluding notes merge",
         args: &["notes", "merge", "--commit"],
         flags: &[],
     };
     pub const NOTES_MERGE_ABORT: Self = Self {
-        what: "notes merge --abort",
+        what: "abort notes merge",
+        doing: "aborting notes merge",
         args: &["notes", "merge", "--abort"],
         flags: &[],
     };
@@ -2938,17 +2962,20 @@ impl RemoteOp {
     /// commands, shipping the apply without these would leave the
     /// repository in a state the editor cannot finish.
     pub const AM_CONTINUE: Self = Self {
-        what: "am --continue",
+        what: "continue applying patches",
+        doing: "continuing to apply patches",
         args: &["am", "--continue"],
         flags: &[],
     };
     pub const AM_SKIP: Self = Self {
-        what: "am --skip",
+        what: "skip patch",
+        doing: "skipping patch",
         args: &["am", "--skip"],
         flags: &[],
     };
     pub const AM_ABORT: Self = Self {
-        what: "am --abort",
+        what: "abort applying patches",
+        doing: "aborting patch application",
         args: &["am", "--abort"],
         flags: &[],
     };
@@ -2963,7 +2990,8 @@ impl RemoteOp {
     /// deferred `<C-u>` work; until then `s` on the Untracked entry in
     /// magit-status is the explicit path.
     pub const STAGE_ALL: Self = Self {
-        what: "stage all",
+        what: "stage all tracked changes",
+        doing: "staging all tracked changes",
         args: &["add", "--update"],
         flags: &[],
     };
@@ -2975,25 +3003,29 @@ impl RemoteOp {
     /// no-confirm set for index-only work — the blast radius is wider
     /// than one file but it is still fully reversible.
     pub const UNSTAGE_ALL: Self = Self {
-        what: "unstage all",
+        what: "unstage everything",
+        doing: "unstaging everything",
         args: &["reset", "--quiet"],
         flags: &[],
     };
     /// MG.41d: magit's `x` — stash everything but leave the index
     /// staged, so a partially-staged commit can be tried in isolation.
     pub const STASH_KEEP_INDEX: Self = Self {
-        what: "stash --keep-index",
+        what: "stash, keeping the index",
+        doing: "stashing, keeping the index",
         args: &["stash", "push", "--keep-index"],
         flags: &[],
     };
     /// MG.41d: magit's `i` — stash only what is staged.
     pub const STASH_STAGED: Self = Self {
-        what: "stash --staged",
+        what: "stash staged changes",
+        doing: "stashing staged changes",
         args: &["stash", "push", "--staged"],
         flags: &[],
     };
     pub const STASH: Self = Self {
-        what: "stash",
+        what: "stash changes",
+        doing: "stashing changes",
         args: &["stash", "push"],
         flags: &[
             RemoteFlag {
@@ -3063,6 +3095,65 @@ impl RemoteOp {
             }
         }
         argv
+    }
+
+    /// NC.4: the notification label for one run, naming what the
+    /// resolved argv acts on.
+    ///
+    /// Built from the argv rather than the transient state, so it
+    /// describes what actually ran — including a destination resolved
+    /// at run time. A force-push, a dry run and a push of tags each
+    /// read differently from a plain push; before this they all read
+    /// "push".
+    pub fn label(&self, argv: &[String]) -> String {
+        let has = |flag: &str| argv.iter().any(|a| a == flag);
+        // Subcommand words (`stash push`) are not destinations.
+        let words = self.args.iter().take_while(|a| !a.starts_with('-')).count();
+        let mut rest: Vec<&str> = Vec::new();
+        let mut message = None;
+        let mut tail = argv.iter().skip(words);
+        while let Some(a) = tail.next() {
+            if a == "-m" {
+                message = tail.next().map(String::as_str);
+            } else if !a.starts_with('-') {
+                rest.push(a);
+            }
+        }
+        // `origin main` is how an upstream resolves; `origin/main` is
+        // how people say it.
+        let dest = match rest.as_slice() {
+            [remote, branch] if !remote.contains(['/', ':']) && !branch.contains(':') => format!("{remote}/{branch}"),
+            other => other.join(" "),
+        };
+        let mut label = match self.args.first().copied() {
+            Some("push") => {
+                let verb = if has("--force-with-lease") {
+                    "force-push"
+                } else {
+                    "push"
+                };
+                let mut s = if has("--tags") {
+                    format!("{verb} tags")
+                } else {
+                    verb.to_string()
+                };
+                if !dest.is_empty() {
+                    s.push_str(&format!(" to {dest}"));
+                }
+                s
+            }
+            Some("fetch") if has("--all") => "fetch all remotes".to_string(),
+            Some("fetch") | Some("pull") if !dest.is_empty() => format!("{} {dest}", self.what),
+            Some("pull") if has("--rebase") => "pull and rebase".to_string(),
+            _ => self.what.to_string(),
+        };
+        if let Some(message) = message.filter(|m| !m.is_empty()) {
+            label.push_str(&format!(" \u{201c}{message}\u{201d}"));
+        }
+        if has("--dry-run") {
+            label.push_str(" (dry run)");
+        }
+        label
     }
 
     /// Is the `--rebase` toggle on? Looked up by NAME rather than by
@@ -4386,34 +4477,39 @@ pub fn spawn_remote_op_to(
     prompted: Option<String>,
 ) -> Effect {
     let base = op.argv(args);
-    let what = op.what;
     let shown = base.join(" ");
     let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
+        // The label names the resolved destination, so it is built
+        // where the destination resolves; a resolution failure is
+        // reported under the base label.
+        let fallback = op.label(&base);
+        let (label, result) = tokio::task::spawn_blocking(move || {
             let resolved = match target {
                 RemoteTarget::Upstream => match resolve_upstream(&workdir) {
                     Some(v) => Some(v),
                     None => {
-                        return Err(
-                            "no upstream configured for this branch — set one,                              or pick a destination explicitly"
-                                .to_string(),
+                        return (
+                            op.label(&base),
+                            Err("no upstream configured for this branch — set one, \
+                                 or pick a destination explicitly"
+                                .to_string()),
                         );
                     }
                 },
                 RemoteTarget::Prompted => match prompted.as_deref() {
                     Some(v) if !v.trim().is_empty() => Some(v.to_string()),
-                    _ => return Err("no destination given".to_string()),
+                    _ => return (op.label(&base), Err("no destination given".to_string())),
                 },
                 _ => None,
             };
             let mut argv = base;
             argv.extend(target.argv(resolved.as_deref()));
-            run_remote_op(&workdir, &argv)
+            (op.label(&argv), run_remote_op(&workdir, &argv))
         })
         .await
-        .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(&scope_dir, what, result);
+        .unwrap_or_else(|e| (fallback, Err(e.to_string())));
+        finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -4428,8 +4524,7 @@ pub fn spawn_remote_op(
 ) -> Effect {
     let argv = op.argv(args);
     let shown = argv.join(" ");
-    let logged = shown.clone();
-    let what = op.what;
+    let label = op.label(&argv);
     let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
@@ -4445,15 +4540,14 @@ pub fn spawn_remote_op(
         // `debug!`-on-success / `error!`-on-failure split (the failure
         // log carries git's FULL stderr; the published message is the
         // one line a notification can show).
-        let _ = logged;
-        finish_task(&scope_dir, what, result);
+        finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         // Naming the flags in the echo matters: a force-push and an
         // ordinary push are the same word otherwise, and the echo is
         // the only synchronous feedback this path produces.
-        text: format!("magit: {}ing… (git {shown})", op.what),
+        text: format!("magit: {}… (git {shown})", op.doing),
     }
 }
 
@@ -4466,8 +4560,14 @@ pub fn spawn_remote_op(
 /// which every view answers for its own row format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommitOp {
-    /// Verb for the echo + logs.
+    /// The git spelling, for the echo, the confirm prompt and the
+    /// ex-command's doc line — places that show the command.
     pub what: &'static str,
+    /// NC.4: what it does, for the notification, completed by the
+    /// commit it acted on ("hard-reset to 3f2a1c0"). The argv it used to
+    /// show there named a full sha and several flags, and read the same
+    /// for every op in a burst.
+    pub label: &'static str,
     /// MG.41d: tokens appended AFTER the commit (see [`Self::argv`]).
     /// Empty for every op that takes none.
     pub trailing: &'static [&'static str],
@@ -4498,6 +4598,7 @@ pub struct CommitOp {
 impl CommitOp {
     pub const REVERT: Self = Self {
         what: "revert",
+        label: "revert",
         trailing: &[],
         ex_command: "magit-revert",
         // `--no-edit` keeps the generated message: lattice has no
@@ -4509,6 +4610,7 @@ impl CommitOp {
     };
     pub const CHERRY_PICK: Self = Self {
         what: "cherry-pick",
+        label: "cherry-pick",
         trailing: &[],
         ex_command: "magit-cherry-pick",
         args: &["cherry-pick"],
@@ -4527,6 +4629,7 @@ impl CommitOp {
     /// `trailing` is for.
     pub const RESET_WORKTREE: Self = Self {
         what: "restore worktree",
+        label: "restore the worktree from",
         trailing: &["--worktree", "--", "."],
         ex_command: "magit-reset-worktree",
         args: &["restore", "--source"],
@@ -4544,6 +4647,7 @@ impl CommitOp {
     /// is committed, so git never opens an editor to hang on.
     pub const REVERT_CHANGES: Self = Self {
         what: "revert --no-commit",
+        label: "apply the revert of",
         trailing: &[],
         ex_command: "magit-revert-changes",
         args: &["revert", "--no-commit"],
@@ -4553,6 +4657,7 @@ impl CommitOp {
     /// without recording a commit. Peer of [`Self::REVERT_CHANGES`].
     pub const CHERRY_PICK_APPLY: Self = Self {
         what: "cherry-pick --no-commit",
+        label: "apply the changes of",
         trailing: &[],
         ex_command: "magit-cherry-pick-apply",
         args: &["cherry-pick", "--no-commit"],
@@ -4560,6 +4665,7 @@ impl CommitOp {
     };
     pub const RESET_SOFT: Self = Self {
         what: "reset --soft",
+        label: "soft-reset to",
         trailing: &[],
         ex_command: "magit-reset-soft",
         args: &["reset", "--soft"],
@@ -4567,6 +4673,7 @@ impl CommitOp {
     };
     pub const RESET_MIXED: Self = Self {
         what: "reset --mixed",
+        label: "reset to",
         trailing: &[],
         ex_command: "magit-reset-mixed",
         args: &["reset", "--mixed"],
@@ -4574,6 +4681,7 @@ impl CommitOp {
     };
     pub const RESET_HARD: Self = Self {
         what: "reset --hard",
+        label: "hard-reset to",
         trailing: &[],
         ex_command: "magit-reset-hard",
         args: &["reset", "--hard"],
@@ -4587,6 +4695,7 @@ impl CommitOp {
     /// rather than destroying anything.
     pub const RESET_KEEP: Self = Self {
         what: "reset --keep",
+        label: "reset (keeping changes) to",
         trailing: &[],
         ex_command: "magit-reset-keep",
         args: &["reset", "--keep"],
@@ -4597,6 +4706,7 @@ impl CommitOp {
     /// command without it moves HEAD too.
     pub const RESET_INDEX: Self = Self {
         what: "reset index",
+        label: "reset the index to",
         trailing: &["--"],
         ex_command: "magit-reset-index",
         args: &["reset"],
@@ -4606,6 +4716,7 @@ impl CommitOp {
     /// later `rebase --autosquash` folds into `commit`.
     pub const COMMIT_FIXUP: Self = Self {
         what: "commit --fixup",
+        label: "record a fixup for",
         trailing: &[],
         ex_command: "magit-commit-fixup",
         args: &["commit", "--no-edit", "--fixup"],
@@ -4615,6 +4726,7 @@ impl CommitOp {
     /// kept for editing when the autosquash runs.
     pub const COMMIT_SQUASH: Self = Self {
         what: "commit --squash",
+        label: "record a squash for",
         trailing: &[],
         ex_command: "magit-commit-squash",
         args: &["commit", "--no-edit", "--squash"],
@@ -4642,14 +4754,14 @@ impl CommitOp {
 pub fn spawn_commit_op(op: CommitOp, workdir: std::path::PathBuf, commit: &str) -> Effect {
     let argv = op.argv(commit);
     let shown = argv.join(" ");
-    let logged = shown.clone();
+    let label = format!("{} {}", op.label, short_rev(commit));
     let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: was log-only.
-        finish_task(&scope_dir, &logged, result);
+        finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -4657,6 +4769,18 @@ pub fn spawn_commit_op(op: CommitOp, workdir: std::path::PathBuf, commit: &str) 
         // each other in the echo area otherwise, and two of them
         // rewrite history.
         text: format!("magit: git {shown}"),
+    }
+}
+
+/// NC.4: a revision as a notification names it — a full sha cut to
+/// the seven characters git itself abbreviates to; anything else (a
+/// branch, `HEAD~2`) as given.
+pub(crate) fn short_rev(rev: &str) -> &str {
+    let rev = rev.trim();
+    if rev.len() > 7 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
+        &rev[..7]
+    } else {
+        rev
     }
 }
 
@@ -5745,6 +5869,147 @@ mod tests {
     fn base_branch_from_prompt_buffer_name_rejects_unrelated_names() {
         assert_eq!(base_branch_from_prompt_buffer_name("*magit:status*"), None);
         assert_eq!(base_branch_from_prompt_buffer_name("*prompt*"), None);
+    }
+}
+
+#[cfg(test)]
+mod task_labels {
+    use super::{CommitOp, RemoteOp, short_rev};
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    /// NC.4: a burst of pushes must say which is which.
+    #[test]
+    fn a_push_label_names_its_destination_and_its_kind() {
+        let p = RemoteOp::PUSH;
+        assert_eq!(p.label(&argv(&["push"])), "push");
+        assert_eq!(
+            p.label(&argv(&["push", "origin", "main"])),
+            "push to origin/main"
+        );
+        assert_eq!(
+            p.label(&argv(&["push", "--force-with-lease", "origin", "main"])),
+            "force-push to origin/main"
+        );
+        assert_eq!(p.label(&argv(&["push", "--tags"])), "push tags");
+        assert_eq!(p.label(&argv(&["push", "--dry-run"])), "push (dry run)");
+        assert_eq!(
+            p.label(&argv(&["push", "origin", "HEAD:refs/for/main"])),
+            "push to origin HEAD:refs/for/main",
+            "a refspec is shown as typed, not joined into a path"
+        );
+    }
+
+    #[test]
+    fn fetch_and_pull_labels_name_their_source() {
+        assert_eq!(
+            RemoteOp::FETCH.label(&argv(&["fetch", "--all", "--prune"])),
+            "fetch all remotes"
+        );
+        assert_eq!(
+            RemoteOp::FETCH.label(&argv(&["fetch", "upstream"])),
+            "fetch upstream"
+        );
+        assert_eq!(
+            RemoteOp::PULL.label(&argv(&["pull", "--rebase"])),
+            "pull and rebase"
+        );
+        assert_eq!(
+            RemoteOp::PULL.label(&argv(&["pull", "--ff-only", "origin", "dev"])),
+            "pull origin/dev"
+        );
+    }
+
+    /// The subcommand word of `stash push` is not a destination, and the
+    /// message is how a stash is recognised later.
+    #[test]
+    fn a_stash_label_carries_its_message() {
+        assert_eq!(
+            RemoteOp::STASH.label(&argv(&["stash", "push"])),
+            "stash changes"
+        );
+        assert_eq!(
+            RemoteOp::STASH.label(&argv(&["stash", "push", "-u", "-m", "wip"])),
+            "stash changes \u{201c}wip\u{201d}"
+        );
+    }
+
+    /// No label is raw git syntax, and none is shared: a label that
+    /// reads like a flag, or two operations that read the same, is the
+    /// ambiguity NC.4 removes.
+    #[test]
+    fn remote_op_labels_are_plain_and_distinct() {
+        let ops = [
+            RemoteOp::PULL,
+            RemoteOp::PUSH,
+            RemoteOp::FETCH,
+            RemoteOp::CHERRY_PICK_CONTINUE,
+            RemoteOp::CHERRY_PICK_SKIP,
+            RemoteOp::CHERRY_PICK_ABORT,
+            RemoteOp::REVERT_CONTINUE,
+            RemoteOp::REVERT_SKIP,
+            RemoteOp::REVERT_ABORT,
+            RemoteOp::MERGE_CONTINUE,
+            RemoteOp::MERGE_ABORT,
+            RemoteOp::REBASE_CONTINUE,
+            RemoteOp::REBASE_SKIP,
+            RemoteOp::REBASE_ABORT,
+            RemoteOp::NOTES_PRUNE,
+            RemoteOp::NOTES_MERGE_COMMIT,
+            RemoteOp::NOTES_MERGE_ABORT,
+            RemoteOp::AM_CONTINUE,
+            RemoteOp::AM_SKIP,
+            RemoteOp::AM_ABORT,
+            RemoteOp::STAGE_ALL,
+            RemoteOp::UNSTAGE_ALL,
+            RemoteOp::STASH_KEEP_INDEX,
+            RemoteOp::STASH_STAGED,
+            RemoteOp::STASH,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for op in ops {
+            assert!(!op.what.contains("--"), "`{}` reads like a flag", op.what);
+            assert!(!op.doing.contains("--"), "`{}` reads like a flag", op.doing);
+            assert!(seen.insert(op.what), "`{}` is shared", op.what);
+        }
+    }
+
+    #[test]
+    fn commit_op_labels_are_plain_and_distinct() {
+        let ops = [
+            CommitOp::REVERT,
+            CommitOp::CHERRY_PICK,
+            CommitOp::RESET_WORKTREE,
+            CommitOp::REVERT_CHANGES,
+            CommitOp::CHERRY_PICK_APPLY,
+            CommitOp::RESET_SOFT,
+            CommitOp::RESET_MIXED,
+            CommitOp::RESET_HARD,
+            CommitOp::RESET_KEEP,
+            CommitOp::RESET_INDEX,
+            CommitOp::COMMIT_FIXUP,
+            CommitOp::COMMIT_SQUASH,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for op in ops {
+            assert!(!op.label.contains("--"), "`{}` reads like a flag", op.label);
+            assert!(seen.insert(op.label), "`{}` is shared", op.label);
+        }
+    }
+
+    #[test]
+    fn a_full_sha_is_shortened_and_a_ref_is_not() {
+        assert_eq!(
+            short_rev("3f2a1c09b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3"),
+            "3f2a1c0"
+        );
+        assert_eq!(
+            short_rev("feature/very-long-name"),
+            "feature/very-long-name"
+        );
+        assert_eq!(short_rev("HEAD~2"), "HEAD~2");
     }
 }
 

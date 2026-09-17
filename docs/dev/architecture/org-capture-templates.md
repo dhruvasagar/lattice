@@ -292,54 +292,60 @@ declaration site instead of a warning in the log at capture time.
 `lattice.toml` remains able to express the same set, unchanged and untested by
 this design beyond a round-trip case.
 
-The reference declaration this design is written against:
+The reference declaration, as it landed in the user init:
 
 ```rust
+const HABIT_TRACKER: &str = "~/src/dhruvasagar/org-files/habit-tracker.org";
+
 // The day's tracker: the whole template file, filed under today's date node.
 Template {
-    key: "h".into(),
-    description: Some("habit tracker: today".into()),
-    type_: EntryType::Entry,
-    body: None,
-    body_file: Some("~/src/dhruvasagar/org-files/templates/habit-tracker.org".into()),
-    target: Target {
-        kind: Some(TargetKind::FileDatetree),
-        file: "~/src/dhruvasagar/org-files/habit-tracker.org".into(),
-        ..Default::default()
-    },
-    ..Default::default()
+	key: "H".into(),
+	description: Some("Habit tracker (today)".into()),
+	target: Target {
+		kind: Some("file+datetree".into()),
+		file: HABIT_TRACKER.into(),
+		..Default::default()
+	},
+	body_file: Some("~/src/dhruvasagar/org-files/templates/habit-episode-tracker.org".into()),
+	..Default::default()
 }
 
 // One episode: a row appended to today's Episode Tracker table.
 Template {
-    key: "he".into(),
-    description: Some("habit: episode row".into()),
-    type_: EntryType::TableLine,
-    body: Some(
-        "| %^{Time / Situation} | %^{Thoughts} | %^{Urge 0-10} \
-         | %^{STOP + NOTICE} | %^{DELAY} | %^{ACTION} | %^{After 0-10} |".into(),
-    ),
-    target: Target {
-        kind: Some(TargetKind::FileDatetree),
-        file: "~/src/dhruvasagar/org-files/habit-tracker.org".into(),
-        sub_olp: Some(vec!["Urge / Habit Episode Tracker".into()]),
-        ..Default::default()
-    },
-    ..Default::default()
+	key: "u".into(),
+	description: Some("Urge episode (tracker row)".into()),
+	target: Target {
+		kind: Some("file+datetree".into()),
+		file: HABIT_TRACKER.into(),
+		sub_olp: Some(vec!["Urge / Habit Episode Tracker".into()]),
+		..Default::default()
+	},
+	r#type: Some("table-line".into()),
+	body: Some("| %^{Time / Situation} | %^{Thoughts / Assumptions} | … | %^{After 0-10} |".into()),
+	..Default::default()
 }
 ```
 
-`type` is a Rust keyword, hence `type_`; the derive kebab-cases it to `type` on
-the wire, the same way `clock_in` already crosses as `clock-in`.
+Three things differ from the draft this section first carried, each for a
+reason:
 
-**`Template` and `Target` derive `Default` as well as `ConfigShape`**, which
-today's declarations do not. That is not cosmetic: `Target` goes from two fields
-to six, of which at most two are set by any one `kind`, and spelling four
-`None`s at every call site is how a declaration acquires noise that hides its
-meaning. `..Default::default()` makes the fields a template *does* set the only
-ones a reader sees. `EntryType` defaults to `Entry` and `TargetKind` to `None`
-(the §4 inference), so a default-constructed template is exactly today's
-behaviour.
+- **`kind` is a validated string, not a schema `Enum`.** The derive kebab-cases
+  enum variants, which would turn org's `file+datetree` into `file-datetree`.
+  Org's spelling is the vocabulary users carry from emacs, so the plugin
+  validates the closed set itself and names an unknown `kind` in `skipped`.
+  `type` has no `+` in any value and *is* a schema `Enum`; the init side
+  declares it as a string, which the host accepts for an `Enum` field.
+- **`type` is spelled `r#type`**, a raw identifier, not `type_` — the derive
+  strips the `r#` and the wire name is `type`.
+- **The keys are `H` and `u`, not `h` and `he`.** `h` was already the habit
+  entry template, and a bound `h` would stop the menu before `he` could be typed
+  in any case.
+
+**`Template` and `Target` derive `Default` as well as `ConfigShape`.** That is
+not cosmetic: `Target` has seven fields, of which at most three are set by any
+one `kind`, and spelling the rest as `None` at every call site is how a
+declaration acquires noise that hides its meaning. A default-constructed
+template is exactly the `entry` / inferred-`kind` behaviour.
 
 ## 10. Migration
 
@@ -347,12 +353,18 @@ Asymmetric, and the roam half is breaking. Stated plainly rather than softened:
 
 - **`org.capture-templates` does not change.** `kind` absent keeps today's
   inference (§4). Existing entries load untouched.
-- **`org.roam-capture-templates` breaks.** Its bare `file` field becomes
-  `target = { kind = "file+head", file = … }`. Eight templates in the reference
-  init need rewriting once. A transitional alias was considered and rejected:
-  the shapes would then disagree about where a destination is declared, which is
-  precisely the confusion §1 is retiring, and the migration is one edit to one
-  file that the author of both is performing.
+- **`org.roam-capture-templates` breaks.** Its bare `file` field is gone, and
+  `target` is **required**, as org-roam's own `:target` is (org-roam signals
+  "Template needs to specify ':target'"). The reference init's eight templates
+  became `target = { kind = "file", file = "%<%Y%m%d%H%M%S>-${slug}.org" }` —
+  org-roam's default path, spelled out, which is why `%<fmt>` landed in the
+  same batch. `file+head` (and `file+head+olp`) is roam-only and writes `head`
+  only when the file is new, followed by the node's `:ID:` drawer; an existing
+  file receives only the body. An empty roam body is allowed — a head alone is
+  a complete node. A transitional alias was considered and rejected: the shapes
+  would then disagree about where a destination is declared, which is precisely
+  the confusion §1 is retiring, and the migration is one edit to one file that
+  the author of both is performing.
 - **`skipped` gains entries for anything that does not resolve** — which is how a
   half-migrated config announces itself rather than silently capturing to the
   wrong place.

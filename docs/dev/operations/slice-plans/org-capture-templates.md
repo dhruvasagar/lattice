@@ -20,13 +20,14 @@ thing in this repo.
 |---|---|---|---|
 | CT.1 | org-plugin | `body-file` becomes a shared body-source seam | ✅ |
 | CT.2 | org-plugin | Tilde-expand the target path before the read | ✅ |
-| CT.3 | org-plugin | `target.kind` discriminant; `file+olp` | 📝 |
-| CT.4 | org-plugin | `type` axis; `table-line` resolver + placement | 📝 |
-| CT.5 | org-plugin | `entry` re-levels under a heading target | 📝 |
-| CT.6 | org-plugin | `file+datetree` — creation, `tree-type`, `olp` above | 📝 |
-| CT.7 | org-plugin | `sub-olp` below the date node; table-line scope | 📝 |
-| CT.8 | org-plugin | Roam adopts the shape; `file+head`; `RoamTemplate` removed | 📝 |
-| CT.9 | user config | `init.rs` declaration + the tracker file's conversion | 📝 |
+| CT.3 | org-plugin | `target.kind` discriminant; `file+olp` | ✅ |
+| CT.4 | org-plugin | `type` axis; `table-line` resolver + placement | ✅ |
+| CT.5 | org-plugin | `entry` re-levels under a heading target | ✅ |
+| CT.6 | org-plugin | `file+datetree` — creation, `tree-type`, `olp` above | ✅ |
+| CT.7 | org-plugin | `sub-olp` below the date node; table-line scope | ✅ |
+| CT.8 | org-plugin | Roam adopts the shape; `file+head`; `RoamTemplate` removed | ✅ |
+| CT.9 | user config | `init.rs` declaration + the tracker file's conversion | 🚧 |
+| CT.4b | org-plugin | Table-location bench over a year-long tracker | ⛔ |
 
 **Ordering rationale.** CT.1 and CT.2 are independently useful and unblock
 nothing else, so they go first and deliver the original request on their own.
@@ -109,7 +110,7 @@ leaving a stale constraint documented.
 
 ---
 
-## CT.3 — `target.kind` discriminant; `file+olp`
+## CT.3 ✅ — `target.kind` discriminant; `file+olp`
 
 Design §4.
 
@@ -134,7 +135,7 @@ different parent; an unknown `kind` string is a named skip; `kind = "file"` plus
 
 ---
 
-## CT.4 — `type` axis; `table-line` resolver and placement
+## CT.4 ✅ — `type` axis; `table-line` resolver and placement
 
 Design §3, §5.
 
@@ -165,9 +166,21 @@ year of daily nodes is the realistic shape). Capture runs on an explicit action
 and already reads the file, so this is a guard against an accidentally quadratic
 scan, not a latency budget — say so in the bench's comment.
 
+
+**What landed differently.** `EntryType` is a schema `Enum` as planned, but
+`target.kind` (CT.3) is a validated string: the derive kebab-cases enum
+variants and would spell `file+olp` as `file-olp`. CT.3 also gave
+`capture_effects` its read seam (`capture_effects_via`), which this plan had
+left out — the table resolver was the second reader, as CT.2 predicted.
+`is_hline` follows `org-table-hline-regexp` (`^[ \t]*|-`); a first version that
+classed `| - |` as a rule was caught by a test taken from org's source.
+
+**The bench did not land** — the plugin crate has no bench harness. Carried as
+CT.4b ⛔: add it with the harness, when a second plugin bench wants one.
+
 ---
 
-## CT.5 — `entry` re-levels under a heading target
+## CT.5 ✅ — `entry` re-levels under a heading target
 
 Design §4.2. **Must precede CT.6.**
 
@@ -188,7 +201,7 @@ already deeper than the target still shifts (up, not only down).
 
 ---
 
-## CT.6 — `file+datetree`
+## CT.6 ✅ — `file+datetree`
 
 Design §4.2. Depends on CT.5.
 
@@ -215,7 +228,7 @@ puts the tree under the named path; the weekday name matches the date.
 
 ---
 
-## CT.7 — `sub-olp`, and `table-line`'s scope under it
+## CT.7 ✅ — `sub-olp`, and `table-line`'s scope under it
 
 Design §4.1. Depends on CT.4 and CT.6.
 
@@ -233,7 +246,7 @@ resolves from the headline target instead.
 
 ---
 
-## CT.8 — roam adopts the shape
+## CT.8 ✅ — roam adopts the shape
 
 Design §7, §10. The only breaking slice.
 
@@ -258,9 +271,19 @@ is a named skip with a message that says what to write instead.
 (`target = { kind = "file+head", file = "…" }`), not merely report the field as
 unknown.
 
+
+**What landed differently.** `target` is **required** in both lists, as
+org-roam's `:target` is — the "`file` absent means the default filename" rule
+above came from a wrong reading of org-roam and was dropped. The default is
+spelled out instead, `%<%Y%m%d%H%M%S>-${slug}.org`, so org's `%<fmt>`
+placeholder landed as its own commit ahead of this slice. `file+head` writes
+`head` only for a new file, then the `:ID:` drawer; an existing file receives
+only the body. A failed template load is reported in the menu rather than
+falling back to the built-in stub.
+
 ---
 
-## CT.9 — `init.rs` and the tracker file
+## CT.9 🚧 — `init.rs` and the tracker file
 
 Tree: `~/.config/lattice/init`, plus
 `~/src/dhruvasagar/org-files/`. Depends on CT.1–CT.8 released.
@@ -292,6 +315,20 @@ body of a date node they land mid-file, where org ignores them and
 a file that already has today's node; capture `he` three times and confirm three
 rows in the Episode Tracker table and none in Daily Overview; confirm the day's
 node collapses to one line.
+
+
+**What landed.** The init `Target` gained `tree_type` / `sub_olp`, `Template`
+gained `r#type`; the tracker templates are `H` (day) and `u` (episode row) —
+`h` is the habit entry template and would shadow `he`, so read those as `H` and
+`u` in the verification above. There is no vocab template in the init, so that
+item is moot. The "paths are ABSOLUTE" warning was replaced by a note that `~/`
+works. The body is `org-files/templates/habit-episode-tracker.org` (keywords
+dropped; the empty episode row dropped so captured rows are not preceded by a
+blank one), and `org-files/habit-tracker.org` carries the keywords and
+`* How to use this` once; its filetag is `:habits:`, since a generated date
+headline cannot carry one. The original `roam/templates/habit-episode-tracker.org`
+is left in place for the user to delete. **The manual verification above has
+not been run** — it needs the editor; this slice turns ✅ when it has.
 
 ---
 

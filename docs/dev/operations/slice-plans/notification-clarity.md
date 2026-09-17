@@ -21,7 +21,7 @@ Built on NOTIF.1a–f. The reported gap had two halves:
 |---|---|---|
 | NC.1 | `NotificationLevel::Success`; one shared `glyph(nerd_fonts)` for the TUI, GPUI and the `*notifications*` buffer; theme-sourced colours in both peers; the buffer re-renders on a `ui.nerd_fonts` flip | ✅ |
 | NC.2 | `scope` on `Event::BackgroundTaskFinished` + a `Stopped` outcome; the notification lays out `<icon> <scope> · <text>`; magit passes the repository name | ✅ |
-| NC.3 | Pick the line that matters: failures prefer `error:` / `fatal:` / `!` / `CONFLICT` and fall back to stdout; push / fetch / pull get their own success summaries | 📝 |
+| NC.3 | Pick the line that matters: failures prefer `error:` / `fatal:` / `!` / `CONFLICT` and fall back to stdout; push / fetch / pull get their own success summaries | ✅ |
 | NC.4 | magit label rewrite — a human phrase naming what was acted on, no raw flags, no shared labels; partial operations report `Stopped`; the `…ing` echo bug | 📝 |
 | NC.5 | Report the eight actions that finish silently (file stage/unstage/discard, branch create/checkout/rename/delete) | 📝 |
 
@@ -66,4 +66,27 @@ separate and shown in the buffer); `lattice-magit` `task_scope_tests`;
 `lattice-ui-tui` bold scope span; the host test
 `a_task_event_carries_its_scope_to_the_notification`, which goes
 through the real subscriber.
+
+## NC.3 — the line that matters ✅
+
+- `lattice-magit::git_report`: `success_report(argv, stdout, stderr)` and
+  `failure_report(stdout, stderr, status)`. **Reorders, never
+  truncates:** the chosen line goes first and git's complete output
+  follows, so `finish_task` publishes line one and still logs everything.
+- Failures look for, in order: `CONFLICT`, `! [`, `fatal:`, `error:`,
+  then the first line that is not `To`/`From`. stdout is searched too.
+  `hint:` and progress lines are skipped. A silent failure names its
+  exit status instead of printing nothing.
+- Successes: push → the ref (`main`, `feature → review/feature`,
+  `(forced)`, `already up to date`); fetch → `updated origin/main` /
+  `N refs updated, M pruned` / `up to date`; pull → `fast-forwarded
+  a..b, <stat>` / `already up to date` / the rebase line; checkout →
+  `Switched to …` from stderr; stash → the `Dropped` / `Saved` line;
+  clone → empty (the label names the destination).
+- `resolve_upstream` now runs its own stdout-only query. It had parsed
+  `run_remote_op`'s output as a value, which the report shape would
+  have broken.
+
+Tests: `git_report` unit tests for every case above; a real-git merge
+conflict and a real upstream resolution (`run_remote_op_reports`).
 

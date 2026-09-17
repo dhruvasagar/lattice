@@ -2685,16 +2685,22 @@ impl RemoteTarget {
 /// caller reports that rather than pushing somewhere unintended, which
 /// is the whole risk this row carries.
 pub fn resolve_upstream(workdir: &std::path::Path) -> Option<String> {
-    let full = run_remote_op(
-        workdir,
-        &[
-            "rev-parse".to_string(),
-            "--abbrev-ref".to_string(),
-            "--symbolic-full-name".to_string(),
-            "@{upstream}".to_string(),
-        ],
-    )
-    .ok()?;
+    // A query, not an operation: read stdout as a value. NC.3 made
+    // `run_remote_op`'s output a report (summary line, then detail),
+    // which is the wrong shape to parse.
+    let output = std::process::Command::new("git")
+        .args([
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(workdir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let full = String::from_utf8_lossy(&output.stdout).into_owned();
     // `origin/main` -> `origin main`. A remote name cannot contain `/`,
     // but a BRANCH can (`origin/feature/x`), so split once from the
     // left and keep the remainder whole.
@@ -4678,14 +4684,24 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
         .env("GIT_SEQUENCE_EDITOR", "true")
         .current_dir(workdir)
         .output();
+    // NC.3: the line that says what happened goes FIRST, git's full
+    // output after it — `finish_task` publishes the first line and
+    // logs the rest. Taking stdout-then-stderr as it came made a push
+    // read `To <url>` and a conflicted merge read nothing at all.
     match output {
-        Ok(o) if o.status.success() => {
+        Ok(o) => {
             let out = String::from_utf8_lossy(&o.stdout);
             let err = String::from_utf8_lossy(&o.stderr);
-            let combined = format!("{out}{err}");
-            Ok(combined.trim().to_string())
+            if o.status.success() {
+                Ok(crate::git_report::success_report(args, &out, &err))
+            } else {
+                Err(crate::git_report::failure_report(
+                    &out,
+                    &err,
+                    o.status.code(),
+                ))
+            }
         }
-        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -5729,6 +5745,75 @@ mod tests {
     fn base_branch_from_prompt_buffer_name_rejects_unrelated_names() {
         assert_eq!(base_branch_from_prompt_buffer_name("*magit:status*"), None);
         assert_eq!(base_branch_from_prompt_buffer_name("*prompt*"), None);
+    }
+}
+
+#[cfg(test)]
+mod run_remote_op_reports {
+    use super::{resolve_upstream, run_remote_op};
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?}");
+    }
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    /// A repository where merging `other` into `main` conflicts on a.txt.
+    fn conflicted() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let d = dir.path();
+        git(d, &["init", "-q", "-b", "main"]);
+        std::fs::write(d.join("a.txt"), "base\n").expect("write");
+        git(d, &["add", "a.txt"]);
+        git(d, &["commit", "-q", "-m", "base"]);
+        git(d, &["checkout", "-q", "-b", "other"]);
+        std::fs::write(d.join("a.txt"), "other\n").expect("write");
+        git(d, &["commit", "-q", "-am", "other"]);
+        git(d, &["checkout", "-q", "main"]);
+        std::fs::write(d.join("a.txt"), "main\n").expect("write");
+        git(d, &["commit", "-q", "-am", "main"]);
+        dir
+    }
+
+    /// NC.3, against real git: the conflict is on stdout and stderr is
+    /// empty, which is what made this read `merge failed: ` before.
+    #[test]
+    fn a_real_merge_conflict_reports_the_conflict() {
+        let dir = conflicted();
+        let err = run_remote_op(dir.path(), &argv(&["merge", "--no-edit", "other"]))
+            .expect_err("the merge conflicts");
+        let first = err.lines().next().unwrap_or_default();
+        assert!(first.starts_with("CONFLICT"), "{err}");
+    }
+
+    /// `resolve_upstream` reads its own stdout: the report shape
+    /// `run_remote_op` now returns would have split into garbage.
+    #[test]
+    fn upstream_resolution_still_reads_a_plain_value() {
+        let origin = conflicted();
+        let clone = tempfile::tempdir().expect("temp dir");
+        git(
+            clone.path(),
+            &["clone", "-q", "--", &origin.path().to_string_lossy(), "c"],
+        );
+        assert_eq!(
+            resolve_upstream(&clone.path().join("c")).as_deref(),
+            Some("origin main")
+        );
     }
 }
 

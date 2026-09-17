@@ -77,14 +77,14 @@
 - [ ] in-built agent harness tooling that can be used to build agents for specific use cases (could be similar to gptel)
 - [ ] multicursor
 - [ ] api I can use within `init.rs` to enable settings in specific modes. eg.) Enable `autowrap` in org-mode, essentially user local overrides for specific modes
-- [ ] we have mouse support (ui.mouse), however, I don't see any mouse interactions within the terminal
-  - [ ] Should be able to scroll
-  - [ ] Should be able to position the cursor
-  - [ ] Should be able to select text
+- [X] we have mouse support (ui.mouse), however, I don't see any mouse interactions within the terminal
+  - [X] Should be able to scroll
+  - [X] Should be able to position the cursor
+  - [X] Should be able to select text
 
 * Plugins
 - [X] plugin manager
-- [ ] project.el
+- [X] project.el
 - [X] Claude Code IDE
 - [ ] Org Mode
     - [X] org agenda views
@@ -101,7 +101,7 @@
       - [X] C-c C-c | C-c C-k should also be available in insert mode in capture buffer
 - [X] treesitter context
 - [ ] lsp breadcrumbs
-- [ ] which key
+- [X] which key
 - [ ] Dictionary lookup
 
 * Issues
@@ -114,65 +114,58 @@
 - [X] `gg`, `zz`, `zt`, `zb` don't work
 - [X] Mouse click on window does not work, no focus, can't maximize
 - [X] Picker UI improve colors for matching, marginalia
-- [X] LSP `K` (hover): popup doesn't appear on first press; requires
-  an additional key press, and is not positioned at the cursor
-  location. Two GPUI fixes (2026-05-27):
-  - Wake-bridge in ~EditorView::new~ now drains ~run_tick_pending~
-    before ~cx.notify()~ so idle LSP arrivals (hover, signature
-    help, …) materialize without the next keystroke.
-  - ~Editor::pending_hover_anchor~ stashes ~(cursor, scroll)~ at
-    K-press; ~open_floating_popup~ consumes it one-shot so the
-    popup pins to the invocation site rather than wherever the
-    cursor drifted to between K and the LSP response.
-  - Popup body now renders every row through a uniform
-    ~flex_row~ of per-char divs (previously non-cursor lines
-    used naked text, cursor line used per-char flex — metrics
-    diverged, current line jumped a char right on every motion).
-- [X] Popup buffers don't scroll when the cursor moves past the
-  viewport (GPUI only — TUI was fine). Per-frame override on the
-  GPUI render pass sets ~Editor::viewport_height~ to the popup's
-  inner row count (~POPUP_INNER_HEIGHT_ROWS = 30~) while focused
-  so ~ensure_cursor_in_viewport~ scrolls correctly; restores from
-  the active leaf when the popup is dismissed.
-- [X] `describe-buffer`'s "Active modes" entries are no longer
-  rendered as links (regression — visual styling restored via
-  ~lattice_help::with_markdown_syntax~ overlay; both peers now
-  see Style::Link spans in popup.help_highlights).
+- [X] LSP `K` (hover): popup doesn't appear on first press; requires an
+  additional key press, and is not positioned at the cursor location. Two GPUI
+  fixes (2026-05-27):
+  - Wake-bridge in ~EditorView::new~ now drains ~run_tick_pending~ before
+    ~cx.notify()~ so idle LSP arrivals (hover, signature help, …) materialize
+    without the next keystroke.
+  - ~Editor::pending_hover_anchor~ stashes ~(cursor, scroll)~ at K-press;
+    ~open_floating_popup~ consumes it one-shot so the popup pins to the
+    invocation site rather than wherever the cursor drifted to between K and the
+    LSP response.
+  - Popup body now renders every row through a uniform ~flex_row~ of per-char
+    divs (previously non-cursor lines used naked text, cursor line used per-char
+    flex — metrics diverged, current line jumped a char right on every motion).
+- [X] Popup buffers don't scroll when the cursor moves past the viewport (GPUI
+  only — TUI was fine). Per-frame override on the GPUI render pass sets
+  ~Editor::viewport_height~ to the popup's inner row count
+  (~POPUP_INNER_HEIGHT_ROWS = 30~) while focused so ~ensure_cursor_in_viewport~
+  scrolls correctly; restores from the active leaf when the popup is dismissed.
+- [X] `describe-buffer`'s "Active modes" entries are no longer rendered as links
+  (regression — visual styling restored via ~lattice_help::with_markdown_syntax~
+  overlay; both peers now see Style::Link spans in popup.help_highlights).
 - [X] Help-link follow (~<CR>~ on a link) works on TUI only.
-  ~do_help_follow_link~ hoisted into ~Editor::do_help_follow_link~
-  (2026-05-27); ~Action::FollowLink => BufferKind::Help~ routes to
-  it. Both peers now dispatch through one host-side handler.
-- [X] :terminal: in Normal mode, ~k~ doesn't move up. Root cause
-  (2026-05-27): ~terminal-mode~ was registered in
-  ~editor_boot.rs~ but never activated for terminal buffers, so
-  ~resolve_invocation_runner~ returned None and motions fell
-  through to ~run_document_invocation~ (the wrong buffer).
-  Fixed by calling ~activate_major_for_buffer_kind(id,
-  BufferKind::Terminal)~ in ~activate_buffer~'s Terminal arm.
-- [X] Universal: cursor must never paint past the last visible
-  buffer row. Resolved by the popup / terminal row-height locks
-  (~popup_inner_height_rows~ derives from explicit chrome math,
-  ~build_terminal_inner~ locks each row to ~estimated_row_px~,
-  ~paint_pane~ uses ~pane.viewport_height~ for inactive paints).
-- [X] :terminal: only half the vertical space appears used to
-  render content (reported 2026-05-27 after row-lock fix). Needs
-  interactive repro with ~RUST_LOG=lattice_gpui::viewport=debug~
-  to confirm whether ~snap.rows~ vs ~leaf.viewport_height~ vs
-  rendered pane height drift.
-- [X] :b switches buffer in split → new buffer renders without
-  syntax highlighting. Same root cause as terminal ~k~:
-  ~resolve_invocation_runner~ was returning None for buffers
-  whose major mode wasn't activated, so ~:b~ to a terminal
-  buffer fell through to the document path and looked inactive.
-  Resolved by the ~activate_major_for_buffer_kind~ call landed
-  for terminal-mode (2026-05-27).
-- [X] Popup body wrap: long lines wrap at the locked popup width
-  (~popup.wrap~ option, default true). One source line emits one
-  or more visible rows; cursor block follows the wrap segment
-  whose char-range contains ~cursor_byte~.
-- [X] Terminal inactive panes should also DIM the content (not
-  just hide the cursor). Document panes today don't dim either —
-  may need a peer-level opacity / palette-darken pass.
+  ~do_help_follow_link~ hoisted into ~Editor::do_help_follow_link~ (2026-05-27);
+  ~Action::FollowLink => BufferKind::Help~ routes to it. Both peers now dispatch
+  through one host-side handler.
+- [X] :terminal: in Normal mode, ~k~ doesn't move up. Root cause (2026-05-27):
+  ~terminal-mode~ was registered in ~editor_boot.rs~ but never activated for
+  terminal buffers, so ~resolve_invocation_runner~ returned None and motions
+  fell through to ~run_document_invocation~ (the wrong buffer). Fixed by calling
+  ~activate_major_for_buffer_kind(id, BufferKind::Terminal)~ in
+  ~activate_buffer~'s Terminal arm.
+- [X] Universal: cursor must never paint past the last visible buffer row.
+  Resolved by the popup / terminal row-height locks (~popup_inner_height_rows~
+  derives from explicit chrome math, ~build_terminal_inner~ locks each row to
+  ~estimated_row_px~, ~paint_pane~ uses ~pane.viewport_height~ for inactive
+  paints).
+- [X] :terminal: only half the vertical space appears used to render content
+  (reported 2026-05-27 after row-lock fix). Needs interactive repro with
+  ~RUST_LOG=lattice_gpui::viewport=debug~ to confirm whether ~snap.rows~ vs
+  ~leaf.viewport_height~ vs rendered pane height drift.
+- [X] :b switches buffer in split → new buffer renders without syntax
+  highlighting. Same root cause as terminal ~k~: ~resolve_invocation_runner~ was
+  returning None for buffers whose major mode wasn't activated, so ~:b~ to a
+  terminal buffer fell through to the document path and looked inactive.
+  Resolved by the ~activate_major_for_buffer_kind~ call landed for terminal-mode
+  (2026-05-27).
+- [X] Popup body wrap: long lines wrap at the locked popup width (~popup.wrap~
+  option, default true). One source line emits one or more visible rows; cursor
+  block follows the wrap segment whose char-range contains ~cursor_byte~.
+- [X] Terminal inactive panes should also DIM the content (not just hide the
+  cursor). Document panes today don't dim either — may need a peer-level opacity
+  / palette-darken pass.
 - [X] visual block mode does not work
 - [X] marginalia columns alignment
 - [X] `scrolloff` not respected properly
@@ -180,66 +173,103 @@
 - [X] Any edit breaks syntax highlighting
 - [X] `:e!` clones the buffer instead of just refreshing
 - [X] `:e!` should not reposition cursor
-- [X] *messages* buffer shows [+] in the :b list, it should not track
-  dirty flag
+- [X] *messages* buffer shows [+] in the :b list, it should not track dirty flag
 - [X] hover popup position is off when there are splits
-- [X] typing on rust, the inlay hint flicker is fixed but I notice as
-  I type the comment fonts switch to italics sometimes, possibly when
-  there are diagnostic errors on the line I am editing. They disappear
-  when the line is syntactically valid.
-- [X] When using `K`, and we focus on the popup, the decorations such
-  as inlay-hint are removed from the background buffer (no reason to
-  remove them), and when we close the popup and the background buffer
-  gains focus again, they don't come back until the next key press
-- [ ] Typing in rust buffer, the syntax highlighting lags behind by
-  one character. The character just before the cursor doesn't get
-  highlighted until one more key press.
+- [X] typing on rust, the inlay hint flicker is fixed but I notice as I type the
+  comment fonts switch to italics sometimes, possibly when there are diagnostic
+  errors on the line I am editing. They disappear when the line is syntactically
+  valid.
+- [X] When using `K`, and we focus on the popup, the decorations such as
+  inlay-hint are removed from the background buffer (no reason to remove them),
+  and when we close the popup and the background buffer gains focus again, they
+  don't come back until the next key press
+- [ ] Typing in rust buffer, the syntax highlighting lags behind by one
+  character. The character just before the cursor doesn't get highlighted until
+  one more key press.
 - [X] echo in GPUI. `set wrap?` should echo the value.
-- [X] claude code inline diff colors are off, font color is dark
-  making it look dull in TUI
+- [X] claude code inline diff colors are off, font color is dark making it look
+  dull in TUI
 - [X] GPUI `describe-key` doesn't ask for / translate key chords
-- [X] claude code sometimes seems to get stuck within lattice with no
-  changes happening. Mostly I feel this was around diff-accept /
-  diff-reject. But we should review it overall to make sure we handle
-  errors correctly, reconnect if connection breaks, etc.
+- [X] claude code sometimes seems to get stuck within lattice with no changes
+  happening. Mostly I feel this was around diff-accept / diff-reject. But we
+  should review it overall to make sure we handle errors correctly, reconnect if
+  connection breaks, etc.
 - [X] Fold issues with active / inactive panes
-  - [X] TUI: when we switch active pane folds reset for the previously
-    active pane, when we switch back to it they are re-applied. The
-    folds should not change for active pane
-  - [X] GPUI: when folding, the folding gets applied to all active and
-    inactive panes, when we switch to separate panes the folds reset
-    for that pane. Folding key bindings should never effect inactive
-    pane content.
+  - [X] TUI: when we switch active pane folds reset for the previously active
+    pane, when we switch back to it they are re-applied. The folds should not
+    change for active pane
+  - [X] GPUI: when folding, the folding gets applied to all active and inactive
+    panes, when we switch to separate panes the folds reset for that pane.
+    Folding key bindings should never effect inactive pane content.
 - [X] lsp `gr` waits for additional key before it launches picker
-- [X] `picker grep` takes a while after pattern entered to show
-  results, we should show a loader or something to indicate searching
-- [X] `o` seems to visually duplicate content of the line, it should be an empty line
-- [X] editing a wrapped line seems to be a bit broken when cursor is on the wrapped part, cursor offset seems to be off by a couple of characters and does not match visually
+- [X] `picker grep` takes a while after pattern entered to show results, we
+  should show a loader or something to indicate searching
+- [X] `o` seems to visually duplicate content of the line, it should be an empty
+  line
+- [X] editing a wrapped line seems to be a bit broken when cursor is on the
+  wrapped part, cursor offset seems to be off by a couple of characters and does
+  not match visually
 - [X] `r` replace mode seems to be broken
-- [X] modeline line / column number indicators don't update as the cursor moves and lag behind
-- [X] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
+- [X] modeline line / column number indicators don't update as the cursor moves
+  and lag behind
+- [X] in TUI, especially with tabline visible (because of multiple tabs), we
+  again get a few lines that go beyond the screen. So pressing `G` it takes to
+  the last line but it's off screen
 - [X] yanking does not seem to work
-  - [X] clipboard support is not there (CB series — clipboard.md; default-on `clipboard` bool, yank-only sync, terminal PTY paste, both peers)
+  - [X] clipboard support is not there (CB series — clipboard.md; default-on
+    `clipboard` bool, yank-only sync, terminal PTY paste, both peers)
 - [X] fold `...` is missing
-- [X] fold line count is wrong when we have consequtive fold groups back to back, the first one's count includes the subsequent fold lines within it
+- [X] fold line count is wrong when we have consequtive fold groups back to
+  back, the first one's count includes the subsequent fold lines within it
 - [X] undo grouping is broken
 - [X] `zz` does not work in terminal & `:claude`
 - [X] `de` does not include the last character
-- [X] `dw` on the last word in a line deletes the whole line (probably something to do with consuming the new line)
-- [X] cursor movements within popup are off, cursor not in sync with cursorline and jumps lines
+- [X] `dw` on the last word in a line deletes the whole line (probably something
+  to do with consuming the new line)
+- [X] cursor movements within popup are off, cursor not in sync with cursorline
+  and jumps lines
 - [X] folding still gets messed up when opening a file in vertical split.
-- [X] `zj` should go to the next visible fold, right now it goes to the next fold and if that fold is nested within the current fold, the cursor remains on that line. `zk` should also follow same concept.
-- [X] popup actions such as `search` causes cursor jumps in the buffer underneath, the experience should be just like any other buffer, cursor is within the popup and jumps or any interactivity should also be only within this popup, nowhere else
-- [ ] % matcher does not seem to be very accurate especially with inline comments, strings, etc. I would prefer more semantic matching maybe leveraging tree-sitter for precision
-- [X] `:describe-key` does not allow <CR>, <BS>, etc. We should see if we can either add these manually or support a way to allow user to input these without breaking <BS>, <CR> functionality (can consider <S-CR> for add <CR> within `:describe-key`)
+- [X] `zj` should go to the next visible fold, right now it goes to the next
+  fold and if that fold is nested within the current fold, the cursor remains on
+  that line. `zk` should also follow same concept.
+- [X] popup actions such as `search` causes cursor jumps in the buffer
+  underneath, the experience should be just like any other buffer, cursor is
+  within the popup and jumps or any interactivity should also be only within
+  this popup, nowhere else
+- [ ] % matcher does not seem to be very accurate especially with inline
+  comments, strings, etc. I would prefer more semantic matching maybe leveraging
+  tree-sitter for precision
+- [X] `:describe-key` does not allow <CR>, <BS>, etc. We should see if we can
+  either add these manually or support a way to allow user to input these
+  without breaking <BS>, <CR> functionality (can consider <S-CR> for add <CR>
+  within `:describe-key`)
 - [X] hlsearch bleeds across tabs
-      - [X] It still bleeds when I open a synthetic buffer like magit, the hlsearch highlight remains and highlights the exact spot where it did in the previous buffer
-- [X] window motions C-w left|up|right|down should work better with splits, for instance when there are 4 splits open, C-w down should go to the down split from the buffer above it, right now from either above it goes down to the left window, not based on the cursor position
-- [X] Issues with folding, sometimes folds get folded while making changes (especially in lists in org mode)
+      - [X] It still bleeds when I open a synthetic buffer like magit, the
+        hlsearch highlight remains and highlights the exact spot where it did in
+        the previous buffer
+- [X] window motions C-w left|up|right|down should work better with splits, for
+  instance when there are 4 splits open, C-w down should go to the down split
+  from the buffer above it, right now from either above it goes down to the left
+  window, not based on the cursor position
+- [X] Issues with folding, sometimes folds get folded while making changes
+  (especially in lists in org mode)
       eg.) `o` on a headline instantly folds the headline
-- [X] `C`, `D` also removes the training newline character hence ends of bring the next line to this line like a join
-- [X] When a picker in a stack is dismissed, it should dismiss the entire stack, in my test if I dismiss a stacked picker while it appears it's dismissed, but when I launch a new picker insted of the new picker, it still shows the previous stacked picker
-- [X] When navigating `../` I get the following errors: `WARN project: `/Users/` is not inside a project — no root marker above it`
+- [X] `C`, `D` also removes the training newline character hence ends of bring
+  the next line to this line like a join
+- [X] When a picker in a stack is dismissed, it should dismiss the entire stack,
+  in my test if I dismiss a stacked picker while it appears it's dismissed, but
+  when I launch a new picker insted of the new picker, it still shows the
+  previous stacked picker
+- [X] When navigating `../` I get the following errors: `WARN project: `/Users/`
+  is not inside a project — no root marker above it`
+- [X] `zz` dismisses the popup
+- [X] <M-CR> in a list in org-mode would create a new item in a list but it does
+  not anymore
+- [X] Motions should work in visual mode, such as `[[`, `C-d` to get to the
+  previous heading in org-mode, this should work for all motions even those
+  registered from plugins
+- [X] If a plugin fails to load, it should not impact other plugin
+  functionality, currently a failed plugin seems to stop others from working
 
 * Documentation
 - [X] lattice-tutor

@@ -86,13 +86,13 @@ The reported bug ("agenda on refresh breaks") is here, not in refresh. Measured
 against the real plugin, one guest `scan` call, debug build — **before** OA.0a,
 kept because the shape is the diagnosis:
 
-| lines | bytes | scan time | after OA.0a | rows |
-|---|---|---|---|---|
-| 202 | 2.1 KB | 0.18 s | 0.10 s | 1 |
-| 402 | 4.2 KB | 0.47 s | 0.11 s | 1 |
-| 802 | 8.5 KB | 1.65 s | 0.13 s | 1 |
-| 1602 | 17 KB | 6.67 s | 0.18 s | 1 |
-| 3202 | 34 KB | 28.9 s | 0.28 s | 1 |
+| lines | bytes  | scan time | after OA.0a | rows |
+|-------|--------|-----------|-------------|------|
+| 202   | 2.1 KB | 0.18 s    | 0.10 s      | 1    |
+| 402   | 4.2 KB | 0.47 s    | 0.11 s      | 1    |
+| 802   | 8.5 KB | 1.65 s    | 0.13 s      | 1    |
+| 1602  | 17 KB  | 6.67 s    | 0.18 s      | 1    |
+| 3202  | 34 KB  | 28.9 s    | 0.28 s      | 1    |
 
 Doubling the file quadrupled the time. The row count is constant at 1, so it
 was never output-driven — it was the walk itself. A 34 KB org file, an ordinary

@@ -100,7 +100,9 @@ fn bench_store(c: &mut Criterion) {
                 store.put(&format!("n/{i:08X}"), record.clone()).unwrap();
             }
             for i in 0..drafts {
-                store.put(&format!("capture/{i:06x}"), record.clone()).unwrap();
+                store
+                    .put(&format!("capture/{i:06x}"), record.clone())
+                    .unwrap();
             }
             b.iter(|| black_box(store.keys(black_box("capture/"))));
         });

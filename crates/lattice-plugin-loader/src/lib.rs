@@ -630,6 +630,11 @@ pub struct WiredSeams {
     /// guest producer whose state changed can say so, nobody is listening, and
     /// the gutter simply never updates.
     pub view_decoration_epoch: bool,
+    /// CD.6b: whether the HOST carries the buffer store `clamp-position` reads.
+    ///
+    /// Unwired, every buffer reads as closed, so a capture's write-back into
+    /// its caller is skipped with a message blaming a buffer that is open.
+    pub buffer_store: bool,
 }
 
 impl WiredSeams {
@@ -658,6 +663,7 @@ impl WiredSeams {
             && self.excerpt_source
             && self.view_args
             && self.view_decoration_epoch
+            && self.buffer_store
     }
 }
 
@@ -892,6 +898,7 @@ impl PluginLoader {
             excerpt_source: self.host.excerpt_source_wired(),
             view_args: self.host.view_args_wired(),
             view_decoration_epoch: self.host.decoration_epoch_wired(),
+            buffer_store: self.host.buffer_store_wired(),
         }
     }
 

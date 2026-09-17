@@ -62,6 +62,24 @@ pub(crate) fn local_utc_offset_seconds() -> i32 {
     chrono::Local::now().offset().local_minus_utc()
 }
 
+/// The `clamp-position` host-service body (CD.6b): `(line, byte)` moved to the
+/// nearest position that exists in `buffer`.
+///
+/// A line past the end becomes the last line. A byte past the end of its line
+/// becomes the end of that line, **before** its newline, so a clamped
+/// insertion never lands on the next line. Both clamps only move a position
+/// backwards, so a range whose start was not after its end still is not.
+///
+/// A byte inside a multi-byte character is left there: `apply-edit` snaps to a
+/// character boundary itself, and doing it twice would disagree about which way.
+pub(crate) fn clamp_position(buffer: &lattice_core::Buffer, line: u32, byte: u32) -> (u32, u32) {
+    // `rope_line_count` counts the empty line after a trailing newline, and an
+    // empty buffer has one line, so it is never zero.
+    let last = buffer.rope_line_count().saturating_sub(1);
+    let line = line.min(last);
+    (line, byte.min(buffer.line_byte_len(line)))
+}
+
 /// The `new-uuid` host-service body (OR.3) — a random (v4) UUID, uppercase,
 /// canonical `8-4-4-4-12` form.
 ///
@@ -320,6 +338,33 @@ mod tests {
 
     use super::*;
     use crate::capability::FsGrant;
+
+    /// CD.6b: the pure clamp, including the cases the seam test cannot reach
+    /// cheaply — an empty buffer, and a line whose byte length is not its
+    /// character count.
+    #[test]
+    fn clamp_position_pulls_a_position_back_into_the_buffer() {
+        let buf = |t: &str| lattice_core::Document::from_text(t).buffer().clone();
+        assert_eq!(clamp_position(&buf(""), 3, 3), (0, 0), "an empty buffer");
+        assert_eq!(
+            clamp_position(&buf("héllo\n"), 0, 99),
+            (0, 6),
+            "bytes, not chars"
+        );
+        assert_eq!(
+            clamp_position(&buf("a\nbc"), 1, 1),
+            (1, 1),
+            "inside: unchanged"
+        );
+        let (start, end) = (
+            clamp_position(&buf("abc\n"), 0, 2),
+            clamp_position(&buf("abc\n"), 5, 9),
+        );
+        assert!(
+            start <= end,
+            "an ordered range stays ordered: {start:?} {end:?}"
+        );
+    }
 
     /// Build a grant that reads exactly `prefix`.
     fn read_grant(prefix: PathBuf) -> CapabilityGrant {

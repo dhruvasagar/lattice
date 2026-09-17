@@ -1107,6 +1107,9 @@ struct PluginState {
     /// OA.30: the counter `refresh-decorations` bumps. `None` in a harness that
     /// wired no editor, where the call is a no-op.
     decoration_epoch: Option<lattice_mode::DecorationEpochHandle>,
+    /// CD.6b: the buffers `clamp-position` measures. `None` in a harness that
+    /// wired no editor, where every buffer reads as absent.
+    buffers: Option<lattice_mode::BufferStoreHandle>,
     /// PH7.8c: events emitted while `register-events` is still running, held
     /// until this plugin's subscriptions are on the bus.
     ///
@@ -1317,6 +1320,23 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
     /// [`host_services::can_write_within_grant`].
     fn can_write_file(&mut self, path: String) -> Result<(), String> {
         host_services::can_write_within_grant(&self.grant, &path)
+    }
+
+    /// CD.6b `clamp-position`: `at`, moved inside `buffer` as it is now.
+    /// `none` when no buffer has that id, or no store is wired. Logic in
+    /// [`host_services::clamp_position`].
+    fn clamp_position(
+        &mut self,
+        buffer: u32,
+        at: crate::lattice::plugin_host::types::Position,
+    ) -> Option<crate::lattice::plugin_host::types::Position> {
+        let handle = self
+            .buffers
+            .as_ref()?
+            .handle_for(lattice_core::BufferId(buffer))?;
+        let (line, byte) =
+            host_services::clamp_position(&handle.snapshot().buffer, at.line, at.byte);
+        Some(crate::lattice::plugin_host::types::Position { line, byte })
     }
 
     /// `register-event` (PH7.8b.2): declare a plugin-defined event into the
@@ -3228,6 +3248,8 @@ pub struct PluginHost {
     view_args: std::sync::OnceLock<lattice_core::ViewArgsResolverHandle>,
     /// OA.30: the decoration-refresh counter, for `refresh-decorations`.
     decoration_epoch: std::sync::OnceLock<lattice_mode::DecorationEpochHandle>,
+    /// CD.6b: the buffer store, for `clamp-position`.
+    buffers: std::sync::OnceLock<lattice_mode::BufferStoreHandle>,
     // OC.3 / ML.6: what the `ui` seam acts on — the modeline element registry
     // and the bus content updates publish onto. Both halves are required (a
     // registry with no bus registers descriptors nothing ever repaints), so
@@ -3678,6 +3700,7 @@ impl PluginHost {
             excerpt_source: std::sync::OnceLock::new(),
             view_args: std::sync::OnceLock::new(),
             decoration_epoch: std::sync::OnceLock::new(),
+            buffers: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
             stores: Mutex::new(std::collections::HashMap::new()),
             _epoch_ticker: epoch_ticker,
@@ -3842,6 +3865,23 @@ impl PluginHost {
     /// replaces survived.
     pub fn view_args_wired(&self) -> bool {
         self.view_args.get().is_some()
+    }
+
+    /// CD.6b: hand the host the buffer store `clamp-position` measures.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_buffer_store(&self, buffers: lattice_mode::BufferStoreHandle) {
+        let _ = self.buffers.set(buffers);
+    }
+
+    /// CD.6b: whether a buffer store was ever wired.
+    ///
+    /// Pinned at boot for `view_args_wired`'s reason: unwired, `clamp-position`
+    /// answers `none` for every buffer, which a guest reads as "that buffer is
+    /// closed". A roam link would then never be written back, with a message
+    /// blaming a buffer that is still open.
+    pub fn buffer_store_wired(&self) -> bool {
+        self.buffers.get().is_some()
     }
 
     /// OA.30: hand the host the counter `refresh-decorations` bumps.
@@ -4075,6 +4115,10 @@ impl PluginHost {
             // to reach the GRAMMAR store above all — a mark is toggled by a
             // chord, and the chord is what has to say the gutter changed.
             decoration_epoch: self.decoration_epoch.get().cloned(),
+            // CD.6b: stamped for every store on `view_args`' reasoning. The
+            // GRAMMAR store is the one that needs it: a capture commits from a
+            // chord, and that is where the caller's extent is asked.
+            buffers: self.buffers.get().cloned(),
             // PH7.8c: opened by `spawn_event_plugin` around `register-events`
             // and closed by its flush. Every other seam publishes straight
             // through, which is what `None` means.

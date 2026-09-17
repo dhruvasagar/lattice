@@ -158,6 +158,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     } else {
         tracing::debug!("project seam unwired: no resolver or buffer store at plugin install");
     }
+    // CD.6b: the store `clamp-position` measures. Its own slot rather than
+    // `project`'s, so whether a buffer exists does not depend on whether
+    // project resolution was wired.
+    if let Some(buffers) = boot.service::<lattice_mode::BufferStoreHandle>() {
+        host.set_buffer_store((*buffers).clone());
+    } else {
+        tracing::debug!("clamp-position unwired: no buffer store at plugin install");
+    }
     // OA.23: what answers "which file did this composed line come from".
     //
     // The registry alone: it maps a view's composed line to a source document,

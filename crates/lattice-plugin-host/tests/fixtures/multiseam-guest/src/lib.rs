@@ -194,6 +194,15 @@ impl Guest for Component {
             &spec(),
             51,
         );
+        // CD.6b: clamp a position into a buffer, from the same seam — where a
+        // capture's commit asks it. Args `"<buffer> <line> <byte>"`; echoes
+        // `<line>:<byte>` or `none`.
+        grammar::register_action(
+            "multiseam-clamp-position",
+            "clamp a position into a buffer from the sync grammar seam (CD.6b)",
+            &spec(),
+            52,
+        );
         // HB.2b: what `excerpt-source` answers a guest standing on a multibuffer
         // row. Every other test of that seam supplies the resolver's arguments
         // itself; this one takes them from the context the HOST handed the
@@ -527,6 +536,26 @@ impl GrammarCallbacks for Component {
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text: format!("{a}|{b}"),
+                })])
+            }
+            52 => {
+                let spec = match &ctx.args {
+                    Args::String(s) => s.clone(),
+                    other => {
+                        return Err(format!("multiseam: clamp-position wants numbers, got {other:?}"));
+                    }
+                };
+                let n: Vec<u32> = spec.split_whitespace().filter_map(|w| w.parse().ok()).collect();
+                let [buffer, line, byte] = n[..] else {
+                    return Err(format!("multiseam: clamp-position wants three numbers, got {spec:?}"));
+                };
+                let text = match host_services::clamp_position(buffer, Position { line, byte }) {
+                    Some(p) => format!("{}:{}", p.line, p.byte),
+                    None => "none".to_string(),
+                };
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text,
                 })])
             }
             51 => {

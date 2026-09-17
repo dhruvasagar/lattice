@@ -408,6 +408,16 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   between an action and its effect is a race rather than a guest bug.
   Appended last in the `effect` variant so existing case indices do not move.
   See [`org-capture-drafts.md`](org-capture-drafts.md) §3 H1.
+- **A plugin can CLAMP a position into a buffer (✅ CD.6b)**:
+  `host-services.clamp-position(buffer, at) -> option<position>`. A line past
+  the end becomes the last line; a byte past its line's end becomes that end,
+  before the newline; `none` means no such buffer. No text crosses. It exists
+  because `apply-edit` refuses a stale position with only a `debug!` line, and
+  a capture writing a link back into the buffer it started from may find that
+  buffer shorter, or closed. Read through a buffer store stamped into every
+  store (`set_buffer_store`), pinned at boot by `WiredSeams::buffer_store`. An
+  unwired host reads every buffer as closed. See
+  [`org-capture-drafts.md`](org-capture-drafts.md) §3 H8.
 - **A plugin can open a picker ALREADY NARROWED (✅ CD.6a)**:
   `open-picker-payload.query`, emacs `completing-read`'s initial input. Only a
   live source could seed its prompt before, through its own `initial_query`;

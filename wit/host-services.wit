@@ -19,6 +19,8 @@ package lattice:plugin-host@0.1.0;
 /// streaming-result question) lands when a real streaming consumer (live-grep)
 /// does — a bounded `walk` covers the fuzzy-finder.
 interface host-services {
+    use types.{position};
+
     /// OA.23: a file and a 0-based line in it — where a composed line came
     /// from.
     record source-location {
@@ -192,6 +194,21 @@ interface host-services {
     /// changes nothing, and a later write can still fail if the file changes
     /// in between (a failed write stops the rest of its action's effects).
     can-write-file: func(path: string) -> result<_, string>;
+
+    /// CD.6b: `at`, moved to the nearest position that exists in `buffer`
+    /// **now**; `none` when no buffer has that id.
+    ///
+    /// A line past the end becomes the last line; a byte past its line's end
+    /// becomes that end, before the newline. Clamping only moves a position
+    /// backwards, so a range stays ordered. No text crosses.
+    ///
+    /// For writing back into a buffer the guest last saw some time ago: a
+    /// capture records where it was started, and by the time it is filed the
+    /// caller may be shorter. `effect.apply-edit` refuses a position that is
+    /// not there, and says so only in the host log, so a guest that wants the
+    /// write to land clamps first, and a `none` tells it the buffer has closed
+    /// and there is nothing to write into.
+    clamp-position: func(buffer: u32, at: position) -> option<position>;
 
     /// Declare a plugin-defined event (PH7.8b). Registers `name` + `doc` into
     /// the host's RUNTIME event registry (`event_registry`) under this plugin's

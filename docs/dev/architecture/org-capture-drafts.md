@@ -6,7 +6,7 @@
 > host seams (§3) that name no org concept. See
 > [`plugin-host.md`](plugin-host.md).
 
-**Status:** 🚧 CD.1–CD.5 and CD.6a built; CD.6–CD.8 planned, CD.9 deferred. Extends [`org-capture.md`](org-capture.md) §8 and
+**Status:** 🚧 CD.1–CD.5, CD.6a and CD.6b built; CD.6–CD.8 planned, CD.9 deferred. Extends [`org-capture.md`](org-capture.md) §8 and
 [`org-roam.md`](org-roam.md) §5, both of which this page contradicts in places —
 where they disagree, this page is newer and says so explicitly. Slice plan:
 [`../operations/slice-plans/org-capture-drafts.md`](../operations/slice-plans/org-capture-drafts.md).
@@ -216,6 +216,30 @@ the host applies any effect the action returns. Cleaning up there would delete
 the draft and its state before the write was even attempted. Commit therefore
 returns its cleanup as `invoke-command("org-capture-cleanup", [id])` after the
 write; if the write fails, H6 skips it and the draft survives intact.
+
+### H8 · `host-services.clamp-position(buffer, at) -> option<position>` (added at CD.6b)
+
+`at` moved to the nearest position that exists in `buffer` now: a line past the
+end becomes the last line, and a byte past its line's end becomes that end,
+before the newline. `none` when no buffer has that id. No text crosses.
+
+§10 says the write-back is clamped to the caller's current extent, and the plan
+assumed the guest could measure it. It cannot: the `document` resource is the
+guest's own buffer, and `source-line` serves only multibuffer sources. Without a
+clamp the write-back fails in the two cases §10 and the slice plan name, and
+fails silently. `apply-edit` refuses an out-of-range position with
+`PositionOutOfBounds`, and a closed target with `Cancelled`, and both reach only
+a `debug!` line. The link would be lost with no word to the user.
+
+`none` doubles as the existence check, which is what lets the commit say "the
+buffer it was for is closed" instead of dropping the link.
+
+Rejected: **`apply-edit` clamps every position.** One flag or none, it turns
+every out-of-range edit bug in every plugin into a silent misplacement, and a
+wrong position that fails is easier to find than one that lands somewhere
+nearby. Also rejected: a text-reading `buffer-line(buffer, line)`, which would
+let a guest read any open buffer to answer a question that needs only its
+shape.
 
 ### Not added: `document.name()`
 
@@ -550,7 +574,7 @@ That is how the verb is actually used — you select a phrase in your prose and
 turn it into a linked note. A collapsed range is an ordinary insertion point, so
 one shape serves both.
 
-`at` is **clamped** to the caller's current extent on use. Emacs uses a marker
+`at` is **clamped** to the caller's current extent on use, through H8. Emacs uses a marker
 here (`:insert-at (point-marker)`), which tracks edits and is therefore correct
 in every case. Lattice has no guest-visible marker primitive, and adding one — a
 mark registry with edit-transform and buffer-scoped lifetime — is a new host

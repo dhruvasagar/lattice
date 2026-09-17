@@ -4,7 +4,7 @@ Design: [`../../architecture/org-capture-drafts.md`](../../architecture/org-capt
 Supersedes parts of [`archive/org-capture.md`](archive/org-capture.md) (OC.7d) and
 [`archive/org-roam.md`](archive/org-roam.md) (OR.7c's create-and-insert).
 
-CD.1–CD.3 and CD.6a land in **this** tree. CD.4–CD.8 land in
+CD.1–CD.3, CD.6a and CD.6b land in **this** tree. CD.4–CD.8 land in
 [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin) and
 depend on the host slices being released first. CD.9 is a trailing host slice
 that unblocks one deferred row of the design's §8 table.
@@ -20,6 +20,7 @@ that unblocks one deferred row of the design's §8 table.
 | CD.4  | org-plugin           | File-backed captures; state in the store; simultaneity; **the caller**; target checked at open, cleanup after the write | ✅          |
 | CD.5  | org-plugin           | `:org-capture-drafts` picker + `<leader>oC`                                                                             | ✅          |
 | CD.6a | lattice              | `open-picker-payload` += `query` (the picker's initial input)                                                           | ✅          |
+| CD.6b | lattice              | `host-services.clamp-position` (design H8)                                                                              | ✅          |
 | CD.6  | org-plugin           | `create-and-insert` opens a child capture; write-back; regions                                                          | 📝          |
 | CD.7  | org-plugin           | `${origin}` back-reference for the no-write-back verbs                                                                  | 📝          |
 | CD.8  | org-plugin           | Roam-scan skip; outstanding-caller warning                                                                              | 📝          |
@@ -278,6 +279,27 @@ with the caret after it, and the rows equal clearing the prompt and typing the
 seed (compared rather than listed, because fuzzy matching over tempdir paths
 can subsequence-match a short seed). No seed gives an empty prompt, and a
 refused open leaves no seed for the next picker.
+
+---
+
+## CD.6b — `host-services.clamp-position` ✅ (added 2026-09-17)
+
+Found while planning CD.6. The plan's "clamped" write-back had no seam to clamp
+with: `source-line` serves only multibuffer sources, and `apply-edit` drops a
+stale or closed target with a `debug!` line. See design H8 for the shape and
+the two rejected alternatives.
+
+The buffer store gets its own slot on the plugin host (`set_buffer_store`),
+wired by the loader and stamped into every store, rather than borrowing
+`project`'s: whether a buffer exists must not depend on project resolution
+being wired. `WiredSeams::buffer_store` joins the boot pin.
+
+**Tests.** `clamp_position_on_the_sync_linker.rs` goes through the multiseam
+fixture on the SYNC linker, where a commit asks. It covers a position kept, a
+line past the end, a byte past the end (stopping before the newline), the empty
+line after a trailing newline, an unknown buffer and an unwired host. A unit
+test in `host_services.rs` covers an empty buffer, byte-versus-character length,
+and range order. `boot_regression_pins.rs` confirms the loader wires it.
 
 ---
 

@@ -22,7 +22,7 @@ that unblocks one deferred row of the design's §8 table.
 | CD.6a | lattice              | `open-picker-payload` += `query` (the picker's initial input)                                                           | ✅          |
 | CD.6b | lattice              | `host-services.clamp-position` (design H8)                                                                              | ✅          |
 | CD.6  | org-plugin           | `create-and-insert` opens a child capture; write-back; regions                                                          | ✅          |
-| CD.7  | org-plugin           | `${origin}` back-reference for the no-write-back verbs                                                                  | 📝          |
+| CD.7  | org-plugin           | `${origin}` back-reference for the no-write-back verbs                                                                  | ✅          |
 | CD.8  | org-plugin           | Roam-scan skip; outstanding-caller warning                                                                              | 📝          |
 | CD.9  | lattice + org-plugin | H4: a `completion-source` accept hook; `[[` → create                                                                    | ⛔ deferred |
 
@@ -362,7 +362,26 @@ the link on commit.
 
 ---
 
-## CD.7 — `${origin}`, the backward reference
+## CD.7 — `${origin}`, the backward reference ✅
+
+**Landed** (org plugin `5ed3237`). What differs from the plan below:
+
+- **The reference to a draft without an `:ID:` is a link to its target
+  file**, not `%a`. A draft's file is deleted when it is filed. Design §9 was
+  amended.
+- **Placement is found with a sentinel**: the draft is built with a
+  private-use marker for `${origin}`, so a reference placed in `body`,
+  `body-file` or `head` is detected alike. The target path is filled
+  without it.
+- **"From a capture" is `capture_state_of`**: the path names a capture, and
+  the store confirms it.
+- **The callerless finalize was missing** and is built here:
+  `open_on_commit`, with serde default.
+- **Nested `C-c n c` is not tested**, because lattice has no
+  `org-roam-capture` verb. When it lands, it parks a caller the same way.
+
+---
+
 
 Design §9. The no-write-back half.
 

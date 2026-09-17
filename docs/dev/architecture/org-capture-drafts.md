@@ -6,7 +6,7 @@
 > host seams (§3) that name no org concept. See
 > [`plugin-host.md`](plugin-host.md).
 
-**Status:** 🚧 CD.1–CD.6 built; CD.7–CD.8 planned, CD.9 deferred. Extends [`org-capture.md`](org-capture.md) §8 and
+**Status:** 🚧 CD.1–CD.7 built; CD.8 planned, CD.9 deferred. Extends [`org-capture.md`](org-capture.md) §8 and
 [`org-roam.md`](org-roam.md) §5, both of which this page contradicts in places —
 where they disagree, this page is newer and says so explicitly. Slice plan:
 [`../operations/slice-plans/org-capture-drafts.md`](../operations/slice-plans/org-capture-drafts.md).
@@ -448,7 +448,9 @@ when it does not. Never both, never neither.
 buffer exactly when `document.path()` is under the drafts directory. No flag has
 to be carried and none can go stale.
 
-**Non-nested `C-c n f` opens the new note, which is emacs.**
+**Non-nested `C-c n f` opens the new note, which is emacs** (built at CD.7:
+`CaptureState::open_on_commit`; CD.4 had left it out, so a filed note just
+disappeared from view).
 `org-roam-node-find` uses `:finalize 'find-file` — you asked for a note and you
 are taken to it. The substrate states this as one rule rather than a roam
 special case: *a capture with a caller returns to it; one without runs the
@@ -550,8 +552,15 @@ reason — user data must not become template syntax.
 | Origin | `${origin}` expands to |
 |---|---|
 | a roam node, or an uncommitted roam draft (it already carries `:ID:`) | `[[id:…][Title]]` |
-| a plain org heading, or any other buffer | the **`%a` link**, verbatim — `[[file:path::line][…]]` |
+| any other capture draft | a `[[file:…][…]]` link to the file the draft **will be filed into** (see below) |
 | nothing (no origin buffer) | empty |
+
+**Not the `%a` link, as first planned** (settled at CD.7). The origin is always
+a capture draft here, since only a nested create has a caller, and a draft's
+own file is deleted when it is filed. `%a` would name that file, so the link
+would break the moment the parent committed. The target file is where the
+parent's text will actually live. It is a file link rather than a heading
+link because the heading's final line is unknown until the parent is filed.
 
 **No `:ID:` is minted in the origin.** org-roam's own `node-insert` does mint one
 when linking to an id-less heading, and `:org-roam-id-create` exists — but

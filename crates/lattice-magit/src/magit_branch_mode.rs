@@ -139,7 +139,7 @@ impl Mode for MagitBranchMode {
                         let g = s.lock().ok()?;
                         (branch_name_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
                     };
-                    spawn_mutation_and_refresh(s, format!("checkout {name}"), move || {
+                    spawn_mutation_and_refresh(s, format!("check out {name}"), move || {
                         let repo = Repository::discover(&workdir)
                             .map_err(|e| format!("not a git repository: {e}"))?;
                         Branch::checkout(&repo, &name)

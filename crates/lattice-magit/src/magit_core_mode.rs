@@ -1036,6 +1036,12 @@ pub(crate) fn spawn_patch_discard(
     view: Option<Arc<dyn crate::buffer_state::MagitView>>,
 ) -> Effect {
     let scope_dir = workdir.clone();
+    // NC.4: name the file — "discard hunk" alone says nothing about
+    // which of several discards this was.
+    let label = match patch_path(&patch) {
+        Some(path) => format!("discard a hunk in {path}"),
+        None => "discard a hunk".to_string(),
+    };
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
             let repo = lattice_vcs::Repository::discover(&workdir)
@@ -1051,11 +1057,7 @@ pub(crate) fn spawn_patch_discard(
         // is SPAWNED, so it said "magit: discarded" whether or not the
         // discard succeeded — an optimistic report with no correction
         // path. `finish_task` is that correction path.
-        crate::magit_global_mode::finish_task(
-            &scope_dir,
-            "discard hunk",
-            result.map(|()| String::new()),
-        );
+        crate::magit_global_mode::finish_task(&scope_dir, &label, result.map(|()| String::new()));
         if let Some(view) = view {
             let _ = view.refresh();
         }
@@ -1064,6 +1066,19 @@ pub(crate) fn spawn_patch_discard(
         level: lattice_grammar::EchoLevel::Info,
         text: "magit: discarded".to_string(),
     }
+}
+
+/// The file a unified diff patch touches, from its `+++ b/` header —
+/// or `--- a/` for a deletion, whose new side is `/dev/null`.
+fn patch_path(patch: &str) -> Option<&str> {
+    let side = |prefix: &str| {
+        patch
+            .lines()
+            .find_map(|l| l.strip_prefix(prefix))
+            .map(str::trim)
+            .filter(|p| !p.is_empty() && *p != "/dev/null")
+    };
+    side("+++ b/").or_else(|| side("--- a/"))
 }
 
 pub(crate) fn spawn_hunk_apply(
@@ -1807,6 +1822,29 @@ pub(crate) fn view_argv(
 /// *wiring*, which is where this crate's history says the bugs live
 /// (MG.13's handler race, MG.15's dead stash chords). Each case builds
 /// the same `ActionContext` shape production dispatch builds.
+#[cfg(test)]
+mod patch_path_tests {
+    use super::patch_path;
+
+    #[test]
+    fn a_patch_names_its_file() {
+        let patch = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-x\n+y\n";
+        assert_eq!(patch_path(patch), Some("src/a.rs"));
+    }
+
+    /// A deletion's new side is `/dev/null`; the file is on the old side.
+    #[test]
+    fn a_deletion_names_the_old_side() {
+        let patch = "--- a/gone.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n";
+        assert_eq!(patch_path(patch), Some("gone.rs"));
+    }
+
+    #[test]
+    fn a_patch_with_no_header_names_nothing() {
+        assert_eq!(patch_path("@@ -1 +1 @@\n-x\n+y\n"), None);
+    }
+}
+
 #[cfg(test)]
 mod hunk_staging {
     use super::*;

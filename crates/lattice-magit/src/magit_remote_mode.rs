@@ -201,7 +201,7 @@ impl Mode for MagitRemoteMode {
                     if url.is_empty() {
                         return None;
                     }
-                    let what = format!("add {name}");
+                    let what = format!("add remote {name}");
                     spawn_remote_mutation(ctx, what, move |repo| Remote::add(repo, &name, &url))?;
                     None
                 }),
@@ -232,7 +232,7 @@ impl Mode for MagitRemoteMode {
                     if to.is_empty() || to == from {
                         return None;
                     }
-                    let what = format!("rename {from} to {to}");
+                    let what = format!("rename remote {from} to {to}");
                     spawn_remote_mutation(ctx, what, move |repo| Remote::rename(repo, &from, &to))?;
                     None
                 }),
@@ -258,7 +258,7 @@ impl Mode for MagitRemoteMode {
                     if url.is_empty() {
                         return None;
                     }
-                    let what = format!("set-url {name}");
+                    let what = format!("change the URL of remote {name}");
                     spawn_remote_mutation(ctx, what, move |repo| {
                         Remote::set_url(repo, &name, &url)
                     })?;
@@ -277,7 +277,7 @@ impl Mode for MagitRemoteMode {
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let entry = entry_at_cursor(ctx)?;
                     let name = entry.name.clone();
-                    let what = format!("remove {name}");
+                    let what = format!("remove remote {name}");
                     spawn_remote_mutation(ctx, what, move |repo| Remote::remove(repo, &name))?;
                     None
                 }),
@@ -292,7 +292,7 @@ impl Mode for MagitRemoteMode {
                     let entry = entry_at_cursor(ctx)?;
                     let name = entry.name.clone();
                     let echo = format!("pruning {name}\u{2026}");
-                    let what = format!("prune {name}");
+                    let what = format!("prune remote {name}");
                     spawn_remote_mutation(ctx, what, move |repo| Remote::prune(repo, &name))?;
                     Some(Effect::Echo {
                         level: EchoLevel::Info,

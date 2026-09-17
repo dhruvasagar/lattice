@@ -283,7 +283,7 @@ impl Mode for MagitStashMode {
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let s = state(ctx)?;
                     let workdir = { s.lock().ok()?.workdir.clone() };
-                    spawn_mutation_and_refresh(s, "stash".to_string(), move || {
+                    spawn_mutation_and_refresh(s, "stash changes".to_string(), move || {
                         let repo = Repository::discover(&workdir)
                             .map_err(|e| format!("not a git repository: {e}"))?;
                         Stash::create(&repo, None, false)

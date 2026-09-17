@@ -204,7 +204,7 @@ impl Mode for MagitSubmoduleMode {
                     if path.is_empty() {
                         return None;
                     }
-                    let what = format!("add {path}");
+                    let what = format!("add submodule {path}");
                     spawn_submodule_mutation(ctx, what, move |repo| {
                         Submodule::add(repo, &url, &path)
                     })?;
@@ -222,7 +222,7 @@ impl Mode for MagitSubmoduleMode {
                     let entry = entry_at_cursor(ctx)?;
                     let path = entry.path.clone();
                     let echo = format!("updating {path}\u{2026}");
-                    let what = format!("update {path}");
+                    let what = format!("update submodule {path}");
                     spawn_submodule_mutation(ctx, what, move |repo| {
                         Submodule::update(repo, Some(&path))
                     })?;
@@ -238,7 +238,7 @@ impl Mode for MagitSubmoduleMode {
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let entry = entry_at_cursor(ctx)?;
                     let path = entry.path.clone();
-                    let what = format!("sync {path}");
+                    let what = format!("sync submodule {path}");
                     spawn_submodule_mutation(ctx, what, move |repo| {
                         Submodule::sync(repo, Some(&path))
                     })?;
@@ -267,7 +267,7 @@ impl Mode for MagitSubmoduleMode {
                         Some(carried) => carried,
                         None => entry_at_cursor(ctx)?.path,
                     };
-                    let what = format!("remove {path}");
+                    let what = format!("remove submodule {path}");
                     spawn_submodule_mutation(ctx, what, move |repo| {
                         Submodule::remove(repo, &path)
                     })?;

@@ -784,6 +784,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 args: vec![format!("magit-file-checkout {{}} {path}")],
                 root: None,
                 fill_action: None,
+                query: None,
             })
         }),
     });
@@ -872,6 +873,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 args: vec!["magit-merge".to_string()],
                 root: None,
                 fill_action: None,
+                query: None,
             })
         }),
     });
@@ -922,6 +924,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         args: vec![$ex_command.to_string()],
                         root: None,
                         fill_action: None,
+                        query: None,
                     })
                 }),
             });
@@ -937,6 +940,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         args: vec![$ex_command.to_string()],
                         root: None,
                         fill_action: None,
+                        query: None,
                     })
                 }),
             });
@@ -1372,6 +1376,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 args: vec!["magit-branch-reset".to_string()],
                 root: None,
                 fill_action: None,
+                query: None,
             })
         }),
     });
@@ -1586,6 +1591,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 args: Vec::new(),
                 root: None,
                 fill_action: None,
+                query: None,
             })
         }),
     });
@@ -1601,6 +1607,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 args: Vec::new(),
                 root: None,
                 fill_action: None,
+                query: None,
             })
         }),
     });
@@ -1636,6 +1643,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 args: vec![format!("magit-find-file {{}} {path}")],
                 root: None,
                 fill_action: None,
+                query: None,
             })
         }),
     });
@@ -2013,6 +2021,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     args: vec!["magit-note-edit".to_string()],
                     root: None,
                     fill_action: None,
+                    query: None,
                 },
             })
         }),
@@ -2033,6 +2042,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     args: vec!["magit-note-remove".to_string()],
                     root: None,
                     fill_action: None,
+                    query: None,
                 },
             })
         }),
@@ -2192,6 +2202,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     args: vec!["magit-log-merged".to_string()],
                     root: None,
                     fill_action: None,
+                    query: None,
                 },
             })
         }),
@@ -2298,6 +2309,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 args: vec!["magit-checkout".to_string()],
                 root: None,
                 fill_action: None,
+                query: None,
             })
         }),
     });
@@ -2336,6 +2348,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 args: Vec::new(),
                 root: None,
                 fill_action: None,
+                query: None,
             })
         }),
     });
@@ -2383,6 +2396,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 args: Vec::new(),
                 root: None,
                 fill_action: None,
+                query: None,
             })
         }),
     });
@@ -2437,6 +2451,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 args: Vec::new(),
                 root: None,
                 fill_action: None,
+                query: None,
             })
         }),
     });

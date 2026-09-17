@@ -757,6 +757,11 @@ pub enum Effect {
         /// `None` leaves the existing behaviour untouched: the target is
         /// whatever surface was captured at open.
         fill_action: Option<String>,
+        /// CD.6a: text the picker's query starts with. For a static source it
+        /// narrows the rows from the first frame, as emacs's `completing-read`
+        /// initial input does; org-roam's node insert seeds it from the active
+        /// region. `None` is an empty prompt (or a live source's own seed).
+        query: Option<String>,
     },
     /// `:bd[elete][!]` -- close the active document buffer.
     /// `force = true` discards unsaved changes.

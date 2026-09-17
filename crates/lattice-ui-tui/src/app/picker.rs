@@ -151,11 +151,26 @@ impl App {
         root: Option<std::path::PathBuf>,
         fill_action: Option<String>,
     ) {
+        self.open_picker_seeded(source, args, root, fill_action, None);
+    }
+
+    /// [`Self::open_picker`] with a starting query (CD.6a) —
+    /// `Effect::OpenPicker { query }`'s arm.
+    pub(crate) fn open_picker_seeded(
+        &mut self,
+        source: String,
+        args: Vec<String>,
+        root: Option<std::path::PathBuf>,
+        fill_action: Option<String>,
+        query: Option<String>,
+    ) {
         // Slice 3c.final.E.3: route through `mutate_editor_with`.
         // PC.11: the body lives on `Editor` so this peer and the GPUI one
-        // cannot drift on the root write or the fill-target rollback.
-        let signals = self
-            .mutate_editor_with(move |e| e.open_picker_for_effect(source, args, root, fill_action));
+        // cannot drift on the root write, the fill-target rollback or (CD.6a)
+        // the query seed.
+        let signals = self.mutate_editor_with(move |e| {
+            e.open_picker_for_effect(source, args, root, fill_action, query)
+        });
         for s in signals {
             self.handle_renderer_signal(s);
         }

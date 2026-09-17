@@ -299,6 +299,7 @@ fn cmd_switch() -> Vec<Effect> {
         args: Vec::new(),
         root: None,
         fill_action: None,
+        query: None,
     })]
 }
 
@@ -320,6 +321,7 @@ fn cmd_choose_dir() -> Vec<Effect> {
         args: Vec::new(),
         root: None,
         fill_action: Some(picker::REMEMBER_AND_SWITCH_COMMAND.to_string()),
+        query: None,
     })]
 }
 
@@ -370,6 +372,7 @@ fn cmd_find_file(ctx: &ExCommandContext) -> Vec<Effect> {
                 args: Vec::new(),
                 root: Some(root),
                 fill_action: None,
+                query: None,
             })]
         }
         Err(effects) => effects,
@@ -396,6 +399,7 @@ fn cmd_buffers(ctx: &ExCommandContext) -> Vec<Effect> {
             args: Vec::new(),
             root: Some(root),
             fill_action: None,
+            query: None,
         })],
         Err(effects) => effects,
     }
@@ -458,6 +462,7 @@ fn cmd_grep(ctx: &ExCommandContext) -> Vec<Effect> {
                 args: Vec::new(),
                 root: Some(root),
                 fill_action: None,
+                query: None,
             })]
         }
         Err(effects) => effects,

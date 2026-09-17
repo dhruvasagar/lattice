@@ -695,11 +695,13 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             args,
             root,
             fill_action,
+            query,
         } => WitEffect::OpenPicker(WitOpenPickerPayload {
             source: source.clone(),
             args: args.clone(),
             root: opt_path_to_wit(root)?,
             fill_action: fill_action.clone(),
+            query: query.clone(),
         }),
         NativeEffect::BufferDelete { force } => WitEffect::BufferDelete(*force),
         NativeEffect::FocusBuffer(id) => WitEffect::FocusBuffer(*id),
@@ -1115,6 +1117,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             // (declared, populated, destructured away) and which two comments
             // recorded as "a dead end" rather than fixing.
             fill_action: p.fill_action,
+            query: p.query,
         },
         WitEffect::BufferDelete(force) => NativeEffect::BufferDelete { force },
         WitEffect::FocusBuffer(id) => NativeEffect::FocusBuffer(id),
@@ -1801,6 +1804,7 @@ mod tests {
                 args: vec!["src".into(), "*.rs".into()],
                 root: None,
                 fill_action: None,
+                query: None,
             },
             // PC.1: a POPULATED root, for the reason above — the `None` case
             // alone cannot tell a carried field from a dropped one.
@@ -1809,6 +1813,7 @@ mod tests {
                 args: vec!["needle".into()],
                 root: Some("/work/api".into()),
                 fill_action: None,
+                query: None,
             },
             // PC.11: a POPULATED fill action, for the same reason one line up
             // — and it is not hypothetical here. The mechanical pass that
@@ -1824,6 +1829,15 @@ mod tests {
                 args: vec!["~".into()],
                 root: None,
                 fill_action: Some("project-remember-and-switch".into()),
+                query: None,
+            },
+            // CD.6a: a POPULATED seed, for the same reason as the two above.
+            NativeEffect::OpenPicker {
+                source: "org-roam-insert".into(),
+                args: Vec::new(),
+                root: None,
+                fill_action: None,
+                query: Some("rust async".into()),
             },
             NativeEffect::BufferDelete { force: true },
             NativeEffect::OpenFileTree {

@@ -1626,11 +1626,12 @@ impl GpuiApp {
                 args,
                 root,
                 fill_action,
+                query,
             } => {
                 // PC.11: root write + fill-target capture + rollback all live
                 // on `Editor`, so this peer and the TUI cannot drift.
                 let signals = self.mutate_editor_with(move |e| {
-                    e.open_picker_for_effect(source, args, root, fill_action)
+                    e.open_picker_for_effect(source, args, root, fill_action, query)
                 });
                 for s in signals {
                     self.handle_renderer_signal(s);

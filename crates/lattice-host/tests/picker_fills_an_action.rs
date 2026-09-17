@@ -79,6 +79,7 @@ fn the_picked_value_arrives_as_the_actions_first_argument() {
         Vec::new(),
         None,
         Some("test-record-pick".to_string()),
+        None,
     );
     assert!(editor.picker.is_some(), "precondition: the picker opened");
 
@@ -110,6 +111,7 @@ fn a_refused_open_leaves_no_capture_behind() {
         Vec::new(),
         None,
         Some("test-record-orphan".to_string()),
+        None,
     );
     assert!(
         editor.picker.is_none(),
@@ -145,6 +147,7 @@ fn an_unregistered_action_says_so_rather_than_dropping_the_value() {
         Vec::new(),
         None,
         Some("no-such-command".to_string()),
+        None,
     );
     let _ = editor.apply_picker_outcome(PickerAcceptOutcome::FillCaller {
         text: "/srv/chosen".to_string(),
@@ -170,7 +173,7 @@ fn opening_without_a_fill_action_leaves_an_existing_capture_alone() {
     let mut editor = boot();
     editor.picker_fill_target = Some(FillTarget::CommandLine);
 
-    let _ = editor.open_picker_for_effect("buffers".to_string(), Vec::new(), None, None);
+    let _ = editor.open_picker_for_effect("buffers".to_string(), Vec::new(), None, None, None);
 
     assert_eq!(
         editor.picker_fill_target,
@@ -190,6 +193,7 @@ fn the_root_override_still_applies_and_still_clears() {
         Vec::new(),
         Some(std::path::PathBuf::from("/srv/project")),
         None,
+        None,
     );
     assert_eq!(
         editor.picker_root,
@@ -197,7 +201,7 @@ fn the_root_override_still_applies_and_still_clears() {
     );
 
     // PC.1: the `None` write is what clears a previous override.
-    let _ = editor.open_picker_for_effect("buffers".to_string(), Vec::new(), None, None);
+    let _ = editor.open_picker_for_effect("buffers".to_string(), Vec::new(), None, None, None);
     assert!(
         editor.picker_root.is_none(),
         "a later open with no root clears the stale one"

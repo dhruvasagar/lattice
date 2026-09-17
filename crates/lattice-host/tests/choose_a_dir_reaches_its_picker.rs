@@ -138,6 +138,7 @@ fn boot() -> Editor {
             args: Vec::new(),
             root: None,
             fill_action: Some(REMEMBER_AND_SWITCH.to_string()),
+            query: None,
         }
     });
     // Hop 2's command: a path becomes a project, and the switch-commands menu
@@ -258,6 +259,7 @@ fn the_chosen_directory_opens_the_switch_menu() {
         Vec::new(),
         None,
         Some(REMEMBER_AND_SWITCH.to_string()),
+        None,
     );
     assert!(editor.picker.is_some(), "precondition: the picker opened");
     // `do_picker_accept` takes the picker before it applies the outcome, so

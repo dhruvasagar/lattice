@@ -475,6 +475,7 @@ fn open_dir_pick_via_choose_a_dir(root: &std::path::Path) -> Editor {
                         args: vec![open_at.clone()],
                         root: None,
                         fill_action: Some("descend-remember-and-switch".to_string()),
+                        query: None,
                     })
                 }),
                 args_schema: vec![],

@@ -81,6 +81,7 @@ fn stash_target(ctx: &ActionContext<'_>, ex_command: &str) -> StashTarget {
             args: vec![ex_command.to_string()],
             root: None,
             fill_action: None,
+            query: None,
         }),
     }
 }

@@ -4,7 +4,7 @@ Design: [`../../architecture/org-capture-drafts.md`](../../architecture/org-capt
 Supersedes parts of [`archive/org-capture.md`](archive/org-capture.md) (OC.7d) and
 [`archive/org-roam.md`](archive/org-roam.md) (OR.7c's create-and-insert).
 
-CD.1–CD.3 land in **this** tree. CD.4–CD.8 land in
+CD.1–CD.3 and CD.6a land in **this** tree. CD.4–CD.8 land in
 [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin) and
 depend on the host slices being released first. CD.9 is a trailing host slice
 that unblocks one deferred row of the design's §8 table.
@@ -18,7 +18,8 @@ that unblocks one deferred row of the design's §8 table.
 | CD.3c | lattice              | A failed or denied `WriteToFile` stops the rest of its action (H6)                                                      | ✅          |
 | CD.3d | lattice              | `Effect::InvokeCommand(command-ref)` (H7)                                                                               | ✅          |
 | CD.4  | org-plugin           | File-backed captures; state in the store; simultaneity; **the caller**; target checked at open, cleanup after the write | ✅          |
-| CD.5  | org-plugin           | `:org-capture-drafts` picker + `<leader>od`                                                                             | 📝          |
+| CD.5  | org-plugin           | `:org-capture-drafts` picker + `<leader>oC`                                                                             | ✅          |
+| CD.6a | lattice              | `open-picker-payload` += `query` (the picker's initial input)                                                           | ✅          |
 | CD.6  | org-plugin           | `create-and-insert` opens a child capture; write-back; regions                                                          | 📝          |
 | CD.7  | org-plugin           | `${origin}` back-reference for the no-write-back verbs                                                                  | 📝          |
 | CD.8  | org-plugin           | Roam-scan skip; outstanding-caller warning                                                                              | 📝          |
@@ -258,6 +259,25 @@ resolves alongside it.
 **Tests.** An empty store yields a picker that *says* so rather than looking
 broken; a saved-and-closed draft is listed with a legible label; accepting a row
 opens the file with the minor active and `C-c C-c` files it.
+
+---
+
+## CD.6a — a picker can open on a seeded query ✅ (added 2026-09-17)
+
+CD.6's region parity needs the node picker to open **filtered to the
+selection**, which is org-roam's `completing-read` initial input. No host path
+did that for a static source: `initial_query` belongs to a live source's own
+spec. `open-picker-payload` gains `query: option<string>`, appended last.
+`Editor::pending_picker_query` carries it from the open to the seat, where it
+takes precedence over a live source's own initial query. A refused open clears
+it, the same rollback the fill target has (YR.6). TUI and GPUI both pass it
+through.
+
+**Tests** (`a_picker_opens_on_a_seeded_query.rs`): the seed is in the prompt
+with the caret after it, and the rows equal clearing the prompt and typing the
+seed (compared rather than listed, because fuzzy matching over tempdir paths
+can subsequence-match a short seed). No seed gives an empty prompt, and a
+refused open leaves no seed for the next picker.
 
 ---
 

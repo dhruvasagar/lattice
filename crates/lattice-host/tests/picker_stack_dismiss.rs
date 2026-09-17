@@ -233,6 +233,7 @@ fn boot_async_source() -> Editor {
                     args: Vec::new(),
                     root: None,
                     fill_action: None,
+                    query: None,
                 })
             }),
             args_schema: vec![],

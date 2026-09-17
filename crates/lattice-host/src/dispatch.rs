@@ -9663,9 +9663,11 @@ impl Editor {
         args: Vec<String>,
         root: Option<std::path::PathBuf>,
         fill_action: Option<String>,
+        query: Option<String>,
     ) -> Vec<RendererSignal> {
         use lattice_picker::FillTarget;
         self.picker_root = root;
+        self.pending_picker_query = query.filter(|q| !q.is_empty());
         let capturing = fill_action.is_some();
         if let Some(command) = fill_action {
             self.picker_fill_target = Some(FillTarget::Action { command });
@@ -9681,6 +9683,11 @@ impl Editor {
         // appeared yet but IS coming, so the capture must survive.
         if capturing && self.picker.is_none() && self.pending_picker_init.is_none() {
             self.picker_fill_target = None;
+        }
+        // The same rollback for the seed: a refused open must not hand its
+        // query to whichever picker opens next.
+        if self.picker.is_none() && self.pending_picker_init.is_none() {
+            self.pending_picker_query = None;
         }
         signals
     }
@@ -14292,10 +14299,12 @@ impl Editor {
             let root = self.picker_workspace_root_path(&snap);
             picker.root_label = Some(lattice_core::home::contract_tilde(&root));
         }
-        let initial_query = self
-            .live_picker_query
-            .as_mut()
-            .and_then(|s| s.initial_query.take());
+        // CD.6a: an effect's explicit seed wins over a live source's own.
+        let initial_query = self.pending_picker_query.take().or_else(|| {
+            self.live_picker_query
+                .as_mut()
+                .and_then(|s| s.initial_query.take())
+        });
         if let Some(initial) = initial_query {
             picker.query_cursor = initial.len();
             picker.query = initial;
@@ -14742,8 +14751,9 @@ impl Editor {
                 args,
                 root,
                 fill_action,
+                query,
             } => {
-                signals.extend(self.open_picker_for_effect(source, args, root, fill_action));
+                signals.extend(self.open_picker_for_effect(source, args, root, fill_action, query));
             }
             Effect::OpenBufferAt {
                 path,

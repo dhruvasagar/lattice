@@ -51,8 +51,13 @@ fn a_rooted_picker_shows_the_root_it_walked() {
     let root = dir.path().canonicalize().unwrap();
     let mut editor = boot();
 
-    let _ =
-        editor.open_picker_for_effect("files".to_string(), Vec::new(), Some(root.clone()), None);
+    let _ = editor.open_picker_for_effect(
+        "files".to_string(),
+        Vec::new(),
+        Some(root.clone()),
+        None,
+        None,
+    );
     assert!(editor.picker.is_some(), "precondition: `files` seated");
 
     let shown = root_label(&editor).expect("`files` declares itself rooted");
@@ -76,6 +81,7 @@ fn two_projects_give_two_different_prompts() {
         Vec::new(),
         Some(alpha.path().canonicalize().unwrap()),
         None,
+        None,
     );
     let first = root_label(&editor).expect("rooted");
 
@@ -83,6 +89,7 @@ fn two_projects_give_two_different_prompts() {
         "files".to_string(),
         Vec::new(),
         Some(beta.path().canonicalize().unwrap()),
+        None,
         None,
     );
     let second = root_label(&editor).expect("rooted");
@@ -155,7 +162,7 @@ fn the_label_is_contracted_for_display() {
     let root = dir.path().canonicalize().unwrap();
     let mut editor = boot();
 
-    let _ = editor.open_picker_for_effect("files".to_string(), Vec::new(), Some(root), None);
+    let _ = editor.open_picker_for_effect("files".to_string(), Vec::new(), Some(root), None, None);
 
     let shown = root_label(&editor).expect("rooted");
     assert!(

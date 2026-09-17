@@ -1526,6 +1526,7 @@ fn register_ex_commands(
                                     args: vec![op.ex_command.to_string()],
                                     root: None,
                                     fill_action: None,
+                                    query: None,
                                 });
                             }
                         };
@@ -1618,6 +1619,7 @@ fn register_ex_commands(
                                         args: vec![name.to_string()],
                                         root: None,
                                         fill_action: None,
+                                        query: None,
                                     });
                                 }
                             };
@@ -1684,6 +1686,7 @@ fn register_ex_commands(
                                     args: vec!["magit-stash-show".to_string()],
                                     root: None,
                                     fill_action: None,
+                                    query: None,
                                 });
                             }
                         };
@@ -1748,6 +1751,7 @@ fn register_ex_commands(
                                         args: vec![name.to_string()],
                                         root: None,
                                         fill_action: None,
+                                        query: None,
                                     });
                                 }
                             };
@@ -1791,6 +1795,7 @@ fn register_ex_commands(
                                     args: vec!["magit-rebase-reword-commit".to_string()],
                                     root: None,
                                     fill_action: None,
+                                    query: None,
                                 });
                             }
                         };
@@ -1844,6 +1849,7 @@ fn register_ex_commands(
                                     args: vec!["magit-augment".to_string()],
                                     root: None,
                                     fill_action: None,
+                                    query: None,
                                 });
                             }
                         };

@@ -408,6 +408,14 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   between an action and its effect is a race rather than a guest bug.
   Appended last in the `effect` variant so existing case indices do not move.
   See [`org-capture-drafts.md`](org-capture-drafts.md) §3 H1.
+- **A plugin can open a picker ALREADY NARROWED (✅ CD.6a)**:
+  `open-picker-payload.query`, emacs `completing-read`'s initial input. Only a
+  live source could seed its prompt before, through its own `initial_query`;
+  the node pickers are static. The seed rides `Editor::pending_picker_query`
+  from the open to the seat, where it wins over a live source's own initial
+  query, and a refused open clears it so it cannot reach the next picker.
+  Filtering is exactly as if the text had been typed. Appended last in the
+  record. Roam's node insert passes the active region here (CD.6).
 - **A plugin can SEQUENCE work after its effects (✅ CD.3d)**:
   `effect.invoke-command(command-ref)`: the picker's `invoke-command`, as an
   effect. `Editor::invoke_command_named` serves both, dispatching an action

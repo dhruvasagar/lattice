@@ -232,6 +232,7 @@ impl Mode for MagitBranchMode {
                         args: Vec::new(),
                         root: None,
                         fill_action: None,
+                        query: None,
                     })
                 }),
             },

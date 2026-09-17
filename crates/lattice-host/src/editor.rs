@@ -1181,6 +1181,11 @@ pub struct Editor {
     /// Live-picker query state -- present only when the
     /// active picker source has `spec().live == true`.
     pub live_picker_query: Option<LivePickerQueryState>,
+    /// CD.6a: the query the next picker to SEAT starts with, set by
+    /// `Effect::OpenPicker { query }`. Consumed at seat for any source —
+    /// unlike a live source's own seed, which only a live source has — and
+    /// cleared if the open is refused.
+    pub pending_picker_query: Option<String>,
     /// PI.1 (preview isolation): per-pane preview projection. A pane
     /// keeps its committed `PaneState.buffer_id`; the entry here (keyed
     /// by `PaneId`) records the buffer it currently *displays* plus the

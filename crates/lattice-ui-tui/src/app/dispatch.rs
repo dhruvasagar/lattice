@@ -1125,7 +1125,8 @@ impl App {
                 args,
                 root,
                 fill_action,
-            } => self.open_picker(source, args, root, fill_action),
+                query,
+            } => self.open_picker_seeded(source, args, root, fill_action, query),
             Effect::Confirm {
                 prompt,
                 yes_action,

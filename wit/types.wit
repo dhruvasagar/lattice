@@ -719,6 +719,11 @@ interface types {
         ///
         /// `none` leaves the target as whatever surface was captured at open.
         fill-action: option<string>,
+        /// CD.6a: text the query starts with. For a static source it narrows the
+        /// rows from the first frame (emacs's `completing-read` initial input);
+        /// org-roam's node insert seeds it from the active region. Appended
+        /// last, so earlier fields keep their positions.
+        query: option<string>,
     }
     record set-lsp-log-level-payload {
         server-id: option<string>,

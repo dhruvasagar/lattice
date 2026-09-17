@@ -211,6 +211,34 @@ pub(crate) fn delete_within_grant(grant: &CapabilityGrant, path: &str) -> Result
     }
 }
 
+/// CD.3b: would a `WriteToFile` of `path` from this plugin land?
+///
+/// The grant half is [`crate::effect_authorizer::EffectAuthorizer::permits_write`]
+/// itself, not a lookalike, so this answers exactly what the boundary will
+/// decide. The rest mirrors `Editor::resolve_path_to_buffer_creating` (with
+/// `create_parents: false`, capture's setting) and the save a commit makes.
+pub(crate) fn can_write_within_grant(grant: &CapabilityGrant, path: &str) -> Result<(), String> {
+    let file = PathBuf::from(path);
+    if !crate::effect_authorizer::EffectAuthorizer::new(grant, "").permits_write(&file) {
+        return Err(format!(
+            "write denied: '{path}' is outside the plugin's writable paths"
+        ));
+    }
+    match std::fs::metadata(&file) {
+        Ok(meta) if meta.is_dir() => Err(format!("'{path}' is a directory")),
+        Ok(meta) if meta.permissions().readonly() => Err(format!("'{path}' is read-only")),
+        Ok(_) => std::fs::read_to_string(&file)
+            .map(|_| ())
+            .map_err(|e| format!("could not read '{path}': {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match file.parent() {
+            Some(dir) if dir.as_os_str().is_empty() || dir.is_dir() => Ok(()),
+            Some(dir) => Err(format!("no such directory: {}", dir.display())),
+            None => Err(format!("'{path}' has no parent directory")),
+        },
+        Err(e) => Err(format!("could not inspect '{path}': {e}")),
+    }
+}
+
 /// OC.5a: capability-gated file read (host-side, §5).
 ///
 /// The reason this exists rather than the guest using WASI is structural, not a
@@ -312,6 +340,74 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn can_write_accepts_a_new_file_in_a_granted_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = write_grant(dir.path().to_path_buf());
+        let new = dir.path().join("inbox.org");
+        assert_eq!(
+            can_write_within_grant(&grant, new.to_str().unwrap()),
+            Ok(())
+        );
+        assert!(!new.exists(), "a query creates nothing");
+    }
+
+    #[test]
+    fn can_write_accepts_an_existing_writable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("inbox.org");
+        std::fs::write(&file, "* One\n").unwrap();
+        let grant = write_grant(dir.path().to_path_buf());
+        assert_eq!(
+            can_write_within_grant(&grant, file.to_str().unwrap()),
+            Ok(())
+        );
+    }
+
+    /// Each refusal says which check failed — "cannot write" alone sends the
+    /// user to guess between their grant, their path and their file.
+    #[test]
+    fn can_write_names_each_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let grant = write_grant(dir.path().to_path_buf());
+        let check = |p: &std::path::Path| can_write_within_grant(&grant, p.to_str().unwrap());
+
+        let outside = other.path().join("x.org");
+        assert!(check(&outside).unwrap_err().contains("outside"));
+
+        let read_only_grant = read_grant(dir.path().to_path_buf());
+        let err =
+            can_write_within_grant(&read_only_grant, dir.path().join("x.org").to_str().unwrap())
+                .unwrap_err();
+        assert!(
+            err.contains("outside"),
+            "a read grant is not a write grant: {err}"
+        );
+
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        assert!(check(&sub).unwrap_err().contains("directory"));
+
+        let missing_dir = dir.path().join("nope").join("x.org");
+        assert!(
+            check(&missing_dir)
+                .unwrap_err()
+                .contains("no such directory")
+        );
+
+        let binary = dir.path().join("bin.org");
+        std::fs::write(&binary, [0xff, 0xfe]).unwrap();
+        assert!(check(&binary).unwrap_err().contains("could not read"));
+
+        let locked = dir.path().join("locked.org");
+        std::fs::write(&locked, "x").unwrap();
+        let mut perms = std::fs::metadata(&locked).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&locked, perms).unwrap();
+        assert!(check(&locked).unwrap_err().contains("read-only"));
     }
 
     #[test]

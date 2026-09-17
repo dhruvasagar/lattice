@@ -408,6 +408,12 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   between an action and its effect is a race rather than a guest bug.
   Appended last in the `effect` variant so existing case indices do not move.
   See [`org-capture-drafts.md`](org-capture-drafts.md) §3 H1.
+- **A plugin can ASK whether a write would land (✅ CD.3b)**:
+  `host-services.can-write-file(path)`. It runs the boundary's own
+  `EffectAuthorizer::permits_write`, not a copy, plus the applier's checks (not
+  a directory, directory present, existing file readable and not read-only).
+  Capture asks it at open, emacs's order, so a bad target is reported before
+  anything is typed. See `org-capture-drafts.md` §3 H5.
 - **A plugin can DELETE a file it may write (✅ CD.3)**:
   `host-services.delete-file(path) -> result<_, string>`, `read-file`'s peer
   and host-side for the same reason: a grammar action runs on the synchronous

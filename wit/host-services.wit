@@ -178,6 +178,21 @@ interface host-services {
     /// named.
     delete-file: func(path: string) -> result<_, string>;
 
+    /// CD.3b: would an `effect.write-to-file` of `path` from this plugin land?
+    ///
+    /// The same grant test the boundary applies to a returned write, and the
+    /// same checks the host's applier makes: the path is not a directory, its
+    /// directory exists, an existing file is readable UTF-8 and not read-only.
+    /// `ok` when all hold, otherwise `err` naming the first that failed.
+    ///
+    /// For checking a destination **before** asking the user for anything —
+    /// capture checks its target when it opens, as emacs's
+    /// `org-capture-set-target-location` does, so a misconfigured target is
+    /// reported before a word is typed rather than at commit. A query: it
+    /// changes nothing, and a later write can still fail if the file changes
+    /// in between (a failed write stops the rest of its action's effects).
+    can-write-file: func(path: string) -> result<_, string>;
+
     /// Declare a plugin-defined event (PH7.8b). Registers `name` + `doc` into
     /// the host's RUNTIME event registry (`event_registry`) under this plugin's
     /// provenance (`plugin:<id>`), so the event surfaces in introspection

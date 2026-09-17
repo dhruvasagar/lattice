@@ -1,5 +1,5 @@
-//! CD.3 end-to-end — `host-services.delete-file`, from the seam that cannot
-//! delete on its own.
+//! CD.3 / CD.3b end-to-end — `host-services.delete-file` and
+//! `can-write-file`, from the seam that cannot touch files on its own.
 //!
 //! `new_uuid_seam.rs`'s argument, for a delete: discarding a saved capture
 //! draft is a **grammar action**, which runs on the grammar seam's
@@ -27,9 +27,9 @@ fn guest_wasm() -> Option<&'static str> {
     (!path.is_empty()).then_some(path)
 }
 
-/// Run `multiseam-delete-file <path>` through the real sync trampoline with
-/// `caps` granted, and return what the guest echoed.
-fn delete_via_guest(caps: Vec<Capability>, path: &Path) -> Option<String> {
+/// Run `<action> <path>` through the real sync trampoline with `caps`
+/// granted, and return what the guest echoed.
+fn run_via_guest(action: &str, caps: Vec<Capability>, path: &Path) -> Option<String> {
     let wasm = guest_wasm()?;
     let dirs = tempfile::tempdir().unwrap();
     let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
@@ -41,7 +41,7 @@ fn delete_via_guest(caps: Vec<Capability>, path: &Path) -> Option<String> {
         .expect("grammar drain instantiates");
     let mut commands = CommandRegistry::new();
     grammar_set.register_all(&mut commands);
-    let id = commands.id_by_name("multiseam-delete-file").unwrap();
+    let id = commands.id_by_name(action).unwrap();
 
     let mut document = lattice_core::Document::from_text("x\n");
     let cancel = CancellationToken::never();
@@ -56,11 +56,19 @@ fn delete_via_guest(caps: Vec<Capability>, path: &Path) -> Option<String> {
         &cancel,
         GrammarEnv::default(),
     )
-    .expect("the delete action dispatches through the sync trampoline");
+    .expect("the action dispatches through the sync trampoline");
     match effect {
         lattice_grammar::effect::Effect::Echo { text, .. } => Some(text),
         other => panic!("expected an Echo, got {other:?}"),
     }
+}
+
+fn delete_via_guest(caps: Vec<Capability>, path: &Path) -> Option<String> {
+    run_via_guest("multiseam-delete-file", caps, path)
+}
+
+fn check_via_guest(caps: Vec<Capability>, path: &Path) -> Option<String> {
+    run_via_guest("multiseam-can-write-file", caps, path)
 }
 
 fn writable(dir: &Path) -> Vec<Capability> {
@@ -129,4 +137,29 @@ fn a_read_only_grant_cannot_delete() {
     };
     assert!(text.starts_with("error: fs delete denied"), "{text}");
     assert!(file.exists());
+}
+
+/// CD.3b: the query answers from the grammar seam, where capture asks it at
+/// open — and says `writable` for a file that does not exist yet.
+#[test]
+fn the_grammar_seam_can_ask_whether_a_write_would_land() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("inbox.org");
+    let Some(text) = check_via_guest(writable(dir.path()), &target) else {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    };
+    assert_eq!(text, "writable");
+    assert!(!target.exists(), "asking creates nothing");
+}
+
+#[test]
+fn a_write_the_boundary_would_deny_is_reported_before_it_is_tried() {
+    let granted = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let Some(text) = check_via_guest(writable(granted.path()), &other.path().join("x.org")) else {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    };
+    assert!(text.starts_with("error: write denied"), "{text}");
 }

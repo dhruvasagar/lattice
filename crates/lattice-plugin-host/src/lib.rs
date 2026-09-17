@@ -1312,6 +1312,13 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         host_services::delete_within_grant(&self.grant, &path)
     }
 
+    /// CD.3b `can-write-file`: the boundary's own grant test plus the
+    /// applier's checks, as a query. See
+    /// [`host_services::can_write_within_grant`].
+    fn can_write_file(&mut self, path: String) -> Result<(), String> {
+        host_services::can_write_within_grant(&self.grant, &path)
+    }
+
     /// `register-event` (PH7.8b.2): declare a plugin-defined event into the
     /// runtime registry under this plugin's `plugin:<id>` provenance. Returns
     /// `false` on a built-in-shadow (the registry refuses it) OR when no emit

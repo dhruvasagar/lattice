@@ -187,6 +187,13 @@ impl Guest for Component {
             &spec(),
             50,
         );
+        // CD.3b: ask whether a write would land, from the same seam.
+        grammar::register_action(
+            "multiseam-can-write-file",
+            "check a write target from the sync grammar seam (CD.3b)",
+            &spec(),
+            51,
+        );
         // HB.2b: what `excerpt-source` answers a guest standing on a multibuffer
         // row. Every other test of that seam supplies the resolver's arguments
         // itself; this one takes them from the context the HOST handed the
@@ -520,6 +527,22 @@ impl GrammarCallbacks for Component {
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text: format!("{a}|{b}"),
+                })])
+            }
+            51 => {
+                let path = match &ctx.args {
+                    Args::String(s) => s.clone(),
+                    other => {
+                        return Err(format!("multiseam: can-write-file wants a path, got {other:?}"));
+                    }
+                };
+                let text = match host_services::can_write_file(&path) {
+                    Ok(()) => "writable".to_string(),
+                    Err(e) => format!("error: {e}"),
+                };
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text,
                 })])
             }
             50 => {

@@ -279,6 +279,31 @@ what crossing into a guest costs anyway — the bytes have to be copied
 into linear memory regardless, so returning a borrow would move the copy
 rather than remove it.
 
+
+---
+
+## CD.5 — capture drafts in the store (2026-09-17)
+
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** `cargo bench -p
+lattice-plugin-host --bench plugin_store -- capture_drafts`.
+
+The drafts picker lists `keys("capture/")` on every open, and a commit whose
+capture is another's caller will scan the same prefix (CD.8). The store here
+also holds a 585-record roam index, which is the realistic neighbour.
+Design: [`../architecture/org-capture-drafts.md`](../architecture/org-capture-drafts.md) §13.
+
+| Live drafts | `keys("capture/")` |
+|---|---|
+| 1 | 73.7 ns |
+| 10 | 372 ns |
+| 100 | 2.47 µs |
+
+**Linear in the drafts, not in the store.** The 585 roam records beside them
+cost nothing visible: 1 draft is 74 ns against a 1000-entry `keys_prefix`
+scan's 10.7 µs, because the store is a `BTreeMap` and a prefix range skips
+what does not match. 100 drafts — more than anyone leaves unfiled — is
+2.5 µs on a user-initiated picker open, far below anything perceptible.
+Nothing about drafts is on the typing path.
 ---
 
 ## H.3 — conceal matching, per display line (2026-08-29)

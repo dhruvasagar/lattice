@@ -9,20 +9,20 @@ CD.1–CD.3 land in **this** tree. CD.4–CD.8 land in
 depend on the host slices being released first. CD.9 is a trailing host slice
 that unblocks one deferred row of the design's §8 table.
 
-| Slice | Tree | What | Status |
-|---|---|---|---|
-| CD.1 | lattice | `Effect::FocusBuffer(u32)` | ✅ |
-| CD.2 | lattice | `open-buffer-at-payload` += `content`, `activate-minor` | ✅ |
-| CD.3 | lattice | `host-services.delete-file` | ✅ |
-| CD.3b | lattice | `host-services.can-write-file` (design H5) | ✅ |
-| CD.3c | lattice | A failed or denied `WriteToFile` stops the rest of its action (H6) | ✅ |
-| CD.3d | lattice | `Effect::InvokeCommand(command-ref)` (H7) | ✅ |
-| CD.4 | org-plugin | File-backed captures; state in the store; simultaneity; **the caller**; target checked at open, cleanup after the write | ✅ |
-| CD.5 | org-plugin | `:org-capture-drafts` picker + `<leader>od` | 📝 |
-| CD.6 | org-plugin | `create-and-insert` opens a child capture; write-back; regions | 📝 |
-| CD.7 | org-plugin | `${origin}` back-reference for the no-write-back verbs | 📝 |
-| CD.8 | org-plugin | Roam-scan skip; outstanding-caller warning | 📝 |
-| CD.9 | lattice + org-plugin | H4: a `completion-source` accept hook; `[[` → create | ⛔ deferred |
+| Slice | Tree                 | What                                                                                                                    | Status      |
+|-------|----------------------|-------------------------------------------------------------------------------------------------------------------------|-------------|
+| CD.1  | lattice              | `Effect::FocusBuffer(u32)`                                                                                              | ✅          |
+| CD.2  | lattice              | `open-buffer-at-payload` += `content`, `activate-minor`                                                                 | ✅          |
+| CD.3  | lattice              | `host-services.delete-file`                                                                                             | ✅          |
+| CD.3b | lattice              | `host-services.can-write-file` (design H5)                                                                              | ✅          |
+| CD.3c | lattice              | A failed or denied `WriteToFile` stops the rest of its action (H6)                                                      | ✅          |
+| CD.3d | lattice              | `Effect::InvokeCommand(command-ref)` (H7)                                                                               | ✅          |
+| CD.4  | org-plugin           | File-backed captures; state in the store; simultaneity; **the caller**; target checked at open, cleanup after the write | ✅          |
+| CD.5  | org-plugin           | `:org-capture-drafts` picker + `<leader>od`                                                                             | 📝          |
+| CD.6  | org-plugin           | `create-and-insert` opens a child capture; write-back; regions                                                          | 📝          |
+| CD.7  | org-plugin           | `${origin}` back-reference for the no-write-back verbs                                                                  | 📝          |
+| CD.8  | org-plugin           | Roam-scan skip; outstanding-caller warning                                                                              | 📝          |
+| CD.9  | lattice + org-plugin | H4: a `completion-source` accept hook; `[[` → create                                                                    | ⛔ deferred |
 
 **OC.7d does not get a slice.** It is `Caller { on_commit: None }` and lands
 inside CD.4 — see the design §5. The archived plan's OC.7d entry gets marked
@@ -230,7 +230,22 @@ state, and succeeds on retry.
 
 ---
 
-## CD.5 — The drafts picker
+## CD.5 — The drafts picker ✅
+
+**Landed** on `<leader>oC`, not the planned `<leader>od`, which is org-mode's
+deadline. The universal minor's binding loses to the major inside an org file,
+which is exactly where drafts get resumed. Decided with Dhruva.
+- **Rows:** `label: first line of the draft`, or `label: (not saved)`,
+  annotated with the id.
+- **Accept:** routes `invoke-command org-capture-resume <id>`, which opens
+  the file with `activate-minor`.
+- **Empty store:** the chord echoes `org: no capture drafts` and opens
+  nothing.
+- **No `<C-d>`:** discarding deletes a file, which that key must never do.
+- **Test harness:** the org defaults attach to a newly opened org buffer on
+  the tick after its major is entered, so `open_t` settles them.
+- **Bench:** `plugin_store/capture_drafts/{1,10,100}` (`benchmarks.md`).
+
 
 Design §7. `:org-capture-drafts` + `<leader>od`, `store_keys("capture/")`,
 reopen with `activate-minor`.

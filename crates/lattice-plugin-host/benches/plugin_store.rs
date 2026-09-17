@@ -14,6 +14,10 @@
 //!     keystroke path, so this is the number that has to be small.
 //!   * `keys_prefix` — a prefix scan over 1000 entries, the shape the indexer
 //!     uses to enumerate `f/<path>` rows when it decides what to retract.
+//!   * `capture_drafts/{1,10,100}` — CD.5: `keys("capture/")`, which the drafts
+//!     picker reads on every open, with that many drafts in a store that also
+//!     holds a corpus-sized roam index. The one growth term the drafts design
+//!     names (`org-capture-drafts.md` §13).
 //!
 //! **What this measures and what it does not.** This is the store itself, not
 //! the WASM boundary — the guest→host crossing is `boundary.rs`'s subject and is
@@ -88,6 +92,19 @@ fn bench_store(c: &mut Criterion) {
         }
         b.iter(|| black_box(store.keys(black_box("f/"))));
     });
+
+    for drafts in [1_usize, 10, 100] {
+        c.bench_function(&format!("plugin_store/capture_drafts/{drafts}"), |b| {
+            let mut store = store_in(dir.path());
+            for i in 0..585 {
+                store.put(&format!("n/{i:08X}"), record.clone()).unwrap();
+            }
+            for i in 0..drafts {
+                store.put(&format!("capture/{i:06x}"), record.clone()).unwrap();
+            }
+            b.iter(|| black_box(store.keys(black_box("capture/"))));
+        });
+    }
 }
 
 criterion_group!(benches, bench_store);

@@ -1,12 +1,17 @@
 //! WK.7 — which-key's lifecycle, asserted the way it fails.
 //!
+//! The hint lives in the **minibuffer band** (`Editor::band_buffer`,
+//! WK.12), not the popup slot: it sits above the `:` line and never
+//! competes with a hover or diagnostic popup. Every assertion about the
+//! hint therefore reads the band; `popup_buffer` appears only where a
+//! test puts a real popup beside it.
+//!
 //! The failure mode CLAUDE.md names outright is an async result that
-//! reaches the screen only on the NEXT keystroke. A which-key popup with
-//! that bug is indistinguishable from a working one in any test that
-//! presses a second key — so **no assertion here dispatches another
-//! action after the one under test**. The popup must arrive because the
-//! idle gate fired and the actor drained, not because the user pressed
-//! something.
+//! reaches the screen only on the NEXT keystroke. A hint with that bug is
+//! indistinguishable from a working one in any test that presses a second
+//! key — so **no assertion here dispatches another action after the one
+//! under test**. The band must fill because the idle gate fired and the
+//! actor drained, not because the user pressed something.
 //!
 //! Design: `docs/dev/architecture/which-key.md` §5, §11.
 
@@ -40,16 +45,16 @@ async fn quiesce(editor: &Editor) {
 
 /// Let the subscription task forward the published event into the
 /// inbound bus, then run the per-tick drain the actor would run. This is
-/// the arming half — NOT the popup, which only the gate can produce.
+/// the arming half — NOT the band, which only the gate can open.
 ///
 /// **A condition wait, not a fixed number of yields.** This was 20
 /// `yield_now()`s followed by one drain, which is a guess about how many
 /// times the runtime has to be polled before a task on ANOTHER thread has
 /// forwarded the event. Under load — a full `cargo test`, or simply more
 /// tests in this file — the guess runs out and the drain finds nothing, so
-/// the popup content assertions fail on a build where the feature works.
-/// Both `holding_a_prefix_opens_the_popup_without_another_keystroke` and
-/// `the_keys_in_the_popup_are_highlighted` failed that way and passed when
+/// the band content assertions fail on a build where the feature works.
+/// Both `holding_a_prefix_opens_the_band_without_another_keystroke` and
+/// `the_keys_in_the_band_are_highlighted` failed that way and passed when
 /// re-run alone.
 ///
 /// `want_armed` is what the gate should look like once the event has landed,
@@ -89,7 +94,7 @@ async fn fire_gate(editor: &mut Editor) {
     let _ = editor.fire_idle_gates();
 }
 
-fn popup_text(editor: &Editor) -> Option<String> {
+fn band_text(editor: &Editor) -> Option<String> {
     let id = editor.band_buffer?;
     Some(
         editor
@@ -101,10 +106,36 @@ fn popup_text(editor: &Editor) -> Option<String> {
     )
 }
 
-/// The headline: press a prefix, wait, and the popup is there — with no
-/// further keystroke.
+/// Wait for the band's content to land, draining as the actor does.
+///
+/// Opening the band and filling it are two steps: the gate's
+/// `OpenPopup { placement: MinibufferBand }` creates the buffer, and
+/// `which-key-mode`'s `on_activate` — an async mode activation — writes
+/// the grid into it and then stores the key highlights. Reading straight
+/// after `fire_gate` races that activation, and under a full-suite load
+/// it loses: `holding_a_prefix…` read `""` once. No key is pressed here,
+/// only the off-keystroke drain, so a hint that needed a keystroke to
+/// appear still fails.
+async fn settle_band(editor: &mut Editor, done: impl Fn(&Editor) -> bool) -> bool {
+    for _ in 0..500 {
+        let _ = editor.run_tick_pending();
+        if done(editor) {
+            return true;
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    false
+}
+
+fn band_has_text(editor: &Editor) -> bool {
+    band_text(editor).is_some_and(|t| !t.trim().is_empty())
+}
+
+/// The headline: press a prefix, wait, and the hint is in the band — with
+/// no further keystroke.
 #[tokio::test]
-async fn holding_a_prefix_opens_the_popup_without_another_keystroke() {
+async fn holding_a_prefix_opens_the_band_without_another_keystroke() {
     let mut editor = booted();
     quiesce(&editor).await;
 
@@ -112,7 +143,7 @@ async fn holding_a_prefix_opens_the_popup_without_another_keystroke() {
     settle_arming_to(&mut editor, true).await;
     assert!(
         editor.band_buffer.is_none(),
-        "the popup must not appear before the delay elapses — that would be \
+        "the hint must not appear before the delay elapses — that would be \
          a stutter, not a hint"
     );
     assert!(
@@ -121,11 +152,20 @@ async fn holding_a_prefix_opens_the_popup_without_another_keystroke() {
     );
 
     fire_gate(&mut editor).await;
+    assert!(
+        editor.band_buffer.is_some(),
+        "the band opened off the gate, with no keypress"
+    );
+    assert!(
+        editor.popup_buffer.is_none(),
+        "the hint is in the band, not the popup slot"
+    );
+    settle_band(&mut editor, band_has_text).await;
 
-    let text = popup_text(&editor).expect("the popup opened off the gate, with no keypress");
+    let text = band_text(&editor).expect("the band is still open");
     assert!(
         text.contains('g'),
-        "the popup names the prefix it is describing: {text:?}"
+        "the band names the prefix it is describing: {text:?}"
     );
     assert!(
         text.lines().count() > 1,
@@ -134,9 +174,9 @@ async fn holding_a_prefix_opens_the_popup_without_another_keystroke() {
 }
 
 /// Finishing the chord inside the delay window shows nothing at all. The
-/// user who knows their chord never sees a frame of popup.
+/// user who knows their chord never sees a frame of hint.
 #[tokio::test]
-async fn a_chord_completed_before_the_delay_never_shows_a_popup() {
+async fn a_chord_completed_before_the_delay_never_shows_the_band() {
     let mut editor = booted();
     quiesce(&editor).await;
 
@@ -151,7 +191,7 @@ async fn a_chord_completed_before_the_delay_never_shows_a_popup() {
 
     assert!(
         editor.idle_gate_deadline().is_none(),
-        "resolving disarms the gate — otherwise a popup would appear for a \
+        "resolving disarms the gate — otherwise a hint would appear for a \
          chord the user already finished"
     );
     fire_gate(&mut editor).await;
@@ -161,12 +201,12 @@ async fn a_chord_completed_before_the_delay_never_shows_a_popup() {
     );
 }
 
-/// The popup is PASSIVE: the document keeps focus, so every keystroke
+/// The band is PASSIVE: the document keeps focus, so every keystroke
 /// still resolves against the trie. This is the property that makes the
 /// feature safe to ship — a hint that stole keys would change what
 /// chords mean, per-prefix and unpredictably.
 #[tokio::test]
-async fn the_popup_is_passive_and_leaves_the_document_focused() {
+async fn the_band_is_passive_and_leaves_the_document_focused() {
     let mut editor = booted();
     quiesce(&editor).await;
     let doc_before = editor.document_buffer_id;
@@ -174,7 +214,7 @@ async fn the_popup_is_passive_and_leaves_the_document_focused() {
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
     settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
-    assert!(editor.band_buffer.is_some(), "popup open");
+    assert!(editor.band_buffer.is_some(), "band open");
 
     assert_eq!(
         editor.document_buffer_id, doc_before,
@@ -229,7 +269,7 @@ async fn a_prefix_with_no_continuations_opens_nothing() {
 
     assert!(
         editor.band_buffer.is_none(),
-        "no continuations ⇒ no popup, rather than an empty grid"
+        "no continuations ⇒ no band, rather than an empty grid"
     );
 }
 
@@ -239,28 +279,36 @@ async fn a_prefix_with_no_continuations_opens_nothing() {
 /// The failure this pins is a silent one: the spans are stored through a
 /// service, and asking the registry for the wrong `T` (the `…Handle`
 /// alias rather than the bare type) compiles, returns `None`, and leaves
-/// the popup permanently unstyled. Only reading the buffer's own
+/// the hint permanently unstyled. Only reading the buffer's own
 /// `ExtraHighlights` proves the chain ran end to end.
 #[tokio::test]
-async fn the_keys_in_the_popup_are_highlighted() {
+async fn the_keys_in_the_band_are_highlighted() {
     let mut editor = booted();
     quiesce(&editor).await;
 
     let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
     settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
-    let popup = editor.band_buffer.expect("popup open");
+    let band = editor.band_buffer.expect("band open");
 
     // The drain that moves stored spans into the buffer local runs on the
-    // tick, exactly as it does for magit's buffers.
-    let _ = editor.run_tick_pending();
+    // tick, exactly as it does for magit's buffers — and the spans are
+    // stored only after the mode's activation has written the grid, so
+    // wait for them rather than draining once.
+    let has_spans = |e: &Editor| {
+        e.buffer_locals
+            .get(&band)
+            .and_then(|l| l.get::<lattice_host::modes::ExtraHighlights>())
+            .is_some_and(|h| h.0.iter().flatten().next().is_some())
+    };
+    settle_band(&mut editor, has_spans).await;
 
     let highlights = editor
         .buffer_locals
-        .get(&popup)
+        .get(&band)
         .and_then(|l| l.get::<lattice_host::modes::ExtraHighlights>())
         .map(|h| h.0.clone())
-        .expect("the popup buffer carries extra highlights");
+        .expect("the band buffer carries extra highlights");
 
     let key_spans: Vec<_> = highlights
         .iter()
@@ -269,7 +317,7 @@ async fn the_keys_in_the_popup_are_highlighted() {
         .collect();
     assert!(
         !key_spans.is_empty(),
-        "every key in the grid is emphasised — without this the popup is a \
+        "every key in the grid is emphasised — without this the hint is a \
          wall of undifferentiated text: {highlights:?}"
     );
 
@@ -277,8 +325,8 @@ async fn the_keys_in_the_popup_are_highlighted() {
     // text back with them.
     let text = editor
         .buffers
-        .document_handle(popup)
-        .expect("popup buffer live")
+        .document_handle(band)
+        .expect("band buffer live")
         .snapshot()
         .buffer
         .as_string();
@@ -295,13 +343,13 @@ async fn the_keys_in_the_popup_are_highlighted() {
     }
 }
 
-/// WK.10 repro: the popup is ALREADY OPEN and then the chord resolves.
+/// WK.10 repro: the band is ALREADY OPEN and then the chord resolves.
 ///
-/// Distinct from `a_chord_completed_before_the_delay_never_shows_a_popup`,
+/// Distinct from `a_chord_completed_before_the_delay_never_shows_the_band`,
 /// which covers resolving while the gate is still counting down — there
-/// the popup never exists, so nothing has to be taken away.
+/// the band never opens, so nothing has to be taken away.
 #[tokio::test]
-async fn resolving_a_chord_dismisses_an_open_popup() {
+async fn resolving_a_chord_dismisses_an_open_band() {
     let mut editor = booted();
     quiesce(&editor).await;
 
@@ -309,8 +357,8 @@ async fn resolving_a_chord_dismisses_an_open_popup() {
     settle_arming_to(&mut editor, true).await;
     fire_gate(&mut editor).await;
     assert!(
-        popup_text(&editor).is_some(),
-        "precondition: the popup is open"
+        band_text(&editor).is_some(),
+        "precondition: the band is open"
     );
 
     // The chord resolves. Any non-absorbing action clears `partial_chord`,
@@ -321,11 +369,11 @@ async fn resolving_a_chord_dismisses_an_open_popup() {
 
     assert!(
         editor.band_buffer.is_none(),
-        "the popup describes a prefix that no longer exists"
+        "the hint describes a prefix that no longer exists"
     );
 }
 
-// ── WK.11: which-key dismisses ITS popup, and only its popup ──────────────
+// ── WK.11: which-key dismisses ITS hint, and only its hint ────────────────
 
 /// **The `zz` bug.** A two-key chord finished inside the delay window must
 /// leave a popup which-key never opened exactly where it was.
@@ -335,7 +383,7 @@ async fn resolving_a_chord_dismisses_an_open_popup() {
 /// chord typed faster than `which-key.delay` (`zz`, `gg`, `dd`, `ci"`) tore
 /// down whatever hover or diagnostic popup happened to be showing.
 ///
-/// `a_chord_completed_before_the_delay_never_shows_a_popup` passed on the
+/// `a_chord_completed_before_the_delay_never_shows_the_band` passed on the
 /// broken build because nothing else had a popup open to lose. That is the
 /// gap this closes: the bug was never in whether which-key's OWN popup
 /// appeared, it was in what its dismissal reached.
@@ -367,7 +415,7 @@ async fn a_fast_chord_leaves_someone_elses_popup_alone() {
     );
 }
 
-/// The other half: which-key's OWN popup is still dismissed when the chord
+/// The other half: which-key's OWN band is still dismissed when the chord
 /// resolves. A fix that simply stopped dismissing would pass the test above
 /// and leave a hint describing a prefix that no longer exists.
 #[tokio::test]

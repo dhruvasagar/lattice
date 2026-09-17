@@ -227,11 +227,23 @@ impl Mode for MagitRebaseMode {
                     let s = state(ctx)?;
                     let workdir = { s.lock().ok()?.workdir.clone() };
                     tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                        if let Ok(repo) = Repository::discover(&workdir)
-                            && rebase_in_progress(repo.gitdir())
-                        {
-                            let _ = repo.run_git(["rebase", "--abort"]);
+                        let Ok(repo) = Repository::discover(&workdir) else {
+                            return;
+                        };
+                        // Nothing in progress is nothing to report: the
+                        // buffer was already stale, and burying it is
+                        // the whole outcome.
+                        if !rebase_in_progress(repo.gitdir()) {
+                            return;
                         }
+                        // NC.5: reported, not discarded — an abort that
+                        // failed left the user believing the rebase
+                        // was gone.
+                        let result = repo
+                            .run_git(["rebase", "--abort"])
+                            .map(|_| String::new())
+                            .map_err(|e| e.to_string());
+                        crate::magit_global_mode::finish_task(&workdir, "abort rebase", result);
                     }));
                     Some(Effect::BuryBuffer)
                 }),

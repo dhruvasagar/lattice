@@ -203,9 +203,20 @@ impl Mode for MagitRefsMode {
                     }
                     let name = entry.name.clone();
                     spawn_mutation_and_refresh(s, move || {
-                        if let Ok(repo) = Repository::discover(&workdir) {
-                            let _ = lattice_vcs::Branch::checkout(&repo, &name);
-                        }
+                        // NC.5: reported, not discarded — a refused
+                        // checkout (dirty tree) used to vanish.
+                        let result = Repository::discover(&workdir)
+                            .map_err(|e| format!("not a git repository: {e}"))
+                            .and_then(|repo| {
+                                lattice_vcs::Branch::checkout(&repo, &name)
+                                    .map_err(|e| e.to_string())
+                            })
+                            .map(|()| String::new());
+                        crate::magit_global_mode::finish_task(
+                            &workdir,
+                            &format!("check out {name}"),
+                            result,
+                        );
                     })
                 }),
             },

@@ -23,7 +23,7 @@ Built on NOTIF.1a–f. The reported gap had two halves:
 | NC.2 | `scope` on `Event::BackgroundTaskFinished` + a `Stopped` outcome; the notification lays out `<icon> <scope> · <text>`; magit passes the repository name | ✅ |
 | NC.3 | Pick the line that matters: failures prefer `error:` / `fatal:` / `!` / `CONFLICT` and fall back to stdout; push / fetch / pull get their own success summaries | ✅ |
 | NC.4 | magit label rewrite — a human phrase naming what was acted on, no raw flags, no shared labels; partial operations report `Stopped`; the `…ing` echo bug. Landed as NC.4a–d | ✅ |
-| NC.5 | Report the eight actions that finish silently (file stage/unstage/discard, branch create/checkout/rename/delete) | 📝 |
+| NC.5 | Report the actions that finished silently (file stage/unstage/discard, branch create/checkout/rename/delete, refs-buffer checkout, rebase abort) | ✅ |
 | NC.6 | A bisect mark reports when it has found the first bad commit (needs `lattice_vcs::Bisect` to return git's output) | ⛔ deferred — no consumer beyond this; revisit with the next bisect change |
 
 ## NC.1 — icons and the success level ✅
@@ -125,4 +125,23 @@ producers.
 Tests: label tables (plain, distinct, naming their object), the helper
 labels, `patch_path`, `stopped_reason` cases, and the real-git conflict
 test asserting it is classified as a stop.
+
+## NC.5 — nothing finishes silently ✅
+
+- `file_mutate!` (the file-dispatch stage / unstage / discard) returns
+  its result and reports it. Its echo is now the in-progress form: the
+  old past-tense echo was written when the task was spawned, so it
+  said "staged a.rs" whether or not that happened.
+- `spawn_repo_op` runs one `lattice_vcs` call and reports it. The five
+  branch rows (create, create without checkout, checkout, rename,
+  delete) use it instead of `tracing::error!`-only spawns.
+- Two sites the audit missed: checkout from the refs buffer, and
+  aborting from the rebase todo buffer.
+- Reporting also publishes `BackgroundTaskFinished`, so open magit
+  views now refresh after these operations. Before, they stayed stale
+  until `gr`.
+
+Guard: `no_repository_call_discards_its_result` fails on any
+`let _ = lattice_vcs::…` or `let _ = repo.run_git…` in the magit
+mutation sources. That is the shape every one of these sites had.
 

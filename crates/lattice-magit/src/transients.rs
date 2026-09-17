@@ -3228,6 +3228,36 @@ mod background_task_tests {
     /// Five of ten spawners previously reported nothing at all — the
     /// gap that motivated this slice — and the reason was that
     /// notification was an opt-in parameter each one could forget.
+    /// NC.5: a repository mutation whose result is thrown away is an
+    /// operation that finishes invisibly — and, publishing nothing,
+    /// leaves every open magit view stale. `let _ =` on one is the
+    /// shape every such site had.
+    #[test]
+    fn no_repository_call_discards_its_result() {
+        let sources = [
+            ("magit_global_mode.rs", include_str!("magit_global_mode.rs")),
+            ("magit_refs_mode.rs", include_str!("magit_refs_mode.rs")),
+            ("magit_rebase_mode.rs", include_str!("magit_rebase_mode.rs")),
+            ("magit_branch_mode.rs", include_str!("magit_branch_mode.rs")),
+            ("magit_stash_mode.rs", include_str!("magit_stash_mode.rs")),
+            ("actions.rs", include_str!("actions.rs")),
+        ];
+        for (file, src) in sources {
+            for (n, line) in src.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                assert!(
+                    !code.starts_with("let _ = lattice_vcs::")
+                        && !code.starts_with("let _ = repo.run_git"),
+                    "{file}:{}: a repository call's result is discarded",
+                    n + 1
+                );
+            }
+        }
+    }
+
     #[test]
     fn every_spawner_reports_completion() {
         let src = include_str!("magit_global_mode.rs");

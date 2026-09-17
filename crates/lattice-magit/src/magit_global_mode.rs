@@ -1478,25 +1478,33 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     /// actor thread, echoing optimistically — the same detached
     /// shape `remote_op!` uses (no synchronous path back to the echo
     /// area from a task that outlives the handler call).
+    // NC.5: every file mutation reports through `finish_task`. These
+    // used to discard their result (`let _ =`) and echo the past tense
+    // when the task was SPAWNED — "staged a.rs" whether or not it was —
+    // and, publishing nothing, left open magit views stale too.
     macro_rules! file_mutate {
-        ($action_name:expr, $past_tense:expr, $body:expr) => {
+        ($action_name:expr, $verb:expr, $doing:expr, $body:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let (workdir, rel) = active_target(ctx)?;
-                    let shown = rel.clone();
+                    let shown = rel.display().to_string();
+                    let label = format!("{} {shown}", $verb);
                     tokio::task::spawn(async move {
-                        let _ = tokio::task::spawn_blocking(move || {
-                            if let Ok(repo) = Repository::discover(&workdir) {
-                                #[allow(clippy::redundant_closure_call)]
-                                ($body)(&repo, &rel);
-                            }
+                        let scope_dir = workdir.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            let repo = Repository::discover(&workdir)
+                                .map_err(|e| format!("not a git repository: {e}"))?;
+                            #[allow(clippy::redundant_closure_call)]
+                            ($body)(&repo, &rel)
                         })
-                        .await;
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()));
+                        finish_task(&scope_dir, &label, result.map(|()| String::new()));
                     });
                     Some(Effect::Echo {
                         level: lattice_grammar::EchoLevel::Info,
-                        text: format!(concat!("magit: ", $past_tense, " {}"), shown.display()),
+                        text: format!(concat!("magit: ", $doing, " {}\u{2026}"), shown),
                     })
                 }),
             });
@@ -1505,16 +1513,18 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
 
     file_mutate!(
         "action:magit-global-file-stage",
-        "staged",
-        |repo: &Repository, rel: &std::path::Path| {
-            let _ = lattice_vcs::Index::stage_path(repo, rel);
+        "stage",
+        "staging",
+        |repo: &Repository, rel: &std::path::Path| -> Result<(), String> {
+            lattice_vcs::Index::stage_path(repo, rel).map_err(|e| e.to_string())
         }
     );
     file_mutate!(
         "action:magit-global-file-unstage",
-        "unstaged",
-        |repo: &Repository, rel: &std::path::Path| {
-            let _ = lattice_vcs::Index::unstage_path(repo, rel);
+        "unstage",
+        "unstaging",
+        |repo: &Repository, rel: &std::path::Path| -> Result<(), String> {
+            lattice_vcs::Index::unstage_path(repo, rel).map_err(|e| e.to_string())
         }
     );
     // Discard is destructive, so it asks first — same `Effect::Confirm`
@@ -1539,9 +1549,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     });
     file_mutate!(
         "action:magit-global-file-discard-execute",
-        "discarded changes to",
-        |repo: &Repository, rel: &std::path::Path| {
-            let _ = repo.run_git(["checkout", "--", &rel.to_string_lossy()]);
+        "discard changes to",
+        "discarding changes to",
+        |repo: &Repository, rel: &std::path::Path| -> Result<(), String> {
+            repo.run_git(["checkout", "--", &rel.to_string_lossy()])
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         }
     );
 
@@ -2231,18 +2244,14 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 .and_then(|n| base_branch_from_prompt_buffer_name(&n))?;
             // MR.5: the branch operation belongs to the buffer's repository.
             let workdir = crate::repo_scope::action_workdir(ctx);
-            tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                let Ok(repo) = Repository::discover(&workdir) else {
-                    tracing::error!(target: "lattice_magit", "branch create: repo discover failed");
-                    return;
-                };
-                if let Err(e) = lattice_vcs::Branch::create(&repo, &name, true, Some(&base)) {
-                    tracing::error!(target: "lattice_magit", "branch create {name} from {base}: {e}");
-                }
-            }));
+            let label = format!("create and check out branch {name} from {base}");
+            let echo = format!("magit: creating branch {name}\u{2026}");
+            spawn_repo_op(workdir, label, move |repo| {
+                lattice_vcs::Branch::create(repo, &name, true, Some(&base))
+            });
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
-                text: "magit: creating branch…".to_string(),
+                text: echo,
             })
         }),
     });
@@ -2302,18 +2311,14 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             }
             // MR.5: the branch operation belongs to the buffer's repository.
             let workdir = crate::repo_scope::action_workdir(ctx);
-            tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                let Ok(repo) = Repository::discover(&workdir) else {
-                    tracing::error!(target: "lattice_magit", "branch checkout: repo discover failed");
-                    return;
-                };
-                if let Err(e) = lattice_vcs::Branch::checkout(&repo, &rev) {
-                    tracing::error!(target: "lattice_magit", "checkout {rev}: {e}");
-                }
-            }));
+            let label = format!("check out {}", short_rev(&rev));
+            let echo = format!("magit: checking out {rev}\u{2026}");
+            spawn_repo_op(workdir, label, move |repo| {
+                lattice_vcs::Branch::checkout(repo, &rev)
+            });
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
-                text: "magit: checking out…".to_string(),
+                text: echo,
             })
         }),
     });
@@ -2352,18 +2357,14 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 })?;
             // MR.5: the branch operation belongs to the buffer's repository.
             let workdir = crate::repo_scope::action_workdir(ctx);
-            tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                let Ok(repo) = Repository::discover(&workdir) else {
-                    tracing::error!(target: "lattice_magit", "branch create: repo discover failed");
-                    return;
-                };
-                if let Err(e) = lattice_vcs::Branch::create(&repo, &name, false, Some(&base)) {
-                    tracing::error!(target: "lattice_magit", "branch create {name} from {base}: {e}");
-                }
-            }));
+            let label = format!("create branch {name} from {base}");
+            let echo = format!("magit: creating branch {name}\u{2026}");
+            spawn_repo_op(workdir, label, move |repo| {
+                lattice_vcs::Branch::create(repo, &name, false, Some(&base))
+            });
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
-                text: "magit: creating branch…".to_string(),
+                text: echo,
             })
         }),
     });
@@ -2410,18 +2411,14 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             }
             // MR.5: the branch operation belongs to the buffer's repository.
             let workdir = crate::repo_scope::action_workdir(ctx);
-            tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                let Ok(repo) = Repository::discover(&workdir) else {
-                    tracing::error!(target: "lattice_magit", "branch rename: repo discover failed");
-                    return;
-                };
-                if let Err(e) = lattice_vcs::Branch::rename(&repo, &old, &new_name) {
-                    tracing::error!(target: "lattice_magit", "branch rename {old} -> {new_name}: {e}");
-                }
-            }));
+            let label = format!("rename branch {old} to {new_name}");
+            let echo = format!("magit: renaming branch {old}\u{2026}");
+            spawn_repo_op(workdir, label, move |repo| {
+                lattice_vcs::Branch::rename(repo, &old, &new_name)
+            });
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
-                text: "magit: renaming branch…".to_string(),
+                text: echo,
             })
         }),
     });
@@ -2450,23 +2447,44 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             let name = crate::confirm::carried_target(ctx)?;
             // MR.5: the branch operation belongs to the buffer's repository.
             let workdir = crate::repo_scope::action_workdir(ctx);
-            tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                let Ok(repo) = Repository::discover(&workdir) else {
-                    tracing::error!(target: "lattice_magit", "branch delete: repo discover failed");
-                    return;
-                };
-                if let Err(e) = lattice_vcs::Branch::delete(&repo, &name) {
-                    tracing::error!(target: "lattice_magit", "branch delete {name}: {e}");
-                }
-            }));
+            let label = format!("delete branch {name}");
+            let echo = format!("magit: deleting branch {name}\u{2026}");
+            spawn_repo_op(workdir, label, move |repo| {
+                lattice_vcs::Branch::delete(repo, &name)
+            });
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
-                text: "magit: deleting branch…".to_string(),
+                text: echo,
             })
         }),
     });
 
     contributions
+}
+
+/// NC.5: run one `lattice_vcs` repository call off the actor thread and
+/// report it through [`finish_task`].
+///
+/// The branch rows used to spawn the call and log a failure with
+/// `tracing::error!`, so success was invisible, failure reached only
+/// `*messages*`, and — publishing nothing — open magit views stayed
+/// stale until `gr`.
+fn spawn_repo_op(
+    workdir: std::path::PathBuf,
+    label: String,
+    op: impl FnOnce(&Repository) -> lattice_vcs::Result<()> + Send + 'static,
+) {
+    tokio::task::spawn(async move {
+        let scope_dir = workdir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let repo =
+                Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
+            op(&repo).map(|()| String::new()).map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        finish_task(&scope_dir, &label, result);
+    });
 }
 
 /// Resolve the active buffer's file to `(repo-workdir,

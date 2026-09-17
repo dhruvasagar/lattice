@@ -3575,9 +3575,9 @@ pub fn spawn_rebase_verb_with(
         // NC.4: an `edit` that worked has STOPPED, by design — the user
         // is meant to amend and continue. "Done" would say otherwise.
         let result = match result {
-            Ok(_) if verb == "edit" => TaskResult::Stopped(
-                "stopped for editing \u{2014} amend, then continue the rebase".to_string(),
-            ),
+            Ok(_) if verb == "edit" => {
+                TaskResult::Stopped("amend, then continue the rebase".to_string())
+            }
             other => other.into(),
         };
         finish_task(&scope_dir, &label, result);

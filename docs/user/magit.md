@@ -171,8 +171,19 @@ as a [notification](help:notifications).
 This matters most when it *fails*. A magit buffer refreshes after every
 mutation, so a failed stage used to look exactly like a successful one:
 the buffer redrew, the file stayed where it was, and nothing said why.
-Now the failure is the notification, with git's first line of output;
-the full text is in the log and `*messages*`.
+Now the failure is the notification, with the line of git's output
+that explains it; the full text is in the log and `*messages*`.
+
+Each notification names the repository and what was acted on —
+`lattice · push to origin/main — main`, `dotfiles · drop stash@{2}` —
+so a burst of them never reads the same twice. Work that **stopped
+part-way** is neither a success nor a failure, and is shown as a
+warning that says what to do next:
+
+```
+▲ lattice · merge feature stopped — CONFLICT (content): Merge conflict in a.rs — resolve, then continue
+▲ lattice · rebase to edit 3f2a1c0 stopped — amend, then continue the rebase
+```
 
 Operations that only **read** stay quiet — a refresh (`gr`), opening a
 log, a diff or a blame. The buffer appearing *is* the report, and a

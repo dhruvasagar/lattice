@@ -9,12 +9,15 @@ Every notification, live and queued. `:notifications`.
 
 ```
 *notifications*
-  ✗ push failed: rejected (non-fast-forward)
-  ✓ fetch finished
-  ✓ pull finished (queued)
+  ✗ lattice · push to origin/main failed — ! [rejected] main -> main (fetch first)
+  ✓ lattice · fetch origin — up to date
+  ▲ dotfiles · merge feature stopped — CONFLICT (content): Merge conflict in a.rs — resolve, then continue
+  ✓ dotfiles · pull — already up to date (queued)
 ```
 
 The corner popup is a **signal** — it tells you something happened.
+Each row has the same icon and the same repository name as in the
+corner, so you can scan it the same way.
 This buffer is where you find the ones the corner counted as `+N more`,
 dismiss the ones you are done with, and act on any that offer an
 action.

@@ -651,6 +651,18 @@ pub enum Effect {
     BufferNext,
     /// `:bp[rev]` -- cycle to the previous open document buffer.
     BufferPrev,
+    /// CD.1: show the buffer with this id in the active pane.
+    ///
+    /// The peer of [`Effect::ApplyEdit`]'s `target`: a plugin can edit a
+    /// buffer it knows only by id, and this is how it shows one. Opening by
+    /// path or by name cannot serve a buffer known only as an id — which is
+    /// how a capture knows the buffer it was fired from.
+    ///
+    /// **Host-applied**, so it works on the off-keystroke paths too. An id
+    /// that no longer names a buffer is a no-op logged at `debug!`: a buffer
+    /// closing between an action and its effect is an ordinary race, not a
+    /// producer bug.
+    FocusBuffer(u32),
     /// `:ls` / `:buffers` -- render every open document buffer in a
     /// help-style view.
     ListBuffers,

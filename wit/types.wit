@@ -881,6 +881,11 @@ interface types {
         record-jump,
         open-ai-log(option<string>),
         open-synthetic-buffer(open-synthetic-buffer-payload),
+        /// CD.1: show the buffer with this id in the active pane. The peer of
+        /// `apply-edit`'s `target`: a guest can edit a buffer it knows only by
+        /// id, and this shows one. An id that no longer names a buffer is a
+        /// no-op. Appended last so existing variant indices do not move.
+        focus-buffer(u32),
     }
 
     // ---- The `app-effect` variant mirror (PH7.3b2) ----

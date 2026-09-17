@@ -4353,6 +4353,9 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 out.renderer_signals.extend(editor.activate_buffer_state());
             }
         }
+        // CD.1: `activate_buffer` completes the activation and enqueues its
+        // own renderer signals, so there is no tail to extend here.
+        Effect::FocusBuffer(id) => editor.do_focus_buffer(BufferId(id)),
         // I3/BC.8c follow-up: SaveBuffer is host-applied (reuses the existing
         // `Editor::do_write`), joining BufferDelete below — so it works on the
         // off-keystroke inbound tick path (claude-code `saveDocument`), where
@@ -40381,6 +40384,20 @@ impl Editor {
     /// full `activate_document` path; caller must run
     /// [`Self::activate_buffer_state`] (the `handle_effect` arm
     /// does this inline as of F.5.5).
+    /// CD.1: `Effect::FocusBuffer` — show `id` in the active pane.
+    ///
+    /// Unlike [`Self::activate_buffer`], an unknown id is silent: the effect
+    /// comes from a plugin that learnt the id earlier, and the buffer closing
+    /// in between is an ordinary race rather than something to tell the user
+    /// about. `debug!`, per the diagnostic-log rule.
+    pub fn do_focus_buffer(&mut self, id: BufferId) {
+        if self.buffers.kind_of(id).is_none() {
+            tracing::debug!(buffer = id.0, "FocusBuffer: no such buffer; ignored");
+            return;
+        }
+        self.activate_buffer(id);
+    }
+
     pub fn do_buffer_next(&mut self) -> bool {
         let Some(target) = self.next_listed_buffer_id() else {
             self.set_message(EchoLevel::Info, "only one listed buffer".to_string());
@@ -42179,6 +42196,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ListKeymap
         | Effect::BufferNext
         | Effect::BufferPrev
+        | Effect::FocusBuffer(_)
         | Effect::ListBuffers
         | Effect::OpenBufferPicker
         | Effect::OpenPicker { .. }
@@ -42333,6 +42351,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ListKeymap
         | Effect::BufferNext
         | Effect::BufferPrev
+        | Effect::FocusBuffer(_)
         | Effect::ListBuffers
         | Effect::OpenBufferPicker
         | Effect::OpenPicker { .. }

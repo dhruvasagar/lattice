@@ -11,7 +11,7 @@ that unblocks one deferred row of the design's §8 table.
 
 | Slice | Tree | What | Status |
 |---|---|---|---|
-| CD.1 | lattice | `Effect::FocusBuffer(u32)` | 📝 |
+| CD.1 | lattice | `Effect::FocusBuffer(u32)` | ✅ |
 | CD.2 | lattice | `open-buffer-at-payload` += `content`, `activate-minor` | 📝 |
 | CD.3 | lattice | `host-services.delete-file` | 📝 |
 | CD.4 | org-plugin | File-backed captures; state in the store; simultaneity; **the caller** | 📝 |
@@ -28,9 +28,18 @@ today is inverted in CD.4.
 
 ---
 
-## CD.1 — `Effect::FocusBuffer(u32)`
+## CD.1 — `Effect::FocusBuffer(u32)` ✅
 
 Show a buffer by id in the active pane. Design §3 H1.
+
+**Landed.** Host-applied through `Editor::do_focus_buffer`, next to
+`BufferNext`, rather than peer-applied: that way the off-keystroke drains get
+it too. So the TUI and GPUI arms are entries in the host-applied no-op lists
+rather than bodies. The unknown-id check is made before `activate_buffer`,
+which would otherwise echo `buffer #N not found`. The WIT case is appended
+last. Tests: `lattice-host/tests/focus_buffer_effect.rs` and
+`boundary_effect::focus_buffer_round_trips`. The "from a plugin action" case
+is exercised end to end by CD.4, whose commit is the first real producer.
 
 **Touches.** `lattice-grammar/src/effect.rs` (the native variant plus its arms
 in the mutation / Visual-exit classifiers); `wit/types.wit`;

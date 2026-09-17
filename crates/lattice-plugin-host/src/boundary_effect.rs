@@ -698,6 +698,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             fill_action: fill_action.clone(),
         }),
         NativeEffect::BufferDelete { force } => WitEffect::BufferDelete(*force),
+        NativeEffect::FocusBuffer(id) => WitEffect::FocusBuffer(*id),
         NativeEffect::OpenFileTree { root } => WitEffect::OpenFileTree(opt_path_to_wit(root)?),
         NativeEffect::CloseFileTree => WitEffect::CloseFileTree,
         NativeEffect::OpenOil { dir } => WitEffect::OpenOil(opt_path_to_wit(dir)?),
@@ -1102,6 +1103,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             fill_action: p.fill_action,
         },
         WitEffect::BufferDelete(force) => NativeEffect::BufferDelete { force },
+        WitEffect::FocusBuffer(id) => NativeEffect::FocusBuffer(id),
         WitEffect::OpenFileTree(root) => NativeEffect::OpenFileTree {
             root: opt_path_from_wit(root),
         },
@@ -1335,6 +1337,16 @@ mod tests {
             create_parents: false,
             save: false,
         }
+    }
+
+    /// CD.1: the id survives both directions unchanged — it is the only
+    /// handle a guest has on the buffer it wants shown.
+    #[test]
+    fn focus_buffer_round_trips() {
+        let wit = effect_to_wit(&NativeEffect::FocusBuffer(42)).unwrap();
+        assert!(matches!(wit, WitEffect::FocusBuffer(42)));
+        let back = effect_from_wit(wit).unwrap();
+        assert!(matches!(back, NativeEffect::FocusBuffer(42)));
     }
 
     #[test]

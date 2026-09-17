@@ -1341,6 +1341,7 @@ impl GpuiApp {
             | Effect::PrevHunk
             | Effect::BufferNext
             | Effect::BufferPrev
+            | Effect::FocusBuffer(_)
             | Effect::BufferDelete { .. }
             | Effect::ListModes
             | Effect::DescribeMode { .. }

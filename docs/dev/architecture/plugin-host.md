@@ -400,6 +400,14 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   `local-offset` deliberately refuses in a multi-threaded process (it would answer UTC here,
   always) unless `unsound_local_offset` is on; chrono resolves the zone through
   `iana-time-zone` — already in the graph via `wasmtime-wasi` — rather than `localtime_r`.
+- **A plugin can SHOW a buffer it knows by id (✅ CD.1)**: `effect.focus-buffer(u32)`.
+  The peer of `apply-edit`'s `target` — a guest could edit a buffer by id and
+  had no way to show one, while `open-buffer` takes a path and
+  `open-synthetic-buffer` a name. Host-applied, so it works off-keystroke; an
+  id that no longer names a buffer is a `debug!` no-op, since a buffer closing
+  between an action and its effect is a race rather than a guest bug.
+  Appended last in the `effect` variant so existing case indices do not move.
+  See [`org-capture-drafts.md`](org-capture-drafts.md) §3 H1.
 - **A plugin can SEED the buffer it opens (✅ OC.7a)**:
   `open-synthetic-buffer-payload` carries `content`, `cursor` and
   `activate-minor` beside `name` / `mode-id`.

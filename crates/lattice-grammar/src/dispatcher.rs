@@ -204,6 +204,8 @@ pub fn execute_motion_only(
         nostartofline: env.nostartofline,
         curswant: env.curswant,
         display: env.display,
+        scrolloff: env.scrolloff,
+        operator_pending: false,
     };
     let result = (motion.apply)(&ctx)?;
     Ok(result.target)
@@ -272,6 +274,8 @@ fn execute_motion(
         nostartofline: env.nostartofline,
         curswant: env.curswant,
         display: env.display,
+        scrolloff: env.scrolloff,
+        operator_pending: false,
     };
     let result = (motion.apply)(&ctx)?;
     // VM.3g-3: a motion that knows its own goal column reports it here. Only
@@ -766,6 +770,9 @@ fn resolve_target(
                 nostartofline: env.nostartofline,
                 curswant: env.curswant,
                 display: env.display,
+                scrolloff: env.scrolloff,
+                // VM.3f: this motion is an operator's target.
+                operator_pending: true,
             };
             let r = (motion.apply)(&ctx)?;
             let mut target = r.target;

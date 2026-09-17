@@ -5878,7 +5878,6 @@ does not bury it; each line names where the detail lives.
   [`slice-plans/archive/project-commands.md`](slice-plans/archive/project-commands.md) PC.14.
 - **Vim-parity follow-ups** (from `visual-motions`, see
   [`slice-plans/archive/visual-motions.md`](slice-plans/archive/visual-motions.md)):
-  - `H` / `L` adjust for `scrolloff` (VM.3f).
   - `scroll` is global here, window-local in vim; needs window-local options (VM.3j-3).
   - `g*` / `g#` are unbound (VM.3d-3).
   - The search-wrap echo is not shown in read-only buffers such as `:help` (VM.3d-2).

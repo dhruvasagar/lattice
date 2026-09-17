@@ -131,6 +131,14 @@ pub struct MotionContext<'a> {
     pub curswant: Option<Curswant>,
     /// VM.3g-2: the display geometry `gj` / `gk` / `g0` / `g$` read.
     pub display: Option<&'a dyn DisplayResolver>,
+    /// VM.3f: see [`GrammarEnv::scrolloff`].
+    pub scrolloff: u32,
+    /// VM.3f: whether this motion is resolving an OPERATOR's target.
+    ///
+    /// `H` / `L` are adjusted for `scrolloff` "unless an operator is pending"
+    /// (`:h H`), so `dH` reaches the window's real top edge while a bare `H`
+    /// stops at the margin. Checked in vim 9.2.
+    pub operator_pending: bool,
 }
 
 /// What a motion's evaluator returned.
@@ -735,6 +743,10 @@ pub struct GrammarEnv<'a> {
     /// `Send + Sync`. The lock is uncontended — one motion writes it once per
     /// dispatch, on the same thread that reads it.
     pub curswant_out: Option<&'a std::sync::Mutex<Option<Curswant>>>,
+    /// VM.3f: `scrolloff`, the margin `H` / `L` keep from the window's edges.
+    /// `0` — the default — leaves them on the first and last lines shown,
+    /// which is vim with `scrolloff=0`.
+    pub scrolloff: u32,
 }
 
 /// Context passed to a text-object's evaluator.

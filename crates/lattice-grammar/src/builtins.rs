@@ -1440,11 +1440,11 @@ fn motion_viewport(
     ctx: &MotionContext,
     pos: crate::app_effect::ViewportPos,
 ) -> Result<MotionResult, CommandError> {
-    let line = ctx
-        .viewport
-        .and_then(|viewport| viewport.viewport_line(pos, ctx.count.get()))
-        .ok_or(CommandError::MotionFailed)?
-        .min(last_addressable_line(ctx.buffer));
+    let viewport = ctx.viewport.ok_or(CommandError::MotionFailed)?;
+    let line = viewport
+        .viewport_line(pos, ctx.count.get())
+        .ok_or(CommandError::MotionFailed)?;
+    let line = scrolloff_adjusted(ctx, viewport, pos, line).min(last_addressable_line(ctx.buffer));
     Ok(MotionResult {
         curswant: None,
         // VM.3j-1: the same helper `gg` / `G` use — this was an inline copy.
@@ -1453,6 +1453,46 @@ fn motion_viewport(
         exclusive: None,
         notice: None,
     })
+}
+
+/// VM.3f: keep `H` / `L` `scrolloff` lines inside the window's edges.
+///
+/// Vim adjusts both "unless an operator is pending" (`:h H`), and it does NOT
+/// adjust at a file edge: a window showing the first line leaves `H` on it, and
+/// one showing the last leaves `L` there — the margin exists to keep context on
+/// screen, and past the end of the file there is none to keep. `M` is never
+/// adjusted.
+///
+/// Measured in vim 9.2 with an 11-line window over 100 lines, `50Gzz` (top 45,
+/// bottom 55): `H` → 48 and `L` → 52 with `scrolloff=3`, 45 and 55 with `0`;
+/// `gg`-then-`H` → 1 and `G`-then-`L` → 100; `dH` deletes from 45, unadjusted.
+fn scrolloff_adjusted(
+    ctx: &MotionContext,
+    viewport: &dyn crate::registry::ViewportResolver,
+    pos: crate::app_effect::ViewportPos,
+    line: u32,
+) -> u32 {
+    use crate::app_effect::ViewportPos;
+    if ctx.scrolloff == 0 || ctx.operator_pending {
+        return line;
+    }
+    // The window's own edges, which is what the margin is measured from —
+    // `viewport_line` with a count of 1 is exactly "the first / last line
+    // shown", so no second resolver call shape is needed.
+    match pos {
+        ViewportPos::Top => match viewport.viewport_line(ViewportPos::Top, 1) {
+            // At the top of the FILE there is nothing above to keep in view.
+            Some(top) if top > 0 => line.max(top + ctx.scrolloff),
+            _ => line,
+        },
+        ViewportPos::Bottom => match viewport.viewport_line(ViewportPos::Bottom, 1) {
+            Some(bottom) if bottom < last_addressable_line(ctx.buffer) => {
+                line.min(bottom.saturating_sub(ctx.scrolloff))
+            }
+            _ => line,
+        },
+        ViewportPos::Middle => line,
+    }
 }
 
 fn motion_viewport_top(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
@@ -2187,6 +2227,8 @@ fn find_repeat(ctx: &MotionContext, reverse: bool) -> Result<MotionResult, Comma
         nostartofline: ctx.nostartofline,
         curswant: ctx.curswant,
         display: ctx.display,
+        scrolloff: ctx.scrolloff,
+        operator_pending: ctx.operator_pending,
     };
     let mut result = match kind {
         FindKind::Forward => motion_find_char_forward(&sub)?,
@@ -4922,6 +4964,98 @@ mod tests {
         rows[2].1 = 4.0;
         assert_eq!(ShownLines(rows).viewport_line(Middle, 1), Some(2));
         assert_eq!(ShownLines::default().viewport_line(Middle, 1), None);
+    }
+
+    /// VM.3f: `H` / `L` stop `scrolloff` lines inside the window's edges.
+    ///
+    /// The numbers are vim 9.2's, measured with an 11-line window over a
+    /// 100-line file and the cursor centred (`50Gzz` → shows 45–55, 0-based
+    /// 44–54): `H` → 48 and `L` → 52 with `scrolloff=3`, 45 and 55 with `0`.
+    /// At a FILE edge vim does not adjust — `gg`-then-`H` is line 1 and
+    /// `G`-then-`L` the last line — because the margin exists to keep context
+    /// on screen and there is none past the end.
+    #[test]
+    fn h_and_l_keep_scrolloff_from_the_windows_edges() {
+        use crate::app_effect::ViewportPos::{Bottom, Top};
+        let long = "x\n".repeat(100);
+        let (_registry, _b, doc) = fixture(&long);
+        let window = shown(44, 11);
+        let motion = |pos, scrolloff, operator_pending| {
+            let ctx = MotionContext {
+                buffer: doc.buffer(),
+                buffer_id: lattice_core::BufferId(0),
+                from: Position::new(49, 0),
+                count: Count::default(),
+                has_explicit_count: false,
+                args: crate::args::Args::None,
+                cancel: &CancellationToken::never(),
+                scope_resolver: None,
+                path: None,
+                syntax: None,
+                last_find: None,
+                fold_resolver: None,
+                last_search: None,
+                marks: None,
+                viewport: Some(&window as &dyn crate::registry::ViewportResolver),
+                nostartofline: false,
+                curswant: None,
+                display: None,
+                scrolloff,
+                operator_pending,
+            };
+            motion_viewport(&ctx, pos).unwrap().target.line
+        };
+
+        assert_eq!(motion(Top, 3, false), 47, "`H` stops 3 inside the top");
+        assert_eq!(
+            motion(Bottom, 3, false),
+            51,
+            "`L` stops 3 inside the bottom"
+        );
+        assert_eq!(motion(Top, 0, false), 44, "`scrolloff=0` reaches the edge");
+        assert_eq!(motion(Bottom, 0, false), 54);
+        // `:h H`: not adjusted under a pending operator, so `dH` deletes to
+        // the window's real top edge.
+        assert_eq!(motion(Top, 3, true), 44, "an operator target is unadjusted");
+        assert_eq!(motion(Bottom, 3, true), 54);
+
+        // A window at the file's edges: nothing above line 0 to keep in view,
+        // and nothing below the last line.
+        let top_of_file = shown(0, 11);
+        let ctx_at = |window: &crate::registry::ShownLines, pos| {
+            let ctx = MotionContext {
+                buffer: doc.buffer(),
+                buffer_id: lattice_core::BufferId(0),
+                from: Position::new(5, 0),
+                count: Count::default(),
+                has_explicit_count: false,
+                args: crate::args::Args::None,
+                cancel: &CancellationToken::never(),
+                scope_resolver: None,
+                path: None,
+                syntax: None,
+                last_find: None,
+                fold_resolver: None,
+                last_search: None,
+                marks: None,
+                viewport: Some(window as &dyn crate::registry::ViewportResolver),
+                nostartofline: false,
+                curswant: None,
+                display: None,
+                scrolloff: 3,
+                operator_pending: false,
+            };
+            motion_viewport(&ctx, pos).unwrap().target.line
+        };
+        assert_eq!(ctx_at(&top_of_file, Top), 0, "`H` on the file's first line");
+        // The window's bottom IS the last line (the fixture's trailing newline
+        // makes 99 the last addressable one).
+        let end_of_file = shown(89, 11);
+        assert_eq!(
+            ctx_at(&end_of_file, Bottom),
+            99,
+            "`L` on the file's last line"
+        );
     }
 
     fn viewport_effect(nostartofline: bool, with_window: bool) -> Result<Effect, CommandError> {

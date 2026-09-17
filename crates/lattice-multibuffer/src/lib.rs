@@ -2370,6 +2370,7 @@ impl MultibufferDocumentHandle {
             marks,
             viewport,
             nostartofline,
+            scrolloff,
             curswant,
             display,
             curswant_out,
@@ -2494,6 +2495,9 @@ impl MultibufferDocumentHandle {
                 marks: marks.as_deref().map(|m| m as _),
                 viewport: viewport.as_deref().map(|v| v as _),
                 nostartofline,
+                // VM.3f: forwarded, like `nostartofline` — `H` / `L` in a
+                // composed view keep the same margin they do anywhere else.
+                scrolloff,
                 curswant,
                 display: display.as_deref().map(|d| d as _),
                 // VM.3g-3: forwarded, like `curswant` and `display` above —

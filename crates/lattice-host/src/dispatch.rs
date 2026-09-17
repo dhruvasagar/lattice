@@ -21347,6 +21347,8 @@ impl Editor {
                 }),
                 viewport,
                 nostartofline: !self.option_cache.startofline,
+                // VM.3f: `H` / `L` keep this margin from the window's edges.
+                scrolloff: self.option_cache.scrolloff,
                 curswant: self.curswant,
                 display,
                 // VM.3g-3: the slot `gj` / `gk` report their unclamped aim
@@ -44522,6 +44524,7 @@ impl Editor {
                 .as_ref()
                 .map(|s| s as &dyn lattice_grammar::ViewportResolver),
             nostartofline: !self.option_cache.startofline,
+            scrolloff: self.option_cache.scrolloff,
             curswant: self.curswant,
             // VM.3g-2: `:help` and the dashboard wrap too.
             display: display_geom

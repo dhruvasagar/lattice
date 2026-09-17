@@ -166,6 +166,9 @@ pub struct DispatchEnv {
     pub viewport: Option<ViewportResolverHandle>,
     /// VM.3f: `!startofline` — `H` / `M` / `L` keep the cursor's column.
     pub nostartofline: bool,
+    /// VM.3f: `scrolloff`, the margin `H` / `L` stop short of the window's
+    /// edges by. `0` puts them on the first and last lines shown.
+    pub scrolloff: u32,
     /// VM.3g-1: vim's `curswant`, the column `j` / `k` aim for across short
     /// lines. Carried like every other keystroke input: `j` comes through the
     /// actor on every press.

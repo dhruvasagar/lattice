@@ -278,6 +278,7 @@ impl DocumentActor {
                     marks: env.marks.as_deref().map(|m| m as _),
                     viewport: env.viewport.as_deref().map(|v| v as _),
                     nostartofline: env.nostartofline,
+                    scrolloff: env.scrolloff,
                     curswant: env.curswant,
                     display: env.display.as_deref().map(|d| d as _),
                     // VM.3g-3: borrowed back out of the owned slot, the same

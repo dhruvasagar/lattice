@@ -44565,7 +44565,7 @@ impl Editor {
                 .map(|d| d as &dyn lattice_grammar::DisplayResolver),
             ..Default::default()
         };
-        match lattice_grammar::execute_motion_only(
+        match lattice_grammar::execute_motion_only_reporting(
             &reg,
             &buffer,
             self.document_buffer_id,
@@ -44574,11 +44574,21 @@ impl Editor {
             &cancel,
             env,
         ) {
-            Ok(target) => {
+            Ok((target, notice)) => {
                 if is_jump_motion {
                     self.push_position_history(jump_from, PositionSource::AutoJump);
                 }
                 self.cursor = target;
+                // VM.3d-2: a wrapping `n` says so here too. The document path
+                // gets this as an `Effect::Echo` beside the motion; this
+                // runner resolves a bare position, so it echoes the notice
+                // itself — one wording, from `notice_text`.
+                if let Some(notice) = notice {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        lattice_grammar::notice_text(notice).to_string(),
+                    );
+                }
             }
             Err(lattice_grammar::error::CommandError::User(message)) => {
                 self.set_message(EchoLevel::Error, message);

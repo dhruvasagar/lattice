@@ -5879,7 +5879,6 @@ does not bury it; each line names where the detail lives.
 - **Vim-parity follow-ups** (from `visual-motions`, see
   [`slice-plans/archive/visual-motions.md`](slice-plans/archive/visual-motions.md)):
   - `scroll` is global here, window-local in vim; needs window-local options (VM.3j-3).
-  - The search-wrap echo is not shown in read-only buffers such as `:help` (VM.3d-2).
   - `zfk` from column 0: probably fixed by VM.3L's linewise targets, but no
     test pins it; `d<C-d>` doing nothing is likewise untested (VM.3h, VM.3j-2).
 

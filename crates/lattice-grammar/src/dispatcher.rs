@@ -172,6 +172,26 @@ pub fn execute_motion_only(
     cancel: &CancellationToken,
     env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<Position> {
+    execute_motion_only_reporting(registry, buffer, buffer_id, cursor, invocation, cancel, env)
+        .map(|(target, _)| target)
+}
+
+/// VM.3d-2: [`execute_motion_only`], also reporting the motion's notice.
+///
+/// A wrapping `n` says "search hit BOTTOM, continuing at TOP" in a document,
+/// because `execute_with_env` turns the notice into an `Effect::Echo`. The
+/// read-only path returned a bare `Position`, so the notice was dropped and
+/// the same keystroke in `:help` or the dashboard wrapped in silence. Callers
+/// that do not care keep using [`execute_motion_only`].
+pub fn execute_motion_only_reporting(
+    registry: &CommandRegistry,
+    buffer: &Buffer,
+    buffer_id: BufferId,
+    cursor: Position,
+    invocation: CommandInvocation,
+    cancel: &CancellationToken,
+    env: crate::registry::GrammarEnv<'_>,
+) -> GrammarResult<(Position, Option<crate::registry::MotionNotice>)> {
     cancel.check()?;
     let entry = registry
         .entry(invocation.command)
@@ -208,7 +228,7 @@ pub fn execute_motion_only(
         operator_pending: false,
     };
     let result = (motion.apply)(&ctx)?;
-    Ok(result.target)
+    Ok((result.target, result.notice))
 }
 
 fn execute_ex_command(
@@ -299,6 +319,16 @@ fn execute_motion(
     ))
 }
 
+/// VM.3d-2: what a motion's notice says. One wording for both peers — the
+/// document path (an `Effect::Echo` beside the motion) and the read-only one
+/// (the host echoes it itself), which would otherwise drift.
+pub fn notice_text(notice: crate::registry::MotionNotice) -> &'static str {
+    match notice {
+        crate::registry::MotionNotice::SearchHitBottom => "search hit BOTTOM, continuing at TOP",
+        crate::registry::MotionNotice::SearchHitTop => "search hit TOP, continuing at BOTTOM",
+    }
+}
+
 /// VM.3d-2: attach a motion's notice to the effect it produced, as an
 /// `Effect::Echo` alongside it. `None` returns the effect untouched, so every
 /// motion without a notice produces exactly the effect it always did.
@@ -306,10 +336,7 @@ fn with_notice(effect: Effect, notice: Option<crate::registry::MotionNotice>) ->
     let Some(notice) = notice else {
         return effect;
     };
-    let text = match notice {
-        crate::registry::MotionNotice::SearchHitBottom => "search hit BOTTOM, continuing at TOP",
-        crate::registry::MotionNotice::SearchHitTop => "search hit TOP, continuing at BOTTOM",
-    };
+    let text = notice_text(notice);
     Effect::Many(vec![
         effect,
         Effect::Echo {

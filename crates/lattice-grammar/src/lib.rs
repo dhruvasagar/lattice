@@ -51,7 +51,9 @@ pub use crate::cancel::{CancellationToken, CheckCancelled};
 pub use crate::command::{
     CommandInvocation, CommandKind, CommandSpec, Count, LatencyClass, kind_icon,
 };
-pub use crate::dispatcher::{execute, execute_motion_only, execute_with_env};
+pub use crate::dispatcher::{
+    execute, execute_motion_only, execute_motion_only_reporting, execute_with_env, notice_text,
+};
 pub use crate::effect::{
     EchoLevel, Effect, FileAnchor, LspRequest, QuitScope, SubstituteScope, Utf16Pos, YankKind,
 };

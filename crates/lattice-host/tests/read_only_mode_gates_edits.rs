@@ -263,3 +263,38 @@ fn the_refusal_reaches_the_echo_area() {
         "the user must be told why the keystroke did nothing; echo was {message:?}"
     );
 }
+
+/// VM.3d-2: a wrapping `n` says so in a READ-ONLY buffer too.
+///
+/// The notice rides an `Effect::Echo` beside the motion on the document path,
+/// but a read-only buffer resolves motions through `run_read_only_motion`,
+/// which took a bare `Position` and dropped it. So `n` in `:help`, the
+/// dashboard or magit wrapped to the top in silence — the one case where the
+/// message is most wanted, because nothing else on screen says the search
+/// started over.
+#[test]
+fn a_wrapping_search_says_so_in_a_read_only_buffer() {
+    let (mut editor, buffer) = boot_plain();
+    editor.activate_minor_by_id(buffer, ReadOnlyMode::mode_id());
+    editor.last_search = Some(lattice_host::state::LastSearch {
+        pattern: "alpha".to_string(),
+        direction: lattice_grammar::SearchDirection::Forward,
+    });
+    // Past the only match, so `n` has to wrap to find it.
+    editor.cursor = lattice_protocol::position::Position::new(2, 0);
+    editor.last_message = None;
+
+    press(&mut editor, &[KeyChord::char('n')]);
+
+    assert_eq!(
+        editor.cursor,
+        lattice_protocol::position::Position::new(0, 0),
+        "`n` wrapped to the match at the top"
+    );
+    let message = editor
+        .last_message
+        .as_ref()
+        .map(|m| m.text.clone())
+        .unwrap_or_default();
+    assert_eq!(message, "search hit BOTTOM, continuing at TOP");
+}

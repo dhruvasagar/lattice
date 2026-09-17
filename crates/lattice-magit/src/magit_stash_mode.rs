@@ -122,7 +122,7 @@ fn run_on_stash(
             verb.to_string(),
             format!("stash@{{{idx}}}"),
         ],
-        verb,
+        &format!("{verb} stash@{{{idx}}}"),
     ))
 }
 

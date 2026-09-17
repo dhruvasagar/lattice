@@ -154,7 +154,12 @@ pub(crate) fn set(workdir: std::path::PathBuf, key: &str, value: &str) -> lattic
     } else {
         vec!["config".to_string(), key.to_string(), value.to_string()]
     };
-    let effect = crate::magit_global_mode::spawn_git(workdir.clone(), argv, "git config");
+    let label = if value.is_empty() {
+        format!("unset {key}")
+    } else {
+        format!("set {key} to {value}")
+    };
+    let effect = crate::magit_global_mode::spawn_git(workdir.clone(), argv, &label);
     // Re-read THAT repository: the write and the read-back must be the
     // same one, which is the whole reason the cache is keyed now.
     refresh(workdir);

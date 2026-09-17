@@ -1328,7 +1328,13 @@ fn register_ex_commands(
             "name",
             "Tag name",
             "action:magit-global-tag-finish",
-            |wd, name| magit_global_mode::spawn_git(wd, magit_global_mode::tag_argv(&name), "tag"),
+            |wd, name| {
+                magit_global_mode::spawn_git(
+                    wd,
+                    magit_global_mode::tag_argv(&name),
+                    &format!("tag HEAD as {name}"),
+                )
+            },
         );
         mk_prompted(
             "magit-merge",
@@ -1337,7 +1343,11 @@ fn register_ex_commands(
             "Merge branch",
             "action:magit-global-merge-finish",
             |wd, branch| {
-                magit_global_mode::spawn_git(wd, magit_global_mode::merge_argv(&branch), "merge")
+                magit_global_mode::spawn_git(
+                    wd,
+                    magit_global_mode::merge_argv(&branch),
+                    &magit_global_mode::merge_label("merge", &branch),
+                )
             },
         );
         // MG.41e: merge / tag variants. Same prompt-then-finish shape
@@ -1352,7 +1362,7 @@ fn register_ex_commands(
                 magit_global_mode::spawn_git(
                     wd,
                     magit_global_mode::merge_no_commit_argv(&branch),
-                    "merge --no-commit",
+                    &magit_global_mode::merge_label("no-commit", &branch),
                 )
             },
         );
@@ -1366,7 +1376,7 @@ fn register_ex_commands(
                 magit_global_mode::spawn_git(
                     wd,
                     magit_global_mode::merge_squash_argv(&branch),
-                    "merge --squash",
+                    &magit_global_mode::merge_label("squash", &branch),
                 )
             },
         );
@@ -1380,7 +1390,7 @@ fn register_ex_commands(
                 magit_global_mode::spawn_git(
                     wd,
                     magit_global_mode::tag_delete_argv(&name),
-                    "tag -d",
+                    &format!("delete tag {name}"),
                 )
             },
         );
@@ -1390,7 +1400,13 @@ fn register_ex_commands(
             "directory",
             "Initialize repository in",
             "action:magit-global-init-finish",
-            |wd, dir| magit_global_mode::spawn_git(wd, magit_global_mode::init_argv(&dir), "init"),
+            |wd, dir| {
+                magit_global_mode::spawn_git(
+                    wd,
+                    magit_global_mode::init_argv(&dir),
+                    &format!("create a repository in {dir}"),
+                )
+            },
         );
         mk_prompted(
             "magit-gitignore",
@@ -1623,7 +1639,7 @@ fn register_ex_commands(
                                     verb.to_string(),
                                     format!("stash@{{{idx}}}"),
                                 ],
-                                verb,
+                                &format!("{verb} stash@{{{idx}}}"),
                             ))
                         })
                     },
@@ -1698,17 +1714,15 @@ fn register_ex_commands(
     {
         // MG.43c: the rebase todo rows' scriptable halves, and the
         // targets of their picker fallbacks (`<ex-command> <sha>`).
-        for (name, verb, label, doc) in [
+        for (name, verb, doc) in [
             (
                 "magit-rebase-edit-commit",
                 "edit",
-                "rebase edit a commit",
                 "Replay history, stopping at the named commit. With no argument: pick one.",
             ),
             (
                 "magit-rebase-remove-commit",
                 "drop",
-                "rebase remove a commit",
                 "Replay history without the named commit. With no argument: pick one.",
             ),
         ] {
@@ -1739,7 +1753,6 @@ fn register_ex_commands(
                             };
                             Ok(magit_global_mode::spawn_rebase_verb(
                                 repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
-                                label,
                                 verb,
                                 &commit,
                             ))
@@ -1894,8 +1907,8 @@ fn register_ex_commands(
                         }
                         Ok(magit_global_mode::spawn_git(
                             repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
-                            vec!["checkout".to_string(), name],
-                            "checkout",
+                            vec!["checkout".to_string(), name.clone()],
+                            &format!("check out {name}"),
                         ))
                     })
                 },
@@ -1929,42 +1942,42 @@ fn register_ex_commands(
                 "magit-merge",
                 "Merge a branch into the current one: `<branch>`.",
                 magit_global_mode::merge_argv,
-                "merge",
+                "merge {}",
                 false,
             ),
             (
                 "magit-merge-no-commit",
                 "Merge a branch but stop before committing: `<branch>`.",
                 magit_global_mode::merge_no_commit_argv,
-                "merge --no-commit",
+                "merge {} without committing",
                 false,
             ),
             (
                 "magit-merge-squash",
                 "Squash a branch's changes into the working tree: `<branch>`.",
                 magit_global_mode::merge_squash_argv,
-                "merge --squash",
+                "squash {} into the index",
                 false,
             ),
             (
                 "magit-rebase-onto",
                 "Rebase the current branch onto another: `<branch>`.",
                 magit_global_mode::rebase_onto_argv,
-                "rebase",
+                "rebase onto {}",
                 false,
             ),
             (
                 "magit-rebase-autosquash",
                 "Rebase interactively with --autosquash onto: `<branch>`.",
                 magit_global_mode::rebase_autosquash_argv,
-                "rebase --autosquash",
+                "autosquash the commits after {}",
                 false,
             ),
             (
                 "magit-branch-reset",
                 "Reset the current branch to another: `<branch>` (hard).",
                 magit_global_mode::merge_argv, // unused — `confirms` diverts
-                "reset",
+                "hard-reset the branch to {}",
                 true,
             ),
         ];
@@ -2007,7 +2020,8 @@ fn register_ex_commands(
                                 magit_global_mode::spawn_git(
                                     repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
                                     argv(&b),
-                                    what,
+                                    // NC.4: a template naming the branch.
+                                    &what.replace("{}", &b),
                                 )
                             })
                         })
@@ -2082,7 +2096,7 @@ fn register_ex_commands(
                             Ok(match name {
                                 "magit-merge-absorb" => magit_global_mode::spawn_git_sequence(
                                     repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
-                                    "merge and delete",
+                                    format!("merge {b} and delete it"),
                                     magit_global_mode::merge_absorb_steps(&b),
                                 ),
                                 // No git call: the merge runs when the
@@ -2114,7 +2128,7 @@ fn register_ex_commands(
                                     },
                                     Some(current) => magit_global_mode::spawn_git_sequence(
                                         repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
-                                        "merge into",
+                                        format!("merge {current} into {b} and delete it"),
                                         magit_global_mode::merge_into_steps(&current, &b),
                                     ),
                                 },
@@ -2143,13 +2157,13 @@ fn register_ex_commands(
                 "magit-tag-delete",
                 "Delete a tag: `<tag>`.",
                 magit_global_mode::tag_delete_argv,
-                "tag -d",
+                "delete tag {}",
             ),
             (
                 "magit-tag-prune",
                 "Prune tags gone from a remote: `<remote>`.",
                 magit_global_mode::tag_prune_argv,
-                "fetch --prune-tags",
+                "prune tags gone from {}",
             ),
         ];
         for (name, doc, argv, what) in REF_EX_COMMANDS {
@@ -2184,7 +2198,7 @@ fn register_ex_commands(
                             Ok(magit_global_mode::spawn_git(
                                 repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
                                 argv(&v),
-                                what,
+                                &what.replace("{}", &v),
                             ))
                         })
                     },
@@ -2435,8 +2449,8 @@ fn register_ex_commands(
                         ) {
                             Some(argv) => Ok(magit_global_mode::spawn_git(
                                 repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
-                                argv,
-                                "am",
+                                argv.clone(),
+                                &magit_global_mode::am_label(&argv),
                             )),
                             None => Ok(am_usage()),
                         }
@@ -2478,8 +2492,8 @@ fn register_ex_commands(
                         ) {
                             Some(argv) => Ok(magit_global_mode::spawn_git(
                                 repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
-                                argv,
-                                "format-patch",
+                                argv.clone(),
+                                &magit_global_mode::format_patch_label(&argv),
                             )),
                             None => Ok(format_patch_usage()),
                         }

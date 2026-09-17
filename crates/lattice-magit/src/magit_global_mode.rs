@@ -535,15 +535,19 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             });
         };
     }
-    snapshot_op!("action:magit-global-stash-snapshot", "stash snapshot", &[]);
+    snapshot_op!(
+        "action:magit-global-stash-snapshot",
+        "snapshot all changes into a stash",
+        &[]
+    );
     snapshot_op!(
         "action:magit-global-stash-snapshot-index",
-        "stash snapshot (index)",
+        "snapshot staged changes into a stash",
         &["--staged"]
     );
     snapshot_op!(
         "action:magit-global-stash-snapshot-worktree",
-        "stash snapshot (worktree)",
+        "snapshot unstaged changes into a stash",
         &["--keep-index"]
     );
     // MG.23b: the two repo-wide index rows magit puts on `S` / `U`.
@@ -651,7 +655,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 spawn_git(
                     crate::repo_scope::action_workdir(ctx),
                     tag_argv(name),
-                    "tag",
+                    &format!("tag HEAD as {name}"),
                 )
             })
         }),
@@ -687,7 +691,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(spawn_git(
                 crate::repo_scope::action_workdir(ctx),
                 untrack_argv(&rel.to_string_lossy()),
-                "untrack",
+                &format!("untrack {}", rel.display()),
             ))
         }),
     });
@@ -714,7 +718,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(spawn_git(
                 crate::repo_scope::action_workdir(ctx),
                 delete_argv(&path),
-                "delete",
+                &format!("delete {path}"),
             ))
         }),
     });
@@ -754,7 +758,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 spawn_git(
                     crate::repo_scope::action_workdir(ctx),
                     rename_argv(&from, &to),
-                    "rename",
+                    &format!("rename {from} to {to}"),
                 )
             })
         }),
@@ -821,7 +825,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(spawn_git(
                 crate::repo_scope::action_workdir(ctx),
                 checkout_file_argv(rev, path),
-                "checkout file",
+                &format!("restore {path} from {}", short_rev(rev)),
             ))
         }),
     });
@@ -852,7 +856,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 spawn_git(
                     crate::repo_scope::action_workdir(ctx),
                     init_argv(dir),
-                    "init",
+                    &format!("create a repository in {dir}"),
                 )
             })
         }),
@@ -962,11 +966,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     if branch.is_empty() {
                         return None;
                     }
-                    let shown = format!("{} {branch}", $label);
+                    let label = format!("{} {branch}", $label);
                     Some(spawn_computed(
                         crate::repo_scope::action_workdir(ctx),
-                        $label,
-                        shown,
+                        label.clone(),
+                        label,
                         move |wd| crate::cherry_move::branch_spinoff(wd, &branch, $checkout),
                     ))
                 }),
@@ -978,21 +982,21 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "action:magit-global-branch-spinoff-finish",
         "Spin off branch: ",
         true,
-        "branch spin-off"
+        "spin off new branch"
     );
     spinoff_op!(
         "action:magit-global-branch-spinout",
         "action:magit-global-branch-spinout-finish",
         "Spin out branch: ",
         false,
-        "branch spin-out"
+        "spin out new branch"
     );
 
     // MG.43d: the cherry-move rows. Each resolves a commit first (the
     // cursor, or a picker), stashes it, then prompts for the branch —
     // the same carry `two_input_op!` uses, and consumed the same way.
     macro_rules! cherry_move_finish {
-        ($finish:expr, $label:expr, $body:expr) => {
+        ($finish:expr, $label:literal, $body:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $finish,
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
@@ -1001,11 +1005,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     if branch.is_empty() {
                         return None;
                     }
-                    let shown = format!("{} {commit} -> {branch}", $label);
+                    let label = format!($label, commit = short_rev(&commit), branch = branch);
                     Some(spawn_computed(
                         crate::repo_scope::action_workdir(ctx),
-                        $label,
-                        shown,
+                        label.clone(),
+                        label,
                         move |wd| {
                             let f: fn(&std::path::Path, &str, &str) -> Result<(), String> = $body;
                             f(wd, &commit, &branch)
@@ -1017,7 +1021,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     }
     cherry_move_finish!(
         "action:magit-cherry-harvest-finish",
-        "cherry harvest",
+        "harvest {commit} from {branch}",
         |wd, commit, branch| {
             // Move it FROM `branch` onto the current one, and stay put.
             let current = crate::cherry_move::current_branch_of(wd)
@@ -1027,7 +1031,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     );
     cherry_move_finish!(
         "action:magit-cherry-donate-finish",
-        "cherry donate",
+        "donate {commit} to {branch}",
         |wd, commit, branch| {
             // Move it from the current branch onto `branch`, and stay
             // on the current one.
@@ -1038,7 +1042,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     );
     cherry_move_finish!(
         "action:magit-cherry-spinout-finish",
-        "cherry spin-out",
+        "spin {commit} out to new branch {branch}",
         |wd, commit, branch| {
             let current = crate::cherry_move::current_branch_of(wd)
                 .ok_or_else(|| "not on a branch".to_string())?;
@@ -1052,7 +1056,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     );
     cherry_move_finish!(
         "action:magit-cherry-spinoff-finish",
-        "cherry spin-off",
+        "spin {commit} off to new branch {branch}",
         |wd, commit, branch| {
             let current = crate::cherry_move::current_branch_of(wd)
                 .ok_or_else(|| "not on a branch".to_string())?;
@@ -1071,7 +1075,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     .iter()
                     .map(|s| s.to_string())
                     .collect(),
-                "fetch --recurse-submodules",
+                "fetch, including submodules",
             ))
         }),
     });
@@ -1117,7 +1121,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             }
             Some(spawn_git_sequence(
                 crate::repo_scope::action_workdir(ctx),
-                "merge into",
+                format!("merge {current} into {target} and delete it"),
                 merge_into_steps(&current, &target),
             ))
         }),
@@ -1144,7 +1148,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // MG.42-E3: two-input operations. The first prompt's finish opens
     // the second; the second builds the argv from both.
     macro_rules! two_input_op {
-        ($entry:expr, $p1:expr, $mid:expr, $p2:expr, $finish:expr, $argv:expr, $what:expr) => {
+        ($entry:expr, $p1:expr, $mid:expr, $p2:expr, $finish:expr, $argv:expr, $label:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $entry,
                 handler: Arc::new(|_ctx: &ActionContext<'_>| Some(prompt_for($p1, $mid))),
@@ -1174,10 +1178,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     if second.is_empty() {
                         return None;
                     }
+                    let label: fn(&str, &str) -> String = $label;
                     Some(spawn_git(
                         crate::repo_scope::action_workdir(ctx),
                         $argv(&first, second),
-                        $what,
+                        &label(&first, second),
                     ))
                 }),
             });
@@ -1190,7 +1195,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "File path: ",
         "action:magit-global-reset-file-finish",
         reset_file_argv,
-        "reset a file"
+        |commit, path| format!("restore {path} from {}", short_rev(commit))
     );
     // MG.43b: rebase `s` — a subset onto a new base. Two refs, and
     // the order is load-bearing (see `rebase_subset_argv`).
@@ -1201,7 +1206,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "Commits after (upstream): ",
         "action:magit-global-rebase-subset-finish",
         rebase_subset_argv,
-        "rebase --onto"
+        |base, upstream| format!("rebase the commits after {upstream} onto {base}")
     );
     // MG.43e: tag `r` release — annotated, so two inputs.
     two_input_op!(
@@ -1211,7 +1216,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "Tag message: ",
         "action:magit-global-tag-release-finish",
         tag_release_argv,
-        "tag -a"
+        |name, _message| format!("create release tag {name}")
     );
     two_input_op!(
         "action:magit-global-stash-branch",
@@ -1220,7 +1225,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "Stash (e.g. stash@{0}): ",
         "action:magit-global-stash-branch-finish",
         stash_branch_argv,
-        "stash branch"
+        |branch, stash| format!("create branch {branch} from {stash}")
     );
 
     // MG.43g: magit's `C` configure rows. One prompt-then-write pair
@@ -1320,12 +1325,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     rebase_onto!(
         "action:magit-global-rebase-onto-push",
         "@{push}",
-        "rebase onto @{push}"
+        "rebase onto the push branch"
     );
     rebase_onto!(
         "action:magit-global-rebase-onto-upstream",
         "@{upstream}",
-        "rebase onto @{upstream}"
+        "rebase onto the upstream"
     );
 
     // MG.43a: magit's commit `e` — add what is staged to the last
@@ -1344,7 +1349,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     .iter()
                     .map(|s| s.to_string())
                     .collect(),
-                "commit --amend --no-edit",
+                "extend the last commit",
             ))
         }),
     });
@@ -1391,7 +1396,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             Some(spawn_git(
                 crate::repo_scope::action_workdir(ctx),
                 vec!["reset".to_string(), "--hard".to_string(), target.clone()],
-                "branch reset",
+                &format!("hard-reset the branch to {}", short_rev(&target)),
             ))
         }),
     });
@@ -1434,7 +1439,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 spawn_git(
                     crate::repo_scope::action_workdir(ctx),
                     merge_argv(branch),
-                    "merge",
+                    &merge_label("merge", branch),
                 )
             })
         }),
@@ -1884,8 +1889,8 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             };
             Some(spawn_git(
                 crate::repo_scope::action_workdir(ctx),
-                argv,
-                "am",
+                argv.clone(),
+                &am_label(&argv),
             ))
         }),
     });
@@ -1918,8 +1923,8 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             };
             Some(spawn_git(
                 crate::repo_scope::action_workdir(ctx),
-                argv,
-                "format-patch",
+                argv.clone(),
+                &format_patch_label(&argv),
             ))
         }),
     });
@@ -3122,7 +3127,9 @@ impl RemoteOp {
         // `origin main` is how an upstream resolves; `origin/main` is
         // how people say it.
         let dest = match rest.as_slice() {
-            [remote, branch] if !remote.contains(['/', ':']) && !branch.contains(':') => format!("{remote}/{branch}"),
+            [remote, branch] if !remote.contains(['/', ':']) && !branch.contains(':') => {
+                format!("{remote}/{branch}")
+            }
             other => other.join(" "),
         };
         let mut label = match self.args.first().copied() {
@@ -3457,13 +3464,14 @@ pub struct GitStep {
 ///    notification surface becomes noise.
 pub fn spawn_git_sequence(
     workdir: std::path::PathBuf,
-    label: &'static str,
+    label: impl Into<String>,
     steps: Vec<GitStep>,
 ) -> Effect {
+    let label = label.into();
     let shown = steps
         .first()
         .map(|s| format!("git {}", s.argv.join(" ")))
-        .unwrap_or_else(|| label.to_string());
+        .unwrap_or_else(|| label.clone());
     let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
@@ -3481,7 +3489,7 @@ pub fn spawn_git_sequence(
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(&scope_dir, label, result);
+        finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3493,22 +3501,28 @@ pub fn spawn_git_sequence(
 ///
 /// `message` is `Some` only for `reword`, where it is what git's
 /// reword step writes — see `run_rebase_with_message`.
-pub fn spawn_rebase_verb(
-    workdir: std::path::PathBuf,
-    label: &'static str,
-    verb: &'static str,
-    commit: &str,
-) -> Effect {
-    spawn_rebase_verb_with(workdir, label, verb, commit, None)
+pub fn spawn_rebase_verb(workdir: std::path::PathBuf, verb: &'static str, commit: &str) -> Effect {
+    spawn_rebase_verb_with(workdir, verb, commit, None)
+}
+
+/// NC.4: what a one-commit rebase does, naming the commit.
+pub(crate) fn rebase_verb_label(verb: &str, commit: &str) -> String {
+    let commit = short_rev(commit);
+    match verb {
+        "edit" => format!("stop at {commit} to edit it"),
+        "drop" => format!("drop {commit} from history"),
+        "reword" => format!("reword {commit}"),
+        other => format!("{other} {commit} in a rebase"),
+    }
 }
 
 pub fn spawn_rebase_verb_with(
     workdir: std::path::PathBuf,
-    label: &'static str,
     verb: &'static str,
     commit: &str,
     message: Option<String>,
 ) -> Effect {
+    let label = rebase_verb_label(verb, commit);
     let commit = commit.to_string();
     let shown = format!("git rebase ({verb} {commit})");
     let scope_dir = workdir.clone();
@@ -3519,7 +3533,7 @@ pub fn spawn_rebase_verb_with(
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(&scope_dir, label, result);
+        finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3536,12 +3550,7 @@ pub fn spawn_rebase_verb_with(
 /// actor thread would be git I/O on a keystroke, so the whole
 /// operation runs inside one `spawn_blocking` and reports once,
 /// exactly like a sequence does.
-pub fn spawn_computed<F>(
-    workdir: std::path::PathBuf,
-    label: &'static str,
-    shown: String,
-    f: F,
-) -> Effect
+pub fn spawn_computed<F>(workdir: std::path::PathBuf, label: String, shown: String, f: F) -> Effect
 where
     F: FnOnce(&std::path::Path) -> Result<(), String> + Send + 'static,
 {
@@ -3550,7 +3559,7 @@ where
         let result = tokio::task::spawn_blocking(move || f(&workdir).map(|()| String::new()))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(&scope_dir, label, result);
+        finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3745,15 +3754,19 @@ pub fn spawn_subtree_op(workdir: std::path::PathBuf, op: SubtreeOp, line: &str) 
         };
     };
     let what = op.what;
-    let shown = argv.join(" ");
+    // NC.4: name the subtree — `--prefix=<dir>` is always argv[2].
+    let prefix = argv
+        .get(2)
+        .and_then(|a| a.strip_prefix("--prefix="))
+        .unwrap_or_default();
+    let label = format!("{} subtree {prefix}", op.sub);
     let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: publish rather than hold a notification handle.
-        let _ = shown;
-        finish_task(&scope_dir, what, result);
+        finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3799,7 +3812,7 @@ pub(crate) fn spawn_note_remove(workdir: std::path::PathBuf, commit: String) -> 
             "--ignore-missing".to_string(),
             commit.clone(),
         ],
-        "notes remove",
+        &format!("remove the note on {}", short_rev(&commit)),
     )
 }
 
@@ -3814,6 +3827,10 @@ pub(crate) fn spawn_note_prune(workdir: std::path::PathBuf) -> Effect {
 
 /// Merge a notes ref into the current one.
 pub(crate) fn spawn_note_merge(workdir: std::path::PathBuf, spec: &str) -> Effect {
+    let label = format!(
+        "merge notes from {}",
+        spec.split_whitespace().next().unwrap_or(spec)
+    );
     let Some(argv) = note_merge_argv(spec) else {
         return Effect::Echo {
             level: lattice_grammar::EchoLevel::Error,
@@ -3826,7 +3843,7 @@ pub(crate) fn spawn_note_merge(workdir: std::path::PathBuf, spec: &str) -> Effec
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: publish rather than post.
-        finish_task(&scope_dir, "notes merge", result);
+        finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3886,7 +3903,7 @@ pub(crate) fn default_clone_dest(url: &str) -> String {
 /// between a documented limit and a user concluding the clone failed.
 pub fn spawn_clone(url: String, dest: String) -> Effect {
     let argv = clone_argv(&url, &dest);
-    let _shown = dest.clone();
+    let label = format!("clone into {dest}");
     let scope_dir = std::path::PathBuf::from(&dest);
     tokio::task::spawn(async move {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -3894,7 +3911,7 @@ pub fn spawn_clone(url: String, dest: String) -> Effect {
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: publish rather than post.
-        finish_task(&scope_dir, "clone", result);
+        finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3915,6 +3932,7 @@ pub fn spawn_clone(url: String, dest: String) -> Effect {
 /// duplicate.
 pub fn spawn_gitignore(workdir: std::path::PathBuf, pattern: String) -> Effect {
     let shown = pattern.clone();
+    let label = format!("ignore {pattern}");
     let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
@@ -3928,15 +3946,15 @@ pub fn spawn_gitignore(workdir: std::path::PathBuf, pattern: String) -> Effect {
             let path = workdir.join(".gitignore");
             let existing = std::fs::read_to_string(&path).unwrap_or_default();
             let Some(out) = gitignore_append(&existing, &pattern) else {
-                return Ok(format!("{pattern} was already ignored"));
+                return Ok("it was already ignored".to_string());
             };
             std::fs::write(&path, out).map_err(|e| e.to_string())?;
-            Ok(format!("ignoring {pattern}"))
+            Ok(String::new())
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: was log-only.
-        finish_task(&scope_dir, "update .gitignore", result);
+        finish_task(&scope_dir, &label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -4042,21 +4060,45 @@ fn spawn_bisect(
                 ))),
             })
             .await;
-        match outcome {
-            // MG.41g: bisect marks check out a different commit — a
-            // completion the user very much wants to see.
-            Ok(Ok(())) => finish_task(&workdir, &format!("bisect {what}"), Ok(String::new())),
-            Ok(Err(e)) => finish_task(&workdir, &format!("bisect {what}"), Err(e.to_string())),
-            Err(e) => finish_task(
-                &workdir,
-                &format!("bisect {what}"),
-                Err(format!("panicked: {e}")),
-            ),
-        }
+        // MG.41g: bisect marks check out a different commit — a
+        // completion the user very much wants to see. NC.4: and the
+        // commit it checked out is the news, so the summary names it.
+        let label = bisect_label(what);
+        let result = match outcome {
+            Ok(Ok(())) if what == "reset" => Ok(String::new()),
+            Ok(Ok(())) => Ok(head_summary(&workdir)
+                .map(|head| format!("now at {head}"))
+                .unwrap_or_default()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(e) => Err(format!("panicked: {e}")),
+        };
+        finish_task(&workdir, &label, result);
         for view in views.all() {
             let _ = view.refresh();
         }
     });
+}
+
+/// NC.4: what each bisect step does, as a user says it.
+fn bisect_label(what: &str) -> String {
+    match what {
+        "start" => "start bisecting".to_string(),
+        "reset" => "end the bisect".to_string(),
+        mark => format!("mark the bisect commit {mark}"),
+    }
+}
+
+/// `HEAD` as a notification names it: short sha and subject. Runs on
+/// the caller's thread — called from a spawned task, never the actor.
+fn head_summary(workdir: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%h %s"])
+        .current_dir(workdir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!line.is_empty()).then_some(line)
 }
 
 fn path_from_prompt_buffer_name(buffer_name: &str, prefix: &str) -> Option<String> {
@@ -4086,6 +4128,37 @@ pub(crate) fn init_argv(dir: &str) -> Vec<String> {
 /// `$EDITOR` for the merge message, and inside lattice that is a wait
 /// on a prompt that never appears — a hang `Command::output()` cannot
 /// recover from.
+/// NC.4: the label for each merge flavour, naming the branch. The
+/// flavours leave the repository in different states, so they must not
+/// read alike.
+pub(crate) fn merge_label(kind: &str, branch: &str) -> String {
+    match kind {
+        "no-commit" => format!("merge {branch} without committing"),
+        "squash" => format!("squash {branch} into the index"),
+        _ => format!("merge {branch}"),
+    }
+}
+
+/// NC.4: `am`'s label, from its argv — the patches it was given.
+pub(crate) fn am_label(argv: &[String]) -> String {
+    let files: Vec<&str> = argv
+        .iter()
+        .skip(1)
+        .map(String::as_str)
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    match files.as_slice() {
+        [one] => format!("apply patch {one}"),
+        many => format!("apply {} patches", many.len()),
+    }
+}
+
+/// NC.4: `format-patch`'s label, from its argv — the range written.
+pub(crate) fn format_patch_label(argv: &[String]) -> String {
+    let range = argv.last().map(String::as_str).unwrap_or_default();
+    format!("write patches for {range}")
+}
+
 pub(crate) fn merge_argv(branch: &str) -> Vec<String> {
     vec!["merge".into(), "--no-edit".into(), branch.to_string()]
 }
@@ -5997,6 +6070,59 @@ mod task_labels {
             assert!(!op.label.contains("--"), "`{}` reads like a flag", op.label);
             assert!(seen.insert(op.label), "`{}` is shared", op.label);
         }
+    }
+
+    /// NC.4b: the merge flavours leave the repository in different
+    /// states, so each names the branch and none reads like another.
+    #[test]
+    fn merge_flavours_read_differently() {
+        use super::merge_label;
+        let labels = [
+            merge_label("merge", "feature"),
+            merge_label("no-commit", "feature"),
+            merge_label("squash", "feature"),
+        ];
+        assert!(labels.iter().all(|l| l.contains("feature")), "{labels:?}");
+        assert_eq!(
+            labels
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn patch_labels_name_what_they_touch() {
+        use super::{am_label, format_patch_label};
+        assert_eq!(
+            am_label(&argv(&["am", "--3way", "0001-fix.patch"])),
+            "apply patch 0001-fix.patch"
+        );
+        assert_eq!(
+            am_label(&argv(&["am", "a.patch", "b.patch"])),
+            "apply 2 patches"
+        );
+        assert_eq!(
+            format_patch_label(&argv(&["format-patch", "-o", "/r", "main..feature"])),
+            "write patches for main..feature"
+        );
+    }
+
+    #[test]
+    fn a_one_commit_rebase_names_the_commit_and_the_verb() {
+        use super::rebase_verb_label;
+        let sha = "3f2a1c09b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3";
+        assert_eq!(rebase_verb_label("edit", sha), "stop at 3f2a1c0 to edit it");
+        assert_eq!(rebase_verb_label("drop", sha), "drop 3f2a1c0 from history");
+    }
+
+    #[test]
+    fn bisect_steps_read_as_steps() {
+        use super::bisect_label;
+        assert_eq!(bisect_label("good"), "mark the bisect commit good");
+        assert_eq!(bisect_label("start"), "start bisecting");
+        assert_eq!(bisect_label("reset"), "end the bisect");
     }
 
     #[test]

@@ -292,7 +292,6 @@ fn commit_op(
 fn rebase_verb_op(
     action_name: &'static str,
     verb: &'static str,
-    label: &'static str,
     ex_command: &'static str,
 ) -> lattice_mode::ActionHandlerContribution {
     lattice_mode::ActionHandlerContribution {
@@ -310,7 +309,6 @@ fn rebase_verb_op(
             };
             Some(crate::magit_global_mode::spawn_rebase_verb(
                 crate::repo_scope::action_workdir(ctx),
-                label,
                 verb,
                 &commit,
             ))
@@ -375,7 +373,7 @@ fn commit_sequence_op(
             };
             Some(crate::magit_global_mode::spawn_git_sequence(
                 crate::repo_scope::action_workdir(ctx),
-                label,
+                format!("{label} {}", crate::magit_global_mode::short_rev(&commit)),
                 steps(&commit),
             ))
         }),
@@ -1514,13 +1512,11 @@ impl Mode for MagitCoreMode {
             rebase_verb_op(
                 "action:magit-rebase-edit-commit",
                 "edit",
-                "rebase edit a commit",
                 "magit-rebase-edit-commit",
             ),
             rebase_verb_op(
                 "action:magit-rebase-remove-commit",
                 "drop",
-                "rebase remove a commit",
                 "magit-rebase-remove-commit",
             ),
             // MG.43c: `w` needs a message, so it opens the compose
@@ -1622,13 +1618,13 @@ impl Mode for MagitCoreMode {
             commit_sequence_op(
                 "action:magit-commit-instant-fixup",
                 "magit-commit-instant-fixup",
-                "instant fixup",
+                "fold a fixup into",
                 |c| crate::magit_global_mode::instant_squash_steps("fixup", c),
             ),
             commit_sequence_op(
                 "action:magit-commit-instant-squash",
                 "magit-commit-instant-squash",
-                "instant squash",
+                "fold a squash into",
                 |c| crate::magit_global_mode::instant_squash_steps("squash", c),
             ),
             // The execute half of reset --hard, reached only through

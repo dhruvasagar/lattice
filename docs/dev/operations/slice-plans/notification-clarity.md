@@ -22,7 +22,7 @@ Built on NOTIF.1a–f. The reported gap had two halves:
 | NC.1 | `NotificationLevel::Success`; one shared `glyph(nerd_fonts)` for the TUI, GPUI and the `*notifications*` buffer; theme-sourced colours in both peers; the buffer re-renders on a `ui.nerd_fonts` flip | ✅ |
 | NC.2 | `scope` on `Event::BackgroundTaskFinished` + a `Stopped` outcome; the notification lays out `<icon> <scope> · <text>`; magit passes the repository name | ✅ |
 | NC.3 | Pick the line that matters: failures prefer `error:` / `fatal:` / `!` / `CONFLICT` and fall back to stdout; push / fetch / pull get their own success summaries | ✅ |
-| NC.4 | magit label rewrite — a human phrase naming what was acted on, no raw flags, no shared labels; partial operations report `Stopped`; the `…ing` echo bug. Landed in parts: NC.4a remote/sequencer/commit ops ✅, NC.4b one-shot and computed ops, NC.4c mode helpers, NC.4d `Stopped` | 🚧 |
+| NC.4 | magit label rewrite — a human phrase naming what was acted on, no raw flags, no shared labels; partial operations report `Stopped`; the `…ing` echo bug. Landed in parts: NC.4a remote/sequencer/commit ops ✅, NC.4b one-shot and computed ops ✅, NC.4c mode helpers, NC.4d `Stopped` | 🚧 |
 | NC.5 | Report the eight actions that finish silently (file stage/unstage/discard, branch create/checkout/rename/delete) | 📝 |
 
 ## NC.1 — icons and the success level ✅

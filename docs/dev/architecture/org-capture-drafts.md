@@ -170,6 +170,53 @@ own ABI question (what a guest may return), so it is a **separate trailing
 slice**, not part of this plan's spine. `C-c n i` covers the same intent
 meanwhile.
 
+### H5 · `host-services.can-write-file(path) -> result<_, string>`
+
+Would a `write-to-file` of this path from this plugin land? It checks the same
+grant test the boundary applies (`EffectAuthorizer::permits_write`), and the
+same resolution the applier does: not a directory, parent present, existing
+content readable. `err` names which check failed.
+
+Capture calls it **when the capture opens**, so a misconfigured target is
+reported before anything is typed. That is emacs's order:
+`org-capture-set-target-location` visits the target file and finds the heading
+before the capture buffer exists, and any error there aborts the capture with
+`Capture template 'x': …`.
+
+### H6 · A failed write stops the rest of its action's effects
+
+`apply_write_to_file` reports whether the write landed. When it did not —
+including a write the boundary **denied**, which it replaces with an echo —
+the effects after it in the same action are **not applied**. The ones before
+it are.
+
+This is emacs's finalize. `org-capture-finalize` calls `save-buffer`, and an
+error there unwinds the rest: the capture buffer is not killed and the window
+layout is not restored, so the user is still looking at their text. Before H6,
+lattice applied every effect regardless: a capture whose target was outside the
+grant echoed a denial and then closed its buffer, and the text was lost. That
+was a live bug in the synthetic-buffer capture, not only a hazard for drafts.
+
+It reverses a recorded decision in `effect_authorizer.rs` ("the rest of a
+`Many` is preserved: one denied write must not silently cancel the other things
+an action did"). That was right for independent effects and wrong for a
+*commit*, where the later effects presume the write happened. An action whose
+effects really are independent should not put a write first.
+
+### H7 · `Effect::InvokeCommand(command-ref)` — run a command after the effects before it
+
+The picker's `invoke-command` outcome, available as an effect: a registered
+action (dispatched with its typed args) or an ex-command. It is applied in
+sequence, so it runs only if every effect before it did — which, with H6, means
+only after a successful write.
+
+Capture needs it because its cleanup (`store-delete`, `delete-file`) is made up
+of host *calls*, and a guest's host call runs **during** the action — before
+the host applies any effect the action returns. Cleaning up there would delete
+the draft and its state before the write was even attempted. Commit therefore
+returns its cleanup as `invoke-command("org-capture-cleanup", [id])` after the
+write; if the write fails, H6 skips it and the draft survives intact.
+
 ### Not added: `document.name()`
 
 Considered and dropped once the buffer became file-backed (§2). Recorded because
@@ -296,25 +343,36 @@ what `org-capture.md` §8 already argued for.
 
 **Save.** `:w`. There is nothing to implement, and that is the point of §2.
 
-**Commit — `C-c C-c`.** `doc.path()` → basename → `hash6` → `store_get`. Then,
-in this order:
+**Open, validated first.** Before the buffer opens, `can-write-file` (H5) is
+asked about the resolved target. A refusal is echoed as
+`org: capture template 't': <reason>` and **nothing opens** — the emacs order,
+where the target is visited and located before the capture buffer exists.
+
+**Commit — `C-c C-c`.** `doc.path()` → basename → `hash6` → `store_get`. The
+action performs **no** host call that changes anything; it returns, in order:
 
 1. file the entry into the target (unchanged from OC.5a/OC.11);
 2. if `caller.on_commit` — `Effect::ApplyEdit` replacing `caller.at` in
    `caller.buffer` with the link;
 3. if `caller` — `Effect::FocusBuffer(caller.buffer)`;
 4. if no `caller` — run the verb's own finalize instead (roam's `find-file`, §8);
-5. `store_delete`;
-6. `delete-file(draft_path)`;
-7. `Effect::BufferDelete(true)`.
+5. `Effect::BufferDelete(true)`;
+6. `Effect::InvokeCommand("org-capture-cleanup", [hash6])`, whose action does
+   `store_delete` and `delete-file(draft_path)`.
 
-The target write goes **first**, keeping OC.7b's rule: a failed write leaves the
-draft on screen with the text still in it rather than closing over the top of
-it. Steps 5–7 are the cleanup — state, file and buffer, none left behind.
+The target write goes **first**, and H6 is what makes that ordering mean
+something: if it fails, steps 2–6 are skipped, so the draft stays on screen,
+its file and its state stay as they were, and `C-c C-c` can be retried once
+the cause is fixed. The target was also checked at open (H5), so this is the
+rare case — a file that became unwritable while the capture was open.
+
+Cleanup is last and is its own action because a host *call* made inside the
+commit action would run before the host applied the write — see H7.
 
 **Discard — `C-c C-k`.** `store_delete`, `delete-file` (absent is `ok`),
 `BufferDelete`, and `FocusBuffer(caller.buffer)` when there is a caller. Nothing
-is filed and nothing is written back.
+is filed and nothing is written back. Discard has no write to wait for, so its
+host calls run directly: there is nothing for them to run ahead of.
 
 **Neither is compulsory.** A capture with a caller is not a modal lock: you can
 `:w` it, walk away, work in the parent, open a third capture, and come back
@@ -557,7 +615,10 @@ drafts picker opens or a caller-bearing capture commits. The one growth term is
 `store_keys("capture/")` scaling with live drafts, bounded by how many notes a
 human leaves unfiled, and benched rather than assumed.
 
-**#2 Extensibility.** Three host seams, none of which knows what a capture is.
+**#2 Extensibility.** Six host seams, none of which knows what a capture is.
+H5–H7 came from reading emacs's finalize (the first slice's review): a guest
+cannot sequence its own cleanup after a write it does not apply, and nothing
+stopped a batch after a failed write.
 `FocusBuffer` completes a pair — `apply-edit` targets a buffer by id, and now
 something can show one. `open-buffer-at`'s two fields are OC.7a's argument
 applied where it always also held. `delete-file` is `read-file`'s peer on a

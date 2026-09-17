@@ -14,7 +14,10 @@ that unblocks one deferred row of the design's §8 table.
 | CD.1 | lattice | `Effect::FocusBuffer(u32)` | ✅ |
 | CD.2 | lattice | `open-buffer-at-payload` += `content`, `activate-minor` | ✅ |
 | CD.3 | lattice | `host-services.delete-file` | ✅ |
-| CD.4 | org-plugin | File-backed captures; state in the store; simultaneity; **the caller** | 📝 |
+| CD.3b | lattice | `host-services.can-write-file` (design H5) | 📝 |
+| CD.3c | lattice | A failed or denied `WriteToFile` stops the rest of its action (H6) | 📝 |
+| CD.3d | lattice | `Effect::InvokeCommand(command-ref)` (H7) | 📝 |
+| CD.4 | org-plugin | File-backed captures; state in the store; simultaneity; **the caller**; target checked at open, cleanup after the write | 📝 |
 | CD.5 | org-plugin | `:org-capture-drafts` picker + `<leader>od` | 📝 |
 | CD.6 | org-plugin | `create-and-insert` opens a child capture; write-back; regions | 📝 |
 | CD.7 | org-plugin | `${origin}` back-reference for the no-write-back verbs | 📝 |
@@ -121,6 +124,33 @@ without covering.
 
 ---
 
+## CD.3b / CD.3c / CD.3d — commit safety (added 2026-09-17)
+
+Not in the original plan. Found while starting CD.4: design §6 assumed a failed
+target write would leave the draft on screen, but the host applied every effect
+regardless, and the guest's cleanup host calls would run *before* the write was
+applied. So a failed filing would have deleted the draft file and its state and
+closed the buffer. The same path already lost text in the synthetic-buffer
+capture whenever the target was outside the grant.
+
+emacs's `org-capture-finalize` was read for the answer (design §3 H5–H7):
+the target is resolved at open, and a failed `save-buffer` unwinds the rest of
+finalize. Decided with Dhruva: take both halves.
+
+- **CD.3b** — `can-write-file(path)`: the boundary's grant check plus the
+  applier's resolution checks, as a query. Tests: each refusal names itself; an
+  absent file under an existing, granted directory is `ok`; runs on the sync
+  linker.
+- **CD.3c** — `apply_write_to_file` returns whether it landed; a failure stops
+  the remaining effects of the batch it is in. The authorizer's denial does the
+  same (the reversed decision is recorded in `effect_authorizer.rs`). Tests: a
+  failed write leaves a following `BufferDelete` unapplied; a denied write drops
+  its later siblings; effects *before* the write still apply; a successful write
+  changes nothing.
+- **CD.3d** — `Effect::InvokeCommand { id, args }`, host-applied through the
+  picker's invoke path (action with typed args, else ex line). Tests: an action
+  and an ex-command each run from an effect; one after a failed write does not.
+
 ## CD.4 — File-backed captures, store-backed state, simultaneity, the caller
 
 Design §§2, 4, 5, 6, 12. The largest slice; one slice because identity, state
@@ -137,9 +167,11 @@ while live. Buffer `*org-capture:{key}:{hash6}*`, file `{drafts}/{hash6}.org`.
 `capture/{hash6}`. `Caller { buffer, path, at, on_commit }` — `on_commit` stays
 `None` for every path in this slice; CD.6 is what first sets it.
 
-**Open** through `Effect::OpenBufferAt` (CD.2). **Commit** files, then focuses
-the caller, then `store_delete` + `delete-file` + `BufferDelete`, in the order
-design §6 fixes. **Discard** focuses the caller without filing.
+**Open** checks the target with `can-write-file` (CD.3b), then opens through
+`Effect::OpenBufferAt` (CD.2). **Commit** returns the write, the caller focus,
+`BufferDelete`, and `invoke-command("org-capture-cleanup", [id])` last, in the
+order design §6 fixes. It makes no mutating host call itself. **Discard**
+cleans up directly and focuses the caller without filing.
 
 **Tests.**
 - two captures of the *same* template open two buffers and two files;
@@ -152,6 +184,10 @@ design §6 fixes. **Discard** focuses the caller without filing.
 - commit deletes the draft file **and** the buffer;
 - **OC.7d:** a plain `<leader>oc` fired from a file returns focus to that file
   on both commit and discard. Invert the assertion that pins the old behaviour.
+- a target outside the grant is refused **at open**, and no buffer opens;
+- a target that becomes unwritable after open: `C-c C-c` echoes the failure,
+  and the buffer, the draft file and the store entry all survive; fixing the
+  cause and committing again files it.
 
 **Docs.** Amend `org-capture.md` §8 — "One capture in flight" and "Aborting
 creates nothing" are now wrong. Point them at the new page rather than editing

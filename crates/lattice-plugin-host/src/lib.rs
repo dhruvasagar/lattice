@@ -3743,6 +3743,7 @@ impl PluginHost {
         let _ = std::fs::create_dir_all(&dir);
         let handle: plugin_store::PluginStoreHandle =
             Arc::new(Mutex::new(plugin_store::PluginStore::open(&dir)));
+        plugin_store::register(&handle);
         stores.insert(plugin_id.to_string(), handle.clone());
         Some(handle)
     }

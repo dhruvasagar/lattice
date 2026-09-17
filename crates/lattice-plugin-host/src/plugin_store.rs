@@ -80,9 +80,51 @@ const SCHEMA_VERSION: u32 = 1;
 /// rebuild what it lost. An LRU would be bookkeeping bought with nothing.
 const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 
-/// Flush after this many mutations, so an unclean exit loses at most this much
-/// rather than a whole index. `Drop` covers the clean exit.
+/// Flush after this many mutations, so a burst is written in chunks rather than
+/// held whole until the burst ends.
 const FLUSH_EVERY: usize = 64;
+
+/// A mutation also writes the store out when the last write is at least this
+/// old, so a store that changes rarely — the project list, a capture's state —
+/// is on disk the moment it changes rather than whenever the 64th change or a
+/// `Drop` comes along. A burst (a roam scan) still writes at most once per
+/// interval, plus every [`FLUSH_EVERY`].
+const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Every store handle the host has opened, weakly — for [`flush_all`].
+///
+/// **`Drop` alone does not survive a real exit.** A handle is cloned into every
+/// `wasmtime::Store` of its plugin, and some of those live in tasks on the
+/// process-wide runtimes, which are `static`s and are never dropped. So the last
+/// `Arc` never goes away, `Drop` never runs, and a store with fewer than
+/// [`FLUSH_EVERY`] changes was never written at all: the project plugin's
+/// remembered list vanished on every restart. The binary calls [`flush_all`] on
+/// its way out instead of relying on destructors.
+static LIVE: Mutex<Vec<std::sync::Weak<Mutex<PluginStore>>>> = Mutex::new(Vec::new());
+
+/// Track `handle` for [`flush_all`].
+pub fn register(handle: &PluginStoreHandle) {
+    let mut live = LIVE.lock().unwrap_or_else(|p| p.into_inner());
+    live.retain(|w| w.strong_count() > 0);
+    live.push(Arc::downgrade(handle));
+}
+
+/// Write out every open store with unflushed changes. Called by the binary as
+/// it exits; safe to call at any time.
+pub fn flush_all() {
+    let live: Vec<PluginStoreHandle> = LIVE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect();
+    for handle in live {
+        let mut store = handle.lock().unwrap_or_else(|p| p.into_inner());
+        if store.dirty > 0 {
+            store.flush();
+        }
+    }
+}
 
 /// One plugin's durable key/value store.
 ///
@@ -106,6 +148,9 @@ pub struct PluginStore {
     generation: u64,
     /// Mutations since the last flush.
     dirty: usize,
+    /// When this session last wrote the file; `None` until it first does, so
+    /// the first change is written at once.
+    last_flush: Option<std::time::Instant>,
 }
 
 impl PluginStore {
@@ -147,6 +192,7 @@ impl PluginStore {
             bytes,
             generation,
             dirty: 0,
+            last_flush: None,
         }
     }
 
@@ -217,7 +263,10 @@ impl PluginStore {
     fn mutated(&mut self) {
         self.generation += 1;
         self.dirty += 1;
-        if self.dirty >= FLUSH_EVERY {
+        let stale = self
+            .last_flush
+            .is_none_or(|at| at.elapsed() >= FLUSH_INTERVAL);
+        if self.dirty >= FLUSH_EVERY || stale {
             self.flush();
         }
     }
@@ -231,6 +280,7 @@ impl PluginStore {
     /// recognise as corrupt.
     pub fn flush(&mut self) {
         self.dirty = 0;
+        self.last_flush = Some(std::time::Instant::now());
         let bytes = encode(&self.entries, self.generation);
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -361,6 +411,40 @@ mod tests {
         }
         let reopened = open(dir.path());
         assert_eq!(reopened.get("n/ABC"), Some(b"a node".to_vec()));
+    }
+
+    /// A rarely-changed store is on disk as soon as it changes — with no
+    /// `flush` and no `Drop`, which is how a real exit behaves (the handle is
+    /// held by tasks on a `static` runtime).
+    #[test]
+    fn a_first_change_is_written_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(dir.path());
+        store.put("projects", b"/src/a".to_vec()).unwrap();
+        std::mem::forget(store);
+        assert_eq!(open(dir.path()).get("projects"), Some(b"/src/a".to_vec()));
+    }
+
+    /// A burst is not written per change, and `flush_all` writes what it held
+    /// back, through a handle that is never dropped.
+    #[test]
+    fn a_burst_waits_and_flush_all_writes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle: PluginStoreHandle = Arc::new(Mutex::new(open(dir.path())));
+        register(&handle);
+        {
+            let mut store = handle.lock().unwrap();
+            store.put("k", b"first".to_vec()).unwrap();
+            store.put("k", b"second".to_vec()).unwrap();
+        }
+        assert_eq!(
+            open(dir.path()).get("k"),
+            Some(b"first".to_vec()),
+            "the second change, a moment later, is held back"
+        );
+        flush_all();
+        assert_eq!(open(dir.path()).get("k"), Some(b"second".to_vec()));
+        std::mem::forget(handle);
     }
 
     /// An editor exits far more often than a guest calls `flush`.

@@ -77,6 +77,16 @@ pub fn enable_autoload() {
     AUTOLOAD_ENABLED.store(true, Ordering::Relaxed);
 }
 
+/// Write out every plugin's store before the process exits.
+///
+/// **Called by the binary, after its UI returns.** A store is otherwise
+/// written only when it changes, at most once a second, so the last second of
+/// changes would be lost on exit: `Drop` never runs for a store whose handle a
+/// task on a `static` runtime still holds.
+pub fn flush_plugin_stores() {
+    lattice_plugin_host::plugin_store::flush_all();
+}
+
 /// Suppress boot-time plugin auto-discovery for this process.
 ///
 /// Now that the default is sealed this is only meaningful *after*

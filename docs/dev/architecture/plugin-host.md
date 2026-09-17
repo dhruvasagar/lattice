@@ -546,8 +546,15 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
 
   The failure policy is `agenda_cache.rs`'s, promoted from an agenda special case to a primitive:
   temp-file-and-rename, a schema version that refuses an older shape, a size cap that clears
-  wholesale, flush-on-drop, and degradation to **empty** on any corruption — never to a partial
-  read, which is how a store starts serving plausible nonsense. The on-disk format is a
+  wholesale, and degradation to **empty** on any corruption — never to a partial
+  read, which is how a store starts serving plausible nonsense.
+
+  **Writes are not left to `Drop`.** The handle is cloned into tasks on the process-wide runtimes,
+  which are `static`s and never dropped, so a destructor-only flush meant a store with fewer than
+  64 changes was never written: the project plugin's remembered list was lost on every restart.
+  A change is written at once when the last write is at least a second old (so a burst writes at
+  most once a second, plus every 64 changes), and the binary calls `flush_plugin_stores()` as it
+  exits, before GPUI's `quit` on that peer, since on macOS `quit` may not return to `main`. The on-disk format is a
   hand-rolled length-prefixed frame rather than a serde format because the payload is *bytes* and
   every serde encoder in the tree writes a `Vec<u8>` as an array of tagged integers.
 - **Directory watch (✅ OR.2)**: `host-services.watch(path)` / `unwatch(path)`, gated on the same

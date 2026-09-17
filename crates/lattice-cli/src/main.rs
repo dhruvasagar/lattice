@@ -291,11 +291,15 @@ async fn main() -> Result<()> {
     // whether the user's plugins load.
     lattice_plugin_loader::enable_autoload();
 
-    if use_gui {
+    let result = if use_gui {
         run_gui(document)
     } else {
         lattice_ui_tui::run(document, cli.tutor)
-    }
+    };
+    // Plugin stores are not written by destructors on the way out (their
+    // handles outlive `main` on `static` runtimes), so write them here.
+    lattice_plugin_loader::flush_plugin_stores();
+    result
 }
 
 /// Route to the GPUI peer. Feature-gated: the `gui` Cargo feature

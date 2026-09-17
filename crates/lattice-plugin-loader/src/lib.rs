@@ -83,7 +83,9 @@ pub use discovery::{
     default_source_cache_dir, discover, discover_one,
 };
 pub use events::LanguagesRegistered;
-pub use install::{autoload_enabled, disable_autoload, enable_autoload, install};
+pub use install::{
+    autoload_enabled, disable_autoload, enable_autoload, flush_plugin_stores, install,
+};
 pub use pipeline::{Install, RequiredSpec, install_all, install_required, to_required_spec};
 pub use resolve::{
     Fetcher, GitRunner, HttpFetcher, PluginSource, Resolved, SystemGit, git_cache_dir, resolve,

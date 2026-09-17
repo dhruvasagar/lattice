@@ -1278,6 +1278,9 @@ impl EditorView {
         // substate.
         if self.app.render_state.load().lifecycle.should_quit {
             tracing::info!("lattice-gpui: editor.should_quit set; closing application");
+            // Before `quit`: on macOS it may end the process without
+            // returning to `main`, which is where the TUI's flush runs.
+            lattice_host::flush_plugin_stores();
             cx.quit();
         }
     }

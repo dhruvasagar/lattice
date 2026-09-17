@@ -2,7 +2,7 @@
 //!
 //! Design: `docs/dev/architecture/which-key.md` (§3 ownership, §5
 //! lifecycle, §8 options). Slice plan:
-//! `docs/dev/operations/slice-plans/which-key.md` (WK.6).
+//! `docs/dev/operations/slice-plans/archive/which-key.md` (WK.6).
 //!
 //! Hold a prefix; after a short idle delay a popup shows what can come
 //! next, derived from the live composite keymap the dispatcher itself

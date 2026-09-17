@@ -53,6 +53,10 @@ other popup you had open stays open. That was not always true: until
 `dd`) dismissed whatever popup happened to be on screen, including one
 the panel had never replaced.
 
+The panel and a popup are shown at the same time, the popup drawn over the
+panel. In the GUI, until 2026-09-17, an open popup hid the panel for as long as
+it was up.
+
 ## What the rows mean
 
 | Row | Meaning |

@@ -7383,7 +7383,7 @@ it is up — the property that makes it safe under paramount #3. Design
 §7 records why a transient-style takeover was rejected.
 
 Design: [`../architecture/which-key.md`](../architecture/which-key.md).
-Slice plan: [`slice-plans/which-key.md`](slice-plans/which-key.md),
+Slice plan: [`slice-plans/archive/which-key.md`](slice-plans/archive/which-key.md),
 which also records three as-built deviations from the design.
 
 ---

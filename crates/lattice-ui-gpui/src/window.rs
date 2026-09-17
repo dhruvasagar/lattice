@@ -147,6 +147,28 @@ pub(crate) fn popup_band_dims_px(
     (viewport_w_px, h)
 }
 
+/// WK.13: the outer box for ONE overlay surface, by its placement.
+///
+/// The popup and the band are sized independently because both can paint in
+/// the same frame and their rules differ: a band spans the viewport and is as
+/// tall as its content, a popup is a window-ratio box. Pure, so the choice is
+/// testable without a window.
+pub(crate) fn surface_box_px(
+    placement: lattice_core::ui::popup::PopupPlacement,
+    content_rows: u32,
+    viewport_w_px: f32,
+    viewport_h_px: f32,
+    rem: f32,
+    row_px: f32,
+) -> (f32, f32) {
+    match placement {
+        lattice_core::ui::popup::PopupPlacement::MinibufferBand => {
+            popup_band_dims_px(viewport_w_px, viewport_h_px, content_rows, rem, row_px)
+        }
+        _ => popup_outer_dims_px(viewport_w_px, viewport_h_px),
+    }
+}
+
 /// Pixel cost of the popup's vertical chrome (border + .p_4 padding
 /// top+bottom + the bold/larger title row + .pb_2 header gap).
 /// Subtract from the popup's outer height to get the inner body area.
@@ -1135,6 +1157,9 @@ pub(crate) struct EditorView {
     /// GPUI peer of the TUI runtime's `last_popup_dims` local) so a
     /// steady-state popup fires zero actor RPCs; `None` once on dismiss.
     last_popup_dims: Option<(u32, u32)>,
+    /// WK.13: the same diff-then-send cache for the minibuffer band, which is
+    /// sized independently of the popup because both can paint at once.
+    last_band_dims: Option<(u32, u32)>,
     /// PU.5d: diff-then-send cache for the completion-docs popup geometry
     /// (`set_completion_docs_viewport`), peer of `last_popup_dims`.
     last_completion_docs_dims: Option<(u32, u32)>,
@@ -1198,6 +1223,7 @@ impl EditorView {
                 crate::glyph_resolver::GlyphResolver::new(),
             )),
             last_popup_dims: None,
+            last_band_dims: None,
             last_completion_docs_dims: None,
         }
     }
@@ -3408,43 +3434,36 @@ impl Render for EditorView {
         // because `popup_inner_rows` feeds the motion clamp and the paint's
         // row cap, and those must agree with whatever box is drawn.
         let popup_rs = self.app.render_state.load();
-        // WK.12: GPUI paints ONE overlay surface per frame, so it prefers the
-        // popup — the user asked for what is in it — and falls back to the
-        // band, which is advisory. The two slots are independent HOST-side, so
-        // which-key can no longer evict a popup; what remains is only that this
-        // peer does not yet paint both at once. The TUI does (it carves the
-        // band out of the pane area); doing the same here means parameterising
-        // the overlay builder below over its pane id, which is WK.13.
-        let overlay_sub = if popup_rs.popup.is_open() {
-            popup_rs.popup.clone()
-        } else {
-            popup_rs.band.clone()
-        };
-        let overlay_is_band = !popup_rs.popup.is_open() && popup_rs.band.is_open();
-        let pane_bottom = matches!(
-            overlay_sub.placement,
-            lattice_core::ui::popup::PopupPlacement::MinibufferBand
-        );
-        let (popup_w_px, popup_h_px) = if pane_bottom {
-            // Content rows from the popup's registry Document — the same
-            // single source the overlay paint reads its body from, so the
-            // box drawn and the rows painted cannot disagree.
-            let rows = overlay_sub
+        // WK.13: the two slots are independent host-side, and this peer now
+        // paints BOTH — a which-key band under an open popup, as the TUI
+        // draws them. Each surface carries its own geometry, because their
+        // boxes are sized by different rules (a band is content-height and
+        // viewport-wide; a popup is a window-ratio box), and each is built by
+        // the same builder over its own pane id.
+        let popup_sub = popup_rs.popup.clone();
+        let band_sub = popup_rs.band.clone();
+        // A surface's outer box. `MinibufferBand` sizes to its content rows,
+        // read from the registry Document the paint reads its body from, so
+        // the box drawn and the rows painted cannot disagree.
+        let dims_of = |sub: &lattice_host::render_state::PopupRenderState| {
+            let rows = sub
                 .buffer_id
                 .and_then(|id| popup_rs.buffers.registry.document_handle(id))
                 .map(|h| h.snapshot().buffer.content_line_count().max(1))
                 .unwrap_or(1);
-            popup_band_dims_px(
+            surface_box_px(
+                sub.placement,
+                rows,
                 f32::from(viewport_px.width),
                 f32::from(viewport_px.height),
-                rows,
                 rem,
                 estimated_row_px,
             )
-        } else {
-            popup_outer_dims_px(f32::from(viewport_px.width), f32::from(viewport_px.height))
         };
+        let (popup_w_px, popup_h_px) = dims_of(&popup_sub);
+        let (band_w_px, band_h_px) = dims_of(&band_sub);
         let popup_inner_rows = popup_inner_height_rows(popup_h_px, rem, estimated_row_px);
+        let band_inner_rows = popup_inner_height_rows(band_h_px, rem, estimated_row_px);
         // 2026-05-27: lock the body div's height too. With only the
         // outer popup container size locked, the body's flex-grown
         // content could (under-estimated chrome) render more rows
@@ -3455,6 +3474,7 @@ impl Render for EditorView {
         // `popup_inner_rows × row_px` so the row count is the
         // single source of truth for both painting and cursor
         // clamping.
+        let band_body_h_px = popup_body_h_px(band_h_px, rem, estimated_row_px);
         let popup_body_h_px = popup_body_h_px(popup_h_px, rem, estimated_row_px);
         // Issue #17 (2026-05-22): the previous calc subtracted
         // exactly 1 row for the modeline/cmdline bottom strip and
@@ -3692,34 +3712,36 @@ impl Render for EditorView {
         // `self.last_popup_dims` keeps a steady-state popup at zero RPCs and
         // pushes once on dismiss (the gate flips to `None`, but we only send
         // on `Some` — the synthetic pane simply stops being built host-side).
-        let popup_dims = {
+        // WK.13: BOTH surfaces are sized, each from its own box, because both
+        // can paint in one frame. Sizing only the one being painted left the
+        // other's matrix unbuilt, and an unsized pane paints unstyled fallback
+        // text.
+        let (popup_dims, band_dims) = {
             let rs = self.app.render_state.load();
             let in_pane_help = matches!(
                 rs.panes.tree.active().buffer,
                 lattice_core::BufferKind::Help
             );
-            if (rs.popup.is_open() || rs.band.is_open()) && !in_pane_help {
-                Some((
-                    popup_inner_rows,
-                    popup_inner_cols(popup_w_px, rem, glyph_advance_px),
-                ))
-            } else {
-                None
-            }
+            let dims = |open: bool, rows: u32, w_px: f32| {
+                (open && !in_pane_help)
+                    .then(|| (rows, popup_inner_cols(w_px, rem, glyph_advance_px)))
+            };
+            (
+                dims(rs.popup.is_open(), popup_inner_rows, popup_w_px),
+                dims(rs.band.is_open(), band_inner_rows, band_w_px),
+            )
         };
         if self.last_popup_dims != popup_dims {
             if let Some((rows, cols)) = popup_dims {
-                // WK.12: size whichever surface is being painted. Feeding the
-                // popup's fields for a band would leave
-                // `PaneId::MINIBUFFER_BAND` unsized, and the band would paint
-                // unstyled fallback text.
-                if overlay_is_band {
-                    self.app.set_band_viewport(rows, cols);
-                } else {
-                    self.app.set_popup_viewport(rows, cols);
-                }
+                self.app.set_popup_viewport(rows, cols);
             }
             self.last_popup_dims = popup_dims;
+        }
+        if self.last_band_dims != band_dims {
+            if let Some((rows, cols)) = band_dims {
+                self.app.set_band_viewport(rows, cols);
+            }
+            self.last_band_dims = band_dims;
         }
         // PU.5d: completion-docs popup geometry hand-off (peer of the
         // floating-popup feedback above). Shown when completion is open with
@@ -4642,13 +4664,27 @@ impl Render for EditorView {
         // State-A scroll from `popup_substate.scroll`. No popup-side
         // `HelpBuffer` snapshot is published anymore. (Help syntax / link
         // styling rides the live cells-worker `DisplayMatrix`.)
-        let popup_substate = overlay_sub.clone();
+        let popup_substate = popup_sub.clone();
         // T.5.b: the popup-overlay cell renderer resolves syntax
         // styles through the active theme's resolved table (loaded
         // once; captured by the popup closure below).
         let popup_resolved = self.app.render_state.load().resolved_theme.clone();
         let popup_ids = self.app.render_state.load().theme_ids;
-        let popup_overlay: Option<gpui::Div> = popup_substate.buffer_id.map(|popup_id| {
+        // WK.13: one builder, called once per open surface. Everything that
+        // differs between a popup and a band arrives as a parameter — the
+        // buffer, the synthetic pane its matrix is built under, the box, and
+        // whether it has focus — so the two cannot drift apart the way a
+        // copied closure would.
+        let build_overlay = |sub: &lattice_host::render_state::PopupRenderState,
+                             popup_id: lattice_core::BufferId,
+                             popup_pane: lattice_core::ui::pane::PaneId,
+                             popup_w_px: f32,
+                             popup_h_px: f32,
+                             popup_inner_rows: u32,
+                             popup_body_h_px: f32,
+                             popup_focused: bool|
+         -> gpui::Div {
+            let popup_substate = sub;
             // PU.2: the popup CONTENT renders through the shared document
             // `EditorElement` reading the synthetic `PaneId::POPUP`
             // `DisplayMatrix` (markdown colour from PU.1b-1, link styling
@@ -4665,7 +4701,6 @@ impl Render for EditorView {
             // scroll from the published `popup_substate.scroll`. No
             // popup-side `HelpBuffer` snapshot.
             let ad = self.app.ad();
-            let popup_focused = ad.popup_focused;
             let rs = self.app.render_state.load();
             // Title = the popup buffer's registry name.
             let title = rs.buffers.registry.name_of(popup_id).unwrap_or_default();
@@ -4743,11 +4778,6 @@ impl Render for EditorView {
             // every pane (`paint_pane`): a lagging matrix falls back to
             // default-styled windowed text for a frame, colour catches up.
             let cells = rs.cells.load();
-            let popup_pane = if overlay_is_band {
-                lattice_core::ui::pane::PaneId::MINIBUFFER_BAND
-            } else {
-                lattice_core::ui::pane::PaneId::POPUP
-            };
             let display_matrix = cells
                 .display_matrix_for_pane(popup_pane)
                 .map(|c| c.load_full())
@@ -4900,6 +4930,33 @@ impl Render for EditorView {
                         .overflow_hidden()
                         .child(editor_element.into_any_element()),
                 )
+        };
+        let popup_overlay: Option<gpui::Div> = popup_sub.buffer_id.map(|id| {
+            build_overlay(
+                &popup_sub,
+                id,
+                lattice_core::ui::pane::PaneId::POPUP,
+                popup_w_px,
+                popup_h_px,
+                popup_inner_rows,
+                popup_body_h_px,
+                self.app.ad().popup_focused,
+            )
+        });
+        // The band is advisory and never takes focus — `popup_focused` names
+        // the popup slot, so passing it here would draw a focused border
+        // around a hint nobody is in.
+        let band_overlay: Option<gpui::Div> = band_sub.buffer_id.map(|id| {
+            build_overlay(
+                &band_sub,
+                id,
+                lattice_core::ui::pane::PaneId::MINIBUFFER_BAND,
+                band_w_px,
+                band_h_px,
+                band_inner_rows,
+                band_body_h_px,
+                false,
+            )
         });
 
         // Issue #29 (2026-05-22): tabline strip. Visibility is
@@ -5198,6 +5255,20 @@ impl Render for EditorView {
         // box sits at right = 16 + 360 + 8(gap) = 384px, same `.top_8()`.
         if let Some(overlay) = completion_docs_overlay {
             root = root.child(div().absolute().top_8().right(px(384.0)).child(overlay));
+        }
+        // WK.13: the band first, so a popup the user is reading is painted
+        // OVER the hint rather than under it. It is bottom-anchored and
+        // full-width, the same arm `MinibufferBand` takes below.
+        if let Some(overlay) = band_overlay {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .child(overlay),
+            );
         }
         if let Some(overlay) = popup_overlay {
             // Issue #18 (2026-05-22): respect
@@ -5802,7 +5873,7 @@ fn build_transient_minibuffer_gpui(
 mod popup_geometry_tests {
     use super::{
         default_ui_row_px, popup_band_dims_px, popup_body_h_px, popup_chrome_v_px,
-        popup_inner_height_rows,
+        popup_inner_height_rows, surface_box_px,
     };
 
     /// WK.5: a `MinibufferBand` popup spans the viewport and sizes to its
@@ -5816,6 +5887,48 @@ mod popup_geometry_tests {
             popup_inner_height_rows(h, rem, row_px) >= 6,
             "the box must hold the 6 rows the grid laid out"
         );
+    }
+
+    /// WK.13: each open surface is sized by its OWN rule, so a band and a
+    /// popup in the same frame get different boxes.
+    ///
+    /// GPUI used to paint one surface per frame and size only that one; the
+    /// other's matrix was never built, so it painted unstyled fallback text.
+    /// With both boxes computed, the band still spans the viewport and the
+    /// popup keeps its ratio box.
+    #[test]
+    fn a_band_and_a_popup_are_sized_by_their_own_rules() {
+        use lattice_core::ui::popup::PopupPlacement;
+        let (rem, row_px) = (16.0_f32, 18.0_f32);
+        let (band_w, band_h) = surface_box_px(
+            PopupPlacement::MinibufferBand,
+            3,
+            1200.0,
+            800.0,
+            rem,
+            row_px,
+        );
+        let (popup_w, popup_h) =
+            surface_box_px(PopupPlacement::Centered, 3, 1200.0, 800.0, rem, row_px);
+        assert_eq!(band_w, 1200.0, "the band spans the viewport");
+        assert!(
+            popup_w < band_w,
+            "the popup keeps its ratio box: {popup_w} vs {band_w}"
+        );
+        assert!(
+            band_h < popup_h,
+            "a three-row hint is shorter than a ratio-box popup: {band_h} vs {popup_h}"
+        );
+        // Every other placement is the popup box — a band is the one shape
+        // that differs, and it differs by placement rather than by which slot
+        // happens to be open.
+        for placement in [PopupPlacement::Centered, PopupPlacement::CursorAnchored] {
+            assert_eq!(
+                surface_box_px(placement, 3, 1200.0, 800.0, rem, row_px),
+                (popup_w, popup_h),
+                "{placement:?} is sized as a popup"
+            );
+        }
     }
 
     /// …and never more than half the viewport, however many

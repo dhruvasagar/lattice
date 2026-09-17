@@ -2,7 +2,7 @@
 //!
 //! Design: `docs/dev/architecture/which-key.md` §4 (data model), §4.1
 //! (label resolution), §4.2 (ordering). Sequencing:
-//! `docs/dev/operations/slice-plans/which-key.md` (WK.1).
+//! `docs/dev/operations/slice-plans/archive/which-key.md` (WK.1).
 //!
 //! Pure and synchronous. Everything here is a function of a
 //! [`NodeView`](crate::trie::NodeView) plus the command registry — no

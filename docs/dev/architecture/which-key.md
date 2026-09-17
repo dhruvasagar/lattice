@@ -11,7 +11,7 @@ layer model and the trie this reads), and to `popup-api.md` (the
 content-agnostic overlay it renders through).
 
 Sequencing, slice IDs and status live in
-`docs/dev/operations/slice-plans/which-key.md`.
+`docs/dev/operations/slice-plans/archive/which-key.md`.
 
 ## 1. Why this exists
 
@@ -212,6 +212,12 @@ slot (`Editor::band_buffer`) and its own synthetic pane
 (`PaneId::MINIBUFFER_BAND`). The hint no longer competes for the single popup
 slot, so it cannot evict a hover, diagnostic or completion popup, and one is no
 longer hidden by the other.
+
+Both renderers paint both surfaces. The TUI carves the band out of the pane
+area; GPUI builds its overlay once per open surface, each with its own box and
+its own fed geometry, with the popup drawn over the band (WK.13). Until then
+GPUI could paint only one and preferred the popup, so the hint was invisible
+behind one.
 
 `PopupFocus::Passive` is State A in `popup-api.md` §4.1: the document
 keeps focus, the caret, and the modal state. **Every keystroke
@@ -496,4 +502,4 @@ it is not lost.
 - `boot-composition.md` §3 — `SubsystemBoot`, and why async results
   must reach the screen without a keypress.
 - `magit.md` §8 — `TransientSpec`, the escalation target in §9.
-- `docs/dev/operations/slice-plans/which-key.md` — sequencing.
+- `docs/dev/operations/slice-plans/archive/which-key.md` — sequencing.

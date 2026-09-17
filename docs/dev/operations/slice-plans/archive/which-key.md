@@ -6,6 +6,9 @@ owns *what* and *why*; this file owns *when* and *in what order*.
 Design fragment: `docs/dev/architecture/which-key.md` (committed
 `25a6fdfa`, no code at the time).
 
+**Archived 2026-09-17.** WK.1–WK.13 are all landed; WK.10 and WK.11 were
+carved mid-build and are recorded below for the trail.
+
 ## Status
 
 | Slice | What | Design § | Status |
@@ -196,6 +199,21 @@ The two tests that caught this are the two that assert without a
 follow-up keystroke; the three that check arming state passed on the
 broken build.
 
+### WK.10 — the off-keystroke drain absorbs the popup pair ✅
+
+Carved mid-build and never given a row here. An idle gate fires off-keystroke,
+where nothing drains the renderer tail, so `OpenPopup` / `DismissPopup` are
+absorbed host-side by BOTH `fire_idle_gates` and the tick drain — fixing one
+peer half-fixes the feature (`dispatch.rs`, and the repro in
+`which_key_band.rs`: the band is already open when the chord resolves).
+
+### WK.11 — it dismisses its OWN hint, and only its own ✅
+
+Commit `47906967`. A chord finishing faster than `which-key.delay` (`zz`, `gg`,
+`dd`) dismissed whatever popup was on screen, including one the hint had never
+replaced. The close half names its own surface (`DismissPopupNamed`) instead of
+using the user's verb. WK.12 fixed the OPEN half of the same class.
+
 ### WK.12 — the hint lives in the minibuffer band ✅
 
 Reported 2026-09-16: "which key popup also automatically dismisses any other
@@ -227,11 +245,32 @@ would then lie about its own meaning.
   tests rewritten for two independent surfaces; a regression test for the
   reported bug, which failed on the first implementation and drove the fix.
 
-### WK.13 — GPUI paints the band and a popup together 📝
+### WK.13 — GPUI paints the band and a popup together ✅
 
-GPUI builds its overlay in one ~250-line closure keyed to `PaneId::POPUP`, so
-it can paint one surface per frame; with a popup open, the hint does not appear
-there. That is strictly better than the reported bug (the popup is never
-evicted) but short of the TUI, which draws both. The work is parameterising
-that builder over `(buffer_id, pane_id, scroll, rows, focused)` and building it
-twice — mechanical, but too large to carry inside WK.12.
+GPUI built its overlay in one ~250-line closure keyed to `PaneId::POPUP`, so it
+painted one surface per frame: with a popup open the hint did not appear, which
+was short of the TUI. As planned, that closure is now a builder taking the
+surface it is drawing — buffer, synthetic pane, box, and whether it has focus —
+and it is called once per open surface.
+
+- **Geometry is per surface.** `surface_box_px` picks the box by placement (a
+  band spans the viewport and sizes to its content; everything else is the
+  window-ratio box), and each surface's inner rows and body height come from
+  its own box.
+- **Both are sized.** The hand-off feeds `set_popup_viewport` AND
+  `set_band_viewport`, each diff-then-sent against its own cache
+  (`last_band_dims` joins `last_popup_dims`). Sizing only the surface being
+  painted left the other's matrix unbuilt, and an unsized pane paints unstyled
+  fallback text — the reason the old code could not simply draw both.
+- **The band never takes focus.** `popup_focused` names the popup slot, so the
+  band is built with `false`; passing it through would draw a focused border
+  around a hint nobody is in.
+- **Z-order: band first, popup over it.** A popup is what the user asked for;
+  the hint is advisory, and a centred popup may overlap the bottom edge.
+
+**Tests.** `a_band_and_a_popup_are_sized_by_their_own_rules` (GPUI) pins that
+the two boxes differ and that every non-band placement is sized as a popup;
+`a_popup_and_a_band_each_get_their_own_synthetic_pane` (host) pins that each
+surface gets its own pane, keyed to its own buffer, gated on its own geometry —
+sizing the popup alone must not conjure a band pane. The paint itself needs a
+real window and is not unit-testable in either peer.

@@ -54580,6 +54580,69 @@ mod tests {
         );
     }
 
+    /// WK.13: a popup and a band open together get **both** synthetic panes.
+    ///
+    /// GPUI used to paint one overlay per frame and size only that one, so
+    /// with both open the other's matrix was never built and it painted
+    /// unstyled fallback text. Both peers now size both surfaces; this pins
+    /// that the host builds a pane for each, keyed to its own buffer, with
+    /// the band's own wrap and anchor rules.
+    #[test]
+    fn a_popup_and_a_band_each_get_their_own_synthetic_pane() {
+        use crate::popup::{PopupFocus, PopupPlacement};
+        use lattice_core::ui::pane::PaneId;
+        let mut editor = Editor::boot(lattice_core::Document::from_text("fn main() {}\n"));
+        let content = lattice_help::HelpContent::from_lines(
+            "test-help",
+            vec!["# Title".into(), "some body text".into()],
+        );
+        let _ = editor.open_floating_popup(content, PopupPlacement::Centered);
+        let popup_id = editor.popup_buffer.expect("floating popup open");
+
+        // The band is a second, independent surface — which-key's.
+        let band_id = editor.ensure_named_synthetic_document(
+            lattice_mode::modes::which_key::WHICH_KEY_BUFFER_NAME,
+            lattice_mode::modes::which_key::WhichKeyMode::mode_id(),
+            lattice_core::BufferFlags::default(),
+        );
+        let _ =
+            editor.open_popup_buffer(band_id, PopupPlacement::MinibufferBand, PopupFocus::Passive);
+        assert_ne!(popup_id, band_id, "two buffers, two slots");
+
+        // Each is gated on its OWN geometry: sizing the popup alone must not
+        // conjure a band pane, which is the bug in miniature.
+        editor.popup_viewport_height = 18;
+        editor.popup_viewport_width = 60;
+        let panes = editor.build_cells_panes(None);
+        assert!(
+            panes.iter().any(|p| p.pane_id == PaneId::POPUP),
+            "the popup pane appears once the popup is sized"
+        );
+        assert!(
+            !panes.iter().any(|p| p.pane_id == PaneId::MINIBUFFER_BAND),
+            "the band is not sized yet, so it has no pane"
+        );
+
+        editor.band_viewport_height = 3;
+        editor.band_viewport_width = 80;
+        let panes = editor.build_cells_panes(None);
+        let pop = panes
+            .iter()
+            .find(|p| p.pane_id == PaneId::POPUP)
+            .expect("the popup pane survives the band opening");
+        let band = panes
+            .iter()
+            .find(|p| p.pane_id == PaneId::MINIBUFFER_BAND)
+            .expect("the band pane is built beside it");
+        assert_eq!(pop.buffer_id, popup_id);
+        assert_eq!(band.buffer_id, band_id, "each keyed to its own buffer");
+        assert_eq!((band.viewport_height, band.viewport_width), (3, 80));
+        assert_eq!((pop.viewport_height, pop.viewport_width), (18, 60));
+        assert!(pop.wrap, "the popup wraps");
+        assert!(!band.wrap, "the band shows a grid and does not");
+        assert_eq!(band.scroll, 0, "the band's top is its anchor");
+    }
+
     // ---- gj / gk / g0 / g$ display-line motions ----
 
     /// Turn soft-wrap on **the way a user does** and give the pane a

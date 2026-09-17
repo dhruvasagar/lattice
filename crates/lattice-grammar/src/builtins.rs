@@ -3428,7 +3428,25 @@ fn shift_indent(ctx: &mut OperatorContext, levels: i32) -> Result<Effect, Comman
     // line, matching the previous one-edit-at-a-time behavior.
     let mut applied = applied;
     applied.reverse();
-    Ok(Effect::Edits(applied))
+    Ok(landing_on_first_non_blank(ctx, first_line, applied))
+}
+
+/// Vim leaves the cursor on the first non-blank of the FIRST line a
+/// whole-line operator touched (`:h >`), which is where `>>`, `<ip` and `=ap`
+/// all end up. The edits alone land it at the edit's start — column 0 of the
+/// topmost line — so the move is appended, exactly as a linewise delete does.
+///
+/// Read AFTER the edits: the indent that decides "first non-blank" is the one
+/// the operator just wrote, not the one it replaced.
+fn landing_on_first_non_blank(
+    ctx: &mut OperatorContext,
+    first_line: u32,
+    applied: Vec<lattice_core::buffer::AppliedEdit>,
+) -> Effect {
+    let buffer = ctx.document.buffer();
+    let line = first_line.min(last_addressable_line(buffer));
+    let at = first_non_blank_position(buffer, line);
+    Effect::Many(vec![Effect::Edits(applied), Effect::CursorMove(at)])
 }
 
 /// Vim's `>` -- add one indent level to each line in the range.
@@ -3525,7 +3543,7 @@ fn operator_reindent(ctx: &mut OperatorContext) -> Result<Effect, CommandError> 
     let applied = ctx.document.apply_edit_batch(edits)?;
     let mut applied = applied;
     applied.reverse();
-    Ok(Effect::Edits(applied))
+    Ok(landing_on_first_non_blank(ctx, first_line, applied))
 }
 
 /// Vim's `gq` **and** `gw` — reflow the range to `textwidth`.

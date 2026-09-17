@@ -584,6 +584,42 @@ mod tests {
         assert_eq!(cursor(&a), (0, 4));
     }
 
+    /// vim: `>>` from 1,5 → 1,5 — the first non-blank of the line it shifted,
+    /// which moved right with the indent. Verified against vim 9.2.
+    ///
+    /// The edits alone land the cursor at column 0 (the edit's start), which is
+    /// where `>` / `<` / `=` used to leave it.
+    #[test]
+    fn shifting_right_lands_on_the_first_non_blank() {
+        let mut a = at(SIXI, 0, 4);
+        press_chars(&mut a, ">>");
+        // `shiftwidth` is 4 here, so the 2-space indent becomes 6.
+        assert!(body(&a).starts_with("      one a\n"), "{:?}", body(&a));
+        assert_eq!(cursor(&a), (0, 6));
+    }
+
+    /// vim: `<<` from 2,7 → 2,3, following the indent back left.
+    #[test]
+    fn shifting_left_lands_on_the_first_non_blank() {
+        let mut a = at(SIXI, 1, 6);
+        press_chars(&mut a, "<<");
+        assert!(body(&a).contains("\ntwo b\n"), "{:?}", body(&a));
+        assert_eq!(cursor(&a), (1, 0));
+    }
+
+    /// vim: `>j` from 1,5 → 1,5 — the FIRST line of the range, not the last.
+    #[test]
+    fn shifting_over_a_motion_lands_on_the_ranges_first_line() {
+        let mut a = at(SIXI, 0, 4);
+        press_chars(&mut a, ">j");
+        assert!(
+            body(&a).starts_with("      one a\n        two b\n"),
+            "both lines shifted: {:?}",
+            body(&a)
+        );
+        assert_eq!(cursor(&a), (0, 6));
+    }
+
     /// vim: `dk` from 5,5 → 4,3, likewise the first non-blank.
     #[test]
     fn dk_lands_on_the_first_non_blank() {

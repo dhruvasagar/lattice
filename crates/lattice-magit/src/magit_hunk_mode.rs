@@ -206,6 +206,8 @@ fn at_position(
             path,
             position,
             force,
+            content: None,
+            activate_minor: None,
         },
         Effect::OpenSyntheticBuffer { name, mode_id, .. } => Effect::OpenSyntheticBufferAt {
             name,

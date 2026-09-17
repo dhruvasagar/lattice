@@ -247,6 +247,8 @@ mod tests {
             path: Some(target.clone()),
             position: deep,
             force: false,
+            content: None,
+            activate_minor: None,
         });
 
         let folds = a.editor.folds.clone();
@@ -267,6 +269,45 @@ mod tests {
                 .any(|f| f.closed && deep.line >= f.start_line && deep.line <= f.end_line),
             "the jump revealed its target — no closed fold still hides it, got {folds:?}"
         );
+    }
+
+    /// CD.2, through the TUI peer: a plugin's `OpenBufferAt` with `content`
+    /// and `activate_minor` seeds a new file, activates the minor and lands
+    /// the cursor — the same host body the GPUI peer calls.
+    #[test]
+    fn open_buffer_at_seeds_a_new_file_and_activates_its_minor() {
+        let dir = std::env::temp_dir().join(format!(
+            "lattice-tui-cd2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("draft.org");
+
+        let mut a = app_with("elsewhere\n", 20);
+        a.apply_effect(lattice_grammar::Effect::OpenBufferAt {
+            path: Some(path.clone()),
+            position: Position::new(0, 7),
+            force: false,
+            content: Some("* TODO thing\n".to_string()),
+            activate_minor: Some("read-only-mode".to_string()),
+        });
+
+        assert_eq!(a.editor.document.snapshot().text(), "* TODO thing\n");
+        assert_eq!(a.editor.cursor, Position::new(0, 7));
+        let id = a.editor.active_pane_buffer_id();
+        assert!(
+            a.editor
+                .active_modes
+                .get(&id)
+                .is_some_and(|m| m.is_active(lattice_mode::ModeId::new("read-only-mode"))),
+            "the minor rides the open"
+        );
+        assert!(!path.exists(), "nothing written before :w");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- compute_fold_hash ----

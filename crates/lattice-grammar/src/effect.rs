@@ -457,6 +457,16 @@ pub enum Effect {
         path: Option<PathBuf>,
         position: lattice_protocol::position::Position,
         force: bool,
+        /// CD.2: text for the buffer **only when the file is not on disk**.
+        /// Reopening a file that exists never has its text replaced — a
+        /// saved draft reopened must keep what was typed into it. The seed
+        /// is an ordinary edit, so the buffer is modified and `:q` guards it.
+        content: Option<String>,
+        /// CD.2: a minor mode to activate alongside the major the path
+        /// resolves, before the buffer is shown, so its keymap is live on
+        /// the first keystroke. OC.7a's reason: a plugin mode has no
+        /// `on_activate`, so this is how a guest gives its buffer chords.
+        activate_minor: Option<String>,
     },
     /// BC.8c: open `uri` via the OS handler (`open` / `xdg-open` /
     /// `explorer`). Emitted by the LSP `window/showDocument` handler for

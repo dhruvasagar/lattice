@@ -1696,6 +1696,8 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                             path: Some(full),
                             position: ctx.cursor,
                             force: false,
+                            content: None,
+                            activate_minor: None,
                         }
                     } else {
                         // The file existed at that revision and does

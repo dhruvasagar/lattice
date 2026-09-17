@@ -1378,14 +1378,26 @@ impl GpuiApp {
             Effect::OpenBuffer { path, force } => self.apply_open_buffer(path, force),
             // M.10.3 bug fix (2026-06-03): atomic open-and-position.
             // GPUI parity with TUI per [[feedback_tui_gpui_parity]].
-            Effect::OpenBufferAt { path, position, force } => {
-                self.apply_open_buffer(path, force);
-                // Same one call as the TUI peer — position AND reveal. The
-                // shared method is what keeps the two from drifting, which is
-                // how the reveal came to be missing from both.
-                self.mutate_editor(move |e| {
-                    e.land_cursor_at(position);
+            // CD.2: the same host body as the TUI peer — seed, minor, and
+            // position-with-reveal. One method is what keeps the peers from
+            // drifting, which is how the reveal came to be missing from both.
+            Effect::OpenBufferAt {
+                path,
+                position,
+                force,
+                content,
+                activate_minor,
+            } => {
+                let outcome = self.mutate_editor_with(move |e| {
+                    e.open_buffer_at(
+                        path,
+                        position,
+                        force,
+                        content.as_deref(),
+                        activate_minor.as_deref(),
+                    )
                 });
+                self.handle_do_edit_outcome(outcome);
             }
             // I3/BC.8c follow-up: `SaveBuffer` is now HOST-applied in
             // `Editor::handle_effect` (reuses `do_write`; works on the
@@ -1730,8 +1742,14 @@ impl GpuiApp {
     /// renderer handler, `NoFileName`/`Failed` are silent (the
     /// host already echoed).
     fn apply_open_buffer(&mut self, path: Option<std::path::PathBuf>, force: bool) {
-        use lattice_host::dispatch::DoEditOutcome;
         let outcome = self.mutate_editor_with(move |e| e.do_edit(path, force));
+        self.handle_do_edit_outcome(outcome);
+    }
+
+    /// Route a host `DoEditOutcome` through the peer's follow-ups — shared by
+    /// `:e` and `Effect::OpenBufferAt`, as in the TUI peer.
+    fn handle_do_edit_outcome(&mut self, outcome: lattice_host::dispatch::DoEditOutcome) {
+        use lattice_host::dispatch::DoEditOutcome;
         match outcome {
             DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
             DoEditOutcome::Directory(dir) => {

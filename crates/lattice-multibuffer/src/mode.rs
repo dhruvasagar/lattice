@@ -296,6 +296,8 @@ impl Mode for MultibufferMode {
                                     path: Some(path),
                                     position: source_position,
                                     force: false,
+                                    content: None,
+                                    activate_minor: None,
                                 },
                             ]))
                         });

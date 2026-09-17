@@ -160,8 +160,17 @@ impl App {
         //   - `Activated`/`Reloaded`/`Opened(signals)` → fan
         //     signals through `handle_renderer_signal`
         //   - `Failed`/`NoFileName` → host already echoed
-        use lattice_host::dispatch::DoEditOutcome;
         let outcome = self.mutate_editor_with(move |e| e.do_edit(path, force));
+        self.handle_do_edit_outcome(outcome);
+    }
+
+    /// Route a host `DoEditOutcome` through the App-side follow-ups — shared
+    /// by `:e` and `Effect::OpenBufferAt`.
+    pub(super) fn handle_do_edit_outcome(
+        &mut self,
+        outcome: lattice_host::dispatch::DoEditOutcome,
+    ) {
+        use lattice_host::dispatch::DoEditOutcome;
         match outcome {
             DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
             DoEditOutcome::Directory(dir) => self.do_open_oil(Some(dir)),
@@ -707,18 +716,28 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The dirty guard is on RELOAD: `:e` of the file already showing would
+    /// throw the edits away. (This used to `:e /nonexistent`, and passed only
+    /// because opening a missing path failed — CD.2 made that open a new
+    /// buffer, as vim does, and switching away keeps the edits in a hidden
+    /// buffer rather than losing them.)
     #[test]
     fn edit_refuses_when_dirty() {
-        let mut a = app_with("modified", 10);
+        let dir = unique_tempdir();
+        let path = dir.join("guarded.txt");
+        std::fs::write(&path, "on disk").unwrap();
+        let mut a = app_with("scratch", 10);
+        submit_ex(&mut a, &format!("e {}", path.display()));
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::Insert("X".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
         assert!(a.editor.document.dirty());
-        submit_ex(&mut a, "e /nonexistent");
+        submit_ex(&mut a, "e");
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         // Document unchanged.
-        assert_eq!(a.editor.document.text(), "Xmodified");
+        assert_eq!(a.editor.document.text(), "Xon disk");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -788,14 +807,19 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// vim 9.2: `:e` of a path with nothing there — even under a directory
+    /// that does not exist — opens an empty buffer; only `:w` would fail
+    /// (E212). CD.2; this used to assert an error.
     #[test]
-    fn edit_unknown_path_emits_error() {
+    fn edit_unknown_path_opens_a_new_buffer() {
         let mut a = app_with("hello", 10);
         submit_ex(&mut a, "e /absolutely/does/not/exist/anywhere.txt");
         let msg = a.editor.last_message.as_ref().unwrap();
-        assert_eq!(msg.level, EchoLevel::Error);
-        // Buffer unchanged.
-        assert_eq!(a.editor.document.text(), "hello");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(msg.text.ends_with("[New]"), "{}", msg.text);
+        assert_eq!(a.editor.document.text(), "");
+        assert!(!a.editor.document.dirty());
+        assert!(!std::path::Path::new("/absolutely/does/not/exist/anywhere.txt").exists());
     }
 
     #[test]

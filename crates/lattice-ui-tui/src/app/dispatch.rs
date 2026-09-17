@@ -1077,16 +1077,26 @@ impl App {
             // SelectionChange arm runs synchronously against the
             // still-active multibuffer; this variant performs
             // both writes against the post-do_edit active doc.
-            Effect::OpenBufferAt { path, position, force } => {
-                self.do_edit(path, force);
-                // `land_cursor_at`, not `set_cursor_clamped`: the jump must
-                // also REVEAL its target. An org file opens at `foldlevel=0`,
-                // so a headline reached from the agenda or through a link
-                // otherwise lands inside a closed fold and the user arrives
-                // looking at a collapsed outline.
-                self.mutate_editor_with(move |e| {
-                    e.land_cursor_at(position);
+            // CD.2: one host body (`Editor::open_buffer_at`) seeds a new
+            // file, activates the minor and lands — and reveals — the cursor.
+            // The GPUI peer and the off-renderer drain call the same method.
+            Effect::OpenBufferAt {
+                path,
+                position,
+                force,
+                content,
+                activate_minor,
+            } => {
+                let outcome = self.mutate_editor_with(move |e| {
+                    e.open_buffer_at(
+                        path,
+                        position,
+                        force,
+                        content.as_deref(),
+                        activate_minor.as_deref(),
+                    )
                 });
+                self.handle_do_edit_outcome(outcome);
             }
             // 5.5.E.7.5: `Substitute` migrated to
             // `Editor::handle_effect`; routed through the grouped

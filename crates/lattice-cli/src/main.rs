@@ -263,9 +263,11 @@ async fn main() -> Result<()> {
     }
 
     let document = match cli.file {
-        Some(path) => {
-            Document::open(&path).with_context(|| format!("opening {}", path.display()))?
-        }
+        // vim: `lattice newfile` opens an empty buffer the first `:w`
+        // creates (CD.2), rather than refusing to start.
+        Some(path) => Document::open_or_new(&path)
+            .map(|(doc, _new)| doc)
+            .with_context(|| format!("opening {}", path.display()))?,
         // `--tutor` conflicts_with = "file" so cli.file is None here too;
         // do_tutor creates and opens the lesson buffer itself.
         None => Document::empty(),

@@ -12,7 +12,7 @@ that unblocks one deferred row of the design's §8 table.
 | Slice | Tree | What | Status |
 |---|---|---|---|
 | CD.1 | lattice | `Effect::FocusBuffer(u32)` | ✅ |
-| CD.2 | lattice | `open-buffer-at-payload` += `content`, `activate-minor` | 📝 |
+| CD.2 | lattice | `open-buffer-at-payload` += `content`, `activate-minor` | ✅ |
 | CD.3 | lattice | `host-services.delete-file` | 📝 |
 | CD.4 | org-plugin | File-backed captures; state in the store; simultaneity; **the caller** | 📝 |
 | CD.5 | org-plugin | `:org-capture-drafts` picker + `<leader>od` | 📝 |
@@ -58,9 +58,28 @@ an empty grep means GPUI was missed.
 
 ---
 
-## CD.2 — `open-buffer-at-payload` gains `content` and `activate-minor`
+## CD.2 — `open-buffer-at-payload` gains `content` and `activate-minor` ✅
 
 Design §3 H2.
+
+**The verification failed, and the design survived it.** `do_edit` on a
+missing path *refused* (`open error: No such file`), and `lattice newfile`
+refused to start. That was a vim divergence, not a constraint. vim 9.2 opens
+an empty unmodified buffer, `:w` creates the file, and a missing parent
+directory fails only at write time with E212. So the fix was
+`Document::open_or_new` and the `"path" [New]` echo, not the eager-write
+fallback, and "abort touches no disk" holds as designed. Two TUI tests had
+pinned the old behaviour (`edit_unknown_path_emits_error`, and an
+`edit_refuses_when_dirty` that only passed because the open failed); both
+now assert what they meant.
+
+**Landed.** One host body, `Editor::open_buffer_at`, for the TUI, the GPUI
+and the off-renderer drain. The seed is an edit on the new document before
+its actor spawns, so syntax is built from the seeded text and the buffer is
+modified. Tests: `lattice-host/tests/open_buffer_at_seeds_a_new_file.rs`,
+`folds::open_buffer_at_seeds_a_new_file_and_activates_its_minor` (TUI), and
+`lattice-core`'s `open_or_new_*`. The `lattice-core` test `tempdir()` got a
+counter while I was there: it collided under parallel runs.
 
 **Verify first, before writing anything else.** The applier is
 `do_edit(path, force)` (`crates/lattice-ui-tui/src/app/dispatch.rs:1055`). Drive

@@ -39,7 +39,7 @@ shows full metadata.
 | `:wq` / `:x`           | Write + quit                                                 |
 | `:q` / `:quit`         | Quit if buffer is clean                                      |
 | `:q!`                  | Quit unconditionally                                         |
-| `:e PATH` / `:edit`    | Open `PATH` in active pane                                   |
+| `:e PATH` / `:edit`    | Open `PATH` in active pane; a path with no file yet opens an empty `[New]` buffer that `:w` creates |
 | `:e!`                  | Reload current file from disk                                |
 | `:bn` / `:bnext`       | Cycle to next buffer                                         |
 | `:bp` / `:bprev`       | Cycle to previous buffer                                     |

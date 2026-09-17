@@ -408,6 +408,15 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   between an action and its effect is a race rather than a guest bug.
   Appended last in the `effect` variant so existing case indices do not move.
   See [`org-capture-drafts.md`](org-capture-drafts.md) §3 H1.
+- **A plugin can SEED a FILE it opens (✅ CD.2)**: `open-buffer-at-payload`
+  gained `content` and `activate-minor`, the file-backed peers of the
+  synthetic-buffer fields below, for the same OC.7a reason. `content` applies
+  only when nothing is on disk, and the file is not already open. It is
+  applied as an edit before the actor spawns, so the buffer is modified and
+  `:q` guards it. It rests on `:e` opening a missing path as an empty `[New]`
+  buffer, as vim does; before CD.2 that open failed, and so did
+  `lattice newfile`. All three appliers (TUI, GPUI, the off-renderer drain)
+  call one host method, `Editor::open_buffer_at`.
 - **A plugin can SEED the buffer it opens (✅ OC.7a)**:
   `open-synthetic-buffer-payload` carries `content`, `cursor` and
   `activate-minor` beside `name` / `mode-id`.

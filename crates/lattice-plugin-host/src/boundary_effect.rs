@@ -611,10 +611,14 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             path,
             position,
             force,
+            content,
+            activate_minor,
         } => WitEffect::OpenBufferAt(WitOpenBufferAtPayload {
             path: opt_path_to_wit(path)?,
             position: position.to_wit()?,
             force: *force,
+            content: content.clone(),
+            activate_minor: activate_minor.clone(),
         }),
         NativeEffect::OpenExternalUri { uri } => WitEffect::OpenExternalUri(uri.clone()),
         NativeEffect::OpenBufferAtColumn {
@@ -1044,6 +1048,10 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             path: opt_path_from_wit(p.path),
             position: NativePosition::from_wit(p.position)?,
             force: p.force,
+            // Guest→host: these fields ARE the feature. Defaulting either
+            // here would hand the guest an empty buffer with no chords.
+            content: p.content,
+            activate_minor: p.activate_minor,
         },
         WitEffect::OpenExternalUri(uri) => NativeEffect::OpenExternalUri { uri },
         WitEffect::OpenBufferAtColumn(p) => NativeEffect::OpenBufferAtColumn {
@@ -1697,6 +1705,8 @@ mod tests {
                 path: None,
                 position: pos(10, 4),
                 force: true,
+                content: None,
+                activate_minor: None,
             },
             NativeEffect::OpenExternalUri {
                 uri: "https://example.com".into(),

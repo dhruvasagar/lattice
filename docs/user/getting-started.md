@@ -68,7 +68,7 @@ grammar. Press `:` — the cursor drops to a prompt at the bottom of the
 screen — type a command, and press `<CR>`.
 
 ```text
-:e src/main.rs      open (edit) a file by path
+:e src/main.rs      open (edit) a file by path — a new name starts a new file
 :w                  write the current buffer to its file
 :w other.txt        write to a different path
 :x                  write, then quit (":wq" is the same)

@@ -146,6 +146,8 @@ fn boot(target: PathBuf) -> Editor {
                         path: Some(target_for_action.clone()),
                         position: Position::new(0, 0),
                         force: false,
+                        content: None,
+                        activate_minor: None,
                     },
                 ]))
             }),

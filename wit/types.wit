@@ -600,6 +600,13 @@ interface types {
         path: option<string>,
         position: position,
         force: bool,
+        /// CD.2: seed text, applied only when the file is NOT on disk —
+        /// reopening an existing file never replaces what is in it.
+        content: option<string>,
+        /// CD.2: a minor to activate alongside the major the path resolves,
+        /// before the buffer is shown. The file-backed peer of
+        /// `open-synthetic-buffer-payload`'s field, for OC.7a's reason.
+        activate-minor: option<string>,
     }
     record open-buffer-at-column-payload {
         path: option<string>,

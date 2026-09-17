@@ -14731,17 +14731,22 @@ impl Editor {
                 path,
                 position,
                 force,
+                content,
+                activate_minor,
             } => {
-                let edit_signals = match self.do_edit(path, force) {
-                    DoEditOutcome::Opened(s)
-                    | DoEditOutcome::Activated(s)
-                    | DoEditOutcome::Reloaded(s) => s,
-                    DoEditOutcome::Directory(_)
-                    | DoEditOutcome::Failed
-                    | DoEditOutcome::NoFileName => Vec::new(),
-                };
-                signals.extend(edit_signals);
-                self.land_cursor_at(position);
+                let outcome = self.open_buffer_at(
+                    path,
+                    position,
+                    force,
+                    content.as_deref(),
+                    activate_minor.as_deref(),
+                );
+                if let DoEditOutcome::Opened(s)
+                | DoEditOutcome::Activated(s)
+                | DoEditOutcome::Reloaded(s) = outcome
+                {
+                    signals.extend(s);
+                }
             }
             // OR.7c: a link resolved by the picker and applied at the caret.
             //
@@ -15693,6 +15698,57 @@ impl Editor {
     ///   - `Failed` / `NoFileName` → host already echoed via
     ///     `set_message`; nothing else to do.
     pub fn do_edit(&mut self, path: Option<std::path::PathBuf>, force: bool) -> DoEditOutcome {
+        self.do_edit_seeded(path, force, None)
+    }
+
+    /// CD.2: `Effect::OpenBufferAt`'s one body, for every peer and the
+    /// off-renderer drain.
+    ///
+    /// [`Self::do_edit_seeded`], then — when a buffer is showing — the minor
+    /// and the cursor. The minor is activated before anything is painted, so
+    /// its chords are live on the first keystroke. Its lifecycle signals ride
+    /// in the returned outcome, so a caller that fans the outcome's signals
+    /// out cannot drop them.
+    ///
+    /// Returns the outcome so a peer still handles `Directory` its own way.
+    pub fn open_buffer_at(
+        &mut self,
+        path: Option<std::path::PathBuf>,
+        position: lattice_protocol::position::Position,
+        force: bool,
+        content: Option<&str>,
+        activate_minor: Option<&str>,
+    ) -> DoEditOutcome {
+        let mut outcome = self.do_edit_seeded(path, force, content);
+        let signals = match &mut outcome {
+            DoEditOutcome::Opened(s) | DoEditOutcome::Activated(s) | DoEditOutcome::Reloaded(s) => {
+                s
+            }
+            DoEditOutcome::Directory(_) | DoEditOutcome::Failed | DoEditOutcome::NoFileName => {
+                return outcome;
+            }
+        };
+        if let Some(minor) = activate_minor {
+            let id = self.active_pane_buffer_id();
+            signals.extend(self.activate_mode_by_id(id, lattice_mode::ModeId::new(minor)));
+        }
+        // `land_cursor_at`, not a bare cursor write: an org file opens at
+        // `foldlevel=0`, and a jump must reveal its target.
+        self.land_cursor_at(position);
+        outcome
+    }
+
+    /// [`Self::do_edit`] with seed text for a file that does not exist yet.
+    ///
+    /// The seed applies **only** to a brand-new file — never to one already
+    /// open, and never to one on disk — so reopening a saved draft keeps what
+    /// was typed into it.
+    pub fn do_edit_seeded(
+        &mut self,
+        path: Option<std::path::PathBuf>,
+        force: bool,
+        seed: Option<&str>,
+    ) -> DoEditOutcome {
         let target = match path {
             Some(p) => p,
             None => match self.document.path() {
@@ -15736,7 +15792,8 @@ impl Editor {
                 // content (the file may have shrunk on disk).
                 let saved_cursor = self.cursor;
                 let saved_scroll = self.scroll;
-                let outcome = self.open_fresh_into_active_slot(target, DoEditOpenAction::Reload);
+                let outcome =
+                    self.open_fresh_into_active_slot(target, DoEditOpenAction::Reload, None);
                 if old_id != self.document_buffer_id {
                     self.cursor = saved_cursor;
                     self.clamp_cursor_to_active_buffer();
@@ -15774,7 +15831,7 @@ impl Editor {
             return DoEditOutcome::Activated(signals);
         }
         // Brand-new file: open a fresh actor and register it.
-        self.open_fresh_into_active_slot(target, DoEditOpenAction::Open)
+        self.open_fresh_into_active_slot(target, DoEditOpenAction::Open, seed)
     }
 
     /// Files at or below this byte size get a **synchronous** initial
@@ -15936,14 +15993,30 @@ impl Editor {
         &mut self,
         target: std::path::PathBuf,
         action: DoEditOpenAction,
+        seed: Option<&str>,
     ) -> DoEditOutcome {
-        let new_doc = match lattice_core::Document::open(&target) {
-            Ok(d) => d,
+        // CD.2: a path with nothing on disk opens an empty buffer that the
+        // first `:w` creates — vim's `:e newfile`. This refused before, and so
+        // did `lattice newfile`.
+        let (mut new_doc, is_new) = match lattice_core::Document::open_or_new(&target) {
+            Ok(opened) => opened,
             Err(e) => {
                 self.set_message(EchoLevel::Error, format!("open error: {e}"));
                 return DoEditOutcome::Failed;
             }
         };
+        // Seeded BEFORE the actor spawns, so syntax is built from the real
+        // text and the first frame shows it. An ordinary edit, so the buffer
+        // is modified and the dirty-buffer guard protects it.
+        if let Some(text) = seed.filter(|t| is_new && !t.is_empty()) {
+            let insert = lattice_protocol::edit::Edit::insert(
+                lattice_protocol::position::Position::ZERO,
+                text,
+            );
+            if let Err(e) = new_doc.apply_edit(insert) {
+                tracing::warn!(path = %target.display(), "seeding a new file failed: {e}");
+            }
+        }
         let lang = lattice_syntax::Lang::detect_from_path(new_doc.path());
         let initial_text = new_doc.text();
         let initial_text_version = new_doc.text_version();
@@ -16062,6 +16135,11 @@ impl Editor {
         self.publish_document_opened_for_active();
         tracing::info!(path = %target.display(), "do_edit: DocumentOpened published");
         let (msg, outcome) = match action {
+            // vim's own wording for a file that does not exist yet.
+            DoEditOpenAction::Open if is_new => (
+                format!("\"{}\" [New]", target.display()),
+                DoEditOutcome::Opened(signals),
+            ),
             DoEditOpenAction::Open => (
                 format!("\"{}\" opened", target.display()),
                 DoEditOutcome::Opened(signals),

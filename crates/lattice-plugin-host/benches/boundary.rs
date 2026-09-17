@@ -93,6 +93,8 @@ fn boundary_round_trip(c: &mut Criterion) {
             path: Some(PathBuf::from("/home/alice/project/src/main.rs")),
             position: lattice_protocol::position::Position { line: 120, byte: 8 },
             force: false,
+            content: None,
+            activate_minor: None,
         },
         Effect::QuitEditor {
             force: false,

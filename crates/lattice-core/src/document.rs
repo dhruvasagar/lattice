@@ -167,6 +167,31 @@ impl Document {
             .build())
     }
 
+    /// Open `path`, or — when nothing is there yet — start an empty,
+    /// unmodified document that will create it on the first save.
+    ///
+    /// vim's `:e newfile` (checked in 9.2: an empty buffer, `&modified` 0, and
+    /// `:w` creates the file). Only `NotFound` becomes a new document; any
+    /// other read failure — permissions, a non-UTF-8 file — is still an
+    /// error, because opening an empty buffer over an unreadable file would
+    /// let the first save overwrite it.
+    ///
+    /// Returns whether the document is new, so a caller can tell a fresh file
+    /// from an existing one without a second `stat`.
+    pub fn open_or_new(path: impl AsRef<Path>) -> CoreResult<(Self, bool)> {
+        let path = path.as_ref();
+        match Self::open(path) {
+            Ok(doc) => Ok((doc, false)),
+            Err(crate::CoreError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok((
+                DocumentBuilder::default()
+                    .with_path(path.to_path_buf())
+                    .build(),
+                true,
+            )),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn id(&self) -> DocumentId {
         self.id
     }
@@ -770,6 +795,41 @@ mod tests {
     }
 
     #[test]
+    fn open_or_new_starts_an_unmodified_empty_document_for_a_missing_file() {
+        let dir = tempdir();
+        let path = dir.join("fresh.org");
+        let (d, new) = Document::open_or_new(&path).unwrap();
+        assert!(new);
+        assert_eq!(d.text(), "");
+        assert_eq!(d.path(), Some(path.as_path()));
+        assert!(!d.dirty(), "vim: `&modified` is 0 on a new file");
+        assert!(!path.exists(), "opening creates nothing");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn open_or_new_reads_an_existing_file() {
+        let dir = tempdir();
+        let path = dir.join("there.txt");
+        std::fs::write(&path, "loaded").unwrap();
+        let (d, new) = Document::open_or_new(&path).unwrap();
+        assert!(!new);
+        assert_eq!(d.text(), "loaded");
+        cleanup(&dir);
+    }
+
+    /// Only a missing file is new. An unreadable one stays an error, or its
+    /// first save would overwrite it with an empty buffer.
+    #[test]
+    fn open_or_new_does_not_mask_other_read_errors() {
+        let dir = tempdir();
+        let path = dir.join("binary.bin");
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(Document::open_or_new(&path).is_err());
+        cleanup(&dir);
+    }
+
+    #[test]
     fn open_missing_file_is_an_error() {
         let dir = tempdir();
         let path = dir.join("nope.txt");
@@ -891,13 +951,17 @@ mod tests {
     }
 
     fn tempdir() -> std::path::PathBuf {
-        // Per-test unique directory under the OS temp area.
+        // Per-test unique directory under the OS temp area. The counter is
+        // what makes it unique: parallel tests can read the same nanosecond,
+        // share a directory, and one's `cleanup` deletes the other's files.
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let base = std::env::temp_dir();
         let id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = base.join(format!("lattice-core-test-{id}"));
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = base.join(format!("lattice-core-test-{}-{id}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

@@ -807,6 +807,20 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Search backward for the word under the cursor (vim's `#`).",
         search_spec(motion_search_next),
     );
+    // VM.3d-3: `g*` / `g#` — the same search without `\<` / `\>`, so it finds
+    // the word inside longer ones (`g*` on `foo` hits `foobar`). Separate
+    // motions rather than an argument because the PATTERN differs, and the
+    // pattern is what the host builds before the motion runs.
+    let search_word_forward_partial = registry.register_motion(
+        "motion:search-word-forward-partial",
+        "Search forward for the word under the cursor, not only whole words (vim's `g*`).",
+        search_spec(motion_search_next),
+    );
+    let search_word_backward_partial = registry.register_motion(
+        "motion:search-word-backward-partial",
+        "Search backward for the word under the cursor, not only whole words (vim's `g#`).",
+        search_spec(motion_search_next),
+    );
     // VM.3e: vim's `'x` / `` `x ``, which were actions, so `d'a` / `v`a` were
     // unbound. `'x` is linewise and lands on the mark line's first non-blank;
     // `` `x `` is charwise and exclusive (vim 9.2: `d'a` deletes whole lines,
@@ -949,6 +963,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         search_prev,
         search_word_forward,
         search_word_backward,
+        search_word_forward_partial,
+        search_word_backward_partial,
         mark_line,
         display_line_down,
         display_line_up,
@@ -1043,6 +1059,10 @@ pub struct Builtins {
     pub search_prev: MotionId,
     pub search_word_forward: MotionId,
     pub search_word_backward: MotionId,
+    /// VM.3d-3: vim's `g*` / `g#` — the word under the cursor, matched
+    /// anywhere rather than only as a whole word.
+    pub search_word_forward_partial: MotionId,
+    pub search_word_backward_partial: MotionId,
     /// VM.3e: vim's `'x` / `` `x ``, as the motions they are in vim.
     pub mark_line: MotionId,
     /// VM.3g-2: vim's `gj` / `gk` / `g0` / `g$`, as the motions they are.

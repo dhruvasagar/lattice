@@ -376,6 +376,58 @@ mod tests {
         assert_eq!(a.editor.last_search.as_ref().unwrap().pattern, r"\bfoo\b");
     }
 
+    /// VM.3d-3: `g*` finds the word INSIDE a longer one; `*` skips it.
+    ///
+    /// vim 9.2 over `foo here / foobar next / foo again`, from 1,1: `g*` lands
+    /// on line 2 with `@/` = `foo`, `*` on line 3 with `\<foo\>`, and `g#`
+    /// from line 3 comes back to line 2.
+    #[test]
+    fn g_star_matches_inside_a_longer_word_where_star_does_not() {
+        const PARTIAL: &str = "foo here\nfoobar next\nfoo again";
+        let at_start = || {
+            let mut a = app_with(PARTIAL, 20);
+            a.editor.cursor = lattice_protocol::position::Position::new(0, 0);
+            a
+        };
+
+        let mut a = at_start();
+        press_chars(&mut a, "g*");
+        assert_eq!(
+            a.editor.cursor,
+            lattice_protocol::position::Position::new(1, 0),
+            "`g*` stops at `foobar`"
+        );
+        assert_eq!(a.editor.last_search.as_ref().unwrap().pattern, "foo");
+
+        let mut a = at_start();
+        press_chars(&mut a, "*");
+        assert_eq!(
+            a.editor.cursor,
+            lattice_protocol::position::Position::new(2, 0),
+            "`*` is whole-word and skips it"
+        );
+        assert_eq!(a.editor.last_search.as_ref().unwrap().pattern, r"\bfoo\b");
+
+        let mut a = app_with(PARTIAL, 20);
+        a.editor.cursor = lattice_protocol::position::Position::new(2, 0);
+        press_chars(&mut a, "g#");
+        assert_eq!(
+            a.editor.cursor,
+            lattice_protocol::position::Position::new(1, 0),
+            "`g#` searches the same pattern backwards"
+        );
+        assert_eq!(a.editor.last_search.as_ref().unwrap().pattern, "foo");
+    }
+
+    /// …and it composes: vim's `dg*` from 1,1 leaves `foobar next` first.
+    #[test]
+    fn dg_star_deletes_to_the_next_partial_match() {
+        let mut a = app_with("foo here\nfoobar next\nfoo again", 20);
+        a.editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        press_chars(&mut a, "dg*");
+        assert_eq!(body(&a), "foobar next\nfoo again");
+    }
+
     /// vim: `n` past the last match wraps and says so.
     #[test]
     fn a_wrapping_n_echoes_search_hit_bottom() {

@@ -27465,10 +27465,16 @@ impl Editor {
             Some(lattice_grammar::target::Target::Motion(id, _)) => id.0,
             _ => inv.command,
         };
-        let direction = if motion == self.builtins.search_word_forward.0 {
-            lattice_grammar::SearchDirection::Forward
+        // VM.3d-3: `g*` / `g#` differ from `*` / `#` only in the pattern —
+        // no `\b` — so they resolve here, not in a second capture.
+        let (direction, whole) = if motion == self.builtins.search_word_forward.0 {
+            (lattice_grammar::SearchDirection::Forward, true)
         } else if motion == self.builtins.search_word_backward.0 {
-            lattice_grammar::SearchDirection::Backward
+            (lattice_grammar::SearchDirection::Backward, true)
+        } else if motion == self.builtins.search_word_forward_partial.0 {
+            (lattice_grammar::SearchDirection::Forward, false)
+        } else if motion == self.builtins.search_word_backward_partial.0 {
+            (lattice_grammar::SearchDirection::Backward, false)
         } else {
             return true;
         };
@@ -27477,7 +27483,7 @@ impl Editor {
             self.set_message(EchoLevel::Error, "no word under cursor".to_string());
             return false;
         };
-        let pattern = star_pattern(&word);
+        let pattern = star_pattern(&word, whole);
         if let Ok(regex) = compile_search_pattern(&pattern) {
             self.all_matches = lattice_core::search::find_all(
                 &buffer,
@@ -27500,6 +27506,17 @@ impl Editor {
     /// the call always read `self.document.*` which gave nonsense
     /// (or empty) results on terminal panes.
     pub fn do_search_word_under_cursor(&mut self, direction: lattice_grammar::SearchDirection) {
+        self.search_word_under_cursor(direction, true)
+    }
+
+    /// VM.3d-3: [`Self::do_search_word_under_cursor`] with vim's `g*` / `g#`
+    /// rule as a parameter — `whole` false drops the word boundaries, so the
+    /// search also finds the word inside longer ones.
+    pub fn search_word_under_cursor(
+        &mut self,
+        direction: lattice_grammar::SearchDirection,
+        whole: bool,
+    ) {
         let pre_jump = self.cursor;
         let buffer = self.active_text();
         let Some(word) = word_at_or_after_cursor(&buffer, self.cursor) else {
@@ -27511,7 +27528,7 @@ impl Editor {
             lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
         };
         let from = step_byte(&buffer, self.cursor, direction);
-        let pattern = star_pattern(&word);
+        let pattern = star_pattern(&word, whole);
         let regex = match compile_search_pattern(&pattern) {
             Ok(r) => r,
             Err(_) => {
@@ -27584,8 +27601,15 @@ impl Editor {
 ///
 /// `g*` / `g#` are not bound (vim's no-boundaries variants); when they land
 /// they take the same word and skip the `\b`s.
-fn star_pattern(word: &str) -> String {
-    format!(r"\b{}\b", fancy_regex::escape(word))
+fn star_pattern(word: &str, whole: bool) -> String {
+    let word = fancy_regex::escape(word);
+    if whole {
+        format!(r"\b{word}\b")
+    } else {
+        // VM.3d-3: `g*` / `g#` — "don't put `\<` and `\>` around the word"
+        // (`:h g*`), so `g*` on `foo` also matches `foobar`.
+        word.to_string()
+    }
 }
 
 /// VM.3d-2: the `*` / `#` word — the keyword under the cursor, or the next one
@@ -44056,6 +44080,15 @@ impl Editor {
             self.do_search_word_under_cursor(lattice_grammar::SearchDirection::Backward);
             return true;
         }
+        // VM.3d-3: `g*` / `g#`, the same jump without the word boundaries.
+        if cmd == self.builtins.search_word_forward_partial.0 {
+            self.search_word_under_cursor(lattice_grammar::SearchDirection::Forward, false);
+            return true;
+        }
+        if cmd == self.builtins.search_word_backward_partial.0 {
+            self.search_word_under_cursor(lattice_grammar::SearchDirection::Backward, false);
+            return true;
+        }
         // VM.3e: likewise `'x` / `` `x ``, whose jump the host mirrors into
         // the grid.
         if cmd == self.builtins.mark_line.0 || cmd == self.builtins.mark_exact.0 {
@@ -55498,6 +55531,29 @@ mod tests {
         )
     }
 
+    /// Dispatch `inv` and route whatever edits it produced the way
+    /// `handle_effect` does in production, so the worker takes its INCREMENTAL
+    /// path (its baseline lags by construction) rather than a full reparse.
+    ///
+    /// VM.3m: `>` / `<` / `=` return `Many([Edits, CursorMove])` since they
+    /// gained vim's first-non-blank landing, so matching `Effect::Edits` alone
+    /// silently applied NOTHING here and the precondition these tests assert
+    /// failed. Both shapes are handled rather than the newer one assumed.
+    fn route_edits(editor: &mut Editor, inv: lattice_grammar::CommandInvocation) {
+        let edits = match editor.dispatch_blocking(inv) {
+            Ok(lattice_grammar::Effect::Edits(applied)) => applied,
+            Ok(lattice_grammar::Effect::Many(parts)) => parts
+                .into_iter()
+                .find_map(|e| match e {
+                    lattice_grammar::Effect::Edits(applied) => Some(applied),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        editor.handle_edits(&edits);
+    }
+
     /// Predictive indent must keep consulting the tree after an edit.
     ///
     /// The freshness gate used to ask `reparsed_from_version() ==
@@ -55517,9 +55573,7 @@ mod tests {
         let b = editor.builtins;
         let shift = lattice_grammar::CommandInvocation::of(b.indent_right.0)
             .with_range(lattice_grammar::range::Range::CurrentLine);
-        if let Ok(lattice_grammar::Effect::Edits(applied)) = editor.dispatch_blocking(shift) {
-            editor.handle_edits(&applied);
-        }
+        route_edits(&mut editor, shift);
         settle_reparse(&mut editor);
         let snap = editor.syntax.as_ref().map(|h| h.snapshot()).unwrap();
         assert_ne!(
@@ -56262,9 +56316,7 @@ mod tests {
         // Without this the edit deltas never reach `pending_syntax_edits`,
         // the worker takes its FULL-reparse branch, and the test passes on
         // the broken build — the incremental path is the one with the bug.
-        if let Ok(lattice_grammar::Effect::Edits(applied)) = editor.dispatch_blocking(shift) {
-            editor.handle_edits(&applied);
-        }
+        route_edits(&mut editor, shift);
         assert_eq!(line_at(&editor, 1), "        x();", ">> indented");
 
         settle_reparse(&mut editor);
@@ -56284,9 +56336,7 @@ mod tests {
         // `==` — with NO action in between.
         let eq = lattice_grammar::CommandInvocation::of(b.reindent.0)
             .with_range(lattice_grammar::range::Range::CurrentLine);
-        if let Ok(lattice_grammar::Effect::Edits(applied)) = editor.dispatch_blocking(eq) {
-            editor.handle_edits(&applied);
-        }
+        route_edits(&mut editor, eq);
         assert_eq!(
             line_at(&editor, 1),
             "    x();",
@@ -57281,11 +57331,19 @@ mod tests {
     /// characters and none of which are regex-magic.
     #[test]
     fn the_star_pattern_wraps_the_escaped_word() {
-        assert_eq!(star_pattern("foo"), r"\bfoo\b");
-        assert_eq!(star_pattern("foo_bar2"), r"\bfoo_bar2\b");
+        assert_eq!(star_pattern("foo", true), r"\bfoo\b");
+        assert_eq!(star_pattern("foo_bar2", true), r"\bfoo_bar2\b");
         // The escape is a no-op for a keyword run, and must stay one: a word
         // that acquired a magic character would otherwise become a regex.
-        assert_eq!(star_pattern("a.b"), r"\ba\.b\b");
+        assert_eq!(star_pattern("a.b", true), r"\ba\.b\b");
+    }
+
+    /// VM.3d-3: `g*` / `g#` drop the boundaries — `:h g*` is `*` "but don't
+    /// put `\<` and `\>` around the word" — and keep the escape.
+    #[test]
+    fn the_partial_star_pattern_keeps_the_escape_and_drops_the_boundaries() {
+        assert_eq!(star_pattern("foo", false), "foo");
+        assert_eq!(star_pattern("a.b", false), r"a\.b");
     }
 
     /// `#` is the same pattern, searched the other way (vim 9.2: `*` and `#`

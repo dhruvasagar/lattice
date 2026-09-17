@@ -345,6 +345,22 @@ pub fn register_normal_bindings(
     // nothing and were dead in Visual. Normal is the only mode named here: the
     // keymap's mirror puts them in Visual, and `expand_grammar_rows` gives them
     // their operator rows. The action ids stay registered for the WIT effects.
+    // VM.3d-3: `g*` / `g#`, the partial-word peers. Two keys rather than one,
+    // so they are bound below rather than in the single-char loop; `g` is a
+    // prefix with many chords, so extending it is safe (a TERMINAL `g` would
+    // kill every longer one).
+    for (key, motion) in [
+        ('*', builtins.search_word_forward_partial),
+        ('#', builtins.search_word_backward_partial),
+    ] {
+        handle.bind(
+            layer,
+            mode,
+            &[lit_char('g'), lit_char(key)],
+            CommandInvocation::of(motion.0),
+            source(),
+        );
+    }
     for (key, motion) in [
         ('n', builtins.search_next),
         ('N', builtins.search_prev),

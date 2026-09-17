@@ -372,7 +372,8 @@ mod tests {
         let mut a = searching("unrelated", 0, 6);
         press_chars(&mut a, "d*");
         assert_eq!(body(&a), "alpha foo three\ndelta four");
-        assert_eq!(a.editor.last_search.as_ref().unwrap().pattern, "foo");
+        // Whole-word, as vim records `\<foo\>` (c3b4bfca).
+        assert_eq!(a.editor.last_search.as_ref().unwrap().pattern, r"\bfoo\b");
     }
 
     /// vim: `n` past the last match wraps and says so.

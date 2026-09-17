@@ -469,7 +469,8 @@ mod tests {
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
         assert_eq!(a.editor.cursor, Position::new(0, 8)); // start of second "foo"
         let last = a.editor.last_search.as_ref().unwrap();
-        assert_eq!(last.pattern, "foo");
+        // c3b4bfca: `*` matches the WHOLE word, as vim's `\<foo\>` does.
+        assert_eq!(last.pattern, r"\bfoo\b");
     }
 
     #[test]
@@ -480,7 +481,7 @@ mod tests {
         // The first word "hello" appears once in the buffer; pattern is
         // recorded but no match is found beyond it (no second "hello").
         let last = a.editor.last_search.as_ref().unwrap();
-        assert_eq!(last.pattern, "hello");
+        assert_eq!(last.pattern, r"\bhello\b");
     }
 
     #[test]
@@ -498,7 +499,7 @@ mod tests {
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
         // Only one occurrence; wrap puts us at the same place.
         let last = a.editor.last_search.as_ref().unwrap();
-        assert_eq!(last.pattern, "hello");
+        assert_eq!(last.pattern, r"\bhello\b");
     }
 
     #[test]

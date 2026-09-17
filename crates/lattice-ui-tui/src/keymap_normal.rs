@@ -1122,16 +1122,20 @@ mod tests {
 
     // ---- Slice 8.g.vi: CTRL chords + <C-w> sub-tree ----
 
+    /// VM.3j-2 (8676912c): `<C-d>` is the half-window scroll, not the `j`
+    /// motion with a baked `Count(10)` — that moved ten lines whatever the
+    /// window height, and made `d<C-d>` delete eleven lines. No count is
+    /// baked in: a typed count now sets `scroll` (VM.3j-3).
     #[test]
-    fn ctrl_d_resolves_to_line_down_count_ten() {
-        let (h, b, _) = populated_handle();
+    fn ctrl_d_resolves_to_the_half_page_scroll() {
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('d'), KeyModifiers::CONTROL));
         match r {
             Some(Action::Invoke(inv)) => {
-                assert_eq!(inv.command, b.line_down.0);
-                assert_eq!(inv.count, Some(lattice_grammar::command::Count(10)));
+                assert_eq!(inv.command, a.half_page_down);
+                assert_eq!(inv.count, None);
             }
-            other => panic!("expected Invoke(line_down, count=10), got {other:?}"),
+            other => panic!("expected Invoke(half_page_down), got {other:?}"),
         }
     }
 

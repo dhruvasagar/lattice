@@ -703,6 +703,12 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         }),
         NativeEffect::BufferDelete { force } => WitEffect::BufferDelete(*force),
         NativeEffect::FocusBuffer(id) => WitEffect::FocusBuffer(*id),
+        NativeEffect::InvokeCommand { id, args } => {
+            WitEffect::InvokeCommand(crate::lattice::plugin_host::types::CommandRef {
+                id: id.clone(),
+                args: args.to_wit()?,
+            })
+        }
         NativeEffect::OpenFileTree { root } => WitEffect::OpenFileTree(opt_path_to_wit(root)?),
         NativeEffect::CloseFileTree => WitEffect::CloseFileTree,
         NativeEffect::OpenOil { dir } => WitEffect::OpenOil(opt_path_to_wit(dir)?),
@@ -1112,6 +1118,10 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         },
         WitEffect::BufferDelete(force) => NativeEffect::BufferDelete { force },
         WitEffect::FocusBuffer(id) => NativeEffect::FocusBuffer(id),
+        WitEffect::InvokeCommand(c) => NativeEffect::InvokeCommand {
+            id: c.id,
+            args: NativeArgs::from_wit(c.args)?,
+        },
         WitEffect::OpenFileTree(root) => NativeEffect::OpenFileTree {
             root: opt_path_from_wit(root),
         },
@@ -1355,6 +1365,22 @@ mod tests {
         assert!(matches!(wit, WitEffect::FocusBuffer(42)));
         let back = effect_from_wit(wit).unwrap();
         assert!(matches!(back, NativeEffect::FocusBuffer(42)));
+    }
+
+    /// CD.3d: the name and the typed args survive both directions.
+    #[test]
+    fn invoke_command_round_trips() {
+        let native = NativeEffect::InvokeCommand {
+            id: "org-capture-cleanup".to_string(),
+            args: NativeArgs::String("a3f9c1".to_string()),
+        };
+        match effect_from_wit(effect_to_wit(&native).unwrap()).unwrap() {
+            NativeEffect::InvokeCommand { id, args } => {
+                assert_eq!(id, "org-capture-cleanup");
+                assert_eq!(args, NativeArgs::String("a3f9c1".to_string()));
+            }
+            other => panic!("expected InvokeCommand, got {other:?}"),
+        }
     }
 
     #[test]

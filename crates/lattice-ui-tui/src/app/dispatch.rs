@@ -1017,6 +1017,7 @@ impl App {
             | Effect::BufferNext
             | Effect::BufferPrev
             | Effect::FocusBuffer(_)
+            | Effect::InvokeCommand { .. }
             | Effect::BufferDelete { .. }
             | Effect::ListModes
             | Effect::DescribeMode { .. }
@@ -1436,6 +1437,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::BufferNext
         | Effect::BufferPrev
         | Effect::FocusBuffer(_)
+        | Effect::InvokeCommand { .. }
         | Effect::ListBuffers
         | Effect::OpenBufferPicker
         | Effect::OpenPicker { .. }
@@ -1588,6 +1590,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::BufferNext
         | Effect::BufferPrev
         | Effect::FocusBuffer(_)
+        | Effect::InvokeCommand { .. }
         | Effect::ListBuffers
         | Effect::OpenBufferPicker
         | Effect::OpenPicker { .. }

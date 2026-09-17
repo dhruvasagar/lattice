@@ -673,6 +673,21 @@ pub enum Effect {
     /// closing between an action and its effect is an ordinary race, not a
     /// producer bug.
     FocusBuffer(u32),
+    /// CD.3d: run a registered command after the effects before this one.
+    ///
+    /// An action is dispatched with `args` typed; anything else runs as an ex
+    /// line. The picker's `invoke-command` outcome, as an effect.
+    ///
+    /// **Why an effect and not a host call.** A plugin's host calls run while
+    /// its action runs — before the host applies any effect the action
+    /// returns. Work that must happen only *after* a returned effect landed
+    /// (capture deletes its draft only once the entry is filed) cannot be a
+    /// host call; it goes here, after the effect it depends on. A write that
+    /// does not land stops the batch, so this does not run.
+    InvokeCommand {
+        id: String,
+        args: crate::args::Args,
+    },
     /// `:ls` / `:buffers` -- render every open document buffer in a
     /// help-style view.
     ListBuffers,

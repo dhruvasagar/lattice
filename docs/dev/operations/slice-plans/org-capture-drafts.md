@@ -16,7 +16,7 @@ that unblocks one deferred row of the design's §8 table.
 | CD.3 | lattice | `host-services.delete-file` | ✅ |
 | CD.3b | lattice | `host-services.can-write-file` (design H5) | ✅ |
 | CD.3c | lattice | A failed or denied `WriteToFile` stops the rest of its action (H6) | ✅ |
-| CD.3d | lattice | `Effect::InvokeCommand(command-ref)` (H7) | 📝 |
+| CD.3d | lattice | `Effect::InvokeCommand(command-ref)` (H7) | ✅ |
 | CD.4 | org-plugin | File-backed captures; state in the store; simultaneity; **the caller**; target checked at open, cleanup after the write | 📝 |
 | CD.5 | org-plugin | `:org-capture-drafts` picker + `<leader>od` | 📝 |
 | CD.6 | org-plugin | `create-and-insert` opens a child capture; write-back; regions | 📝 |

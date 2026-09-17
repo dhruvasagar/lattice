@@ -893,6 +893,12 @@ interface types {
         /// id, and this shows one. An id that no longer names a buffer is a
         /// no-op. Appended last so existing variant indices do not move.
         focus-buffer(u32),
+        /// CD.3d: run a registered command — an action with typed args, else
+        /// an ex line — AFTER the effects before it in the same batch. A
+        /// write-to-file that does not land stops the batch, so work that must
+        /// follow a successful write (deleting what was filed) goes here rather
+        /// than in a host call, which runs before any effect is applied.
+        invoke-command(command-ref),
     }
 
     // ---- The `app-effect` variant mirror (PH7.3b2) ----

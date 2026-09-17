@@ -4367,6 +4367,9 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         // CD.1: `activate_buffer` completes the activation and enqueues its
         // own renderer signals, so there is no tail to extend here.
         Effect::FocusBuffer(id) => editor.do_focus_buffer(BufferId(id)),
+        // CD.3d: applied in sequence, so it runs only if every effect before it
+        // did — `apply_effect_host` stops a batch at a write that did not land.
+        Effect::InvokeCommand { id, args } => out.merge(editor.invoke_command_named(&id, args)),
         // I3/BC.8c follow-up: SaveBuffer is host-applied (reuses the existing
         // `Editor::do_write`), joining BufferDelete below — so it works on the
         // off-keystroke inbound tick path (claude-code `saveDocument`), where
@@ -31748,21 +31751,7 @@ impl Editor {
                 // lossy round-trip the comment above records as having eaten
                 // the branch pickers' arguments — a path containing a space
                 // would arrive as two arguments.
-                let action = self.registry.load().id_by_name(&id).filter(|cid| {
-                    self.registry
-                        .load()
-                        .lookup(*cid)
-                        .is_some_and(|m| matches!(m.kind, lattice_grammar::CommandKind::Action))
-                });
-                let mut inner = DispatchOutcome::default();
-                match action {
-                    Some(cid) => self.dispatch_invocation(
-                        lattice_grammar::CommandInvocation::of(cid).with_args(args),
-                        &mut inner,
-                    ),
-                    None => self.execute_ex_line(&ex_line_with_args(&id, &args), &mut inner),
-                }
-                out.merge(inner);
+                out.merge(self.invoke_command_named(&id, args));
             }
             LoadCommandLine { text } => {
                 // MB.3: load the picked history entry into the `:` line
@@ -40482,6 +40471,36 @@ impl Editor {
     /// full `activate_document` path; caller must run
     /// [`Self::activate_buffer_state`] (the `handle_effect` arm
     /// does this inline as of F.5.5).
+    /// Run the command named `id`: a registered ACTION is dispatched with its
+    /// typed `args`; anything else runs as an ex line built from them.
+    ///
+    /// Shared by the picker's `InvokeCommand` outcome and CD.3d's
+    /// `Effect::InvokeCommand`, so the two cannot disagree about how a name
+    /// resolves. OM.11 records why an action is not sent through the `:` line:
+    /// the line cannot reach an action at all, and re-serialising typed args
+    /// splits a path with a space into two.
+    pub fn invoke_command_named(
+        &mut self,
+        id: &str,
+        args: lattice_grammar::Args,
+    ) -> DispatchOutcome {
+        let action = self.registry.load().id_by_name(id).filter(|cid| {
+            self.registry
+                .load()
+                .lookup(*cid)
+                .is_some_and(|m| matches!(m.kind, lattice_grammar::CommandKind::Action))
+        });
+        let mut inner = DispatchOutcome::default();
+        match action {
+            Some(cid) => self.dispatch_invocation(
+                lattice_grammar::CommandInvocation::of(cid).with_args(args),
+                &mut inner,
+            ),
+            None => self.execute_ex_line(&ex_line_with_args(id, &args), &mut inner),
+        }
+        inner
+    }
+
     /// CD.1: `Effect::FocusBuffer` — show `id` in the active pane.
     ///
     /// Unlike [`Self::activate_buffer`], an unknown id is silent: the effect
@@ -42295,6 +42314,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::BufferNext
         | Effect::BufferPrev
         | Effect::FocusBuffer(_)
+        | Effect::InvokeCommand { .. }
         | Effect::ListBuffers
         | Effect::OpenBufferPicker
         | Effect::OpenPicker { .. }
@@ -42450,6 +42470,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::BufferNext
         | Effect::BufferPrev
         | Effect::FocusBuffer(_)
+        | Effect::InvokeCommand { .. }
         | Effect::ListBuffers
         | Effect::OpenBufferPicker
         | Effect::OpenPicker { .. }
@@ -45046,6 +45067,77 @@ mod tests {
         assert!(completed);
         assert_eq!(editor.active_pane_buffer_id(), first);
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "* filed\n");
+    }
+
+    // ── CD.3d: `Effect::InvokeCommand` ──
+
+    /// An ex-command runs from the effect, with its args on the line.
+    #[test]
+    fn an_invoke_command_effect_runs_an_ex_command() {
+        let (mut editor, _first, second, _dir) = cd3c_editor();
+        let mut out = DispatchOutcome::default();
+        let _ = apply_effect_host(
+            &mut editor,
+            lattice_grammar::Effect::InvokeCommand {
+                id: "bnext".to_string(),
+                args: lattice_grammar::Args::None,
+            },
+            &mut out,
+        );
+        assert_ne!(editor.active_pane_buffer_id(), second, "`:bnext` ran");
+    }
+
+    /// An action is dispatched with its args TYPED — the path an ex line
+    /// cannot take (OM.11).
+    #[test]
+    fn an_invoke_command_effect_dispatches_an_action_with_typed_args() {
+        let (mut editor, first, _second, _dir) = cd3c_editor();
+        let mut reg = (*editor.registry.load_full()).clone();
+        reg.register_action(
+            "test:focus-by-arg",
+            "focus the buffer whose id is the argument",
+            lattice_grammar::registry::ActionSpec {
+                apply: std::sync::Arc::new(|ctx| match &ctx.args {
+                    lattice_grammar::Args::String(id) => Ok(lattice_grammar::Effect::FocusBuffer(
+                        id.parse().unwrap_or(u32::MAX),
+                    )),
+                    _ => Ok(lattice_grammar::Effect::None),
+                }),
+                args_schema: Vec::new(),
+            },
+        );
+        editor.registry.store(std::sync::Arc::new(reg));
+
+        let mut out = DispatchOutcome::default();
+        let _ = apply_effect_host(
+            &mut editor,
+            lattice_grammar::Effect::InvokeCommand {
+                id: "test:focus-by-arg".to_string(),
+                args: lattice_grammar::Args::String(first.0.to_string()),
+            },
+            &mut out,
+        );
+        assert_eq!(editor.active_pane_buffer_id(), first);
+    }
+
+    /// The reason the effect exists: after a write that does not land, it does
+    /// not run.
+    #[test]
+    fn an_invoke_command_after_a_failed_write_does_not_run() {
+        let (mut editor, _first, second, dir) = cd3c_editor();
+        let mut out = DispatchOutcome::default();
+        let _ = apply_effect_host(
+            &mut editor,
+            lattice_grammar::Effect::Many(vec![
+                cd3c_write(dir.path().join("missing").join("inbox.org")),
+                lattice_grammar::Effect::InvokeCommand {
+                    id: "bnext".to_string(),
+                    args: lattice_grammar::Args::None,
+                },
+            ]),
+            &mut out,
+        );
+        assert_eq!(editor.active_pane_buffer_id(), second);
     }
 
     // ── RF.5b / RF.6: delegation ──

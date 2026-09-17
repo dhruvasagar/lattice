@@ -408,6 +408,14 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   between an action and its effect is a race rather than a guest bug.
   Appended last in the `effect` variant so existing case indices do not move.
   See [`org-capture-drafts.md`](org-capture-drafts.md) §3 H1.
+- **A plugin can SEQUENCE work after its effects (✅ CD.3d)**:
+  `effect.invoke-command(command-ref)`: the picker's `invoke-command`, as an
+  effect. `Editor::invoke_command_named` serves both, dispatching an action
+  with typed args and otherwise running an ex line. It exists because a guest's
+  host calls run *during* its action, before any returned effect is applied,
+  and a failed write stops its batch (CD.3c, `cross-file-writes.md` §8.0). So
+  "delete the draft only once the entry is filed" has to be an effect after
+  the write.
 - **A plugin can ASK whether a write would land (✅ CD.3b)**:
   `host-services.can-write-file(path)`. It runs the boundary's own
   `EffectAuthorizer::permits_write`, not a copy, plus the applier's checks (not

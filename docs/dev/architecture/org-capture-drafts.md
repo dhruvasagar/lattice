@@ -226,7 +226,6 @@ propose it again.
 ## 4. Identity and naming
 
 ```
-buffer   *org-capture:{key}:{hash6}*      *org-roam-capture:{key}:{hash6}*
 file     {drafts}/{hash6}.org
 ```
 
@@ -245,7 +244,12 @@ deliberate: "stable so re-firing the same template returns to the note in
 progress rather than starting a second". Re-firing now starts a second. That is
 the trade simultaneity *is*, not a side effect of it.
 
-**The cost this creates.** `*org-capture:t:a3f9c1*` in `:ls` says nothing about
+**A draft has no synthetic buffer name.** It is an ordinary file buffer, and
+`:ls` shows it by its path. (An earlier draft of this page named the buffer
+`*org-capture:{key}:{hash6}*`; a file buffer has no such slot, and giving it one
+would be the host change §2 set out to avoid.)
+
+**The cost this creates.** `captures/a3f9c1.org` in `:ls` says nothing about
 which draft it is. That is why the drafts picker (§7) is load-bearing rather
 than a convenience — it is the front door, and `:ls` is not.
 
@@ -354,10 +358,11 @@ action performs **no** host call that changes anything; it returns, in order:
 1. file the entry into the target (unchanged from OC.5a/OC.11);
 2. if `caller.on_commit` — `Effect::ApplyEdit` replacing `caller.at` in
    `caller.buffer` with the link;
-3. if `caller` — `Effect::FocusBuffer(caller.buffer)`;
-4. if no `caller` — run the verb's own finalize instead (roam's `find-file`, §8);
-5. `Effect::BufferDelete(true)`;
-6. `Effect::InvokeCommand("org-capture-cleanup", [hash6])`, whose action does
+3. `Effect::BufferDelete(true)` — **before** the focus, because it closes the
+   *active* buffer, and after step 4 that would be the caller;
+4. if `caller` — `Effect::FocusBuffer(caller.buffer)`; if no `caller` — run the
+   verb's own finalize instead (roam's `find-file`, §8);
+5. `Effect::InvokeCommand("org-capture-cleanup", [hash6])`, whose action does
    `store_delete` and `delete-file(draft_path)`.
 
 The target write goes **first**, and H6 is what makes that ordering mean

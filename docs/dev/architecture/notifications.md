@@ -276,3 +276,35 @@ row for the per-pane status line, so the TUI anchors one row short of
 the pane area and GPUI clears the same height. The modeline is how you
 stay oriented while a *transient* thing is on screen; occluding it was
 a real bug, reported against the first build.
+
+## Icons and the success level
+
+> Slice plan: [`../operations/slice-plans/notification-clarity.md`](../operations/slice-plans/notification-clarity.md) (NC.1).
+
+Colour alone was not enough to scan a stack, and "success" did not
+exist: a finished push was posted as Info, so it looked the same as any
+neutral note.
+
+**`Success` is a state, not a severity.** "Levels are `EchoLevel`'s
+three" was about *how bad* something is, and it still holds: Success
+is Info in every respect that measures that — the timeout multiplier
+and the `*messages*` tee level. It differs only in how it reads: a
+green check. A fourth severity would have reopened the drift the rule
+exists to prevent. A separate "tone" field beside the level would have
+added a second axis for one extra state.
+
+**One glyph function, three surfaces.** `NotificationLevel::glyph`
+serves the TUI corner, the GPUI corner and the `*notifications*`
+buffer, so they cannot disagree. It follows the icon rule: Nerd Fonts
+v3 when `ui.nerd_fonts` is on, a BMP fallback otherwise (the diagnostic
+gutter's `● ▲`, plus `✓ ✗`), both one cell wide. The corner reads the
+option each frame, and only while something is up. The buffer is text,
+so an `OptionChanged` subscriber re-renders it in place. It goes
+through the document handle and never opens the buffer, because
+flipping an option must not move focus.
+
+**Colours are theme elements, shared by both peers:**
+`diagnostic.{info,warning,error}` and `diff.add.sign`. The TUI had
+fixed ANSI colours and GPUI borrowed `cursor_background` for info.
+`:colorscheme` now recolours both, identically.
+

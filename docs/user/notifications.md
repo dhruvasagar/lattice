@@ -11,11 +11,25 @@ wherever you happen to be by then.
 
 ```
 ┌──────────────────────────┐
-│ fetch finished           │
-│ push failed: rejected    │
+│ ✓ fetch finished         │
+│ ✗ push failed: rejected  │
 │ +2 more                  │
 └──────────────────────────┘
 ```
+
+Each row starts with an icon and is coloured by what happened:
+
+| Icon | Nerd Font | Meaning |
+|---|---|---|
+| `✓` | circle-check | something you started finished cleanly |
+| `●` | circle-info | a neutral note |
+| `▲` | triangle-exclamation | a warning |
+| `✗` | circle-xmark | a failure |
+
+The plain icons work in any font. With `:set ui.nerd_fonts=on` the rows
+use Nerd Font icons instead, and an open `*notifications*` buffer
+switches with them. Colours come from your colour scheme
+(`diagnostic.*`, and `diff.add.sign` for success).
 
 They stack, the newest below, and disappear on their own. Errors stay
 up four times as long as successes, because an error you blink past is
@@ -54,7 +68,7 @@ there afterwards.
 | Option | Default | What it does |
 |---|---|---|
 | `notifications.max-visible` | `3` | How many show at once. The rest queue and the stack shows `+N more`. |
-| `notifications.timeout` | `4` | Seconds an **info** notification stays. Warnings last twice that, errors four times. |
+| `notifications.timeout` | `4` | Seconds an **info** or **success** notification stays. Warnings last twice that, errors four times. |
 | `notifications.corner` | `bottom-right` | Which corner they anchor to. |
 
 ```

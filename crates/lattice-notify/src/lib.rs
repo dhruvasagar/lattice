@@ -36,6 +36,15 @@ use std::time::Duration;
 pub enum NotificationLevel {
     #[default]
     Info,
+    /// Work the user started finished cleanly.
+    ///
+    /// **A state, not a severity.** It is Info in every respect that
+    /// measures how bad something is — timeout, the `*messages*` tee —
+    /// and differs only in how it *reads*: a green check, so a finished
+    /// push is distinguishable at a glance from a neutral note. The
+    /// "same three levels as `EchoLevel`" rule is about severity, and
+    /// this adds none.
+    Success,
     Warn,
     Error,
 }
@@ -51,7 +60,7 @@ impl NotificationLevel {
     /// lands.
     pub fn default_timeout(self) -> Duration {
         match self {
-            NotificationLevel::Info => Duration::from_secs(4),
+            NotificationLevel::Info | NotificationLevel::Success => Duration::from_secs(4),
             NotificationLevel::Warn => Duration::from_secs(8),
             NotificationLevel::Error => Duration::from_secs(16),
         }
@@ -65,7 +74,7 @@ impl NotificationLevel {
     /// that misconfiguration reachable.
     pub fn timeout_multiplier(self) -> u64 {
         match self {
-            NotificationLevel::Info => 1,
+            NotificationLevel::Info | NotificationLevel::Success => 1,
             NotificationLevel::Warn => 2,
             NotificationLevel::Error => 4,
         }
@@ -74,8 +83,33 @@ impl NotificationLevel {
     pub fn label(self) -> &'static str {
         match self {
             NotificationLevel::Info => "info",
+            NotificationLevel::Success => "success",
             NotificationLevel::Warn => "warn",
             NotificationLevel::Error => "error",
+        }
+    }
+
+    /// The icon that leads this level's row, for the current palette.
+    ///
+    /// **One function both renderers and the `*notifications*` buffer
+    /// call**, so the three surfaces cannot drift apart. Nerd Fonts v3
+    /// glyphs when `ui.nerd_fonts` is on; otherwise a BMP fallback that
+    /// renders in every monospace font — the same shapes the diagnostic
+    /// gutter falls back to (`● ▲`), so "warning" looks the same
+    /// everywhere. Both palettes are one cell wide, so toggling the
+    /// option cannot shift the text that follows.
+    pub fn glyph(self, nerd_fonts: bool) -> &'static str {
+        match (self, nerd_fonts) {
+            // nf-fa-circle_info / circle_check / triangle_exclamation /
+            // circle_xmark.
+            (NotificationLevel::Info, true) => "\u{f05a}",
+            (NotificationLevel::Success, true) => "\u{f058}",
+            (NotificationLevel::Warn, true) => "\u{f071}",
+            (NotificationLevel::Error, true) => "\u{f057}",
+            (NotificationLevel::Info, false) => "\u{25cf}",
+            (NotificationLevel::Success, false) => "\u{2713}",
+            (NotificationLevel::Warn, false) => "\u{25b2}",
+            (NotificationLevel::Error, false) => "\u{2717}",
         }
     }
 }
@@ -223,6 +257,20 @@ impl NotificationStore {
         }
     }
 
+    /// Whether icons use the Nerd Fonts palette — `ui.nerd_fonts`.
+    ///
+    /// Read by name: the option is declared in `lattice-host`, which
+    /// this crate sits below. A store with no config uses the fallback
+    /// palette, which renders everywhere.
+    pub fn nerd_fonts(&self) -> bool {
+        self.config
+            .lock()
+            .ok()
+            .and_then(|c| c.as_ref().cloned())
+            .and_then(|c| c.get_bool_by_name("ui.nerd_fonts"))
+            .unwrap_or(false)
+    }
+
     /// Give the store its config. Called by [`install`]; without one it
     /// falls back to the compiled defaults.
     pub fn set_config(&self, config: Arc<lattice_config::ConfigRegistry>) {
@@ -266,7 +314,9 @@ impl NotificationStore {
         // notification level, which `MessagesLayer` maps straight
         // through.
         match level {
-            NotificationLevel::Info => tracing::info!(target: "lattice_notify", "{tee}"),
+            NotificationLevel::Info | NotificationLevel::Success => {
+                tracing::info!(target: "lattice_notify", "{tee}")
+            }
             NotificationLevel::Warn => tracing::warn!(target: "lattice_notify", "{tee}"),
             NotificationLevel::Error => tracing::error!(target: "lattice_notify", "{tee}"),
         }
@@ -571,16 +621,13 @@ pub fn render_buffer(store: &NotificationStore) -> (String, Vec<Option<Notificat
         return ("No notifications.\n".to_string(), vec![None]);
     }
     let visible = store.max_visible();
+    let nerd_fonts = store.nerd_fonts();
     let mut out = String::new();
     let mut rows: Vec<Option<NotificationId>> = Vec::new();
     for (i, n) in all.iter().enumerate() {
         // The marker is the level, not a bullet: scanning for the one
         // that failed is the reason to open this buffer.
-        let marker = match n.level {
-            NotificationLevel::Info => "\u{2713}",
-            NotificationLevel::Warn => "!",
-            NotificationLevel::Error => "\u{2717}",
-        };
+        let marker = n.level.glyph(nerd_fonts);
         // Queued ones are shown, dimmed by a marker rather than hidden:
         // "+N more" in the corner tells you they exist, and this is
         // where you find out what they are.
@@ -723,7 +770,52 @@ pub fn install(boot: &mut impl lattice_mode::SubsystemBoot) {
         }
         Vec::new()
     });
+    install_palette_refresh(boot, store.clone(), bus.clone());
     store.set_expiry_channel(bus, boot.runtime_handle().clone());
+}
+
+/// Re-render an open `*notifications*` buffer when `ui.nerd_fonts`
+/// flips, so its icons follow the palette like every other glyph
+/// surface. The corner needs no help — it reads the option per frame.
+///
+/// Refreshes in place through the document handle and never opens the
+/// buffer: flipping an option must not move focus. Matched by name for
+/// the reason `lattice-dashboard` gives — the option lives in
+/// `lattice-host`, above this crate.
+fn install_palette_refresh(
+    boot: &mut impl lattice_mode::SubsystemBoot,
+    store: NotificationStoreHandle,
+    wake: lattice_mode::inbound::InboundBus<NotifyInbound>,
+) {
+    use lattice_protocol::event::{Event, EventKind};
+    use lattice_runtime::{EventFilter, SubscriptionTarget};
+
+    let buffers = boot.buffer_store().clone();
+    let rows = boot.service::<mode::RowMapHandle>().map(|r| (*r).clone());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    boot.event_bus().subscribe(
+        EventFilter::kind(EventKind::OptionChanged),
+        SubscriptionTarget::Channel(tx),
+    );
+    boot.runtime_handle().spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let Event::OptionChanged { name, .. } = event else {
+                continue;
+            };
+            if name != "ui.nerd_fonts" {
+                continue;
+            }
+            let Some(handle) = buffers
+                .find_by_name(mode::BUFFER_NAME)
+                .and_then(|id| buffers.handle_for(id))
+            else {
+                continue;
+            };
+            mode::rerender(&store, rows.as_ref(), &handle).await;
+            // The edit landed off-keystroke; wake the editor so it paints.
+            let _ = wake.send(NotifyInbound::Changed);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -756,6 +848,67 @@ mod tests {
         assert!(
             NotificationLevel::Warn.default_timeout() > NotificationLevel::Info.default_timeout()
         );
+    }
+
+    /// Success is a state, not a severity: it reads differently but
+    /// lingers exactly as long as info. Otherwise raising the timeout
+    /// would change the two differently, and a finished push would
+    /// behave unlike the note beside it.
+    #[test]
+    fn success_times_out_like_info() {
+        assert_eq!(
+            NotificationLevel::Success.default_timeout(),
+            NotificationLevel::Info.default_timeout()
+        );
+        assert_eq!(
+            NotificationLevel::Success.timeout_multiplier(),
+            NotificationLevel::Info.timeout_multiplier()
+        );
+    }
+
+    const LEVELS: [NotificationLevel; 4] = [
+        NotificationLevel::Info,
+        NotificationLevel::Success,
+        NotificationLevel::Warn,
+        NotificationLevel::Error,
+    ];
+
+    /// The icon is what tells the rows apart. Two levels sharing one
+    /// in either palette would make them look the same again.
+    #[test]
+    fn every_level_has_its_own_icon_in_both_palettes() {
+        for nerd in [false, true] {
+            let glyphs: std::collections::HashSet<&str> =
+                LEVELS.iter().map(|l| l.glyph(nerd)).collect();
+            assert_eq!(glyphs.len(), LEVELS.len(), "nerd_fonts={nerd}");
+        }
+    }
+
+    /// One cell in both palettes, so toggling `ui.nerd_fonts` cannot
+    /// shift the text after the icon.
+    #[test]
+    fn every_icon_is_one_char_in_both_palettes() {
+        for level in LEVELS {
+            for nerd in [false, true] {
+                assert_eq!(
+                    level.glyph(nerd).chars().count(),
+                    1,
+                    "{level:?} nerd_fonts={nerd}"
+                );
+            }
+        }
+    }
+
+    /// The fallback palette is the default and must render in any
+    /// monospace font, so it may not reach into the Private Use Area
+    /// that only a patched font fills. The Nerd palette must.
+    #[test]
+    fn only_the_nerd_palette_uses_private_use_glyphs() {
+        let pua = |g: &str| g.chars().all(|c| ('\u{e000}'..='\u{f8ff}').contains(&c));
+        for level in LEVELS {
+            assert!(!pua(level.glyph(false)), "{level:?}");
+            assert!(pua(level.glyph(true)), "{level:?}");
+        }
     }
 
     #[test]
@@ -1247,8 +1400,17 @@ mod tests {
     fn the_level_marker_is_what_you_scan_for() {
         let s = NotificationStore::new();
         s.post(NotificationLevel::Error, "boom");
+        s.post(NotificationLevel::Success, "pushed");
         let (text, _) = render_buffer(&s);
-        assert!(text.contains('\u{2717}'), "{text}");
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines[0].contains(NotificationLevel::Error.glyph(false)),
+            "{text}"
+        );
+        assert!(
+            lines[1].contains(NotificationLevel::Success.glyph(false)),
+            "the buffer uses the same icons as the corner: {text}"
+        );
     }
 
     /// NOTIF.1f: the action is a typed effect, not a name to resolve.

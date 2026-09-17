@@ -43,6 +43,20 @@ async fn replace_buffer_text(handle: &Arc<dyn lattice_runtime::Document>, text: 
         .await;
 }
 
+/// Render the store into `handle` and record the row map that goes
+/// with it — the two are only correct together.
+pub(crate) async fn rerender(
+    store: &NotificationStoreHandle,
+    rows: Option<&RowMapHandle>,
+    handle: &Arc<dyn lattice_runtime::Document>,
+) {
+    let (text, row_map) = render_buffer(store);
+    if let Some(rows) = rows {
+        rows.set(row_map);
+    }
+    replace_buffer_text(handle, text).await;
+}
+
 pub struct NotificationsMode;
 
 impl NotificationsMode {
@@ -194,11 +208,8 @@ impl Mode for NotificationsMode {
             let Some(store) = ctx.service::<NotificationStoreHandle>() else {
                 return Ok(());
             };
-            let (text, row_map) = render_buffer(&store);
-            if let Some(rows) = ctx.service::<RowMapHandle>() {
-                rows.set(row_map);
-            }
-            replace_buffer_text(&handle, text).await;
+            let rows = ctx.service::<RowMapHandle>().map(|r| (*r).clone());
+            rerender(&store, rows.as_ref(), &handle).await;
             Ok(())
         })
     }

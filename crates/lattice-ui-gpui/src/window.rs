@@ -931,6 +931,30 @@ where
         .unwrap_or(dflt)
 }
 
+/// One notification row: the level's icon, then the text, both in the
+/// level's colour. Peer of the TUI's `notification_line` — same glyph
+/// function, same theme elements (`diagnostic.*`, `diff.add.sign`).
+fn notification_row(
+    item: &lattice_notify::Notification,
+    theme: &crate::GpuiTheme,
+    nerd_fonts: bool,
+) -> gpui::Div {
+    use lattice_notify::NotificationLevel as L;
+    let colour = match item.level {
+        L::Info => theme.notification_info,
+        L::Success => theme.notification_success,
+        L::Warn => theme.notification_warn,
+        L::Error => theme.notification_error,
+    };
+    div()
+        .flex()
+        .flex_row()
+        .gap_2()
+        .text_color(rgb(colour))
+        .child(item.level.glyph(nerd_fonts))
+        .child(item.text.clone())
+}
+
 /// T.6.t, restored: the four severity glyphs and their resolved
 /// colours, read ONCE per frame.
 ///
@@ -5097,13 +5121,16 @@ impl Render for EditorView {
                     .bg(rgb(theme.background))
                     .border_1()
                     .border_color(rgb(theme.cursor_background));
+                // Read once per frame, and only while something is up —
+                // an idle corner costs no option lookup.
+                let nerd_fonts = render_state
+                    .options
+                    .config
+                    .get_typed::<lattice_host::ui::theme_options::UiNerdFonts>()
+                    .map(|v| *v)
+                    .unwrap_or(false);
                 for item in &n.visible {
-                    let colour = match item.level {
-                        lattice_notify::NotificationLevel::Info => theme.cursor_background,
-                        lattice_notify::NotificationLevel::Warn => theme.notification_warn,
-                        lattice_notify::NotificationLevel::Error => theme.notification_error,
-                    };
-                    stack = stack.child(div().text_color(rgb(colour)).child(item.text.clone()));
+                    stack = stack.child(notification_row(item, &theme, nerd_fonts));
                 }
                 if n.queued > 0 {
                     // Named rather than dropped: a burst that silently

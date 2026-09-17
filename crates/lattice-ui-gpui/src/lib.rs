@@ -248,6 +248,10 @@ pub struct GpuiTheme {
     /// they recolour with `:colorscheme` like every other element.
     pub notification_warn: u32,
     pub notification_error: u32,
+    /// Info and success rows ↔ `diagnostic.info` / `diff.add.sign`,
+    /// the elements the TUI peer reads for the same levels.
+    pub notification_info: u32,
+    pub notification_success: u32,
     /// Issue #35 (2026-05-22): picker match-range highlight
     /// color. Painted on the substring of each candidate that
     /// matched the query. Catppuccin Mocha peach by default —
@@ -304,6 +308,9 @@ impl Default for GpuiTheme {
             // defaults elsewhere; overridden by the resolved elements.
             notification_warn: 0xfab387,
             notification_error: 0xf38ba8,
+            // Catppuccin Mocha sky / green.
+            notification_info: 0x89dceb,
+            notification_success: 0xa6e3a1,
             // Issue #35: Catppuccin Mocha peach — bright accent
             // distinct from `foreground` (text). Highly
             // visible against both light and dark backgrounds.
@@ -1008,6 +1015,12 @@ impl GpuiApp {
         }
         if let Some(fg) = resolved.get(ids.diagnostic_error).fg {
             self.theme.notification_error = fg.to_rgb_u32(defaults.notification_error);
+        }
+        if let Some(fg) = resolved.get(ids.diagnostic_info).fg {
+            self.theme.notification_info = fg.to_rgb_u32(defaults.notification_info);
+        }
+        if let Some(fg) = resolved.get(ids.diff_add_sign).fg {
+            self.theme.notification_success = fg.to_rgb_u32(defaults.notification_success);
         }
         if let Some(fg) = resolved.get(ids.ui_popup_hint).fg {
             self.theme.popup_hint = fg.to_rgb_u32(defaults.popup_hint);

@@ -2156,20 +2156,11 @@ fn draw_notifications(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(block_area);
     frame.render_widget(block, block_area);
 
+    let theme = &app.theme;
     let mut lines: Vec<Line> = n
         .visible
         .iter()
-        .map(|item| {
-            let colour = match item.level {
-                lattice_notify::NotificationLevel::Info => Color::Cyan,
-                lattice_notify::NotificationLevel::Warn => Color::Yellow,
-                lattice_notify::NotificationLevel::Error => Color::Red,
-            };
-            Line::from(vec![Span::styled(
-                clip_to_width(&item.text, inner.width),
-                TuiStyle::default().fg(colour),
-            )])
-        })
+        .map(|item| notification_line(item, theme, inner.width))
         .collect();
     if n.queued > 0 {
         // Named rather than dropped: a burst that silently discarded
@@ -2180,6 +2171,33 @@ fn draw_notifications(frame: &mut Frame, area: Rect, app: &App) {
         )]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// One notification row: the level's icon, then the text, both in the
+/// level's colour.
+///
+/// Colours come from the theme rather than fixed terminal colours, and
+/// from the same elements the GPUI peer reads — `diagnostic.*` for the
+/// severities and `diff.add.sign` for success — so `:colorscheme`
+/// recolours both, identically.
+fn notification_line(
+    item: &lattice_notify::Notification,
+    theme: &crate::theme::Theme,
+    width: u16,
+) -> Line<'static> {
+    use lattice_notify::NotificationLevel as L;
+    let style = match item.level {
+        L::Info => theme.diagnostic_info_style,
+        L::Success => theme.diff_add_sign_style,
+        L::Warn => theme.diagnostic_warning_style,
+        L::Error => theme.diagnostic_error_style,
+    };
+    let icon = format!("{} ", item.level.glyph(theme.nerd_fonts));
+    let rest = width.saturating_sub(icon.chars().count() as u16);
+    Line::from(vec![
+        Span::styled(icon, style),
+        Span::styled(clip_to_width(&item.text, rest), style),
+    ])
 }
 
 fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
@@ -14254,6 +14272,66 @@ mod tests {
             ),
         ];
         assert!(separator_cells(&rects).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod notification_line_tests {
+    use super::notification_line;
+    use lattice_notify::{Notification, NotificationId, NotificationLevel};
+
+    fn item(level: NotificationLevel, text: &str) -> Notification {
+        Notification {
+            id: NotificationId(1),
+            level,
+            text: text.into(),
+            timeout: None,
+            actions: Vec::new(),
+        }
+    }
+
+    fn line_text(line: &ratatui::text::Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn a_row_leads_with_its_levels_icon() {
+        let mut theme = crate::theme::Theme::default();
+        for nerd in [false, true] {
+            theme.nerd_fonts = nerd;
+            let line = notification_line(&item(NotificationLevel::Success, "pushed"), &theme, 40);
+            let text = line_text(&line);
+            assert!(
+                text.starts_with(NotificationLevel::Success.glyph(nerd)),
+                "nerd_fonts={nerd}: {text:?}"
+            );
+            assert!(text.trim_end().ends_with("pushed"), "{text:?}");
+        }
+    }
+
+    /// Success must not look like info — that is why the level exists.
+    #[test]
+    fn success_is_coloured_apart_from_info() {
+        let theme = crate::theme::Theme::default();
+        let style = |level| notification_line(&item(level, "x"), &theme, 40).spans[0].style;
+        assert_ne!(
+            style(NotificationLevel::Success),
+            style(NotificationLevel::Info)
+        );
+        assert_eq!(
+            style(NotificationLevel::Success),
+            theme.diff_add_sign_style,
+            "success reads the same element GPUI does"
+        );
+    }
+
+    /// The icon costs width; the text is clipped to what is left, so a
+    /// long message cannot push past the box.
+    #[test]
+    fn the_text_is_clipped_to_the_width_left_after_the_icon() {
+        let theme = crate::theme::Theme::default();
+        let line = notification_line(&item(NotificationLevel::Info, &"a".repeat(80)), &theme, 20);
+        assert!(line_text(&line).chars().count() <= 20);
     }
 }
 

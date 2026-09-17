@@ -2193,11 +2193,29 @@ fn notification_line(
         L::Error => theme.diagnostic_error_style,
     };
     let icon = format!("{} ", item.level.glyph(theme.nerd_fonts));
-    let rest = width.saturating_sub(icon.chars().count() as u16);
-    Line::from(vec![
-        Span::styled(icon, style),
-        Span::styled(clip_to_width(&item.text, rest), style),
-    ])
+    // NC.2: the scope is its own bold span, so two repositories'
+    // notifications differ in one place the eye can find.
+    // Capped at a third of the row: a long repository name must not
+    // leave no room for what happened in it.
+    let scope = item
+        .scope
+        .as_deref()
+        .map(|s| {
+            let s = clip_to_width(s, width / 3);
+            format!("{} {} ", s.trim_end(), lattice_notify::SCOPE_SEPARATOR)
+        })
+        .unwrap_or_default();
+    let used = (icon.chars().count() + scope.chars().count()) as u16;
+    let rest = width.saturating_sub(used);
+    let mut spans = vec![Span::styled(icon, style)];
+    if !scope.is_empty() {
+        spans.push(Span::styled(
+            scope,
+            style.add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::styled(clip_to_width(&item.text, rest), style));
+    Line::from(spans)
 }
 
 fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
@@ -14284,6 +14302,7 @@ mod notification_line_tests {
         Notification {
             id: NotificationId(1),
             level,
+            scope: None,
             text: text.into(),
             timeout: None,
             actions: Vec::new(),
@@ -14322,6 +14341,30 @@ mod notification_line_tests {
             style(NotificationLevel::Success),
             theme.diff_add_sign_style,
             "success reads the same element GPUI does"
+        );
+    }
+
+    /// NC.2: the scope leads the text, bold, so two repositories'
+    /// notifications cannot read the same.
+    #[test]
+    fn the_scope_is_its_own_bold_span_before_the_text() {
+        let theme = crate::theme::Theme::default();
+        let mut n = item(NotificationLevel::Success, "push main");
+        n.scope = Some("lattice".into());
+        let line = notification_line(&n, &theme, 60);
+        let text = line_text(&line);
+        let scope_at = text.find("lattice").unwrap();
+        assert!(scope_at < text.find("push main").unwrap(), "{text:?}");
+        let scope_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("lattice"))
+            .unwrap();
+        assert!(
+            scope_span
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
         );
     }
 

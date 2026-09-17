@@ -3233,6 +3233,57 @@ pub(crate) fn invalidates_a_magit_view(event: &lattice_protocol::event::Event) -
     )
 }
 
+/// NC.2: how a magit operation ended. `From<Result<..>>` keeps the
+/// common case a plain result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TaskResult {
+    Done(String),
+    Failed(String),
+}
+
+impl From<Result<String, String>> for TaskResult {
+    fn from(result: Result<String, String>) -> Self {
+        match result {
+            Ok(out) => TaskResult::Done(out),
+            Err(err) => TaskResult::Failed(err),
+        }
+    }
+}
+
+/// NC.2: the name a notification shows for `workdir`'s repository.
+///
+/// The basename, until a second repository with the same basename
+/// reports in this session — from then on both are qualified with their
+/// parent (`work/api`, `oss/api`). Two notifications that differ only
+/// in a repository nobody can tell apart are the ambiguity this field
+/// exists to remove. Learnt from what has reported, because a task has
+/// no handle on the set of open repositories, and the first report
+/// from each checkout is the moment that set grows.
+pub(crate) fn task_scope(workdir: &std::path::Path) -> Option<String> {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashMap<String, HashSet<std::path::PathBuf>>>> = OnceLock::new();
+
+    if workdir.as_os_str().is_empty() {
+        return None;
+    }
+    let base = crate::workdir::repo_label(workdir);
+    let shared = SEEN
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut seen| {
+            let dirs = seen.entry(base.clone()).or_default();
+            dirs.insert(workdir.to_path_buf());
+            dirs.len() > 1
+        })
+        .unwrap_or(false);
+    Some(if shared {
+        crate::workdir::qualified_repo_label(workdir)
+    } else {
+        base
+    })
+}
+
 /// MG.41g: report a finished background operation — log **and**
 /// publish, in one call.
 ///
@@ -3241,33 +3292,38 @@ pub(crate) fn invalidates_a_magit_view(event: &lattice_protocol::event::Event) -
 /// and making them one call means the failure mode requires actively
 /// skipping the helper rather than merely forgetting an argument.
 ///
+/// NC.2: `workdir` is required for the same reason — the repository
+/// is what tells two notifications apart, and an optional argument is
+/// one a spawner forgets.
+///
 /// magit never mentions notifications. The notification layer is one
 /// subscriber on `BackgroundTaskFinished`; LSP, compilation, or a
 /// plugin get the same treatment by publishing the same event.
-pub(crate) fn finish_task(label: &str, result: Result<String, String>) {
+pub(crate) fn finish_task(workdir: &std::path::Path, label: &str, result: impl Into<TaskResult>) {
     use lattice_protocol::event::{Event, TaskOutcome};
-    let outcome = match &result {
-        Ok(out) => {
+    let outcome = match result.into() {
+        TaskResult::Done(out) => {
             // `debug!`, not `info!`: the notification tees itself to
             // `*messages*`, and two lines saying the same thing is the
             // flooding the diagnostic-logging rule warns about.
             tracing::debug!(target: "lattice_magit", "magit: {label} succeeded: {out}");
             TaskOutcome::Succeeded {
-                summary: first_line(out),
+                summary: first_line(&out),
             }
         }
-        Err(err) => {
+        TaskResult::Failed(err) => {
             // `error!` keeps git's FULL stderr; the published message
             // is the truncated one-liner a notification can show.
             tracing::error!(target: "lattice_magit", "magit: {label} failed: {err}");
             TaskOutcome::Failed {
-                message: first_line(err),
+                message: first_line(&err),
             }
         }
     };
     if let Some(bus) = EVENT_BUS.get() {
         bus.publish(Event::BackgroundTaskFinished {
             source: "magit".to_string(),
+            scope: task_scope(workdir),
             label: label.to_string(),
             outcome,
         });
@@ -3311,6 +3367,7 @@ pub fn spawn_git_sequence(
         .first()
         .map(|s| format!("git {}", s.argv.join(" ")))
         .unwrap_or_else(|| label.to_string());
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
             let mut last = String::new();
@@ -3327,7 +3384,7 @@ pub fn spawn_git_sequence(
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(label, result);
+        finish_task(&scope_dir, label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3357,6 +3414,7 @@ pub fn spawn_rebase_verb_with(
 ) -> Effect {
     let commit = commit.to_string();
     let shown = format!("git rebase ({verb} {commit})");
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
             crate::magit_rebase_mode::rebase_one_commit(&workdir, &commit, verb, message.as_deref())
@@ -3364,7 +3422,7 @@ pub fn spawn_rebase_verb_with(
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(label, result);
+        finish_task(&scope_dir, label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3390,11 +3448,12 @@ pub fn spawn_computed<F>(
 where
     F: FnOnce(&std::path::Path) -> Result<(), String> + Send + 'static,
 {
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || f(&workdir).map(|()| String::new()))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(label, result);
+        finish_task(&scope_dir, label, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3406,6 +3465,7 @@ pub fn spawn_git(workdir: std::path::PathBuf, argv: Vec<String>, what: &str) -> 
     let shown = format!("git {}", argv.join(" "));
     let logged = shown.clone();
     let what = what.to_string();
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
@@ -3413,7 +3473,7 @@ pub fn spawn_git(workdir: std::path::PathBuf, argv: Vec<String>, what: &str) -> 
         // MG.41g: was log-only, so every `spawn_git` caller finished
         // invisibly.
         let _ = logged;
-        finish_task(&what, result);
+        finish_task(&scope_dir, &what, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3589,13 +3649,14 @@ pub fn spawn_subtree_op(workdir: std::path::PathBuf, op: SubtreeOp, line: &str) 
     };
     let what = op.what;
     let shown = argv.join(" ");
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: publish rather than hold a notification handle.
         let _ = shown;
-        finish_task(what, result);
+        finish_task(&scope_dir, what, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3662,12 +3723,13 @@ pub(crate) fn spawn_note_merge(workdir: std::path::PathBuf, spec: &str) -> Effec
             text: "magit: usage — <notes-ref> [manual|ours|theirs|union|cat_sort_uniq]".to_string(),
         };
     };
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: publish rather than post.
-        finish_task("notes merge", result);
+        finish_task(&scope_dir, "notes merge", result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3728,13 +3790,14 @@ pub(crate) fn default_clone_dest(url: &str) -> String {
 pub fn spawn_clone(url: String, dest: String) -> Effect {
     let argv = clone_argv(&url, &dest);
     let _shown = dest.clone();
+    let scope_dir = std::path::PathBuf::from(&dest);
     tokio::task::spawn(async move {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let result = tokio::task::spawn_blocking(move || run_remote_op(&cwd, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: publish rather than post.
-        finish_task("clone", result);
+        finish_task(&scope_dir, "clone", result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3755,6 +3818,7 @@ pub fn spawn_clone(url: String, dest: String) -> Effect {
 /// duplicate.
 pub fn spawn_gitignore(workdir: std::path::PathBuf, pattern: String) -> Effect {
     let shown = pattern.clone();
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
             // MR.4: `.gitignore` is written in the repository the buffer
@@ -3775,7 +3839,7 @@ pub fn spawn_gitignore(workdir: std::path::PathBuf, pattern: String) -> Effect {
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: was log-only.
-        finish_task("update .gitignore", result);
+        finish_task(&scope_dir, "update .gitignore", result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -3884,9 +3948,13 @@ fn spawn_bisect(
         match outcome {
             // MG.41g: bisect marks check out a different commit — a
             // completion the user very much wants to see.
-            Ok(Ok(())) => finish_task(&format!("bisect {what}"), Ok(String::new())),
-            Ok(Err(e)) => finish_task(&format!("bisect {what}"), Err(e.to_string())),
-            Err(e) => finish_task(&format!("bisect {what}"), Err(format!("panicked: {e}"))),
+            Ok(Ok(())) => finish_task(&workdir, &format!("bisect {what}"), Ok(String::new())),
+            Ok(Err(e)) => finish_task(&workdir, &format!("bisect {what}"), Err(e.to_string())),
+            Err(e) => finish_task(
+                &workdir,
+                &format!("bisect {what}"),
+                Err(format!("panicked: {e}")),
+            ),
         }
         for view in views.all() {
             let _ = view.refresh();
@@ -4314,6 +4382,7 @@ pub fn spawn_remote_op_to(
     let base = op.argv(args);
     let what = op.what;
     let shown = base.join(" ");
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
             let resolved = match target {
@@ -4338,7 +4407,7 @@ pub fn spawn_remote_op_to(
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(what, result);
+        finish_task(&scope_dir, what, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -4355,6 +4424,7 @@ pub fn spawn_remote_op(
     let shown = argv.join(" ");
     let logged = shown.clone();
     let what = op.what;
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
@@ -4370,7 +4440,7 @@ pub fn spawn_remote_op(
         // log carries git's FULL stderr; the published message is the
         // one line a notification can show).
         let _ = logged;
-        finish_task(what, result);
+        finish_task(&scope_dir, what, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -4567,12 +4637,13 @@ pub fn spawn_commit_op(op: CommitOp, workdir: std::path::PathBuf, commit: &str) 
     let argv = op.argv(commit);
     let shown = argv.join(" ");
     let logged = shown.clone();
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: was log-only.
-        finish_task(&logged, result);
+        finish_task(&scope_dir, &logged, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -5662,6 +5733,42 @@ mod tests {
 }
 
 #[cfg(test)]
+mod task_scope_tests {
+    use super::task_scope;
+    use std::path::Path;
+
+    /// The static set is shared by every test in the binary, so each
+    /// test invents basenames nobody else uses.
+    #[test]
+    fn a_lone_repository_is_named_by_its_basename() {
+        assert_eq!(
+            task_scope(Path::new("/tmp/nc2-lone/nc2-solo")).as_deref(),
+            Some("nc2-solo")
+        );
+    }
+
+    /// Two checkouts sharing a basename would make two notifications
+    /// read the same, so once both have reported, both are qualified.
+    #[test]
+    fn a_shared_basename_is_qualified_by_its_parent() {
+        let work = Path::new("/tmp/nc2-work/nc2-api");
+        let oss = Path::new("/tmp/nc2-oss/nc2-api");
+        assert_eq!(task_scope(work).as_deref(), Some("nc2-api"));
+        assert_eq!(task_scope(oss).as_deref(), Some("nc2-oss/nc2-api"));
+        assert_eq!(
+            task_scope(work).as_deref(),
+            Some("nc2-work/nc2-api"),
+            "and the first one stops using the bare name too"
+        );
+    }
+
+    #[test]
+    fn an_empty_workdir_has_no_scope() {
+        assert_eq!(task_scope(Path::new("")), None);
+    }
+}
+
+#[cfg(test)]
 mod reactive_refresh {
     use super::invalidates_a_magit_view;
     use lattice_protocol::event::{Event, TaskOutcome};
@@ -5669,6 +5776,7 @@ mod reactive_refresh {
     fn finished(source: &str) -> Event {
         Event::BackgroundTaskFinished {
             source: source.to_string(),
+            scope: None,
             label: "push".to_string(),
             outcome: TaskOutcome::Succeeded {
                 summary: "done".to_string(),

@@ -424,7 +424,7 @@ fn spawn_mutation_and_refresh(
         let result = tokio::task::spawn_blocking(mutate)
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        crate::magit_global_mode::finish_task(&label, result);
+        crate::magit_global_mode::finish_task(&wd, &label, result);
         let (text, header) = tokio::task::spawn_blocking(move || build_stash_list(&wd))
             .await
             .unwrap_or_default();

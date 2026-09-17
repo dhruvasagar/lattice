@@ -445,6 +445,7 @@ fn spawn_remote_mutation(
         // so `a` / `r` / `d` / `u` / `p` in the remote list finished
         // where only a log reader would see it.
         crate::magit_global_mode::finish_task(
+            &workdir,
             &what,
             match outcome {
                 Ok(Ok(())) => Ok(String::new()),

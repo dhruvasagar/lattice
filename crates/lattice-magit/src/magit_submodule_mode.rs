@@ -410,6 +410,7 @@ fn spawn_submodule_mutation(
         // `a` / `u` / `s` / `d` here finish where only a log reader
         // would see them.
         crate::magit_global_mode::finish_task(
+            &workdir,
             &what,
             match outcome {
                 Ok(Ok(())) => Ok(String::new()),

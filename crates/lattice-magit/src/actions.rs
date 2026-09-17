@@ -1437,7 +1437,7 @@ fn spawn_mutation_and_refresh(
         let result = tokio::task::spawn_blocking(mutate)
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        crate::magit_global_mode::finish_task(&label, result);
+        crate::magit_global_mode::finish_task(&ctx.wd, &label, result);
         // `finish_task` published `BackgroundTaskFinished`, and every
         // live magit-status buffer is subscribed to it — including
         // this one. Refreshing here as well would run `git status`

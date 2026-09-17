@@ -946,13 +946,21 @@ fn notification_row(
         L::Warn => theme.notification_warn,
         L::Error => theme.notification_error,
     };
-    div()
+    let mut row = div()
         .flex()
         .flex_row()
         .gap_2()
         .text_color(rgb(colour))
-        .child(item.level.glyph(nerd_fonts))
-        .child(item.text.clone())
+        .child(item.level.glyph(nerd_fonts));
+    // NC.2: the scope as its own bold column, as the TUI draws it.
+    if let Some(scope) = &item.scope {
+        row = row.child(
+            div()
+                .font_weight(gpui::FontWeight::BOLD)
+                .child(format!("{scope} {}", lattice_notify::SCOPE_SEPARATOR)),
+        );
+    }
+    row.child(item.text.clone())
 }
 
 /// T.6.t, restored: the four severity glyphs and their resolved

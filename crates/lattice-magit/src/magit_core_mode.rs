@@ -1037,6 +1037,7 @@ pub(crate) fn spawn_patch_discard(
     patch: String,
     view: Option<Arc<dyn crate::buffer_state::MagitView>>,
 ) -> Effect {
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
             let repo = lattice_vcs::Repository::discover(&workdir)
@@ -1052,7 +1053,11 @@ pub(crate) fn spawn_patch_discard(
         // is SPAWNED, so it said "magit: discarded" whether or not the
         // discard succeeded — an optimistic report with no correction
         // path. `finish_task` is that correction path.
-        crate::magit_global_mode::finish_task("discard hunk", result.map(|()| String::new()));
+        crate::magit_global_mode::finish_task(
+            &scope_dir,
+            "discard hunk",
+            result.map(|()| String::new()),
+        );
         if let Some(view) = view {
             let _ = view.refresh();
         }
@@ -1075,6 +1080,7 @@ pub(crate) fn spawn_hunk_apply(
     let text = patch.to_patch();
     let (cached, reverse) = op.apply_flags();
     let logged = location.clone();
+    let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
             let repo = lattice_vcs::Repository::discover(&workdir)
@@ -1094,6 +1100,7 @@ pub(crate) fn spawn_hunk_apply(
         // precisely the outcome worth surfacing, and it was the one
         // outcome nothing surfaced.
         crate::magit_global_mode::finish_task(
+            &scope_dir,
             &format!("{} hunk at {logged}", op.present()),
             result.map(|()| String::new()),
         );

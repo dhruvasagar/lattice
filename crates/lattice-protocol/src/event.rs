@@ -272,7 +272,18 @@ pub enum Event {
         /// Subsystem that ran it — `"magit"`, `"lsp"`, a plugin id.
         /// Lets a subscriber filter without parsing `label`.
         source: String,
-        /// What finished, in the user's words: `"push"`, `"clone …"`.
+        /// NC.2: what the work was done *in* — a repository name, a
+        /// project, a server. `None` when the work has no such place.
+        ///
+        /// A field, not part of `label`, so every producer's scope
+        /// lands in the same place on screen: several notifications at
+        /// once are told apart by reading one column, not by parsing
+        /// each producer's own phrasing.
+        scope: Option<String>,
+        /// What was done, as an imperative phrase naming its object:
+        /// `"push main → origin/main"`, `"drop stash@{2}"`. The outcome
+        /// is appended by whoever reports it, so the label must read
+        /// correctly before "failed" as well as before a summary.
         label: String,
         outcome: TaskOutcome,
     },
@@ -315,6 +326,11 @@ pub enum TaskOutcome {
     /// Finished cleanly. `summary` is a short human line — the full
     /// output belongs in a log, not a notification.
     Succeeded { summary: String },
+    /// NC.2: ended cleanly but **not done** — a rebase paused on an
+    /// `edit`, a merge left uncommitted, a conflict waiting for the
+    /// user. Reporting these as success says "finished" about work the
+    /// user still has to finish. `message` says what is waiting.
+    Stopped { message: String },
     /// Failed. `message` is the reason, already truncated for display.
     Failed { message: String },
 }

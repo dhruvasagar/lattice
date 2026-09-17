@@ -482,7 +482,7 @@ fn spawn_mutation_and_refresh(
         let result = tokio::task::spawn_blocking(mutate)
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        crate::magit_global_mode::finish_task(&label, result);
+        crate::magit_global_mode::finish_task(&wd, &label, result);
         let text = tokio::task::spawn_blocking(move || {
             run_diff(&wd, &scope, path.as_deref(), &extra, context)
         })

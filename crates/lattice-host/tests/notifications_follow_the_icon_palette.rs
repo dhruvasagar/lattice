@@ -87,3 +87,38 @@ async fn toggling_nerd_fonts_rerenders_an_open_notifications_buffer() {
         "and the old palette's icon is gone"
     );
 }
+
+/// NC.2: two repositories finishing the same operation must not read
+/// the same. The scope travels on the event, so this goes through the
+/// real subscriber rather than posting directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_task_event_carries_its_scope_to_the_notification() {
+    use lattice_protocol::event::{Event, TaskOutcome};
+
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    let store = editor
+        .services
+        .get::<NotificationStoreHandle>()
+        .map(|s| (*s).clone())
+        .unwrap();
+    for scope in ["lattice", "dotfiles"] {
+        editor.event_bus.publish(Event::BackgroundTaskFinished {
+            source: "magit".into(),
+            scope: Some(scope.into()),
+            label: "push main".into(),
+            outcome: TaskOutcome::Succeeded {
+                summary: String::new(),
+            },
+        });
+    }
+
+    assert!(
+        settle_until(&mut editor, |_| store.visible().len() == 2).await,
+        "both completions are posted"
+    );
+    let live = store.visible();
+    let scopes: Vec<_> = live.iter().map(|n| n.scope.as_deref()).collect();
+    assert!(scopes.contains(&Some("lattice")), "{scopes:?}");
+    assert!(scopes.contains(&Some("dotfiles")), "{scopes:?}");
+    assert!(live.iter().all(|n| n.level == NotificationLevel::Success));
+}

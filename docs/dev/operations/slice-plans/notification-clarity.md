@@ -20,7 +20,7 @@ Built on NOTIF.1a–f. The reported gap had two halves:
 | Slice | What | Status |
 |---|---|---|
 | NC.1 | `NotificationLevel::Success`; one shared `glyph(nerd_fonts)` for the TUI, GPUI and the `*notifications*` buffer; theme-sourced colours in both peers; the buffer re-renders on a `ui.nerd_fonts` flip | ✅ |
-| NC.2 | `scope` on `Event::BackgroundTaskFinished` + a `Stopped` outcome; plugin-boundary mirror; the notification lays out `<icon> <scope> · <text>`; magit passes the repository name | 📝 |
+| NC.2 | `scope` on `Event::BackgroundTaskFinished` + a `Stopped` outcome; the notification lays out `<icon> <scope> · <text>`; magit passes the repository name | ✅ |
 | NC.3 | Pick the line that matters: failures prefer `error:` / `fatal:` / `!` / `CONFLICT` and fall back to stdout; push / fetch / pull get their own success summaries | 📝 |
 | NC.4 | magit label rewrite — a human phrase naming what was acted on, no raw flags, no shared labels; partial operations report `Stopped`; the `…ing` echo bug | 📝 |
 | NC.5 | Report the eight actions that finish silently (file stage/unstage/discard, branch create/checkout/rename/delete) | 📝 |
@@ -44,3 +44,26 @@ each, fallback outside the Private Use Area, Success timing = Info);
 `lattice-ui-tui` `notification_line_tests`;
 `lattice-host/tests/notifications_follow_the_icon_palette.rs` (fails with
 the refresh removed).
+
+## NC.2 — scope and the outcome wording ✅
+
+- `Event::BackgroundTaskFinished { scope }` and `TaskOutcome::Stopped`.
+  **No plugin-boundary change:** the event is not mirrored in WIT yet,
+  and `boundary_event.rs` refuses it with `{ .. }` patterns. The plan
+  had budgeted a mirror update that turned out to be unnecessary.
+- `Notification::scope`, `NotificationStore::post_scoped`, and
+  `task_notification(label, outcome)` as the single wording table.
+- `finish_task(workdir, label, result)`: the workdir is required, not
+  optional, for the same reason `finish_task` fuses its log and its
+  publish. `task_scope` qualifies a basename once two checkouts share
+  it.
+- magit's `TaskResult` enum is introduced with `Done` / `Failed`;
+  `Stopped` arrives in NC.4 with its first producer, rather than as a
+  variant nothing constructs yet.
+
+Tests: `lattice-notify` (wording per outcome, empty summary, scope kept
+separate and shown in the buffer); `lattice-magit` `task_scope_tests`;
+`lattice-ui-tui` bold scope span; the host test
+`a_task_event_carries_its_scope_to_the_notification`, which goes
+through the real subscriber.
+

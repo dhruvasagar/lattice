@@ -308,3 +308,62 @@ flipping an option must not move focus.
 fixed ANSI colours and GPUI borrowed `cursor_background` for info.
 `:colorscheme` now recolours both, identically.
 
+## Scope, and saying what happened
+
+> Slice plan: [`../operations/slice-plans/notification-clarity.md`](../operations/slice-plans/notification-clarity.md) (NC.2–NC.5).
+
+The first consumer's notifications were individually terse and
+collectively ambiguous. An audit of magit's producers found that none
+named the repository, and the text was `label` plus the first line of
+whatever git printed. So `push: To github.com:o/r.git` sat next to
+`fetch finished`, and two repositories' pushes read identically.
+
+**The event carries a `scope`.** `BackgroundTaskFinished` gained
+`scope: Option<String>`: where the work happened — a repository, a
+project, a server. It is a field rather than a prefix in `label`, so
+every producer's scope lands in the same column. Several notifications
+at once are then told apart by reading that column, not by parsing
+each producer's own phrasing. The notification keeps it separate too
+(`Notification::scope`), and both peers draw it bold ahead of the
+text, capped at a third of the row so a long name cannot crowd out
+what happened. `*messages*` gets `scope: text`, because the record is
+read long after the corner has cleared.
+
+magit's scope is the repository basename, qualified with its parent
+once a second checkout with the same basename has reported in the
+session (`work/api`, `oss/api`). The set is learnt from reports because
+a spawned task has no handle on the open repositories, and a first
+report is exactly when that set grows.
+
+Considered and rejected: having magit bake the repository into its
+label. It is smaller, but every producer would then format it
+differently, and the ambiguity would return with the next producer.
+The field is what makes an unambiguous layout the default rather than
+something each producer has to remember.
+
+**`TaskOutcome` has a third state, `Stopped`.** A rebase paused on
+`edit`, a merge left uncommitted, a conflict waiting for the user —
+each exits cleanly and is not done. Reporting them as success says
+"finished" about work the user still has to finish. `Stopped` posts at
+Warn.
+
+**The wording is decided in one place** (`task_notification`), not per
+producer:
+
+| Outcome | Level | Text |
+|---|---|---|
+| succeeded | Success | `label — summary`, or `label` alone |
+| stopped | Warn | `label stopped — message` |
+| failed | Error | `label failed — message` |
+
+So `label` is an imperative phrase naming its object (`push main →
+origin/main`, `drop stash@{2}`), because it must read correctly both
+before a summary and before "failed". Success drops the word
+"finished": the check says it. Stopped and failed keep their word,
+which is what `*messages*` records and what a reader without colour
+sees.
+
+The event is still host-internal: the plugin boundary refuses it until
+a WIT mirror lands (MG.41g), so the new field is additive there and
+changes nothing at the boundary today.
+

@@ -145,6 +145,10 @@ pub struct NotificationAction {
 pub struct Notification {
     pub id: NotificationId,
     pub level: NotificationLevel,
+    /// NC.2: where the work happened — a repository name, say. Drawn
+    /// in its own column ahead of `text`, so notifications from two
+    /// repositories cannot read the same.
+    pub scope: Option<String>,
     /// One line. Longer text belongs in `*messages*`, which this tees
     /// to — a corner popup that needs scrolling is the wrong surface.
     pub text: String,
@@ -292,12 +296,38 @@ impl NotificationStore {
         text: impl Into<String>,
         timeout: Option<Duration>,
     ) -> NotificationId {
+        self.post_full(level, None, text.into(), timeout)
+    }
+
+    /// NC.2: post with a scope — where the work happened — at the
+    /// level's own timeout.
+    pub fn post_scoped(
+        &self,
+        level: NotificationLevel,
+        scope: Option<String>,
+        text: impl Into<String>,
+    ) -> NotificationId {
+        self.post_full(level, scope, text.into(), Some(self.timeout_for(level)))
+    }
+
+    fn post_full(
+        &self,
+        level: NotificationLevel,
+        scope: Option<String>,
+        text: String,
+        timeout: Option<Duration>,
+    ) -> NotificationId {
         let id = NotificationId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        let text = text.into();
-        let tee = text.clone();
+        // The record carries the scope too: `*messages*` is read long
+        // after the corner has cleared, with no column to lean on.
+        let tee = match &scope {
+            Some(scope) => format!("{scope}: {text}"),
+            None => text.clone(),
+        };
         let notification = Notification {
             id,
             level,
+            scope,
             text,
             timeout,
             actions: Vec::new(),
@@ -632,7 +662,12 @@ pub fn render_buffer(store: &NotificationStore) -> (String, Vec<Option<Notificat
         // "+N more" in the corner tells you they exist, and this is
         // where you find out what they are.
         let queued = if i >= visible { " (queued)" } else { "" };
-        out.push_str(&format!("  {marker} {}{queued}\n", n.text));
+        let scope = n
+            .scope
+            .as_deref()
+            .map(|s| format!("{s} {SCOPE_SEPARATOR} "))
+            .unwrap_or_default();
+        out.push_str(&format!("  {marker} {scope}{}{queued}\n", n.text));
         rows.push(Some(n.id));
         for action in &n.actions {
             out.push_str(&format!("      <CR>  {}\n", action.label));
@@ -642,6 +677,52 @@ pub fn render_buffer(store: &NotificationStore) -> (String, Vec<Option<Notificat
         }
     }
     (out, rows)
+}
+
+/// Between a notification's scope and its text, on every surface.
+pub const SCOPE_SEPARATOR: &str = "\u{b7}";
+
+/// NC.2: how a finished background task reads.
+///
+/// Pure, so the wording is tested without a bus. The label is an
+/// imperative phrase naming its object ("push main → origin/main"); the
+/// outcome is appended here, in one place, so every producer reads the
+/// same way:
+///
+/// | Outcome | Level | Text |
+/// |---|---|---|
+/// | succeeded | Success | `label — summary`, or just `label` |
+/// | stopped | Warn | `label stopped — message` |
+/// | failed | Error | `label failed — message` |
+///
+/// Success needs no "finished" — the check says it — and the icon does
+/// not stand alone for the other two: the word is what `*messages*`
+/// keeps, and what a reader without colour sees.
+pub fn task_notification(
+    label: &str,
+    outcome: &lattice_protocol::event::TaskOutcome,
+) -> (NotificationLevel, String) {
+    use lattice_protocol::event::TaskOutcome;
+    let with = |head: String, tail: &str| {
+        if tail.is_empty() {
+            head
+        } else {
+            format!("{head} \u{2014} {tail}")
+        }
+    };
+    match outcome {
+        TaskOutcome::Succeeded { summary } => {
+            (NotificationLevel::Success, with(label.to_string(), summary))
+        }
+        TaskOutcome::Stopped { message } => (
+            NotificationLevel::Warn,
+            with(format!("{label} stopped"), message),
+        ),
+        TaskOutcome::Failed { message } => (
+            NotificationLevel::Error,
+            with(format!("{label} failed"), message),
+        ),
+    }
 }
 
 /// Which notification the cursor is on, from [`render_buffer`]'s map.
@@ -671,7 +752,7 @@ fn install_background_task_subscriber(
     boot: &mut impl lattice_mode::SubsystemBoot,
     store: NotificationStoreHandle,
 ) {
-    use lattice_protocol::event::{Event, EventKind, TaskOutcome};
+    use lattice_protocol::event::{Event, EventKind};
     use lattice_runtime::{EventFilter, SubscriptionTarget};
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
@@ -681,7 +762,13 @@ fn install_background_task_subscriber(
     );
     boot.runtime_handle().spawn(async move {
         while let Some(event) = rx.recv().await {
-            let Event::BackgroundTaskFinished { label, outcome, .. } = event else {
+            let Event::BackgroundTaskFinished {
+                scope,
+                label,
+                outcome,
+                ..
+            } = event
+            else {
                 continue;
             };
             // `post` wakes the editor via `bump_and_wake`, so the
@@ -695,22 +782,8 @@ fn install_background_task_subscriber(
             // if the user happened to press a key inside its timeout.
             // Pinned now by
             // `a_posted_notification_wakes_the_editor_with_no_keystroke`.
-            match outcome {
-                TaskOutcome::Succeeded { summary } => {
-                    let text = if summary.is_empty() {
-                        format!("{label} finished")
-                    } else {
-                        format!("{label}: {summary}")
-                    };
-                    store.post(NotificationLevel::Info, text);
-                }
-                TaskOutcome::Failed { message } => {
-                    store.post(
-                        NotificationLevel::Error,
-                        format!("{label} failed: {message}"),
-                    );
-                }
-            }
+            let (level, text) = task_notification(&label, &outcome);
+            store.post_scoped(level, scope, text);
         }
     });
 }
@@ -909,6 +982,89 @@ mod tests {
             assert!(!pua(level.glyph(false)), "{level:?}");
             assert!(pua(level.glyph(true)), "{level:?}");
         }
+    }
+
+    fn outcome_ok(summary: &str) -> lattice_protocol::event::TaskOutcome {
+        lattice_protocol::event::TaskOutcome::Succeeded {
+            summary: summary.into(),
+        }
+    }
+
+    /// NC.2: the outcome is worded in one place, so every producer's
+    /// completion reads the same way.
+    #[test]
+    fn a_task_outcome_sets_the_level_and_the_wording() {
+        use lattice_protocol::event::TaskOutcome;
+        assert_eq!(
+            task_notification("push main", &outcome_ok("main → origin/main")),
+            (
+                NotificationLevel::Success,
+                "push main \u{2014} main → origin/main".to_string()
+            )
+        );
+        assert_eq!(
+            task_notification(
+                "rebase onto main",
+                &TaskOutcome::Stopped {
+                    message: "stopped at 3f2a1c for edit".into()
+                }
+            ),
+            (
+                NotificationLevel::Warn,
+                "rebase onto main stopped \u{2014} stopped at 3f2a1c for edit".to_string()
+            )
+        );
+        assert_eq!(
+            task_notification(
+                "merge feature",
+                &TaskOutcome::Failed {
+                    message: "CONFLICT (content): Merge conflict in a.rs".into()
+                }
+            ),
+            (
+                NotificationLevel::Error,
+                "merge feature failed \u{2014} CONFLICT (content): Merge conflict in a.rs"
+                    .to_string()
+            )
+        );
+    }
+
+    /// An empty summary is not padded with "finished": the check
+    /// already says it, and a dangling dash reads as a missing value.
+    #[test]
+    fn an_empty_summary_leaves_the_label_alone() {
+        assert_eq!(
+            task_notification("stage a.rs", &outcome_ok("")).1,
+            "stage a.rs"
+        );
+    }
+
+    /// The scope is kept apart from the text, so a renderer can give it
+    /// its own column, and the buffer and the record both carry it.
+    #[test]
+    fn a_scoped_notification_keeps_its_scope_everywhere() {
+        let s = NotificationStore::new();
+        s.post_scoped(
+            NotificationLevel::Success,
+            Some("lattice".into()),
+            "push main",
+        );
+        s.post_scoped(
+            NotificationLevel::Success,
+            Some("dotfiles".into()),
+            "push main",
+        );
+        let live = s.visible();
+        assert_eq!(live[0].scope.as_deref(), Some("lattice"));
+        assert_eq!(
+            live[0].text, "push main",
+            "the scope is not baked into the text"
+        );
+        let (text, _) = render_buffer(&s);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains("lattice \u{b7} push main"), "{text}");
+        assert!(lines[1].contains("dotfiles \u{b7} push main"), "{text}");
+        assert_ne!(lines[0], lines[1], "two repositories never read the same");
     }
 
     #[test]

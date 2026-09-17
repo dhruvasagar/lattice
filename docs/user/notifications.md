@@ -10,12 +10,17 @@ a pull — tells you when it finishes, in the bottom-right corner,
 wherever you happen to be by then.
 
 ```
-┌──────────────────────────┐
-│ ✓ fetch finished         │
-│ ✗ push failed: rejected  │
-│ +2 more                  │
-└──────────────────────────┘
+┌─────────────────────────────────────────────┐
+│ ✓ lattice · fetch origin — up to date       │
+│ ✗ dotfiles · push main failed — rejected    │
+│ +2 more                                     │
+└─────────────────────────────────────────────┘
 ```
+
+The bold name after the icon is **where** the work happened — for git
+operations, the repository. When two checkouts share a directory name,
+both are shown with their parent directory (`work/api`, `oss/api`), so
+two notifications never read the same.
 
 Each row starts with an icon and is coloured by what happened:
 
@@ -23,7 +28,7 @@ Each row starts with an icon and is coloured by what happened:
 |---|---|---|
 | `✓` | circle-check | something you started finished cleanly |
 | `●` | circle-info | a neutral note |
-| `▲` | triangle-exclamation | a warning |
+| `▲` | triangle-exclamation | a warning, or work that **stopped part-way** and is waiting for you (a rebase paused to edit, a merge with conflicts) |
 | `✗` | circle-xmark | a failure |
 
 The plain icons work in any font. With `:set ui.nerd_fonts=on` the rows

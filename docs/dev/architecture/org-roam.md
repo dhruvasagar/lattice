@@ -375,6 +375,7 @@ failure would write an empty drawer and nothing would ever say so.
 |---|---|
 | `:org-roam-find-node` (`<leader>onf`) | picker over all nodes; create-on-no-match; opens the node |
 | completion inside `[[…` | org-roam nodes as an insert-mode completion source — match a title, insert `[[id:…][Title]]` |
+| `:org-roam-insert-node` (`C-c n i`, Insert; Visual for a region) | picker over all nodes; inserts the chosen link, or replaces the region with it. Its create row opens a child capture whose commit writes the link back (CD.6) |
 | `:org-roam-id-create` | mint an `:ID:` for the headline at point, making it a node |
 | `:org-roam-backlinks` | a picker over what points here — navigation, so a jump list rather than a view |
 | `:org-roam-dailies-today` / `-yesterday` / `-tomorrow` / `-goto-date` (`<leader>ondd` / `ondy` / `ondt` / `ondD`) | the journal — §6.2 |
@@ -390,8 +391,12 @@ picking, and coming back — and emacs does not ask that either: you type `[[` a
 completion offers nodes. Org contributes a `completion-source` (PH7.6) rather
 than a second picker, gated on the cursor being inside an unclosed `[[`, which
 is also what keeps a 500-node corpus out of ordinary word completion. The
-picker form (`:org-roam-insert-node`) is deferred, not dropped — see the slice
-plan.
+picker form (`:org-roam-insert-node`) came later (OR.7c), for the case
+completion serves badly: finding one title among hundreds you only half
+remember. Its create row runs the ordinary roam capture and writes the link
+back when the draft is filed — see
+[`org-capture-drafts.md`](org-capture-drafts.md) §8 and §10, which supersede the
+one-hop "mint, write, link" OR.7c shipped.
 
 The gate is the **guest's** to decide, and deliberately so. The host hands over
 `line-before-cursor` and `language`; it does not know what `[[` means and must

@@ -21,7 +21,7 @@ that unblocks one deferred row of the design's §8 table.
 | CD.5  | org-plugin           | `:org-capture-drafts` picker + `<leader>oC`                                                                             | ✅          |
 | CD.6a | lattice              | `open-picker-payload` += `query` (the picker's initial input)                                                           | ✅          |
 | CD.6b | lattice              | `host-services.clamp-position` (design H8)                                                                              | ✅          |
-| CD.6  | org-plugin           | `create-and-insert` opens a child capture; write-back; regions                                                          | 📝          |
+| CD.6  | org-plugin           | `create-and-insert` opens a child capture; write-back; regions                                                          | ✅          |
 | CD.7  | org-plugin           | `${origin}` back-reference for the no-write-back verbs                                                                  | 📝          |
 | CD.8  | org-plugin           | Roam-scan skip; outstanding-caller warning                                                                              | 📝          |
 | CD.9  | lattice + org-plugin | H4: a `completion-source` accept hook; `[[` → create                                                                    | ⛔ deferred |
@@ -303,7 +303,37 @@ and range order. `boot_regression_pins.rs` confirms the loader wires it.
 
 ---
 
-## CD.6 — `create-and-insert` opens a child capture
+## CD.6 — `create-and-insert` opens a child capture ✅
+
+**Landed** (org plugin `5ebf2ad`), on CD.6a (the seeded query) and CD.6b
+(`clamp-position`), both found missing while planning this slice. What differs
+from the plan below:
+
+- **The origin lives in the plugin store**: `capture-origin` for the picker's
+  origin, and `capture-caller/<id>` for the parked caller. A guest
+  thread_local is per seam. The id rides the template chooser as a third
+  argument. Leftover parked callers are cleared at the next
+  create-and-insert.
+- **The region form is its own action**, `org-roam-insert-node-region` on
+  Visual `<C-c>ni`, because only an action receives the selection. Visual's
+  inclusive end is made exclusive by one character.
+- **"Commit the middle child before the innermost" cannot land the innermost
+  link.** Filing the middle closes the innermost's caller, which is the
+  closed-caller case. The any-order test uses siblings instead; design §8 now
+  states exactly what the property is.
+- **The harness needed two fixes**: `OpenPicker` through
+  `open_picker_for_effect`, and `set_buffer_store` on the hand-built loader.
+  The second was the "harness bypasses install" trap: unwired, every caller
+  read as closed.
+- **Found along the way:** `delete-file` refused never-saved drafts under a
+  symlinked grant (lattice `ee38466c`).
+
+Tests: the eight below, all in `tests/org_roam_index.rs`, plus "without
+templates, still one step".
+
+---
+
+### As planned
 
 Design §8, §10. The write-back half.
 

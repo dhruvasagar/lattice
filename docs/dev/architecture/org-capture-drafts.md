@@ -6,7 +6,7 @@
 > host seams (§3) that name no org concept. See
 > [`plugin-host.md`](plugin-host.md).
 
-**Status:** 🚧 CD.1–CD.5, CD.6a and CD.6b built; CD.6–CD.8 planned, CD.9 deferred. Extends [`org-capture.md`](org-capture.md) §8 and
+**Status:** 🚧 CD.1–CD.6 built; CD.7–CD.8 planned, CD.9 deferred. Extends [`org-capture.md`](org-capture.md) §8 and
 [`org-roam.md`](org-roam.md) §5, both of which this page contradicts in places —
 where they disagree, this page is newer and says so explicitly. Slice plan:
 [`../operations/slice-plans/org-capture-drafts.md`](../operations/slice-plans/org-capture-drafts.md).
@@ -470,6 +470,14 @@ This is strictly better than emacs and the difference is visible:
 clobbers its parent's. Per-capture callers give unbounded depth *and* let
 captures be committed in **any** order — the innermost need not go first,
 because nothing depends on a stack discipline being maintained.
+
+What "any order" buys, stated exactly (settled at CD.6): siblings — two
+children of one caller — file in either order and both links land. A parent
+filed **before** its child closes the buffer the child's link was for, so the
+child still files its note but cannot write the link; the commit says so and
+shows the link (§10, H8). The alternative, following the parent into the note
+it was filed as, would mean locating text the user may have rewritten in a file
+that is no longer a draft, which is guesswork presented as a write.
 
 ### `:org-roam-create-and-insert` stops writing the note
 

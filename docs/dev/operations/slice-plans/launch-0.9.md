@@ -16,7 +16,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 
 | Slice | What | Gate | Status |
 |---|---|---|---|
-| L.0 | Green `lattice-ui-tui` baseline | both red tests pass | 📝 |
+| L.0 | Green `lattice-ui-tui` baseline | both tests pass; LCP pinned by a test | ✅ |
 | L.1 | Pipeline: ARM artefact bug + first green preview run | `publish` succeeds once | 📝 |
 | L.2 | Core plugins in every artefact; prefix-relocatable layout | extracted binary loads 3 plugins | 📝 |
 | L.3 | Version 0.9.0 + honesty pass | no false claim on any user surface | 📝 |
@@ -48,7 +48,25 @@ Every task's requirements implicitly include this section.
 
 ---
 
-### Task L.0: Green `lattice-ui-tui` baseline
+### Task L.0: Green `lattice-ui-tui` baseline ✅
+
+> **Premise correction (2026-09-18, after execution).** The two tests were
+> NOT red: the bug was fixed on 2026-09-08 by `af719434` ("a fuzzy action id
+> no longer suppresses the `<Tab>` LCP"), and `focused-surface.md` §7 — the
+> source this slice was written from — was simply stale. Step 1's
+> reproduction found 2 passed, which is the signal the brief told the
+> implementer to stop on.
+>
+> What L.0 actually delivered, and why it was still worth doing:
+> `af719434` shipped **without a test at the layer that computes the
+> extension**, so the behaviour was guarded only by two TUI-level tests that
+> happened to notice. L.0 added
+> `opening_the_popup_extends_the_line_to_the_longest_common_prefix` in
+> `lattice-host`'s dispatch path (proven load-bearing: RED with `af719434`
+> reverted, GREEN restored) and retired the stale note. No production code
+> changed. See spec §9 for the pattern this is the second instance of.
+>
+> The task text below is left as written, as the record of what was planned.
 
 Two tests are red on clean HEAD and have been since before 2026-09-04. Fixing them first means every later slice can trust its own test run, and the first stranger who clones the repo does not have to rediscover which failures are "normal".
 

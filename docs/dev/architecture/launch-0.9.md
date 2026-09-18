@@ -205,14 +205,33 @@ is the only thing a soft launch actually measures.
 
 ## 9. Green baseline
 
-Two `lattice-ui-tui` tests are red on clean HEAD —
-`typing_after_popup_open_live_refilters_candidates`
-(`crates/lattice-ui-tui/src/app/options.rs:1026`) and
-`backspace_after_popup_open_live_refilters`
-(`crates/lattice-ui-tui/src/app/edit.rs:1527`). Documented root cause:
-command-line completion stopped extending `descr` to `describe-`
-(`focused-surface.md` §7, re-proven by stashing 2026-09-04).
+**The baseline is already green** — and the way that was discovered is
+itself a launch concern.
 
-They are fixed **first**, before any launch work. A red baseline makes
-"did I break it?" unanswerable for the first contributor who clones the
-repo, and 0.9's whole point is that strangers arrive.
+`focused-surface.md` §7 recorded that two `lattice-ui-tui` tests
+(`typing_after_popup_open_live_refilters_candidates`,
+`backspace_after_popup_open_live_refilters`) were red on clean HEAD
+because command-line completion had stopped extending `descr` to
+`describe-`, "re-proven by stashing, 2026-09-04". This document's first
+revision took that at face value and made fixing them slice L.0.
+
+They pass. The bug was fixed on 2026-09-08 by `af719434` ("a fuzzy action
+id no longer suppresses the `<Tab>` LCP"), an ancestor of HEAD; the note
+was never updated. L.0 became what the situation actually called for: a
+regression test at the layer that computes the extension — which
+`af719434` shipped without — plus retirement of the stale note.
+
+**The pattern matters more than the instance.** This is the second stale
+"X is broken" claim found while preparing 0.9, after the 2026-07-26 magit
+audit block in `implementation.md` (§4). Both recorded a real
+point-in-time problem and were never revised when it was fixed, and both
+would have sent a contributor hunting a bug that does not exist. Only
+`design.md` and `implementation.md` are authoritative, and even they
+drift — so a claim that something is broken is verified against source
+before it is planned around. The magit claims were verified that way; this
+one was not, and it cost a slice's worth of work.
+
+The green baseline still matters for the launch, which is why it is
+checked rather than assumed: a red baseline makes "did I break it?"
+unanswerable for the first contributor who clones the repo, and 0.9's
+whole point is that strangers arrive.

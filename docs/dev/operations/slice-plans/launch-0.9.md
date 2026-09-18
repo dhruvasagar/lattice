@@ -311,10 +311,14 @@ integration run — passed on 2026-09-18** under launch slice L.1, which
 also fixed the required/best-effort mismatch the 2026-08-27 audit found
 (`lattice-gui-*-aarch64.{AppImage,deb}` were required while the leg that
 builds them is best-effort) and added a guard against its recurrence.
-The packaging contract was then amended by launch slice L.2 — see
-`../../architecture/launch-0.9.md` §3 — because the archives as designed
-here carry no core plugins.
+The packaging contract this plan designed is amended by launch slice L.2
+— see `../../architecture/launch-0.9.md` §3 — because the archives as
+designed here carry no core plugins.
 ```
+
+(Present tense deliberately: L.1 runs before L.2, so this sentence must
+not claim an amendment that has not landed yet. L.2 Step 13 writes the
+amendment itself.)
 
 Then tick Task 5's five checkboxes.
 
@@ -1128,22 +1132,7 @@ Expected: the usage block; `install.sh: unknown option: --bogus`; `install.sh: -
 
 - [ ] **Step 4: Test the install path against the L.2 preview bundle**
 
-There is no release yet, so exercise the download-and-extract path with a local archive instead of a tag:
-
-```bash
-cd /tmp/lattice-preview
-python3 -m http.server 8765 >/dev/null 2>&1 &
-srv=$!
-mkdir -p /tmp/fake-prefix
-# Point the script at the local archive by faking the release layout.
-( cd /tmp && REPO_OVERRIDE=1 sh -c '
-  ver=$(ls /tmp/lattice-preview/lattice-dev-*-aarch64-macos.tar.xz | sed -E "s/.*lattice-(dev-[^-]+)-.*/\1/")
-  echo "preview version: $ver"
-' )
-kill $srv
-```
-
-Then do the real end-to-end check manually, since it is the only thing that proves the script:
+There is no release yet, so the script's network path cannot run end to end — it resolves a tag from the GitHub releases API, and there are no releases. Prove the **install block** (the part that is script-specific and easy to get wrong) against the L.2 preview bundle by performing exactly what the script performs:
 
 ```bash
 rm -rf /tmp/fake-prefix && mkdir -p /tmp/fake-prefix

@@ -210,6 +210,19 @@ pub struct PaneState {
     /// (`build_render_state`). Ephemeral: never persisted, never
     /// snapshotted. See `docs/dev/architecture/preview-isolation.md` §5.
     pub committed_buffer_id: Option<BufferId>,
+    /// VM.3j-3: this WINDOW's `scroll` — how far `<C-d>` / `<C-u>` move, set
+    /// by a count to either key. `None` means "this window has none", and the
+    /// distance falls back to the `scroll` option, then to half the window.
+    ///
+    /// Per pane because vim's `scroll` is window-local: two windows on the
+    /// same buffer scroll by different amounts, and a count typed in one must
+    /// not change the other. (The `:set scroll=N` OPTION is still global here
+    /// — lattice has no window-local option layer — so it is the default a
+    /// window with no count of its own uses.)
+    ///
+    /// Cleared when the window is resized, as vim resets it to half the new
+    /// height.
+    pub scroll_lines: Option<u32>,
 }
 
 impl PaneState {
@@ -1041,6 +1054,7 @@ mod tests {
             viewport_height: 0,
             viewport_width: 0,
             committed_buffer_id: None,
+            scroll_lines: None,
         }
     }
 

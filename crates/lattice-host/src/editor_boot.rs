@@ -1367,6 +1367,8 @@ impl Editor {
             viewport_height: 0,
             viewport_width: 0,
             committed_buffer_id: None,
+            // VM.3j-3: a fresh window has no `scroll` of its own.
+            scroll_lines: None,
         };
         let pane_tree = PaneTree::single(initial_pane);
 

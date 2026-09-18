@@ -2761,9 +2761,12 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             // freezing a number that was right once. The user-visible
             // difference is what `:set scroll?` reports: `0` here, the concrete
             // half in vim.
-            if editor.viewport_height != h && editor.option_cache.scroll_lines != 0 {
-                let _ = editor.config.set_typed::<lattice_config::Scroll>(0);
-                editor.option_cache.scroll_lines = 0;
+            if editor.viewport_height != h {
+                // VM.3j-3: the RESIZED window forgets its own scroll, and only
+                // it — a split elsewhere keeps what was typed in it. The
+                // `scroll` option is left alone: it is the global default now,
+                // not the place a count is stored.
+                editor.pane_tree.active_mut().scroll_lines = None;
             }
             editor.viewport_height = h;
             editor.ensure_cursor_visible();
@@ -24237,14 +24240,19 @@ impl Editor {
         // updated alongside so the move below uses the new value in THIS call
         // without waiting for the refresh.
         if count > 0 {
-            let n = count.min(height);
-            let _ = self.config.set_typed::<lattice_config::Scroll>(n as i64);
-            self.option_cache.scroll_lines = n;
+            // VM.3j-3: the count sets THIS WINDOW's scroll, not a global. vim's
+            // `scroll` is window-local: `3<C-d>` in one split leaves the other
+            // scrolling by its own amount. Clamped to the window height, so
+            // `99<C-d>` scrolls a screen rather than 99 lines.
+            self.pane_tree.active_mut().scroll_lines = Some(count.min(height));
         }
-        let n = if self.option_cache.scroll_lines > 0 {
-            self.option_cache.scroll_lines
-        } else {
-            (height / 2).max(1)
+        // This window's own value, else the `scroll` option (global here —
+        // lattice has no window-local option layer), else half the window,
+        // which is vim's default and what `scroll=0` means.
+        let n = match self.pane_tree.active().scroll_lines {
+            Some(n) if n > 0 => n,
+            _ if self.option_cache.scroll_lines > 0 => self.option_cache.scroll_lines,
+            _ => (height / 2).max(1),
         };
         let buffer = self.active_text();
         let last = last_addressable_line(&buffer);
@@ -29476,6 +29484,8 @@ impl Editor {
             viewport_height: self.viewport_height,
             viewport_width: 0,
             committed_buffer_id: None,
+            // VM.3j-3: a fresh window has no `scroll` of its own.
+            scroll_lines: None,
         };
         let mut new_panes = lattice_core::ui::pane::PaneTree::single(initial_pane);
         std::mem::swap(&mut *self.pane_tree, &mut new_panes);
@@ -29532,6 +29542,8 @@ impl Editor {
             viewport_height: captured_height,
             viewport_width: 0,
             committed_buffer_id: None,
+            // VM.3j-3: a fresh window has no `scroll` of its own.
+            scroll_lines: None,
         };
         let mut new_panes = lattice_core::ui::pane::PaneTree::single(initial_pane);
         std::mem::swap(&mut *self.pane_tree, &mut new_panes);
@@ -49950,14 +49962,18 @@ mod tests {
 
         e.do_half_page(true, 3);
         assert_eq!(e.cursor.line, 3, "the count moves three");
-        assert_eq!(e.option_cache.scroll_lines, 3, "and sets the option");
+        assert_eq!(
+            e.pane_tree.active().scroll_lines,
+            Some(3),
+            "and sets THIS WINDOW's scroll (vim's `scroll` is window-local)"
+        );
         assert_eq!(
             *e.config
                 .get_typed::<lattice_config::Scroll>()
                 .expect("scroll is registered"),
-            3,
-            "written through to the option, not only the cache — the cache is \
-             rebuilt from it on the next dispatch",
+            0,
+            "the global option is untouched — it is the default for a window \
+             that has no count of its own",
         );
 
         e.do_half_page(true, 0);
@@ -49972,7 +49988,7 @@ mod tests {
         e.scroll = 40;
         e.cursor = lattice_protocol::position::Position::new(50, 0);
         e.do_half_page(false, 2);
-        assert_eq!(e.option_cache.scroll_lines, 2);
+        assert_eq!(e.pane_tree.active().scroll_lines, Some(2));
         assert_eq!(e.cursor.line, 48);
     }
 
@@ -49985,8 +50001,49 @@ mod tests {
         e.scroll = 0;
         e.cursor = lattice_protocol::position::Position::new(0, 0);
         e.do_half_page(true, 99);
-        assert_eq!(e.option_cache.scroll_lines, 22, "clamped to the window");
+        assert_eq!(
+            e.pane_tree.active().scroll_lines,
+            Some(22),
+            "clamped to the window"
+        );
         assert_eq!(e.cursor.line, 22);
+    }
+
+    /// VM.3j-3: `scroll` is WINDOW-local — a count typed in one split leaves
+    /// the other scrolling by its own amount.
+    ///
+    /// This is what made the old shape wrong: the count wrote the global
+    /// option, so `3<C-d>` in one window changed how every other window
+    /// scrolled. (`:set scroll=N` is still global here — there is no
+    /// window-local option layer — and serves as the default for a window
+    /// with no count of its own, which the assertion below also pins.)
+    #[test]
+    fn two_windows_keep_their_own_scroll() {
+        let mut e = crate::editor::Editor::boot(doc_with_lines(80));
+        e.viewport_height = 22;
+        e.cursor = lattice_protocol::position::Position::new(0, 0);
+        e.scroll = 0;
+        // A second window on the same buffer.
+        e.do_split_pane(lattice_core::ui::pane::SplitOrientation::Horizontal);
+        e.pane_tree.active_mut().viewport_height = 22;
+        e.viewport_height = 22;
+
+        // Type a count here.
+        e.do_half_page(true, 3);
+        assert_eq!(e.pane_tree.active().scroll_lines, Some(3));
+
+        // …and the other window still scrolls by half its height.
+        let others: Vec<_> = e
+            .pane_tree
+            .leaves()
+            .iter()
+            .filter(|p| p.id != e.pane_tree.active().id)
+            .map(|p| p.scroll_lines)
+            .collect();
+        assert!(
+            others.iter().all(|s| s.is_none()),
+            "a count in one window must not reach another: {others:?}"
+        );
     }
 
     /// vim resets `scroll` when the window is resized, so a count typed in one
@@ -49998,13 +50055,14 @@ mod tests {
         e.viewport_height = 22;
         e.cursor = lattice_protocol::position::Position::new(0, 0);
         e.do_half_page(true, 3);
-        assert_eq!(e.option_cache.scroll_lines, 3);
+        assert_eq!(e.pane_tree.active().scroll_lines, Some(3));
 
         let mut out = DispatchOutcome::default();
         handle_action(&mut e, Action::SetViewportHeight(40), &mut out);
         assert_eq!(
-            e.option_cache.scroll_lines, 0,
-            "back to the half-the-window sentinel",
+            e.pane_tree.active().scroll_lines,
+            None,
+            "the window forgets its own scroll; half the new height again",
         );
 
         e.cursor = lattice_protocol::position::Position::new(0, 0);

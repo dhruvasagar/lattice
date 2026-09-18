@@ -9,7 +9,7 @@
 
 Design owns *what* and *why*; this file owns *when* and *in what order*.
 
-Graduated out of [`org-agenda.md`](../org-agenda.md) OA.14c, which recorded the
+Graduated out of [`org-agenda.md`](org-agenda.md) OA.14c, which recorded the
 problem statement because org's options are what motivate it. Spans two repos:
 slices marked **(plugin)** land in `~/src/dhruvasagar/lattice-org-plugin`.
 

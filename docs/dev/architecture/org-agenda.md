@@ -20,7 +20,7 @@ fragment covers what it becomes: a view with agenda-aware colour, layered
 display modes that each own one concept, a tags/todo query language, and
 `org-agenda-custom-commands`.
 
-Slice plan: [`slice-plans/org-agenda.md`](../operations/slice-plans/org-agenda.md).
+Slice plan: [`slice-plans/archive/org-agenda.md`](../operations/slice-plans/archive/org-agenda.md).
 User documentation: [`org.md`](../../user/org.md), and the plugin's own
 `doc/org.md` for the full reference.
 

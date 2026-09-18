@@ -5877,6 +5877,14 @@ does not bury it; each line names where the detail lives.
   been applied once (`apply_effect_host` applies and then records it in
   `out.effects`), so re-applying wrote a capture's file twice — caught by
   `async_picker_accept_applies_open_buffer_at`.
+- **The org scan's time ratchet is a printing probe, not an assertion** (from
+  `org-agenda` OA.0a, see
+  [`slice-plans/archive/org-agenda.md`](slice-plans/archive/org-agenda.md)).
+  All four tests in `lattice-org-plugin/tests/org_agenda_hang.rs` are
+  `#[ignore]`d, `scan_time_versus_size` among them. OA.0a named making it an
+  assertion as its follow-up "so the ratchet holds from the org side too". The
+  authoritative ratchet is the bench, so this is a second line of defence
+  rather than the only one — which is why the slice closed without it.
 - **Vim-parity follow-ups** (from `visual-motions`, see
   [`slice-plans/archive/visual-motions.md`](slice-plans/archive/visual-motions.md)):
   - `:set scroll=N` is still a GLOBAL option (vim's is window-local). The
@@ -7222,7 +7230,7 @@ harness, which read as a product bug through three rounds of diagnosis.
 > agenda-aware colour, layered display modes, a tags/todo query language and
 > `org-agenda-custom-commands` — is designed in
 > [`org-agenda.md`](../architecture/org-agenda.md) and sequenced in
-> [`slice-plans/org-agenda.md`](slice-plans/org-agenda.md) as `OA.1`–`OA.18`.
+> [`slice-plans/archive/org-agenda.md`](slice-plans/archive/org-agenda.md) as `OA.1`–`OA.18`.
 > The table below is the phase that landed on 2026-08-31 and stays closed.
 
 | Slice | What | Status |

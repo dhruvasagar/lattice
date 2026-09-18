@@ -860,7 +860,7 @@ Sequencing is in
 > tags/todo query language and `org-agenda-custom-commands`. This section stays
 > the account of what the agenda *is* — the multibuffer, the seam, the walk,
 > the sort, the sections. Sequencing lives in
-> `docs/dev/operations/slice-plans/org-agenda.md`.
+> `docs/dev/operations/slice-plans/archive/org-agenda.md`.
 
 > **MV.3 (2026-08-30): the agenda is a plugin-owned view now.** `*agenda*`, the
 > provider name and the reuse policy come from org's own `view-spec`, declared

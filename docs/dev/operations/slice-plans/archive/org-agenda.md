@@ -1,8 +1,13 @@
 # Org agenda as a dashboard — slice plan
 
-> **Status: Active.** Opened 2026-08-31. Implements
-> [`org-agenda.md`](../../architecture/org-agenda.md), which extends
-> [`org-mode.md`](../../architecture/org-mode.md) §6.
+> **Status: COMPLETE — archived 2026-09-18.** Opened 2026-08-31. Every slice is
+> settled (✅ landed or ❌ dropped); each was verified against code and tests,
+> slice by slice, rather than against its icon. The one piece of open work the
+> plan named — OA.0a's `#[ignore]`d scan-time probes — moved to
+> `implementation.md`'s "Carried over from archived slice plans" so archiving
+> did not bury it. Implements
+> [`org-agenda.md`](../../../architecture/org-agenda.md), which extends
+> [`org-mode.md`](../../../architecture/org-mode.md) §6.
 
 Design owns *what* and *why*; this file owns *when* and *in what order*.
 
@@ -12,7 +17,7 @@ cross-repo and say so.
 
 Depends on [`refreshable-views.md`](refreshable-views.md) RV.1 (`gr` comes from
 the shared minor). Catalogue entry: the agenda in
-[`multibuffer-providers.md`](multibuffer-providers.md).
+[`multibuffer-providers.md`](../multibuffer-providers.md).
 
 ## Status
 
@@ -56,7 +61,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.18 | The `gD` view-mode dispatch transient **(plugin)** | ✅ |
 | **Phase 6 — the agenda is navigable** | | |
 | OA.19 | `scan_args` becomes a typed view-argument list **(plugin)** | ✅ |
-| OA.20 | Span walking — `f` / `b` / `.` / `v d w m y` **(plugin)** | ✅ |
+| OA.20 | Span walking — `f` / `b` / `.`, spans via `gD` **(plugin)** | ✅ |
 | OA.21 | Filtering — `/` tag, `\` narrow, `|` clear **(plugin)** | ✅ |
 | OA.22 | The headerline says what you are looking at **(cross-repo)** | ✅ |
 | OA.23 | A guest seam for an excerpt's source file **(cross-repo)** | ✅ |
@@ -75,7 +80,7 @@ OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
 that slice landed before the display modes rather than after. OA.14c and OA.14d
 block nothing here and were recorded in this plan only because org's options are
 what motivate them — OA.14c has since **graduated** to
-[`typed-configuration.md`](archive/typed-configuration.md), and OA.14d fixed a reported
+[`typed-configuration.md`](typed-configuration.md), and OA.14d fixed a reported
 bug that happens to be org's.
 
 ---
@@ -152,7 +157,7 @@ uncached resource on the same path). 302 existing plugin-host tests unchanged.
 
 **Bench:** `benches/tree_walk.rs`, swept across fan-out — a single size cannot
 tell linear from quadratic. Results and the wider lesson in
-[`benchmarks.md`](../benchmarks.md).
+[`benchmarks.md`](../../benchmarks.md).
 
 **Follow-up left open.** `tests/org_agenda_hang.rs::scan_time_versus_size` in
 the org repo is still an `#[ignore]`d printing probe. It should become an
@@ -349,7 +354,7 @@ emits nothing rather than `[untitled]`.
 
 ### OA.3 — Refresh repopulates the view ❌ not a defect
 
-Diagnosed and closed. **The refresh mechanism is correct.** Four end-to-end
+Diagnosed and closed. **The refresh mechanism is correct.** Five end-to-end
 tests drive the real plugin, open the agenda, press `gr` and get their rows
 back — including after an edit in the agenda, with roots from the option, and
 on a second consecutive `gr`.
@@ -834,8 +839,8 @@ option encodings are what motivate it and because the question arose mid-phase;
 the entry was a problem statement, not a design.
 
 It now has both artefacts it was waiting for:
-[`typed-configuration.md`](../../architecture/typed-configuration.md) (the
-design) and [`typed-configuration.md`](archive/typed-configuration.md) (its own slice
+[`typed-configuration.md`](../../../architecture/typed-configuration.md) (the
+design) and [`typed-configuration.md`](typed-configuration.md) (its own slice
 plan, TC.1–TC.8). Nothing in phase 5 waits on it.
 
 **Two decisions were locked when it graduated**, and both went against the
@@ -1005,7 +1010,7 @@ paying for.
 
 ### OA.15a — A guest can refresh its own view **(cross-repo)** ✅
 
-Design: [`plugin-multibuffer-views.md`](../../architecture/plugin-multibuffer-views.md) §8.
+Design: [`plugin-multibuffer-views.md`](../../../architecture/plugin-multibuffer-views.md) §8.
 
 **Not planned as a slice.** It was carved when OA.15's design turned out to
 need a mode, and the mode turned out to be unreachable.
@@ -1051,7 +1056,7 @@ work it triggers is a provider re-scan already covered by phase 0's numbers.
 
 ### OA.15b — `org-agenda-log-mode` **(plugin)** ✅
 
-Design: [`org-agenda.md`](../../architecture/org-agenda.md) §3a–§3b.
+Design: [`org-agenda.md`](../../../architecture/org-agenda.md) §3a–§3b.
 
 Emacs' `l`. Admits what a file records about its own past — closed, clocked,
 state-changed — as **ordinary excerpt rows** over the headline each happened to,
@@ -1172,7 +1177,7 @@ Empty renders `No clocked time in range`, a sentence rather than a table with a
 
 ### OA.18 — The `gD` view-mode dispatch transient **(plugin)** ✅
 
-Design: [`org-agenda.md`](../../architecture/org-agenda.md) §4.
+Design: [`org-agenda.md`](../../../architecture/org-agenda.md) §4.
 
 Emacs' `org-agenda-view-mode-dispatch` — everything that changes *how* the open
 agenda is shown, behind one key. Span on `d` / `w` / `m` / `y`, log mode on `l`,
@@ -1283,8 +1288,14 @@ back to what they meant.
 
 ### OA.20 — Span walking **(plugin)** ✅
 
-`f` / `b` (emacs `org-agenda-later` / `org-agenda-earlier`), `.` for today, and
-`v d` / `v w` / `v m` / `v y` for the day / week / month / year spans.
+`f` / `b` (emacs `org-agenda-later` / `org-agenda-earlier`) and `.` for today.
+
+**The span letters are NOT `v d` / `v w` / `v m` / `v y`.** This slice was
+written expecting them and they were never shipped: OA.18 found that a bound
+prefix stops the trie walk, so `gD` and `gDd` cannot both fire, and the four
+span chords now live as rows of the `gD` menu at the same keystrokes (`gD` then
+`d` / `w` / `m` / `y`). Corrected here 2026-09-18 — reading this slice alone
+otherwise describes a binding that never existed.
 
 The span and offset ride `scan_args`; re-opening the view with new ones is the
 whole implementation, because `reuse: true` means the same buffer re-scans in
@@ -1455,9 +1466,13 @@ rather than working out what Wednesday's date is.
 
 **Tests.** Each form against a fixed anchor day, because "today" in a test is
 the fastest way to write an assertion that passes until it does not. The
-weekday forms are the ones worth being careful about — `fri` typed ON a Friday
-means *next* Friday in emacs, and getting that wrong makes the key silently do
-nothing one day in seven.
+weekday forms are the ones worth being careful about, and the boundary went the
+OTHER way from this slice's first guess: **`fri` typed on a Friday is that
+Friday**, not the next one. Emacs' docs say "the next Wednesday" and are silent
+on the boundary; scheduling something for `fri` on Friday morning and having it
+land a week away is the more surprising reading, and `+7d` says the other thing
+unambiguously. The choice and its test are recorded at the top of
+`src/org_date.rs`; this paragraph asserted the opposite until 2026-09-18.
 
 ### OA.25 — Schedule and deadline **(plugin)** ✅
 
@@ -1701,11 +1716,10 @@ An empty grep means GPUI was missed.
 Added after the phases above. Both landed.
 
 > **ID collision, noted 2026-09-17.** "OA.30" names two different slices:
-> this one (time of day, ✅) and `refresh-decorations` above (🚧, whose guest
-> half — marks, `m` / `M`, the `x` bulk menu — is not built in the org
-> plugin). Both labels are cited in code comments and commit messages, so
-> neither is renamed; read "OA.30" by its title. The plan stays active on the
-> `refresh-decorations` one.
+> this one (time of day) and `refresh-decorations` above. Both are ✅ — the
+> latter's guest half (marks, `m` / `M` / `~` / `*`, the `x` bulk menu) landed
+> 2026-09-18. Both labels are cited in code comments and commit messages, so
+> neither is renamed; read "OA.30" by its title.
 
 | Slice | Title | Status |
 |---|---|---|

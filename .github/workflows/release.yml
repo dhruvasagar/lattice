@@ -74,6 +74,16 @@ jobs:
         with:
           key: core-plugins
 
+      - name: Install mold
+        run: |
+          # `.cargo/config.toml` pins `-fuse-ld=mold` for
+          # x86_64-unknown-linux-gnu, and this job builds the `xtask` binary
+          # for exactly that host triple — so clang aborts the link without
+          # mold present, the same way it killed the pipeline's first two
+          # runs. No GUI display libs here: this job links no GPUI.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mold
+
       - name: Build and stage the core plugin components
         run: cargo xtask build-core-plugins
 

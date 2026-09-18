@@ -428,6 +428,30 @@ mod tests {
         assert_eq!(body(&a), "foobar next\nfoo again");
     }
 
+    /// VM.3j-2: `<C-d>` is a SCROLL command, not a motion, so `d<C-d>`
+    /// deletes nothing — vim 9.2 leaves the buffer untouched.
+    ///
+    /// It used to be `motion:line-down` with a baked count, which gave
+    /// lattice an operator row vim does not have; VM.3j-2 removed it and left
+    /// the case untested.
+    #[test]
+    fn d_ctrl_d_deletes_nothing() {
+        let mut a = app_with(FOO, 20);
+        a.editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        let ctrl_d = || {
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('d'),
+                crossterm::event::KeyModifiers::CONTROL,
+            )
+        };
+        press(&mut a, ctrl_d());
+        assert_eq!(body(&a), FOO, "a bare <C-d> scrolls, it does not edit");
+
+        press_chars(&mut a, "d");
+        press(&mut a, ctrl_d());
+        assert_eq!(body(&a), FOO, "and `d<C-d>` deletes nothing");
+    }
+
     /// vim: `n` past the last match wraps and says so.
     #[test]
     fn a_wrapping_n_echoes_search_hit_bottom() {

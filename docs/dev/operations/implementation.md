@@ -5884,8 +5884,6 @@ does not bury it; each line names where the detail lives.
     `PaneState::scroll_lines` since 2026-09-18, so two windows scroll by their
     own amounts; the option is the default a window with no count uses. A real
     window-local option LAYER is still unbuilt (VM.3j-3).
-  - `zfk` from column 0: probably fixed by VM.3L's linewise targets, but no
-    test pins it; `d<C-d>` doing nothing is likewise untested (VM.3h, VM.3j-2).
 
 ---
 

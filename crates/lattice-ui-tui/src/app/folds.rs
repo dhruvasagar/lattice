@@ -405,6 +405,23 @@ mod tests {
         assert_eq!((f.start_line, f.end_line, f.closed), (0, 1, true));
     }
 
+    /// VM.3h: `zfk` folds UPWARD from column 0.
+    ///
+    /// The slice recorded this as a known gap: `k` was exclusive and there
+    /// were no linewise operator targets, so the span ended at byte 0 of the
+    /// cursor's own line and no fold was made. VM.3L added those targets, and
+    /// nothing pinned the case until now. vim 9.2 from line 3 folds lines
+    /// 2–3, which is what this asserts (0-based 1–2).
+    #[test]
+    fn zf_k_folds_upward() {
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        a.editor.cursor = Position::new(2, 0);
+        press_chars(&mut a, "zfk");
+        assert_eq!(a.editor.folds.len(), 1, "folds: {:?}", a.editor.folds);
+        let f = &a.editor.folds[0];
+        assert_eq!((f.start_line, f.end_line, f.closed), (1, 2, true));
+    }
+
     /// `zfip` folds a paragraph, not the blank line after it.
     #[test]
     fn zf_ip_folds_a_paragraph() {

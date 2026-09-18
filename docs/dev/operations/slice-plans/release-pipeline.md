@@ -7,28 +7,15 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
-**Status:** 🚧 in progress (audited 2026-08-27). Tasks 1–4 ✅ landed
-(`233dc3d1`, `036b9dd3`, `ef9523fa`, `d1cf810c`, plus `d9dd6d01` /
-`120b27e9`). **Task 5 — the integration run — has never passed, and the
-plan calls it "the real gate."**
-
-The workflow has run exactly twice, both failures. `publish` has never
-executed once: the source archive, `SHA256SUMS`, the manifest check,
-provenance and the release upload are all code that has never run. The
-`x86_64-linux` leg died on `-fuse-ld=mold` (re-applied from
-`.cargo/config.toml` because the release legs build with an explicit
-`--target`); `120b27e9` installs `mold` to fix that, and **no run has
-happened since**, so the fix itself is untested. No tags, no releases,
-no branch.
-
-**A latent bug the audit found, which Task 5 exists to catch.** The
-`publish` manifest lists `lattice-gui-*-aarch64.AppImage` and
-`…-aarch64.deb` as **required**, but the steps producing them are gated
-on the GUI build succeeding and the `aarch64-linux` leg is
-`gui_best_effort: true`. If the ARM GUI build fails — the exact case the
-design says "must never block the release" — `publish` exits 1 and kills
-the release. The Self-Review's ✓ on "aarch64 GUI best-effort, no silent
-drop" is wrong for this pair.
+**Status:** ✅ complete. Tasks 1–4 landed (`233dc3d1`, `036b9dd3`,
+`ef9523fa`, `d1cf810c`, `d9dd6d01`, `120b27e9`); **Task 5 — the
+integration run — passed on 2026-09-18** under launch slice L.1, which
+also fixed the required/best-effort mismatch the 2026-08-27 audit found
+(`lattice-gui-*-aarch64.{AppImage,deb}` were required while the leg that
+builds them is best-effort) and added a guard against its recurrence.
+The packaging contract this plan designed is amended by launch slice L.2
+— see `../../architecture/launch-0.9.md` §3 — because the archives as
+designed here carry no core plugins.
 
 Also stale: Global Constraints cites the workspace version at
 `Cargo.toml:33`; it is now line 49. Task 1 Step 2's embedded YAML
@@ -559,7 +546,7 @@ The real gate. A preview run exercises every job without creating a release.
 
 **Files:** none (operational verification).
 
-- [ ] **Step 1: Push the branch and trigger a preview run**
+- [x] **Step 1: Push the branch and trigger a preview run**
 
 ```bash
 git push -u origin feat/release-pipeline
@@ -567,14 +554,14 @@ gh workflow run release.yml --ref feat/release-pipeline
 ```
 (`workflow_dispatch` runs in preview mode — no tag, no release.)
 
-- [ ] **Step 2: Watch the run**
+- [x] **Step 2: Watch the run**
 
 ```bash
 gh run watch "$(gh run list --workflow=release.yml --branch=feat/release-pipeline --limit=1 --json databaseId --jq '.[0].databaseId')" --exit-status
 ```
 Expected: `prepare`, all 6 `dist` legs, and `publish` succeed. The two ARM GUI legs may show a `continue-on-error` warning on the "Build GUI binary" step — that is acceptable; the leg itself must still be green.
 
-- [ ] **Step 3: Download and inspect the preview artefact**
+- [x] **Step 3: Download and inspect the preview artefact**
 
 ```bash
 rid="$(gh run list --workflow=release.yml --branch=feat/release-pipeline --limit=1 --json databaseId --jq '.[0].databaseId')"
@@ -584,7 +571,11 @@ sha256sum -c /tmp/lattice-release-preview/SHA256SUMS  # run from inside that dir
 ```
 Expected: TUI archives for all 6 platforms, GUI archives for the 4 proven platforms (+ ARM GUI if they linked), `.deb` + `.AppImage` + `.zsync` for both Linux arches, `lattice-dev-<sha>-source.tar.xz`, `SHA256SUMS`. Checksums verify.
 
-- [ ] **Step 4: Verify the .deb icon wiring**
+- [ ] **Step 4: Verify the .deb icon wiring** — NOT RUN. `dpkg-deb` is
+  unavailable on the macOS dev box, and an `ar x` + `tar` improvisation
+  was declined as a worse check than none. The `.deb` is built and
+  published (`lattice-gui-dev-4b605f4-x86_64.deb`,
+  `…-aarch64.deb`); only the icon-path assertion is outstanding.
 
 ```bash
 cd /tmp/lattice-release-preview
@@ -592,7 +583,9 @@ dpkg-deb -c lattice-gui-dev-*-x86_64.deb | grep -E 'com\.lattice-editor\.lattice
 ```
 Expected: the `.desktop` under `usr/share/applications/` and `com.lattice-editor.lattice.png` under multiple `usr/share/icons/hicolor/<size>/apps/` paths. (Skip if not on a machine with `dpkg-deb`; otherwise inspect via `ar x` + `tar`.)
 
-- [ ] **Step 5: Open the PR**
+- [ ] **Step 5: Open the PR** — not done here. The launch plan opens its
+  PR in `launch-0.9.md` L.8 Step 3, once every slice has landed, rather
+  than per-slice.
 
 ```bash
 gh pr create --fill --base main --head feat/release-pipeline

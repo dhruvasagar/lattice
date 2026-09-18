@@ -207,3 +207,34 @@ preview mode (no tag).
 - **Partial leg failure (TUI)** — `fail-fast: false` so one leg's failure does
   not cancel the others; the release publishes what succeeded and the failed
   leg is visible in the Actions UI and the missing-artefact log.
+
+## Amendment (2026-09-18) — archives are prefix-relocatable
+
+The layout above packaged a bare binary, which shipped every artefact with
+zero core plugins: the legs never ran `cargo xtask build-core-plugins`, and
+a flat archive puts nothing on any of discovery's four search paths, so
+`default_core_plugins_dir()` returned `None` — a skip the code documents as
+benign because in the dev path it is. Verified against a real artefact from
+the 2026-09-18 preview run: `lattice-dev-4b605f4-aarch64-macos.tar.xz`
+contained exactly `LICENSE`, `README.md` and `lattice`.
+
+Archives now carry `bin/lattice` plus
+`share/lattice/plugins/<name>/{<name>.wasm,plugin.toml,.source}`, and a
+`core-plugins` job builds the three components once for every leg to
+download. WASM components are platform-independent, and the dist legs
+install only their own target triple — so a per-leg build would need a
+`wasm32-wasip2` toolchain on all six runners including ARM Windows, which
+makes build-once the cheap option rather than merely the tidy one.
+
+The `.deb` installs the same tree under `/usr`; the AppImage stages it
+under `AppDir/usr`. Artefact filenames are unchanged, so `publish`'s
+manifest and its best-effort classification are unaffected.
+
+Two things guard this, because a green build proves nothing here:
+`cargo xtask build-core-plugins` fails hard when the wasm target is absent
+(unlike `lattice-plugin-host`'s build script, which warns and continues),
+and each `dist` leg asserts the **contents** of the archives it just built.
+
+Rationale, and the rejected alternatives — a baked `LATTICE_INSTALL_PREFIX`,
+a `LATTICE_RUNTIME` wrapper script, per-leg builds — are in
+`launch-0.9.md` §3.

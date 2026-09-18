@@ -49,9 +49,61 @@ jobs:
             echo "Tag matches Cargo.toml version $cargo_ver"
           fi
 
+  # WASM components are platform-independent, so the three core plugins are
+  # built ONCE here and downloaded by every dist leg. The dist legs install
+  # only ${{ matrix.target }} and have no wasm32-wasip2 toolchain, so a
+  # per-leg build would need a target install on all six runners including
+  # ARM Windows. See docs/dev/architecture/launch-0.9.md §3.
+  core-plugins:
+    name: core-plugins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove rust-toolchain.toml
+        shell: bash
+        run: rm -f rust-toolchain.toml
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-wasip2
+          rustflags: ""
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core-plugins
+
+      - name: Build and stage the core plugin components
+        run: cargo xtask build-core-plugins
+
+      - name: Verify the staged layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pl in auto-pair treesitter-context project; do
+            for f in "$pl.wasm" plugin.toml .source; do
+              if [[ ! -f "runtime/plugins/$pl/$f" ]]; then
+                echo "::error::missing runtime/plugins/$pl/$f"
+                exit 1
+              fi
+            done
+          done
+          ls -lR runtime/plugins
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-plugins
+          path: runtime/plugins
+          # `.source` is a dotfile and upload-artifact@v4 drops hidden files by
+          # default. Without this the marker vanishes and `:plugins` shows `—`
+          # instead of `bundled` for every core plugin.
+          include-hidden-files: true
+          if-no-files-found: error
+
   dist:
     name: dist (${{ matrix.build }})
-    needs: prepare
+    needs: [prepare, core-plugins]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -80,6 +132,12 @@ jobs:
         with:
           key: release-${{ matrix.build }}
 
+      - name: Download the core plugin components
+        uses: actions/download-artifact@v4
+        with:
+          name: core-plugins
+          path: runtime/plugins
+
       - name: Install Linux build deps (mold linker + GUI display libs)
         if: runner.os == 'Linux'
         run: |
@@ -105,14 +163,18 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           pkg="lattice-${VERSION}-${{ matrix.build }}"
-          mkdir -p "$pkg"
+          # Prefix-relocatable layout: `bin/lattice` finds
+          # `../share/lattice/plugins` wherever the user extracts this.
+          # See docs/dev/architecture/launch-0.9.md §3.
+          mkdir -p "$pkg/bin" "$pkg/share/lattice"
+          cp -R runtime/plugins "$pkg/share/lattice/plugins"
           cp LICENSE README.md "$pkg/"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "target/${{ matrix.target }}/release/lattice.exe" "$pkg/"
+            cp "target/${{ matrix.target }}/release/lattice.exe" "$pkg/bin/"
             7z a -r "dist/$pkg.zip" "$pkg" >/dev/null
           else
-            cp "target/${{ matrix.target }}/release/lattice" "$pkg/"
-            chmod +x "$pkg/lattice"
+            cp "target/${{ matrix.target }}/release/lattice" "$pkg/bin/"
+            chmod +x "$pkg/bin/lattice"
             tar cJf "dist/$pkg.tar.xz" "$pkg"
           fi
           rm -rf "$pkg"
@@ -131,17 +193,54 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           pkg="lattice-gui-${VERSION}-${{ matrix.build }}"
-          mkdir -p "$pkg"
+          # Prefix-relocatable layout: `bin/lattice` finds
+          # `../share/lattice/plugins` wherever the user extracts this.
+          # See docs/dev/architecture/launch-0.9.md §3.
+          mkdir -p "$pkg/bin" "$pkg/share/lattice"
+          cp -R runtime/plugins "$pkg/share/lattice/plugins"
           cp LICENSE README.md "$pkg/"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "target/${{ matrix.target }}/release/lattice.exe" "$pkg/"
+            cp "target/${{ matrix.target }}/release/lattice.exe" "$pkg/bin/"
             7z a -r "dist/$pkg.zip" "$pkg" >/dev/null
           else
-            cp "target/${{ matrix.target }}/release/lattice" "$pkg/"
-            chmod +x "$pkg/lattice"
+            cp "target/${{ matrix.target }}/release/lattice" "$pkg/bin/"
+            chmod +x "$pkg/bin/lattice"
             tar cJf "dist/$pkg.tar.xz" "$pkg"
           fi
           rm -rf "$pkg"
+
+      - name: Verify archives carry the core plugins
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A missing plugin is SILENT at runtime — discovery treats an absent
+          # dir as a benign skip — so it has to be caught here or not at all.
+          # The build exiting 0 proves nothing; this content check is the gate.
+          check_tar() {
+            local listing; listing="$(tar tJf "$1")"
+            for pl in auto-pair treesitter-context project; do
+              for f in "$pl.wasm" plugin.toml .source; do
+                echo "$listing" | grep -q "share/lattice/plugins/$pl/$f" \
+                  || { echo "::error::$1 is missing $pl/$f"; exit 1; }
+              done
+            done
+            echo "$listing" | grep -q "bin/lattice" \
+              || { echo "::error::$1 has no bin/lattice"; exit 1; }
+            echo "ok: $1"
+          }
+          check_zip() {
+            local listing; listing="$(7z l -ba "$1")"
+            for pl in auto-pair treesitter-context project; do
+              for f in "$pl.wasm" plugin.toml .source; do
+                echo "$listing" | grep -q "$pl.$f" \
+                  || { echo "::error::$1 is missing $pl/$f"; exit 1; }
+              done
+            done
+            echo "ok: $1"
+          }
+          shopt -s nullglob
+          for a in dist/*.tar.xz; do check_tar "$a"; done
+          for a in dist/*.zip; do check_zip "$a"; done
 
       - name: Install cargo-deb
         if: runner.os == 'Linux' && steps.gui_build.outcome == 'success'
@@ -176,6 +275,8 @@ jobs:
           cp assets/lattice.iconset/icon_256x256.png com.lattice-editor.lattice.png
           mkdir -p AppDir/usr/bin
           cp "target/${{ matrix.target }}/release/lattice" AppDir/usr/bin/lattice
+          mkdir -p AppDir/usr/share/lattice
+          cp -R runtime/plugins AppDir/usr/share/lattice/plugins
           curl -fsSLo linuxdeploy.AppImage \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${arch}.AppImage"
           chmod +x linuxdeploy.AppImage

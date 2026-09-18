@@ -111,6 +111,21 @@ assets = [
     ["../../assets/lattice.iconset/icon_128x128.png", "usr/share/icons/hicolor/128x128/apps/com.lattice-editor.lattice.png", "644"],
     ["../../assets/lattice.iconset/icon_256x256.png", "usr/share/icons/hicolor/256x256/apps/com.lattice-editor.lattice.png", "644"],
     ["../../assets/lattice.iconset/icon_512x512.png", "usr/share/icons/hicolor/512x512/apps/com.lattice-editor.lattice.png", "644"],
+    # Core plugin components, staged into runtime/plugins/ by the pipeline's
+    # core-plugins job. An installed /usr/bin/lattice resolves these through
+    # discovery path 3 (`<exe>/../share/lattice/plugins`). Listed explicitly
+    # rather than globbed: a glob would depend on the glob crate's
+    # require_literal_leading_dot defaulting to false to catch `.source`,
+    # which is too subtle for a gate that exists to stop silent absence.
+    ["../../runtime/plugins/auto-pair/auto-pair.wasm", "usr/share/lattice/plugins/auto-pair/auto-pair.wasm", "644"],
+    ["../../runtime/plugins/auto-pair/plugin.toml", "usr/share/lattice/plugins/auto-pair/plugin.toml", "644"],
+    ["../../runtime/plugins/auto-pair/.source", "usr/share/lattice/plugins/auto-pair/.source", "644"],
+    ["../../runtime/plugins/treesitter-context/treesitter-context.wasm", "usr/share/lattice/plugins/treesitter-context/treesitter-context.wasm", "644"],
+    ["../../runtime/plugins/treesitter-context/plugin.toml", "usr/share/lattice/plugins/treesitter-context/plugin.toml", "644"],
+    ["../../runtime/plugins/treesitter-context/.source", "usr/share/lattice/plugins/treesitter-context/.source", "644"],
+    ["../../runtime/plugins/project/project.wasm", "usr/share/lattice/plugins/project/project.wasm", "644"],
+    ["../../runtime/plugins/project/plugin.toml", "usr/share/lattice/plugins/project/plugin.toml", "644"],
+    ["../../runtime/plugins/project/.source", "usr/share/lattice/plugins/project/.source", "644"],
 ]
 
 [dev-dependencies]

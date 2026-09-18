@@ -1249,6 +1249,13 @@ impl GpuiApp {
         for signal in tick_signals {
             self.handle_renderer_signal(signal);
         }
+        // OR.16: the renderer-owned effects an off-renderer path (the async
+        // picker accept, the fill target, the picker's delete verb) had no
+        // renderer to hand over. The TUI drains these in the same place.
+        let queued = self.mutate_editor_with(|e| e.drain_pending_renderer_effects());
+        for effect in queued {
+            self.apply_effect_gpui(effect);
+        }
         outcome
     }
 

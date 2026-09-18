@@ -2270,6 +2270,8 @@ pub struct Editor {
     /// drains them via
     /// [`Editor::drain_pending_renderer_signals`].
     pub pending_renderer_signals: Vec<RendererSignal>,
+    /// OR.16: see [`Editor::drain_pending_renderer_effects`].
+    pub pending_renderer_effects: Vec<lattice_grammar::Effect>,
 }
 
 impl Editor {
@@ -2283,6 +2285,18 @@ impl Editor {
     #[must_use]
     pub fn drain_pending_renderer_signals(&mut self) -> Vec<RendererSignal> {
         std::mem::take(&mut self.pending_renderer_signals)
+    }
+
+    /// OR.16: renderer-owned effects produced on a path with no renderer to
+    /// hand them to, for the peers to apply on their next frame.
+    ///
+    /// The off-renderer paths (the async picker accept, the fill target, the
+    /// picker's delete verb) apply what they can themselves; anything left is
+    /// queued here instead of being dropped, which is how four features went
+    /// missing before. Both peers drain this beside the tick's signals.
+    #[must_use]
+    pub fn drain_pending_renderer_effects(&mut self) -> Vec<lattice_grammar::Effect> {
+        std::mem::take(&mut self.pending_renderer_effects)
     }
 
     /// M.2.b.2 (2026-06-01): push a renderer-signal batch onto

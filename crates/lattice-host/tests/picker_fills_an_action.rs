@@ -207,3 +207,75 @@ fn the_root_override_still_applies_and_still_clears() {
         "a later open with no root clears the stale one"
     );
 }
+
+/// OR.16: an effect the off-renderer applier has no arm for is QUEUED for the
+/// renderer, not dropped.
+///
+/// The fill path and the async picker accept run with no renderer to hand
+/// effects to, so they applied a hand-written allowlist of renderer-owned
+/// effects and `warn!`ed about everything else. That list silently killed four
+/// features as they landed (`OpenTransient`, `OpenBufferAt`, `ApplyEdit`,
+/// `OpenPicker`), each found by someone watching a feature do nothing.
+///
+/// `OpenSyntheticBuffer` is the probe: renderer-owned (its host half is a
+/// no-op), and never in the list. Re-applying it here is NOT the fix — every
+/// effect on this path has already been through `handle_effect` once, so a
+/// second pass writes files twice — so it is handed to whichever peer draws
+/// next, which is where the renderer half lives.
+#[test]
+fn an_effect_outside_the_old_allowlist_is_queued_for_the_renderer() {
+    let mut editor = boot();
+    let reg = editor
+        .services
+        .get::<lattice_grammar::CommandRegistryHandle>()
+        .expect("the command registry is a boot service");
+    let mut next = (**reg.load()).clone();
+    next.register_ex_command(
+        "test-fill-opens-a-synthetic-buffer",
+        "test: return an effect the allowlist never had an arm for",
+        lattice_grammar::registry::ExCommandSpec {
+            latency_class: lattice_grammar::command::LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(|rest: &str, _bang: bool| {
+                Ok(lattice_grammar::Args::String(rest.to_string()))
+            }),
+            apply: Arc::new(move |_ctx| {
+                Ok(Effect::OpenSyntheticBuffer {
+                    name: "*test-queued*".to_string(),
+                    mode_id: "help-mode".to_string(),
+                    content: Some("queued\n".to_string()),
+                    cursor: None,
+                    activate_minor: None,
+                })
+            }),
+            args_schema: vec![],
+            surface_form: lattice_grammar::registry::SurfaceForm::Keyword,
+        },
+    );
+    reg.store(Arc::new(next));
+
+    let _ = editor.open_picker_for_effect(
+        "buffers".to_string(),
+        Vec::new(),
+        None,
+        Some("test-fill-opens-a-synthetic-buffer".to_string()),
+        None,
+    );
+    let _ = editor.apply_picker_outcome(PickerAcceptOutcome::FillCaller {
+        text: "anything".to_string(),
+    });
+
+    let queued = editor.drain_pending_renderer_effects();
+    assert!(
+        queued.iter().any(|e| matches!(
+            e,
+            Effect::OpenSyntheticBuffer { name, .. } if name == "*test-queued*"
+        )),
+        "the effect is waiting for a renderer instead of being dropped: {queued:?}"
+    );
+    assert!(
+        editor.drain_pending_renderer_effects().is_empty(),
+        "draining takes them"
+    );
+}

@@ -14791,22 +14791,49 @@ impl Editor {
                 // both use.
                 self.apply_edit_effect_inline(target, edit, cursor);
             }
-            // No `Effect::Many` arm: `apply_effect_host` flattens the tree into
-            // `out.effects` before either caller gets here, so a `Many` reaching
-            // this match would mean a new, unflattened producer — which the
-            // fallback below should report rather than quietly absorb.
+            // OR.16's structural fix: everything else goes through the host's
+            // ORDINARY applier rather than falling off the end of a list.
             //
-            // Named rather than swallowed — and `warn!`, not `debug!`, because
-            // `debug!` is what let two of the four above sit here dropped. This
-            // fires only when one of these paths actually produced an effect
-            // with no arm (not per-keystroke, not per-frame), so it is the
-            // one-shot, user-actionable case that earns the level.
-            other => tracing::warn!(
-                effect = ?std::mem::discriminant(&other),
-                path = what,
-                "an effect reached a path with no renderer to apply it and no handler \
-                 (see OR.16's report for the structural fix this allowlist still needs)"
-            ),
+            // The arms above are the renderer-owned effects this path must
+            // apply itself, because there is no renderer to hand them to. The
+            // rest are ordinary host-applied effects, and `handle_effect` is
+            // what applies them everywhere else — so a `SetOption`, an `Echo`,
+            // a `BufferDelete` or anything added next reaches its handler
+            // instead of a `warn!`. The allowlist dropped four features this
+            // way (`OpenTransient` OR.11b, `OpenBufferAt` OR.16, `ApplyEdit`
+            // OR.7c, `OpenPicker` PC.12), each found by someone watching a
+            // feature do nothing.
+            //
+            // Whatever `handle_effect` leaves for a renderer is QUEUED for the
+            // peers rather than discarded: this path has no renderer now, but
+            // both peers drain the queue on their next frame.
+            //
+            // No `Effect::Many` arm is needed: `apply_effect_host` flattens the
+            // tree before either caller gets here, and an unflattened one would
+            // now be applied by `handle_effect` rather than dropped.
+            other => {
+                // QUEUED for the peers, never re-applied here. Every effect on
+                // this path has already been through `handle_effect` once
+                // (`apply_effect_host` applies it and keeps the record in
+                // `out.effects`), so calling it again writes the file twice —
+                // measured, not theorised.
+                //
+                // What the arms above do instead is the RENDERER's half, for
+                // effects whose host half is a no-op. The rest of that half
+                // lives in the peers' own arms (`apply_effect_app_arms`,
+                // `apply_effect_gpui`), so the honest answer for an effect with
+                // no arm here is to hand it to whichever peer draws next rather
+                // than to guess — which is what the `warn!` this replaces could
+                // not do, and why four features (`OpenTransient` OR.11b,
+                // `OpenBufferAt` OR.16, `ApplyEdit` OR.7c, `OpenPicker` PC.12)
+                // each shipped dead until someone noticed.
+                tracing::debug!(
+                    effect = ?std::mem::discriminant(&other),
+                    path = what,
+                    "queued for the next frame's renderer"
+                );
+                self.pending_renderer_effects.push(other);
+            }
         }
         signals
     }

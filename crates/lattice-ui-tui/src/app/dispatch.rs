@@ -780,6 +780,7 @@ impl App {
         for signal in tick_signals {
             self.handle_renderer_signal(signal);
         }
+        self.drain_queued_renderer_effects();
         // Reached only on the non-fused path (e.g. a popup was up). `declined`
         // is false here for any buffer-mutating action; it can be true when a
         // declining action didn't fuse (popup open), so carry it out.
@@ -796,6 +797,22 @@ impl App {
         let tick_signals = self.mutate_editor_with(|e| e.run_tick_pending());
         for signal in tick_signals {
             self.handle_renderer_signal(signal);
+        }
+        self.drain_queued_renderer_effects();
+    }
+
+    /// OR.16: apply the renderer-owned effects an off-renderer path queued.
+    ///
+    /// The async picker accept, the fill target and the picker's delete verb
+    /// run with no renderer to hand effects to. They apply what they can and
+    /// queue the rest; this is where the TUI picks them up, through the same
+    /// arms a keystroke's effects go through. Draining beside the tick's
+    /// signals is deliberate: every caller of one wants the other, and the
+    /// GPUI peer does the same in `apply` (cross-renderer rule).
+    pub(super) fn drain_queued_renderer_effects(&mut self) {
+        let effects = self.mutate_editor_with(|e| e.drain_pending_renderer_effects());
+        for effect in effects {
+            self.apply_effect_app_arms(effect);
         }
     }
 
@@ -1715,6 +1732,39 @@ mod tests {
             a.editor.cursor.byte, 5,
             "the caret must land at end-of-line, not past it — a caret \
              beyond the line makes the next motion behave oddly"
+        );
+    }
+
+    /// OR.16: the TUI applies what an off-renderer path queued.
+    ///
+    /// The host half of this is `Editor::pending_renderer_effects`: the async
+    /// picker accept, the fill target and the picker's delete verb have no
+    /// renderer to hand a renderer-owned effect to, so they queue it rather
+    /// than drop it (which is how four features shipped dead). This is the
+    /// other half — the peer picking the queue up beside the tick's signals,
+    /// through the same arms a keystroke's effects go through.
+    #[test]
+    fn a_queued_renderer_effect_is_applied_on_the_next_drain() {
+        let mut a = app_with("scratch\n", 10);
+        a.editor
+            .pending_renderer_effects
+            .push(Effect::OpenSyntheticBuffer {
+                name: "*queued-by-a-picker*".to_string(),
+                mode_id: "help-mode".to_string(),
+                content: Some("from an off-renderer path\n".to_string()),
+                cursor: None,
+                activate_minor: None,
+            });
+
+        a.drain_async_pending();
+
+        assert!(
+            a.editor.buffers.by_name("*queued-by-a-picker*").is_some(),
+            "the queued effect reached the TUI's own arms"
+        );
+        assert!(
+            a.editor.pending_renderer_effects.is_empty(),
+            "and the queue is drained, so the next frame does not repeat it"
         );
     }
 

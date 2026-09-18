@@ -247,14 +247,27 @@ jobs:
             "lattice-gui-${VERSION}-x86_64-windows.zip"
             "lattice-gui-${VERSION}-x86_64.AppImage"
             "lattice-gui-${VERSION}-x86_64.deb"
-            "lattice-gui-${VERSION}-aarch64.AppImage"
-            "lattice-gui-${VERSION}-aarch64.deb"
             "lattice-${VERSION}-source.tar.xz"
           )
           best_effort=(
             "lattice-gui-${VERSION}-aarch64-linux.tar.xz"
             "lattice-gui-${VERSION}-aarch64-windows.zip"
+            "lattice-gui-${VERSION}-aarch64.AppImage"
+            "lattice-gui-${VERSION}-aarch64.deb"
           )
+          # Every artefact produced by a `gui_best_effort` leg must be
+          # best-effort here too. Listing one as required is what made a
+          # failed ARM GUI link kill the entire release.
+          for f in "${required[@]}"; do
+            case "$f" in
+              *aarch64-linux* | *aarch64-windows* | *-aarch64.AppImage | *-aarch64.deb)
+                if [[ "$f" != *"lattice-${VERSION}-aarch64"* ]]; then
+                  echo "::error::$f is produced by a best-effort leg but listed as required"
+                  exit 1
+                fi
+                ;;
+            esac
+          done
           fail=0
           for f in "${required[@]}"; do
             if [[ ! -f "dist/$f" ]]; then echo "::error::missing required artefact $f"; fail=1; fi

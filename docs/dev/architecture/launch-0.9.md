@@ -235,3 +235,49 @@ The green baseline still matters for the launch, which is why it is
 checked rather than assumed: a red baseline makes "did I break it?"
 unanswerable for the first contributor who clones the repo, and 0.9's
 whole point is that strangers arrive.
+
+## 10. Positioning, and why demo assets are artefacts
+
+A soft launch is judged on first contact, and for most visitors first
+contact is an image, not prose. So the demo assets are part of the launch
+contract rather than decoration.
+
+**The four differentiators the assets lead with**, each named against the
+editors Lattice is actually compared to:
+
+| Differentiator | Absent from |
+|---|---|
+| **Magit** — status, hunk staging, rebase, blame, transients | Zed, Helix, Neovim (fugitive is not magit) |
+| **Everything is a buffer** — file tree, terminal, search results, git views all carry the full grammar | every one of them; the others have panels |
+| **Config is Rust compiled to WASM** — one substrate for config and plugins, and programmable enough for custom commands and hooks, not just keybindings | Zed (JSON), Helix (TOML, no plugin host shipped), Neovim (Lua), VS Code (JSON + TS) |
+| **Org-mode, and coding agents as editable buffers** | everything outside Emacs; Zed has agents but not as buffers you edit with the grammar |
+
+A fifth, structural rather than feature-shaped: **one core, two
+first-class renderers.** Zed has no terminal UI; Helix has no GPU
+renderer. Nobody else ships both from one core, and it is why `--gui` is
+a peer rather than a fallback.
+
+The pre-existing shot list in `docs/media/screenshot-ideas.md` was
+organised by feature and contained none of the four. A feature-organised
+gallery shows that Lattice is real; a differentiator-organised one shows
+why it exists. The list is re-cut against this table.
+
+It was also **stale** — written before most of what it omits existed, and
+never revised as features landed. That is the third stale-doc instance
+found preparing 0.9, after `focused-surface.md` §7 and the magit audit
+block in `implementation.md`, and the three share a cause: a document
+that records a point-in-time state, maintained by hand, with nothing
+tying it to the thing it describes. So the shot list is **derived, not
+remembered**: its inventory comes from `docs/user/`, which carries one
+topic page per shipped feature and is enforced against
+`site/data/nav.toml` by a build that fails when the two disagree. A
+feature cannot ship without a page, so it cannot be silently missing from
+the inventory either. Same principle as the tapes in the paragraph
+below, and as generating the site from `docs/` rather than copying into
+it: bind the artefact to its source, or accept that it will drift.
+
+**Demo assets are regenerable, not recorded.** TUI demos are declarative
+VHS `.tape` files committed to the repo and rendered per release, so an
+asset cannot silently rot when the UI moves — the same reason the docs are
+generated from `docs/` rather than copied into the site. Manual capture
+stays for the GPUI renderer, which VHS cannot drive.

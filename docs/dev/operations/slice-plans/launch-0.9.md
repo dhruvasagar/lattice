@@ -17,11 +17,12 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 | Slice | What | Gate | Status |
 |---|---|---|---|
 | L.0 | Green `lattice-ui-tui` baseline | both tests pass; LCP pinned by a test | ✅ |
-| L.1 | Pipeline: ARM artefact bug + first green preview run | `publish` succeeds once | 📝 |
+| L.1 | Pipeline: ARM artefact bug + first green preview run | `publish` succeeds once | ✅ |
 | L.2 | Core plugins in every artefact; prefix-relocatable layout | extracted binary loads 3 plugins | 📝 |
 | L.3 | Version 0.9.0 + honesty pass | no false claim on any user surface | 📝 |
 | L.4 | `install.sh` | installs from a real release on macOS + Linux | 📝 |
-| L.5 | README restructure + hero screenshot | README < 200 lines, one image | 📝 |
+| L.4b | Positioning, re-cut shot list, VHS capture harness | tapes render; every shot names a differentiator | 📝 |
+| L.5 | README restructure + hero + feature series | README < 200 lines, hero + 4 feature shots | 📝 |
 | L.6 | known-limitations, troubleshooting, cheatsheet, dashboard | site sync passes; docs budget green | 📝 |
 | L.7 | CONTRIBUTING / SECURITY / CoC / issue templates / CHANGELOG | templates render on GitHub | 📝 |
 | L.8 | Tag `v0.9.0`, notes, announce | a real release exists | 📝 |
@@ -1186,6 +1187,223 @@ Claude-Session: https://claude.ai/code/session_01L1Ac4ezt9RY2UVPr1372zL"
 
 ---
 
+### Task L.4b: Positioning, the re-cut shot list, and the capture harness
+
+Spec §10. `docs/media/screenshot-ideas.md` has two problems, and the second is worse than the first.
+
+**It is mis-organised.** It lists 13 screenshots and 8 screencasts by feature, and contains **none** of the four differentiators the launch leads with: magit, everything-is-a-buffer, config-as-Rust-WASM (programmable, not just keybindings), and org-mode + agents-as-buffers.
+
+**It is stale.** It was written long before the features it omits existed, and nothing updated it as they landed. This is the *third* stale-doc instance found preparing 0.9, after `focused-surface.md` §7 (L.0) and the magit audit block in `implementation.md` (L.3) — so the slice does not re-cut the old list from memory. It rebuilds the inventory from the sources that cannot drift: `docs/user/`, which has one topic page per shipped feature and is enforced against `site/data/nav.toml` by a build that fails when they disagree.
+
+A feature-organised gallery shows Lattice is real; a differentiator-organised one shows why it exists.
+
+This slice also makes TUI demos **regenerable**: declarative VHS `.tape` files committed to the repo and rendered per release, so an asset cannot silently rot when the UI moves. VHS drives a terminal, so GPUI shots stay manual.
+
+**Files:**
+- Rewrite: `docs/media/screenshot-ideas.md`
+- Create: `docs/media/tapes/{magit,buffers,config,org-agents}.tape`
+- Create: `docs/media/README.md` (how to regenerate, and the demo-fixture convention)
+- Create: `assets/media/demos/` (rendered GIFs, committed)
+
+**Interfaces:**
+- Consumes: nothing from earlier slices.
+- Produces: `assets/media/demos/<name>.gif` and `assets/media/screenshots/<name>.png` paths that L.5 references from the README and the site, and the differentiator ordering L.5's gallery follows.
+
+- [ ] **Step 1: Install VHS and confirm it runs**
+
+```bash
+brew install vhs
+vhs --version
+```
+
+Expected: a version line. VHS renders a terminal session from a `.tape` file to GIF/MP4 with no screen recorder and no manual timing.
+
+- [ ] **Step 2: Confirm the real ex-command names before writing any tape**
+
+Do not invent commands. `magit-status` and `search` are confirmed to exist (`crates/lattice-magit/src/lib.rs:948`, `crates/lattice-host/src/dispatch.rs`). Find the rest:
+
+```bash
+grep -rhoE '"(org-agenda|org-capture)[a-z-]*"' /Users/dhruva/src/dhruvasagar/lattice-org-plugin/src/*.rs | sort -u
+grep -rhoE 'register(_ex)?_command\w*\(\s*"[a-z][a-z0-9-]*"' crates/lattice-agent/src/*.rs | sort -u
+grep -rn "reload-config\|scaffold-init" crates/lattice-cli/src/*.rs crates/lattice-host/src/*.rs | head -5
+```
+
+Report every command name you will type in a tape and where you confirmed it. If a command you need does not exist, say so and leave that tape out rather than typing a command that will error on screen — a demo showing an unknown-command message is worse than no demo.
+
+- [ ] **Step 3: Rebuild the feature inventory from source, not from the old list**
+
+The old list predates a great deal of what shipped. Derive the current set from the authoritative places rather than trusting it:
+
+```bash
+# One topic page per shipped user-facing feature (~147 of them).
+ls docs/user/*.md | sed 's|docs/user/||; s|\.md$||' | sort > /tmp/topics.txt
+wc -l /tmp/topics.txt
+
+# What the old shot list already covers.
+grep -oiE '(magit|org|agent|lsp|picker|diff|terminal|multibuffer|narrow|fold|snippet|theme|tutor|plugin|dashboard|which-key|surround|table|repl|media|compilation|blame|rebase)' docs/media/screenshot-ideas.md | tr 'A-Z' 'a-z' | sort -u > /tmp/covered.txt
+
+# Subsystem crates — each is a feature area that may deserve a shot.
+ls crates | sed 's/^lattice-//' | sort
+```
+
+Read `/tmp/topics.txt` against `/tmp/covered.txt` and list, in your report, every substantial shipped feature the old doc does not mention. Expect a long list — magit alone has ~22 topic pages, and org, agents, narrowing, folding, multibuffer, which-key, surround, table-mode, snippets, compilation, REPL and media are all likely absent.
+
+Then group what you found into: **priority** (a differentiator from spec §10), **second tier** (a strong feature worth a page shot), and **skip** (real but not visually distinctive — an option, a keybinding nicety). Judgement call: a shot has to show something a still image can carry.
+
+- [ ] **Step 4: Re-cut the shot list**
+
+Rewrite `docs/media/screenshot-ideas.md`. Keep the Technical Notes and Screencast sections largely as they are (they are good), but replace the flat screenshot list with a table whose every row names the differentiator **and the editors it differentiates against**, ordered by launch priority:
+
+```markdown
+## Priority shots — the differentiators
+
+These are the shots the README gallery and the site lead with. Each exists
+to answer "why this and not Zed / Helix / Neovim / VS Code", not "what
+features does it have". See `../dev/architecture/launch-0.9.md` §10.
+
+| # | Shot | Shows | Absent from | File |
+|---|---|---|---|---|
+| 1 | Magit status with staged + unstaged hunks and a transient popup open | a real magit port inside a modal editor | Zed, Helix, Neovim (fugitive is not magit) | `assets/media/screenshots/magit.png` |
+| 2 | Four-way split: file tree, code, terminal, search results — all real buffers | everything is a buffer; the same grammar works in all of them | all of them; the others have panels | `assets/media/screenshots/buffer-splits.png` |
+| 3 | `init.rs` beside the editor, defining a custom command and a hook, then `:reload-config` applying it live | config is Rust compiled to WASM, and it is programmable — not a settings file | Zed (JSON), Helix (TOML), Neovim (Lua), VS Code (JSON+TS) | `assets/media/screenshots/config-init-rs.png` |
+| 4 | Org agenda beside a coding-agent buffer under interactive diff review | org-mode and agents-as-editable-buffers, in one editor | everything outside Emacs; Zed's agent is not a buffer | `assets/media/screenshots/org-and-agents.png` |
+| 5 | The same file in the TUI and the GPU window, side by side | one core, two first-class renderers | Zed (no TUI), Helix (no GPU) | `assets/media/screenshots/two-renderers.png` |
+
+Shot 3 must show something genuinely programmatic — a custom command or a
+hook — not a keybinding one-liner. A remapped key looks like every other
+editor's config; a compiled function does not.
+
+## Supporting shots
+
+[the second tier: the existing hero / LSP / picker / diff / help / tutor /
+ theme entries, PLUS everything Step 3's inventory found missing that you
+ graded second tier — magit sub-views, org capture/clocking, narrowing,
+ folding, multibuffer, which-key, surround, table mode, snippets,
+ compilation, REPL, media. Used on feature pages, not the landing gallery.]
+```
+
+- [ ] **Step 5: Write the demo-media README**
+
+Create `docs/media/README.md`:
+
+```markdown
+# Demo media
+
+Screenshots and demo GIFs for the README and the website.
+
+## Regenerating the TUI demos
+
+The `.gif` files under `assets/media/demos/` are **generated**, not
+recorded. Each has a declarative `.tape` beside it in `tapes/`:
+
+```sh
+brew install vhs
+vhs docs/media/tapes/magit.tape     # writes assets/media/demos/magit.gif
+```
+
+Re-render them whenever the UI they show changes. A recorded video would
+silently go stale; a tape fails loudly or shows the new UI.
+
+## The demo fixture
+
+Tapes run against **this repository**. It is a real Rust project with real
+git history, which is what makes the magit demo honest — staged hunks from
+an actual working tree rather than a contrived fixture. Before rendering,
+ensure the tree is clean and no editor is already running.
+
+## GPUI shots
+
+VHS drives a terminal, so it cannot capture the GPU renderer. Those shots
+are captured by hand — see `screenshot-ideas.md` Technical Notes for the
+resolution, theme and font conventions.
+```
+
+- [ ] **Step 6: Write the magit tape**
+
+Create `docs/media/tapes/magit.tape`. Fill the command names from Step 2; `magit-status` is confirmed.
+
+```tape
+# Regenerate: vhs docs/media/tapes/magit.tape
+# Shows: a real magit port inside a modal editor (differentiator 1).
+Output assets/media/demos/magit.gif
+
+Require lattice
+
+Set Shell "bash"
+Set FontSize 16
+Set Width 1400
+Set Height 800
+Set Padding 20
+Set TypingSpeed 60ms
+
+Hide
+Type "cd /Users/dhruva/src/dhruvasagar/lattice && clear"
+Enter
+Show
+
+Sleep 500ms
+Type "lattice"
+Enter
+Sleep 3s
+
+Type ":magit-status"
+Enter
+Sleep 2500ms
+
+# Walk to a hunk and stage it — the thing no other modal editor does.
+Type "jjj"
+Sleep 1s
+Type "s"
+Sleep 2s
+
+Escape
+Sleep 500ms
+Type ":q!"
+Enter
+Sleep 1s
+```
+
+- [ ] **Step 7: Write the remaining three tapes**
+
+`buffers.tape`, `config.tape` and `org-agents.tape`, following the same header shape (Output/Require/Set block identical; only the body differs). Each body should be under ~20 seconds of screen time — a landing-page GIF that runs longer than that does not get watched.
+
+- `buffers.tape` — open the file tree, open a file from it, `:search` for a symbol, jump to a result, open a terminal buffer in a split, then `:ls` to show every one of them is a listed buffer.
+- `config.tape` — show `init.rs` defining a custom command, then `:reload-config`, then invoke that command. This is the shot that must be programmatic, not a keybinding.
+- `org-agents.tape` — org agenda, then an agent buffer with a diff under review. Leave this tape out and say so if Step 2 could not confirm the command names.
+
+- [ ] **Step 8: Render and inspect**
+
+```bash
+mkdir -p assets/media/demos
+for t in docs/media/tapes/*.tape; do echo "--- $t"; vhs "$t" || echo "FAILED: $t"; done
+ls -lh assets/media/demos/
+```
+
+Expected: one GIF per tape, each **under 4 MB** (they ship in every clone and load on the landing page). If one is larger, shorten the tape or drop `Set Width`/`Height` — do not commit a 20 MB GIF.
+
+Then watch each GIF. A tape that ran without erroring can still show a blank editor, an error message, or a popup that never opened. Confirm each one actually shows the thing its comment claims, and say so per tape in your report.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add docs/media/screenshot-ideas.md docs/media/README.md docs/media/tapes assets/media/demos
+git commit -m "docs(media): re-cut the shot list around differentiators, add VHS tapes
+
+The shot list was organised by feature and contained none of the four
+things that separate lattice from the editors it is compared to: magit,
+everything-is-a-buffer, programmable Rust-WASM config, and org plus
+agents-as-buffers. Re-cut so every priority shot names both the
+differentiator and the editors that lack it.
+
+TUI demos are now declarative VHS tapes rendered per release rather than
+one-off recordings, so a demo cannot silently rot when the UI moves.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01L1Ac4ezt9RY2UVPr1372zL"
+```
+
+---
+
 ### Task L.5: README restructure and a hero screenshot
 
 The README is 653 lines opening on a 47-line internal phase ledger ("Phase 4 wind-down ~90%", "Phase 5.8 GPUI feature-parity"), and there is not one screenshot anywhere in the repo — only the SVG wordmark. It reads as a changelog for people who already know what Lattice is.
@@ -2115,6 +2333,80 @@ git push
 ```
 
 Then announce — soft launch, so: your own channels, and one post to r/rust. Lead with what it is and one honest sentence about the alpha; link the release and the site, not the repo root. No Hacker News at 0.9.
+
+---
+
+### Task L.9: The demo video script
+
+Post-tag; does not gate the release. A **differentiator-led 6-8 minute** script Dhruva records from — it opens on what nobody else has rather than touring features.
+
+**Files:**
+- Create: `docs/media/demo-script.md`
+
+**Interfaces:**
+- Consumes: L.4b's differentiator ordering and confirmed command names; L.2's shipped plugins (the demo runs a real installed build).
+- Produces: nothing other slices depend on.
+
+- [ ] **Step 1: Write the script**
+
+Create `docs/media/demo-script.md` with this structure. Every keystroke must be one confirmed to exist in L.4b Step 2 — a demo that shows an unknown-command error is worse than no demo.
+
+```markdown
+# Lattice — introductory demo script (6-8 min)
+
+Differentiator-led: open on what no other editor has, then earn the
+feature tour. Record in sections; each has a reset point so one section
+can be re-recorded without redoing the take.
+
+## Before recording
+
+- Fresh terminal, 1400×800, 16pt Nerd Font, default dark theme.
+- `cd` to a clean checkout of this repo with a few uncommitted edits
+  staged and unstaged (the magit section needs real hunks).
+- Run the installed 0.9 build, not `cargo run` — the demo should be the
+  thing a viewer can download.
+- Confirm `:plugins` lists auto-pair, treesitter-context and project as
+  `bundled` before you start. If it does not, the build is wrong and the
+  auto-pair beat in section 3 will not work.
+
+## 0. Cold open (0:00-0:30)
+
+Editor already open on a Rust file. Say what it is in one sentence:
+a modal, GPU-accelerated, plugin-first editor in Rust — vim's grammar,
+emacs's extensibility, on a core where the UI thread does no I/O.
+
+Then immediately: `:magit-status`.
+
+## 1. Magit (0:30-2:00) — the thing nobody else has
+
+...
+```
+
+Write all seven sections in full: cold open, magit, everything-is-a-buffer, config as Rust-WASM, org + agents, two renderers, and a close that says plainly it is an alpha and points at the install page and the issue tracker. For each section give: the exact keystrokes in order, what to say over each beat (as prose to paraphrase, not a teleprompter), the duration budget, and the reset command to return to a known state.
+
+- [ ] **Step 2: Verify every command in the script exists**
+
+```bash
+grep -oE '^\s*:[a-z][a-z0-9-]*' docs/media/demo-script.md | tr -d ' :' | sort -u > /tmp/script-cmds.txt
+cat /tmp/script-cmds.txt
+```
+
+For each, confirm it is registered (the greps from L.4b Step 2). Report any that you could not confirm, and remove them from the script rather than leaving them in.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/media/demo-script.md
+git commit -m "docs(media): differentiator-led demo script for the intro video
+
+Opens on magit in a modal editor rather than touring features, then
+everything-is-a-buffer, programmable Rust-WASM config, org and agents,
+and the two renderers. Sectioned with reset points so a single section
+can be re-recorded without redoing the take.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01L1Ac4ezt9RY2UVPr1372zL"
+```
 
 ---
 

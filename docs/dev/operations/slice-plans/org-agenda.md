@@ -68,7 +68,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.27 | The `<leader>o` reorganisation — clock under `ox…` **(plugin)** | ✅ |
 | OA.28 | `view-args` — a guest can read what its view is showing **(cross-repo)** | ✅ |
 | OA.29 | Filtering moves to `s`; `/` is search again **(plugin)** | ✅ |
-| OA.30 | `refresh-decorations`, so guest state reaches the gutter **(cross-repo)** | 🚧 |
+| OA.30 | `refresh-decorations`, so guest state reaches the gutter **(cross-repo)** | ✅ |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
@@ -1626,7 +1626,7 @@ category filtering exists, and is recorded in §8b rather than changed.
 
 ---
 
-### OA.30 — `refresh-decorations`, so a mark can paint **(cross-repo)** 🚧
+### OA.30 — `refresh-decorations`, so a mark can paint **(cross-repo)** ✅
 
 Design: `docs/dev/architecture/plugin-multibuffer-views.md` §10.
 
@@ -1643,8 +1643,41 @@ registry epoch is. Wired in `install`, pinned by `WiredSeams::view_decoration_ep
 Proven red-then-green: with the comparison removed, the new test fails on "the
 producer is asked again", which is the frozen-gutter symptom exactly.
 
-The guest half — the mark set, the `m` / `M` chords and the `x` bulk menu —
-lands in lattice-org-plugin.
+The guest half landed 2026-09-18 in lattice-org-plugin, and is the reason the
+host half exists:
+
+* **the mark set** in the plugin store, keyed `agenda-mark/<path>:<line>`. A
+  mark names a SOURCE entry, not a view row, so it survives `gr`, a filter and a
+  span change — which is the whole point of marking several rows before acting
+  on them. The store rather than a guest `thread_local` because the chords, the
+  paint and the menu run on three seams with three separate memories
+  (`guest-state-does-not-cross-seams`).
+* **the chords**, on evil-org-agenda's letters: `m` toggle (stepping down a line
+  as org's does), `M` unmark-all, `~` toggle-all, `*` mark-all.
+* **the paint** — a `decorations` producer resolving view-ward (for each line on
+  screen, ask `excerpt-source` what it shows and look that up), and a `signs`
+  declaration of org's own `>` at priority 10, in the `mark` column. Every
+  mutation calls `refresh-decorations`; without it the producer answers once and
+  freezes, which is the bug this slice's host half was built for.
+* **the `x` bulk menu**, with ONE verb: `t`, a TODO keyword written into every
+  marked entry, built by the same function as the single-entry keyword menu so
+  the two cannot disagree about which key means which state. Marks are dropped
+  after the verb runs (org's default — `org-agenda-persistent-marks` is nil).
+
+Two deliberate divergences from org, both recorded in the code:
+
+* **`x` with nothing marked refuses.** Org marks the row at point and proceeds;
+  that infers a target for a destructive edit from where the cursor happens to
+  be.
+* **marks outlive a restart**, because the store is on disk. Same fact as
+  surviving `gr`: a mark names an entry, and the entry is still there tomorrow.
+  It cannot paint anywhere unexpected — the producer only marks rows the current
+  view shows — and `M` clears the set.
+
+Follow-ups, each needing its single-entry verb reachable from a row's SOURCE
+document first: org's other bulk verbs (`$` archive, `A` archive-to-sibling,
+`+`/`-` tag, `s` schedule, `d` deadline, `r` refile, `S` scatter), and `%`
+(mark by regexp), which needs a prompt hop.
 
 ---
 

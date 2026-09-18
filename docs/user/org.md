@@ -41,7 +41,7 @@ Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 | **Outline** | headline folding, promotion and demotion, structure motions, tree-sitter highlighting |
 | **Lists** | insert, indent, move and cycle list items and checkboxes — under org's own meta-arrows, over a Visual region, and while typing |
 | **TODO workflow** | your own keyword sequences with fast-select keys and `(@)` / `(!)` logging, per-keyword colours |
-| **Agenda** | `:org-agenda` — every dated headline across your files in one editable view, with filters, custom commands, a clock report, and `l` for what you finished |
+| **Agenda** | `:org-agenda` — every dated headline across your files in one editable view, with filters, custom commands, a clock report, `l` for what you finished, and `m` / `x` to act on several entries at once |
 | **Capture** | `<leader>oc` — templates that file a note without leaving what you were doing: into a headline, an outline path, today's date-tree node, or a row of a table. Each capture is a draft file, so several can be open at once, `:w` keeps one for later, and `<leader>oC` brings it back |
 | **Habits** | repeating tasks with a consistency graph under their agenda row |
 | **Roam** | a Zettelkasten layer: id links, backlinks, dailies, and notes that nest. A note created while you write another links into it, or back to it |

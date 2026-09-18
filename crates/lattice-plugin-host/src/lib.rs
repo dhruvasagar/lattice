@@ -3563,6 +3563,20 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // SG.3a, for the TC.6 reason above, and found the same way: org
+        // provides BOTH `grammar` and `signs` (OA.30's agenda marks declare
+        // the `>` they paint), so its component is instantiated against this
+        // sync linker for its grammar seam — and instantiation must satisfy
+        // EVERY import the world declares, not only the ones that seam uses.
+        // `define-sign` writes the sign registry and nothing else, so it is
+        // safe here; leaving it out made the WHOLE org plugin fail to load
+        // with "instance export `define-sign` has the wrong type", which
+        // reads like a WIT mismatch rather than a missing linker entry.
+        crate::sign_host::bindings::lattice::plugin_host::signs::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // CR.3, for the TC.6 reason above: a multi-seam component providing
         // BOTH `grammar` and `help` is instantiated against this sync linker
         // for its grammar seam, and instantiation must satisfy EVERY import

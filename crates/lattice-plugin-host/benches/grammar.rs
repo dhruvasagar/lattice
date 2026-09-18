@@ -63,6 +63,8 @@ fn grammar_marshalling(c: &mut Criterion) {
         marks: None,
         viewport: None,
         nostartofline: false,
+        operator_pending: false,
+        scrolloff: 0,
         curswant: None,
         display: None,
     };

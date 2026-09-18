@@ -260,6 +260,7 @@ docs = [
   "operations/verify",
   "operations/releasing",
   "architecture/release-pipeline",
+  "architecture/launch-0.9",
   "operations/embedded-docs-budget",
   "architecture/lighthouse",
 ]
@@ -294,6 +295,7 @@ docs = [
 "operations/benchmarks" = "Benchmark record"
 "operations/verify" = "Verification checklist"
 "operations/releasing" = "Cutting a release"
+"architecture/launch-0.9" = "The 0.9 launch contract"
 "audit/README" = "About these audits"
 "audit/plugin-host-architecture" = "Plugin host audit"
 "audit/plugin-observability-review" = "Plugin observability review"

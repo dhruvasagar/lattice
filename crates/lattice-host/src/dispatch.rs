@@ -46228,6 +46228,26 @@ mod tests {
         assert_eq!(longest_common_prefix_of(pool), "describe-");
     }
 
+    /// L.0: end-to-end pin for the LCP rewrite through the real
+    /// `open_completion_popup` entry point, not just the pure prefix
+    /// helpers above. Every `describe-*` command shares `describe-`,
+    /// so opening the popup on `descr` must rewrite the line
+    /// (vim-wildmenu style) while preserving `descr` as
+    /// `original_line` for dismiss-restore.
+    #[test]
+    fn opening_the_popup_extends_the_line_to_the_longest_common_prefix() {
+        let mut e = Editor::boot(lattice_core::Document::empty());
+        e.modal = lattice_grammar::ModalState::Command;
+        e.set_command_line_text("descr");
+        e.open_completion_popup();
+        let state = e
+            .completion_state
+            .as_ref()
+            .expect("popup must open with multiple describe-* matches");
+        assert_eq!(e.command_line(), "describe-");
+        assert_eq!(state.original_line, "descr");
+    }
+
     #[test]
     fn renderer_signal_is_clone() {
         fn assert_clone<T: Clone>(_: T) {}

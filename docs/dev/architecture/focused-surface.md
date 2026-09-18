@@ -197,10 +197,14 @@ these are still open. None of them blocks the model above.
   defensible and neither is the bug this initiative was opened for, so the
   divergence was left standing rather than picked arbitrarily. Cross-renderer
   parity says it should be picked deliberately, once.
-- **Two `lattice-ui-tui` tests are red on clean HEAD** —
+- **Was fixed 2026-09-08 by `af719434`** ("a fuzzy action id no longer
+  suppresses the `<Tab>` LCP"); this note wrongly claimed it was still
+  broken until 2026-09-18.
   `typing_after_popup_open_live_refilters_candidates` and
-  `backspace_after_popup_open_live_refilters`. Command-line completion stopped
-  extending `descr` to `describe-`. Predates this initiative (re-proven by
-  stashing, 2026-09-04) and is unrelated to focus, but it means "2 failures"
-  is that crate's green baseline until someone fixes it — a baseline nobody
-  should have to rediscover.
+  `backspace_after_popup_open_live_refilters` had been red because
+  command-line completion stopped extending `descr` to `describe-`. That
+  fix shipped without a test at the layer that computes the extension, so
+  launch slice L.0 added
+  `opening_the_popup_extends_the_line_to_the_longest_common_prefix` in
+  `lattice-host`'s dispatch path and retired this note. The crate's green
+  baseline is zero failures.

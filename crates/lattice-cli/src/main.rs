@@ -43,7 +43,7 @@ mod scaffold;
 mod wit_sync;
 
 #[derive(Debug, Parser)]
-#[command(version, about = "lattice editor", long_about = None)]
+#[command(name = "lattice", version, about = "lattice editor", long_about = None)]
 struct Cli {
     /// Path to the file to open. If omitted, an empty buffer is opened.
     file: Option<PathBuf>,

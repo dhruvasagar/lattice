@@ -1,58 +1,101 @@
 +++
 title = "Installation"
-description = "Install Lattice from source, Homebrew, or pre-built binaries"
+description = "Install Lattice from a release archive, the install script, or source"
 +++
 
-## From source (Rust toolchain)
+Lattice 0.9 is an **alpha**. The editor is usable; the distribution is new.
+Binaries are unsigned — see [Gatekeeper](#macos-gatekeeper) below if macOS
+refuses to open one.
+
+## Install script (macOS, Linux)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh | sh
+```
+
+Installs into `~/.local` (`~/.local/bin/lattice` plus the bundled plugins
+under `~/.local/share/lattice`). Override with `--prefix`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh | sh -s -- --prefix /usr/local
+```
+
+Add `~/.local/bin` to your `PATH` if it isn't there already.
+
+## Release archives
+
+Download from the [releases page](https://github.com/dhruvasagar/lattice/releases).
+
+| Platform | Architectures | TUI | GUI |
+|---|---|---|---|
+| macOS | x86_64, aarch64 | `.tar.xz` | `.tar.xz` |
+| Linux | x86_64, aarch64 | `.tar.xz` | `.tar.xz`, `.AppImage`, `.deb` |
+| Windows | x86_64, aarch64 | `.zip` | `.zip` (x86_64) |
+
+The `lattice-*` archives are the terminal build — the one to use over SSH or
+on a server. The `lattice-gui-*` archives are the same editor plus the
+GPU-rendered window, opened with `--gui`. ARM Linux and ARM Windows GUI
+builds are best-effort and may be absent from a given release.
+
+Every archive unpacks to a relocatable prefix — put it anywhere:
+
+```
+lattice-0.9.0-aarch64-macos/
+  bin/lattice
+  share/lattice/plugins/…   # bundled plugins; keep these beside bin/
+```
+
+`bin/lattice` finds its plugins through `../share/lattice/plugins`, so move
+the whole directory rather than just the binary. Verify your download against
+the release's `SHA256SUMS`:
+
+```sh
+shasum -a 256 -c SHA256SUMS
+```
+
+### macOS Gatekeeper
+
+Archives downloaded in a browser are quarantined, and macOS will refuse to
+run an unsigned binary. Clear the flag:
+
+```sh
+xattr -dr com.apple.quarantine lattice-0.9.0-aarch64-macos
+```
+
+Downloads made with `curl` — including the install script — are not
+quarantined, so this step only applies to browser downloads. There is no
+signed installer at 0.9; notarisation needs a paid certificate.
+
+## From source
 
 ```sh
 git clone https://github.com/dhruvasagar/lattice
 cd lattice
 cargo build --release
-
-# Run (TUI mode)
+cargo xtask build-core-plugins   # builds the bundled plugins
 ./target/release/lattice
+```
 
-# Run (GPU mode, macOS)
+The GPU renderer is behind a cargo feature:
+
+```sh
 cargo run --features gui -- --gui
 ```
 
-Requires Rust 1.85+ (edition 2024). Install the toolchain via [rustup](https://rustup.rs/).
+Requires Rust **1.94+** (edition 2024, pinned in `rust-toolchain.toml`) and
+the `wasm32-wasip2` target for the plugin build:
+`rustup target add wasm32-wasip2`. Install the toolchain via
+[rustup](https://rustup.rs/).
 
-## Homebrew (macOS)
+`cargo xtask build-core-plugins` is not optional — without it the editor
+starts with no bundled plugins and no error, because an absent plugin
+directory is indistinguishable from an empty one.
 
-```sh
-brew install dhruvasagar/lattice/lattice
-```
+## Requirements
 
-(coming soon — tap not yet published)
-
-## Pre-built binaries
-
-Download the latest release from the [releases page](https://github.com/dhruvasagar/lattice/releases).
-
-| Platform | Architecture | Format |
-|---|---|---|
-| macOS | x86_64, aarch64 | .tar.gz |
-| Linux | x86_64, aarch64 | .tar.gz |
-
-Pre-built binaries are signed and checksummed.
-
-## From source (no Rust toolchain)
-
-If you don't have Rust installed but want the latest development build:
-
-```sh
-curl -fsSL https://github.com/dhruvasagar/lattice/releases/latest/download/lattice-x86_64-linux.tar.gz \
-  | tar xz
-./lattice
-```
-
-## Build dependencies
-
-- **Runtime:** macOS 14+ or Linux (kernel 5.10+)
-- **Build:** Rust 1.85+, `clang` (for tree-sitter), `cmake` (for some native deps)
-- **GPU mode (optional):** Metal (macOS) or Vulkan (Linux); enabled via `--features gui`
+- **macOS** 14+, or **Linux** with kernel 5.10+, or **Windows** 10+
+- **Build:** Rust 1.94+, `clang` (tree-sitter), `cmake` (some native deps)
+- **GPU mode (optional):** Metal on macOS, Vulkan on Linux
 
 ## Verify your install
 
@@ -60,9 +103,17 @@ curl -fsSL https://github.com/dhruvasagar/lattice/releases/latest/download/latti
 lattice --version
 ```
 
-Should print the version number and commit hash.
+Prints the version. To confirm the bundled plugins were found, open the
+editor and run `:plugins` — `auto-pair`, `treesitter-context` and `project`
+should each be listed as `bundled`.
+
+## Not yet available
+
+Homebrew, `cargo install`, `.dmg` and `.msi` are all post-0.9. See
+[known limitations](./docs/known-limitations/).
 
 ## Next steps
 
 - [Getting started](./docs/getting-started/) — ten-minute orientation
 - [Modal editing](./docs/modal-editing/) — the vim grammar
+- [Known limitations](./docs/known-limitations/) — what doesn't work yet

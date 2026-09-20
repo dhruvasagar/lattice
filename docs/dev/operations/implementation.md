@@ -1343,12 +1343,12 @@ navigation arrive incrementally:
 | `K` / `gd` registered in keymap registry  | ✅     | The input translator already dispatched `K` -> `LspHoverRequest` and `gd` -> `LspDefinitionRequest`, but the keymap registry didn't list them, so `:describe-key K` / `:apropos hover` came back empty. Added entries in `keymap::build_default_keymap`. |
 | Styled link ranges in renderer           | ⛔     | renderer ignores `links` today                                    |
 | Follow-link motion (e.g. `<CR>` on link) | ⛔     | needs tree-sitter help grammar + link motion                      |
-| Help major mode + tree-sitter grammar    | ⛔     | post-Phase-3-extension; sections / code-blocks / link-targets     |
+| Help major mode + tree-sitter grammar    | ✅     | shipped; see [`docs/user/help-mode.md`](../../user/help-mode.md) |
 | `SourceLocation` on `CommandSpec`        | ⛔     | needs `register_*` API extension; powers `[[file:...]]` auto-emit |
 | `:source-of <command>`                   | ⛔     | depends on `SourceLocation`                                       |
 | `:describe-key`                          | ✅     | keymap registry §5.2.3 -- see below                               |
 | `:keymap`                                | ✅     | full default keymap, grouped by mode                              |
-| `:describe-option`                       | ⛔     | needs typed options registry §5.12                                |
+| `:describe-option`                       | ✅     | typed options registry §5.12 shipped -- see the `:describe-option` row above |
 | `:describe-event`                        | ⛔     | needs event bus §5.10                                             |
 | `:describe-mode`                         | ⛔     | needs major/minor modes (Phase 8)                                 |
 
@@ -4322,90 +4322,20 @@ Installs through `SubsystemBoot` seam. Inverted out of
   amend doesn't pre-populate the previous commit message; no
   explicit refresh-status-after-commit. Not fixed in this
   pass — tracked as follow-up.
-- 🚧 **MG.5** — magit-diff buffer. **Audit correction
-  (2026-07-26):** `on_activate` registers only a close
-  handler — no `DiffSession`/content population at all, the
-  buffer opens empty. `s`/`u` are declared in its keymap but
-  have no handler registered in this mode; pressing them only
-  appears to work if `magit-status` was already activated in
-  the session (its handler is keyed by the same `CommandId`
-  and captures the *status* buffer's state, not the diff
-  buffer's — a cross-buffer hijack, see MG.9 audit note).
-  Was marked ✅; corrected to reflect actual state. Not
-  rebuilt in this pass.
-- 🚧 **MG.6** — magit-log buffer. **Audit correction
-  (2026-07-26):** log rendering (`git log --oneline --graph`)
-  is real, but `<CR>`'s `ActionHandlerRegistration` guard is
-  dropped immediately after registration (never stored), so
-  the handler unregisters itself on the spot — dead on
-  arrival. Commit-open also writes an uncleaned temp file
-  into the repo workdir and opens it via plain `OpenBuffer`,
-  not the spec'd `*magit:commit:<sha>*` synthetic buffer. Was
-  marked ✅; corrected. Not rebuilt in this pass.
-- 🚧 **MG.7** — magit-blame buffer. **Audit correction
-  (2026-07-26):** blame text population (`git blame
-  --line-porcelain`) is real, but `<CR>`/`p` are declared in
-  the keymap with zero `ActionHandlerRegistry.register` calls
-  in `on_activate` — both are dead. "Styled cells" gutter is
-  actually a plain text prefix, no `StyledSpan`s. Was marked
-  ✅; corrected. Not rebuilt in this pass.
-- 🚧 **MG.8** — Transient menus. **Audit correction
-  (2026-07-26):** the ledger's original "wired via PICK.1
-  types... action handler invocation via CommandId dispatch"
-  claim did not match source — `magit-dispatch` /
-  `magit-file-dispatch` were registered as plain aliases of
-  `:magit-status` (`Effect::OpenSyntheticBuffer` with
-  identical args), and `transients.rs`'s `dispatch_transient`/
-  `file_dispatch_transient` builders, though real, were never
-  called from anywhere. **Fixed in this pass:** added
-  `Effect::OpenTransient { source }` + a
-  `lattice_picker::TransientSourceRegistry` service (named
-  builders registered by the owning mode crate, resolved at
-  the renderer's effect-handling site — mirrors `OpenPicker`'s
-  named-source shape, needed because `TransientSpec` lives
-  downstream of `lattice-grammar`'s `Effect` enum);
-  `magit-dispatch`/`magit-file-dispatch` now open their own
-  transients. `dispatch_transient()`'s group list completed
-  (Stashing/Remotes/Misc added; was 3 of 6). Still open:
-  every item in the root/file transients remains a
-  `TransientItemKind::Flag` placeholder (no real `CommandId`
-  wiring — the registry's builder closures take no context, so
-  resolving action names to `CommandId`s needs a
-  `CommandRegistry` reference threaded through, not done
-  here), the branch/merge/rebase/stash/push/pull sub-transients
-  don't exist, `TransientState`/live `preview()` aren't wired,
-  and file-dispatch's path resolution (from active buffer or
-  `SectionIndex` at cursor) isn't implemented.
-  **`--features window` build was broken (2026-07-26):**
-  discovered verifying GPUI parity for this fix —
-  `crates/lattice-ui-gpui/src/window.rs`'s `render()` had a
-  missing `};` closing `let picker_overlay = if ... else {
-  ... }` (introduced with the PICK.1 picker-overlay code;
-  never caught because `cargo check -p lattice-cli`/`--workspace`
-  don't compile this crate's `window` feature by default — see
-  the standing GPUI-feature-gating pitfall note). Once parseable,
-  `build_transient_gpui` (the PICK.1 GPUI transient renderer,
-  also apparently never compiled) had two more errors: a
-  nonexistent `crate::AppTheme` type (should be `GpuiTheme`) and
-  a nonexistent `GpuiTheme::selection_background` field (should
-  be `cursor_background`) and a `.child(&item.description)` type
-  error (`String`, not `&String`). All fixed; `cargo check -p
-  lattice-ui-gpui --features window` is green again.
-- ✅ **MG.9** — Remaining operation buffers (2026-07-25).
-  MagitStashMode, MagitBranchMode, MagitRebaseMode major
-  modes. Stash list/apply/pop/drop, branch checkout/create/
-  delete, rebase todo buffer. All via git CLI on spawn_blocking.
-  **Audit note (2026-07-26):** branch `c` (create) is an
-  explicit stub ("needs minibuffer prompt", not implemented).
-  `magit-rebase`'s todo buffer is populated with a hardcoded
-  fake sample instead of real `git rebase -i` output, and
-  `C-c C-c` writes that fake content + runs `git rebase
-  --continue` against a rebase that was never started (fails
-  silently — `.ok()?` swallows the error). Stash/branch
-  mutations don't auto-refresh their list (`gr` is only ever
-  bound by `magit-status`'s `on_activate`; see the
-  `ActionHandlerRegistry` cross-buffer note under MG.5). None
-  of this fixed in this pass — tracked as follow-up.
+
+**MG.5–MG.9 — closed.** The 2026-07-26 functional audit that used to be
+quoted here was superseded by the magit plan's own 2026-07-27 close-out and
+by MG.13 (action handlers registered at boot rather than on activation),
+which invalidated its cross-buffer-hijack and dropped-registration findings
+outright. Re-verified against source 2026-09-18: magit-diff populates and
+refreshes, magit-log `<CR>` opens a synthetic revision buffer with no temp
+file, blame `<CR>`/`p` resolve and re-blame, root/file transient items
+resolve to real actions (guarded by
+`every_root_dispatch_item_resolves_to_a_real_action_not_a_flag_fallback`),
+branch `c` runs a pick-base → prompt-name wizard, and the rebase todo is
+built from `git log --reverse` with `C-c C-c` running a real `git rebase -i`.
+See `slice-plans/magit.md` for the per-slice record.
+
 - ✅ **MG.10** — Polish (2026-07-25).
   Edge cases: not-a-git-repo message, detached HEAD, bare repo
   denial. Refresh on re-activation. All 714 host tests pass.
@@ -5221,16 +5151,27 @@ multibuffer, tree-sitter per-excerpt) resolved per slice.
 
 ## In-progress
 
-**Phase 4.2 navigation -- 9/12 shipped + 1 partial.**
-**Phase 4.3 -- 3/9 shipped.**
+**Phase 4.2 (navigation) and Phase 4.3 (edits) are both complete** — the
+phase table's Phase 4 row already says so ("4.1–4.5 complete; 11 wire-only
+rows with deferred trigger UX, all post-1.0 / upstream-gated"). This was
+still reading "9/12 shipped + 1 partial" / "3/9 shipped" as of 2026-09-18;
+stale, corrected. The per-item ledger below is kept as the historical build
+record, not a live status claim. **The actual active frontier is Phase
+5.8.AF.5 — UI-thread relocation** (paramount goal #4 enforcement: moving
+every remaining renderer-thread drain onto background tokio tasks via
+`RenderState` + `PerBufferCache`), which is also what README's status block
+names as current work. See [Phase 5.8.AF.5 — UI-thread
+relocation](#phase-58af5--ui-thread-relocation-paramount-goal-4) above for
+its slice ledger.
 
 - ✅ hover (`K`), definition (`gd`), declaration (`gD`),
   typeDefinition (`gy`), implementation (`gI`), references
   (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol
   (`:lsp-workspace-symbol`).
-- 🚧 completion (`:complete` picker bridge -- buffer-level
+- ✅ completion (`:complete` picker bridge -- buffer-level
   Insert-mode completion shell + snippet expansion + lazy
-  resolve queued behind it).
+  resolve; see 4.2.g below -- "4.2.g complete" at the tail
+  of the per-item ledger).
 - ✅ formatting + rangeFormatting (`:format` / `:format-range`).
 - ✅ signatureHelp via `:signature-help` + Insert-mode
   trigger-char autopilot (typing `(` / `,` etc. fires the
@@ -5843,10 +5784,10 @@ slice boundary.
 	described command. New `HelpLinkTarget::Topic(name)` variant
 	+ `help:` URL scheme so topic links are first-class everywhere
 	a help body can render.
-6. **Help major mode + tree-sitter grammar** — defines sections,
-   link-targets, code-blocks. Needs the help mode registered as a major
-   mode, which depends on the modes registry (Phase 8) but the *grammar*
-   can be drafted earlier.
+6. ~~**Help major mode + tree-sitter grammar**~~ — done; see
+   [`docs/user/help-mode.md`](../../user/help-mode.md) and the help-table
+   row above. This numbered list predates Phase 8 landing; left as
+   historical record, corrected in place rather than deleted.
 7. **Veto-class hooks + actor event publish** (§5.10.2 / §5.2.1) —
    observation-only event bus is in place; pre-mutation hooks
    (`BeforeSave`, `BeforeQuit`) need the mutation/abort return path.

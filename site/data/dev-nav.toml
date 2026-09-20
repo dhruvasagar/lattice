@@ -276,6 +276,7 @@ docs = [
   "architecture/comparison-zed",
   "audit/effect-dispatch",
   "audit/terminal-wide-char-ghosting",
+  "notes/pickers",
 ]
 
 # ---------------------------------------------------------------------------
@@ -290,6 +291,7 @@ docs = [
 "notes/mode-keymap-authoring" = "Authoring a mode's keymap"
 "notes/lsp-features" = "LSP feature reference"
 "notes/ai-assisted-development" = "AI-assisted development"
+"notes/pickers" = "Picker implementation notes"
 "operations/implementation" = "Implementation ledger"
 "reference/plugin-api" = "Plugin API reference"
 "operations/benchmarks" = "Benchmark record"

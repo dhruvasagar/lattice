@@ -240,17 +240,26 @@ jobs:
           }
           check_zip() {
             local listing; listing="$(7z l -ba "$1")"
+            # The unescaped `.` in these grep patterns is a deliberate
+            # path-separator wildcard, not a typo: 7z prints `bin/lattice.exe`
+            # on some versions and `bin\lattice.exe` on others, and `.`
+            # matches either single character.
             for pl in auto-pair treesitter-context project; do
               for f in "$pl.wasm" plugin.toml .source; do
                 echo "$listing" | grep -q "$pl.$f" \
                   || { echo "::error::$1 is missing $pl/$f"; exit 1; }
               done
             done
+            echo "$listing" | grep -q "bin.lattice.exe" \
+              || { echo "::error::$1 has no bin/lattice.exe"; exit 1; }
             echo "ok: $1"
           }
+          checked=0
           shopt -s nullglob
-          for a in dist/*.tar.xz; do check_tar "$a"; done
-          for a in dist/*.zip; do check_zip "$a"; done
+          for a in dist/*.tar.xz; do check_tar "$a"; checked=$((checked + 1)); done
+          for a in dist/*.zip; do check_zip "$a"; checked=$((checked + 1)); done
+          [[ $checked -gt 0 ]] || { echo "::error::no archives found to verify"; exit 1; }
+          echo "verified $checked archive(s)"
 
       - name: Install cargo-deb
         if: runner.os == 'Linux' && steps.gui_build.outcome == 'success'
@@ -303,6 +312,48 @@ jobs:
           mkdir -p dist
           mv "lattice-gui-${VERSION}-${arch}.AppImage" dist/
           mv "lattice-gui-${VERSION}-${arch}.AppImage.zsync" dist/
+
+      - name: Verify .deb and AppImage carry the core plugins
+        if: runner.os == 'Linux' && steps.gui_build.outcome == 'success'
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Same rationale as the archive-verify step above: a missing
+          # plugin is silent at runtime, so the .deb and .AppImage — never
+          # globbed by that step — need their own content check here.
+          arch="${{ matrix.build }}"; arch="${arch%-linux}"
+
+          check_paths() {
+            local listing="$1" label="$2"
+            for pl in auto-pair treesitter-context project; do
+              for f in "$pl.wasm" plugin.toml .source; do
+                echo "$listing" | grep -q "usr/share/lattice/plugins/$pl/$f" \
+                  || { echo "::error::$label is missing $pl/$f"; exit 1; }
+              done
+            done
+            echo "$listing" | grep -q "usr/bin/lattice" \
+              || { echo "::error::$label has no usr/bin/lattice"; exit 1; }
+          }
+
+          deb="dist/lattice-gui-${VERSION}-${arch}.deb"
+          [[ -f "$deb" ]] || { echo "::error::no .deb found to verify at $deb"; exit 1; }
+          deb_listing="$(dpkg-deb -c "$deb")"
+          check_paths "$deb_listing" "$deb"
+          echo "ok: $deb"
+
+          appimage="dist/lattice-gui-${VERSION}-${arch}.AppImage"
+          [[ -f "$appimage" ]] || { echo "::error::no .AppImage found to verify at $appimage"; exit 1; }
+          rm -rf appimage-verify
+          mkdir -p appimage-verify
+          cp "$appimage" "appimage-verify/$(basename "$appimage")"
+          ( cd appimage-verify \
+              && chmod +x "$(basename "$appimage")" \
+              && "./$(basename "$appimage")" --appimage-extract >/dev/null )
+          appimage_listing="$(find appimage-verify/squashfs-root -type f)"
+          check_paths "$appimage_listing" "$appimage"
+          echo "ok: $appimage"
 
       - uses: actions/upload-artifact@v4
         with:

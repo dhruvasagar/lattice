@@ -255,7 +255,20 @@ flowchart TD
 - Rust 1.94+ (edition 2024)
 - A POSIX terminal that handles 256 colors and bracketed paste
 
-**Build & run (TUI — default)**
+**Install (prebuilt)**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh | sh
+```
+
+Downloads the latest release archive for your platform, verifies it against
+the release's `SHA256SUMS`, and installs `bin/lattice` plus its bundled core
+plugins under `~/.local`. Pass `--gui` for the GPU-rendered build, `--prefix`
+to install elsewhere, or `--help` for all options. See
+[`site/content/install.md`](site/content/install.md) for details and manual
+download instructions.
+
+**Build & run from source (TUI — default)**
 
 ```sh
 # One-time (and after changing a core plugin): stage the bundled plugins.

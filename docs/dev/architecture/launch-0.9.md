@@ -180,8 +180,23 @@ and so none of it reads as an oversight:
   palette.
 - GPUI as the default renderer (Phase 5.last ⛔); `--gui` stays opt-in,
   and ARM GUI builds stay best-effort.
-- `:customize`, `:autocmd`/`:add-hook`, `:describe-event`,
-  `:describe-mode`, `:history-*`.
+- `:autocmd` / `:add-hook` (verified unregistered).
+- `:customize` **write-back**. Browsing and picking groups and modes
+  works, and `:customize-edit <name>` opens an option in the `:` line;
+  what is missing is writing the result back to the user's TOML.
+- The dashed `:history-*` **spelling**. `:history` itself ships with
+  three kinds.
+
+> **These entries are source-verified, and the first revision of this
+> list was not.** It was copied from ⛔ rows in `implementation.md` —
+> which contradicts itself on all four, six thousand lines later — and
+> `docs/user/known-limitations.md` then inherited the error, telling
+> strangers that `:describe-event`, `:describe-mode`, `:customize` and
+> `:history` do not exist when all four ship. §9 below states the rule
+> this broke, in the course of reproaching an earlier instance of it;
+> writing the rule down did not stop the next one. Verify against source,
+> including when the source you are tempted to trust is this project's
+> own ledger.
 - Vim grammar gaps: `!` filter, `gq`, `'<`/`'>` marks, partial ex ranges.
 - Terminal mouse passthrough; word motions in Terminal Visual.
 - Rich buffer rendering (Phase 9, retired from v1 — concealment is the

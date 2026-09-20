@@ -70,7 +70,6 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 | `y` | Yank selection |
 | `~` | Toggle case |
 | `>` `<` | Indent / outdent |
-| `J` | Join lines |
 
 ## Insert mode
 
@@ -102,38 +101,38 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 | `:colorscheme {name}` | Change theme |
 | `:{range}s/old/new/g` | Substitute |
 | `:g/pattern/command` | Global command |
-| `:!{shell cmd}` | Run shell command |
 | `:help {topic}` | Open help |
 
-## Picker (`<space>` or `:pick`)
+## Picker
 
-| Key | Action |
+| Command | Opens |
 |---|---|
-| `<C-p>` | File picker |
-| `<C-g>` | Grep / text search |
-| `<C-b>` | Buffer picker |
-| `<C-o>` | Outline / symbol picker |
-| `<C-r>` | Recently opened |
-| `<C-k>` | Pick a picker |
-| `<Esc>` | Close picker |
+| `:picker {source}` | A named source (`files`, `recent`, `buffers`, `lines`, `outline`, `grep`, `jumps`, `marks`, `registers`, `commands`, `colorscheme`, ...); `<Tab>` after `:picker ` lists them |
+| `:files [root]` | File picker |
+| `:recent` | Recently-edited files |
+| `:buffers` `:b` | Buffer switcher |
+| `:colorscheme` | Theme picker, with live preview |
 
 ## Picker (within picker)
 
 | Key | Action |
 |---|---|
-| `<C-n>` `<Down>` | Next result |
-| `<C-p>` `<Up>` | Previous result |
-| `<C-c>` `<Esc>` | Dismiss picker |
-| `<Tab>` | Preview selection |
+| `<C-n>` `<Down>` `<Tab>` | Next result |
+| `<C-p>` `<Up>` `<S-Tab>` | Previous result |
+| `<CR>` | Accept selected candidate |
+| `<Esc>` `<C-c>` | Dismiss picker |
+| `<C-s>` | Accept, open in horizontal split |
+| `<C-v>` | Accept, open in vertical split |
+| `<C-t>` | Accept, open in new tab |
 
 ## Multibuffer / search results
 
 | Key | Action |
 |---|---|
 | `:search {pattern}` | Search project |
-| Enter on a result | Jump to source location |
-| `:cnext` `:cprev` | Next / previous result |
-| `:copen` `:cclose` | Open / close results |
+| `<CR>` | Jump to source location |
+| `]e` `[e` | Next / previous match |
+| `gr` | Refresh (re-run the same search) |
 
 ## Diff mode
 
@@ -143,7 +142,6 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 | `]c` `[c` | Next / previous hunk |
 | `do` | Diff obtain (get from other buffer) |
 | `dp` | Diff put (put to other buffer) |
-| `:diffupdate` | Refresh diff |
 
 ## Buffers and navigation
 
@@ -153,21 +151,21 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 | `<C-w> w` | Cycle panes |
 | `<C-w> s/v` | Split horizontal / vertical |
 | `<C-w> c` | Close pane |
-| `<C-w> o` | Close others |
+| `:only` | Close every pane except the active one |
 
 ## LSP
 
 | Key | Command | Action |
 |---|---|---|
-| `K` | `:lsp-hover` | Show documentation |
-| `gd` | `:lsp-definition` | Go to definition |
-| `gD` | `:lsp-declaration` | Go to declaration |
-| `gi` | `:lsp-implementation` | Go to implementation |
-| `gr` | `:lsp-references` | Find references |
-| `[d` `]d` | `:lsp-diagnostic-prev/next` | Previous / next diagnostic |
-| `<C-w> d` | `:lsp-peek-definition` | Peek definition |
-| `:lsp-rename` | Rename symbol |
-| `:lsp-format` | Format buffer |
+| `K` | — | Show hover documentation |
+| `gd` | — | Go to definition |
+| `gD` | — | Go to declaration |
+| `gI` | — | Go to implementation (lowercase `gi` is vim's "go to last insert") |
+| `gr` | — | Find references (picker) |
+| `[d` `]d` | `:diag-prev` / `:diag-next` | Previous / next diagnostic |
+| — | `:lsp-references` | Open the editable references view |
+| — | `:lsp-rename` | Rename symbol |
+| — | `:lsp-format` | Format buffer |
 
 ## Macros
 
@@ -187,12 +185,8 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 | `0` | Last yank |
 | `1`-`9` | Last 9 deletes |
 | `a`-`z` | Named registers |
-| `%` | Current file name |
-| `#` | Alternate file name |
-| `/` | Last search pattern |
-| `:` | Last command |
-| `.` | Last inserted text |
-| `=` | Expression register |
+| `+` `*` | System clipboard |
+| `_` | Black hole (discards) |
 
 ## Marks
 
@@ -201,8 +195,7 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 | `m{a-z}` | Set mark |
 | `'{a-z}` | Jump to mark line |
 | `` `{a-z} `` | Jump to mark line + column |
-| `'.` `` `. `` | Jump to last change position |
-| `''` `` `` `` | Jump to previous position |
+| `<C-o>` `<C-i>` | Walk the jump list back / forward |
 
 ## Options
 
@@ -213,11 +206,11 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 | `expandtab` | true | Use spaces for tabs |
 | `number` | true | Show line numbers |
 | `relativenumber` | false | Show relative line numbers |
-| `wrap` | true | Soft-wrap long lines |
-| `scrolloff` | 3 | Lines visible above/below cursor |
-| `sidescrolloff` | 3 | Columns visible left/right of cursor |
-| `mouse` | true | Mouse support |
-| `clipboard` | unnamed | Clipboard integration |
+| `wrap` | false | Soft-wrap long lines |
+| `scrolloff` | 0 | Lines visible above/below cursor |
+| `sidescrolloff` | 0 | Columns visible left/right of cursor |
+| `ui.mouse` | true | Mouse support |
+| `clipboard` | true | Yank/paste through the system clipboard (bool, not vim's `unnamed` string) |
 
 ## See also
 

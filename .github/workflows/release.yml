@@ -49,9 +49,71 @@ jobs:
             echo "Tag matches Cargo.toml version $cargo_ver"
           fi
 
+  # WASM components are platform-independent, so the three core plugins are
+  # built ONCE here and downloaded by every dist leg. The dist legs install
+  # only ${{ matrix.target }} and have no wasm32-wasip2 toolchain, so a
+  # per-leg build would need a target install on all six runners including
+  # ARM Windows. See docs/dev/architecture/launch-0.9.md §3.
+  core-plugins:
+    name: core-plugins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove rust-toolchain.toml
+        shell: bash
+        run: rm -f rust-toolchain.toml
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-wasip2
+          rustflags: ""
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core-plugins
+
+      - name: Install mold
+        run: |
+          # `.cargo/config.toml` pins `-fuse-ld=mold` for
+          # x86_64-unknown-linux-gnu, and this job builds the `xtask` binary
+          # for exactly that host triple — so clang aborts the link without
+          # mold present, the same way it killed the pipeline's first two
+          # runs. No GUI display libs here: this job links no GPUI.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mold
+
+      - name: Build and stage the core plugin components
+        run: cargo xtask build-core-plugins
+
+      - name: Verify the staged layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pl in auto-pair treesitter-context project; do
+            for f in "$pl.wasm" plugin.toml .source; do
+              if [[ ! -f "runtime/plugins/$pl/$f" ]]; then
+                echo "::error::missing runtime/plugins/$pl/$f"
+                exit 1
+              fi
+            done
+          done
+          ls -lR runtime/plugins
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-plugins
+          path: runtime/plugins
+          # `.source` is a dotfile and upload-artifact@v4 drops hidden files by
+          # default. Without this the marker vanishes and `:plugins` shows `—`
+          # instead of `bundled` for every core plugin.
+          include-hidden-files: true
+          if-no-files-found: error
+
   dist:
     name: dist (${{ matrix.build }})
-    needs: prepare
+    needs: [prepare, core-plugins]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -80,6 +142,12 @@ jobs:
         with:
           key: release-${{ matrix.build }}
 
+      - name: Download the core plugin components
+        uses: actions/download-artifact@v4
+        with:
+          name: core-plugins
+          path: runtime/plugins
+
       - name: Install Linux build deps (mold linker + GUI display libs)
         if: runner.os == 'Linux'
         run: |
@@ -105,14 +173,18 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           pkg="lattice-${VERSION}-${{ matrix.build }}"
-          mkdir -p "$pkg"
+          # Prefix-relocatable layout: `bin/lattice` finds
+          # `../share/lattice/plugins` wherever the user extracts this.
+          # See docs/dev/architecture/launch-0.9.md §3.
+          mkdir -p "$pkg/bin" "$pkg/share/lattice"
+          cp -R runtime/plugins "$pkg/share/lattice/plugins"
           cp LICENSE README.md "$pkg/"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "target/${{ matrix.target }}/release/lattice.exe" "$pkg/"
+            cp "target/${{ matrix.target }}/release/lattice.exe" "$pkg/bin/"
             7z a -r "dist/$pkg.zip" "$pkg" >/dev/null
           else
-            cp "target/${{ matrix.target }}/release/lattice" "$pkg/"
-            chmod +x "$pkg/lattice"
+            cp "target/${{ matrix.target }}/release/lattice" "$pkg/bin/"
+            chmod +x "$pkg/bin/lattice"
             tar cJf "dist/$pkg.tar.xz" "$pkg"
           fi
           rm -rf "$pkg"
@@ -131,17 +203,63 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           pkg="lattice-gui-${VERSION}-${{ matrix.build }}"
-          mkdir -p "$pkg"
+          # Prefix-relocatable layout: `bin/lattice` finds
+          # `../share/lattice/plugins` wherever the user extracts this.
+          # See docs/dev/architecture/launch-0.9.md §3.
+          mkdir -p "$pkg/bin" "$pkg/share/lattice"
+          cp -R runtime/plugins "$pkg/share/lattice/plugins"
           cp LICENSE README.md "$pkg/"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "target/${{ matrix.target }}/release/lattice.exe" "$pkg/"
+            cp "target/${{ matrix.target }}/release/lattice.exe" "$pkg/bin/"
             7z a -r "dist/$pkg.zip" "$pkg" >/dev/null
           else
-            cp "target/${{ matrix.target }}/release/lattice" "$pkg/"
-            chmod +x "$pkg/lattice"
+            cp "target/${{ matrix.target }}/release/lattice" "$pkg/bin/"
+            chmod +x "$pkg/bin/lattice"
             tar cJf "dist/$pkg.tar.xz" "$pkg"
           fi
           rm -rf "$pkg"
+
+      - name: Verify archives carry the core plugins
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A missing plugin is SILENT at runtime — discovery treats an absent
+          # dir as a benign skip — so it has to be caught here or not at all.
+          # The build exiting 0 proves nothing; this content check is the gate.
+          check_tar() {
+            local listing; listing="$(tar tJf "$1")"
+            for pl in auto-pair treesitter-context project; do
+              for f in "$pl.wasm" plugin.toml .source; do
+                echo "$listing" | grep -q "share/lattice/plugins/$pl/$f" \
+                  || { echo "::error::$1 is missing $pl/$f"; exit 1; }
+              done
+            done
+            echo "$listing" | grep -q "bin/lattice" \
+              || { echo "::error::$1 has no bin/lattice"; exit 1; }
+            echo "ok: $1"
+          }
+          check_zip() {
+            local listing; listing="$(7z l -ba "$1")"
+            # The unescaped `.` in these grep patterns is a deliberate
+            # path-separator wildcard, not a typo: 7z prints `bin/lattice.exe`
+            # on some versions and `bin\lattice.exe` on others, and `.`
+            # matches either single character.
+            for pl in auto-pair treesitter-context project; do
+              for f in "$pl.wasm" plugin.toml .source; do
+                echo "$listing" | grep -q "$pl.$f" \
+                  || { echo "::error::$1 is missing $pl/$f"; exit 1; }
+              done
+            done
+            echo "$listing" | grep -q "bin.lattice.exe" \
+              || { echo "::error::$1 has no bin/lattice.exe"; exit 1; }
+            echo "ok: $1"
+          }
+          checked=0
+          shopt -s nullglob
+          for a in dist/*.tar.xz; do check_tar "$a"; checked=$((checked + 1)); done
+          for a in dist/*.zip; do check_zip "$a"; checked=$((checked + 1)); done
+          [[ $checked -gt 0 ]] || { echo "::error::no archives found to verify"; exit 1; }
+          echo "verified $checked archive(s)"
 
       - name: Install cargo-deb
         if: runner.os == 'Linux' && steps.gui_build.outcome == 'success'
@@ -176,6 +294,8 @@ jobs:
           cp assets/lattice.iconset/icon_256x256.png com.lattice-editor.lattice.png
           mkdir -p AppDir/usr/bin
           cp "target/${{ matrix.target }}/release/lattice" AppDir/usr/bin/lattice
+          mkdir -p AppDir/usr/share/lattice
+          cp -R runtime/plugins AppDir/usr/share/lattice/plugins
           curl -fsSLo linuxdeploy.AppImage \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${arch}.AppImage"
           chmod +x linuxdeploy.AppImage
@@ -192,6 +312,48 @@ jobs:
           mkdir -p dist
           mv "lattice-gui-${VERSION}-${arch}.AppImage" dist/
           mv "lattice-gui-${VERSION}-${arch}.AppImage.zsync" dist/
+
+      - name: Verify .deb and AppImage carry the core plugins
+        if: runner.os == 'Linux' && steps.gui_build.outcome == 'success'
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Same rationale as the archive-verify step above: a missing
+          # plugin is silent at runtime, so the .deb and .AppImage — never
+          # globbed by that step — need their own content check here.
+          arch="${{ matrix.build }}"; arch="${arch%-linux}"
+
+          check_paths() {
+            local listing="$1" label="$2"
+            for pl in auto-pair treesitter-context project; do
+              for f in "$pl.wasm" plugin.toml .source; do
+                echo "$listing" | grep -q "usr/share/lattice/plugins/$pl/$f" \
+                  || { echo "::error::$label is missing $pl/$f"; exit 1; }
+              done
+            done
+            echo "$listing" | grep -q "usr/bin/lattice" \
+              || { echo "::error::$label has no usr/bin/lattice"; exit 1; }
+          }
+
+          deb="dist/lattice-gui-${VERSION}-${arch}.deb"
+          [[ -f "$deb" ]] || { echo "::error::no .deb found to verify at $deb"; exit 1; }
+          deb_listing="$(dpkg-deb -c "$deb")"
+          check_paths "$deb_listing" "$deb"
+          echo "ok: $deb"
+
+          appimage="dist/lattice-gui-${VERSION}-${arch}.AppImage"
+          [[ -f "$appimage" ]] || { echo "::error::no .AppImage found to verify at $appimage"; exit 1; }
+          rm -rf appimage-verify
+          mkdir -p appimage-verify
+          cp "$appimage" "appimage-verify/$(basename "$appimage")"
+          ( cd appimage-verify \
+              && chmod +x "$(basename "$appimage")" \
+              && "./$(basename "$appimage")" --appimage-extract >/dev/null )
+          appimage_listing="$(find appimage-verify/squashfs-root -type f)"
+          check_paths "$appimage_listing" "$appimage"
+          echo "ok: $appimage"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -247,14 +409,27 @@ jobs:
             "lattice-gui-${VERSION}-x86_64-windows.zip"
             "lattice-gui-${VERSION}-x86_64.AppImage"
             "lattice-gui-${VERSION}-x86_64.deb"
-            "lattice-gui-${VERSION}-aarch64.AppImage"
-            "lattice-gui-${VERSION}-aarch64.deb"
             "lattice-${VERSION}-source.tar.xz"
           )
           best_effort=(
             "lattice-gui-${VERSION}-aarch64-linux.tar.xz"
             "lattice-gui-${VERSION}-aarch64-windows.zip"
+            "lattice-gui-${VERSION}-aarch64.AppImage"
+            "lattice-gui-${VERSION}-aarch64.deb"
           )
+          # Every artefact produced by a `gui_best_effort` leg must be
+          # best-effort here too. Listing one as required is what made a
+          # failed ARM GUI link kill the entire release.
+          for f in "${required[@]}"; do
+            case "$f" in
+              *aarch64-linux* | *aarch64-windows* | *-aarch64.AppImage | *-aarch64.deb)
+                if [[ "$f" != *"lattice-${VERSION}-aarch64"* ]]; then
+                  echo "::error::$f is produced by a best-effort leg but listed as required"
+                  exit 1
+                fi
+                ;;
+            esac
+          done
           fail=0
           for f in "${required[@]}"; do
             if [[ ! -f "dist/$f" ]]; then echo "::error::missing required artefact $f"; fail=1; fi

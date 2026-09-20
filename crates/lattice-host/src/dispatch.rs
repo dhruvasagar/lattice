@@ -25368,20 +25368,31 @@ impl Editor {
     pub fn do_open_file_tree(&mut self, root: Option<std::path::PathBuf>) -> Vec<RendererSignal> {
         let root = match root {
             Some(p) => p,
-            None => match self
-                .document
-                .path()
-                .and_then(|p| p.parent().map(Into::into))
-            {
-                Some(parent) => parent,
-                None => match std::env::current_dir() {
-                    Ok(p) => p,
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
-                        return Vec::new();
-                    }
-                },
-            },
+            // A relative single-component document path (e.g. lattice was
+            // opened as `lattice Cargo.toml`) has `Path::parent()` == `Some("")`,
+            // not `None` -- that's documented Rust behaviour, not a missing-file
+            // edge case. Treating that empty parent as "no parent" and falling
+            // through to `current_dir()` was previously skipped, so `:Tree` with
+            // no argument tried to open an empty path and errored with
+            // "No such file or directory" for the single most common way to
+            // start the editor. Filter it out so cwd is used instead, which is
+            // exactly the directory an empty relative parent denotes anyway.
+            None => {
+                // Bound before taking `parent()`: `Document::path()` hands back an
+                // owned `Option<PathBuf>`, so borrowing inside an `and_then` closure
+                // would return a reference into a value the closure owns (E0515).
+                let doc_path = self.document.path();
+                match doc_path.as_deref().and_then(std::path::Path::parent) {
+                    Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+                    _ => match std::env::current_dir() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
+                            return Vec::new();
+                        }
+                    },
+                }
+            }
         };
         if let Some(existing_id) = self.file_tree_with_root(&root) {
             self.activate_file_tree(existing_id);
@@ -44896,6 +44907,43 @@ mod tests {
         Editor::boot(lattice_core::Document::from_text("alpha\nbeta\n"))
     }
 
+    // ── I9: `:Tree` with no argument must not mistake a bare relative
+    // document path for "no parent" ──
+
+    /// `Path::new("Cargo.toml").parent()` is `Some("")`, not `None` -- that
+    /// is documented Rust behaviour for a relative, single-component path,
+    /// not a missing-file edge case. `lattice Cargo.toml` (a file opened
+    /// with a bare relative name and no directory prefix -- the single most
+    /// common way to start the editor) left `do_open_file_tree`'s `None`
+    /// branch treating that empty parent as a real one, so bare `:Tree`
+    /// tried to list an empty path and errored with "No such file or
+    /// directory" instead of falling back to `current_dir()` the way the
+    /// command's own doc-string ("Absent = current dir") promises.
+    #[test]
+    fn tree_with_no_arg_falls_back_to_cwd_for_a_bare_relative_document_path() {
+        let doc = lattice_core::DocumentBuilder::default()
+            .with_path("Cargo.toml")
+            .with_text("")
+            .build();
+        let mut ed = Editor::boot(doc);
+        ed.do_open_file_tree(None);
+
+        let ids = ed.buffers.file_tree_ids();
+        assert_eq!(ids.len(), 1, "a file-tree buffer should have opened");
+        let root = ed
+            .file_tree_root_for(ids[0])
+            .expect("file-tree buffer must carry a root");
+        assert!(
+            !root.as_os_str().is_empty(),
+            "root must not be the empty path an unfiltered `parent()` produces"
+        );
+        assert_eq!(
+            root,
+            std::env::current_dir().expect("cwd"),
+            "with a bare relative document path, root falls back to cwd"
+        );
+    }
+
     // ── H.4: which modal states reveal concealed markup ──
 
     /// The split is "am I editing text", not "am I in a modal state".
@@ -46226,6 +46274,26 @@ mod tests {
             .map(|c| c.raw.text.as_str())
             .filter(|t| t.starts_with("descr"));
         assert_eq!(longest_common_prefix_of(pool), "describe-");
+    }
+
+    /// L.0: end-to-end pin for the LCP rewrite through the real
+    /// `open_completion_popup` entry point, not just the pure prefix
+    /// helpers above. Every `describe-*` command shares `describe-`,
+    /// so opening the popup on `descr` must rewrite the line
+    /// (vim-wildmenu style) while preserving `descr` as
+    /// `original_line` for dismiss-restore.
+    #[test]
+    fn opening_the_popup_extends_the_line_to_the_longest_common_prefix() {
+        let mut e = Editor::boot(lattice_core::Document::empty());
+        e.modal = lattice_grammar::ModalState::Command;
+        e.set_command_line_text("descr");
+        e.open_completion_popup();
+        let state = e
+            .completion_state
+            .as_ref()
+            .expect("popup must open with multiple describe-* matches");
+        assert_eq!(e.command_line(), "describe-");
+        assert_eq!(state.original_line, "descr");
     }
 
     #[test]

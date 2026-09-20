@@ -1,0 +1,23 @@
+name: Feature request
+description: Something missing you'd like to exist
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Lattice has four paramount goals in priority order — performance,
+        extensibility, vim modal editing, asynchronicity — with user
+        experience above all of them. A request that names the goal it
+        serves is much easier to act on.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Prior art
+      description: How vim, emacs, helix or zed handle this, if they do.

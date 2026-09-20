@@ -11,11 +11,15 @@ Lattice is in active development (Phase 1+). It is usable for daily editing but 
 
 ### What platforms are supported?
 
-macOS 14+ and Linux (kernel 5.10+) are the primary targets. Windows is not tested or supported. Both x86_64 and aarch64 are supported on macOS and Linux.
+macOS 14+, Linux (kernel 5.10+), and Windows 10+ — x86_64 and aarch64 on all
+three. macOS and Linux are the primary development targets; Windows runs the
+full test suite in CI on every commit and ships release archives, but has
+seen less real-world daily-driver use than macOS and Linux. ARM Windows GUI
+builds are best-effort and may be absent from a given release.
 
 ### Is there a GUI?
 
-Yes — Lattice has two renderer backends: a TUI renderer (terminal) and a GPUI renderer (native GPU window). The TUI renderer is more mature. Use `--gui` to launch the GPU mode on macOS.
+Yes — Lattice has two renderer backends: a TUI renderer (terminal) and a GPUI renderer (native GPU window). The TUI renderer is more mature. Use `--gui` to launch the GPU mode — it ships for macOS, Linux (AppImage/`.deb`), and Windows x86_64.
 
 ### Does it work over SSH?
 
@@ -47,11 +51,11 @@ The default keymap is vim. Many keybindings match vim defaults. You can rebind a
 
 ### Does it support Emacs keybindings?
 
-There is an `emacs-keys-mode` minor mode that provides `C-x` leader-style bindings. See the [emacs-keys-mode docs](./docs/emacs-keys-mode/).
+There is an `emacs-keys-mode` minor mode that provides `C-x` leader-style bindings. See the [emacs-keys-mode docs](@/docs/config/emacs-keys-mode.md).
 
 ### Does it have an equivalent of org-mode?
 
-Not yet. The everything-is-a-buffer architecture makes this possible, but no org-mode implementation exists.
+Yes, as an out-of-repo WASM plugin — [`dhruvasagar/lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), documented at [org-mode](@/docs/config/org.md). It isn't bundled with the editor or the installer; you clone and build it yourself. The everything-is-a-buffer architecture is what makes it possible without any editor-side special-casing.
 
 ### Can I use elisp?
 
@@ -69,7 +73,7 @@ Plugins are WebAssembly Component Model components compiled from any language wi
 
 ### Can I write plugins in languages other than Rust?
 
-Yes — any language with WASM Component Model support. The [plugin authoring guide](./dev/guides/plugin-authoring/) covers the WIT API and multi-language setup.
+Yes — any language with WASM Component Model support. The [plugin authoring guide](@/dev/plugins/plugin-authoring.md) covers the WIT API and multi-language setup.
 
 ### Why not Lua, vimscript, elisp, or embedded Scheme?
 
@@ -77,11 +81,11 @@ An explicit non-goal. A single WASM substrate means one toolchain, one API surfa
 
 ### Does Lattice support LSP?
 
-Yes — LSP is a first-class feature. Diagnostics, completions, hover, go-to-definition, references, rename, formatting, signature help, and code actions are all implemented. See the [LSP docs](./docs/lsp/).
+Yes — LSP is a first-class feature. Diagnostics, completions, hover, go-to-definition, references, rename, formatting, signature help, and code actions are all implemented. See the [LSP docs](@/docs/code/lsp.md).
 
 ### Does Lattice support tree-sitter?
 
-Yes — tree-sitter provides syntax highlighting, incremental parsing, and structured motion/text objects. See the [languages docs](./docs/languages/).
+Yes — tree-sitter provides syntax highlighting, incremental parsing, and structured motion/text objects. See the [languages docs](@/docs/code/languages.md).
 
 ### What file size can it handle?
 
@@ -95,7 +99,7 @@ You can try! Many features work, but you should expect rough edges, missing feat
 
 ### How can I contribute?
 
-See the [contributing guide](https://github.com/dhruvasagar/lattice/blob/main/CONTRIBUTING.md). The [developer docs](./dev/) cover architecture and development setup. Good first issues are [tagged on GitHub](https://github.com/dhruvasagar/lattice/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
+See the [contributing guide](https://github.com/dhruvasagar/lattice/blob/main/CONTRIBUTING.md). The [developer docs](@/dev/_index.md) cover architecture and development setup. Good first issues are [tagged on GitHub](https://github.com/dhruvasagar/lattice/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
 
 ### Where do I report bugs?
 
@@ -103,4 +107,7 @@ Open an issue on the [GitHub issue tracker](https://github.com/dhruvasagar/latti
 
 ### Is there a chat or forum?
 
-Not yet. GitHub issues and discussions are the primary communication channels for now.
+[GitHub Discussions](https://github.com/dhruvasagar/lattice/discussions) and
+[issues](https://github.com/dhruvasagar/lattice/issues). There's no Discord or
+Matrix room at 0.9 — an empty chat room is worse than none, and discussions
+keep answers searchable.

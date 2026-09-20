@@ -1,82 +1,108 @@
 # Screenshot & Screencast Ideas
 
-This doc lists screenshots and screencasts to collect over time for the Lattice website and README.
+This doc lists screenshots and screencasts to collect for the Lattice website
+and README.
 
-## Screenshots
+**Re-cut 2026-09-20 (L.4b).** The previous version of this list was
+feature-organised and predated most of what Lattice now ships — it never
+mentioned magit (~22 topic pages), org, agents, narrowing, folding,
+multibuffer, which-key, surround, table mode, snippets, compilation, the
+REPL, or dashboard. It was re-derived from `docs/user/` (one topic page per
+shipped feature, enforced against `site/data/nav.toml` by a build that fails
+when they disagree — see the inventory diff in
+`.superpowers/sdd/launch-0.9/task-L.4b-report.md`) rather than re-cut from
+its own contents, and re-ordered around the four differentiators in
+[`../dev/architecture/launch-0.9.md`](../dev/architecture/launch-0.9.md) §10.
 
-### Hero / Editor (landing page hero)
+## Priority shots — the differentiators
 
-- **What:** Lattice editing a Rust file with tree-sitter syntax highlighting, LSP completion popup visible, picker open, file tree buffer in a split pane, status line showing mode + filename
-- **Why:** The first thing a visitor sees — must show Lattice looks good and real
-- **Theme:** Dark theme (matches developer preference, more visually striking)
-- **File:** `assets/media/screenshots/hero-dark.png` (1920×1080 or 1440×900)
-- **Variant:** Light theme at `assets/media/screenshots/hero-light.png`
+These are the shots the README gallery and the site lead with. Each exists
+to answer "why this and not Zed / Helix / Neovim / VS Code", not "what
+features does it have". See `../dev/architecture/launch-0.9.md` §10.
 
-### Feature: Modal Editing
+| # | Shot | Shows | Absent from | File |
+|---|---|---|---|---|
+| 1 | Magit status with staged + unstaged hunks and a transient popup open | a real magit port inside a modal editor | Zed, Helix, Neovim (fugitive is not magit) | `assets/media/screenshots/magit.png`, `assets/media/demos/magit.gif` |
+| 2 | Four-way split: file tree, code, terminal, search results — all real buffers | everything is a buffer; the same grammar works in all of them | all of them; the others have panels | `assets/media/screenshots/buffer-splits.png`, `assets/media/demos/buffers.gif` |
+| 3 | `init.rs` beside the editor, defining a custom command and a hook, then `:reload-config` applying it live | config is Rust compiled to WASM, and it is programmable — not a settings file | Zed (JSON), Helix (TOML), Neovim (Lua), VS Code (JSON+TS) | `assets/media/screenshots/config-init-rs.png`, `assets/media/demos/config.gif` |
+| 4 | Org agenda beside a coding-agent buffer under interactive diff review | org-mode and agents-as-editable-buffers, in one editor | everything outside Emacs; Zed's agent is not a buffer | `assets/media/screenshots/org-and-agents.png` |
+| 5 | The same file in the TUI and the GPU window, side by side | one core, two first-class renderers | Zed (no TUI), Helix (no GPU) | `assets/media/screenshots/two-renderers.png` |
 
-- **What:** Visual mode selection active, operator-pending state shown in status line, command line at bottom showing `:s/foo/bar`
-- **Why:** Demonstrates vim grammar parity
-- **File:** `assets/media/screenshots/modal-editing.png`
+Shot 3 must show something genuinely programmatic — a custom command or a
+hook — not a keybinding one-liner. A remapped key looks like every other
+editor's config; a compiled function does not. `docs/media/tapes/config.tape`
+demonstrates this with a real `:hello <name>` ex-command registered from
+`init.rs`, built to WASM, and invoked after `:reload-config`.
 
-### Feature: LSP Integration
+Shot 4 (org + agents) is not yet a rendered demo — see
+`.superpowers/sdd/launch-0.9/task-L.4b-report.md` for why (a live agent
+session is not reproducible/deterministic enough for a committed tape, and
+a real org agenda would leak personal data). It stays on this list as a
+screenshot to capture by hand with a fixture org file, same convention as
+the GPUI shots below.
 
-- **What:** Completion popup with documentation sidebar, diagnostics (error/warning gutters + inline), signature help
-- **Why:** Shows language-aware editing works
-- **File:** `assets/media/screenshots/lsp.png`
+## Supporting shots
 
-### Feature: Everything is a Buffer
+Used on feature pages and in the docs, not the landing gallery. Grouped by
+area; each names the `docs/user/` page(s) it documents.
 
-- **What:** Split pane with file tree buffer (left), code buffer (center), terminal buffer (right-bottom), search results buffer (right-top)
-- **Why:** The signature differentiator — shows traditional "sidebar + split" replaced by composable buffer splits
-- **File:** `assets/media/screenshots/buffer-splits.png`
+**Magit, beyond status** (`docs/user/magit-*.md`, ~22 pages)
+- Interactive rebase (`magit-rebase-mode`) — the todo-list buffer, reorder/edit/squash
+- `magit-log-mode` — commit graph, `<CR>` to a revision
+- `magit-blame-mode` — inline blame gutter, jump to the commit
+- `magit-diff-mode` side-by-side (`dv`) two/three-way diff
+- A transient dispatch menu open (`C-c g`) — the popup itself
 
-### Feature: Multibuffer Search
+**Org-mode** (`docs/user/org.md` + agenda/capture pages)
+- `org-capture` template picker mid-capture
+- `org-agenda` composite view (day/week agenda + TODO list)
+- Clocking (`org.agenda-log.md` / clock report) in the modeline
+- Org-roam backlinks pane
 
-- **What:** `:search` results showing excerpt lines from multiple files, cursor on a result, preview highlighted
-- **Why:** Shows project-wide search and replace workflow
-- **File:** `assets/media/screenshots/multibuffer-search.png`
+**Coding agents as buffers** (`docs/user/claude-code-mode.md`, `opencode-mode.md`, `ai-*-mode.md`)
+- `:claude` / `:opencode` conversation buffer mid-response
+- `:diff-accept` / `:diff-reject` side-by-side review of an agent's edit
+- The `*ai:<provider>:<index>*` log buffer (`:ai-log`)
 
-### Feature: Diff & Merge
+**Everything-is-a-buffer, beyond the hero split**
+- `oil-mode` — editing a directory listing as text, `:w` renders the diff as filesystem ops
+- `dashboard-mode` — the splash buffer, every row a followable link
+- `multibuffer-mode` / `:search` results — excerpts from several files in one buffer
+- `compilation-mode` + the error list — `:compile`, `gr` to rerun, `<CR>` to jump
+- `repl-mode` — a REPL transcript where `i`/`o` jump to the prompt line
 
-- **What:** Three-pane diff view (two files + combined), diff sign gutter (add/remove/change), cursor on a hunk
-- **Why:** Shows two/three-way diff capability
-- **File:** `assets/media/screenshots/diff.png`
+**Editing power beyond vim-parity**
+- `which-key-mode` — the hint popup, read live off the keymap
+- `surround-mode` — `ys`/`cs`/`ds` before/after
+- `table-mode` — a markdown/org pipe table mid-edit, `<Tab>` walking cells
+- `narrow-mode` — `zn` narrowed to a region, `:widen` restoring
+- `folding` — a computed fold collapsed, `zo`/`zc`
+- Macros + the yank ring as editable data (not a hidden register)
 
-### Feature: Picker
+**LSP** (`docs/user/lsp*.md`, ~20 submodes)
+- Completion popup with docs sidebar + diagnostics gutter (kept from the old list)
+- `lsp-code-action-mode` — the action picker
+- `lsp-references-mode` / `lsp-symbols-mode` — a references/symbols buffer
 
-- **What:** Fuzzy file picker open, showing file list with scores, preview window
-- **Why:** Fast navigation showcase
-- **File:** `assets/media/screenshots/picker.png`
+**Kept from the previous list, still worth shooting**
+- Modal editing: visual-mode selection, operator-pending status, `:s/foo/bar`
+- Picker: fuzzy file picker with frecency-sorted results + preview
+- Help system: `:describe-key` result in a help buffer
+- Theme preview: the same file across 3–4 themes
+- Ghost-text completion (insert mode, before accepting)
+- Tutor: the interactive lesson buffer
+- A plugin's custom command running (extensibility, general case — differentiator 3 is the sharper version of this)
 
-### Feature: Help System
+## Skip (real, but not visually distinctive)
 
-- **What:** `:describe-key` result showing keybinding documentation in a help buffer
-- **Why:** Self-documenting editor philosophy
-- **File:** `assets/media/screenshots/help-system.png`
-
-### Feature: Theme Preview
-
-- **What:** Same Rust file rendered in 3-4 different themes (tiled or carousel)
-- **Why:** Shows theme support
-- **File(s):** `assets/media/screenshots/theme-{name}.png`
-
-### Feature: Completion Ghost Text
-
-- **What:** Insert mode with ghost text completion inline, before accepting
-- **Why:** Shows insert-completion with ghost text
-- **File:** `assets/media/screenshots/ghost-text.png`
-
-### Feature: Tutoral
-
-- **What:** Tutor buffer open, interactive lesson with instructions panel
-- **Why:** Shows built-in learning experience
-- **File:** `assets/media/screenshots/tutor.png`
-
-### Feature: Plugin (WASM)
-
-- **What:** A plugin's custom command running, e.g. `:plugin-mycommand` with output in a buffer
-- **Why:** Extensibility showcase
-- **File:** `assets/media/screenshots/plugin-wasm.png`
+An option, a keybinding nicety, or internal plumbing — nothing a still image
+or short clip can carry on its own: `emacs-keys-mode`, the individual
+language-mode pages (~25 of them; the hero shot already proves syntax
+highlighting), `whitespace-show-mode` / `wrap-mode` / `*-line-numbers-mode` /
+`current-line-highlight-mode` (display toggles), `command-line-expand-mode` /
+`path-completion-mode` / `prompt-line-mode` (minibuffer plumbing under the
+hood of shots already listed above), `notifications-mode`, `cancellation`,
+`modes`, `options`, `plugins-mode`, `pi-mode`, `troubleshooting-keys`.
 
 ## Screencast Ideas
 
@@ -162,22 +188,35 @@ This doc lists screenshots and screencasts to collect over time for the Lattice 
 ## Technical Notes
 
 - **Resolution:** 1440×900 for screenshots (clear on retina+non-retina)
-- **Format:** PNG for screenshots, WebM/MP4 for screencasts
+- **Format:** PNG for screenshots, WebM/MP4 for screencasts, GIF for the
+  README/site demo clips (see `README.md` in this directory for the VHS
+  tapes that generate those)
 - **Terminal font:** A patched Nerd Font (e.g. JetBrains Mono Nerd Font) at 14px
 - **Theme:** Default dark theme for consistency (light as variant where noted)
 - **Opacity:** No transparency/alpha on windows — pure dark background
 - **Frame:** no window chrome — just the editor content area unless the screencast shows window management
 - **Screencast length:** target 60-120 seconds per clip; < 30s for social-media clips
 - **Voiceover:** None — text overlays/annotations instead (international audience)
-- **Tool:** Kap (macOS), OBS (cross-platform), or Peek (Linux) for screen capture
+- **Tool:** VHS for TUI demo GIFs (declarative, regenerable — see `README.md`); Kap (macOS), OBS (cross-platform), or Peek (Linux) for manual GPUI screenshots/screencasts
 
 ## Collection checklist
 
-- [ ] Hero dark
+### Priority (differentiators)
+- [ ] Magit status + transient (screenshot + `magit.gif`)
+- [ ] Buffer splits: tree + code + terminal + search (screenshot + `buffers.gif`)
+- [ ] `init.rs` custom command + `:reload-config` (screenshot + `config.gif`)
+- [ ] Org agenda + agent buffer under diff review
+- [ ] TUI + GPU renderer side by side
+
+### Supporting
+- [x] Hero dark — captured (L.5, 2026-09-20), downscaled from a 3680×2382 retina
+      capture to 1920×1242 / 196 KB, committed at
+      `assets/media/screenshots/hero-dark.png` and mirrored to
+      `site/static/media/hero-dark.png` for the site hero. Wired into
+      `README.md` and `site/templates/index.html` (`.hero-shot`).
 - [ ] Hero light
 - [ ] Modal editing
 - [ ] LSP integration
-- [ ] Buffer splits
 - [ ] Multibuffer search
 - [ ] Diff & merge
 - [ ] Picker
@@ -185,4 +224,16 @@ This doc lists screenshots and screencasts to collect over time for the Lattice 
 - [ ] Theme preview (3-4 themes)
 - [ ] Ghost text completion
 - [ ] Tutor
-- [ ] Plugin WASM
+- [ ] Plugin WASM (general case)
+- [ ] Magit rebase / log / blame / side-by-side diff
+- [ ] Org capture / clocking / roam
+- [ ] `:claude` / `:opencode` conversation + diff review
+- [ ] Oil-mode directory edit
+- [ ] Dashboard
+- [ ] Compilation + error list
+- [ ] REPL
+- [ ] Which-key
+- [ ] Surround
+- [ ] Table mode
+- [ ] Narrow / widen
+- [ ] Folding

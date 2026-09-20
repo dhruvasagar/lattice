@@ -187,6 +187,9 @@ same surface).
 | Configuring with `init.rs` | [`init`](help:init)                      | ✅      |
 | Performance posture        | _planned_                                | ⛔      |
 | Tutor                      | [`tutor-mode`](help:tutor-mode)          | ✅      |
+| Cheatsheet                 | [`cheatsheet`](help:cheatsheet)          | ✅      |
+| Troubleshooting            | [`troubleshooting`](help:troubleshooting) | ✅      |
+| Known limitations          | [`known-limitations`](help:known-limitations) | ✅      |
 
 Topics with `_planned_` aren't drafted yet — open an issue or send
 a PR if you want one prioritized.

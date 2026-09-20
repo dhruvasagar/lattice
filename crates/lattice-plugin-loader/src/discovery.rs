@@ -269,6 +269,39 @@ mod tests {
     }
 
     #[test]
+    fn resolves_a_relocatable_install_from_the_bin_dir() {
+        // The release-archive layout (launch-0.9.md §3): the user extracts
+        // `lattice-<ver>-<platform>/` anywhere and runs `bin/lattice`, which
+        // must find `../share/lattice/plugins` beside it. No baked prefix —
+        // the archive is relocatable, so the prefix isn't known at build time.
+        //
+        // Compared by canonical path rather than literal `PathBuf` equality:
+        // the candidate is built by appending a `..` component instead of
+        // popping the parent, so it comes back as
+        // `<prefix>/bin/../share/lattice/plugins`. That names the right
+        // directory and `.exists()` selects it correctly — only the spelling
+        // differs, and nothing compares this path. The sibling dev-fallback
+        // test compares the same way for the same reason. Both sides are
+        // canonicalized because macOS resolves the tempdir's `/var` to
+        // `/private/var`.
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = tmp.path();
+        let plugins = prefix.join("share").join("lattice").join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+
+        let got = core_plugins_dir_from(None, None, Some(&prefix.join("bin").join("lattice")))
+            .expect("an extracted archive must find the plugins shipped beside its binary");
+
+        assert_eq!(
+            got.canonicalize().unwrap(),
+            plugins.canonicalize().unwrap(),
+            "resolved {} but expected the plugins dir beside the binary",
+            got.display()
+        );
+    }
+
+    #[test]
     fn none_when_no_candidate_exists() {
         assert_eq!(
             core_plugins_dir_from(None, None, Some(Path::new("/nowhere/bin/lattice"))),

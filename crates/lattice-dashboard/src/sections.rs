@@ -1,9 +1,9 @@
-//! The eight built-in dashboard sections (native Rust — the built-in surface
+//! The nine built-in dashboard sections (native Rust — the built-in surface
 //! stays native, like the vim grammar). Each is a small pure renderer; the
 //! branding art and custom theme roles are layered on in later slices, but
 //! the text content and roles are real here.
 //!
-//! [`builtin_registry`] returns a [`DashboardRegistry`] with all eight
+//! [`builtin_registry`] returns a [`DashboardRegistry`] with all nine
 //! registered in their default order.
 
 use std::sync::Arc;
@@ -24,6 +24,7 @@ const REPO_URL: &str = "https://github.com/dhruvasagar/lattice";
 pub fn builtin_registry() -> DashboardRegistry {
     let mut reg = DashboardRegistry::new();
     reg.register(Arc::new(About));
+    reg.register(Arc::new(Survival));
     reg.register(Arc::new(Links));
     reg.register(Arc::new(Tutor));
     reg.register(Arc::new(Commands));
@@ -84,6 +85,45 @@ impl DashboardSection for About {
         f.line(
             "  4. Asynchronicity — nothing blocks the UI",
             DashboardRole::Body,
+        );
+        f
+    }
+}
+
+// ---------------------------------------------------------------------------
+// survival
+// ---------------------------------------------------------------------------
+
+/// The two dead ends a brand-new user hits first: not knowing how to leave,
+/// and not knowing a config exists. Each is one row, ahead of everything
+/// else that assumes they're already staying.
+struct Survival;
+
+impl DashboardSection for Survival {
+    fn id(&self) -> &str {
+        "survival"
+    }
+    fn order(&self) -> i32 {
+        15
+    }
+    fn render(&self, _ctx: &DashboardCtx) -> DashboardFragment {
+        let mut f = DashboardFragment::new();
+        heading(&mut f, "Survival");
+        f.push(body_link(
+            "Quit      ",
+            ":q",
+            LinkTarget::Command("q".to_string()),
+        ));
+        f.push(
+            DashboardRow::line("Config    ", DashboardRole::Body)
+                .push(DashboardSpan::new(
+                    "lattice --scaffold-init",
+                    DashboardRole::Key,
+                ))
+                .push(DashboardSpan::new(
+                    "  — writes a starter WASM config crate (Cargo.toml, plugin.toml, src/lib.rs)",
+                    DashboardRole::Hint,
+                )),
         );
         f
     }
@@ -315,6 +355,7 @@ mod tests {
             ids,
             [
                 "about",
+                "survival",
                 "links",
                 "tutor",
                 "commands",
@@ -406,6 +447,41 @@ mod tests {
         assert!(
             cmds.iter().any(|c| c == "describe-command describe-key"),
             "expected a help-page link for describe-key: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn the_dashboard_tells_a_first_time_user_how_to_leave_and_how_to_configure() {
+        // A brand-new user's two dead ends: not knowing how to quit, and not
+        // knowing a config exists. Both are one row each. `rendered.contains(":q")`
+        // alone doesn't pin the Survival row -- any `:q!` / `:quit` elsewhere on
+        // the dashboard would satisfy it too, so assert the Survival section's
+        // rows directly.
+        let survival = Survival.render(&DashboardCtx::default());
+        let survival_text = survival
+            .rows
+            .iter()
+            .map(|row| row.text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            survival_text.contains(":q"),
+            "the Survival row must say how to quit"
+        );
+        assert!(
+            survival_text.contains("lattice --scaffold-init"),
+            "the Survival row must point at config scaffolding"
+        );
+        // Pin what --scaffold-init actually writes (crates/lattice-cli/src/scaffold.rs
+        // write_scaffold_init: Cargo.toml, plugin.toml, src/lib.rs, wit/ -- no
+        // config.toml, and "config.toml" isn't even the user TOML's name).
+        assert!(
+            survival_text.contains("src/lib.rs"),
+            "the Survival row must describe what --scaffold-init actually writes"
+        );
+        assert!(
+            !survival_text.contains("config.toml"),
+            "the Survival row must not claim --scaffold-init writes config.toml -- it doesn't"
         );
     }
 

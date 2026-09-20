@@ -264,6 +264,14 @@ img { max-width: 100%; height: auto; }
     gap: 16px;
     margin-top: 16px;
   }
+
+  .hero-shot {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    margin-top: 32px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+  }
 }
 
 // Section title
@@ -382,6 +390,19 @@ img { max-width: 100%; height: auto; }
       font-size: 0.875rem;
       line-height: 1.6;
       color: #e6edf3;
+    }
+  }
+
+  .quickstart-note {
+    max-width: 640px;
+    margin: 16px auto 0;
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: $text-muted;
+
+    code {
+      font-family: $font-mono;
+      font-size: 0.8125rem;
     }
   }
 }
@@ -1163,6 +1184,8 @@ img { max-width: 100%; height: auto; }
 
   .quickstart {
     background: $dark-bg;
+
+    .quickstart-note { color: $dark-text-muted; }
   }
 
   .section-title {

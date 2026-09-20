@@ -365,9 +365,10 @@ picker. The `net:http` / `proc:spawn` / tree-sitter seams follow (design.md
 streaming-result question) lands when a real streaming consumer (live-grep)
 does — a bounded `walk` covers the fuzzy-finder.
 
-### Functions (19)
+### Functions (20)
 
 - `can-write-file` — CD.3b: would an `effect.write-to-file` of `path` from this plugin land?
+- `clamp-position` — CD.6b: `at`, moved to the nearest position that exists in `buffer`
 - `delete-file` — CD.3: delete a file — `read-file`'s peer, for the same reason.
 - `emit-event` — Publish a plugin-defined event on the editor's event bus (PH7.8b). `name`
 - `excerpt-source` — OA.23: where a line of a MULTIBUFFER came from.

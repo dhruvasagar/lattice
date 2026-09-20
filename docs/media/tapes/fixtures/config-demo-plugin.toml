@@ -1,0 +1,3 @@
+# The init config manifest. `id` MUST be "init" (the :reload-config target).
+id = "init"
+provides = ["grammar"]

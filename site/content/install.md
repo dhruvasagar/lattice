@@ -110,10 +110,10 @@ should each be listed as `bundled`.
 ## Not yet available
 
 Homebrew, `cargo install`, `.dmg` and `.msi` are all post-0.9. See
-[known limitations](./docs/known-limitations/).
+[known limitations](@/docs/start/known-limitations.md).
 
 ## Next steps
 
-- [Getting started](./docs/getting-started/) — ten-minute orientation
-- [Modal editing](./docs/modal-editing/) — the vim grammar
-- [Known limitations](./docs/known-limitations/) — what doesn't work yet
+- [Getting started](@/docs/start/getting-started.md) — ten-minute orientation
+- [Modal editing](@/docs/editing/modal-editing.md) — the vim grammar
+- [Known limitations](@/docs/start/known-limitations.md) — what doesn't work yet

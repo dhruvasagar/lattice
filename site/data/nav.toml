@@ -51,6 +51,9 @@ docs = [
   "dashboard-mode",
   "help",
   "which-key-mode",
+  "cheatsheet",
+  "troubleshooting",
+  "known-limitations",
 ]
 
 [[section]]

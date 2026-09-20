@@ -1,7 +1,9 @@
-+++
-title = "Quick Reference"
-description = "One-page cheatsheet for Lattice keybindings and commands"
-+++
+---
+summary: "One-page keystroke reference: modes, motions, operators, git, LSP."
+related: [modal-editing, ex-commands]
+---
+
+# Cheatsheet
 
 ## Normal mode
 
@@ -219,6 +221,6 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 
 ## See also
 
-- [Full modal editing reference](./docs/modal-editing/)
-- [Ex-commands reference](./docs/ex-commands/)
-- [All options](./docs/options/)
+- [Full modal editing reference](help:modal-editing)
+- [Ex-commands reference](help:ex-commands)
+- [All options](help:options)

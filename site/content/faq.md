@@ -103,4 +103,7 @@ Open an issue on the [GitHub issue tracker](https://github.com/dhruvasagar/latti
 
 ### Is there a chat or forum?
 
-Not yet. GitHub issues and discussions are the primary communication channels for now.
+[GitHub Discussions](https://github.com/dhruvasagar/lattice/discussions) and
+[issues](https://github.com/dhruvasagar/lattice/issues). There's no Discord or
+Matrix room at 0.9 — an empty chat room is worse than none, and discussions
+keep answers searchable.

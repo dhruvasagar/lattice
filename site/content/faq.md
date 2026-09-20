@@ -11,11 +11,15 @@ Lattice is in active development (Phase 1+). It is usable for daily editing but 
 
 ### What platforms are supported?
 
-macOS 14+ and Linux (kernel 5.10+) are the primary targets. Windows is not tested or supported. Both x86_64 and aarch64 are supported on macOS and Linux.
+macOS 14+, Linux (kernel 5.10+), and Windows 10+ — x86_64 and aarch64 on all
+three. macOS and Linux are the primary development targets; Windows runs the
+full test suite in CI on every commit and ships release archives, but has
+seen less real-world daily-driver use than macOS and Linux. ARM Windows GUI
+builds are best-effort and may be absent from a given release.
 
 ### Is there a GUI?
 
-Yes — Lattice has two renderer backends: a TUI renderer (terminal) and a GPUI renderer (native GPU window). The TUI renderer is more mature. Use `--gui` to launch the GPU mode on macOS.
+Yes — Lattice has two renderer backends: a TUI renderer (terminal) and a GPUI renderer (native GPU window). The TUI renderer is more mature. Use `--gui` to launch the GPU mode — it ships for macOS, Linux (AppImage/`.deb`), and Windows x86_64.
 
 ### Does it work over SSH?
 
@@ -51,7 +55,7 @@ There is an `emacs-keys-mode` minor mode that provides `C-x` leader-style bindin
 
 ### Does it have an equivalent of org-mode?
 
-Not yet. The everything-is-a-buffer architecture makes this possible, but no org-mode implementation exists.
+Yes, as an out-of-repo WASM plugin — [`dhruvasagar/lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), documented at [org-mode](@/docs/config/org.md). It isn't bundled with the editor or the installer; you clone and build it yourself. The everything-is-a-buffer architecture is what makes it possible without any editor-side special-casing.
 
 ### Can I use elisp?
 

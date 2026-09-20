@@ -76,8 +76,8 @@
     <h2 class="section-title">Current Status</h2>
     <div class="status-grid">
       <div class="status-card">
-        <span class="status-badge status-active">Phase 1+</span>
-        <p>Modal engine, ex-commands, async actor, snapshot model, completion, help, basic perf benches, CI — <strong>active development</strong>.</p>
+        <span class="status-badge status-active">v{{ version.latest }} — alpha</span>
+        <p>Vim modal grammar, LSP (completion, diagnostics, hover, rename, references, code actions), tree-sitter across 20 languages, a magit port, a WASM Component Model plugin host, and two renderers (terminal + GPU) — all shipped and usable today.</p>
         <a href="https://github.com/dhruvasagar/lattice/blob/main/docs/dev/operations/implementation.md" class="status-link">View implementation ledger →</a>
       </div>
       <div class="status-card">
@@ -87,8 +87,8 @@
       </div>
       <div class="status-card">
         <span class="status-badge status-milestone">v{{ version.latest }}</span>
-        <p>Pre-1.0 breaking changes expected. Pluggable WASM init, plugin lifecycle, keymap teardown, decoration rendering, and more in progress.</p>
-        <a href="{{ get_url(path='/docs/') }}" class="status-link">Read the docs →</a>
+        <p>Pre-1.0 — breaking changes expected. The GPU renderer isn't at parity with the terminal one yet, syntax colours aren't fully themeable, and a few grammar/command corners (see known limitations) are still open.</p>
+        <a href="{{ get_url(path='/docs/start/known-limitations/') }}" class="status-link">Read the docs →</a>
       </div>
     </div>
   </div>
@@ -98,20 +98,16 @@
   <div class="container">
     <h2 class="section-title">Quick Start</h2>
     <div class="code-block">
-      <pre><code class="language-sh"># Clone and build
-git clone https://github.com/dhruvasagar/lattice
-cd lattice
-cargo build --release
+      <pre><code class="language-sh"># Install (macOS, Linux)
+curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh | sh
 
 # Open a file
-cargo run --release -- README.md
+lattice README.md
 
 # Or with the GPU renderer
-cargo run --release --features gui -- --gui README.md
-
-# Run tests
-cargo test --workspace</code></pre>
+lattice --gui README.md</code></pre>
     </div>
+    <p class="quickstart-note">Installs into <code>~/.local</code>, plus the bundled core plugins. Building from source instead? <code>cargo build --release</code> alone starts an editor with <strong>no bundled plugins and no error</strong> — you also need <code>cargo xtask build-core-plugins</code>. See the <a href="{{ get_url(path='/install/') }}">install guide</a> for the full from-source steps, release archives, and Windows.</p>
   </div>
 </section>
 

@@ -392,6 +392,19 @@ img { max-width: 100%; height: auto; }
       color: #e6edf3;
     }
   }
+
+  .quickstart-note {
+    max-width: 640px;
+    margin: 16px auto 0;
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: $text-muted;
+
+    code {
+      font-family: $font-mono;
+      font-size: 0.8125rem;
+    }
+  }
 }
 
 // CTA section
@@ -1171,6 +1184,8 @@ img { max-width: 100%; height: auto; }
 
   .quickstart {
     background: $dark-bg;
+
+    .quickstart-note { color: $dark-text-muted; }
   }
 
   .section-title {

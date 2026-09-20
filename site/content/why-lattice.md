@@ -59,4 +59,4 @@ Honest caveats — Lattice is in active development (Phase 1+):
 - **Windows support:** not tested; macOS and Linux are the primary targets
 - **GUI polish:** the TUI renderer is more mature than the GPUI renderer
 
-If those sound fine, read the [getting started guide](./docs/getting-started/).
+If those sound fine, read the [getting started guide](@/docs/start/getting-started.md).

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or idea
+    url: https://github.com/dhruvasagar/lattice/discussions
+    about: Discussions are the place for questions, ideas and show-and-tell.
+  - name: Documentation
+    url: https://dhruvasagar.github.io/lattice/
+    about: The user guide, install instructions, and known limitations.

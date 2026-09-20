@@ -47,7 +47,7 @@ The default keymap is vim. Many keybindings match vim defaults. You can rebind a
 
 ### Does it support Emacs keybindings?
 
-There is an `emacs-keys-mode` minor mode that provides `C-x` leader-style bindings. See the [emacs-keys-mode docs](./docs/emacs-keys-mode/).
+There is an `emacs-keys-mode` minor mode that provides `C-x` leader-style bindings. See the [emacs-keys-mode docs](@/docs/config/emacs-keys-mode.md).
 
 ### Does it have an equivalent of org-mode?
 
@@ -69,7 +69,7 @@ Plugins are WebAssembly Component Model components compiled from any language wi
 
 ### Can I write plugins in languages other than Rust?
 
-Yes — any language with WASM Component Model support. The [plugin authoring guide](./dev/guides/plugin-authoring/) covers the WIT API and multi-language setup.
+Yes — any language with WASM Component Model support. The [plugin authoring guide](@/dev/plugins/plugin-authoring.md) covers the WIT API and multi-language setup.
 
 ### Why not Lua, vimscript, elisp, or embedded Scheme?
 
@@ -77,11 +77,11 @@ An explicit non-goal. A single WASM substrate means one toolchain, one API surfa
 
 ### Does Lattice support LSP?
 
-Yes — LSP is a first-class feature. Diagnostics, completions, hover, go-to-definition, references, rename, formatting, signature help, and code actions are all implemented. See the [LSP docs](./docs/lsp/).
+Yes — LSP is a first-class feature. Diagnostics, completions, hover, go-to-definition, references, rename, formatting, signature help, and code actions are all implemented. See the [LSP docs](@/docs/code/lsp.md).
 
 ### Does Lattice support tree-sitter?
 
-Yes — tree-sitter provides syntax highlighting, incremental parsing, and structured motion/text objects. See the [languages docs](./docs/languages/).
+Yes — tree-sitter provides syntax highlighting, incremental parsing, and structured motion/text objects. See the [languages docs](@/docs/code/languages.md).
 
 ### What file size can it handle?
 
@@ -95,7 +95,7 @@ You can try! Many features work, but you should expect rough edges, missing feat
 
 ### How can I contribute?
 
-See the [contributing guide](https://github.com/dhruvasagar/lattice/blob/main/CONTRIBUTING.md). The [developer docs](./dev/) cover architecture and development setup. Good first issues are [tagged on GitHub](https://github.com/dhruvasagar/lattice/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
+See the [contributing guide](https://github.com/dhruvasagar/lattice/blob/main/CONTRIBUTING.md). The [developer docs](@/dev/_index.md) cover architecture and development setup. Good first issues are [tagged on GitHub](https://github.com/dhruvasagar/lattice/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
 
 ### Where do I report bugs?
 

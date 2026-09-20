@@ -1,0 +1,73 @@
+name: Bug report
+description: Something behaved wrongly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check [known limitations](https://dhruvasagar.github.io/lattice/docs/start/known-limitations/)
+        first — if it's listed there it's absent rather than broken.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `lattice --version`
+      placeholder: lattice 0.9.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS (Apple silicon)
+        - macOS (Intel)
+        - Linux x86_64
+        - Linux aarch64
+        - Windows x86_64
+        - Windows aarch64
+    validations:
+      required: true
+  - type: dropdown
+    id: renderer
+    attributes:
+      label: Renderer
+      options:
+        - Terminal (default)
+        - GPU (--gui)
+    validations:
+      required: true
+  - type: dropdown
+    id: plugins
+    attributes:
+      label: Does `:plugins` list auto-pair, treesitter-context and project as `bundled`?
+      description: If not, that is its own bug and it hides others.
+      options:
+        - "Yes, all three"
+        - "No, the list is empty or incomplete"
+        - "Haven't checked"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - install.sh
+        - Release archive
+        - .deb or AppImage
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: messages
+    attributes:
+      label: Relevant `:messages` output
+      render: text

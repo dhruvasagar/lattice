@@ -14,18 +14,18 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 
 **Status:** 📝 planned (written 2026-09-18).
 
-| Slice | What | Gate | Status |
-|---|---|---|---|
-| L.0 | Green `lattice-ui-tui` baseline | both tests pass; LCP pinned by a test | ✅ |
-| L.1 | Pipeline: ARM artefact bug + first green preview run | `publish` succeeds once | ✅ |
-| L.2 | Core plugins in every artefact; prefix-relocatable layout | extracted binary loads 3 plugins | 📝 |
-| L.3 | Version 0.9.0 + honesty pass | no false claim on any user surface | 📝 |
-| L.4 | `install.sh` | installs from a real release on macOS + Linux | 📝 |
-| L.4b | Positioning, re-cut shot list, VHS capture harness | tapes render; every shot names a differentiator | 📝 |
-| L.5 | README restructure + hero + feature series | README < 200 lines, hero + 4 feature shots | 📝 |
-| L.6 | known-limitations, troubleshooting, cheatsheet, dashboard | site sync passes; docs budget green | 📝 |
-| L.7 | CONTRIBUTING / SECURITY / CoC / issue templates / CHANGELOG | templates render on GitHub | 📝 |
-| L.8 | Tag `v0.9.0`, notes, announce | a real release exists | 📝 |
+| Slice | What                                                        | Gate                                            | Status |
+|-------|-------------------------------------------------------------|-------------------------------------------------|--------|
+| L.0   | Green `lattice-ui-tui` baseline                             | both tests pass; LCP pinned by a test           | ✅     |
+| L.1   | Pipeline: ARM artefact bug + first green preview run        | `publish` succeeds once                         | ✅     |
+| L.2   | Core plugins in every artefact; prefix-relocatable layout   | extracted binary loads 3 plugins                | ✅     |
+| L.3   | Version 0.9.0 + honesty pass                                | no false claim on any user surface              | ✅     |
+| L.4   | `install.sh`                                                | installs from a real release on macOS + Linux   | ✅     |
+| L.4b  | Positioning, re-cut shot list, VHS capture harness          | tapes keystroke-verified; GIFs ⛔ (VHS sandbox)  | ✅     |
+| L.5   | README restructure + hero (series deferred)                 | README 143 lines, hero wired, paths verified    | ✅     |
+| L.6   | known-limitations, troubleshooting, cheatsheet, dashboard   | sync + zola clean; budget 12.2% headroom        | ✅     |
+| L.7   | CONTRIBUTING / SECURITY / CoC / issue templates / CHANGELOG | YAML validates; 9 silent 404s fixed             | ✅     |
+| L.8   | Tag `v0.9.0`, notes, announce                               | a real release exists                           | 📝     |
 
 ---
 
@@ -648,7 +648,7 @@ print(f'{len(deb["assets"])} deb asset sources all exist')
 EOF
 ```
 
-Expected: `18 deb asset sources all exist` (9 pre-existing + 9 plugin files). If `cargo xtask build-core-plugins` fails on a missing target, run `rustup target add wasm32-wasip2`.
+Expected: `17 deb asset sources all exist` (8 pre-existing + 9 plugin files). If `cargo xtask build-core-plugins` fails on a missing target, run `rustup target add wasm32-wasip2`.
 
 - [ ] **Step 13: Land the design amendment**
 

@@ -78,8 +78,15 @@ if `gD` is bound, `gDd` can never fire.
 `:messages` is the in-editor log. For a file, redirect stderr:
 
 ```sh
-lattice --log-level debug 2>/tmp/lattice.log
+lattice --stderr-logs --log-level debug 2>/tmp/lattice.log
 ```
+
+In TUI mode stderr tracing is off by default — stderr is the alternate
+screen, and writing to it would corrupt the paint — so `--stderr-logs` is
+required to turn it on. It only takes effect when stderr is redirected (as
+above); with stderr still attached to the terminal, Lattice prints a note
+and ignores the flag rather than corrupting the display. The GUI (`--gui`)
+enables stderr logging unconditionally.
 
 Never use `println!`/`eprintln!` while the terminal UI is up — it corrupts
 the alternate screen.

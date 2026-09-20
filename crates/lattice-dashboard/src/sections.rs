@@ -121,7 +121,7 @@ impl DashboardSection for Survival {
                     DashboardRole::Key,
                 ))
                 .push(DashboardSpan::new(
-                    "  — writes a starter init.rs + config.toml",
+                    "  — writes a starter WASM config crate (Cargo.toml, plugin.toml, src/lib.rs)",
                     DashboardRole::Hint,
                 )),
         );
@@ -450,39 +450,38 @@ mod tests {
         );
     }
 
-    /// Render every default-enabled section to one flat string, for tests
-    /// that just need to assert a phrase appears somewhere on the
-    /// dashboard rather than pin it to one section.
-    fn render_all_sections_for_test() -> String {
-        let reg = builtin_registry();
-        let ctx = DashboardCtx::default();
-        reg.ordered(&SectionSelection::Default)
-            .iter()
-            .map(|section| {
-                section
-                    .render(&ctx)
-                    .rows
-                    .iter()
-                    .map(|row| row.text())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     #[test]
     fn the_dashboard_tells_a_first_time_user_how_to_leave_and_how_to_configure() {
         // A brand-new user's two dead ends: not knowing how to quit, and not
-        // knowing a config exists. Both are one row each.
-        let rendered = render_all_sections_for_test();
+        // knowing a config exists. Both are one row each. `rendered.contains(":q")`
+        // alone doesn't pin the Survival row -- any `:q!` / `:quit` elsewhere on
+        // the dashboard would satisfy it too, so assert the Survival section's
+        // rows directly.
+        let survival = Survival.render(&DashboardCtx::default());
+        let survival_text = survival
+            .rows
+            .iter()
+            .map(|row| row.text())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            rendered.contains(":q"),
-            "the dashboard must say how to quit"
+            survival_text.contains(":q"),
+            "the Survival row must say how to quit"
         );
         assert!(
-            rendered.contains("--scaffold-init"),
-            "the dashboard must point at config scaffolding"
+            survival_text.contains("lattice --scaffold-init"),
+            "the Survival row must point at config scaffolding"
+        );
+        // Pin what --scaffold-init actually writes (crates/lattice-cli/src/scaffold.rs
+        // write_scaffold_init: Cargo.toml, plugin.toml, src/lib.rs, wit/ -- no
+        // config.toml, and "config.toml" isn't even the user TOML's name).
+        assert!(
+            survival_text.contains("src/lib.rs"),
+            "the Survival row must describe what --scaffold-init actually writes"
+        );
+        assert!(
+            !survival_text.contains("config.toml"),
+            "the Survival row must not claim --scaffold-init writes config.toml -- it doesn't"
         );
     }
 

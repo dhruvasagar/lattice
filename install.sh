@@ -19,8 +19,18 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--prefix) [ $# -ge 2 ] || die "--prefix needs a directory"; PREFIX="$2"; shift 2 ;;
-		--version) [ $# -ge 2 ] || die "--version needs a tag"; VERSION="$2"; shift 2 ;;
+		--prefix)
+			[ $# -ge 2 ] || die "--prefix needs a directory"
+			case "$2" in
+				-*) die "--prefix needs a directory" ;;
+			esac
+			PREFIX="$2"; shift 2 ;;
+		--version)
+			[ $# -ge 2 ] || die "--version needs a tag"
+			case "$2" in
+				-*) die "--version needs a tag" ;;
+			esac
+			VERSION="$2"; shift 2 ;;
 		--gui) FLAVOUR="lattice-gui"; shift ;;
 		-h|--help)
 			cat <<'EOF'
@@ -61,7 +71,21 @@ archive="$FLAVOUR-$ver-$arch-$os.tar.xz"
 base="https://github.com/$REPO/releases/download/$VERSION"
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT INT TERM
+cleanup() {
+	rc=$?
+	rm -rf "$tmp"
+	rm -rf "$PREFIX/share/lattice/.plugins.new.$$"
+	if [ -d "$PREFIX/share/lattice/plugins.old.$$" ]; then
+		if [ -d "$PREFIX/share/lattice/plugins" ]; then
+			rm -rf "$PREFIX/share/lattice/plugins.old.$$"
+		else
+			mv "$PREFIX/share/lattice/plugins.old.$$" "$PREFIX/share/lattice/plugins"
+		fi
+	fi
+	rm -f "$PREFIX/bin/lattice.new.$$"
+	exit "$rc"
+}
+trap cleanup EXIT INT TERM
 
 printf 'Downloading %s (%s)…\n' "$archive" "$VERSION"
 curl -fSL --progress-bar -o "$tmp/$archive" "$base/$archive" \
@@ -89,10 +113,20 @@ root="$tmp/$FLAVOUR-$ver-$arch-$os"
 [ -d "$root/share/lattice/plugins" ] || die "archive carries no bundled plugins — refusing to install a crippled editor"
 
 mkdir -p "$PREFIX/bin" "$PREFIX/share/lattice"
-rm -rf "$PREFIX/share/lattice/plugins"
-cp -R "$root/share/lattice/plugins" "$PREFIX/share/lattice/plugins"
-cp "$root/bin/lattice" "$PREFIX/bin/lattice"
-chmod +x "$PREFIX/bin/lattice"
+
+stage="$PREFIX/share/lattice/.plugins.new.$$"
+rm -rf "$stage"
+cp -R "$root/share/lattice/plugins" "$stage"
+if [ -d "$PREFIX/share/lattice/plugins" ]; then
+	rm -rf "$PREFIX/share/lattice/plugins.old.$$"
+	mv "$PREFIX/share/lattice/plugins" "$PREFIX/share/lattice/plugins.old.$$"
+fi
+mv "$stage" "$PREFIX/share/lattice/plugins"
+rm -rf "$PREFIX/share/lattice/plugins.old.$$"
+
+cp "$root/bin/lattice" "$PREFIX/bin/lattice.new.$$"
+chmod +x "$PREFIX/bin/lattice.new.$$"
+mv "$PREFIX/bin/lattice.new.$$" "$PREFIX/bin/lattice"
 
 printf '\nInstalled lattice %s to %s/bin/lattice\n' "$ver" "$PREFIX"
 case ":$PATH:" in

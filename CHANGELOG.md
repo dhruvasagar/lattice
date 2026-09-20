@@ -40,8 +40,10 @@ distribution is new.
 - Pickers, which-key, a dashboard, notifications, themes, a tutor
   (`:tutor`), and self-documenting help for every command, option, mode and
   key.
-- Coding-agent integrations: Claude Code over MCP and opencode over ACP,
-  both as buffers with interactive diff review.
+- Coding-agent integrations: Claude Code attaches over MCP, and `:opencode`
+  runs opencode's own TUI in a terminal buffer. An ACP-buffer alternative
+  gives opencode a lattice-owned conversation buffer with interactive diff
+  review; it is not the default path at 0.9.
 
 ### Distribution
 - Release archives for macOS, Linux and Windows on x86_64 and aarch64, plus

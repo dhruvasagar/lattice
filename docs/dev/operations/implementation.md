@@ -7346,3 +7346,148 @@ which also records three as-built deviations from the design.
 - Move completed items from **Up next** into the appropriate coverage table.
 - Update **Test counts** at the end of each session.
 - Don't write per-session log entries here — `git log --oneline` is the log.
+
+---
+
+## Feature checklist (moved from README, 2026-09-20)
+
+This checklist lived in README.md through 0.8; the README restructure for
+the 0.9 alpha launch (L.5) moved it here rather than deleting it. It is the
+granular pre-Phase-4 polish plan, plus Phase 4 work, checked off as it
+landed — kept for history, not maintained as a live tracker going forward
+(the Phase status table above and the per-feature sections elsewhere in
+this doc are the live ledger).
+
+The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
+
+**Async runtime + cancellation** (DESIGN.md §5.2, §5.6.8, §5.7)
+
+- [x] `DocumentActor` + bounded-mailbox dispatch (one tokio task per doc)
+- [x] `arc-swap` snapshot publish-before-reply contract
+- [x] `Pending<T>` typed handles for every mutating call
+- [x] Cooperative `CancellationToken` (grammar + actor + search loops)
+- [x] Actor stress tests (mailbox saturation, concurrent senders, snapshot ordering)
+- [ ] Per-`LatencyClass` deadline timers (Reflex < 2 ms, Display < 10 ms)
+- [x] Plugin async-task host primitive (Phase 7 — per-plugin `Store` as a tokio task)
+
+**Vim modal editing** (DESIGN.md §5.2)
+
+- [x] Modal state machine: Normal / Insert / Visual / Op-pending / Command / Search / Replace
+- [x] Strict vim grammar: counts, registers, operators, motions, text objects, ex-ranges
+- [x] Built-in motion / operator / text-object catalog
+- [x] Macros (recorded as `CommandInvocation` sequences, not keystrokes)
+- [x] Marks, dot-repeat with insert-replay, position-history ring (§5.1.1)
+- [x] Search + hlsearch with `fancy-regex` (RE2 + bounded NFA for backrefs)
+- [x] Substitute (`:s` / `:%s`) with `$1` / `${name}` template syntax
+- [x] Block-visual `d` / `y` / `c` / `I` / `A` / `>` / `<` (per-row dispatch + replicate-on-Esc + single undo unit)
+- [x] Manual folds (`zf` / `zo` / `zc` / `za` / `zR` / `zM` / `zd`)
+- [x] Counts on linewise ops (`2dd`, `2>>`) collapse to one undo unit
+- [x] Substitute live preview (matches highlighted while typing `:s/pat/repl/...`)
+- [x] Computed folds — indent fallback (`:set foldmethod=indent`); tree-sitter folds queued
+
+**Unified command / grammar dispatch** (DESIGN.md §5.2.1)
+
+- [x] One `CommandRegistry` for ex-commands, motions, operators, text objects
+- [x] `:` line is a parser front-end producing typed `CommandInvocation`s
+- [x] Every command is reachable from `:` via the kind-prefix form (`:motion goto-first-line`, `:operator delete word-forward`, `:text-object inner-word`); ex-commands keep their bare alias surface; chord grammar stays the natural compact-typing path
+- [x] `:g/pat/body` and `:v/pat/body` parse `body` up front (no per-match re-parse)
+- [x] `Range::Selection` resolves to active visual selection
+- [x] Interactive arg-prompts via `args_schema` (any required arg arms a prompt; Chord kind auto-submits on next chord)
+
+**Event system + hooks** (DESIGN.md §5.10)
+
+- [x] Typed `Event` catalog in `lattice-protocol`
+- [x] `EventBus`: `subscribe(filter, target)`, `unsubscribe`, `publish` (kind-indexed dispatch)
+- [x] `SubscriptionTarget::Channel` (mpsc) and `SubscriptionTarget::Invocation`
+- [x] Actor publishes events on save / mode-change / quit (`BeforeSave`, `DocumentSaved`, `ModalModeChanged`, `BeforeQuit`)
+- [ ] `Before*`-event mutation / veto seam (the events fire; the mutate / abort return path is not wired)
+- [ ] ~~`:autocmd` / `add-hook` front-ends~~ — deliberate non-goal: handlers call typed APIs with an `Event` context, not `:`-command strings
+
+**Self-documenting help** (DESIGN.md §5.11)
+
+- [x] Every command / option / mode / keybinding carries metadata at registration time
+- [x] `:describe-command`, `:describe-buffer`, `:describe-key`, `:keymap`, `:apropos`
+- [x] `:describe-option`, `:options` (typed options registry)
+- [x] `:help [topic]` -- free-form topic surface with `<Tab>` completion; built-ins embedded via `include_str!` from `docs/user/*.md`; `Dynamic` body variant is the seam for LSP / plugin-supplied topics; `:describe-*` views emit "See also" topic cross-links
+- [x] `:describe-event` / `:describe-events`, `:describe-mode`, `:describe-active-modes` (`<C-h>m`), `:describe-bindings` (`<C-h>K`)
+
+**Configuration** (DESIGN.md §5.12)
+
+- [x] **Renderer-agnostic typed-options crate** (`lattice-config`): `OptionType` trait with primitive impls (`bool`, `i64`, `String`); `Option<T>` with `ArcSwap<T>` value cell for wait-free reads; `OptionHandle<T>` for zero-overhead typed access; `ErasedOption` + `ConfigRegistry` for by-name lookups; `:set` parser; `gen:options` completion source — every consumer (App, plugins, future renderers) registers options through the same API
+- [x] `register_core_options(&registry) → CoreOptions` for the nine renderer-agnostic options (`number`, `relativenumber`, `wrap`, `ignorecase`, `tabstop`, `foldenable`, `foldmethod`, `scrolloff`, `completion.auto_insert_single`)
+- [x] Renderer-specific options register via the same API: `lattice-ui-tui::register_tui_options(&registry) → TuiOptions` covers `ui.dim_inactive`, `ui.separator`, `ui.separator_color`, `ui.statusline_active_fg`, `ui.statusline_inactive_fg`. Future GUI / web renderers register their own
+- [x] `:set name=value`, `:set name`, `:set noname`, `:set name?` parser front-end (drives `ConfigRegistry::parse_and_set_command`)
+- [x] `:describe-option <name>` (reads the erased view: name, aliases, type label, default, current value, enumerated values, doc)
+- [x] TOML static-settings layer — `~/.config/lattice/lattice.toml` (`lattice-config/src/loader.rs`)
+- [x] `init.rs` plugin loader (Rust → WASM) — landed with Phase 8 (`lattice-plugin-loader`)
+- [x] `:customize` buffer view (group / mode / cross-mode) — [ ] write-back to TOML not wired
+- [ ] `lattice config build` diagnostic CLI subcommand
+- [x] Project-local `.lattice/config.toml` (project-local `init.rs` still deferred behind a per-directory trust prompt)
+
+**Rendering** (DESIGN.md §5.6)
+
+- [x] TUI renderer (crossterm + ratatui) — first-class peer for headless / SSH
+- [x] Display-width-aware cursor placement (CJK / Latin / emoji)
+- [x] Tree-sitter highlight emission (Rust / Python / JS / Markdown bundled)
+- [x] Markdown grammar with fenced-code injections (` ```rust``` ` blocks highlight as rust)
+- [x] Markup `Style` variants for headings (1-6), bold / italic, links, raw — themable from day one
+- [x] GPU compositor via GPUI — full edit + LSP parity with TUI on both renderers
+- [x] O(viewport) incremental highlight + cell build (flat to 100k-line files; H-series)
+- [x] Soft-wrap on both renderers: reflow at pane width, wrap-continuation gutter marker, wrapped cursor movement
+- [x] Event-driven TUI loop — 100ms poll replaced by reader-thread + `Wake` channel; idle CPU ≈ 0
+- [x] Decoration retention: inactive panes keep full syntax + inlay hints + diagnostics; focus change = opacity flip only, zero recompute
+- [x] Per-pane `DisplayMatrix` (keyed by `PaneId`): shared produce/consume path for both active and inactive panes
+- [ ] Renderer trait split (`EditorRenderer` / `DocumentRenderer` / `TuiRenderer`) — Phase 5/6
+- [ ] Sprite atlas for icons (file-type, severity, gutter, picker, status) — §5.6.7
+- [ ] Rich-buffer rendering (variable fonts within a single buffer) — Phase 9
+
+**LSP** (DESIGN.md §5.4) — Phase 4 (wind-down)
+
+- [x] Diagnostics, completion (Insert-mode + LSP source + docs popup + snippets + ghost text), hover (`K`), go-to-definition family (`gd`/`gD`/`gy`/`gI`), references (`gr`), symbols
+- [x] Signature help, rename + prepareRename, code actions + execute, formatting (range / on-type / format-on-save)
+- [x] Inlay hints, semantic tokens, document highlights, folding ranges, selection ranges
+- [x] Call hierarchy, type hierarchy, document links, code lens, document colors
+- [x] `window/showMessage`, `$/progress` modeline, `:lsp-restart`, dynamic `registerCapability` / `unregisterCapability`
+- [x] Cancellation tokens plumbed through every wrapper; per-server compatibility shims
+- [x] 15 sub-modes toggle individually or via the `lsp-mode` umbrella
+- [ ] `linkedEditingRange` (needs shadow-edit machinery), `inlineValue` (needs DAP), `inlineCompletion` (lsp-types `proposed`) — deferred
+
+**Plugin host** (DESIGN.md §5.5, §9) — Phase 7 ✅ (runtime; editor-side loading is Phase 8)
+
+- [x] `wasmtime` + Component Model + WIT bindings; per-plugin `Store` as a tokio task
+- [x] Module cache; capability manifests + WASI-preopen enforcement; fuel + epoch deadlines; crash-quarantine (`PluginCrashed`)
+- [x] Per-call overhead bench gates in CI (grammar round-trip < 5 µs p99 ~340 ns; no-per-frame-WASM dep-graph guard; `wasm32-wasip2` in CI)
+- [x] Every extension seam mirrored: picker, grammar (sync), completion, events, decorations, config, modes, host-services
+- [x] Reference plugin: `fuzzy-finder` (validates picker primitive end-to-end; parity + overhead benched, not cut over)
+- [ ] Editor-side loading: loader ex-command, on-disk plugin discovery, `init.rs`-as-WASM config — **Phase 8**
+
+**Multi-buffer + UI components** (DESIGN.md §5.9) — Phase 6
+
+- [x] Buffer abstraction + active-buffer routing; `<C-o>` / `<C-i>` walk across buffers
+- [x] Pane tree + `<C-w>{s,v,c,h,j,k,l,w,W}` window-management chord grammar
+- [x] Multiple Document buffers + `:bn` / `:bp` / `:ls` / `:bd` / `:b N`
+- [x] File-tree buffer (`:Tree path`); multiple roots; `:e folder` defers to `:Tree folder`
+- [x] Unified `BufferRegistry`: documents and trees in one keyspace; `BufferFlags { listed, hidden }`
+- [x] Vim-style pane visuals: per-pane status line, `│` separator, inactive dim — all `:set ui.*`
+- [x] Hover popup (LSP `K`); inline completion popup (vertico-style)
+- [x] Multibuffer / excerpt display: `lattice-multibuffer` crate, excerpt layout, virtual-row header providers, composed→source row map, scrolling, generic `<CR>` jump-to-source
+- [x] Compilation mode: `:compile`/`:recompile`/`:make` any CLI tool, streaming `*compilation*` + headerline, 4-parser tool-agnostic error list (stdout+stderr; cargo test panics), `:next-error`/`]qq`, `:error-list` picker, `*problems*` view, `<C-c>` kill
+- [x] `*messages*` buffer (synthetic Document, subsystem-owned streaming content)
+- [x] Pane groups (D.4) — foundation for diff side-by-side, `:set scrollbind`, `:windo`
+- [x] Virtual rows + `DisplayMatrix` — above/below-anchored inlays, fold summaries, header rows
+- [x] Diff foundation: two-way and three-way hunk computation; gutter diff signs; side-by-side diff layout (partial)
+- [ ] Picker primitive as standalone buffer (file picker, project grep, diagnostics list — Phase 6)
+- [x] Oil buffer (directory editing à la vim-oil) — `lattice-listing`
+- [x] Terminal buffer on a real cross-platform PTY (`portable-pty`); T4 polish partly open (mouse), T5 plugin surface deferred to Phase 7+
+
+**CI / engineering** (DESIGN.md §8)
+
+- [x] Workspace lint policy (`unsafe_code = "deny"`, opt-in per module)
+- [x] Criterion benches for runtime, motions, operators, search
+- [x] Cross-platform CI matrix (Linux / macOS / Windows) + fmt + doc gates
+- [x] Bench compile-check (catches bench-code rot per platform)
+- [x] Bench baseline artifact recorded on every push to main
+- [x] Keystroke→glyph ratchet (`keystroke-ratchet` job): records the p50/p95/p99 distribution at three file sizes and gates each against a committed baseline
+- [ ] Whole-suite bench regression gate (needs a stable runner; shared CI variance dwarfs signal)
+- [ ] Allocation-discipline checks on the render hot path (dhat-based)
+

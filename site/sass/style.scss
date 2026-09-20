@@ -264,6 +264,14 @@ img { max-width: 100%; height: auto; }
     gap: 16px;
     margin-top: 16px;
   }
+
+  .hero-shot {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    margin-top: 32px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+  }
 }
 
 // Section title

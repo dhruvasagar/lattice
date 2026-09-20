@@ -209,7 +209,11 @@ hood of shots already listed above), `notifications-mode`, `cancellation`,
 - [ ] TUI + GPU renderer side by side
 
 ### Supporting
-- [ ] Hero dark
+- [x] Hero dark — captured (L.5, 2026-09-20), downscaled from a 3680×2382 retina
+      capture to 1920×1242 / 196 KB, committed at
+      `assets/media/screenshots/hero-dark.png` and mirrored to
+      `site/static/media/hero-dark.png` for the site hero. Wired into
+      `README.md` and `site/templates/index.html` (`.hero-shot`).
 - [ ] Hero light
 - [ ] Modal editing
 - [ ] LSP integration

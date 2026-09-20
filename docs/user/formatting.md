@@ -96,7 +96,7 @@ The column both `gq` and `autowrap` aim at. It is always a real column —
 there is no "off" value, because `autowrap=off` is how you turn wrapping off,
 and `gq` should still have a target when you ask for it explicitly.
 
-This is unrelated to [`wrap`](display.md), which is *soft* wrap — a display
+This is unrelated to [`wrap`](help:display), which is *soft* wrap — a display
 setting that changes no bytes. The two work together: a buffer can soft-wrap
 at the window edge while hard-wrapping at 80.
 

@@ -49,7 +49,7 @@ distribution is new.
 - `install.sh` for macOS and Linux.
 
 ### Known limitations
-See [known limitations](./docs/user/known-limitations.md). The short version:
+See [known limitations](https://dhruvasagar.github.io/lattice/docs/start/known-limitations/). The short version:
 binaries are unsigned, LSP servers must be installed by hand, syntax colours
 are not fully themeable, and the GPU renderer is not yet at parity with the
 terminal one.

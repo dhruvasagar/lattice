@@ -41,9 +41,11 @@ fixture source is exactly what `docs/user/init.md`'s "Custom grammar"
 section walks through; see it there for the annotated version.
 
 `org-agents.tape` does not exist yet — org-mode and agent buffers need a
-fixture org file (not a contributor's real notes) and a way to show an agent
-turn without a live, non-deterministic API call. See
-`.superpowers/sdd/launch-0.9/task-L.4b-report.md` for the reasoning.
+fixture org file (not a contributor's real notes, and the org plugin isn't
+in the release's bundled core-plugin set), and `:opencode` drives a real,
+non-deterministic LLM conversation that VHS's fixed `Sleep`-based timeline
+can't script. Capture that shot by hand instead: a screenshot with a
+fixture org file and a real agent turn, reviewed before it's committed.
 
 ## GPUI shots
 

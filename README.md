@@ -46,7 +46,7 @@ Full instructions, including building from source (Rust 1.94+): [install guide](
 Unsigned binaries (macOS quarantines browser downloads); LSP servers must be
 installed by hand; syntax colours are not yet fully themeable; ARM Linux and
 ARM Windows GUI builds are best-effort; `--gui` is opt-in, not the default.
-The full list is [known limitations](https://dhruvasagar.github.io/lattice/docs/known-limitations/).
+The full list is [known limitations](https://dhruvasagar.github.io/lattice/docs/start/known-limitations/).
 
 ---
 

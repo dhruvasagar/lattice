@@ -39,7 +39,7 @@ Full instructions, including building from source (Rust 1.94+): [install guide](
 | **Git** | A magit port — status, stage/unstage by hunk, commit, rebase, blame, log, branches, stashes |
 | **Extensibility** | WASM Component Model plugin host; config is Rust compiled to WASM |
 | **Two renderers** | Terminal (first-class, for SSH) and GPU (`--gui`) |
-| **AI agents** | Claude Code over MCP, and opencode over ACP, both as buffers |
+| **AI agents** | Claude Code over MCP; opencode's own TUI in a terminal buffer, or an ACP conversation buffer with diff review |
 
 ## Rough edges at 0.9
 

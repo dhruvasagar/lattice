@@ -445,13 +445,38 @@ jobs:
         with:
           subject-path: 'dist/*'
 
+      # The release body is the tag's CHANGELOG.md section, not
+      # `generate_release_notes`' commit list. The changelog is theme-grouped
+      # prose written for users; a raw commit dump is strictly worse. Kept
+      # honest at both ends: `scripts/release.sh` refuses to cut a tag whose
+      # section is missing or still a stub, and this step fails the release
+      # rather than publishing an empty body.
+      - name: Release notes from CHANGELOG.md
+        if: needs.prepare.outputs.preview == 'false'
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          awk -v ver="$VERSION" '
+            BEGIN { gsub(/\./, "\\.", ver) }
+            $0 ~ "^## " ver "([ \t]|$)" { inside = 1; next }
+            inside && /^## / { exit }
+            inside { print }
+          ' CHANGELOG.md > release-notes.md
+          if [[ ! -s release-notes.md ]]; then
+            echo "::error::CHANGELOG.md has no '## $VERSION' section; the release body would be empty"
+            exit 1
+          fi
+          echo "Release body: $(wc -l < release-notes.md) lines from CHANGELOG.md"
+
       - name: Create GitHub Release
         if: needs.prepare.outputs.preview == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           files: dist/*
-          generate_release_notes: true
+          body_path: release-notes.md
           fail_on_unmatched_files: true
 
       - name: Upload preview bundle

@@ -181,6 +181,13 @@ A step in `publish` asserts the tag matches the workspace version:
 prevents tagging `v0.3.0` while `Cargo.toml` still says `0.2.0`. Skipped in
 preview mode (no tag).
 
+`scripts/release.sh` is the other half of that guard: it is the only supported
+way to move the version, and it reads `Cargo.toml` with the *same* `grep`
+expression `prepare` uses, so the two cannot drift into disagreeing. It stops
+at the local tag and prints the push line — firing a pipeline that publishes
+public artefacts stays a deliberate, separate act. See
+`../operations/releasing.md`.
+
 ## Repo additions
 
 | File                                              | Purpose                                  |
@@ -188,6 +195,7 @@ preview mode (no tag).
 | `.github/workflows/release.yml`                   | the pipeline                             |
 | `crates/lattice-cli/Cargo.toml` `[package.metadata.deb]` | .deb file mapping + icon install  |
 | `docs/dev/operations/releasing.md`                | how to cut a release (tag, bump, preview)|
+| `scripts/release.sh`                              | bump + changelog gate + commit + tag     |
 
 ## Out of scope (v1)
 

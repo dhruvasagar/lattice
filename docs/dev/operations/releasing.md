@@ -5,17 +5,51 @@ Design: `docs/dev/architecture/release-pipeline.md`.
 
 ## Steps
 
-1. Bump `[workspace.package] version` in the root `Cargo.toml` and commit.
-   The tag must equal this value or `prepare` fails (e.g. `version = "0.2.0"`
-   ⇒ tag `v0.2.0`).
-2. Tag and push:
+1. **Write the changelog entry.** Add a `## X.Y.Z — YYYY-MM-DD` section at the
+   top of `CHANGELOG.md`, in theme-grouped prose (see the 0.9.0 entry). This
+   is not optional bookkeeping: it becomes the annotated tag's message *and*
+   the GitHub Release body. If you skip it, `scripts/release.sh` inserts a
+   dated stub and stops.
+2. **Cut it.**
    ```bash
-   git tag v0.2.0
-   git push origin v0.2.0
+   scripts/release.sh              # current version, and what each bump gives
+   scripts/release.sh minor --dry-run
+   scripts/release.sh minor        # 0.9.0 -> 0.10.0
    ```
-3. The pipeline builds 6 platform legs, packages TUI + GUI archives, Linux
+   The script checks you are on `main`, clean (bar `CHANGELOG.md`) and in sync
+   with `origin/main`; that the tag is free locally and on the remote; and that
+   the changelog section exists and is not still the stub. Then it rewrites the
+   one `[workspace.package] version` line, runs `cargo update --workspace` so
+   `Cargo.lock`'s member entries follow, commits `chore(release): vX.Y.Z` from
+   explicit paths, and creates the annotated tag.
+3. **Push.** The script never pushes — it prints the line. Pushing the tag is
+   what publishes:
+   ```bash
+   git push origin main && git push origin v0.10.0
+   ```
+   To undo before pushing: `git tag -d v0.10.0 && git reset --hard HEAD~1`.
+4. The pipeline builds 6 platform legs, packages TUI + GUI archives, Linux
    AppImage/.deb, a source archive, `SHA256SUMS`, attests provenance, and
-   creates the GitHub Release with auto-generated notes.
+   creates the GitHub Release.
+
+### Why a script rather than `cargo-release`
+
+All 41 crates are `version.workspace = true` and nothing is published to
+crates.io, so the multi-crate version interdependence that `cargo-release` and
+`release-plz` exist to solve does not arise here. What *is* worth enforcing is
+local policy — the changelog gate and the refusal to push — which a generic
+tool makes you work around. Helix, Alacritty and Zed all cut releases the same
+way, by hand or from a small in-repo script; the generic-tool adopters are
+overwhelmingly library crates.
+
+## Release notes
+
+The GitHub Release body is the tag's `CHANGELOG.md` section, extracted by the
+`Release notes from CHANGELOG.md` step in `release.yml`. It replaced
+`generate_release_notes: true`, whose raw commit list is strictly worse reading
+for users. Both ends refuse to ship an empty body: the script will not tag
+without a written section, and the workflow step fails the release if the
+section is missing at publish time.
 
 ## Testing without releasing (preview mode)
 

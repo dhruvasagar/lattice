@@ -19,11 +19,24 @@ public `curl … | sh` one-liner resolved the tag through the API, checksummed
 the archive, installed a prefix, and `lattice --version` printed
 `lattice 0.9.0` with all nine plugin files present.
 
-Still open, which is why this plan is NOT archived: the **announcement**
-(L.8 Step 11, Dhruva's to make), **L.9**'s demo script, L.4b's GIF
-rendering ⛔ (VHS writes no file in an agent session; the tapes are
-keystroke-verified and render on a real terminal), and L.5's
-feature-screenshot gallery ⛔ plus the hero recapture Dhruva chose.
+Still open, which is why this plan is NOT archived — every open item now has
+a row in the table below rather than living only in this paragraph, because
+prose-only open work is how `ML.4` and `DB.8` got buried:
+
+- the **announcement** (L.8 Step 11, Dhruva's to make);
+- **L.5**'s differentiator screenshot gallery ⛔ (1 of 6 captured) and the
+  hero recapture Dhruva chose;
+- **L.9b**, recording the demo video — the script is written and ✅, but the
+  recording is what every motion clip is now cut from, so it gates L.5's
+  moving assets as well as its own;
+- **L.10** and **L.11**, added 2026-09-21: org-mode is the fourth
+  differentiator in the launch contract (§10) and nothing user-facing says
+  so. L.11 grows a `/plugins/` section that the community can be listed in
+  later.
+
+L.4b's GIF rendering is ❌ **dropped**, not deferred — headless Chrome's
+screencast is broken on this machine, reproduced minimally on a real
+terminal, so motion comes from the demo video instead (L.9). Nothing to do.
 
 | Slice | What                                                        | Gate                                            | Status |
 |-------|-------------------------------------------------------------|-------------------------------------------------|--------|
@@ -33,11 +46,15 @@ feature-screenshot gallery ⛔ plus the hero recapture Dhruva chose.
 | L.3   | Version 0.9.0 + honesty pass                                | no false claim on any user surface              | ✅     |
 | L.4   | `install.sh`                                                | installs from a real release on macOS + Linux   | ✅     |
 | L.4b  | Positioning, re-cut shot list, VHS capture harness          | tapes keystroke-verified; GIFs ⛔ (VHS sandbox)  | ✅     |
-| L.5   | README restructure + hero (series deferred)                 | README 143 lines, hero wired, paths verified    | ✅     |
+| L.5   | README restructure + hero                                   | README 143 lines, hero wired, paths verified    | ✅     |
+| L.5b  | Differentiator screenshot gallery + hero recapture          | 5 landing shots captured; README gallery wired  | ⛔     |
 | L.6   | known-limitations, troubleshooting, cheatsheet, dashboard   | sync + zola clean; budget 12.2% headroom        | ✅     |
 | L.7   | CONTRIBUTING / SECURITY / CoC / issue templates / CHANGELOG | YAML validates; 9 silent 404s fixed             | ✅     |
 | L.8   | Tag `v0.9.0`, notes, announce                               | released; announcement is Dhruva's              | 🚧     |
 | L.9   | Demo video script + clip plan                               | script written; recording is Dhruva's           | ✅     |
+| L.9b  | Record the demo video; cut the clips                        | video published; clips under 4 MB committed     | ⛔     |
+| L.10  | Org-mode in the launch communications                       | README + landing card + org repo discoverable   | 📝     |
+| L.11  | A `/plugins/` section: index + a page per plugin             | bundled/external split legible; guard bites     | 📝     |
 
 ---
 
@@ -2419,6 +2436,151 @@ can be re-recorded without redoing the take.
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01L1Ac4ezt9RY2UVPr1372zL"
 ```
+
+---
+
+## Addendum (2026-09-21) — the remaining launch work, made visible
+
+The three slices below were added after `v0.9.0` shipped. L.9b and L.5b
+existed already as prose deferrals; they are written out here so the plan's
+open work is greppable rather than remembered. L.10 and L.11 are new, and
+their premise is a gap found by reading the launch contract against the
+shipped surfaces: **§10 names org-mode as one of four differentiators, and
+not one user-facing surface mentions it.** `README.md` (143 lines): zero.
+The site landing page: zero. `CHANGELOG.md`'s 0.9.0 section, which is now
+the GitHub release body: zero.
+
+The argument itself is already written, and well — `docs/user/org.md`
+("the deepest test of those seams, and the reason several of them exist"),
+`docs/user/plugins.md:272` ("a complete worked example"), `demo-script.md`
+§4, and the plugin's own README, titled *"org — the reference plugin"*,
+carrying a seam-by-seam table. So this is a **pointing** job, not a writing
+one, and the second audience is the one that makes it urgent: a developer
+deciding whether lattice's plugin API is deep enough to build on. Org is
+the honest answer to that question, and right now nothing leads them to it.
+
+Org is **not** becoming a bundled plugin — its tree-sitter grammar is 2.2 MB
+of generated C, and design §1's argument is that such a grammar is the
+plugin's build artefact, not the editor's. Every surface below says so.
+
+### Task L.9b: Record the demo video and cut the clips ⛔
+
+Dhruva's, and it gates more than itself: since VHS is ❌ dropped, **every
+motion clip for the README and the site is cut from this recording**. One
+session produces both.
+
+**Files:**
+- Create: `assets/media/demos/*.{mp4,gif}` (clips, each under 4 MB — `docs/media/README.md` size budget)
+- Modify: `README.md`, `site/templates/index.html` (embed points)
+
+- [ ] **Step 1: Record** against `docs/media/demo-script.md`, section by section — each has a reset point, so one section can be re-taken without redoing the whole run.
+- [ ] **Step 2: Publish the full video** somewhere hosted; the size budget says link it, do not commit it.
+- [ ] **Step 3: Cut the clips** named in the script's "Clips to cut" section.
+- [ ] **Step 4: Wire them in**, keeping each committed clip under 4 MB.
+
+### Task L.5b: The differentiator screenshot gallery ⛔
+
+1 of 6 captured (`hero-dark.png`). The five landing shots and the ~20
+supporting shots are listed in `docs/media/screenshot-ideas.md`, which is
+derived from `docs/user/` rather than remembered. Shots 1-3 have verified
+choreography in `docs/media/tapes/`; shots 4 and 5 are hand-only. Dhruva
+also chose to recapture the hero.
+
+### Task L.10: Org-mode in the launch communications 📝
+
+**Files:**
+- Modify: `README.md` (a new section after *What works today*)
+- Modify: `site/templates/index.html` (the Extensibility feature card)
+- External: `dhruvasagar/lattice-org-plugin` repo metadata
+
+**Interfaces:**
+- Consumes: `docs/user/org.md`, `docs/user/plugins.md` §"A plugin can ship a whole language", the plugin's own README.
+- Produces: the inbound links L.11's page and the announcement both rely on.
+
+**Decisions taken 2026-09-21 (Dhruva):**
+- **`CHANGELOG.md`'s 0.9.0 section and the published release body are left alone.** Org lands in 0.10.0's section instead. A shipped release is not rewritten to improve its marketing.
+- The README gets its **own section**, not a table row — "nothing in lattice knows what a headline is" does not fit in a cell, and the plugin-developer argument is the one being made.
+- The org repo gets a **description and topics** so it is findable; **no tag** is cut for it here (that is its own repo's call, and it would be a release of code not reviewed in this plan).
+
+- [ ] **Step 1: README section.** After *What works today*. Two audiences, named separately: what you get if you use org, and what it proves if you want to write a plugin. State plainly that it is not bundled and why.
+- [ ] **Step 2: Landing-page card.** Extend the Extensibility card's copy with the org clause and link it to `/plugins/` (L.11).
+- [ ] **Step 3: Org repo metadata.** `gh repo edit` — description and topics.
+- [ ] **Step 4: Verify.** Links resolve; `README.md` stays close to its 143-line discipline; no claim that org ships with lattice.
+
+> **Accuracy note.** The plugin's own README says "the `language` seam, and
+> by now of twelve others" (13) while its table lists 15 rows. Do not
+> propagate either number — write "more than a dozen" until that repo
+> settles it.
+
+### Task L.11: A `/plugins/` section — index plus a page per plugin 📝
+
+**Files:**
+- Create: `site/content/plugins/_index.md` → `/plugins/`
+- Create: `site/content/plugins/{auto-pair,treesitter-context,project,org}.md`
+- Create: `site/templates/plugins-index.html`
+- Modify: `site/templates/base.html` (nav + footer)
+- Modify: `site/scripts/sync-docs.sh` (the drift guard)
+
+**Interfaces:**
+- Consumes: `xtask/src/main.rs:19` `CORE_PLUGINS`, `docs/user/core-plugins.md`, `docs/user/plugins.md`, `docs/user/org.md`, L.10's org copy.
+- Produces: `/plugins/` and `/plugins/<name>/`, the link targets L.10's landing card and README point at.
+
+**Scope, revised 2026-09-21 (Dhruva, three passes):** not a single page and
+not an org-only feature. `/plugins/` is an **index** that will grow —
+eventually with plugins written by other people — and each plugin gets its
+**own page** for detail, screenshots and demo clips. The index **clearly
+demarcates bundled from external**, because that distinction is the one a
+visitor most needs and most easily gets wrong: bundled plugins arrive with
+the binary and are on by default; external ones you install yourself.
+
+An earlier draft of this slice settled on "org as the featured reference,
+not a directory". That answer was given for a *single page*; the page is no
+longer single, and a section with one page per plugin carries a directory
+without the thinness that objection was about.
+
+**Structure:**
+
+```
+site/content/plugins/
+  _index.md              -> /plugins/            (grouped card index)
+  auto-pair.md           -> /plugins/auto-pair/
+  treesitter-context.md  -> /plugins/treesitter-context/
+  project.md             -> /plugins/project/
+  org.md                 -> /plugins/org/
+```
+
+**Grouping mechanism:** each page carries `extra.kind` in its frontmatter —
+`"bundled"` or `"external"` — and `plugins-index.html` partitions
+`section.pages` on it, rendering one card grid per group under its own
+heading, plus a per-card badge so the distinction survives being skimmed. A
+group with no pages renders **nothing**, so the future `"community"` group
+stays invisible until a third-party plugin exists rather than shipping an
+empty shelf. `extra.kind` is also what the drift guard reads.
+
+Chosen over a Zola taxonomy: a taxonomy would generate its own listing pages
+and need a `config.toml` change, to give exactly one filter this template
+does in two lines.
+
+**The single-source constraint — reference content does NOT move.**
+`docs/user/` *is* the offline `:help` corpus embedded in the binary
+(`sync-docs.sh`'s header states this, and `crates/lattice-help/build.rs`
+reads it). So `/plugins/<name>/` is a **showcase** surface — what it is, what
+it looks like, how to get it — that links into `/docs/` for the reference.
+It must not restate keybinding tables or option lists; those have one home
+and it is not this page.
+
+**Demo assets are blocked, and the pages ship without them.** Screenshots and
+clips come from L.5b and L.9b. No page gets a placeholder `<img>` for an
+asset that does not exist — a broken image is worse than an absent one. The
+asset slots go in when the captures land.
+
+- [ ] **Step 1: The template.** `plugins-index.html`, partitioning on `extra.kind`, reusing the existing `.subsection-grid` / `.subsection-card` classes (`site/sass/style.scss:603,610`) rather than inventing card CSS.
+- [ ] **Step 2: `_index.md`.** The lead: config, bundled plugins and third-party plugins are the same mechanism at different trust tiers — one substrate, capability-gated, crash-isolated. Then the groups.
+- [ ] **Step 3: The four plugin pages.** Each: what it is, why you would want it, how to get it (bundled ⇒ the `<id>.enabled` gate; external ⇒ the install route), and **Full documentation →** into `/docs/`. Org additionally carries the reference-implementation argument from L.10 and the "never bundled, here is why" note.
+- [ ] **Step 4: Nav + footer** links in `base.html`, between *Why Lattice* and *Docs*.
+- [ ] **Step 5: The drift guard.** Extend `sync-docs.sh` to hard-fail when the set of `extra.kind = "bundled"` pages and `CORE_PLUGINS` in `xtask/src/main.rs` disagree **in either direction** — the same both-directions check `nav.toml` already gets. This section restates a list whose truth lives in code, and §10's rule is *bind the artefact to its source, or accept that it will drift*; 0.9 prep turned up three stale docs that each failed exactly this way. External pages are deliberately unguarded — there is no in-tree source of truth to bind them to.
+- [ ] **Step 6: Prove the guard bites.** Add a bundled page for a plugin not in `CORE_PLUGINS`, run the sync, watch it fail; delete one that is, watch it fail the other way. A guard never seen red is not a guard.
+- [ ] **Step 7: Verify.** `python3 site/scripts/sync-docs.sh` clean, `zola build` clean, every link resolves, and the bundled/external split is legible without reading the prose.
 
 ---
 

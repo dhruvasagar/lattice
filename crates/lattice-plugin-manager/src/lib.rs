@@ -25,6 +25,7 @@ use lattice_grammar::{Args, Effect, ExCommandSpec, LatencyClass, SurfaceForm};
 use lattice_mode::SubsystemBoot;
 
 mod actions;
+mod headerline;
 mod mode;
 mod render;
 

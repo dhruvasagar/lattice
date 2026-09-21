@@ -302,6 +302,25 @@ impl Mode for PluginManagerMode {
             let Some(loader) = ctx.service::<PluginLoaderHandle>() else {
                 return Ok(None);
             };
+
+            // The information rows: how many plugins there are, how many are
+            // in trouble, and which keys act on them. Counts are CACHED in the
+            // provider rather than recomputed in `version()` — that is polled
+            // on every cells tick and must not allocate, and `plugin_status()`
+            // does. Registered as a second provider so the transient
+            // build-progress row above keeps its own lifetime.
+            let info = Arc::new(crate::headerline::InfoHeaderline::new(
+                crate::headerline::counts(&loader.plugin_status(), &loader.failed_loads()),
+            ));
+            if let Some(registrar) = ctx.service::<Arc<dyn lattice_mode::VirtualRowRegistrar>>() {
+                let registrar: Arc<dyn lattice_mode::VirtualRowRegistrar> = (*registrar).clone();
+                registrar.unregister(buffer_id, crate::headerline::INFO_HEADERLINE_PROVIDER_ID);
+                registrar.register(
+                    buffer_id,
+                    info.clone() as Arc<dyn lattice_cells::VirtualRowProvider>,
+                );
+            }
+
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
             let sub_id = ctx.events().subscribe(
                 EventFilter::kind(EventKind::PluginCrashed),
@@ -309,14 +328,17 @@ impl Mode for PluginManagerMode {
             );
             let bus_handle = ctx.events_handle();
             let refresh_handle = handle.clone();
+            let refresh_info = info;
             runtime.spawn(async move {
                 while rx.recv().await.is_some() {
                     // Coalesce a burst before re-rendering the whole snapshot.
                     while rx.try_recv().is_ok() {}
-                    let text = render_status_with_failures(
-                        &loader.plugin_status(),
-                        &loader.failed_loads(),
-                    );
+                    let status = loader.plugin_status();
+                    let failed = loader.failed_loads();
+                    // One snapshot feeds both surfaces, so the header can never
+                    // disagree with the table it sits above.
+                    refresh_info.set(crate::headerline::counts(&status, &failed));
+                    let text = render_status_with_failures(&status, &failed);
                     write_all(&refresh_handle, text).await;
                 }
             });
@@ -330,6 +352,14 @@ impl Mode for PluginManagerMode {
 /// `crate::actions` command-name consts (the `keymap_entry!` macro requires a
 /// literal, so they can't reference the const directly) — pinned by
 /// `keymap_cmds_have_registered_handlers`.
+/// Test seam: the keymap entries, for the headerline's hint-row
+/// cross-check. A chord added without a hint stops being discoverable, and
+/// nothing else would notice.
+#[cfg(test)]
+pub(crate) fn plugins_keymap_entries_for_test() -> &'static [KeymapEntry] {
+    plugins_keymap_entries()
+}
+
 fn plugins_keymap_entries() -> &'static [KeymapEntry] {
     use std::sync::OnceLock;
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();

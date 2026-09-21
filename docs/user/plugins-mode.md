@@ -11,6 +11,26 @@ and the chords to act on them. `:plugins`.
 This is the *manager view*. For what the plugin host is and how to
 write or install a plugin, see [`plugins`](help:plugins).
 
+## The header
+
+Two sticky rows sit above the table.
+
+The first counts the set: how many plugins are loaded, how many are running,
+how many are quarantined, and how many failed to load. That last number is
+the one worth reading — a plugin that fails to load has no row in the table
+at all, so the header is the only place it is visible.
+
+The second lists the chords, grouped by the lowercase/uppercase convention
+below rather than one line per key.
+
+Both rows stay put while you scroll, and neither is part of the buffer's
+text — they cannot be yanked, and they do not shift which row the cursor is
+on. A third row appears above them while a build is running and disappears
+when it finishes.
+
+Counts come from the same snapshot that renders the table, so the header
+cannot disagree with what is underneath it.
+
 ## Chords
 
 **Lowercase acts on the row under the cursor; uppercase acts on every row.**

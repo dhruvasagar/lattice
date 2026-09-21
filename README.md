@@ -41,6 +41,27 @@ Full instructions, including building from source (Rust 1.94+): [install guide](
 | **Two renderers** | Terminal (first-class, for SSH) and GPU (`--gui`) |
 | **AI agents** | Claude Code over MCP; opencode's own TUI in a terminal buffer, or an ACP conversation buffer with diff review |
 
+## Org-mode, and what a plugin can be
+
+Org in lattice is a **plugin**, not a feature —
+[`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin),
+developed in its own repository. You install it yourself. It is not bundled
+and never will be: its tree-sitter grammar is 2.2 MB of generated C, and that
+is the plugin's build artefact, not the editor's.
+
+**If you use org**, you get headline editing, TODO states and priorities,
+tables, the clock, capture, refile, archive, the agenda, and org-roam.
+
+**If you want to write a plugin**, it is the reference implementation — and
+the honest answer to "how far does this plugin API actually go?" It
+contributes across more than a dozen seams: a whole language with its own
+tree-sitter grammar, four modes, a complete editing grammar, an agenda built
+on the multibuffer, pickers, completion, transients, signs, decorations,
+themes, and its own `:help` pages — **without a single line in lattice's
+tree.** Nothing in lattice knows what a headline is.
+
+Every plugin, bundled or not: [plugins](https://dhruvasagar.github.io/lattice/plugins/).
+
 ## Rough edges at 0.9
 
 Unsigned binaries (macOS quarantines browser downloads); LSP servers must be

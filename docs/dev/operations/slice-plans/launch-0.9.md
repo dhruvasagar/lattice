@@ -53,7 +53,7 @@ terminal, so motion comes from the demo video instead (L.9). Nothing to do.
 | L.8   | Tag `v0.9.0`, notes, announce                               | released; announcement is Dhruva's              | 🚧     |
 | L.9   | Demo video script + clip plan                               | script written; recording is Dhruva's           | ✅     |
 | L.9b  | Record the demo video; cut the clips                        | video published; clips under 4 MB committed     | ⛔     |
-| L.10  | Org-mode in the launch communications                       | README + landing card + org repo discoverable   | 📝     |
+| L.10  | Org-mode in the launch communications                       | README + landing card + org repo discoverable   | ✅     |
 | L.11  | A `/plugins/` section: index + a page per plugin             | bundled/external split legible; guard bites     | 📝     |
 
 ---
@@ -2486,7 +2486,7 @@ derived from `docs/user/` rather than remembered. Shots 1-3 have verified
 choreography in `docs/media/tapes/`; shots 4 and 5 are hand-only. Dhruva
 also chose to recapture the hero.
 
-### Task L.10: Org-mode in the launch communications 📝
+### Task L.10: Org-mode in the launch communications ✅
 
 **Files:**
 - Modify: `README.md` (a new section after *What works today*)

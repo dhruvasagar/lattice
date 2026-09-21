@@ -34,6 +34,8 @@ repo_root = os.path.normpath(os.path.join(site_dir, '..'))
 
 USER_SRC = os.path.join(repo_root, 'docs', 'user')
 DEV_SRC = os.path.join(repo_root, 'docs', 'dev')
+PLUGINS_SRC = os.path.join(site_dir, 'content', 'plugins')
+XTASK_MAIN = os.path.join(repo_root, 'xtask', 'src', 'main.rs')
 DOCS_DST = os.path.join(site_dir, 'content', 'docs')
 DEV_DST = os.path.join(site_dir, 'content', 'dev')
 DEV_SUBDIRS = ['guides', 'architecture', 'operations', 'audit', 'notes', 'reference']
@@ -525,6 +527,68 @@ def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labe
         print(f'  dev/{sec["slug"]}/ ({counts.get(sec["slug"], 0)} pages)')
 
 
+
+def validate_plugin_pages():
+    """site/content/plugins/ and CORE_PLUGINS must agree, in both directions.
+
+    The plugins index restates a list whose truth lives in code — `CORE_PLUGINS`
+    in xtask/src/main.rs, the set staged into every release artefact. A page
+    claiming lattice bundles something it does not is a lie on the landing path,
+    and a bundled plugin with no page is invisible. Neither announces itself, so
+    the same both-directions check nav.toml gets applies here.
+
+    Only `kind = "bundled"` is checked. External and community pages have no
+    in-tree source of truth to bind to, which is exactly what makes them
+    external.
+    """
+    if not os.path.isdir(PLUGINS_SRC):
+        return
+
+    m = re.search(
+        r'const\s+CORE_PLUGINS\s*:\s*&\[&str\]\s*=\s*&\[(.*?)\];',
+        open(XTASK_MAIN, encoding='utf-8').read(),
+        re.S,
+    )
+    if not m:
+        die(f'could not find CORE_PLUGINS in {os.path.relpath(XTASK_MAIN, repo_root)} '
+            '— it was renamed or reshaped, and this guard is now blind')
+    in_code = set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    on_page = set()
+    for f in sorted(glob.glob(os.path.join(PLUGINS_SRC, '*.md'))):
+        name = os.path.basename(f)[:-3]
+        if name == '_index':
+            continue
+        head = open(f, encoding='utf-8').read().split('+++')[1]
+        kind = re.search(r'^\s*kind\s*=\s*"([^"]+)"', head, re.M)
+        if not kind:
+            die(f'site/content/plugins/{name}.md has no [extra] kind — it must be '
+                '"bundled", "external" or "community", or the index cannot group it')
+        if kind.group(1) not in ('bundled', 'external', 'community'):
+            die(f'site/content/plugins/{name}.md: unknown kind {kind.group(1)!r}')
+        if kind.group(1) == 'bundled':
+            on_page.add(name)
+
+    missing = sorted(in_code - on_page)
+    phantom = sorted(on_page - in_code)
+    problems = []
+    if missing:
+        problems.append(
+            'CORE_PLUGINS ships plugins with no page in site/content/plugins/ — '
+            'a bundled plugin nobody can read about:\n    ' + '\n    '.join(missing)
+        )
+    if phantom:
+        problems.append(
+            'site/content/plugins/ marks these `kind = "bundled"` but CORE_PLUGINS '
+            'does not ship them — the page claims lattice bundles something it '
+            'does not:\n    ' + '\n    '.join(phantom)
+        )
+    if problems:
+        die('\n\n  '.join(problems))
+
+    print(f'  {len(on_page)} bundled plugin pages match CORE_PLUGINS')
+
+
 def main():
     print('Reading navigation manifest...')
     sections, topic_section, labels = load_nav()
@@ -535,6 +599,8 @@ def main():
     )
     print(f'  {len(topic_section)} topics across {len(sections)} sections '
           f'({guides} guides, {len(topic_section) - guides} reference)')
+
+    validate_plugin_pages()
 
     print('Updating version data...')
     write_version_data()

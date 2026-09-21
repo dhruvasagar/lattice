@@ -54,7 +54,7 @@ terminal, so motion comes from the demo video instead (L.9). Nothing to do.
 | L.9   | Demo video script + clip plan                               | script written; recording is Dhruva's           | ✅     |
 | L.9b  | Record the demo video; cut the clips                        | video published; clips under 4 MB committed     | ⛔     |
 | L.10  | Org-mode in the launch communications                       | README + landing card + org repo discoverable   | ✅     |
-| L.11  | A `/plugins/` section: index + a page per plugin             | bundled/external split legible; guard bites     | 📝     |
+| L.11  | A `/plugins/` section: index + a page per plugin             | bundled/external split legible; guard bites     | ✅     |
 
 ---
 
@@ -2512,7 +2512,7 @@ also chose to recapture the hero.
 > propagate either number — write "more than a dozen" until that repo
 > settles it.
 
-### Task L.11: A `/plugins/` section — index plus a page per plugin 📝
+### Task L.11: A `/plugins/` section — index plus a page per plugin ✅
 
 **Files:**
 - Create: `site/content/plugins/_index.md` → `/plugins/`

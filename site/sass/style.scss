@@ -636,6 +636,46 @@ img { max-width: 100%; height: auto; }
   }
 }
 
+// Plugin index: the bundled / external / community split. The badge repeats
+// the group heading on every card so the distinction survives being skimmed —
+// which group a plugin is in is the thing a visitor most easily gets wrong.
+.group-blurb {
+  color: $text-muted;
+  font-size: 0.9375rem;
+  margin-top: -8px;
+}
+
+.plugin-badge {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  border: 1px solid transparent;
+}
+
+.plugin-badge-bundled {
+  color: $brand-blue;
+  background: rgba($brand-blue, 0.10);
+  border-color: rgba($brand-blue, 0.30);
+}
+
+.plugin-badge-external {
+  color: darken($brand-amber, 12%);
+  background: rgba($brand-amber, 0.12);
+  border-color: rgba($brand-amber, 0.35);
+}
+
+.plugin-badge-community {
+  color: $text-muted;
+  background: $bg-alt;
+  border-color: $border;
+}
+
 // Sidebar back link
 .sidebar-back {
   padding: 0 20px 12px;
@@ -1246,6 +1286,26 @@ img { max-width: 100%; height: auto; }
     &:hover { box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
     h3 { color: lighten($brand-blue, 10%); }
     p { color: $dark-text-muted; }
+  }
+
+  .group-blurb { color: $dark-text-muted; }
+
+  .plugin-badge-bundled {
+    color: lighten($brand-blue, 12%);
+    background: rgba($brand-blue, 0.18);
+    border-color: rgba($brand-blue, 0.40);
+  }
+
+  .plugin-badge-external {
+    color: lighten($brand-amber, 8%);
+    background: rgba($brand-amber, 0.16);
+    border-color: rgba($brand-amber, 0.40);
+  }
+
+  .plugin-badge-community {
+    color: $dark-text-muted;
+    background: $dark-bg-hover;
+    border-color: $dark-border;
   }
 
   .sidebar-back {

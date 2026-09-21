@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}{{ section.title }} — Lattice{% endblock title %}
+{% block description %}{{ section.description | default(value=config.description) }}{% endblock description %}
+
+{% block content %}
+<div class="docs-layout">
+  <article class="docs-content docs-content-full">
+    <h1>{{ section.title }}</h1>
+    {{ section.content | safe }}
+
+    {# Three groups, each rendered only if it has pages — so "From the
+       community" stays invisible until a third-party plugin exists rather
+       than shipping an empty shelf. The grouping key is `extra.kind` in each
+       page's front matter, which is also what sync-docs.sh's drift guard
+       reads to check the bundled set against CORE_PLUGINS. #}
+
+    {% set bundled = section.pages | filter(attribute="extra.kind", value="bundled") %}
+    {% if bundled | length > 0 %}
+    <h2 id="bundled">Ships with lattice</h2>
+    <p class="group-blurb">Prebuilt components that arrive beside the binary and are
+      enabled by default. You configure or disable them; you never install them, and
+      they work offline with no toolchain.</p>
+    <div class="subsection-grid">
+      {% for p in bundled %}
+      <a href="{{ p.permalink }}" class="subsection-card">
+        <h3>{{ p.title }}<span class="plugin-badge plugin-badge-bundled">bundled</span></h3>
+        <p>{{ p.description }}</p>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% set external = section.pages | filter(attribute="extra.kind", value="external") %}
+    {% if external | length > 0 %}
+    <h2 id="external">Install these yourself</h2>
+    <p class="group-blurb">Not in the download. Point the plugin manager at a git
+      repository or a local checkout and the editor builds it on first boot, or drop a
+      built component into your plugins directory by hand.</p>
+    <div class="subsection-grid">
+      {% for p in external %}
+      <a href="{{ p.permalink }}" class="subsection-card">
+        <h3>{{ p.title }}<span class="plugin-badge plugin-badge-external">install it</span></h3>
+        <p>{{ p.description }}</p>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% set community = section.pages | filter(attribute="extra.kind", value="community") %}
+    {% if community | length > 0 %}
+    <h2 id="community">From the community</h2>
+    <p class="group-blurb">Written by other people. Lattice does not review or
+      vet these; read the source and the capabilities each one asks for.</p>
+    <div class="subsection-grid">
+      {% for p in community %}
+      <a href="{{ p.permalink }}" class="subsection-card">
+        <h3>{{ p.title }}<span class="plugin-badge plugin-badge-community">community</span></h3>
+        <p>{{ p.description }}</p>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </article>
+</div>
+{% endblock content %}

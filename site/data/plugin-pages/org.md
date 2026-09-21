@@ -1,11 +1,3 @@
-+++
-title = "org"
-description = "Org-mode as a WebAssembly component — outline, TODO workflow, agenda, capture, roam and clocking. Also the reference for writing your own plugin."
-weight = 20
-[extra]
-kind = "external"
-+++
-
 Org-mode in lattice is a plugin, developed in its own repository:
 [`dhruvasagar/lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin).
 The editor knows nothing about it. There is no `BufferKind::Org`, no

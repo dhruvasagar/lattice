@@ -55,6 +55,7 @@ terminal, so motion comes from the demo video instead (L.9). Nothing to do.
 | L.9b  | Record the demo video; cut the clips                        | video published; clips under 4 MB committed     | ⛔     |
 | L.10  | Org-mode in the launch communications                       | README + landing card + org repo discoverable   | ✅     |
 | L.11  | A `/plugins/` section: index + a page per plugin             | bundled/external split legible; guard bites     | ✅     |
+| L.11b | Plugin pages generated from each plugin's own manual        | `:help <id>` text on the site; manager showcased | ✅     |
 
 ---
 
@@ -2581,6 +2582,66 @@ asset slots go in when the captures land.
 - [ ] **Step 5: The drift guard.** Extend `sync-docs.sh` to hard-fail when the set of `extra.kind = "bundled"` pages and `CORE_PLUGINS` in `xtask/src/main.rs` disagree **in either direction** — the same both-directions check `nav.toml` already gets. This section restates a list whose truth lives in code, and §10's rule is *bind the artefact to its source, or accept that it will drift*; 0.9 prep turned up three stale docs that each failed exactly this way. External pages are deliberately unguarded — there is no in-tree source of truth to bind them to.
 - [ ] **Step 6: Prove the guard bites.** Add a bundled page for a plugin not in `CORE_PLUGINS`, run the sync, watch it fail; delete one that is, watch it fail the other way. A guard never seen red is not a guard.
 - [ ] **Step 7: Verify.** `python3 site/scripts/sync-docs.sh` clean, `zola build` clean, every link resolves, and the bundled/external split is legible without reading the prose.
+
+### Task L.11b: Generate the plugin pages from the plugins themselves ✅
+
+L.11 shipped four hand-written showcase pages, deliberately thin, on the
+rule that reference content must not be restated because `docs/user/` is the
+embedded `:help` corpus. **That rule was right and the conclusion was wrong**,
+because the bundled plugins' manuals are not in `docs/user/` at all — each
+ships its own `doc/<id>.md`, `include_str!`'d into the component and served by
+`:help <id>`. `plugins/project/doc/project.md` is 140 lines of keys, commands,
+where the remembered list comes from and how the switch menu behaves. None of
+it was on the website. A visitor deciding whether to install lattice could not
+read what its bundled plugins actually do.
+
+So the pages are now **generated from those manuals**, which is the same
+principle L.11 was applying, followed one step further: bind the artefact to
+its source. The website cannot drift from the manual the editor ships,
+because they are the same file.
+
+**Shape:**
+
+- `site/data/plugins.toml` — the only hand-maintained part: `kind`, `weight`
+  and the card blurb, per plugin. What a plugin cannot tell us about itself.
+- Body: `plugins/<id>/doc/<id>.md` for bundled plugins; its leading `#` is
+  stripped because `page.html` renders the title.
+- A **"Getting it"** block derived from `plugins/<id>/plugin.toml` — the enable
+  gate from `default_mode(s)`, the seams from `provides`, the grants from
+  `capabilities` / `editor_capabilities`. Inserted after the manual's opening
+  prose and before its first section, so the page reads lead → how to get it →
+  the manual. Leading with it answers a question the reader has not asked.
+- External plugins have no in-tree source, so their body is authored at
+  `site/data/plugin-pages/<id>.md` and `body = "authored"` says so.
+- `.gitignore`: everything under `site/content/plugins/` except `_index.md` is
+  build output. Keeping the external body in `site/data/` rather than beside
+  the generated pages is what makes that rule absolute — no per-file negations
+  to forget when a second external plugin lands.
+
+**Zola's `load_data` cannot do this.** It refuses paths outside the site
+directory (`"../plugins/…/doc/project.md" is not inside the base site
+directory`), verified rather than assumed. Generation was the only route.
+
+**The index also showcases `:plugins`** — the manager view. It is how you
+operate everything the page lists, and it was unmentioned: live health, trust
+tier, granted and denied capabilities, the header's failed-to-load count
+(those have no row in the table, so the header is the only place they appear),
+lowercase-acts-on-the-row / uppercase-acts-on-all, and the build row.
+
+**Guard, proven red in four directions** before being trusted: a manifest
+entry marked bundled that `CORE_PLUGINS` does not ship; a `CORE_PLUGINS` entry
+with no manifest entry; a bundled plugin with no `doc/<id>.md`; an authored
+external with no body file. Then green. `zola build` clean, 293 pages, 0
+orphans.
+
+> **Process note.** The scripted edit that reordered the glance block first
+> landed in `rewrite_links` instead of `sync_plugin_pages` — both contain the
+> line `body = resolve_help_links(body, topic_section)`, and the patch matched
+> the earlier one. It raised `UnboundLocalError` on every user doc, and the
+> failure was invisible because the run was piped through `head`, so the
+> generated page read as merely mis-ordered rather than as a crashed sync.
+> Anchor a scripted edit on text unique to the target function, and read a
+> script's exit status, not the first eight lines of its output.
 
 ---
 

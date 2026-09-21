@@ -34,7 +34,10 @@ repo_root = os.path.normpath(os.path.join(site_dir, '..'))
 
 USER_SRC = os.path.join(repo_root, 'docs', 'user')
 DEV_SRC = os.path.join(repo_root, 'docs', 'dev')
-PLUGINS_SRC = os.path.join(site_dir, 'content', 'plugins')
+PLUGINS_DST = os.path.join(site_dir, 'content', 'plugins')
+PLUGINS_SRC = os.path.join(repo_root, 'plugins')
+PLUGIN_MANIFEST = os.path.join(site_dir, 'data', 'plugins.toml')
+PLUGIN_BODIES = os.path.join(site_dir, 'data', 'plugin-pages')
 XTASK_MAIN = os.path.join(repo_root, 'xtask', 'src', 'main.rs')
 DOCS_DST = os.path.join(site_dir, 'content', 'docs')
 DEV_DST = os.path.join(site_dir, 'content', 'dev')
@@ -528,22 +531,8 @@ def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labe
 
 
 
-def validate_plugin_pages():
-    """site/content/plugins/ and CORE_PLUGINS must agree, in both directions.
-
-    The plugins index restates a list whose truth lives in code — `CORE_PLUGINS`
-    in xtask/src/main.rs, the set staged into every release artefact. A page
-    claiming lattice bundles something it does not is a lie on the landing path,
-    and a bundled plugin with no page is invisible. Neither announces itself, so
-    the same both-directions check nav.toml gets applies here.
-
-    Only `kind = "bundled"` is checked. External and community pages have no
-    in-tree source of truth to bind to, which is exactly what makes them
-    external.
-    """
-    if not os.path.isdir(PLUGINS_SRC):
-        return
-
+def core_plugin_ids():
+    """The plugins that ship with lattice, read from xtask's CORE_PLUGINS."""
     m = re.search(
         r'const\s+CORE_PLUGINS\s*:\s*&\[&str\]\s*=\s*&\[(.*?)\];',
         open(XTASK_MAIN, encoding='utf-8').read(),
@@ -552,41 +541,149 @@ def validate_plugin_pages():
     if not m:
         die(f'could not find CORE_PLUGINS in {os.path.relpath(XTASK_MAIN, repo_root)} '
             '— it was renamed or reshaped, and this guard is now blind')
-    in_code = set(re.findall(r'"([^"]+)"', m.group(1)))
+    return set(re.findall(r'"([^"]+)"', m.group(1)))
 
-    on_page = set()
-    for f in sorted(glob.glob(os.path.join(PLUGINS_SRC, '*.md'))):
-        name = os.path.basename(f)[:-3]
-        if name == '_index':
-            continue
-        head = open(f, encoding='utf-8').read().split('+++')[1]
-        kind = re.search(r'^\s*kind\s*=\s*"([^"]+)"', head, re.M)
-        if not kind:
-            die(f'site/content/plugins/{name}.md has no [extra] kind — it must be '
-                '"bundled", "external" or "community", or the index cannot group it')
-        if kind.group(1) not in ('bundled', 'external', 'community'):
-            die(f'site/content/plugins/{name}.md: unknown kind {kind.group(1)!r}')
-        if kind.group(1) == 'bundled':
-            on_page.add(name)
 
-    missing = sorted(in_code - on_page)
-    phantom = sorted(on_page - in_code)
+def plugin_at_a_glance(pid):
+    """The "Getting it" block, read out of the plugin's OWN manifest.
+
+    Enable gate, seams and capability grants are all declared in
+    plugins/<id>/plugin.toml. Deriving them means the page cannot claim a
+    plugin asks for a capability it no longer asks for.
+    """
+    manifest = os.path.join(PLUGINS_SRC, pid, 'plugin.toml')
+    if not os.path.isfile(manifest):
+        die(f'no plugin.toml at plugins/{pid}/ — site/data/plugins.toml lists '
+            f'{pid!r} as bundled, but there is no such plugin in this tree')
+    with open(manifest, 'rb') as fh:
+        man = tomllib.load(fh)
+
+    modes = man.get('default_modes') or (
+        [man['default_mode']] if 'default_mode' in man else []
+    )
+    out = ['## Getting it', '']
+    out.append('It ships with lattice and is enabled by default — nothing to '
+               'install, no toolchain, works offline.')
+    out.append('')
+    if modes:
+        out.append(f'It contributes the minor mode `{modes[0]}`, and the loader '
+                   f'registers `{pid}.enabled` as the switch for it:')
+        out.append('')
+        out.append('```')
+        out.append(f':set {pid}.enabled=false')
+        out.append('```')
+        out.append('')
+    rows = []
+    if man.get('provides'):
+        rows.append(('Seams it plugs into', ', '.join(f'`{x}`' for x in man['provides'])))
+    grants = list(man.get('capabilities', [])) + list(man.get('editor_capabilities', []))
+    rows.append((
+        'Capabilities it asks for',
+        ', '.join(f'`{x}`' for x in grants) if grants else 'none',
+    ))
+    out.append('| | |')
+    out.append('|---|---|')
+    for label, value in rows:
+        out.append(f'| **{label}** | {value} |')
+    out.append('')
+    return '\n'.join(out)
+
+
+def sync_plugin_pages(topic_section):
+    """Generate site/content/plugins/<id>.md for every plugin in the manifest.
+
+    A bundled plugin's page body IS `plugins/<id>/doc/<id>.md` — the same
+    markdown `:help <id>` serves from inside the component, so the website
+    cannot drift from the manual the editor ships. That is the whole point:
+    these manuals are the only place the keys, commands and options of a
+    bundled plugin are written down, and before this they were invisible to
+    anyone who had not already installed lattice.
+
+    External plugins live in someone else's repository, so there is nothing
+    in-tree to sync; their body is authored under site/data/plugin-pages/.
+    """
+    with open(PLUGIN_MANIFEST, 'rb') as fh:
+        plugins = tomllib.load(fh)['plugin']
+
+    bundled = {p['id'] for p in plugins if p['kind'] == 'bundled'}
+    in_code = core_plugin_ids()
+    missing = sorted(in_code - bundled)
+    phantom = sorted(bundled - in_code)
     problems = []
     if missing:
         problems.append(
-            'CORE_PLUGINS ships plugins with no page in site/content/plugins/ — '
-            'a bundled plugin nobody can read about:\n    ' + '\n    '.join(missing)
+            'CORE_PLUGINS ships plugins absent from site/data/plugins.toml — a '
+            'bundled plugin nobody can read about:\n    ' + '\n    '.join(missing)
+            + '\n  Add an entry, and add its generated page to .gitignore.'
         )
     if phantom:
         problems.append(
-            'site/content/plugins/ marks these `kind = "bundled"` but CORE_PLUGINS '
-            'does not ship them — the page claims lattice bundles something it '
-            'does not:\n    ' + '\n    '.join(phantom)
+            'site/data/plugins.toml marks these `kind = "bundled"` but '
+            'CORE_PLUGINS does not ship them — the page claims lattice bundles '
+            'something it does not:\n    ' + '\n    '.join(phantom)
         )
     if problems:
         die('\n\n  '.join(problems))
 
-    print(f'  {len(on_page)} bundled plugin pages match CORE_PLUGINS')
+    # Everything here is generated; a renamed plugin must not keep a stale page.
+    for stale in glob.glob(os.path.join(PLUGINS_DST, '*.md')):
+        if os.path.basename(stale) != '_index.md':
+            os.remove(stale)
+
+    for p in plugins:
+        pid, kind = p['id'], p['kind']
+        if kind not in ('bundled', 'external', 'community'):
+            die(f'site/data/plugins.toml: {pid!r} has unknown kind {kind!r}')
+
+        if p.get('body') == 'authored':
+            src = os.path.join(PLUGIN_BODIES, f'{pid}.md')
+            if not os.path.isfile(src):
+                die(f'{pid!r} is body = "authored" but site/data/plugin-pages/'
+                    f'{pid}.md does not exist')
+            body = open(src, encoding='utf-8').read()
+            glance = ''
+        else:
+            src = os.path.join(PLUGINS_SRC, pid, 'doc', f'{pid}.md')
+            if not os.path.isfile(src):
+                die(f'no manual at plugins/{pid}/doc/{pid}.md — a bundled plugin '
+                    'must ship the help text its page is built from')
+            body = open(src, encoding='utf-8').read()
+            # page.html renders the title as <h1>; drop the manual's own H1 so
+            # the page does not carry two.
+            body = re.sub(r'\A#[^\n]*\n+', '', body)
+            glance = plugin_at_a_glance(pid)
+
+        body = resolve_help_links(body, topic_section)
+
+        # The glance block goes AFTER the manual's opening prose and before its
+        # first section, so the page reads lead -> how to get it -> the manual.
+        # Leading with "Getting it" answers a question the reader has not asked
+        # yet.
+        if glance:
+            split = body.find('\n## ')
+            if split == -1:
+                body = body.rstrip() + '\n\n' + glance
+            else:
+                body = body[:split].rstrip() + '\n\n' + glance + body[split:]
+            glance = ''
+
+        extra = [f'kind = "{kind}"']
+        if p.get('repo'):
+            extra.append(f'repo = "{p["repo"]}"')
+
+        with open(os.path.join(PLUGINS_DST, f'{pid}.md'), 'w', encoding='utf-8') as fh:
+            fh.write(
+                '+++\n'
+                f'title = "{toml_escape(pid)}"\n'
+                f'description = "{toml_escape(p["description"])}"\n'
+                f'weight = {p["weight"]}\n'
+                '[extra]\n' + '\n'.join(extra) + '\n'
+                '+++\n\n'
+                + (glance + '\n' if glance else '')
+                + body.rstrip() + '\n'
+            )
+
+    print(f'  {len(plugins)} plugin pages ({len(bundled)} bundled, matching CORE_PLUGINS)')
 
 
 def main():
@@ -600,8 +697,6 @@ def main():
     print(f'  {len(topic_section)} topics across {len(sections)} sections '
           f'({guides} guides, {len(topic_section) - guides} reference)')
 
-    validate_plugin_pages()
-
     print('Updating version data...')
     write_version_data()
 
@@ -610,6 +705,9 @@ def main():
     validate_dev_nav(page_section, dev_labels, dev_pages)
     print(f'  {len(page_section)} dev pages across {len(dev_sections)} sections')
     reset_generated_dirs(sections, dev_sections)
+
+    print('Syncing plugin pages...')
+    sync_plugin_pages(topic_section)
 
     print('Syncing user docs...')
     meta, headings = sync_user_docs(topic_section, labels, dev_pages, page_section)

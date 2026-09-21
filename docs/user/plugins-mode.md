@@ -31,6 +31,18 @@ when it finishes.
 Counts come from the same snapshot that renders the table, so the header
 cannot disagree with what is underneath it.
 
+## Colour
+
+The table is coloured by meaning, not by syntax: a plugin's name stands out
+as the thing you scan for, `ok` reads as healthy and `quarantined` as a
+problem, a failed build is highlighted while an unremarkable one is dim, and
+`user-installed` is emphasised over `bundled` on the grounds that you are
+more likely to be looking for something you installed yourself.
+
+The colours are the editor's own semantic ones — the same greens, reds and
+accents `:help`, diagnostics and diffs use — so the view follows your theme
+rather than carrying a palette of its own.
+
 ## Chords
 
 **Lowercase acts on the row under the cursor; uppercase acts on every row.**

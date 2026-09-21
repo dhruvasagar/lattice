@@ -29,7 +29,7 @@ use lattice_protocol::{Event, EventKind};
 use lattice_runtime::{Document, EventFilter, SubscriptionTarget};
 
 use crate::actions;
-use crate::render::{PLUGINS_MODE_ID, render_status_with_failures};
+use crate::render::PLUGINS_MODE_ID;
 
 /// PM.8b: the headerline provider id for the build-progress row.
 pub const BUILD_HEADERLINE_PROVIDER_ID: u64 = 0x706c_7567_6862_0800; // "plug-hb"
@@ -116,11 +116,12 @@ pub(crate) async fn write_all(handle: &Arc<dyn Document>, text: String) {
 /// Render the current status snapshot into the buffer. Returns the rendered text
 /// so a caller can also await the write. `None` if the loader service is absent
 /// (a test harness with no plugin support) — the buffer stays empty, not a panic.
-fn current_status_text(ctx: &ModeContext) -> Option<String> {
+fn current_status_render(ctx: &ModeContext) -> Option<crate::render::RenderedStatus> {
     let loader = ctx.service::<PluginLoaderHandle>()?;
-    Some(render_status_with_failures(
+    Some(crate::render::render_status_styled(
         &loader.plugin_status(),
         &loader.failed_loads(),
+        None,
     ))
 }
 
@@ -267,10 +268,22 @@ impl Mode for PluginManagerMode {
             // thread (paramount #1 — no document-proportional work on activation's
             // synchronous path; the render is O(plugins), tiny, but the write goes
             // through the async edit path regardless).
-            if let Some(text) = current_status_text(&ctx) {
+            // `PendingSyntheticHighlights`, NOT the `…Handle` alias: boot
+            // registers the bare type and the ServiceRegistry keys on the exact
+            // `T`, so asking for the alias compiles, returns `None`, and leaves
+            // the table permanently unstyled with nothing to show for it. The
+            // which-key hint names the same type for the same reason.
+            let highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
+            if let Some(rendered) = current_status_render(&ctx) {
                 let handle_seed = handle.clone();
+                let ph = highlights.clone();
                 runtime.spawn(async move {
-                    write_all(&handle_seed, text).await;
+                    write_all(&handle_seed, rendered.text).await;
+                    // After the text: the spans index by line, so they mean
+                    // nothing until the lines exist.
+                    if let Some(ph) = ph {
+                        ph.store_and_wake(buffer_id, rendered.spans);
+                    }
                 });
             }
 
@@ -329,17 +342,21 @@ impl Mode for PluginManagerMode {
             let bus_handle = ctx.events_handle();
             let refresh_handle = handle.clone();
             let refresh_info = info;
+            let refresh_highlights = highlights;
             runtime.spawn(async move {
                 while rx.recv().await.is_some() {
                     // Coalesce a burst before re-rendering the whole snapshot.
                     while rx.try_recv().is_ok() {}
                     let status = loader.plugin_status();
                     let failed = loader.failed_loads();
-                    // One snapshot feeds both surfaces, so the header can never
-                    // disagree with the table it sits above.
+                    // One snapshot feeds all three surfaces, so the header, the
+                    // table and its highlights can never disagree.
                     refresh_info.set(crate::headerline::counts(&status, &failed));
-                    let text = render_status_with_failures(&status, &failed);
-                    write_all(&refresh_handle, text).await;
+                    let rendered = crate::render::render_status_styled(&status, &failed, None);
+                    write_all(&refresh_handle, rendered.text).await;
+                    if let Some(ph) = &refresh_highlights {
+                        ph.store_and_wake(buffer_id, rendered.spans);
+                    }
                 }
             });
 

@@ -110,12 +110,82 @@ pub fn render_status_full(
     failed: &[FailedLoad],
     progress: Option<&str>,
 ) -> String {
+    render_status_styled(plugins, failed, progress).text
+}
+
+/// The text **and** the per-line highlight spans, built together.
+///
+/// Two views of one construction, deliberately. The spans carry byte offsets
+/// into the text, so computing them separately from a second pass over the
+/// same data is how the two drift apart — a span that is correct for the text
+/// the author had in mind and wrong for the text that shipped colours the
+/// neighbouring column and nobody notices.
+///
+/// `spans[i]` styles line `i`. Lines with nothing to style carry an empty vec
+/// rather than being absent, because the consumer indexes by line.
+pub struct RenderedStatus {
+    pub text: String,
+    pub spans: Vec<Vec<lattice_cells::StyledSpan>>,
+}
+
+/// A cell written into a line, with the span covering its **content** and not
+/// the padding that follows it — a span over trailing blanks would paint
+/// whitespace between columns.
+fn push_cell(
+    line: &mut String,
+    spans: &mut Vec<lattice_cells::StyledSpan>,
+    text: &str,
+    width: usize,
+    style: Option<lattice_cells::Style>,
+) {
+    let start = line.len();
+    line.push_str(text);
+    if let Some(style) = style {
+        spans.push(lattice_cells::StyledSpan {
+            start,
+            end: line.len(),
+            style,
+        });
+    }
+    // `{:<width$}` pads by char count; pad explicitly so the offsets recorded
+    // above stay byte offsets regardless of what is in the cell.
+    for _ in text.chars().count()..width {
+        line.push(' ');
+    }
+}
+
+fn health_style(health: &PluginHealth) -> lattice_cells::Style {
+    match health {
+        // Semantic styles already themed everywhere, rather than a
+        // plugins-specific element: a second name for one concept is a second
+        // thing to keep in sync (the `Style::HelpKey` reasoning in
+        // `lattice-mode`'s which-key hint).
+        PluginHealth::Healthy => lattice_cells::Style::DiffAdd,
+        PluginHealth::Quarantined { .. } => lattice_cells::Style::DiagnosticError,
+    }
+}
+
+pub fn render_status_styled(
+    plugins: &[PluginStatus],
+    failed: &[FailedLoad],
+    progress: Option<&str>,
+) -> RenderedStatus {
     let note = progress.map(|p| format!(" — {p}")).unwrap_or_default();
     let mut out = format!("# Plugins ({} loaded){note}\n\n", plugins.len());
+    let mut spans: Vec<Vec<lattice_cells::StyledSpan>> = vec![
+        // The title reads as a heading, so it is styled as one.
+        vec![lattice_cells::StyledSpan {
+            start: 0,
+            end: out.lines().next().map(str::len).unwrap_or(0),
+            style: lattice_cells::Style::Heading1,
+        }],
+        Vec::new(),
+    ];
     if plugins.is_empty() {
         out.push_str("No plugins are loaded. Load one with `:plugin-load <path>`.\n");
+        spans.push(Vec::new());
         out.push_str(&failures_section(failed));
-        return out;
+        return RenderedStatus { text: out, spans };
     }
 
     // Column widths: adapt name + tier to their content (health is fixed-vocab).
@@ -144,24 +214,93 @@ pub fn render_status_full(
         .unwrap_or(6);
     let build_w = "build-failed".len();
 
-    out.push_str(&format!(
-        "  {:<name_w$}  {:<health_w$}  {:<tier_w$}  {:<source_w$}  {:<build_w$}  CAPABILITIES\n",
-        "NAME", "HEALTH", "TIER", "SOURCE", "BUILD",
-    ));
+    // The column header: dim, because it is scaffolding rather than content.
+    let dim = lattice_cells::Style::Comment;
+    let mut head = String::from("  ");
+    let mut head_spans = Vec::new();
+    push_cell(&mut head, &mut head_spans, "NAME", name_w, Some(dim));
+    head.push_str("  ");
+    push_cell(&mut head, &mut head_spans, "HEALTH", health_w, Some(dim));
+    head.push_str("  ");
+    push_cell(&mut head, &mut head_spans, "TIER", tier_w, Some(dim));
+    head.push_str("  ");
+    push_cell(&mut head, &mut head_spans, "SOURCE", source_w, Some(dim));
+    head.push_str("  ");
+    push_cell(&mut head, &mut head_spans, "BUILD", build_w, Some(dim));
+    head.push_str("  ");
+    push_cell(&mut head, &mut head_spans, "CAPABILITIES", 0, Some(dim));
+    out.push_str(&head);
+    out.push('\n');
+    spans.push(head_spans);
+
     for p in plugins {
-        out.push_str(&format!(
-            "  {:<name_w$}  {:<health_w$}  {:<tier_w$}  {:<source_w$}  {:<build_w$}  {}{}\n",
-            p.name,
+        let mut line = String::from("  ");
+        let mut row_spans = Vec::new();
+        // The name identifies the row — the one cell a reader scans for.
+        push_cell(
+            &mut line,
+            &mut row_spans,
+            &p.name,
+            name_w,
+            Some(lattice_cells::Style::Type),
+        );
+        line.push_str("  ");
+        push_cell(
+            &mut line,
+            &mut row_spans,
             health_label(&p.health),
+            health_w,
+            Some(health_style(&p.health)),
+        );
+        line.push_str("  ");
+        push_cell(
+            &mut line,
+            &mut row_spans,
             tier_label(p.tier),
-            p.source.label(),
-            p.build.label(),
-            caps_cell(&p.granted, &p.denied),
-            crash_suffix(&p.health),
-        ));
+            tier_w,
+            // Bundled is the unremarkable default; user-installed is the row
+            // a reader is more likely to be looking for.
+            Some(match p.tier {
+                TrustTier::Bundled => dim,
+                TrustTier::UserInstalled => lattice_cells::Style::Constant,
+            }),
+        );
+        line.push_str("  ");
+        let source = p.source.label();
+        push_cell(&mut line, &mut row_spans, &source, source_w, Some(dim));
+        line.push_str("  ");
+        let build = p.build.label();
+        push_cell(
+            &mut line,
+            &mut row_spans,
+            build,
+            build_w,
+            // A failed build is the actionable state in this column.
+            Some(if build.contains("failed") {
+                lattice_cells::Style::DiagnosticWarning
+            } else {
+                dim
+            }),
+        );
+        line.push_str("  ");
+        // Capabilities and the crash suffix keep the default foreground: the
+        // cell is variable-length prose, and the crash text is already the
+        // longest thing on the row.
+        line.push_str(&caps_cell(&p.granted, &p.denied));
+        line.push_str(&crash_suffix(&p.health));
+        out.push_str(&line);
+        out.push('\n');
+        spans.push(row_spans);
     }
-    out.push_str(&failures_section(failed));
-    out
+
+    let failures = failures_section(failed);
+    // One empty span vec per failure line, so `spans` stays index-aligned with
+    // the text for any consumer that walks it by line.
+    for _ in 0..failures.lines().count() {
+        spans.push(Vec::new());
+    }
+    out.push_str(&failures);
+    RenderedStatus { text: out, spans }
 }
 
 /// The trailing "failed to load" block, empty when nothing failed.
@@ -209,6 +348,89 @@ mod tests {
             build,
             ..status(name, TrustTier::UserInstalled, PluginHealth::Healthy)
         }
+    }
+
+    /// The span must select exactly the cell's text. An off-by-one here
+    /// colours the gap or the neighbouring column and still looks plausible,
+    /// which is why this slices the line by the span rather than checking the
+    /// style alone.
+    #[test]
+    fn a_health_span_selects_exactly_the_health_cell() {
+        let plugins = vec![
+            status("auto-pair", TrustTier::Bundled, PluginHealth::Healthy),
+            status(
+                "broken",
+                TrustTier::UserInstalled,
+                PluginHealth::Quarantined {
+                    func: "on-key".into(),
+                    kind: "unreachable".into(),
+                },
+            ),
+        ];
+        let r = render_status_styled(&plugins, &[], None);
+        let lines: Vec<&str> = r.text.lines().collect();
+
+        for (i, expected_text, expected_style) in [
+            (HEADER_LINES, "ok", lattice_cells::Style::DiffAdd),
+            (
+                HEADER_LINES + 1,
+                "quarantined",
+                lattice_cells::Style::DiagnosticError,
+            ),
+        ] {
+            let span = r.spans[i]
+                .iter()
+                .find(|s| s.style == expected_style)
+                .unwrap_or_else(|| panic!("line {i} has no {expected_style:?} span"));
+            assert_eq!(
+                &lines[i][span.start..span.end],
+                expected_text,
+                "the span must cover the health text and nothing else"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_span_selects_exactly_the_name() {
+        let plugins = vec![status(
+            "treesitter-context",
+            TrustTier::Bundled,
+            PluginHealth::Healthy,
+        )];
+        let r = render_status_styled(&plugins, &[], None);
+        let line = r.text.lines().nth(HEADER_LINES).unwrap();
+        let span = r.spans[HEADER_LINES]
+            .iter()
+            .find(|s| s.style == lattice_cells::Style::Type)
+            .unwrap();
+        assert_eq!(&line[span.start..span.end], "treesitter-context");
+    }
+
+    /// The consumer indexes spans by line, so a short `spans` silently drops
+    /// the styling of every line past its end.
+    #[test]
+    fn spans_are_index_aligned_with_the_text_lines() {
+        let plugins = vec![
+            status("a", TrustTier::Bundled, PluginHealth::Healthy),
+            status("b", TrustTier::UserInstalled, PluginHealth::Healthy),
+        ];
+        let r = render_status_styled(&plugins, &[], None);
+        assert_eq!(
+            r.spans.len(),
+            r.text.lines().count(),
+            "one span vec per line, empty where there is nothing to style"
+        );
+    }
+
+    #[test]
+    fn the_styled_render_and_the_text_render_agree() {
+        // `render_status_full` delegates, so the two can never diverge — this
+        // pins that it still does rather than growing a second formatter.
+        let plugins = vec![status("a", TrustTier::Bundled, PluginHealth::Healthy)];
+        assert_eq!(
+            render_status_full(&plugins, &[], None),
+            render_status_styled(&plugins, &[], None).text
+        );
     }
 
     #[test]

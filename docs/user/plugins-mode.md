@@ -33,11 +33,14 @@ cannot disagree with what is underneath it.
 
 ## Colour
 
-The table is coloured by meaning, not by syntax: a plugin's name stands out
-as the thing you scan for, `ok` reads as healthy and `quarantined` as a
-problem, a failed build is highlighted while an unremarkable one is dim, and
-`user-installed` is emphasised over `bundled` on the grounds that you are
-more likely to be looking for something you installed yourself.
+The table is coloured by meaning, not by syntax — and only where it earns
+attention. A plugin's name stands out as the thing you scan for.
+`quarantined` and a failed build are highlighted because they are the rows
+you have to act on; `ok` is left plain, because a screen of healthy plugins
+does not need decorating and colouring it leaves less contrast for the one
+that is broken. `user-installed` is emphasised over `bundled`, on the
+grounds that you are more likely to be hunting for something you installed
+yourself.
 
 The colours are the editor's own semantic ones — the same greens, reds and
 accents `:help`, diagnostics and diffs use — so the view follows your theme

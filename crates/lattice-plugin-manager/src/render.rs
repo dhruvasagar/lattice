@@ -154,14 +154,23 @@ fn push_cell(
     }
 }
 
-fn health_style(health: &PluginHealth) -> lattice_cells::Style {
+/// `None` for a healthy plugin — deliberately.
+///
+/// Eleven rows reading `ok` do not need attention drawn to them; the one
+/// reading `quarantined` does. Decorating the normal case spends the reader's
+/// attention on the rows they do not have to act on, and leaves less contrast
+/// for the row they do.
+///
+/// It also keeps the diff style family out of this view. `Style::DiffAdd`
+/// resolves to `diff.add.text` (`spec().fg("green")`, foreground-only), so it
+/// *should* have been safe — but a diff style on a non-diff surface invites
+/// exactly the confusion it caused, and the styles that remain here
+/// (`DiagnosticError`, `DiagnosticWarning`, `Comment`, `Type`, `Constant`)
+/// are all plain `fg`/`bold` specs.
+fn health_style(health: &PluginHealth) -> Option<lattice_cells::Style> {
     match health {
-        // Semantic styles already themed everywhere, rather than a
-        // plugins-specific element: a second name for one concept is a second
-        // thing to keep in sync (the `Style::HelpKey` reasoning in
-        // `lattice-mode`'s which-key hint).
-        PluginHealth::Healthy => lattice_cells::Style::DiffAdd,
-        PluginHealth::Quarantined { .. } => lattice_cells::Style::DiagnosticError,
+        PluginHealth::Healthy => None,
+        PluginHealth::Quarantined { .. } => Some(lattice_cells::Style::DiagnosticError),
     }
 }
 
@@ -250,7 +259,7 @@ pub fn render_status_styled(
             &mut row_spans,
             health_label(&p.health),
             health_w,
-            Some(health_style(&p.health)),
+            health_style(&p.health),
         );
         line.push_str("  ");
         push_cell(
@@ -370,24 +379,37 @@ mod tests {
         let r = render_status_styled(&plugins, &[], None);
         let lines: Vec<&str> = r.text.lines().collect();
 
-        for (i, expected_text, expected_style) in [
-            (HEADER_LINES, "ok", lattice_cells::Style::DiffAdd),
-            (
-                HEADER_LINES + 1,
-                "quarantined",
-                lattice_cells::Style::DiagnosticError,
-            ),
-        ] {
-            let span = r.spans[i]
+        // The quarantined row's health cell is styled, and the span selects
+        // exactly that word.
+        let span = r.spans[HEADER_LINES + 1]
+            .iter()
+            .find(|s| s.style == lattice_cells::Style::DiagnosticError)
+            .expect("a quarantined plugin's health cell is styled");
+        assert_eq!(
+            &lines[HEADER_LINES + 1][span.start..span.end],
+            "quarantined",
+            "the span must cover the health text and nothing else"
+        );
+
+        // The healthy row's is NOT. Nothing on that line may claim the health
+        // column — decorating the normal case is what this asserts against.
+        //
+        // The column offset comes from the HEADER's own HEALTH span rather
+        // than from `find("ok")`, which would match inside a plugin name like
+        // `tokenizer` and quietly test the wrong column.
+        let header_line = lines[HEADER_LINES - 1];
+        let health_at = r.spans[HEADER_LINES - 1]
+            .iter()
+            .map(|s| s.start)
+            .find(|&start| header_line[start..].starts_with("HEALTH"))
+            .expect("the column header has a HEALTH span");
+        assert!(
+            !r.spans[HEADER_LINES]
                 .iter()
-                .find(|s| s.style == expected_style)
-                .unwrap_or_else(|| panic!("line {i} has no {expected_style:?} span"));
-            assert_eq!(
-                &lines[i][span.start..span.end],
-                expected_text,
-                "the span must cover the health text and nothing else"
-            );
-        }
+                .any(|s| s.start <= health_at && health_at < s.end),
+            "a healthy plugin's health cell carries no span: {:?}",
+            r.spans[HEADER_LINES]
+        );
     }
 
     #[test]

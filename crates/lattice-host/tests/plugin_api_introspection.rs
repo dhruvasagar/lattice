@@ -34,6 +34,16 @@ fn has_exec_link(content: &lattice_help::HelpContent, cmdline: &str) -> bool {
         .any(|l| matches!(&l.target, lattice_help::HelpLinkTarget::Execute(c) if c == cmdline))
 }
 
+/// True if the content carries a `[[help:TOPIC]]` link. Like exec-links, topic
+/// links are stripped from the visible buffer text into `metadata.links`.
+fn has_topic_link(content: &lattice_help::HelpContent, topic: &str) -> bool {
+    content
+        .metadata
+        .links
+        .iter()
+        .any(|l| matches!(&l.target, lattice_help::HelpLinkTarget::Topic(t) if t == topic))
+}
+
 #[test]
 fn list_plugin_apis_lists_every_seam() {
     let ed = editor();
@@ -228,6 +238,102 @@ fn describe_plugin_renders_registered_metadata_and_lists_it() {
     assert!(list_body.contains("# Plugins (1 loaded)"));
     assert!(list_body.contains("git-gutter"));
     assert!(has_exec_link(&list, "describe-plugin git-gutter"));
+}
+
+/// A plugin's real documentation is its `help` seam page, not the optional
+/// `doc =` key in `plugin.toml`. None of the three bundled plugins set that
+/// key — `auto-pair`, `treesitter-context` and `project` each ship a
+/// `doc/<id>.md` registered under the bare plugin id — so a `:describe-plugin`
+/// that reads only the manifest field says "(no documentation)" about a plugin
+/// carrying a 140-line manual. `K` in the `:plugins` manager routes here, which
+/// is where it was seen.
+#[test]
+fn describe_plugin_falls_back_to_its_help_topic() {
+    let mut ed = editor();
+    // Registered exactly as the loader does it: no manifest `doc`.
+    ed.register_plugin(7, "git-gutter", "");
+    ed.help_topics.rcu(|current| {
+        let mut next = (**current).clone();
+        next.register(lattice_help::topics::HelpTopic {
+            name: "git-gutter".to_string(),
+            summary: "Gutter signs from git.".to_string(),
+            body: lattice_help::topics::HelpTopicBody::Owned(
+                "# git-gutter\n\nStages a hunk with `ghs`.\n".to_string(),
+            ),
+            related_command_patterns: Vec::new(),
+            plugin_id: Some(7),
+        });
+        std::sync::Arc::new(next)
+    });
+
+    let content = ed
+        .build_describe_plugin_content("git-gutter")
+        .expect("a registered plugin is describable");
+    let body = text(&content);
+    assert!(
+        !body.contains("(no documentation)"),
+        "a plugin with a `:help` page is not undocumented:\n{body}"
+    );
+    assert!(
+        body.contains("Stages a hunk with `ghs`."),
+        "the help page's body is what describe shows:\n{body}"
+    );
+    assert!(
+        has_topic_link(&content, "git-gutter"),
+        "and it links out to the full `:help` page:\n{body}"
+    );
+}
+
+#[test]
+fn describe_plugin_prefers_the_manifest_doc_over_the_help_page() {
+    // The manifest field stays authoritative where it is set: it is the
+    // plugin's own one-line self-description, and a plugin that writes one
+    // means it.
+    let mut ed = editor();
+    ed.register_plugin(7, "git-gutter", "Shows git diff signs in the gutter.");
+    ed.help_topics.rcu(|current| {
+        let mut next = (**current).clone();
+        next.register(lattice_help::topics::HelpTopic {
+            name: "git-gutter".to_string(),
+            summary: "Gutter signs from git.".to_string(),
+            body: lattice_help::topics::HelpTopicBody::Owned("PAGE BODY".to_string()),
+            related_command_patterns: Vec::new(),
+            plugin_id: Some(7),
+        });
+        std::sync::Arc::new(next)
+    });
+
+    let body = text(
+        &ed.build_describe_plugin_content("git-gutter")
+            .expect("describable"),
+    );
+    assert!(body.contains("Shows git diff signs in the gutter."));
+    assert!(!body.contains("PAGE BODY"), "manifest doc wins:\n{body}");
+}
+
+/// `:list-plugins` has the same blank-column defect one field over: its summary
+/// is `PluginMeta.doc`'s first line, which is empty for every bundled plugin.
+#[test]
+fn list_plugins_falls_back_to_the_help_summary() {
+    let mut ed = editor();
+    ed.register_plugin(7, "git-gutter", "");
+    ed.help_topics.rcu(|current| {
+        let mut next = (**current).clone();
+        next.register(lattice_help::topics::HelpTopic {
+            name: "git-gutter".to_string(),
+            summary: "Gutter signs from git.".to_string(),
+            body: lattice_help::topics::HelpTopicBody::Owned("body".to_string()),
+            related_command_patterns: Vec::new(),
+            plugin_id: Some(7),
+        });
+        std::sync::Arc::new(next)
+    });
+
+    let body = text(&ed.build_list_plugins_content());
+    assert!(
+        body.contains("Gutter signs from git."),
+        "a listed plugin is summarised by its `:help` page:\n{body}"
+    );
 }
 
 #[test]

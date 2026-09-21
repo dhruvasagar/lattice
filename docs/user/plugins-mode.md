@@ -54,7 +54,7 @@ rather than carrying a palette of its own.
 
 | Chord | Action |
 |---|---|
-| `<CR>` or `K` | Describe the plugin under the cursor |
+| `<CR>` or `K` | Describe the plugin under the cursor — its documentation and the commands it contributed |
 | `r` / `R` | Reload it / reload every loaded plugin |
 | `b` / `B` | Rebuild it from source / rebuild every one |
 | `u` / `U` | Update it / update every one |
@@ -66,6 +66,12 @@ rather than carrying a palette of its own.
 `u`, `U`, `R` and `X` shadow vim's `u`, `R` and `x`-adjacent meanings inside
 this buffer only. Nothing is lost: the table is read-only, so there is no edit
 for undo to reverse and no text for Replace to overwrite.
+
+The description shows the plugin's **own manual** — the page it registered
+through the `help` seam, the same text `:help <name>` opens — followed by every
+command it contributed and a link to that page as a full help buffer. A plugin
+that ships neither a manual nor a `doc` line in its manifest is the only case
+that reports no documentation.
 
 ## Reload, rebuild, update
 

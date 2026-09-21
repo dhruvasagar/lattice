@@ -39196,9 +39196,29 @@ impl Editor {
             names
         };
 
+        // A plugin's real documentation is usually its `help` seam page, not
+        // the optional `doc =` key in `plugin.toml`. None of the bundled
+        // plugins set that key — each ships a `doc/<id>.md` registered under
+        // its bare id — so reading only the manifest field reported
+        // "(no documentation)" about plugins carrying full manuals. The
+        // manifest field still wins where it is set: a plugin that writes one
+        // means it as its self-description.
+        let topic = self
+            .help_topics
+            .load()
+            .lookup(&meta.name)
+            .map(|t| t.body.render());
+        let doc = if meta.doc.is_empty() {
+            topic.clone().unwrap_or_default()
+        } else {
+            meta.doc.clone()
+        };
+        let topic_name = topic.is_some().then(|| meta.name.clone());
+
         struct View<'a> {
             name: &'a str,
-            doc: &'a str,
+            doc: String,
+            topic: Option<&'a str>,
             contributions: Vec<String>,
         }
         impl lattice_grammar::Introspectable for View<'_> {
@@ -39209,7 +39229,7 @@ impl Editor {
                 self.name.to_string()
             }
             fn doc(&self) -> &str {
-                self.doc
+                &self.doc
             }
             fn sources(&self) -> Vec<lattice_grammar::SourceEntry<'_>> {
                 Vec::new()
@@ -39223,17 +39243,28 @@ impl Editor {
                         .map(|n| format!("  {}", lattice_help::command_link(n)))
                         .collect()
                 };
-                vec![lattice_grammar::HelpSection {
+                let mut sections = vec![lattice_grammar::HelpSection {
                     heading: format!("Commands ({}):", self.contributions.len()),
                     lines,
                     anchor: Some("commands".to_string()),
-                }]
+                }];
+                // The page is already inlined above; the link is what opens it
+                // as a real help buffer, with its own anchors and history.
+                if let Some(topic) = self.topic {
+                    sections.push(lattice_grammar::HelpSection {
+                        heading: "Documentation:".to_string(),
+                        lines: vec![format!("  {}", lattice_help::topic_link(topic))],
+                        anchor: Some("documentation".to_string()),
+                    });
+                }
+                sections
             }
         }
 
         let view = View {
             name: &meta.name,
-            doc: &meta.doc,
+            doc,
+            topic: topic_name.as_deref(),
             contributions,
         };
         let rendered = lattice_grammar::render_introspection(&view);
@@ -39267,9 +39298,23 @@ impl Editor {
             );
         } else {
             let name_w = plugins.iter().map(|(_, m)| m.name.len()).max().unwrap_or(0);
+            let topics = self.help_topics.load();
             for (_, m) in plugins {
                 let pad = " ".repeat(name_w.saturating_sub(m.name.len()));
+                // Same fallback `:describe-plugin` takes, one field over: a
+                // plugin's summary line is its `help` page's summary when the
+                // manifest carries no `doc`. Without it every bundled plugin
+                // listed as a bare name with an empty column, because none of
+                // them sets that optional key.
                 let first = m.doc.lines().next().unwrap_or("");
+                let first = if first.is_empty() {
+                    topics
+                        .lookup(&m.name)
+                        .map(|t| t.summary.as_str())
+                        .unwrap_or("")
+                } else {
+                    first
+                };
                 lines.push(format!(
                     "  [{name}](exec:describe-plugin {name}){pad}  {first}",
                     name = m.name,

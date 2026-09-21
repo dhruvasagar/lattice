@@ -14,6 +14,11 @@ when they disagree — see the inventory diff in
 its own contents, and re-ordered around the four differentiators in
 [`../dev/architecture/launch-0.9.md`](../dev/architecture/launch-0.9.md) §10.
 
+> **Motion clips come from the demo video** (`demo-script.md`), not from
+> VHS — see `README.md` in this directory for why (headless Chrome's
+> screencast is broken on this machine, so VHS writes no file). The
+> `.tape` files remain as verified choreography for the video.
+
 ## Priority shots — the differentiators
 
 These are the shots the README gallery and the site lead with. Each exists
@@ -22,9 +27,9 @@ features does it have". See `../dev/architecture/launch-0.9.md` §10.
 
 | # | Shot | Shows | Absent from | File |
 |---|---|---|---|---|
-| 1 | Magit status with staged + unstaged hunks and a transient popup open | a real magit port inside a modal editor | Zed, Helix, Neovim (fugitive is not magit) | `assets/media/screenshots/magit.png`, `assets/media/demos/magit.gif` |
-| 2 | Four-way split: file tree, code, terminal, search results — all real buffers | everything is a buffer; the same grammar works in all of them | all of them; the others have panels | `assets/media/screenshots/buffer-splits.png`, `assets/media/demos/buffers.gif` |
-| 3 | `init.rs` beside the editor, defining a custom command and a hook, then `:reload-config` applying it live | config is Rust compiled to WASM, and it is programmable — not a settings file | Zed (JSON), Helix (TOML), Neovim (Lua), VS Code (JSON+TS) | `assets/media/screenshots/config-init-rs.png`, `assets/media/demos/config.gif` |
+| 1 | Magit status with staged + unstaged hunks and a transient popup open | a real magit port inside a modal editor | Zed, Helix, Neovim (fugitive is not magit) | `assets/media/screenshots/magit.png` |
+| 2 | Four-way split: file tree, code, terminal, search results — all real buffers | everything is a buffer; the same grammar works in all of them | all of them; the others have panels | `assets/media/screenshots/buffer-splits.png` |
+| 3 | `init.rs` beside the editor, defining a custom command and a hook, then `:reload-config` applying it live | config is Rust compiled to WASM, and it is programmable — not a settings file | Zed (JSON), Helix (TOML), Neovim (Lua), VS Code (JSON+TS) | `assets/media/screenshots/config-init-rs.png` |
 | 4 | Org agenda beside a coding-agent buffer under interactive diff review | org-mode and agents-as-editable-buffers, in one editor | everything outside Emacs; Zed's agent is not a buffer | `assets/media/screenshots/org-and-agents.png` |
 | 5 | The same file in the TUI and the GPU window, side by side | one core, two first-class renderers | Zed (no TUI), Helix (no GPU) | `assets/media/screenshots/two-renderers.png` |
 

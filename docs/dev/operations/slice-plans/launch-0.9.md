@@ -37,7 +37,7 @@ feature-screenshot gallery ⛔ plus the hero recapture Dhruva chose.
 | L.6   | known-limitations, troubleshooting, cheatsheet, dashboard   | sync + zola clean; budget 12.2% headroom        | ✅     |
 | L.7   | CONTRIBUTING / SECURITY / CoC / issue templates / CHANGELOG | YAML validates; 9 silent 404s fixed             | ✅     |
 | L.8   | Tag `v0.9.0`, notes, announce                               | released; announcement is Dhruva's              | 🚧     |
-| L.9   | YouTube demo script (post-tag, does not gate)               | a script Dhruva can record from                 | 📝     |
+| L.9   | Demo video script + clip plan                               | script written; recording is Dhruva's           | ✅     |
 
 ---
 
@@ -2330,7 +2330,7 @@ In `docs/dev/operations/releasing.md`, add the core-plugins step to the process 
 
 Mark every slice ✅ in the status table at the top of this file, and set `**Status:** ✅ complete`. Note in `docs/dev/operations/implementation.md` that 0.9.0 shipped, with the date.
 
-**Do NOT archive this plan.** The archiving rule in CLAUDE.md is explicit that a ⛔ deferred slice keeps a plan active, naming `ML.4`/`ML.6` and `DB.8` as the work that got buried by ignoring it. At tag time this plan still carries: L.4b's GIF rendering ⛔ (VHS cannot write a file in an agent session — retried after creating `assets/media/demos/`, still nothing), L.5's feature-screenshot gallery ⛔, and L.9 (the demo video script) not yet started. Leave it in `slice-plans/`; archive it when those settle.
+**Do NOT archive this plan.** The archiving rule in CLAUDE.md is explicit that a ⛔ deferred slice keeps a plan active, naming `ML.4`/`ML.6` and `DB.8` as the work that got buried by ignoring it. Still carries: the **announcement** (Step 11, Dhruva's), L.5's feature-screenshot gallery ⛔ (1 of 6 shots exists) and the hero recapture Dhruva chose, and L.4b's GIF rendering ❌ — **dropped**, not deferred: VHS writes no file because headless Chrome 153's screencast is broken on this machine (`CVDisplayLinkCreateWithCGDisplay failed`), reproduced with a minimal tape on a real terminal, so motion now comes from the demo video instead (L.9). Leave this plan in `slice-plans/`; archive it when the announcement and the screenshots settle.
 
 - [ ] **Step 11: Commit and announce**
 

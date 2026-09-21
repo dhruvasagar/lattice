@@ -62,6 +62,13 @@ Reasons this ordering wins:
 
 ## Phase status
 
+> **v0.9.0 shipped 2026-09-21** — the first installable release.
+> `https://github.com/dhruvasagar/lattice/releases/tag/v0.9.0`. Release
+> pipeline runs end to end; archives carry the bundled plugins in a
+> prefix-relocatable layout. See `slice-plans/launch-0.9.md` for the
+> sequencing and `../architecture/launch-0.9.md` for the launch contract.
+
+
 | Phase | Title                                 | Status                   | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 |-------|---------------------------------------|--------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | 0     | Foundation                            | ✅ done                  | Workspace, lattice-core, document/buffer/undo, file I/O, protocol enums                                                                                                                                                                                                                                                                                                                                                                                                                                              |

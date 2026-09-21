@@ -12,7 +12,18 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
-**Status:** 🚧 in progress — L.0-L.7 ✅, L.8 (tag) and L.9 (demo script) open.
+**Status:** 🚧 — **v0.9.0 shipped 2026-09-21.**
+`https://github.com/dhruvasagar/lattice/releases/tag/v0.9.0`, 20 assets,
+notes written by hand from `CHANGELOG.md`. Verified the way it matters: the
+public `curl … | sh` one-liner resolved the tag through the API, checksummed
+the archive, installed a prefix, and `lattice --version` printed
+`lattice 0.9.0` with all nine plugin files present.
+
+Still open, which is why this plan is NOT archived: the **announcement**
+(L.8 Step 11, Dhruva's to make), **L.9**'s demo script, L.4b's GIF
+rendering ⛔ (VHS writes no file in an agent session; the tapes are
+keystroke-verified and render on a real terminal), and L.5's
+feature-screenshot gallery ⛔ plus the hero recapture Dhruva chose.
 
 | Slice | What                                                        | Gate                                            | Status |
 |-------|-------------------------------------------------------------|-------------------------------------------------|--------|
@@ -25,7 +36,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 | L.5   | README restructure + hero (series deferred)                 | README 143 lines, hero wired, paths verified    | ✅     |
 | L.6   | known-limitations, troubleshooting, cheatsheet, dashboard   | sync + zola clean; budget 12.2% headroom        | ✅     |
 | L.7   | CONTRIBUTING / SECURITY / CoC / issue templates / CHANGELOG | YAML validates; 9 silent 404s fixed             | ✅     |
-| L.8   | Tag `v0.9.0`, notes, announce                               | a real release exists                           | 📝     |
+| L.8   | Tag `v0.9.0`, notes, announce                               | released; announcement is Dhruva's              | 🚧     |
 | L.9   | YouTube demo script (post-tag, does not gate)               | a script Dhruva can record from                 | 📝     |
 
 ---

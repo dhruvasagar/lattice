@@ -193,7 +193,9 @@ pub fn render_status_styled(
     if plugins.is_empty() {
         out.push_str("No plugins are loaded. Load one with `:plugin-load <path>`.\n");
         spans.push(Vec::new());
-        out.push_str(&failures_section(failed));
+        let (text, fail_spans) = failures_section(failed);
+        out.push_str(&text);
+        spans.extend(fail_spans);
         return RenderedStatus { text: out, spans };
     }
 
@@ -302,13 +304,10 @@ pub fn render_status_styled(
         spans.push(row_spans);
     }
 
-    let failures = failures_section(failed);
-    // One empty span vec per failure line, so `spans` stays index-aligned with
-    // the text for any consumer that walks it by line.
-    for _ in 0..failures.lines().count() {
-        spans.push(Vec::new());
-    }
+    let (failures, fail_spans) = failures_section(failed);
     out.push_str(&failures);
+    // The section builds its own spans, index-aligned with its own lines.
+    spans.extend(fail_spans);
     RenderedStatus { text: out, spans }
 }
 
@@ -318,17 +317,72 @@ pub fn render_status_styled(
 /// under it — rather than a table column. A load error is a sentence (a wasm
 /// trap, a missing import, a manifest complaint), and squeezing sentences into a
 /// fixed-width cell is how the useful half gets truncated away.
-fn failures_section(failed: &[FailedLoad]) -> String {
+fn failures_section(failed: &[FailedLoad]) -> (String, Vec<Vec<lattice_cells::StyledSpan>>) {
     if failed.is_empty() {
-        return String::new();
+        return (String::new(), Vec::new());
     }
-    let mut out = format!("\n## Failed to load ({})\n\n", failed.len());
+    let err = lattice_cells::Style::DiagnosticError;
+    let dim = lattice_cells::Style::Comment;
+    let mut out = String::new();
+    let mut spans: Vec<Vec<lattice_cells::StyledSpan>> = Vec::new();
+
+    let heading = format!("## Failed to load ({})", failed.len());
+    out.push('\n');
+    spans.push(Vec::new()); // the blank line before the heading
+    out.push_str(&heading);
+    out.push('\n');
+    spans.push(vec![lattice_cells::StyledSpan {
+        start: 0,
+        end: heading.len(),
+        style: lattice_cells::Style::Heading2,
+    }]);
+    out.push('\n');
+    spans.push(Vec::new());
+
     for f in failed {
-        out.push_str(&format!("  {}  ({})\n", f.name, f.dir.display()));
+        // The NAME carries the error colour: these plugins have no row in the
+        // table above, so this line is the only place they exist, and the
+        // header's `N failed to load` count is pointing here.
+        let mut line = String::from("  ");
+        let mut row = Vec::new();
+        let name_at = line.len();
+        line.push_str(&f.name);
+        row.push(lattice_cells::StyledSpan {
+            start: name_at,
+            end: line.len(),
+            style: err,
+        });
+        line.push_str("  (");
+        let dir_at = line.len();
+        line.push_str(&f.dir.display().to_string());
+        row.push(lattice_cells::StyledSpan {
+            start: dir_at,
+            end: line.len(),
+            style: dim,
+        });
+        line.push(')');
+        out.push_str(&line);
+        out.push('\n');
+        spans.push(row);
+
+        // The reason keeps the default foreground: it is the sentence the
+        // reader has to actually read, and dimming it would bury the useful
+        // half of the report under the decoration.
         out.push_str(&format!("      {}\n", f.error));
+        spans.push(Vec::new());
     }
-    out.push_str("\nIf the plugin API changed, run `lattice --wit-sync` and restart to rebuild.\n");
-    out
+
+    let hint = "If the plugin API changed, run `lattice --wit-sync` and restart to rebuild.";
+    out.push('\n');
+    spans.push(Vec::new());
+    out.push_str(hint);
+    out.push('\n');
+    spans.push(vec![lattice_cells::StyledSpan {
+        start: 0,
+        end: hint.len(),
+        style: dim,
+    }]);
+    (out, spans)
 }
 
 #[cfg(test)]
@@ -481,6 +535,56 @@ mod tests {
             dir: std::path::PathBuf::from(format!("/plugins/{name}")),
             error: error.to_string(),
         }
+    }
+
+    /// A plugin that failed to load is the most actionable row in the view —
+    /// it has no entry in the table at all, so this line is the only place it
+    /// exists. It shows in the error colour, and the span selects exactly the
+    /// name rather than bleeding into the directory beside it.
+    #[test]
+    fn a_failed_plugins_name_is_shown_in_the_error_colour() {
+        let r = render_status_styled(
+            &[status("fine", TrustTier::Bundled, PluginHealth::Healthy)],
+            &[failure("org", "unknown import `logging`")],
+            None,
+        );
+        let lines: Vec<&str> = r.text.lines().collect();
+        let (i, span) = lines
+            .iter()
+            .enumerate()
+            .find_map(|(i, _)| {
+                r.spans
+                    .get(i)?
+                    .iter()
+                    .find(|s| s.style == lattice_cells::Style::DiagnosticError)
+                    .map(|s| (i, *s))
+            })
+            .expect("the failed plugin's name carries an error span");
+        assert_eq!(
+            &lines[i][span.start..span.end],
+            "org",
+            "the span covers the name and not the directory after it"
+        );
+    }
+
+    /// The failures section builds its own spans by hand, so its alignment is
+    /// the easiest thing on this path to get wrong by one — and a misalignment
+    /// silently styles a neighbouring line.
+    #[test]
+    fn spans_stay_index_aligned_when_a_plugin_failed_to_load() {
+        let r = render_status_styled(
+            &[status("fine", TrustTier::Bundled, PluginHealth::Healthy)],
+            &[
+                failure("org", "unknown import `logging`"),
+                failure("other", "manifest missing `id`"),
+            ],
+            None,
+        );
+        assert_eq!(
+            r.spans.len(),
+            r.text.lines().count(),
+            "one span vec per line, failures included"
+        );
     }
 
     /// WT.4: the whole point. A plugin that failed to load must be visibly

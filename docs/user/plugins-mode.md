@@ -36,9 +36,11 @@ cannot disagree with what is underneath it.
 The table is coloured by meaning, not by syntax — and only where it earns
 attention. A plugin's name stands out as the thing you scan for.
 `quarantined` and a failed build are highlighted because they are the rows
-you have to act on; `ok` is left plain, because a screen of healthy plugins
-does not need decorating and colouring it leaves less contrast for the one
-that is broken. `user-installed` is emphasised over `bundled`, on the
+you have to act on, and the name of a plugin that **failed to load** is
+shown in the error colour in the section at the bottom — those have no row
+in the table at all, so that line is the only place they appear. `ok` is
+left plain, because a screen of healthy plugins does not need decorating
+and colouring it leaves less contrast for the one that is broken. `user-installed` is emphasised over `bundled`, on the
 grounds that you are more likely to be hunting for something you installed
 yourself.
 

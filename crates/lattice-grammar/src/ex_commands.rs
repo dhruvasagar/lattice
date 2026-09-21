@@ -474,9 +474,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 prompt: "colorscheme:".into(),
                 // T.12a: optional — no-arg opens the picker.
                 default: ArgDefault::None,
-                // T.12 wires a `gen:colorschemes` completion generator;
-                // no name completion yet.
-                completion: None,
+                // Inline `<Tab>` over the same `theme_names()` the picker
+                // enumerates; the no-arg form still opens the picker, which is
+                // what adds live preview.
+                completion: Some("gen:themes".into()),
                 picker: None,
             }],
             surface_form: SurfaceForm::Keyword,
@@ -1226,7 +1227,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 // catalog lives host-side in `lattice-plugin-api`, which the
                 // grammar crate's generators can't reach -- the describe-element
                 // precedent).
-                completion: None,
+                completion: Some("gen:plugin-api-seams".into()),
                 picker: None,
             }],
             surface_form: SurfaceForm::Keyword,
@@ -1265,7 +1266,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "`markdown` (default) or `json`.".into(),
                 prompt: "format:".into(),
                 default: ArgDefault::None,
-                completion: None,
+                completion: Some("gen:plugin-api-formats".into()),
                 picker: None,
             }],
             surface_form: SurfaceForm::Keyword,
@@ -1306,9 +1307,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Loaded plugin name (e.g. `git-gutter`).".into(),
                 prompt: "plugin:".into(),
                 default: ArgDefault::Required,
-                // `gen:plugins` completion is a follow-up (the loaded-plugin
-                // registry is host-side + empty until Phase-8).
-                completion: None,
+                completion: Some("gen:plugins".into()),
                 picker: None,
             }],
             surface_form: SurfaceForm::Keyword,

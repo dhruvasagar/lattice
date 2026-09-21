@@ -315,7 +315,7 @@ fn describe_plugin_prefers_the_manifest_doc_over_the_help_page() {
 /// is `PluginMeta.doc`'s first line, which is empty for every bundled plugin.
 #[test]
 fn list_plugins_falls_back_to_the_help_summary() {
-    let mut ed = editor();
+    let ed = editor();
     ed.register_plugin(7, "git-gutter", "");
     ed.help_topics.rcu(|current| {
         let mut next = (**current).clone();

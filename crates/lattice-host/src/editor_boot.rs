@@ -1290,6 +1290,24 @@ impl Editor {
                 registry: theme_registry.clone(),
             },
         );
+        completion_registry.register_generator(
+            "gen:themes",
+            "Every registered colour theme (`:colorscheme <Tab>`).",
+            crate::host_generators::ThemesGenerator {
+                registry: theme_registry.clone(),
+            },
+        );
+        completion_registry.register_generator(
+            "gen:plugin-api-seams",
+            "Every WIT interface in the plugin-API catalog \
+             (`:describe-plugin-api <Tab>`).",
+            crate::host_generators::PluginApiSeamsGenerator,
+        );
+        completion_registry.register_generator(
+            "gen:plugin-api-formats",
+            "Export formats accepted by `:export-plugin-api`.",
+            crate::host_generators::PluginApiFormatsGenerator,
+        );
         // MB.5: `gen:history-kinds` — valid args for `:history <Tab>`.
         completion_registry.register_generator(
             "gen:history-kinds",
@@ -1884,6 +1902,17 @@ impl Editor {
         // registered; coerce it to the trait object (same instance the host's
         // `register_plugin` / `plugin_meta` read through).
         if let Some(meta) = boot.service::<crate::dispatch::PluginMetaRegistry>() {
+            // `gen:plugins` — registered HERE rather than beside the other
+            // generators above, because it needs the Arc the line above just
+            // created. The completion registry stays mutable until it is moved
+            // into the Editor, so ordering costs nothing; reaching backwards
+            // for the service would have meant moving this registration up
+            // through a boot sequence whose order is load-bearing elsewhere.
+            completion_registry.register_generator(
+                "gen:plugins",
+                "Every loaded plugin (`:describe-plugin`, `:plugin-unload`, …).",
+                crate::host_generators::PluginsGenerator { meta: meta.clone() },
+            );
             let sink: lattice_mode::PluginMetaSinkHandle = meta;
             boot.register_service::<lattice_mode::PluginMetaSinkHandle>(sink);
         }

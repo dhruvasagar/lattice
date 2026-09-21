@@ -378,6 +378,132 @@ impl PickerSourceGenerator for ThemePickerSource {
     }
 }
 
+/// `gen:themes` — one candidate per registered colour theme. Drives
+/// `:colorscheme <Tab>`.
+///
+/// The same `theme_names()` the `colorscheme` picker enumerates, so the two
+/// surfaces cannot disagree about which themes exist. `:colorscheme` keeps its
+/// picker as well: `ArgSpec` carries `completion` and `picker` as separate
+/// fields precisely so an argument can offer inline `<Tab>` AND the richer
+/// surface — here the picker adds live preview, which completion cannot.
+pub struct ThemesGenerator {
+    pub registry: ThemeRegistryHandle,
+}
+
+impl CandidateGenerator for ThemesGenerator {
+    fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
+        self.registry
+            .theme_names()
+            .into_iter()
+            .map(|name| RawCandidate {
+                insert_text: None,
+                text: name.clone(),
+                display: name,
+                kind: CandidateKind::Plain,
+                data: CandidateData::Plain,
+                source: None,
+                accept_action: None,
+                annotations: Vec::new(),
+                display_spans: Vec::new(),
+            })
+            .collect()
+    }
+}
+
+/// `gen:plugin-api-seams` — one candidate per WIT interface in the plugin-API
+/// catalog. Drives `:describe-plugin-api <Tab>`.
+///
+/// The catalog is generated from the WIT at build time and is static, so this
+/// needs no handle — and a seam renamed in the WIT changes the candidates with
+/// no second place to update.
+pub struct PluginApiSeamsGenerator;
+
+impl CandidateGenerator for PluginApiSeamsGenerator {
+    fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
+        lattice_plugin_api::catalog()
+            .interfaces
+            .iter()
+            .map(|i| RawCandidate {
+                insert_text: None,
+                text: i.name.clone(),
+                display: i.name.clone(),
+                kind: CandidateKind::Plain,
+                data: CandidateData::Plain,
+                source: None,
+                accept_action: None,
+                annotations: Vec::new(),
+                display_spans: Vec::new(),
+            })
+            .collect()
+    }
+}
+
+/// `gen:plugin-api-formats` — the two export formats `:export-plugin-api`
+/// accepts. A two-element set is still worth completing: the alternative is
+/// reading the command's doc to learn that `md` is spelled `markdown`.
+pub struct PluginApiFormatsGenerator;
+
+impl CandidateGenerator for PluginApiFormatsGenerator {
+    fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
+        ["markdown", "json"]
+            .into_iter()
+            .map(|s| RawCandidate {
+                insert_text: None,
+                text: s.to_string(),
+                display: s.to_string(),
+                kind: CandidateKind::Plain,
+                data: CandidateData::Plain,
+                source: None,
+                accept_action: None,
+                annotations: Vec::new(),
+                display_spans: Vec::new(),
+            })
+            .collect()
+    }
+}
+
+/// `gen:plugins` — one candidate per loaded plugin. Drives `:describe-plugin <Tab>` and the plugin manager's
+/// `:plugin-unload` / `:plugin-reload` / `:plugin-update`.
+///
+/// Both call sites carried this as a deferred comment — "`gen:plugins`
+/// completion is a follow-up … empty until Phase-8" in `ex_commands.rs`, and
+/// the same note on `lattice-plugin-loader`'s `string_arg`. Phase 8 landed and
+/// the comments did not get grepped, which is why the rule is now a test
+/// (`ex_string_args_have_completion.rs`) rather than a convention.
+///
+/// Holds a strong `Arc<PluginMetaRegistry>`, the same instance the host's
+/// `register_plugin` writes through and `:list-plugins` reads. It is registered
+/// once at boot and never swapped, so there is no stale-Arc hazard; the
+/// interior `RwLock` is what a mid-session load mutates, and reading it per
+/// `generate` is what makes a plugin loaded after boot appear under `<Tab>`.
+pub struct PluginsGenerator {
+    pub meta: std::sync::Arc<crate::dispatch::PluginMetaRegistry>,
+}
+
+impl CandidateGenerator for PluginsGenerator {
+    fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
+        let Ok(map) = self.meta.0.read() else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = map.values().map(|m| m.name.clone()).collect();
+        names.sort();
+        names
+            .into_iter()
+            .map(|name| RawCandidate {
+                insert_text: None,
+                text: name.clone(),
+                display: name,
+                kind: CandidateKind::Plain,
+                data: CandidateData::Plain,
+                source: None,
+                accept_action: None,
+                annotations: Vec::new(),
+                display_spans: Vec::new(),
+            })
+            .collect()
+    }
+}
+
 /// MB.5: `gen:history-kinds` — completion source for `:history <Tab>`.
 /// Returns the two valid kind arguments: `commands` and `searches`.
 pub struct HistoryKindsGenerator;
@@ -441,6 +567,51 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted, "candidates must be sorted");
+    }
+
+    /// `gen:plugins` enumerates the LOADED set, read per `generate` rather than
+    /// snapshotted, so a plugin loaded after boot completes without a restart.
+    #[test]
+    fn plugins_generator_enumerates_loaded_plugins_sorted() {
+        let meta = Arc::new(crate::dispatch::PluginMetaRegistry::default());
+        let g = PluginsGenerator { meta: meta.clone() };
+        let doc = Document::from_text("");
+        let buf = doc.buffer();
+        let cmd_reg = CommandRegistry::new();
+        let ctx = GenerateContext {
+            prefix: "",
+            buffer: buf,
+            registry: &cmd_reg,
+            case_sensitive: false,
+        };
+
+        assert!(
+            g.generate(&ctx).is_empty(),
+            "nothing loaded yet ⇒ no candidates"
+        );
+
+        // Registered the way the loader does it, AFTER the generator was built.
+        // A boot-time snapshot would list nothing here forever.
+        {
+            let mut map = meta.0.write().expect("meta registry lock");
+            for (id, name) in [(7u32, "zebra"), (8, "auto-pair")] {
+                map.insert(
+                    id,
+                    crate::dispatch::PluginMeta {
+                        name: name.to_string(),
+                        doc: String::new(),
+                    },
+                );
+            }
+        }
+
+        let names: Vec<String> = g.generate(&ctx).iter().map(|c| c.text.clone()).collect();
+        assert_eq!(
+            names,
+            vec!["auto-pair".to_string(), "zebra".to_string()],
+            "every loaded plugin completes, sorted — popup order must be stable \
+             even though the backing map is a HashMap"
+        );
     }
 
     /// A plugin's option namespace must be offered by `:customize <Tab>`.

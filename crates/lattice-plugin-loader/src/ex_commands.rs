@@ -136,16 +136,27 @@ fn echo(level: EchoLevel, text: impl Into<String>) -> Effect {
 }
 
 /// One `ArgSpec` for the single positional string arg (drives the missing-arg
-/// prompt + palette form). Completion is a follow-up (a `gen:plugins` generator
-/// over the loaded set for unload/reload; a path completer for load).
-fn string_arg(name: &'static str, doc: &'static str, prompt: &'static str) -> Vec<ArgSpec> {
+/// prompt, the palette form, and `<Tab>` in the `:` line).
+///
+/// `completion` names a generator registered by the host: `gen:plugins` over
+/// the loaded set for unload / reload / update, and `gen:files` for load, whose
+/// argument is a directory rather than a plugin. This was a deferred comment
+/// here until the loaded-plugin registry existed; it does now, and
+/// `ex_string_args_have_completion.rs` is what keeps the next one from being
+/// deferred silently.
+fn string_arg(
+    name: &'static str,
+    doc: &'static str,
+    prompt: &'static str,
+    completion: &'static str,
+) -> Vec<ArgSpec> {
     vec![ArgSpec {
         name: name.into(),
         kind: ArgKind::String,
         doc: doc.into(),
         prompt: prompt.into(),
         default: ArgDefault::None,
-        completion: None,
+        completion: Some(completion.into()),
         picker: None,
     }]
 }
@@ -172,6 +183,7 @@ fn load_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
             "path",
             "Directory holding the plugin's `plugin.toml` + `.wasm` component.",
             "path:",
+            "gen:files",
         ),
         surface_form: SurfaceForm::Keyword,
     }
@@ -206,6 +218,7 @@ fn unload_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
             "target",
             "Loaded plugin's manifest id or numeric plugin id.",
             "plugin:",
+            "gen:plugins",
         ),
         surface_form: SurfaceForm::Keyword,
     }
@@ -228,6 +241,7 @@ fn update_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
             "target",
             "Loaded plugin's manifest id or numeric plugin id.",
             "plugin:",
+            "gen:plugins",
         ),
         surface_form: SurfaceForm::Keyword,
     }
@@ -325,6 +339,7 @@ fn reload_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
             "target",
             "Loaded plugin's manifest id or numeric plugin id.",
             "plugin:",
+            "gen:plugins",
         ),
         surface_form: SurfaceForm::Keyword,
     }

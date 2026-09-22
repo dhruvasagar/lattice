@@ -43,6 +43,9 @@ pub trait OperatorChordWirer: Send + Sync {
         // host file that happened to create the binding, which is a
         // provenance lie about a plugin's own chord.
         plugin_id: u32,
+        // CM.4: the manifest name, so the stamp reads `plugin:comment` rather
+        // than `plugin:1` — a number the reader then has to resolve by hand.
+        plugin_name: &str,
         post_motion_char: bool,
     ) -> Result<(), String>;
 }

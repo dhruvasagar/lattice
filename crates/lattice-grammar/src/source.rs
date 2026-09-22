@@ -109,10 +109,27 @@ impl SourceLocation {
     /// trusted subsystem stamps `Plugin` provenance: the public
     /// `CommandRegistry::register_plugin_*` methods take a `u32`, never a
     /// `SourceLocation`, and route through here.
+    /// The same, with the plugin's manifest name — which is what a reader
+    /// wants. `plugin:comment` answers "where did `gc` come from"; `plugin:1`
+    /// makes them go and look the number up.
+    ///
+    /// Separate from [`Self::plugin`] because the name is not always in hand:
+    /// `register_plugin_*` runs in the drain with only an id, while a caller
+    /// that holds the manifest can do better.
+    pub fn plugin_named(plugin_id: u32, name: &str) -> Self {
+        Self {
+            layer: SourceLayer::Plugin(plugin_id),
+            kind: SourceKind::Synthetic(format!("plugin:{name}")),
+        }
+    }
+
     pub fn plugin(plugin_id: u32) -> Self {
         Self {
             layer: SourceLayer::Plugin(plugin_id),
-            kind: SourceKind::Synthetic(format!("<plugin:{plugin_id}>")),
+            // NOT pre-wrapped in `<>`: `as_link` renders a `Synthetic` tag as
+            // `[<tag>](synthetic:tag)`, so a tag that already carries angle
+            // brackets shows up as `<<plugin:1>>`.
+            kind: SourceKind::Synthetic(format!("plugin:{plugin_id}")),
         }
     }
 
@@ -122,6 +139,24 @@ impl SourceLocation {
     /// classifies into a typed `lattice_ui_tui::help::HelpLinkTarget`; the label
     /// is what the user sees.
     pub fn as_link(&self) -> String {
+        self.as_link_with(&|_| None)
+    }
+
+    /// [`Self::as_link`], with a way to name a plugin.
+    ///
+    /// The LAYER is authoritative about a source being a plugin's — the
+    /// `kind` is only a tag, and one stamped by whichever registration path
+    /// happened to run. So the resolver is consulted on `SourceLayer::Plugin`
+    /// and its answer wins, which means every display site gets the manifest
+    /// name regardless of what was stamped, and `plugin:1` survives only where
+    /// the plugin genuinely cannot be named (unloaded, or a harness with no
+    /// meta registry).
+    pub fn as_link_with(&self, resolve_plugin: &dyn Fn(u32) -> Option<String>) -> String {
+        if let SourceLayer::Plugin(pid) = self.layer
+            && let Some(name) = resolve_plugin(pid)
+        {
+            return format!("[plugin:{name}](synthetic:plugin:{name})");
+        }
         match &self.kind {
             SourceKind::File {
                 path,
@@ -201,6 +236,45 @@ mod tests {
             },
         };
         assert_eq!(s.as_link(), "[macro:q:5](macro:q:step:5)");
+    }
+
+    /// CM.5: the LAYER decides a source is a plugin's; the resolver names it.
+    ///
+    /// Keying on the layer rather than the `kind` tag is what makes this
+    /// uniform — the tag is whatever the registration path stamped, and the
+    /// paths disagree: the chord wiring knows the manifest name while
+    /// `register_plugin_operator` holds only an id.
+    #[test]
+    fn a_plugin_source_renders_its_manifest_name_when_one_resolves() {
+        let s = SourceLocation::plugin(7);
+
+        // No resolver: the id, and NOT double-wrapped — `as_link` adds the
+        // angle brackets, so a tag carrying its own produced `<<plugin:7>>`.
+        assert_eq!(s.as_link(), "[<plugin:7>](synthetic:plugin:7)");
+
+        // With one: the name, whatever the tag says.
+        assert_eq!(
+            s.as_link_with(&|pid| (pid == 7).then(|| "comment".to_string())),
+            "[plugin:comment](synthetic:plugin:comment)"
+        );
+
+        // A plugin the host cannot name falls back rather than inventing one.
+        assert_eq!(
+            s.as_link_with(&|_| None),
+            "[<plugin:7>](synthetic:plugin:7)",
+            "an unloaded plugin still renders, by id"
+        );
+    }
+
+    /// A non-plugin source is untouched by the resolver — it must not start
+    /// claiming provenance it does not have.
+    #[test]
+    fn a_builtin_source_ignores_the_plugin_resolver() {
+        let s = SourceLocation::builtin_file("src/foo.rs", 42);
+        assert_eq!(
+            s.as_link_with(&|_| Some("comment".to_string())),
+            "[src/foo.rs:42](file:src/foo.rs:42)"
+        );
     }
 
     #[test]

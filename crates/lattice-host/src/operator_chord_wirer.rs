@@ -54,6 +54,7 @@ impl lattice_mode::OperatorChordWirer for HostOperatorChordWirer {
         doubled: Option<char>,
         mode: lattice_mode::ModeId,
         plugin_id: u32,
+        plugin_name: &str,
         post_motion_char: bool,
     ) -> Result<(), String> {
         // A chord that does not parse is a manifest error, reported rather than
@@ -76,7 +77,7 @@ impl lattice_mode::OperatorChordWirer for HostOperatorChordWirer {
             // CM.4: stamped as the PLUGIN's, not this file's. `:describe-key
             // gc` answers "where did this come from", and the honest answer is
             // the plugin that declared the chord.
-            lattice_grammar::SourceLocation::plugin(plugin_id),
+            lattice_grammar::SourceLocation::plugin_named(plugin_id, plugin_name),
             &self.keymap,
             &prefix,
             op,

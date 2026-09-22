@@ -60,7 +60,7 @@ pub use crate::effect::{
 pub use crate::error::{CommandError, GrammarResult};
 pub use crate::introspect::{
     HelpSection, Introspectable, RenderedAnchor, RenderedIntrospection, SourceEntry, SourceLabel,
-    render_introspection, render_introspection_lines,
+    render_introspection, render_introspection_lines, render_introspection_with,
 };
 pub use crate::modal::{ModalState, SearchDirection, VisualKind};
 pub use crate::range::{Range, RangeBound};

@@ -129,6 +129,19 @@ pub struct RenderedIntrospection {
 /// don't need anchors can read `result.lines` and ignore
 /// `result.anchors`.
 pub fn render_introspection(item: &dyn Introspectable) -> RenderedIntrospection {
+    render_introspection_with(item, &|_| None)
+}
+
+/// [`render_introspection`], with a plugin-name resolver.
+///
+/// Every `:describe-*` view goes through here, so resolving at THIS point
+/// names plugins on all of them at once — rather than each registration path
+/// having to stamp a name it may not hold. `:list-commands` already resolved
+/// ids this way; this brings the describe views into line.
+pub fn render_introspection_with(
+    item: &dyn Introspectable,
+    resolve_plugin: &dyn Fn(u32) -> Option<String>,
+) -> RenderedIntrospection {
     let mut lines = Vec::new();
     let mut anchors = Vec::new();
     lines.push(format!(
@@ -166,7 +179,7 @@ pub fn render_introspection(item: &dyn Introspectable) -> RenderedIntrospection 
             lines.push(format!(
                 "{}: {}  ({})",
                 label.as_prose(),
-                source.as_link(),
+                source.as_link_with(resolve_plugin),
                 source.layer.label(),
             ));
         }

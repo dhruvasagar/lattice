@@ -38779,7 +38779,7 @@ impl Editor {
             self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
             return None;
         };
-        let rendered = lattice_grammar::render_introspection(spec);
+        let rendered = self.render_introspection_named(spec);
         let anchors: Vec<lattice_help::HelpAnchor> = rendered
             .anchors
             .into_iter()
@@ -38988,7 +38988,7 @@ impl Editor {
             }
         }
 
-        let rendered = lattice_grammar::render_introspection(&View(iface));
+        let rendered = self.render_introspection_named(&View(iface));
         let anchors: Vec<lattice_help::HelpAnchor> = rendered
             .anchors
             .into_iter()
@@ -39069,6 +39069,28 @@ impl Editor {
                 },
             );
         }
+    }
+
+    /// CM.5: `render_introspection`, with plugin ids resolved to manifest
+    /// names.
+    ///
+    /// Every `:describe-*` view routes through here rather than calling
+    /// `render_introspection` directly, because the host is the only layer
+    /// that CAN name a plugin — `lattice-grammar` has no meta registry, so a
+    /// source stamped `SourceLayer::Plugin(1)` renders as `plugin:1` there and
+    /// as `plugin:comment` here.
+    ///
+    /// Resolving at the display site rather than at registration is what makes
+    /// this uniform: `register_plugin_operator` and friends run in the drain
+    /// holding only an id, so stamping names at creation would have covered
+    /// some surfaces and not others — which is exactly the state that produced
+    /// a chord reading `plugin:comment` beside its own command reading
+    /// `plugin:1`.
+    fn render_introspection_named(
+        &self,
+        item: &dyn lattice_grammar::Introspectable,
+    ) -> lattice_grammar::RenderedIntrospection {
+        lattice_grammar::render_introspection_with(item, &|pid| self.plugin_display_name(pid))
     }
 
     /// PI.3: the manifest name for a plugin id, if the host knows it. `None`
@@ -39267,7 +39289,7 @@ impl Editor {
             topic: topic_name.as_deref(),
             contributions,
         };
-        let rendered = lattice_grammar::render_introspection(&view);
+        let rendered = self.render_introspection_named(&view);
         let anchors: Vec<lattice_help::HelpAnchor> = rendered
             .anchors
             .into_iter()

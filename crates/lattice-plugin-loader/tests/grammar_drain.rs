@@ -215,7 +215,7 @@ async fn grammar_plugin_without_a_wired_command_registry_is_skipped_not_fatal() 
 /// whole capability gate.
 #[derive(Default)]
 struct RecordingWirer {
-    wired: std::sync::Mutex<Vec<(String, Option<char>, String, u32)>>,
+    wired: std::sync::Mutex<Vec<(String, Option<char>, String, u32, String)>>,
 }
 
 impl lattice_mode::OperatorChordWirer for RecordingWirer {
@@ -226,6 +226,7 @@ impl lattice_mode::OperatorChordWirer for RecordingWirer {
         doubled: Option<char>,
         mode: lattice_mode::ModeId,
         plugin_id: u32,
+        plugin_name: &str,
         _post_motion_char: bool,
     ) -> Result<(), String> {
         self.wired.lock().unwrap().push((
@@ -237,6 +238,10 @@ impl lattice_mode::OperatorChordWirer for RecordingWirer {
             // `:describe-key gc` names `keymap_normal.rs`, which is a lie about
             // a chord the plugin declared.
             plugin_id,
+            // The NAME is what `:help gc` shows. Stamped as `plugin:comment`
+            // rather than `plugin:1`, which would make a reader resolve the
+            // number by hand.
+            plugin_name.to_string(),
         ));
         Ok(())
     }
@@ -293,7 +298,7 @@ async fn a_declared_operator_chord_is_wired_into_its_own_minor_mode() {
         1,
         "the fixture declares exactly one operator chord; got {wired:?}"
     );
-    let (chord, doubled, mode, plugin_id) = &wired[0];
+    let (chord, doubled, mode, plugin_id, plugin_name) = &wired[0];
     assert_eq!(chord, "gX", "the chord the guest declared, verbatim");
     assert_eq!(
         *doubled,
@@ -308,7 +313,15 @@ async fn a_declared_operator_chord_is_wired_into_its_own_minor_mode() {
     // The SAME id the plugin registered under — not merely "some id". Plugin
     // ids start at 0, so a `!= 0` check passes on a defaulted field, which is
     // exactly the mistake this assertion replaced.
-    let registered_id = sink.registered.lock().unwrap()[0].0;
+    let (registered_id, registered_name) = {
+        let r = sink.registered.lock().unwrap();
+        (r[0].0, r[0].1.clone())
+    };
+    assert_eq!(
+        plugin_name, &registered_name,
+        "the manifest name reaches the wirer, so `:describe-key` reads \
+         `plugin:chord-fixture` rather than `plugin:<id>`"
+    );
     assert_eq!(
         *plugin_id, registered_id,
         "the contributing plugin's id reaches the wirer, so the binding is \

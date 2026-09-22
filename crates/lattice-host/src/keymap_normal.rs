@@ -1060,8 +1060,8 @@ pub fn register_normal_bindings(
     // current line (no operator). `[f]` etc. arm the pending
     // state; `[f, CharLiteral]` resolves to a typed
     // `Invoke(find_char_*, Args::Char(captured))`.
-    register_find_char_paths(handle, &[], None, builtins);
-    register_mark_paths(handle, &[], None, builtins);
+    register_find_char_paths(handle, &[], None, builtins, &source());
+    register_mark_paths(handle, &[], None, builtins, &source());
 
     // `r<X>` -- replace the char(s) under the cursor with X (vim's
     // `r{char}`). The affected span is `char_right x count`, exactly
@@ -1573,6 +1573,7 @@ pub fn register_operator_bindings_in(
             builtins,
             syntax_textobjects,
             post_motion_char,
+            &binding_source,
         );
     }
 
@@ -1581,8 +1582,8 @@ pub fn register_operator_bindings_in(
     // ---- depth-3 `[op, f/F/t/T, CharLiteral]` wildcard
     // ---- resolves to a typed `Invoke(op,
     // ---- Target::Motion(find_char_*, Args::Char(captured)))`.
-    register_find_char_paths(handle, op_prefix, Some(op), builtins);
-    register_mark_paths(handle, op_prefix, Some(op), builtins);
+    register_find_char_paths(handle, op_prefix, Some(op), builtins, &binding_source);
+    register_mark_paths(handle, op_prefix, Some(op), builtins, &binding_source);
 
     // ---- Visual mode: an operator acts on the active selection BY
     // ---- DESIGN. Pressing the operator's trigger chord in Visual
@@ -1624,6 +1625,12 @@ fn register_find_char_paths(
     prefix: &[ChordPattern],
     operator: Option<lattice_grammar::registry::OperatorId>,
     builtins: &Builtins,
+    // CM.5: the stamp for every binding this creates. An operator's
+    // CONTINUATIONS are bindings too — `gcF{char}`, `gcT{char}`,
+    // `gc'{char}` — and stamping them from this file made a plugin's
+    // chord look half host-owned: `gc` named the plugin while `gcF` named
+    // keymap_normal.rs.
+    binding_source: &lattice_grammar::SourceLocation,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
@@ -1665,7 +1672,7 @@ fn register_find_char_paths(
                 CommandInvocation::of(op.0).with_target(Target::Motion(*motion_id, Args::None))
             }
         };
-        handle.bind(layer, mode, &wild_path, invocation, source());
+        handle.bind(layer, mode, &wild_path, invocation, binding_source.clone());
     }
 }
 
@@ -1680,6 +1687,12 @@ fn register_mark_paths(
     prefix: &[ChordPattern],
     operator: Option<lattice_grammar::registry::OperatorId>,
     builtins: &Builtins,
+    // CM.5: the stamp for every binding this creates. An operator's
+    // CONTINUATIONS are bindings too — `gcF{char}`, `gcT{char}`,
+    // `gc'{char}` — and stamping them from this file made a plugin's
+    // chord look half host-owned: `gc` named the plugin while `gcF` named
+    // keymap_normal.rs.
+    binding_source: &lattice_grammar::SourceLocation,
 ) {
     for (key, motion_id) in [('\'', builtins.mark_line), ('`', builtins.mark_exact)] {
         let mut path: Vec<ChordPattern> = prefix.to_vec();
@@ -1696,7 +1709,7 @@ fn register_mark_paths(
             BindingMode::Normal,
             &path,
             invocation,
-            source(),
+            binding_source.clone(),
         );
     }
 }
@@ -1922,6 +1935,12 @@ fn register_text_object_resolutions(
     builtins: &Builtins,
     syntax_textobjects: &SyntaxTextObjectIds,
     post_motion_char: bool,
+    // CM.5: the stamp for every binding this creates. An operator's
+    // CONTINUATIONS are bindings too — `gcF{char}`, `gcT{char}`,
+    // `gc'{char}` — and stamping them from this file made a plugin's
+    // chord look half host-owned: `gc` named the plugin while `gcF` named
+    // keymap_normal.rs.
+    binding_source: &lattice_grammar::SourceLocation,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
@@ -1939,7 +1958,7 @@ fn register_text_object_resolutions(
                 mode,
                 &path,
                 CommandInvocation::of(op.0).with_target(Target::TextObject(tobj, Args::None)),
-                source(),
+                binding_source.clone(),
             );
         }
     }

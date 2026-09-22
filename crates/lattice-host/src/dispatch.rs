@@ -39071,6 +39071,16 @@ impl Editor {
         }
     }
 
+    /// CM.5: a source link with plugin ids resolved to manifest names.
+    ///
+    /// `:describe-key` renders sources itself rather than through
+    /// `render_introspection`, so it needs the same resolution or a plugin's
+    /// chord reads `plugin:1` on the one view most likely to be asked "where
+    /// did this key come from".
+    fn source_link_named(&self, source: &lattice_grammar::SourceLocation) -> String {
+        source.as_link_with(&|pid| self.plugin_display_name(pid))
+    }
+
     /// CM.5: `render_introspection`, with plugin ids resolved to manifest
     /// names.
     ///
@@ -39488,7 +39498,10 @@ impl Editor {
                     "    layer: {}",
                     self.keymap.layer_label_string(winner.layer),
                 ));
-                lines.push(format!("    source: {}", winner.command.source.as_link(),));
+                lines.push(format!(
+                    "    source: {}",
+                    self.source_link_named(&winner.command.source),
+                ));
                 // SN.3c.2b: walk the fall-through continuation — each
                 // active hit below a `fall_through` one runs too, until
                 // a non-fall-through binding (or the bottom) stops it.
@@ -39515,7 +39528,10 @@ impl Editor {
                         "    layer: {}",
                         self.keymap.layer_label_string(hit.layer),
                     ));
-                    lines.push(format!("    source: {}", hit.command.source.as_link()));
+                    lines.push(format!(
+                        "    source: {}",
+                        self.source_link_named(&hit.command.source)
+                    ));
                 }
             } else {
                 lines.push(
@@ -39575,7 +39591,10 @@ impl Editor {
                         "    {} → {cmd_name} {status}",
                         self.keymap.layer_label_string(hit.layer),
                     ));
-                    lines.push(format!("      source: {}", hit.command.source.as_link(),));
+                    lines.push(format!(
+                        "      source: {}",
+                        self.source_link_named(&hit.command.source),
+                    ));
                 }
             }
         }
@@ -39586,7 +39605,81 @@ impl Editor {
         // chords can only ever fire where this binding is inactive, and a
         // chord silently killing the family below it is exactly what a user
         // needs `:describe-key` to tell them.
-        if !continuations.is_empty() {
+        // DK.5: an OPERATOR's continuations are not news. `gc` composes with
+        // every motion and text object by construction, so enumerating
+        // `gcw` / `gcap` / `gci{` / `gcF{char}` / `gc'{char}` is a screen of
+        // rows that all say the same thing — and it buries the one fact that
+        // explains all of them, which is that `gc` is an operator.
+        //
+        // The prefix case still enumerates: for a chord that is ONLY a prefix
+        // (`g`, `z`), the subtree IS the answer.
+        // Detected from the CONTINUATIONS, not from the chord's own binding.
+        // `d` in Normal binds `action:absorb-operator-delete` — the action that
+        // ENTERS operator-pending — while `operator:delete` is what `d` means
+        // in Visual; and `gc` is not bound in Normal at all, it is a pure
+        // prefix. Neither says "operator" when asked directly.
+        //
+        // What does say it is the subtree: every continuation
+        // (`{prefix}w`, `{prefix}ap`, `{prefix}F{char}`) invokes the SAME
+        // operator id, because that is what `register_operator_bindings_in`
+        // built. One shared operator across the subtree is the signature.
+        let operator_summary = {
+            let reg = self.registry.load();
+            let mut op: Option<(lattice_grammar::CommandId, String)> = None;
+            let mut uniform = !continuations.is_empty();
+            for cont in &continuations {
+                let id = cont.command.command.command;
+                match reg.lookup(id) {
+                    Some(spec) if matches!(spec.kind, lattice_grammar::CommandKind::Operator) => {
+                        match &op {
+                            None => op = Some((id, spec.name.clone())),
+                            Some((seen, _)) if *seen == id => {}
+                            // Two different operators under one prefix is not
+                            // an operator prefix — it is `g`, and its subtree
+                            // is the answer.
+                            Some(_) => {
+                                uniform = false;
+                                break;
+                            }
+                        }
+                    }
+                    // A non-operator continuation (`zf`, `zo`) means the same.
+                    _ => {
+                        uniform = false;
+                        break;
+                    }
+                }
+            }
+            uniform.then(|| op.map(|(_, name)| name)).flatten()
+        };
+        if let Some(op_name) = operator_summary {
+            lines.push(String::new());
+            lines.push(format!("─── {chord_str} is an operator ───"));
+            lines.push(String::new());
+            lines.push(format!(
+                "  It takes any motion or text object — {}, {}, {}, {} …",
+                lattice_help::key_link(&format!("{chord_str}w")),
+                lattice_help::key_link(&format!("{chord_str}ap")),
+                lattice_help::key_link(&format!("{chord_str}i{{")),
+                lattice_help::key_link(&format!("{chord_str}3j")),
+            ));
+            lines.push(format!(
+                "  Doubled ({}) operates on the current line; in Visual it \
+                 takes the selection.",
+                lattice_help::key_link(&format!(
+                    "{chord_str}{}",
+                    chord_str.chars().last().unwrap_or('c')
+                )),
+            ));
+            lines.push(String::new());
+            lines.push(format!(
+                "  {} continuation(s) are registered and not listed — they are \
+                 the motion and text-object grammar, identical for every \
+                 operator. See {} for what this one does.",
+                continuations.len(),
+                lattice_help::command_link(&op_name),
+            ));
+        } else if !continuations.is_empty() {
             lines.push(String::new());
             lines.push(if resolutions.is_empty() {
                 format!("─── Continuations of {chord_str} ───")
@@ -39624,7 +39717,7 @@ impl Editor {
                 lines.push(format!(
                     "    layer: {}   source: {}",
                     self.keymap.layer_label_string(cont.layer),
-                    cont.command.source.as_link(),
+                    self.source_link_named(&cont.command.source),
                 ));
             }
         }

@@ -39616,56 +39616,58 @@ impl Editor {
         //
         // The prefix case still enumerates: for a chord that is ONLY a prefix
         // (`g`, `z`), the subtree IS the answer.
-        // Detected from the CONTINUATIONS, not from the chord's own binding.
-        // `d` in Normal binds `action:absorb-operator-delete` — the action that
-        // ENTERS operator-pending — while `operator:delete` is what `d` means
-        // in Visual; and `gc` is not bound in Normal at all, it is a pure
-        // prefix. Neither says "operator" when asked directly.
         //
-        // What does say it is the subtree: the continuations that invoke one
-        // shared operator id, because that is what
-        // `register_operator_bindings_in` built.
+        // DECLARED, not inferred. Every operator binds its own chord in Visual
+        // to itself — `register_operator_bindings_in` does it for all of them,
+        // builtin and plugin, because acting on the selection is intrinsic to
+        // being an operator. So `gc` / `d` / `gU` in Visual answer "which
+        // operator is this" directly, and `g` / `z` answer nothing. The Normal
+        // binding cannot: `d` there is `action:absorb-operator-delete`, and
+        // `gc` is not bound at all.
+        //
+        // An earlier draft inferred it from the subtree — "exactly one operator
+        // id below the prefix" — and that failed on the most common operator
+        // there is: surround's `ds` is a second operator under `d`, so `d` fell
+        // back to listing 115 rows.
         //
         // PARTITIONED, not all-or-nothing. A foreign binding below the prefix —
-        // a minor mode's `gcs`, say — must still be reported: it is precisely
-        // the thing a user needs `:describe-key` for, and an earlier draft
-        // reverted to the full wall the moment one appeared, which buried it
-        // among seventy rows that say nothing. The operator's own grammar is
-        // summarised; anything else under the prefix is listed.
+        // a minor mode's `gcs`, surround's `ds` — must still be reported: it is
+        // precisely the thing a user needs `:describe-key` for. The operator's
+        // own grammar is summarised; anything else under the prefix is listed.
         let (operator_summary, grammar, listable) = {
             let reg = self.registry.load();
-            // The operator the subtree belongs to, if exactly one does.
-            // `register_operator_bindings_in` builds one operator's surface at
-            // a time, so a SECOND operator id under the prefix means this is a
-            // plain prefix like `g` (whose `gU` / `gu` / `gq` / `g~` are four
-            // different operators) and nothing should be summarised.
-            let mut op_id: Option<lattice_grammar::CommandId> = None;
-            let mut op_name: Option<String> = None;
-            let mut distinct = 0usize;
-            for cont in &continuations {
-                let id = cont.command.command.command;
-                if let Some(spec) = reg.lookup(id)
-                    && matches!(spec.kind, lattice_grammar::CommandKind::Operator)
-                    && op_id != Some(id)
-                {
-                    if op_id.is_none() {
-                        op_id = Some(id);
-                        op_name = Some(spec.name.clone());
-                    }
-                    distinct += 1;
-                }
-            }
-            if distinct > 1 {
-                op_id = None;
-                op_name = None;
-            }
-            match op_id {
-                Some(id) => {
+            let visual = self.keymap.resolve_trace(
+                lattice_keymap::BindingMode::Visual,
+                &parsed,
+                &active_modes,
+            );
+            // The winner if it is an operator, else any layer's operator — a
+            // plugin's `gc` is still `gc` on a buffer where its mode is off.
+            let is_operator = |hit: &&lattice_keymap::LayerHit| {
+                reg.lookup(hit.command.command.command)
+                    .is_some_and(|spec| matches!(spec.kind, lattice_grammar::CommandKind::Operator))
+            };
+            let declared = visual
+                .winner()
+                .filter(is_operator)
+                .or_else(|| visual.hits.iter().rev().find(is_operator));
+            let op = declared.and_then(|hit| {
+                let id = hit.command.command.command;
+                reg.lookup(id).map(|spec| (id, spec.name.clone()))
+            });
+            match op {
+                Some((id, name)) => {
                     let (grammar, other): (Vec<_>, Vec<_>) = continuations
                         .iter()
                         .cloned()
                         .partition(|c| c.command.command.command == id);
-                    (op_name, grammar, other)
+                    // Visual `x` is `operator:delete` too, with nothing beneath
+                    // it: an alias, not an operator prefix.
+                    if grammar.is_empty() {
+                        (None, Vec::new(), continuations.clone())
+                    } else {
+                        (Some(name), grammar, other)
+                    }
                 }
                 None => (None, Vec::new(), continuations.clone()),
             }

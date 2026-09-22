@@ -6,13 +6,10 @@
 //! of rows that all say the same thing, and the one fact explaining all of
 //! them — that `gU` is an operator — is buried in it.
 //!
-//! **Why `gU` and not `d`.** A single-key operator is BOUND (`d` runs
-//! `action:absorb-operator-delete`), and a bound prefix kills its longer
-//! chords: the trie stops there and `dw` resolves through the operator-pending
-//! state machine instead. So `d` has no continuations to summarise. The noise
-//! is specific to MULTI-KEY operator prefixes — `gU`, `zn`, `gc` — which are
-//! unbound, so `register_operator_bindings_in`'s whole subtree sits in the
-//! trie under them.
+//! The operator is identified by the chord's own Visual binding — every
+//! operator binds its chord to itself there — not inferred from the subtree.
+//! Inference failed on `d`, the commonest operator: surround's `ds` is a second
+//! operator beneath it, so "exactly one operator below" said no.
 
 use lattice_core::Document as CoreDocument;
 use lattice_host::editor::Editor;
@@ -192,5 +189,45 @@ fn the_summary_names_each_layer_and_source_the_operator_came_from() {
     assert!(
         layer_lines.iter().all(|l| l.contains("continuation(s)")),
         "each layer reports its share of the count:\n{body}"
+    );
+}
+
+/// `d` is the case subtree-inference got wrong: surround's `ds` is a SECOND
+/// operator under it, so "one operator below the prefix" said no and `d`
+/// listed all 115 of its rows. Identified from Visual `d` instead, the grammar
+/// is summarised and `ds` — a different operator that happens to share the
+/// prefix — is listed, because it is news.
+#[test]
+fn a_single_key_operator_with_a_foreign_operator_beneath_it_is_summarised() {
+    let ed = editor();
+    let body = text(&ed.build_describe_key_content("d"));
+
+    assert!(
+        body.contains("d is an operator"),
+        "`d` is summarised despite `ds` beneath it:\n{body}"
+    );
+    let (_, also) = body
+        .split_once("─── Also bound below d ───")
+        .unwrap_or_else(|| panic!("the foreign rows get their own heading:\n{body}"));
+    assert!(
+        also.contains("operator:surround-delete"),
+        "surround's `ds` is listed — a different operator is news:\n{body}"
+    );
+    assert!(
+        !also.contains("→ operator:delete"),
+        "and `d`'s own grammar is not:\n{body}"
+    );
+}
+
+/// Visual `x` is `operator:delete` too — an alias with nothing beneath it. The
+/// Visual binding names an operator, but there is no grammar to summarise, so
+/// no summary: the heading would be a claim about a prefix that is not one.
+#[test]
+fn a_visual_operator_alias_is_not_called_an_operator_prefix() {
+    let ed = editor();
+    let body = text(&ed.build_describe_key_content("x"));
+    assert!(
+        !body.contains("x is an operator"),
+        "`x` has no operator grammar beneath it:\n{body}"
     );
 }

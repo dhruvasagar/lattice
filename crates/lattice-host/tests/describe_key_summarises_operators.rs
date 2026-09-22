@@ -231,3 +231,24 @@ fn a_visual_operator_alias_is_not_called_an_operator_prefix() {
         "`x` has no operator grammar beneath it:\n{body}"
     );
 }
+
+/// A composed chord names what its operator acts on. `dw` and `diw` both
+/// invoke `operator:delete`; reporting only that answers "what does `diw` do"
+/// with half the answer.
+#[test]
+fn a_composed_chord_names_its_motion_or_text_object() {
+    let ed = editor();
+    let cases = [
+        ("diw", "operator:delete on text-object:inner-word"),
+        ("dw", "operator:delete on motion:word-forward"),
+        ("gUiw", "operator:upper on text-object:inner-word"),
+        ("v_d", "operator:delete on the selection"),
+    ];
+    for (chord, expected) in cases {
+        let body = text(&ed.build_describe_key_content(chord));
+        assert!(
+            body.contains(expected),
+            "`{chord}` should read `{expected}`:\n{body}"
+        );
+    }
+}

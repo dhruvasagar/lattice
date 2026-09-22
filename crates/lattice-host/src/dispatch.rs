@@ -39380,6 +39380,31 @@ impl Editor {
         self.activate_buffer(id);
     }
 
+    /// How `:describe-key` names what a binding does: the command, plus what
+    /// it acts on when the binding says. `dw` and `diw` both invoke
+    /// `operator:delete`, and printing only that answered "what does `diw`
+    /// do" with half the answer — the text object is the other half.
+    fn describe_invocation(&self, inv: &lattice_grammar::CommandInvocation) -> String {
+        let reg = self.registry.load();
+        let name_of = |id: lattice_grammar::CommandId| {
+            reg.lookup(id)
+                .map(|spec| spec.name.clone())
+                .unwrap_or_else(|| format!("{id:?}"))
+        };
+        let head = name_of(inv.command);
+        let on = match (&inv.target, &inv.range) {
+            (Some(lattice_grammar::Target::Motion(m, _)), _) => Some(name_of(m.0)),
+            (Some(lattice_grammar::Target::TextObject(t, _)), _) => Some(name_of(t.0)),
+            (_, Some(lattice_grammar::Range::CurrentLine)) => Some("the current line".into()),
+            (_, Some(lattice_grammar::Range::Selection)) => Some("the selection".into()),
+            _ => None,
+        };
+        match on {
+            Some(on) => format!("{head} on {on}"),
+            None => head,
+        }
+    }
+
     /// 5.5.F.2: build the `:describe-key <chord>` content.
     ///
     /// Accepts an optional mode prefix (`n_j` → Normal mode `j`;
@@ -39483,12 +39508,7 @@ impl Editor {
 
             // Winner: what fires under the current active modes.
             if let Some(winner) = resolution.winner() {
-                let cmd_name = self
-                    .registry
-                    .load()
-                    .lookup(winner.command.command.command)
-                    .map(|spec| spec.name.clone())
-                    .unwrap_or_else(|| format!("{:?}", winner.command.command.command));
+                let cmd_name = self.describe_invocation(&winner.command.command);
                 // SN.3c.2b: a `fall_through` winner augments-and-continues
                 // — flag it and render the continuation chain below.
                 let fires = if winner.command.fall_through {
@@ -39515,12 +39535,7 @@ impl Editor {
                         break;
                     }
                     let hit = active_desc[i];
-                    let next_name = self
-                        .registry
-                        .load()
-                        .lookup(hit.command.command.command)
-                        .map(|spec| spec.name.clone())
-                        .unwrap_or_else(|| format!("{:?}", hit.command.command.command));
+                    let next_name = self.describe_invocation(&hit.command.command);
                     let tail = if hit.command.fall_through {
                         " → falls through ↓"
                     } else {
@@ -39584,12 +39599,7 @@ impl Editor {
                         (false, _, true) => "[inactive · fall-through]",
                         (false, _, false) => "[inactive]",
                     };
-                    let cmd_name = self
-                        .registry
-                        .load()
-                        .lookup(hit.command.command.command)
-                        .map(|spec| spec.name.clone())
-                        .unwrap_or_else(|| format!("{:?}", hit.command.command.command));
+                    let cmd_name = self.describe_invocation(&hit.command.command);
                     lines.push(format!(
                         "    {} → {cmd_name} {status}",
                         self.keymap.layer_label_string(hit.layer),
@@ -39763,12 +39773,7 @@ impl Editor {
                     lines.push(format!("[{} mode]", cont.mode.label()));
                     last_mode = Some(cont.mode);
                 }
-                let cmd_name = self
-                    .registry
-                    .load()
-                    .lookup(cont.command.command.command)
-                    .map(|spec| spec.name.clone())
-                    .unwrap_or_else(|| format!("{:?}", cont.command.command.command));
+                let cmd_name = self.describe_invocation(&cont.command.command);
                 let status = if cont.active {
                     "[active]"
                 } else {

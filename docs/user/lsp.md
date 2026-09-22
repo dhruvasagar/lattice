@@ -265,7 +265,7 @@ under its standard name:
 extra arguments, other root markers, server priority or a server
 for another language cannot be set today. Put the binary on your
 `PATH` under the name above (a symlink works). See
-[known limitations](known-limitations.md).
+[known limitations](help:known-limitations).
 
 ### Server settings
 
@@ -288,7 +288,7 @@ The file is read at startup.
 `:lsp-mode` toggles the `lsp-mode` umbrella on the active
 buffer, which detaches every server from it without affecting
 other buffers. Run it again to re-attach. See
-[modes](modes.md) for how mode toggles work.
+[modes](help:modes) for how mode toggles work.
 
 ---
 

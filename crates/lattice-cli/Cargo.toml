@@ -126,6 +126,9 @@ assets = [
     ["../../runtime/plugins/project/project.wasm", "usr/share/lattice/plugins/project/project.wasm", "644"],
     ["../../runtime/plugins/project/plugin.toml", "usr/share/lattice/plugins/project/plugin.toml", "644"],
     ["../../runtime/plugins/project/.source", "usr/share/lattice/plugins/project/.source", "644"],
+    ["../../runtime/plugins/comment/comment.wasm", "usr/share/lattice/plugins/comment/comment.wasm", "644"],
+    ["../../runtime/plugins/comment/plugin.toml", "usr/share/lattice/plugins/comment/plugin.toml", "644"],
+    ["../../runtime/plugins/comment/.source", "usr/share/lattice/plugins/comment/.source", "644"],
 ]
 
 [dev-dependencies]

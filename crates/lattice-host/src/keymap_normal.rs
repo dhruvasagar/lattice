@@ -1060,8 +1060,8 @@ pub fn register_normal_bindings(
     // current line (no operator). `[f]` etc. arm the pending
     // state; `[f, CharLiteral]` resolves to a typed
     // `Invoke(find_char_*, Args::Char(captured))`.
-    register_find_char_paths(handle, &[], None, builtins, &source());
-    register_mark_paths(handle, &[], None, builtins, &source());
+    register_find_char_paths(KeymapLayer::Builtin, handle, &[], None, builtins, &source());
+    register_mark_paths(KeymapLayer::Builtin, handle, &[], None, builtins, &source());
 
     // `r<X>` -- replace the char(s) under the cursor with X (vim's
     // `r{char}`). The affected span is `char_right x count`, exactly
@@ -1566,6 +1566,7 @@ pub fn register_operator_bindings_in(
         let mut pending_path: Vec<ChordPattern> = op_prefix.to_vec();
         pending_path.push(around_chord.clone());
         register_text_object_resolutions(
+            layer,
             handle,
             &pending_path,
             op,
@@ -1582,8 +1583,22 @@ pub fn register_operator_bindings_in(
     // ---- depth-3 `[op, f/F/t/T, CharLiteral]` wildcard
     // ---- resolves to a typed `Invoke(op,
     // ---- Target::Motion(find_char_*, Args::Char(captured)))`.
-    register_find_char_paths(handle, op_prefix, Some(op), builtins, &binding_source);
-    register_mark_paths(handle, op_prefix, Some(op), builtins, &binding_source);
+    register_find_char_paths(
+        layer,
+        handle,
+        op_prefix,
+        Some(op),
+        builtins,
+        &binding_source,
+    );
+    register_mark_paths(
+        layer,
+        handle,
+        op_prefix,
+        Some(op),
+        builtins,
+        &binding_source,
+    );
 
     // ---- Visual mode: an operator acts on the active selection BY
     // ---- DESIGN. Pressing the operator's trigger chord in Visual
@@ -1621,6 +1636,13 @@ pub fn register_operator_bindings_in(
 /// `CharLiteral` wildcard that captures the char and triggers
 /// the substituter in `substitute_normal_capture`.
 fn register_find_char_paths(
+    // CM.2: the layer every binding this creates lands in — the CALLER's,
+    // never assumed. Hardcoding `Builtin` here put a plugin operator's
+    // `gcap` / `gcF{char}` / `gc'{char}` in the universal layer while its
+    // `gcw` sat in the plugin's mode: they fired in every buffer, outlived
+    // `:set <id>.enabled=false`, and `:describe-key gc` showed the operator
+    // registered twice.
+    layer: KeymapLayer,
     handle: &KeymapHandle,
     prefix: &[ChordPattern],
     operator: Option<lattice_grammar::registry::OperatorId>,
@@ -1632,7 +1654,6 @@ fn register_find_char_paths(
     // keymap_normal.rs.
     binding_source: &lattice_grammar::SourceLocation,
 ) {
-    let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
 
     let table: &[(ChordPattern, FindKind, lattice_grammar::registry::MotionId)] = &[
@@ -1683,6 +1704,13 @@ fn register_find_char_paths(
 /// mirror, which carries wildcard paths exactly. They were actions, so none of
 /// `d'a`, `` c`a `` or `v'a` was bound, though vim composes all of them.
 fn register_mark_paths(
+    // CM.2: the layer every binding this creates lands in — the CALLER's,
+    // never assumed. Hardcoding `Builtin` here put a plugin operator's
+    // `gcap` / `gcF{char}` / `gc'{char}` in the universal layer while its
+    // `gcw` sat in the plugin's mode: they fired in every buffer, outlived
+    // `:set <id>.enabled=false`, and `:describe-key gc` showed the operator
+    // registered twice.
+    layer: KeymapLayer,
     handle: &KeymapHandle,
     prefix: &[ChordPattern],
     operator: Option<lattice_grammar::registry::OperatorId>,
@@ -1705,7 +1733,7 @@ fn register_mark_paths(
             }
         };
         handle.bind(
-            KeymapLayer::Builtin,
+            layer,
             BindingMode::Normal,
             &path,
             invocation,
@@ -1927,7 +1955,15 @@ pub(crate) fn text_object_rows(
 /// corresponding inner / around `TextObjectId`. Rows come from the
 /// shared [`text_object_rows`] table -- the same table the Visual-mode
 /// binder consumes, so operator-pending and Visual never drift.
+#[allow(clippy::too_many_arguments)]
 fn register_text_object_resolutions(
+    // CM.2: the layer every binding this creates lands in — the CALLER's,
+    // never assumed. Hardcoding `Builtin` here put a plugin operator's
+    // `gcap` / `gcF{char}` / `gc'{char}` in the universal layer while its
+    // `gcw` sat in the plugin's mode: they fired in every buffer, outlived
+    // `:set <id>.enabled=false`, and `:describe-key gc` showed the operator
+    // registered twice.
+    layer: KeymapLayer,
     handle: &KeymapHandle,
     pending_prefix: &[ChordPattern],
     op: lattice_grammar::registry::OperatorId,
@@ -1942,7 +1978,6 @@ fn register_text_object_resolutions(
     // keymap_normal.rs.
     binding_source: &lattice_grammar::SourceLocation,
 ) {
-    let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
 
     for (chord_aliases, inner_id, around_id) in text_object_rows(builtins, syntax_textobjects) {

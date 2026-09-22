@@ -18,6 +18,8 @@ local directory and which the editor builds on first boot — see
 | **treesitter-context** | `treesitter-context-mode` | `treesitter-context.enabled` (default `true`) | Pins the enclosing `impl` / `fn` / `if` above the text once their headers scroll away. Run `:help treesitter-context`. |
 | **project** | `project-mode` | `project.enabled` (default `true`) | Choose the project *first*, then the verb — `<leader>pp` (or `<C-x>pp`) picks a project and offers find-file, grep, a shell or Magit in it. Every other project-aware surface roots itself at the buffer you are standing in; this is for the one you are not. Run `:help project`. |
 
+| **comment** | `comment-mode` | `comment.enabled` (default `true`) | `gc` toggles line comments — an operator, so `gcc` does the line, `gcap` the paragraph, `gci{` a block, and `gc` works over a Visual selection. Run `:help comment`. |
+
 More core plugins land over time (a git-gutter, a file-tree, …); each appears here
 with its mode, its `<id>.enabled` option, and its own options.
 

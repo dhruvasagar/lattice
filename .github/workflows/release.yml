@@ -91,7 +91,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for pl in auto-pair treesitter-context project; do
+          for pl in auto-pair treesitter-context project comment; do
             for f in "$pl.wasm" plugin.toml .source; do
               if [[ ! -f "runtime/plugins/$pl/$f" ]]; then
                 echo "::error::missing runtime/plugins/$pl/$f"
@@ -228,7 +228,7 @@ jobs:
           # The build exiting 0 proves nothing; this content check is the gate.
           check_tar() {
             local listing; listing="$(tar tJf "$1")"
-            for pl in auto-pair treesitter-context project; do
+            for pl in auto-pair treesitter-context project comment; do
               for f in "$pl.wasm" plugin.toml .source; do
                 echo "$listing" | grep -q "share/lattice/plugins/$pl/$f" \
                   || { echo "::error::$1 is missing $pl/$f"; exit 1; }
@@ -244,7 +244,7 @@ jobs:
             # path-separator wildcard, not a typo: 7z prints `bin/lattice.exe`
             # on some versions and `bin\lattice.exe` on others, and `.`
             # matches either single character.
-            for pl in auto-pair treesitter-context project; do
+            for pl in auto-pair treesitter-context project comment; do
               for f in "$pl.wasm" plugin.toml .source; do
                 echo "$listing" | grep -q "$pl.$f" \
                   || { echo "::error::$1 is missing $pl/$f"; exit 1; }
@@ -327,7 +327,7 @@ jobs:
 
           check_paths() {
             local listing="$1" label="$2"
-            for pl in auto-pair treesitter-context project; do
+            for pl in auto-pair treesitter-context project comment; do
               for f in "$pl.wasm" plugin.toml .source; do
                 echo "$listing" | grep -q "usr/share/lattice/plugins/$pl/$f" \
                   || { echo "::error::$label is missing $pl/$f"; exit 1; }

@@ -40,6 +40,12 @@ weight = 12
 description = "Choose the project first, then the verb — find a file, grep, open a shell or Magit in a project you are not currently in."
 
 [[plugin]]
+id = "comment"
+kind = "bundled"
+weight = 13
+description = "Toggle line comments with `gc` — an operator, so it takes any motion or text object."
+
+[[plugin]]
 id = "org"
 kind = "external"
 weight = 20

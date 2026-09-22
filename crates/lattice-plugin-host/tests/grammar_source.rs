@@ -299,6 +299,9 @@ fn plugin_operator_reads_the_buffer_it_operates_on() {
     let op_id = registry.id_by_name("comment-probe").unwrap();
 
     let mut document = lattice_core::Document::from_text("hello\nworld\n");
+    document.set_path_shared(std::sync::Arc::new(std::path::PathBuf::from(
+        "/tmp/fixture.rs",
+    )));
     let cancel = CancellationToken::never();
     let env = lattice_grammar::registry::GrammarEnv::default();
     let effect = lattice_grammar::dispatcher::execute_with_env(
@@ -317,8 +320,8 @@ fn plugin_operator_reads_the_buffer_it_operates_on() {
             assert_eq!(
                 // `document.line()` yields the line WITHOUT its terminator.
                 text,
-                "op|world",
-                "the guest read line 1 of the operated range through `document`"
+                "op|/tmp/fixture.rs|world",
+                "the guest read the operated line AND the path through `document`",
             );
         }
         other => panic!("expected an Echo effect from the plugin operator, got {other:?}"),

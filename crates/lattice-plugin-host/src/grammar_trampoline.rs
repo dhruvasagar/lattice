@@ -382,12 +382,21 @@ fn build_operator_spec(
                 // cannot decide comment-vs-uncomment without reading the
                 // lines it was handed.
                 //
-                // `path` is `None` and there is no tree: `OperatorContext`
-                // carries neither, unlike `TextObjectContext`. Widening the
-                // native context for a capability no operator has asked for
-                // is the change to make when one asks.
+                // The path comes off the `Document` the context already holds —
+                // `OperatorContext` has no `path` FIELD, unlike
+                // `TextObjectContext`, but it does not need one. An earlier
+                // draft of this left `path: None` on the reasoning that the
+                // context did not carry it, and shipped an operator whose
+                // `document.path()` answered `none` for every real file. The
+                // comment plugin chooses its comment leader by extension, so
+                // the symptom was `gcc` in a .rs file reporting "this buffer
+                // has no file".
+                //
+                // Still no tree: that genuinely does need a native field
+                // (`syntax`), and no operator has asked for it.
                 let snapshot = Arc::new(DocumentSnapshot {
                     buffer: ctx.document.buffer().clone(),
+                    path: ctx.document.path_shared(),
                     ..Default::default()
                 });
                 let wit = run_callback(&guest, "apply-operator", |b, s| {

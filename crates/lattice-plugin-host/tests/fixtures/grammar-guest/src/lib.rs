@@ -225,9 +225,13 @@ impl Callbacks for Component {
                 let line = doc
                     .line(ctx.range.start.line)
                     .ok_or_else(|| format!("fixture: no line {}", ctx.range.start.line))?;
+                // The PATH as well as the text. An operator's handle was minted
+                // with `path: None` at first, so `document.path()` answered
+                // `none` for every real file — invisible until a plugin asked.
+                let path = doc.path().unwrap_or_else(|| "<none>".to_string());
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
-                    text: format!("op|{line}"),
+                    text: format!("op|{path}|{line}"),
                 })])
             }
             other => Err(format!("fixture: unknown operator callback {other}")),

@@ -177,7 +177,11 @@ and so none of it reads as an oversight:
   not started) — users install servers by hand.
 - Fully themeable syntax colours (`slice-plans/theme-system.md`
   T.5.b/T.5.c) — six `syntax_style` consumers still read a hardcoded
-  palette.
+  palette. **Corrected 2026-09-23:** T.5.b had already deleted that
+  `match`; every consumer resolves through `resolve_syntax_style`, and the
+  remaining Catppuccin literals are the default theme's own palette. The
+  entry was stale when this list was written, and the user-facing
+  known-limitations page inherited it until an audit caught it.
 - GPUI as the default renderer (Phase 5.last ⛔); `--gui` stays opt-in,
   and ARM GUI builds stay best-effort.
 - `:autocmd` / `:add-hook` (verified unregistered).

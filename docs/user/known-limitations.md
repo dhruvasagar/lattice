@@ -23,8 +23,6 @@ here.
 
 - **`--gui` is opt-in.** The terminal renderer is the default and is a
   first-class peer, not a fallback. The GPU renderer is not yet at parity.
-- **Syntax colours are not fully themeable.** UI theming works; several
-  syntax-style consumers still read a hardcoded palette.
 - **LSP servers must be installed by hand.** There is no server manager or
   installer; point lattice at servers already on your `PATH`.
 - **Org-mode is a separate build.** It ships as an out-of-repo WASM plugin
@@ -34,15 +32,23 @@ here.
   [`:claude`](help:claude-code-mode) requires the `claude` CLI on your
   `PATH`; [`:opencode`](help:opencode-mode) requires the `opencode` CLI.
   Lattice provides the editor-side integration, not the agent itself.
+- **Concealment has no settings.** Markup hiding works and both renderers
+  paint it, but there is no `conceallevel` / `concealcursor` equivalent:
+  the cursor line reveals in Insert and Replace, always, and only org
+  declares conceal rules today.
 - **No crash reporter**, and no accessibility work has been done yet.
 
 ## Grammar and commands not yet implemented
 
-- `!` (filter through an external command) and `gq` (format motion).
-- The `'<` / `'>` visual marks.
-- Ex ranges are partially implemented.
-- Command line: `<C-b>` / `<C-e>` cursor movement, `<C-r>` register paste,
-  and completion inside `:s/.../.../`.
+- `!` — filtering a range through an external command (`:%!sort`).
+- The `'<` / `'>` visual marks as motions — `'<` does not jump. The
+  `:'<,'>` command-line prefix does work, and is what Visual mode inserts
+  for you.
+- Ex ranges are partially implemented. What works: `:42` (go to a line),
+  the `:'<,'>` prefix, `%s/` / `s/` for substitute, and `:g/` / `:v/`.
+  What does not parse yet: `1,5`, `.` and `$`, `'a,'b`, `+n` / `-n`
+  offsets, and `/pattern/` addresses.
+- Completion inside `:s/.../.../`.
 - `:autocmd` / `:add-hook`.
 - `:customize` — browsing and picking groups/modes works, and
   `:customize-edit <name>` opens the option in the `:` line via `:set`; there
@@ -51,7 +57,7 @@ here.
 - `:history-*` (the dashed spelling) does not exist; use `:history
   [commands|searches|pane-buffers]` instead — it ships today with all three
   kinds.
-- Terminal buffers: mouse passthrough, and word motions in Terminal Visual.
+- Terminal buffers: mouse passthrough.
 
 ## Deliberately absent
 
@@ -64,5 +70,5 @@ here.
 ## Reporting
 
 [Open an issue](https://github.com/dhruvasagar/lattice/issues) with your
-platform, `lattice --version`, and whether `:plugins` lists the three bundled
+platform, `lattice --version`, and whether `:plugins` lists the four bundled
 plugins. If it doesn't, say so — that is its own bug and it hides others.

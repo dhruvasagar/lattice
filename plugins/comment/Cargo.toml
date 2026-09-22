@@ -1,0 +1,28 @@
+# CM.3 — the `comment` bundled plugin. `gc{motion}` / `gcc` / Visual `gc`,
+# contributed from WASM.
+#
+# Chosen as the first new plugin for what it proves rather than what it does:
+# paramount goal #3 says adding operators is first-class, and nothing
+# demonstrates that like an OPERATOR crossing the boundary and composing with
+# every motion and text object without a line in `lattice-grammar`.
+#
+# Standalone workspace (`[workspace]` below): targets wasm32-wasip2, must not
+# inherit the host toolchain's lints/target, and must not be built by a plain
+# `cargo build --workspace`. Built by `cargo xtask build-core-plugins`.
+[package]
+name = "comment"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

@@ -78,3 +78,67 @@ fn a_bare_prefix_still_enumerates_its_subtree() {
         "and `z` is not an operator:\n{body}"
     );
 }
+
+/// The partition. An operator prefix is not the operator's private namespace:
+/// a minor mode can bind `gUs` to something of its own, and that binding is
+/// news — it is precisely what `:describe-key` exists to surface.
+///
+/// An earlier draft was all-or-nothing and reverted to the full enumeration
+/// the moment one foreign binding existed, which buried the one interesting
+/// row under seventy that say nothing. So the two are separated: the
+/// operator's own grammar is summarised by count, everything else under the
+/// prefix is listed under its own heading.
+#[test]
+fn a_foreign_binding_under_an_operator_prefix_is_still_listed() {
+    let ed = editor();
+
+    // A real registered command, so the row resolves to a name rather than to
+    // an id that no lookup answers — and a MOTION rather than an operator,
+    // because a second operator id under the prefix is exactly the signal
+    // that suppresses the summary (that is what makes `g` a bare prefix).
+    let victim = {
+        let reg = ed.registry.load();
+        reg.id_by_name("motion:line-down")
+            .expect("`motion:line-down` is registered at boot")
+    };
+    let mode = lattice_mode::ModeId::new("fixture-foreign-mode");
+    let mut trie = lattice_keymap::KeymapTrie::new();
+    trie.insert(
+        &[
+            lattice_keymap::ChordPattern::Literal(lattice_protocol::chord::KeyChord::char('g')),
+            lattice_keymap::ChordPattern::Literal(lattice_protocol::chord::KeyChord::char('U')),
+            lattice_keymap::ChordPattern::Literal(lattice_protocol::chord::KeyChord::char('s')),
+        ],
+        std::sync::Arc::new(lattice_keymap::BoundCommand::from_invocation(
+            lattice_grammar::CommandInvocation::of(victim),
+            lattice_grammar::SourceLocation::synthetic("fixture-foreign-mode"),
+            lattice_keymap::KeymapLayer::MinorMode(mode),
+        )),
+    );
+    ed.keymap.push_layer(
+        lattice_host::keymap_registry::PushLayerKind::MinorMode(mode),
+        "fixture-foreign",
+        std::collections::HashMap::from([(lattice_keymap::BindingMode::Normal, trie)]),
+    );
+
+    let body = text(&ed.build_describe_key_content("gU"));
+
+    assert!(
+        body.contains("gU is an operator"),
+        "the summary still applies — one foreign chord does not make the \
+         operator's own grammar worth enumerating:\n{body}"
+    );
+    let (_, also) = body
+        .split_once("─── Also bound below gU ───")
+        .unwrap_or_else(|| panic!("the foreign binding gets its own heading:\n{body}"));
+    assert!(also.contains("gUs"), "…naming the chord:\n{body}");
+    // Scoped to the section on purpose: the SUMMARY prints `gUw` / `gUap` as
+    // examples of what an operator composes with, so asserting against the
+    // whole body would pass on the wall this test exists to prevent.
+    assert!(
+        !also.contains("gUw") && !also.contains("gUap"),
+        "while the operator's own grammar stays out of that section — it is \
+         summarised, and listing it under `Also bound` is the same wall \
+         wearing a different heading:\n{body}"
+    );
+}

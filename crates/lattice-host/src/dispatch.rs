@@ -39619,40 +39619,55 @@ impl Editor {
         // in Visual; and `gc` is not bound in Normal at all, it is a pure
         // prefix. Neither says "operator" when asked directly.
         //
-        // What does say it is the subtree: every continuation
-        // (`{prefix}w`, `{prefix}ap`, `{prefix}F{char}`) invokes the SAME
-        // operator id, because that is what `register_operator_bindings_in`
-        // built. One shared operator across the subtree is the signature.
-        let operator_summary = {
+        // What does say it is the subtree: the continuations that invoke one
+        // shared operator id, because that is what
+        // `register_operator_bindings_in` built.
+        //
+        // PARTITIONED, not all-or-nothing. A foreign binding below the prefix —
+        // a minor mode's `gcs`, say — must still be reported: it is precisely
+        // the thing a user needs `:describe-key` for, and an earlier draft
+        // reverted to the full wall the moment one appeared, which buried it
+        // among seventy rows that say nothing. The operator's own grammar is
+        // summarised; anything else under the prefix is listed.
+        let (operator_summary, grammar_count, listable) = {
             let reg = self.registry.load();
-            let mut op: Option<(lattice_grammar::CommandId, String)> = None;
-            let mut uniform = !continuations.is_empty();
+            // The operator the subtree belongs to, if exactly one does.
+            // `register_operator_bindings_in` builds one operator's surface at
+            // a time, so a SECOND operator id under the prefix means this is a
+            // plain prefix like `g` (whose `gU` / `gu` / `gq` / `g~` are four
+            // different operators) and nothing should be summarised.
+            let mut op_id: Option<lattice_grammar::CommandId> = None;
+            let mut op_name: Option<String> = None;
+            let mut distinct = 0usize;
             for cont in &continuations {
                 let id = cont.command.command.command;
-                match reg.lookup(id) {
-                    Some(spec) if matches!(spec.kind, lattice_grammar::CommandKind::Operator) => {
-                        match &op {
-                            None => op = Some((id, spec.name.clone())),
-                            Some((seen, _)) if *seen == id => {}
-                            // Two different operators under one prefix is not
-                            // an operator prefix — it is `g`, and its subtree
-                            // is the answer.
-                            Some(_) => {
-                                uniform = false;
-                                break;
-                            }
-                        }
+                if let Some(spec) = reg.lookup(id)
+                    && matches!(spec.kind, lattice_grammar::CommandKind::Operator)
+                    && op_id != Some(id)
+                {
+                    if op_id.is_none() {
+                        op_id = Some(id);
+                        op_name = Some(spec.name.clone());
                     }
-                    // A non-operator continuation (`zf`, `zo`) means the same.
-                    _ => {
-                        uniform = false;
-                        break;
-                    }
+                    distinct += 1;
                 }
             }
-            uniform.then(|| op.map(|(_, name)| name)).flatten()
+            if distinct > 1 {
+                op_id = None;
+                op_name = None;
+            }
+            match op_id {
+                Some(id) => {
+                    let (grammar, other): (Vec<_>, Vec<_>) = continuations
+                        .iter()
+                        .cloned()
+                        .partition(|c| c.command.command.command == id);
+                    (op_name, grammar.len(), other)
+                }
+                None => (None, 0, continuations.clone()),
+            }
         };
-        if let Some(op_name) = operator_summary {
+        if let Some(op_name) = operator_summary.as_deref() {
             lines.push(String::new());
             lines.push(format!("─── {chord_str} is an operator ───"));
             lines.push(String::new());
@@ -39676,12 +39691,17 @@ impl Editor {
                 "  {} continuation(s) are registered and not listed — they are \
                  the motion and text-object grammar, identical for every \
                  operator. See {} for what this one does.",
-                continuations.len(),
-                lattice_help::command_link(&op_name),
+                grammar_count,
+                lattice_help::command_link(op_name),
             ));
-        } else if !continuations.is_empty() {
+        }
+        // Foreign bindings under the prefix are listed whether or not the
+        // operator was summarised — a minor mode's `gcs` is news either way.
+        if !listable.is_empty() {
             lines.push(String::new());
-            lines.push(if resolutions.is_empty() {
+            lines.push(if operator_summary.is_some() {
+                format!("─── Also bound below {chord_str} ───")
+            } else if resolutions.is_empty() {
                 format!("─── Continuations of {chord_str} ───")
             } else {
                 format!(
@@ -39690,7 +39710,7 @@ impl Editor {
                 )
             });
             let mut last_mode: Option<lattice_keymap::BindingMode> = None;
-            for cont in &continuations {
+            for cont in &listable {
                 if last_mode != Some(cont.mode) {
                     lines.push(String::new());
                     lines.push(format!("[{} mode]", cont.mode.label()));

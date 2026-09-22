@@ -227,9 +227,11 @@ impl Lang {
             Lang::Python | Lang::Ruby | Lang::Bash | Lang::Yaml | Lang::Toml => (Some("#"), None),
             // WIT sits here rather than with the `#` languages: it takes its
             // comment syntax from C, including the `///` doc form.
-            Lang::Go | Lang::C | Lang::Cpp | Lang::Java | Lang::Sql | Lang::Wit => {
+            Lang::Go | Lang::C | Lang::Cpp | Lang::Java | Lang::Wit => {
                 (Some("//"), Some(("/*", "*/")))
             }
+            // C-style blocks, but the line form is `--`, not `//`.
+            Lang::Sql => (Some("--"), Some(("/*", "*/"))),
             Lang::Css => (None, Some(("/*", "*/"))),
             Lang::Html => (None, Some(("<!--", "-->"))),
             Lang::Lua => (Some("--"), Some(("--[[", "]]"))),
@@ -251,6 +253,51 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use std::path::PathBuf;
+
+    /// Every built-in language's line leader, pinned. SQL shipped as `//` —
+    /// grouped with the C family for its `/* */` blocks — which made `aC` /
+    /// `iC` find nothing in a `.sql` file, where comments start with `--`.
+    #[test]
+    fn line_comment_leaders_match_each_language() {
+        let expected: &[(Lang, Option<&str>)] = &[
+            (Lang::Rust, Some("//")),
+            (Lang::JavaScript, Some("//")),
+            (Lang::TypeScript, Some("//")),
+            (Lang::Tsx, Some("//")),
+            (Lang::Go, Some("//")),
+            (Lang::C, Some("//")),
+            (Lang::Cpp, Some("//")),
+            (Lang::Java, Some("//")),
+            (Lang::Wit, Some("//")),
+            (Lang::Python, Some("#")),
+            (Lang::Ruby, Some("#")),
+            (Lang::Bash, Some("#")),
+            (Lang::Yaml, Some("#")),
+            (Lang::Toml, Some("#")),
+            (Lang::Sql, Some("--")),
+            (Lang::Lua, Some("--")),
+            (Lang::Css, None),
+            (Lang::Html, None),
+            (Lang::Json, None),
+            (Lang::Markdown, None),
+            (Lang::Plain, None),
+        ];
+        for (lang, leader) in expected {
+            assert_eq!(
+                lang.comment_syntax().line.as_deref(),
+                *leader,
+                "line comment leader for {lang:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sql_keeps_its_block_comment_form() {
+        assert_eq!(
+            Lang::Sql.comment_syntax().block,
+            Some(("/*".to_string(), "*/".to_string()))
+        );
+    }
 
     #[test]
     fn detects_rust() {

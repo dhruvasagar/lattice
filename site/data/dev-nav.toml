@@ -74,6 +74,7 @@ docs = [
   "architecture/surround-mode",
   "architecture/table-mode",
   "architecture/select-mode",
+  "architecture/multi-cursor",
   "architecture/search-operator",
   "architecture/narrow-mode",
   "architecture/fold-architecture",

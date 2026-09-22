@@ -64,12 +64,14 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
     let plugin_id = set.plugin_id().0;
     // 3 motions (down-n, fails, traps) + 1 text object (to-cursor) + 5 actions
     // (read-at-cursor, AP.0.1; open-files-picker, PH7.4e; archive-to, XF.5;
-    // archive-beside-me, OM.6b; capture-to, OC.9).
+    // archive-beside-me, OM.6b; capture-to, OC.9) + 1 operator (comment-probe,
+    // CM.1 — the first operator any guest has contributed).
     assert_eq!(
         set.len(),
-        9,
+        10,
         "guest contributed down-n + to-cursor + fails + traps + read-at-cursor \
-         + open-files-picker + archive-to + archive-beside-me + capture-to"
+         + open-files-picker + archive-to + archive-beside-me + capture-to \
+         + comment-probe"
     );
 
     let mut registry = CommandRegistry::new();
@@ -277,6 +279,61 @@ fn plugin_action_reads_buffer_text_at_the_cursor_via_the_document_handle() {
             );
         }
         other => panic!("expected an Echo effect from the plugin action, got {other:?}"),
+    }
+}
+
+/// CM.1: an operator reads the buffer AND its comment syntax through the
+/// `borrow<document>` that `apply-operator` was the last grammar callback to
+/// receive. Motion, text-object, action and ex-command got theirs in AP.0.1,
+/// OM.4b, OT.1 and OC.10; operators were skipped because no plugin had
+/// contributed one, and a comment operator cannot decide comment-vs-uncomment
+/// without reading its lines.
+///
+/// The env supplies a REAL `CommentSyntax`. A `None` leader would exercise the
+/// `<none>` branch and pass whether or not the accessor works — the seam has
+/// to be asserted through an answer only a working seam can produce.
+#[test]
+fn plugin_operator_reads_the_buffer_and_its_comment_leader() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let (registry, _) = load(&dir);
+    let op_id = registry.id_by_name("comment-probe").unwrap();
+
+    let mut document = lattice_core::Document::from_text("hello\nworld\n");
+    let cancel = CancellationToken::never();
+    let comment = lattice_grammar::registry::CommentSyntax {
+        line: Some("//".to_string()),
+        block: None,
+    };
+    let env = lattice_grammar::registry::GrammarEnv {
+        comment_syntax: Some(&comment),
+        ..Default::default()
+    };
+    let effect = lattice_grammar::dispatcher::execute_with_env(
+        &registry,
+        &mut document,
+        BufferId(1),
+        Position { line: 1, byte: 0 },
+        CommandInvocation::of(op_id).with_range(lattice_grammar::range::Range::CurrentLine),
+        &cancel,
+        env,
+    )
+    .expect("plugin operator dispatches through the sync trampoline");
+
+    match effect {
+        lattice_grammar::effect::Effect::Echo { text, .. } => {
+            assert_eq!(
+                // `document.line()` yields the line WITHOUT its terminator.
+                text,
+                "//|world",
+                "the guest read line 1 through `document` and the leader \
+                 through `document.comment-syntax()` — both crossed"
+            );
+        }
+        other => panic!("expected an Echo effect from the plugin operator, got {other:?}"),
     }
 }
 

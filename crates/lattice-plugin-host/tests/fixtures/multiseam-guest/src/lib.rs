@@ -637,7 +637,11 @@ impl GrammarCallbacks for Component {
             other => Err(format!("multiseam: unknown motion callback {other}")),
         }
     }
-    fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
+    fn apply_operator(
+        _c: u32,
+        _ctx: OperatorContext,
+        _doc: &Document,
+    ) -> Result<Vec<Effect>, String> {
         Err("multiseam: no operators".into())
     }
     fn apply_text_object(

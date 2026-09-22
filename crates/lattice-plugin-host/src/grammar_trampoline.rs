@@ -375,9 +375,33 @@ fn build_operator_spec(
         apply: Arc::new(
             move |ctx: &mut OperatorContext| -> GrammarResult<NativeEffect> {
                 let wit_ctx = project_operator_context(ctx).map_err(CommandError::Plugin)?;
+                // CM.1: mint a point-in-time `document`, as the motion,
+                // text-object, action and ex-command paths already do. An
+                // operator was the last callback without one, because no
+                // plugin had contributed an operator — and a comment operator
+                // cannot decide comment-vs-uncomment without reading the
+                // lines it was handed.
+                //
+                // `path` is `None` and there is no tree: `OperatorContext`
+                // carries neither, unlike `TextObjectContext`. Widening the
+                // native context for a capability no operator has asked for
+                // is the change to make when one asks.
+                let snapshot = Arc::new(DocumentSnapshot {
+                    buffer: ctx.document.buffer().clone(),
+                    ..Default::default()
+                });
+                let comment_syntax = ctx.comment_syntax.cloned();
                 let wit = run_callback(&guest, "apply-operator", |b, s| {
-                    b.lattice_plugin_host_grammar_callbacks()
-                        .call_apply_operator(s, callback, &wit_ctx)
+                    let owned_doc = s.data_mut().table.push(
+                        DocumentResource::new(snapshot.clone())
+                            .with_comment_syntax(comment_syntax.clone()),
+                    )?;
+                    let doc_borrow = Resource::new_borrow(owned_doc.rep());
+                    let result = b
+                        .lattice_plugin_host_grammar_callbacks()
+                        .call_apply_operator(&mut *s, callback, &wit_ctx, doc_borrow);
+                    let _ = s.data_mut().table.delete(owned_doc);
+                    result
                 })?;
                 effect_from_guest(&authorizer, wit)
             },
@@ -409,14 +433,20 @@ fn build_text_object_spec(
                     path: ctx.path.map(|p| Arc::new(p.to_path_buf())),
                     ..Default::default()
                 });
+                // CM.1: `TextObjectContext` carries `comment_syntax` too, and
+                // the accessor the WIT now advertises has to answer here as
+                // well — an accessor wired on one of the two paths that can
+                // populate it is a seam that half-works, which is worse than
+                // one that does not exist.
+                let to_comment_syntax = ctx.comment_syntax.cloned();
                 // OT.1: and the tree — org's `ir` / `ar` resolve a subtree,
                 // which is the `(section)` node rather than a star count.
                 let tree_snapshot = resolve_tree_snapshot(tree_sitter_granted, ctx.syntax);
                 let wit = run_callback(&guest, "apply-text-object", |b, s| {
-                    let owned_doc = s
-                        .data_mut()
-                        .table
-                        .push(DocumentResource::new(snapshot.clone()))?;
+                    let owned_doc = s.data_mut().table.push(
+                        DocumentResource::new(snapshot.clone())
+                            .with_comment_syntax(to_comment_syntax.clone()),
+                    )?;
                     let doc_borrow = Resource::new_borrow(owned_doc.rep());
                     let owned_tree = match &tree_snapshot {
                         Some(snap) => Some(

@@ -27,7 +27,8 @@ use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, Effect, EchoLevel, EchoPayload, ExCommandContext,
     FileAnchor, OpenPickerPayload, WriteToFilePayload,
-    MotionContext, MotionResult, MotionSpec, OperatorContext, Position, Range, TextObjectContext,
+    MotionContext, MotionResult, MotionSpec, OperatorContext, OperatorSpec, Position, Range,
+    TextObjectContext,
     TextObjectSpec,
 };
 
@@ -134,6 +135,21 @@ impl Guest for Component {
             },
             9,
         );
+        // CM.1: an operator that READS the buffer and its comment syntax
+        // through the `borrow<document>` `apply-operator` now receives. Both
+        // halves are observable in the effect it returns, so the test cannot
+        // pass on a seam that crossed nothing.
+        grammar::register_operator(
+            "comment-probe",
+            "echo the operated line and its comment leader (fixture)",
+            &OperatorSpec {
+                repeatable: true,
+                args_schema: Vec::new(),
+                blockwise_per_row: false,
+                post_motion_char: false,
+            },
+            10,
+        );
         grammar::register_action(
             "open-files-picker",
             "open the host's `files` picker (fixture)",
@@ -185,8 +201,32 @@ impl Callbacks for Component {
         }
     }
 
-    fn apply_operator(_callback: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
-        Err("fixture: no operators".to_string())
+    fn apply_operator(
+        callback: u32,
+        ctx: OperatorContext,
+        doc: &Document,
+    ) -> Result<Vec<Effect>, String> {
+        match callback {
+            // Read the first line of the operated range through the borrowed
+            // document, and the buffer's comment leader through the accessor
+            // `document` grew in CM.1. Echo both back: a test asserting on
+            // this string fails if either the handle or the comment syntax
+            // stopped crossing, which a `no operators` stub could never show.
+            10 => {
+                let line = doc
+                    .line(ctx.range.start.line)
+                    .ok_or_else(|| format!("fixture: no line {}", ctx.range.start.line))?;
+                let leader = doc
+                    .comment_syntax()
+                    .and_then(|cs| cs.line)
+                    .unwrap_or_else(|| "<none>".to_string());
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("{leader}|{line}"),
+                })])
+            }
+            other => Err(format!("fixture: unknown operator callback {other}")),
+        }
     }
 
     fn apply_action(

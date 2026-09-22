@@ -48,6 +48,31 @@ interface buffer {
         /// invisible, which is the same trade `get-text-range` already makes
         /// and for the same reason.
         path: func() -> option<string>;
+
+        /// The buffer's comment syntax, as the host resolved it for this
+        /// buffer's language (`lattice_grammar::registry::CommentSyntax`).
+        ///
+        /// Here for the same reason `path` is: `types.wit` has always said
+        /// "buffer text + the scope/comment env ride the `document` handle",
+        /// and a guest asking "how do I comment this line" always holds a
+        /// `document`. On a context it would have to be re-added to
+        /// `operator-context`, `text-object-context` and `action-context` in
+        /// turn, and every dispatch would pay the clone whether or not the
+        /// guest read it.
+        ///
+        /// `none` for plain text, an unknown language, or a host that
+        /// resolved none — a caller degrades to "cannot comment here" and
+        /// never guesses a leader, which would write `//` into a Python file.
+        comment-syntax: func() -> option<comment-syntax>;
+    }
+
+    /// Mirrors `lattice_grammar::registry::CommentSyntax`, field for field.
+    record comment-syntax {
+        /// Line-comment leader — `//` (rust, js), `#` (python, shell).
+        /// `none` for a language with no line-comment form.
+        line: option<string>,
+        /// Block delimiters, e.g. `("/*", "*/")`.
+        block: option<tuple<string, string>>,
     }
 
     /// The owned projection of `ActiveBufferSnapshot`'s metadata (§4.2). Bulk

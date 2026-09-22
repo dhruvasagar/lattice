@@ -1977,6 +1977,20 @@ impl crate::grammar_host::bindings::lattice::plugin_host::buffer::HostDocument f
         self.table.get(&self_).ok().and_then(|d| d.path())
     }
 
+    fn comment_syntax(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::buffer::DocumentResource>,
+    ) -> Option<crate::grammar_host::bindings::lattice::plugin_host::buffer::CommentSyntax> {
+        self.table.get(&self_).ok().and_then(|d| {
+            d.comment_syntax().map(|cs| {
+                crate::grammar_host::bindings::lattice::plugin_host::buffer::CommentSyntax {
+                    line: cs.line.clone(),
+                    block: cs.block.clone(),
+                }
+            })
+        })
+    }
+
     fn drop(
         &mut self,
         rep: wasmtime::component::Resource<crate::buffer::DocumentResource>,

@@ -295,7 +295,11 @@ impl GrammarCallbacks for Plugin {
     ) -> Result<MotionResult, String> {
         Err("__NAME__: no motions".into())
     }
-    fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
+    fn apply_operator(
+        _c: u32,
+        _ctx: OperatorContext,
+        _doc: &Document,
+    ) -> Result<Vec<Effect>, String> {
         Err("__NAME__: no operators".into())
     }
     fn apply_text_object(

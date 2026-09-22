@@ -438,7 +438,11 @@ impl Callbacks for Component {
 
     // An operator receives the resolved `ctx.range` and returns Effects. (This
     // demo just echoes; a real one would emit edit Effects over the range.)
-    fn apply_operator(callback: u32, ctx: OperatorContext) -> Result<Vec<Effect>, String> {
+    fn apply_operator(
+        callback: u32,
+        ctx: OperatorContext,
+        _doc: &Document,
+    ) -> Result<Vec<Effect>, String> {
         match callback {
             OP_SHOUT => Ok(vec![Effect::Echo(EchoPayload {
                 level: EchoLevel::Info,

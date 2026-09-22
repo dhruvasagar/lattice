@@ -465,7 +465,11 @@ impl GrammarCallbacks for Component {
     ) -> Result<MotionResult, String> {
         Err("auto-pair: no motions".into())
     }
-    fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
+    fn apply_operator(
+        _c: u32,
+        _ctx: OperatorContext,
+        _doc: &Document,
+    ) -> Result<Vec<Effect>, String> {
         Err("auto-pair: no operators".into())
     }
     fn apply_text_object(

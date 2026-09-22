@@ -58,7 +58,11 @@ impl Callbacks for Component {
         Err(format!("no motion {callback}"))
     }
 
-    fn apply_operator(callback: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
+    fn apply_operator(
+        callback: u32,
+        _ctx: OperatorContext,
+        _doc: &Document,
+    ) -> Result<Vec<Effect>, String> {
         Err(format!("no operator {callback}"))
     }
 

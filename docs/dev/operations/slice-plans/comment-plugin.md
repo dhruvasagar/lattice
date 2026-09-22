@@ -20,7 +20,8 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 | Slice | What | Gate | Status |
 |-------|------|------|--------|
 | C.1 | `apply-operator` gets `doc`; `document` gets `comment-syntax` | a fixture guest operator reads a line and its comment leader | 📝 |
-| C.2 | The `comment` plugin itself | `gcc` round-trips in rust / python / lua buffers | 📝 |
+| C.2a | A plugin operator can declare its chord | `gc{motion}` / `gcc` / Visual `gc` resolve for a fixture operator | 📝 |
+| C.2b | The `comment` plugin itself | `gcc` round-trips in rust / python / lua buffers | 📝 |
 | C.3 | Promote to core | a release archive carries four plugins; `:plugins` shows four bundled | 📝 |
 
 ---
@@ -118,7 +119,77 @@ a version note there.
 
 ---
 
-## Task C.2: the plugin
+## Task C.2a: a plugin operator can declare its chord
+
+**The gap, and it is the third of the same shape.** `register-operator` lets a
+plugin *register* an operator. Nothing lets that operator be *reached*:
+
+- `keymap.wit`'s `binding-mode` is normal / insert / visual / select / replace
+  / command / search. It says outright that "the transient operator-pending /
+  after-key states are internal grammar states, **not plugin-bindable**".
+- So a plugin cannot bind `gc` into `AfterG`, cannot get operator-pending
+  motion targets, the doubled `gcc`, `i_`/`a_` text-object pendings, or the
+  `f`/`F`/`t`/`T` find-char pendings.
+- Binding `gc` in plain Normal through `register-binding` does not work
+  around it: it fires immediately with no motion, and a bound prefix kills its
+  longer chords, so it would also kill `gcc`.
+
+The host builds all of that for native operators in
+`keymap_normal::register_operator_bindings`, which is **already `pub` for this
+exact case** — N.1.3 exposed it so boot could wire a *provider-contributed*
+operator's chord (narrow's `zn`) while the provider kept the spec and apply.
+A WASM plugin is the same split with a process boundary in the middle.
+
+**Chosen (Dhruva, 2026-09-22): the operator declares its chord.**
+`operator-spec` gains `chord` and `doubled`; the loader's grammar drain wires
+them. Rejected: a separate `register-operator-chord` on the keymap seam —
+it splits one concept across two seams and permits an operator that is
+registered but never reachable.
+
+**Layer: `MinorMode(<mode>)`, not `Builtin`** — and
+`register_operator_bindings` gains a `layer` parameter to allow it. The
+standing rule says feature keymaps never sit at Builtin, and there is a
+concrete reason here beyond the rule: at Builtin the chord outlives its plugin,
+so `:set comment.enabled=false` would leave `gc` bound to a command whose
+handler is gone. At MinorMode it is scoped and reverses with the plugin, which
+is what the loader already does for mode-plugin bindings.
+
+**Wiring shape — a service, like every other seam.** `register_operator_bindings`
+lives in `lattice-host` and the drain lives in `lattice-plugin-loader`, which
+does not depend on it. So the host publishes a handle:
+
+	// lattice-mode
+	pub trait OperatorChordWirer: Send + Sync {
+	    fn wire(&self, op: OperatorId, chord: &str, doubled: Option<char>,
+	            mode: ModeId, post_motion_char: bool);
+	}
+	pub type OperatorChordWirerHandle = Arc<dyn OperatorChordWirer>;
+
+`lattice-host` implements it over `register_operator_bindings`;
+`LoaderServices` carries it; **absent ⇒ the seam is `NotWired` and the load
+fails loudly**, per the `agenda_registry` precedent — a plugin whose operator
+silently has no keys is the failure this project keeps writing rules about.
+
+- [ ] **Step 1: `wit/types.wit`** — `operator-spec` gains `chord: option<string>`
+  and `doubled: option<string>`. Note in the WIT that `doubled` is the TRAILING
+  key (`c` for `gcc`, `U` for `gUU`), not the whole chord, and that `none`
+  binds no doubled form (vim has no `zff`).
+- [ ] **Step 2: `lattice-mode`** — the trait + handle.
+- [ ] **Step 3: `register_operator_bindings`** — take `layer: KeymapLayer`.
+  Native callers pass `Builtin` unchanged.
+- [ ] **Step 4: `lattice-host`** — implement the trait, register the service.
+- [ ] **Step 5: `lattice-plugin-host`** — carry `chord` / `doubled` out of the
+  WIT spec to the drain. The native `OperatorSpec` has no chord field and
+  should not grow one; the chord is registration data, not dispatch data.
+- [ ] **Step 6: `lattice-plugin-loader`** — `LoaderServices.operator_chords`;
+  wire on drain; `NotWired` when absent.
+- [ ] **Step 7: test** — the fixture's `comment-probe` gains a chord, and a
+  host test presses `gc` + a motion, then `gcc`, and asserts the operator ran
+  over the right range. Pressing keys, not calling `dispatch_chord` — per
+  `dispatch-chord-cannot-compose-operators`, a host-side harness firing
+  `d<motion>` runs the bare motion.
+
+## Task C.2b: the plugin
 
 - [ ] **Step 1: `plugins/comment/`** — a standalone `wasm32-wasip2` crate, not
   a workspace member (the `plugins/*` precedent). `plugin.toml`:

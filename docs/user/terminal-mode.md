@@ -272,7 +272,7 @@ editable with `:set`:
 Options apply to **new** terminals. Existing terminals keep
 their boot-time config.
 
-Example `~/.config/lattice/config.toml`:
+Example `~/.config/lattice/lattice.toml`:
 
 ```toml
 [terminal]

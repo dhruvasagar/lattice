@@ -71,8 +71,8 @@ ones:
 
 1. **Built-in default** — the value the option was registered
    with (`Tabstop = 8`, `Wrap = false`).
-2. **TOML overrides** — keys from your `~/.config/lattice/init.toml`
-   (and project-level `.lattice/init.toml`) loaded at startup.
+2. **TOML overrides** — keys from your `~/.config/lattice/lattice.toml`
+   (and a project's `.lattice/config.toml`) loaded at startup.
 3. **Runtime `:set`** — explicit settings during the session.
 4. **Mode contributions** — modes can contribute options via
    `Mode::options()`. Example: `help-mode` contributes
@@ -137,13 +137,13 @@ actually configure.
 ### Static settings: TOML
 
 Put values that should persist across sessions in
-`~/.config/lattice/init.toml`. Project-level overrides live in
-`.lattice/init.toml` at the repo root and override user-level
+`~/.config/lattice/lattice.toml`. Project-level overrides live in
+`.lattice/config.toml` at the repo root and override user-level
 on a per-project basis. The TOML keys mirror the option names
 verbatim:
 
 ```toml
-# ~/.config/lattice/init.toml
+# ~/.config/lattice/lattice.toml
 number = true
 tabstop = 4
 foldmethod = "syntax"

@@ -101,7 +101,7 @@ where you last changed to.
 :set project.root-markers=.git,Cargo.toml,WORKSPACE.bazel
 ```
 
-or in `config.toml`:
+or in `~/.config/lattice/lattice.toml` (or a project's `.lattice/config.toml`):
 
 ```toml
 [project]

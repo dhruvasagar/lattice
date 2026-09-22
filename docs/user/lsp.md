@@ -169,17 +169,17 @@ references-picker rows, diagnostics jumps, etc.).
 | `:lsp-symbols`               | `textDocument/documentSymbol` -- the active document's outline; nested DocumentSymbol responses keep their hierarchy as picker indent. |
 | `:lsp-workspace-symbol [q]`  | `workspace/symbol` -- workspace-scoped symbols matching `q` (server-side substring filter). Empty `q` returns the server's idea of "every workspace symbol". Fans out across **every running server**, not just the active buffer's. |
 | `:diagnostics`               | Every workspace diagnostic across attached servers; severity in marginalia.   |
-| `:complete`                  | LSP completion items at the cursor (`textDocument/completion`) — the cmdline-driven peer of the Insert-mode auto-trigger. Full surface: snippet expansion, lazy `completionItem/resolve`, ranking, ghost text, commit chars, cross-source dedup. |
+| `:lsp-complete`              | LSP completion items at the cursor (`textDocument/completion`) — the cmdline-driven peer of the Insert-mode auto-trigger. Full surface: snippet expansion, lazy `completionItem/resolve`, ranking, ghost text, commit chars, cross-source dedup. |
 
 ### Edits
 
 | Command                | Effect                                                                                              |
 |------------------------|-----------------------------------------------------------------------------------------------------|
-| `:format` (`:fmt`)     | `textDocument/formatting` -- whole buffer; highest-priority server with the provider; one undo unit.|
-| `:format-range`        | `textDocument/rangeFormatting` over the active Visual selection (or whole buffer when not in Visual). |
-| `:signature-help`      | `textDocument/signatureHelp` -- popup with the active signature + parameter highlight. Auto-fires in Insert mode on server-advertised trigger characters (typically `(` and `,`). |
-| `:rename <name>` (`:rn`) | `textDocument/rename` after `textDocument/prepareRename`. Replaces the symbol under cursor across the workspace. Empty `<name>` uses the server's prepareRename placeholder. Active buffer's edits apply as one undo unit; cross-file edits open via `:e` and apply per-file. |
-| `:code-actions` (`:ca`) | `textDocument/codeAction` -- vertico picker over quick-fixes, refactors, and source actions at the cursor / Visual selection. Accept resolves lazy actions via `codeAction/resolve`, applies inline `WorkspaceEdit`s via the rename apply path, and routes `Command` payloads through `workspace/executeCommand`. |
+| `:lsp-format`          | `textDocument/formatting` -- whole buffer; one undo unit.|
+| `:lsp-format-range`    | `textDocument/rangeFormatting` over the active Visual selection (or whole buffer when not in Visual). |
+| `:lsp-signature-help`  | `textDocument/signatureHelp` -- popup with the active signature + parameter highlight. Auto-fires in Insert mode on server-advertised trigger characters (typically `(` and `,`). |
+| `:lsp-rename <name>`   | `textDocument/rename` after `textDocument/prepareRename`. Replaces the symbol under cursor across the workspace. Empty `<name>` uses the server's prepareRename placeholder. Active buffer's edits apply as one undo unit; cross-file edits open via `:e` and apply per-file. |
+| `:lsp-code-action`     | `textDocument/codeAction` -- vertico picker over quick-fixes, refactors, and source actions at the cursor / Visual selection. Accept resolves lazy actions via `codeAction/resolve`, applies inline `WorkspaceEdit`s via the rename apply path, and routes `Command` payloads through `workspace/executeCommand`. |
 
 Each picker entry encodes `path:line:col` in its candidate
 text; accept dispatch parses through `jump_to_file_line_col`
@@ -225,7 +225,6 @@ four places:
 | `[d`                | Jump to the previous diagnostic (wraps), echoing its message.                            |
 | `gl`                | Open a cursor-anchored popup listing every diagnostic on the cursor line (severity glyph, message, `source`/`code`, related-info count). |
 | `:diagnostics`      | Open the workspace diagnostics picker.                                                   |
-| `:diag-clear`       | Drop the renderer's overlay for the active buffer (server may republish).                |
 
 > Diagnostics are **separate** from the [error list](help:error-list).
 > `:next-error` / `:cnext` walk the *error list* (compiler / tool
@@ -245,46 +244,51 @@ overwriting fresher state.
 ## Configuration
 
 > Most users never need to configure anything: the defaults
-> match how each server's docs say to invoke it. Override only
-> when you need a non-standard binary path or initialization
-> options.
+> match how each server's docs say to invoke it.
 
-### Where config lives
+### Which servers lattice starts
 
-LSP configuration is part of lattice's options system (§5.12).
-Until the typed-options layer ships, `lsp.toml` at the
-workspace root provides overrides:
+The server list is built in. Lattice starts a server when you
+open a file it handles, provided its binary is on your `PATH`
+under its standard name:
+
+| Language | Binary | Files |
+|---|---|---|
+| Rust | `rust-analyzer` | `*.rs` |
+| Python | `pyright-langserver --stdio` | `*.py`, `*.pyi` |
+| Go | `gopls` | `*.go` |
+| TypeScript / JavaScript | `typescript-language-server --stdio` | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mts`, `*.cts` |
+| C / C++ | `clangd` | `*.c`, `*.h`, `*.cc`, `*.cpp`, `*.cxx`, `*.hpp`, `*.hh` |
+| Lua | `lua-language-server` | `*.lua` |
+
+**The list is not configurable yet.** A different binary path,
+extra arguments, other root markers, server priority or a server
+for another language cannot be set today. Put the binary on your
+`PATH` under the name above (a symlink works). See
+[known limitations](known-limitations.md).
+
+### Server settings
+
+Settings a server asks for (LSP `workspace/configuration`) are
+answered from the `lsp` table of your config file,
+`~/.config/lattice/lattice.toml`, or a project's
+`.lattice/config.toml`. The server names the section it wants;
+rust-analyzer, for example, asks for `rust-analyzer`:
 
 ```toml
-# lsp.toml at workspace root
-[server.rust]
-binary = "/opt/rust-analyzer-nightly/rust-analyzer"
-args = []
-root_markers = ["Cargo.toml", "rust-project.json"]
-file_patterns = ["*.rs"]
-
-[server.rust.initialization_options]
+[lsp.rust-analyzer]
 checkOnSave.command = "clippy"
-cargo.features = ["all"]
-
-[server.python]
-binary = "pyright-langserver"
-args = ["--stdio"]
+cargo.features = "all"
 ```
 
-The keys mirror `ServerConfig` (see
-[`../dev/architecture/lsp-architecture.md`](../dev/architecture/lsp-architecture.md) for the
-schema).
+The file is read at startup.
 
-### Per-language overrides
+### Turning LSP off for a buffer
 
-A user-level `~/.config/lattice/lsp.toml` is merged on top of
-the workspace file. Workspace wins on key collision.
-
-### Disabling LSP for a buffer
-
-`:set nolsp` (per-buffer) detaches the server for that buffer
-without affecting others. Re-attach with `:set lsp`.
+`:lsp-mode` toggles the `lsp-mode` umbrella on the active
+buffer, which detaches every server from it without affecting
+other buffers. Run it again to re-attach. See
+[modes](modes.md) for how mode toggles work.
 
 ---
 
@@ -361,21 +365,17 @@ The default min level is `info`; per-server overrides allowed.
 
 ### Configuration
 
-`lsp.toml` (workspace) + `~/.config/lattice/lsp.toml` (user)
-accept these logging keys:
+The default minimum log level can be set in `lattice.toml`:
 
 ```toml
-[lsp]
-log_level    = "info"   # subsystem-wide default
-log_capacity = 10000    # records per ring (per server + global)
-
-[server.rust]
-log_level = "debug"     # override for this server
-trace_io  = true        # turn on JSON-RPC trace at startup
+[lsp-mode]
+log-level = "debug"   # default "info"
 ```
 
-Every key is optional; defaults are conservative
-(`info` / `10000` / no trace).
+(`[lsp] log-level` is read too, as an older spelling.) Per-server
+levels are set at runtime with `:lsp-log-level <server> <level>`;
+there is no config key for them, nor for the ring capacity or
+JSON-RPC tracing.
 
 ### Tracing-crate fall-through
 
@@ -439,14 +439,11 @@ the same events whether or not buffer views are open.
 
 ### "rust-analyzer: command not found" in the modeline
 
-The server binary isn't on `PATH`. Either install it through
-your language's normal channel, or set an absolute path in
-`lsp.toml`:
-
-```toml
-[server.rust]
-binary = "/full/path/to/rust-analyzer"
-```
+The server binary isn't on `PATH`. Install it through your
+language's normal channel, or symlink it onto your `PATH` under
+the name lattice looks for (see
+[which servers lattice starts](#which-servers-lattice-starts)).
+A custom binary path cannot be configured yet.
 
 ### Server starts but no diagnostics appear
 
@@ -455,8 +452,9 @@ binary = "/full/path/to/rust-analyzer"
    `RUST_LOG=lattice_lsp=debug` surfaces them at the terminal.
 2. Confirm the workspace root matches what the server expects.
    For rust-analyzer, this is the directory containing
-   `Cargo.toml`. If lattice resolved the wrong root, edit
-   `lsp.toml` to set `root_markers` explicitly.
+   `Cargo.toml`. Root markers are built in and cannot be
+   overridden yet; opening the file from inside the intended
+   project is the workaround.
 3. Some servers need warmup time on first open (rust-analyzer
    indexes the workspace). Wait a few seconds.
 
@@ -528,15 +526,7 @@ publish diagnostics. lattice merges per feature:
 | Formatting      | Single winner: highest-priority server with `documentFormattingProvider`. Avoids two formatters fighting.                    |
 | Rename          | `WorkspaceEdit`s from each server merged; conflicts (same range edited by two servers) resolve to the higher-priority one.   |
 
-Server priority is configurable in `lsp.toml`:
-
-```toml
-[server.rust]
-priority = 100  # default; higher wins ties
-
-[server.clippy-bridge]
-priority = 50
-```
+There is no per-server priority setting yet.
 
 A crashed server affects only its own diagnostics + its own
 running task; other servers attached to the same buffer keep

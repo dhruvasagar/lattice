@@ -51,7 +51,7 @@ Priority, highest to lowest:
 2. Buffer-local explicit     — :setlocal foo=bar  ← this design
 3. Active minor modes        — OverridePriority breaks ties
 4. Major mode                — Mode::options() contribution
-5. Global config             — :set foo=bar, init.toml, user TOML
+5. Global config             — :set foo=bar, lattice.toml
 6. Built-in default          — option's declared default value
 ```
 

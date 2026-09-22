@@ -10,7 +10,7 @@ pub enum OptionOrigin {
     /// The option's registered default — no override at any layer.
     #[default]
     Default,
-    /// Set via `:set`, `init.toml`, or user TOML (global config layer).
+    /// Set via `:set` or `lattice.toml` (global config layer).
     GlobalConfig,
     /// Set via `:setlocal` for this buffer.
     BufferLocal,

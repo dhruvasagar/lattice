@@ -418,7 +418,7 @@ fn execute_operator(
         )
         && operator.blockwise_per_row
     {
-        return execute_operator_blockwise(operator, document, invocation, cancel, env);
+        return execute_operator_blockwise(operator, document, buffer_id, invocation, cancel, env);
     }
 
     let motion_count = invocation.count_or_default();
@@ -462,6 +462,7 @@ fn execute_operator(
         );
     let mut ctx = OperatorContext {
         document,
+        buffer_id,
         range: target_range,
         origin,
         linewise: matches!(
@@ -500,6 +501,9 @@ fn execute_operator(
 fn execute_operator_blockwise(
     operator: &crate::registry::OperatorSpec,
     document: &mut Document,
+    // CM.3: threaded through so each per-row context can name its buffer, the
+    // `target` a plugin operator's `apply-edit` effect needs.
+    buffer_id: BufferId,
     invocation: &CommandInvocation,
     cancel: &CancellationToken,
     env: crate::registry::GrammarEnv<'_>,
@@ -560,6 +564,7 @@ fn execute_operator_blockwise(
         cancel.check()?;
         let mut ctx = OperatorContext {
             document,
+            buffer_id,
             range: *r,
             // VM.3m: each blockwise row starts at its own left edge.
             origin: r.start,

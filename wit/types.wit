@@ -1704,6 +1704,13 @@ interface types {
     /// `lattice_protocol` position `range`, which crosses; the recursive grammar
     /// `Range` is a dispatcher concern the guest never sees).
     record operator-context {
+        /// CM.3: the buffer being operated on — the `target` an `apply-edit`
+        /// effect names. `action-context` and `motion-context` have always
+        /// carried it; an operator did not, because a NATIVE operator mutates
+        /// the document in place and never needs to name it. A plugin operator
+        /// holds a read-only handle and must ask the host to apply, so without
+        /// this it can read its range and never change it.
+        buffer-id: u32,
         range: range,
         linewise: bool,
         register: register,

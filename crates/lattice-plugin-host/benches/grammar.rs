@@ -111,6 +111,7 @@ fn grammar_marshalling(c: &mut Criterion) {
     let mut document = Document::from_text("hello world\nsecond line of text\n");
     let operator_ctx = OperatorContext {
         document: &mut document,
+        buffer_id: lattice_core::BufferId(1),
         range: Range {
             start: pos(0, 0),
             end: pos(1, 5),

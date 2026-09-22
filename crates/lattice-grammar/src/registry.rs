@@ -266,6 +266,17 @@ impl std::fmt::Debug for MotionSpec {
 /// Context passed to an operator's evaluator.
 pub struct OperatorContext<'a> {
     pub document: &'a mut Document,
+    /// CM.3: the buffer the operator is running over — the `target` a plugin
+    /// operator names in an `apply-edit` effect.
+    ///
+    /// Absent until now, and the absence was an asymmetry rather than a
+    /// decision, exactly as MR.2 found for [`ExCommandContext::buffer_id`]:
+    /// [`ActionContext`] and [`MotionContext`] both carry it, a native
+    /// operator never needed it because it mutates `document` in place, and a
+    /// PLUGIN operator cannot — it holds a read-only handle and must ask the
+    /// host to apply. Without this field a plugin operator can read its range
+    /// and never change it, which makes the contribution pointless.
+    pub buffer_id: BufferId,
     pub range: ProtoRange,
     /// VM.3m: the start of the operated text BEFORE linewise expansion —
     /// `min(cursor, motion target)` for a motion, the object's or selection's

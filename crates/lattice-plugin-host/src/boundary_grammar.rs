@@ -134,6 +134,7 @@ pub fn project_motion_context(ctx: &NativeMotionContext) -> Result<WitMotionCont
 /// `&mut Document` is not projected — mutation is the returned `effect` (§4.5).
 pub fn project_operator_context(ctx: &NativeOperatorContext) -> Result<WitOperatorContext, String> {
     Ok(WitOperatorContext {
+        buffer_id: ctx.buffer_id.0,
         range: ctx.range.to_wit()?,
         linewise: ctx.linewise,
         register: ctx.register.to_wit()?,
@@ -302,6 +303,7 @@ mod tests {
         let mut document = Document::from_text("abc\n");
         let ctx = NativeOperatorContext {
             document: &mut document,
+            buffer_id: lattice_core::BufferId(7),
             range: Range {
                 start: pos(0, 0),
                 end: pos(0, 3),
@@ -324,6 +326,7 @@ mod tests {
         assert!(!wit.linewise);
         assert!(matches!(wit.register, WitRegister::Named('a')));
         assert_eq!(wit.count, 1);
+        assert_eq!(wit.buffer_id, 7, "CM.3: the id crosses");
     }
 
     #[test]

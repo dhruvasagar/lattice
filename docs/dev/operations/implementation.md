@@ -62,6 +62,14 @@ Reasons this ordering wins:
 
 ## Phase status
 
+> **v0.9.1 shipped 2026-09-23** — a fourth bundled plugin (`comment`), the
+> plugin-data relocation (`../architecture/plugin-data-location.md`; the
+> installer was deleting plugin state on Linux), and an honesty pass over the
+> docs the first users read. The release failed once before it published: the
+> `.deb` asset list in `lattice-cli/Cargo.toml` was a fifth copy of the
+> core-plugin set and had never gained `comment`. A test reads `CORE_PLUGINS`
+> and gates it now.
+>
 > **v0.9.0 shipped 2026-09-21** — the first installable release.
 > `https://github.com/dhruvasagar/lattice/releases/tag/v0.9.0`. Release
 > pipeline runs end to end; archives carry the bundled plugins in a

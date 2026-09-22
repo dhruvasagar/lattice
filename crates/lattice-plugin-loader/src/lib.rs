@@ -1253,6 +1253,12 @@ impl PluginLoader {
                 manifest.id.clone(),
                 manifest.doc.clone().unwrap_or_default(),
             );
+            // Every seam's contributions are stamped with THAT seam's id, so
+            // the name has to resolve from all of them — or a keymap-seam
+            // binding reads `<plugin:29>` beside the same plugin's named
+            // grammar.
+            let seam_ids: Vec<u32> = record.teardown.seam_ids.iter().map(|s| s.0).collect();
+            sink.register_seam_ids(id.0, &seam_ids);
         }
 
         self.loaded

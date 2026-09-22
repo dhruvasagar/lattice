@@ -25,6 +25,22 @@ pub trait PluginMetaSink: Send + Sync {
     /// and `:list-plugins` shows it. Called once per plugin at load.
     fn register_plugin(&self, id: u32, name: String, doc: String);
 
+    /// Record that `seam_ids` all belong to the plugin registered as `primary`.
+    ///
+    /// A plugin is instantiated once per seam and each instance gets its own
+    /// host id; `primary` (the first) is its identity, but a contribution is
+    /// stamped with the id of the seam that made it. Without this, a binding
+    /// the `keymap` seam registered renders as `<plugin:29>` while the same
+    /// plugin's grammar renders as its name. Aliases only — `:list-plugins`
+    /// must still show the plugin once. `unregister_plugin(primary)` drops
+    /// them.
+    ///
+    /// Defaults to a no-op so a test sink need not care; the host's registry
+    /// is the one implementation that must.
+    fn register_seam_ids(&self, primary: u32, seam_ids: &[u32]) {
+        let _ = (primary, seam_ids);
+    }
+
     /// Forget a plugin's metadata (unload / reload). Idempotent — a
     /// never-registered or already-removed id is a no-op.
     fn unregister_plugin(&self, id: u32);

@@ -39110,10 +39110,13 @@ impl Editor {
     }
 
     /// PI.4: the full metadata for a plugin id, if loaded.
+    ///
+    /// `id` may be any of the plugin's seam ids, not just its primary one: a
+    /// binding is stamped with the id of the seam that registered it.
     pub fn plugin_meta(&self, id: u32) -> Option<PluginMeta> {
         let reg = self.services.get::<PluginMetaRegistry>()?;
-
-        reg.0.read().ok()?.get(&id).cloned()
+        let primary = reg.primary_of(id);
+        reg.0.read().ok()?.get(&primary).cloned()
     }
 
     /// PI.4: every loaded plugin as `(id, meta)`, sorted by name then id.
@@ -42443,11 +42446,33 @@ pub struct PluginMeta {
 /// Registered empty at boot; the Phase-8 plugin loader is the populator (none
 /// exists yet — the seam is ready). `RwLock` gives the interior mutability a
 /// post-boot populate needs behind the shared `Arc<ServiceRegistry>`.
-pub struct PluginMetaRegistry(pub std::sync::RwLock<std::collections::HashMap<u32, PluginMeta>>);
+///
+/// The second map aliases a plugin's non-primary seam ids to its primary one.
+/// It is separate from the first on purpose: everything that ENUMERATES
+/// plugins (`:list-plugins`, `gen:plugins`) reads `.0` and must see each
+/// plugin once, while provenance lookups go through [`Self::primary_of`].
+pub struct PluginMetaRegistry(
+    pub std::sync::RwLock<std::collections::HashMap<u32, PluginMeta>>,
+    pub std::sync::RwLock<std::collections::HashMap<u32, u32>>,
+);
+
+impl PluginMetaRegistry {
+    /// The primary id `id` belongs to — itself when it is one, or has no alias.
+    pub fn primary_of(&self, id: u32) -> u32 {
+        self.1
+            .read()
+            .ok()
+            .and_then(|aliases| aliases.get(&id).copied())
+            .unwrap_or(id)
+    }
+}
 
 impl Default for PluginMetaRegistry {
     fn default() -> Self {
-        PluginMetaRegistry(std::sync::RwLock::new(std::collections::HashMap::new()))
+        PluginMetaRegistry(
+            std::sync::RwLock::new(std::collections::HashMap::new()),
+            std::sync::RwLock::new(std::collections::HashMap::new()),
+        )
     }
 }
 
@@ -42466,6 +42491,19 @@ impl lattice_mode::PluginMetaSink for PluginMetaRegistry {
     fn unregister_plugin(&self, id: u32) {
         if let Ok(mut map) = self.0.write() {
             map.remove(&id);
+        }
+        // Ids are monotonic and never reused, so a stale alias would only
+        // leak — but it would leak once per reload, forever.
+        if let Ok(mut aliases) = self.1.write() {
+            aliases.retain(|_, primary| *primary != id);
+        }
+    }
+
+    fn register_seam_ids(&self, primary: u32, seam_ids: &[u32]) {
+        if let Ok(mut aliases) = self.1.write() {
+            for &seam in seam_ids.iter().filter(|&&s| s != primary) {
+                aliases.insert(seam, primary);
+            }
         }
     }
 }

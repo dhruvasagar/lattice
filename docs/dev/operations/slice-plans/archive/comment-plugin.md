@@ -15,14 +15,56 @@ boundary** composing with every motion and text object without a line in
 It is deliberately NOT blocked on `plugin-inline-decorations.md` — that seam
 unblocks colorizer and todo-comments; `gc` needs only the grammar seam.
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
 | Slice | What | Gate | Status |
 |-------|------|------|--------|
-| C.1 | `apply-operator` gets `doc`; `document` gets `comment-syntax` | a fixture guest operator reads a line and its comment leader | 📝 |
-| C.2a | A plugin operator can declare its chord | `gc{motion}` / `gcc` / Visual `gc` resolve for a fixture operator | 📝 |
-| C.2b | The `comment` plugin itself | `gcc` round-trips in rust / python / lua buffers | 📝 |
-| C.3 | Promote to core | a release archive carries four plugins; `:plugins` shows four bundled | 📝 |
+| C.1a | `apply-operator` gets `doc` | a fixture guest operator reads a line through `doc` | ✅ |
+| C.1b | `document` gets `comment-syntax` | the guest reads its leader from the host | ❌ |
+| C.2a | A plugin operator can declare its chord | `gc{motion}` / `gcc` / Visual `gc` resolve for a fixture operator | ✅ |
+| C.2b | The `comment` plugin itself | `gcc` round-trips in rust / python / lua buffers | ✅ |
+| C.3 | Promote to core | a release archive carries four plugins; `:plugins` shows four bundled | ✅ |
+
+**Shipped 2026-09-22, under different slice ids.** The commits call these
+slices CM.1 (C.1a), CM.2 (C.2a) and CM.3 (C.2b + C.3) — `ed3afa1d` is the
+plugin, `a95bfa91` stamps its chords as the plugin's, and `e88dbce0` keeps
+every continuation in `comment-mode`'s layer. `CM.x` is
+also compilation-mode's prefix (CM.5, CM.6b), so this plan's `C.x` ids are the
+ones to cite. Verified against source 2026-09-22, not against these icons,
+which had stayed 📝 throughout:
+
+- **C.1a** — `apply-operator` takes `borrow<document>` (`wit/grammar.wit`);
+  `grammar_source.rs::plugin_operator_reads_the_buffer_it_operates_on` asserts
+  the guest read the real line and path.
+- **C.1b ❌ — replaced by the plugin's own leader table.** The plugin keys a
+  line-comment leader on the file extension (`plugins/comment/src/toggle.rs`
+  `LEADERS`) instead of asking the host; the extension also answers before a
+  buffer's parse lands. `ed3afa1d` records the reasoning: the operator has no
+tree, and `document` exposes `path()` but no language. **The cost
+  is two tables that can disagree**, and on the day this was audited they
+  did: the host's `Lang::comment_syntax` gave SQL `//` (fixed in `0f9ce15b`,
+  with a test pinning every language's leader). The plugin's table also cannot
+  see filename- or shebang-detected buffers (`Makefile`, `Dockerfile`,
+  `.zshrc`, an extensionless script). Revisit when LG.3 lets plugin languages
+  declare comment syntax: that is when the host table becomes the complete one
+  and an accessor pays for itself.
+- **C.2a** — `OperatorChordWirer` (`lattice-mode`), `LoaderServices.operator_chords`,
+  bound at `MinorMode(comment-mode)` and gated on the `grammar:chord`
+  capability; `grammar_drain.rs` pins the wiring and the capability refusal,
+  `plugin_operator_chords_stay_in_their_layer.rs` pins that every continuation
+  (`gcap`, `gcF{c}`, `gc'{c}`) stays in the mode's layer.
+- **C.2b** — `plugins/comment/`, 13 toggle unit tests, `doc/comment.md`. The
+  gate itself landed later than the plugin: `6d45c7b0` presses `gcc` / `gcj`
+  through `App::apply` against the shipped component and manifest
+  (`lattice-ui-tui/src/app/comment_plugin.rs`). The key-press half of C.2a's
+  step 7 is covered by the same test, against the real plugin rather than the
+  fixture.
+- **C.3** — `CORE_PLUGINS`, all four `release.yml` loops,
+  `site/data/plugins.toml`, `docs/user/core-plugins.md`. Verified by reading
+  those files; the audit did not rebuild a release archive or open `:plugins`.
+
+The per-step checklists below are the plan as written, kept for the record;
+C.1 steps 1 and 4 are the ❌ above.
 
 ---
 

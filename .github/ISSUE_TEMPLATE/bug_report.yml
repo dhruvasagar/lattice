@@ -47,7 +47,7 @@ body:
   - type: dropdown
     id: plugins
     attributes:
-      label: Does `:plugins` list auto-pair, treesitter-context and project as `bundled`?
+      label: Does `:plugins` list auto-pair, treesitter-context, project and comment as `bundled`?
       description: If not, that is its own bug and it hides others.
       options:
         - "Yes, all three"

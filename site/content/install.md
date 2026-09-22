@@ -104,7 +104,7 @@ lattice --version
 ```
 
 Prints the version. To confirm the bundled plugins were found, open the
-editor and run `:plugins` — `auto-pair`, `treesitter-context` and `project`
+editor and run `:plugins` — `auto-pair`, `treesitter-context`, `project` and `comment`
 should each be listed as `bundled`.
 
 ## Not yet available

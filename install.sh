@@ -134,4 +134,4 @@ case ":$PATH:" in
 	*) printf '\n%s/bin is not on your PATH. Add it:\n    export PATH="%s/bin:$PATH"\n' "$PREFIX" "$PREFIX" ;;
 esac
 printf '\nNext: run `lattice` and press <CR> on "Tutor", or `lattice --scaffold-init` to start a config.\n'
-printf 'Confirm the bundled plugins loaded with `:plugins` — three rows marked `bundled`.\n'
+printf 'Confirm the bundled plugins loaded with `:plugins` — four rows marked `bundled`.\n'

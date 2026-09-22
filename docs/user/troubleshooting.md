@@ -17,7 +17,7 @@ tree-sitter context header.
 :plugins
 ```
 
-`auto-pair`, `treesitter-context` and `project` should each be listed with
+`auto-pair`, `treesitter-context`, `project` and `comment` should each be listed with
 SOURCE `bundled`. If the list is empty, the editor found no plugin
 directory. Lattice looks in this order:
 
@@ -93,6 +93,6 @@ the alternate screen.
 
 ## Filing a bug
 
-Include your platform, `lattice --version`, whether `:plugins` shows three
+Include your platform, `lattice --version`, whether `:plugins` shows four
 `bundled` rows, and the relevant `:messages` output.
 [Open an issue](https://github.com/dhruvasagar/lattice/issues).

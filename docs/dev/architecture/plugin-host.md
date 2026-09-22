@@ -281,6 +281,7 @@ against the full exercised set (§14 mitigation), and land as follow-on slices.
 | `command` | `CommandRegistry` + `CommandInvocation` + `Effect` | guest→host `invoke`; host→guest apply | ➕ |
 | `events` | `EventBus::subscribe` + `Event` enum (✅ PH7.8) | host owns mpsc + a type-erased sink; forwards each `Event` to the guest `on-event` off-keystroke | ➕ |
 | `decorations` | `Mode::gutter_decorations` + `GutterDecoration` (✅ PH7.9) | host calls guest producer OFF the render path per trigger; caches per-line data (the PH7.6 fork) | ➕ |
+| `inline-decorations` 📝 | `lattice_cells::StyledSpan` + `Style::Element` + the `ExtraHighlights` merge | same producer/cache shape as `decorations`, for byte ranges rather than lines — designed, not built (`plugin-inline-decorations.md`) | ➕ |
 | `modes` | `Mode` trait (`mode.rs:148`) + `ModeRegistry` | guest declares mode; host registers `Arc<dyn DynMode>` | ➕ |
 | `ui` | status/gutter segments, popups, notifications, sprites (type-mirror ✅ PH7.9) | guest→host emit data (no draw calls) — emit producer deferred | ➕ |
 | `config` | `ConfigRegistry` + `OptionType`/`OptionSpec` | guest declares typed option; host registers into registry | ➕ |

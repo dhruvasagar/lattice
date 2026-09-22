@@ -191,6 +191,7 @@ docs = [
   "architecture/plugin-manager",
   "architecture/plugin-observability",
   "architecture/plugin-treesitter-seam",
+  "architecture/plugin-inline-decorations",
   "architecture/plugin-auto-pair",
   "architecture/plugin-multibuffer-views",
   "architecture/plugin-transients",

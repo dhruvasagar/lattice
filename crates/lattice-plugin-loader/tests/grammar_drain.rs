@@ -215,7 +215,7 @@ async fn grammar_plugin_without_a_wired_command_registry_is_skipped_not_fatal() 
 /// whole capability gate.
 #[derive(Default)]
 struct RecordingWirer {
-    wired: std::sync::Mutex<Vec<(String, Option<char>, String)>>,
+    wired: std::sync::Mutex<Vec<(String, Option<char>, String, u32)>>,
 }
 
 impl lattice_mode::OperatorChordWirer for RecordingWirer {
@@ -225,12 +225,19 @@ impl lattice_mode::OperatorChordWirer for RecordingWirer {
         chord: &str,
         doubled: Option<char>,
         mode: lattice_mode::ModeId,
+        plugin_id: u32,
         _post_motion_char: bool,
     ) -> Result<(), String> {
-        self.wired
-            .lock()
-            .unwrap()
-            .push((chord.to_string(), doubled, mode.as_str().to_string()));
+        self.wired.lock().unwrap().push((
+            chord.to_string(),
+            doubled,
+            mode.as_str().to_string(),
+            // CM.4: recorded so the test can assert the chord is stamped as the
+            // PLUGIN's. Without the id the binding lands as host-sourced and
+            // `:describe-key gc` names `keymap_normal.rs`, which is a lie about
+            // a chord the plugin declared.
+            plugin_id,
+        ));
         Ok(())
     }
 }
@@ -263,13 +270,14 @@ async fn a_declared_operator_chord_is_wired_into_its_own_minor_mode() {
     write_chord_plugin_dir(&plugins_dir, "chord-fixture", "\"grammar:chord\"", &wasm);
 
     let wirer: Arc<RecordingWirer> = Arc::new(RecordingWirer::default());
+    let sink: Arc<RecordingSink> = Arc::new(RecordingSink::default());
     let loader = PluginLoader::with_services(
         temp_host(base.path()),
         LoaderServices {
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(Arc::new(EventBus::new())),
             command_registry: Some(empty_registry_handle()),
-            meta_sink: Some(Arc::new(RecordingSink::default()) as Arc<dyn PluginMetaSink>),
+            meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
             operator_chords: Some(wirer.clone() as lattice_mode::OperatorChordWirerHandle),
             ..Default::default()
         },
@@ -285,7 +293,7 @@ async fn a_declared_operator_chord_is_wired_into_its_own_minor_mode() {
         1,
         "the fixture declares exactly one operator chord; got {wired:?}"
     );
-    let (chord, doubled, mode) = &wired[0];
+    let (chord, doubled, mode, plugin_id) = &wired[0];
     assert_eq!(chord, "gX", "the chord the guest declared, verbatim");
     assert_eq!(
         *doubled,
@@ -296,6 +304,16 @@ async fn a_declared_operator_chord_is_wired_into_its_own_minor_mode() {
         mode, "fixture-mode",
         "scoped to the plugin's own minor mode — at `Builtin` the chord would \
          outlive `:set <id>.enabled=false` and point at a handler that is gone"
+    );
+    // The SAME id the plugin registered under — not merely "some id". Plugin
+    // ids start at 0, so a `!= 0` check passes on a defaulted field, which is
+    // exactly the mistake this assertion replaced.
+    let registered_id = sink.registered.lock().unwrap()[0].0;
+    assert_eq!(
+        *plugin_id, registered_id,
+        "the contributing plugin's id reaches the wirer, so the binding is \
+         stamped `SourceLayer::Plugin(id)` and `:describe-key gc` names the \
+         plugin rather than the host file that created the binding"
     );
 }
 

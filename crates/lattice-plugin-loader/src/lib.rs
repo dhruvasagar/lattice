@@ -2974,7 +2974,8 @@ impl PluginLoader {
 
             let mode_id = lattice_mode::ModeId::new(mode);
             for c in operator_chords {
-                if let Err(err) = wirer.wire(c.operator, &c.chord, c.doubled, mode_id, false) {
+                if let Err(err) = wirer.wire(c.operator, &c.chord, c.doubled, mode_id, id.0, false)
+                {
                     tracing::warn!(
                         plugin = %manifest.id,
                         chord = %c.chord,

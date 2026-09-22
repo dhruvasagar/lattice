@@ -53,6 +53,7 @@ impl lattice_mode::OperatorChordWirer for HostOperatorChordWirer {
         chord: &str,
         doubled: Option<char>,
         mode: lattice_mode::ModeId,
+        plugin_id: u32,
         post_motion_char: bool,
     ) -> Result<(), String> {
         // A chord that does not parse is a manifest error, reported rather than
@@ -72,6 +73,10 @@ impl lattice_mode::OperatorChordWirer for HostOperatorChordWirer {
             // at `Builtin` would outlive `:set <id>.enabled=false` and point at
             // a handler that is gone.
             KeymapLayer::MinorMode(mode),
+            // CM.4: stamped as the PLUGIN's, not this file's. `:describe-key
+            // gc` answers "where did this come from", and the honest answer is
+            // the plugin that declared the chord.
+            lattice_grammar::SourceLocation::plugin(plugin_id),
             &self.keymap,
             &prefix,
             op,

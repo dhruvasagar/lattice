@@ -38,6 +38,11 @@ pub trait OperatorChordWirer: Send + Sync {
         chord: &str,
         doubled: Option<char>,
         mode: crate::ModeId,
+        // CM.4: the contributing plugin, so the bindings are stamped
+        // `SourceLayer::Plugin(id)`. Without it `:describe-key gc` names the
+        // host file that happened to create the binding, which is a
+        // provenance lie about a plugin's own chord.
+        plugin_id: u32,
         post_motion_char: bool,
     ) -> Result<(), String>;
 }

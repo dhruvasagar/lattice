@@ -1425,6 +1425,7 @@ pub fn register_operator_bindings(
 ) {
     register_operator_bindings_in(
         KeymapLayer::Builtin,
+        source(),
         handle,
         op_prefix,
         op,
@@ -1447,6 +1448,12 @@ pub fn register_operator_bindings(
 #[allow(clippy::too_many_arguments)]
 pub fn register_operator_bindings_in(
     layer: KeymapLayer,
+    // CM.4: where these bindings came from. Stamped onto every chord the
+    // composition creates, so `:describe-key gc` names the PLUGIN rather than
+    // this file. A binding made on a plugin's behalf and attributed to host
+    // code is a provenance lie, and provenance is a feature here — it is the
+    // whole of what `:describe-key` answers.
+    binding_source: lattice_grammar::SourceLocation,
     handle: &KeymapHandle,
     op_prefix: &[ChordPattern],
     op: lattice_grammar::registry::OperatorId,
@@ -1485,7 +1492,7 @@ pub fn register_operator_bindings_in(
             mode,
             &path,
             CommandInvocation::of(op.0).with_target(Target::Motion(motion, motion_args)),
-            source(),
+            binding_source.clone(),
         );
     }
 
@@ -1508,7 +1515,7 @@ pub fn register_operator_bindings_in(
             mode,
             &path,
             CommandInvocation::of(op.0).with_target(Target::Motion(motion, motion_args)),
-            source(),
+            binding_source.clone(),
         );
     }
 
@@ -1542,7 +1549,7 @@ pub fn register_operator_bindings_in(
             mode,
             &path,
             CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
-            source(),
+            binding_source.clone(),
         );
     }
 
@@ -1596,7 +1603,7 @@ pub fn register_operator_bindings_in(
         BindingMode::Visual,
         op_prefix,
         CommandInvocation::of(op.0).with_range(lattice_grammar::Range::Selection),
-        source(),
+        binding_source.clone(),
     );
 }
 

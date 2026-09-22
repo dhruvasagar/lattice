@@ -39700,27 +39700,44 @@ impl Editor {
             // DK.6: where the operator's chords came from, per layer. The rows
             // that used to carry `layer:` / `source:` are the ones the summary
             // folds away, so without this the view answers "what is gU" and
-            // drops "who registered it, and where". An operator's grammar can
-            // legitimately live in several layers — `gU` has a Built-in copy
-            // and a multibuffer-mode copy — so each distinct (layer, source)
-            // gets its own line and its share of the count.
-            let mut origins: Vec<((String, String), usize)> = Vec::new();
+            // drops "who registered it, and where".
+            //
+            // Grouped by LAYER, because a layer can hold rows from several
+            // sources: `gU`'s multibuffer-mode continuations are `gU` composed
+            // with that mode's four motions, and each row names the line that
+            // declared its motion. One line per (layer, source) read as four
+            // registrations of one layer.
+            let mut by_layer: Vec<(String, usize, Vec<String>)> = Vec::new();
             for cont in &grammar {
-                let origin = (
-                    self.keymap.layer_label_string(cont.layer),
-                    self.source_link_named(&cont.command.source),
-                );
-                match origins.iter_mut().find(|(o, _)| *o == origin) {
-                    Some((_, n)) => *n += 1,
-                    None => origins.push((origin, 1)),
+                let layer = self.keymap.layer_label_string(cont.layer);
+                let source = self.source_link_named(&cont.command.source);
+                let idx = match by_layer.iter().position(|(l, _, _)| *l == layer) {
+                    Some(i) => i,
+                    None => {
+                        by_layer.push((layer, 0, Vec::new()));
+                        by_layer.len() - 1
+                    }
+                };
+                let (_, count, sources) = &mut by_layer[idx];
+                *count += 1;
+                if !sources.contains(&source) {
+                    sources.push(source);
                 }
             }
             lines.push(String::new());
             lines.push("  Registered in:".to_string());
-            for ((layer, source), n) in &origins {
-                lines.push(format!(
-                    "    layer: {layer}   source: {source}   ({n} continuation(s))"
-                ));
+            for (layer, count, sources) in &by_layer {
+                match sources.as_slice() {
+                    [only] => lines.push(format!(
+                        "    layer: {layer}   source: {only}   ({count} continuation(s))"
+                    )),
+                    many => {
+                        lines.push(format!("    layer: {layer}   ({count} continuation(s))"));
+                        for source in many {
+                            lines.push(format!("      source: {source}"));
+                        }
+                    }
+                }
             }
         }
         // Foreign bindings under the prefix are listed whether or not the

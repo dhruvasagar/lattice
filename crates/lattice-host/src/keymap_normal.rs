@@ -2324,15 +2324,20 @@ pub fn expand_grammar_rows(
     }
 
     let mut added = 0usize;
-    let mut bind_if_absent =
-        |mode: BindingMode, path: &[ChordPattern], command: CommandInvocation| {
-            let taken = occupied.entry(mode).or_default();
-            if !taken.insert(path.to_vec()) {
-                return 0;
-            }
-            handle.bind(layer, mode, path, command, source());
-            1
-        };
+    // A derived row is stamped with the source of the binding it was derived
+    // FROM, never this pass's own: `dih` exists because org declared `ih`, and
+    // `:describe-key dih` naming this file would hide the plugin that owns it.
+    let mut bind_if_absent = |mode: BindingMode,
+                              path: &[ChordPattern],
+                              command: CommandInvocation,
+                              from: &lattice_grammar::SourceLocation| {
+        let taken = occupied.entry(mode).or_default();
+        if !taken.insert(path.to_vec()) {
+            return 0;
+        }
+        handle.bind(layer, mode, path, command, from.clone());
+        1
+    };
 
     for (path, bound) in normal {
         let Some(spec) = commands.lookup(bound.command.command) else {
@@ -2363,6 +2368,7 @@ pub fn expand_grammar_rows(
                 BindingMode::Normal,
                 &full,
                 CommandInvocation::of(op.0).with_target(target.clone()),
+                &bound.source,
             );
         }
 
@@ -2378,7 +2384,12 @@ pub fn expand_grammar_rows(
             // selection (select-mode.md §4). The row is the Normal binding's
             // `CommandInvocation` verbatim; a bare text object goes through
             // `execute_text_object` and yields a `SelectionChange`.
-            added += bind_if_absent(BindingMode::Visual, &path, bound.command.clone());
+            added += bind_if_absent(
+                BindingMode::Visual,
+                &path,
+                bound.command.clone(),
+                &bound.source,
+            );
 
             // Drop the Normal terminal binding `bind_mode_keymap` wrote: `ar`
             // alone in Normal is not a command a user can mean. Kind-driven,

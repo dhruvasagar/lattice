@@ -148,9 +148,10 @@ fn a_foreign_binding_under_an_operator_prefix_is_still_listed() {
 /// turn "who registered this operator, and in which layer" into a question the
 /// view no longer answers.
 ///
-/// `gU` is the right probe because its grammar lives in TWO layers — Built-in
-/// and multibuffer-mode — so a summary that collapsed to one line, or dropped
-/// the layer, fails here.
+/// `gU` is the right probe because its grammar lives in TWO layers. Built-in's
+/// rows come from the host's keymap; multibuffer-mode's are `gU` composed with
+/// that mode's own motions, so they name `lattice-multibuffer` — the derived
+/// row carries the source of the binding it was derived from.
 #[test]
 fn the_summary_names_each_layer_and_source_the_operator_came_from() {
     let ed = editor();
@@ -163,22 +164,33 @@ fn the_summary_names_each_layer_and_source_the_operator_came_from() {
     let (_, origins) = summary
         .split_once("Registered in:")
         .unwrap_or_else(|| panic!("the summary says where it was registered:\n{body}"));
-    let origin_lines: Vec<&str> = origins.lines().filter(|l| l.contains("layer:")).collect();
 
-    for line in &origin_lines {
-        assert!(
-            line.contains("source:") && line.contains("continuation(s)"),
-            "each origin names layer, source and its share:\n{body}"
-        );
-    }
-    let has = |layer: &str| {
-        origin_lines
-            .iter()
-            .any(|l| l.contains(&format!("layer: {layer} ")) && l.contains("keymap_normal.rs"))
-    };
-    assert!(has("Built-in"), "the Built-in layer is named:\n{body}");
+    let layer_lines: Vec<&str> = origins.lines().filter(|l| l.contains("layer:")).collect();
+    assert_eq!(
+        layer_lines.len(),
+        2,
+        "one line per LAYER — a layer holding rows from several sources is \
+         still one layer:\n{body}"
+    );
     assert!(
-        has("multibuffer-mode"),
+        layer_lines
+            .iter()
+            .any(|l| l.contains("layer: Built-in ") && l.contains("keymap_normal.rs")),
+        "the Built-in layer is named, with its source:\n{body}"
+    );
+    assert!(
+        layer_lines
+            .iter()
+            .any(|l| l.contains("layer: multibuffer-mode ")),
         "and so is the second layer — collapsing to one would hide it:\n{body}"
+    );
+    assert!(
+        origins.contains("lattice-multibuffer"),
+        "multibuffer-mode's rows name the mode that declared their motions, \
+         not the host pass that derived them:\n{body}"
+    );
+    assert!(
+        layer_lines.iter().all(|l| l.contains("continuation(s)")),
+        "each layer reports its share of the count:\n{body}"
     );
 }

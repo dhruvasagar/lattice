@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.1 — unreleased
+## 0.9.1 — 2026-09-23
 
 A fourth bundled plugin, one data-loss fix, and an honesty pass over the
 docs the first 0.9 users read.

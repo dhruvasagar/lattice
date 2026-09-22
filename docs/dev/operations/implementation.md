@@ -989,6 +989,10 @@ sources" subsection).
 This section enumerates every named primitive in vim's grammar against its
 status here. Anchor: ../architecture/design.md §5.2 + the seven unifications in §5.10–§5.12.
 
+**Multi-cursor** (native, 📝 MC.1–MC.15): design in
+[`../architecture/multi-cursor.md`](../architecture/multi-cursor.md), sequencing in
+[`slice-plans/multi-cursor.md`](slice-plans/multi-cursor.md).
+
 ### Modal states
 
 | State              | Status           | Anchor    | Notes                                                                                                                                                                                                                                                                                                     |

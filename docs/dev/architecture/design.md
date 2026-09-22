@@ -691,7 +691,7 @@ The keymap-side companion of this extension point -- how plugins and user config
 
 **Visual mode IS the active region.** When Visual is active, the current selection is automatically supplied as the `range` argument to any range-accepting command. Vim users see "operate on visual selection"; users coming from emacs see "operate on region." Both reduce to: the dispatcher receives `range = Some(Range::Selection)` when no explicit range is given and Visual is active. This is the `Range::Selection` variant added to the range type for exactly this purpose.
 
-**Multi-cursor (post-1.0).** The selection set already permits it. Adding multi-cursor later requires per-feature semantic spec (which operators broadcast, how registers behave, how dot-repeat interacts) but no fundamental rework of the grammar, the dispatcher, or the command API.
+**Multi-cursor (native, 📝).** The selection set already permits it, and it needs no fundamental rework of the grammar, the dispatcher, or the command API. The per-feature semantic spec (which commands broadcast, how registers behave, how dot-repeat interacts) is [`multi-cursor.md`](multi-cursor.md); sequencing in [`slice-plans/multi-cursor.md`](../operations/slice-plans/multi-cursor.md).
 
 #### 5.2.5 Latency classes (the keystroke contract)
 
@@ -1116,7 +1116,7 @@ use-package `require` (git/local source, built on first boot into that cache).
 - **Project-wide grep** (ripgrep wrapper, results-as-buffer).
 - **Git client** (magit-style — git ops as buffers).
 - **Snippet engine** (LSP-spec snippets + custom).
-- **Editing helpers**: comment toggle, surround, auto-pairs, multi-cursor.
+- **Editing helpers**: comment toggle, surround, auto-pairs. (Multi-cursor is native, not a plugin: see [`multi-cursor.md`](multi-cursor.md) §1.)
 - **Diff viewer / merge tool**.
 - **Outline / symbols sidebar** (consumes LSP `documentSymbol`).
 - **Format-on-save controller**.

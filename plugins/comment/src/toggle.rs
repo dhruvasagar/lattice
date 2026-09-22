@@ -230,6 +230,79 @@ mod tests {
 
     /// A line already commented WITHOUT the space this plugin writes still
     /// uncomments — it may have been commented by another editor or a human.
+    /// Why `comment-toggle` declares `blockwise_per_row: false`.
+    ///
+    /// The host dispatches a blockwise (`<C-v>`) visual selection per ROW —
+    /// but only for operators that opt in. Rectangle ops (`d`, `y`, `c`) want
+    /// each row's column slice; linewise-style ops (`>`, `<`, `gU`, `g~`) want
+    /// one contiguous range so the change is a single undo unit. `gc` is the
+    /// second kind, and this test is what says so in executable form.
+    ///
+    /// Rule 1 is a property of the RANGE, not of a line. Decide it per row and
+    /// a mixed block inverts — every commented line uncomments while every
+    /// plain line comments — which is the failure
+    /// `a_mixed_range_comments_rather_than_inverting` describes, now reachable
+    /// through a dispatch flag rather than through the logic.
+    ///
+    /// If someone flips that flag to `true` reasoning that a block selection
+    /// "should" be a rectangle op, this is the behaviour they would ship.
+    #[test]
+    fn a_mixed_block_must_be_decided_as_one_range() {
+        let block = lines(&["// a", "b", "// c"]);
+
+        // One range, the whole block: rule 1 sees an uncommented line, so
+        // everything comments. The block stays a block.
+        let as_one: Vec<String> = toggle(&block, "//", true)
+            .into_iter()
+            .zip(block.clone())
+            .map(|(next, old)| next.unwrap_or(old))
+            .collect();
+        assert_eq!(
+            as_one,
+            lines(&["// // a", "// b", "// // c"]),
+            "one range ⇒ one decision for every line in it"
+        );
+
+        // Per row, as `blockwise_per_row: true` would dispatch it: each line
+        // decides alone, and the block comes apart.
+        let per_row: Vec<String> = block
+            .iter()
+            .map(|line| {
+                let one = vec![line.clone()];
+                toggle(&one, "//", true)
+                    .pop()
+                    .flatten()
+                    .unwrap_or_else(|| line.clone())
+            })
+            .collect();
+        assert_eq!(
+            per_row,
+            lines(&["a", "// b", "c"]),
+            "per row ⇒ the mixed block inverts, which is the bug"
+        );
+
+        assert_ne!(
+            as_one, per_row,
+            "the two dispatch shapes disagree, so the flag is load-bearing \
+             rather than incidental"
+        );
+    }
+
+    /// The uniform block — every line already commented — is the case that
+    /// looks fine either way, which is exactly why it must not be the only
+    /// blockwise test. It passes under both dispatch shapes and would hide the
+    /// regression above.
+    #[test]
+    fn a_uniformly_commented_block_uncomments_either_way() {
+        let block = lines(&["// a", "// b"]);
+        let as_one: Vec<String> = toggle(&block, "//", true)
+            .into_iter()
+            .zip(block.clone())
+            .map(|(next, old)| next.unwrap_or(old))
+            .collect();
+        assert_eq!(as_one, lines(&["a", "b"]));
+    }
+
     #[test]
     fn uncomments_a_leader_with_no_following_space() {
         assert_eq!(apply(&["//a"], "//"), lines(&["a"]));

@@ -181,6 +181,11 @@ impl Guest for Component {
             &OperatorSpec {
                 repeatable: true,
                 args_schema: Vec::new(),
+                // `false`, and load-bearing: a blockwise `<C-v>` selection
+                // arrives as ONE contiguous range rather than per row, like
+                // `>` / `gU` and unlike `d` / `y`. Rule 1 is a property of the
+                // range — decided per row, a mixed block inverts. See
+                // `toggle::tests::a_mixed_block_must_be_decided_as_one_range`.
                 blockwise_per_row: false,
                 post_motion_char: false,
                 // CM.2: the chord travels with the operator. `doubled` is the

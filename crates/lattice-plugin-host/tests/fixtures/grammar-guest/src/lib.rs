@@ -147,6 +147,16 @@ impl Guest for Component {
                 args_schema: Vec::new(),
                 blockwise_per_row: false,
                 post_motion_char: false,
+                // CM.2: the chord travels WITH the operator. `gX` is
+                // deliberately free — `gJ gT gU gg gt gu gv g~` are bound
+                // literally and `gq` / `gw` are built by the reflow helper, so
+                // picking one of those would have the test assert against a
+                // builtin collision rather than against the wiring. Shaped
+                // like the real `gc`: a two-key `g`-prefixed operator whose
+                // doubled form repeats the trailing key (`gXX`), which is the
+                // case this wiring has to get right.
+                chord: Some("gX".to_string()),
+                doubled: Some("X".to_string()),
             },
             10,
         );
@@ -208,21 +218,16 @@ impl Callbacks for Component {
     ) -> Result<Vec<Effect>, String> {
         match callback {
             // Read the first line of the operated range through the borrowed
-            // document, and the buffer's comment leader through the accessor
-            // `document` grew in CM.1. Echo both back: a test asserting on
-            // this string fails if either the handle or the comment syntax
-            // stopped crossing, which a `no operators` stub could never show.
+            // document `apply-operator` now receives, and echo it back. A test
+            // asserting on real buffer text fails if the handle stopped
+            // crossing, which the old `no operators` stub could never show.
             10 => {
                 let line = doc
                     .line(ctx.range.start.line)
                     .ok_or_else(|| format!("fixture: no line {}", ctx.range.start.line))?;
-                let leader = doc
-                    .comment_syntax()
-                    .and_then(|cs| cs.line)
-                    .unwrap_or_else(|| "<none>".to_string());
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
-                    text: format!("{leader}|{line}"),
+                    text: format!("op|{line}"),
                 })])
             }
             other => Err(format!("fixture: unknown operator callback {other}")),

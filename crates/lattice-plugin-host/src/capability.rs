@@ -72,6 +72,11 @@ pub struct CapabilityGrant {
     /// plugin's private data dir, which WASI already mounts, so this gate is
     /// host-side like `net:http` rather than a preopen).
     pub state_write: bool,
+    /// CM.2: whether the plugin may bind an operator chord into the universal
+    /// operator-pending grammar. Enforced at the loader's grammar drain — a
+    /// declared chord is skipped (and logged) without this, while the operator
+    /// itself still registers and stays reachable by name.
+    pub grammar_chord: bool,
     /// The editor capabilities a plugin-declared mode requires (enforced at
     /// mode activation, PH7.11).
     pub editor: CapabilitySet,
@@ -121,6 +126,11 @@ pub fn grant(manifest: &PluginManifest, tier: TrustTier) -> GrantOutcome {
             // deny nothing it could not already do through WASI — it would
             // only deny the crash-safe, versioned, cross-instance shape.
             Capability::StateWrite => g.state_write = true,
+            // CM.2: both tiers. See the variant's doc — the chord is scoped to
+            // the plugin's own minor mode, shown in `:plugins`, and reversed on
+            // unload, so withholding it would deny the feature without
+            // narrowing the risk that matters.
+            Capability::GrammarChord => g.grammar_chord = true,
             Capability::ProcSpawn => match tier {
                 TrustTier::Bundled => g.proc_spawn = true,
                 // proc:spawn is bundled-only in v1 — a user plugin's request

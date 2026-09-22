@@ -390,12 +390,11 @@ fn build_operator_spec(
                     buffer: ctx.document.buffer().clone(),
                     ..Default::default()
                 });
-                let comment_syntax = ctx.comment_syntax.cloned();
                 let wit = run_callback(&guest, "apply-operator", |b, s| {
-                    let owned_doc = s.data_mut().table.push(
-                        DocumentResource::new(snapshot.clone())
-                            .with_comment_syntax(comment_syntax.clone()),
-                    )?;
+                    let owned_doc = s
+                        .data_mut()
+                        .table
+                        .push(DocumentResource::new(snapshot.clone()))?;
                     let doc_borrow = Resource::new_borrow(owned_doc.rep());
                     let result = b
                         .lattice_plugin_host_grammar_callbacks()
@@ -433,20 +432,14 @@ fn build_text_object_spec(
                     path: ctx.path.map(|p| Arc::new(p.to_path_buf())),
                     ..Default::default()
                 });
-                // CM.1: `TextObjectContext` carries `comment_syntax` too, and
-                // the accessor the WIT now advertises has to answer here as
-                // well — an accessor wired on one of the two paths that can
-                // populate it is a seam that half-works, which is worse than
-                // one that does not exist.
-                let to_comment_syntax = ctx.comment_syntax.cloned();
                 // OT.1: and the tree — org's `ir` / `ar` resolve a subtree,
                 // which is the `(section)` node rather than a star count.
                 let tree_snapshot = resolve_tree_snapshot(tree_sitter_granted, ctx.syntax);
                 let wit = run_callback(&guest, "apply-text-object", |b, s| {
-                    let owned_doc = s.data_mut().table.push(
-                        DocumentResource::new(snapshot.clone())
-                            .with_comment_syntax(to_comment_syntax.clone()),
-                    )?;
+                    let owned_doc = s
+                        .data_mut()
+                        .table
+                        .push(DocumentResource::new(snapshot.clone()))?;
                     let doc_borrow = Resource::new_borrow(owned_doc.rep());
                     let owned_tree = match &tree_snapshot {
                         Some(snap) => Some(
@@ -657,7 +650,10 @@ pub struct GrammarContributionSet {
     // `(name, doc, spec)` per kind. The specs carry boxed trampoline closures
     // (not `Clone`), so registration consumes the set.
     motions: Vec<(String, String, MotionSpec)>,
-    operators: Vec<(String, String, OperatorSpec)>,
+    /// CM.2: the fourth element is the chord the guest declared, if any —
+    /// registration data, kept beside the spec rather than inside it because
+    /// `OperatorSpec` is read on every dispatch and carries no keys.
+    operators: Vec<(String, String, OperatorSpec, Option<PluginOperatorChord>)>,
     text_objects: Vec<(String, String, TextObjectSpec)>,
     actions: Vec<(String, String, ActionSpec)>,
     ex_commands: Vec<(String, String, ExCommandSpec)>,
@@ -688,13 +684,24 @@ impl GrammarContributionSet {
     /// `SourceLayer::Plugin(plugin_id)`. Consumes the set (the specs own boxed
     /// trampoline closures). The registry, dispatcher, and `:describe-*` views
     /// then treat each entry exactly like a builtin (paramount #3).
-    pub fn register_all(self, registry: &mut CommandRegistry) {
+    pub fn register_all(self, registry: &mut CommandRegistry) -> Vec<WiredOperatorChord> {
         let id = self.plugin_id.0;
+        let mut chords = Vec::new();
         for (name, doc, spec) in self.motions {
             registry.register_plugin_motion(id, &name, &doc, spec);
         }
-        for (name, doc, spec) in self.operators {
-            registry.register_plugin_operator(id, &name, &doc, spec);
+        for (name, doc, spec, chord) in self.operators {
+            let op = registry.register_plugin_operator(id, &name, &doc, spec);
+            // The id is only knowable here, after registration — which is why
+            // the chord request travels OUT rather than the wirer travelling
+            // in. `lattice-plugin-host` stays unaware of how a chord is bound.
+            if let Some(c) = chord {
+                chords.push(WiredOperatorChord {
+                    operator: op,
+                    chord: c.chord,
+                    doubled: c.doubled,
+                });
+            }
         }
         for (name, doc, spec) in self.text_objects {
             registry.register_plugin_text_object(id, &name, &doc, spec);
@@ -705,7 +712,28 @@ impl GrammarContributionSet {
         for (name, doc, spec) in self.ex_commands {
             registry.register_plugin_ex_command(id, &name, &doc, spec);
         }
+        chords
     }
+}
+
+/// CM.2: a chord a plugin declared on its operator, as recorded at drain time.
+#[derive(Debug, Clone)]
+pub struct PluginOperatorChord {
+    pub chord: String,
+    /// The trailing key of the doubled linewise form (`c` for `gcc`).
+    pub doubled: Option<char>,
+}
+
+/// CM.2: a chord request, paired with the `OperatorId` registration produced.
+///
+/// The caller binds it — `lattice-plugin-host` does not, because the
+/// operator-pending composition needs host-resolved builtins that live two
+/// crates away.
+#[derive(Debug, Clone)]
+pub struct WiredOperatorChord {
+    pub operator: lattice_grammar::registry::OperatorId,
+    pub chord: String,
+    pub doubled: Option<char>,
 }
 
 impl PluginHost {
@@ -857,9 +885,22 @@ impl PluginHost {
                     doc,
                     spec,
                     callback,
-                } => set
-                    .operators
-                    .push((name, doc, build_operator_spec(&guest, spec, callback)?)),
+                } => {
+                    // CM.2: the chord is registration data, not dispatch data,
+                    // so it rides beside the native spec rather than into it —
+                    // `OperatorSpec` is read on every dispatch and has no
+                    // business carrying keys.
+                    let chord = spec.chord.clone().map(|chord| PluginOperatorChord {
+                        chord,
+                        doubled: spec.doubled.as_ref().and_then(|d| d.chars().next()),
+                    });
+                    set.operators.push((
+                        name,
+                        doc,
+                        build_operator_spec(&guest, spec, callback)?,
+                        chord,
+                    ))
+                }
                 RecordedContribution::TextObject {
                     name,
                     doc,

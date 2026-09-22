@@ -65,12 +65,35 @@ pub enum Capability {
     /// "remember something between restarts" require a grant over the user's
     /// documents, which is the wrong trade in the direction that matters.
     StateWrite,
+    /// CM.2: permission to bind an operator's chord into the universal
+    /// operator-pending grammar (`gc{motion}`, `gcc`, Visual `gc`).
+    ///
+    /// A capability rather than a free contribution because it is the most
+    /// user-visible power a plugin can take: it claims keys in the grammar
+    /// every buffer shares, and a chord the user did not expect is worse than
+    /// a feature they did not get. Declaring it puts the claim in
+    /// `plugin.toml`, in the grant `:plugins` displays, and in the denial list
+    /// when a tier withholds it.
+    ///
+    /// Granted at BOTH tiers, unlike `proc:spawn`. The chord lands in the
+    /// plugin's own `MinorMode` layer rather than `Builtin`, it is visible in
+    /// `:plugins`, and unload reverses it by provenance — so the blast radius
+    /// is the plugin's own modes. Withholding it from user-installed plugins
+    /// would make contributing an operator a bundled-only feature, which is
+    /// precisely the "adding new operators is first-class" claim (paramount
+    /// #3) that the plugin API exists to honour.
+    ///
+    /// Withheld is NOT a load failure: the operator still registers and stays
+    /// reachable by name. A plugin never silently mis-binds
+    /// (`register-binding`'s contract), and a refused chord is a decision
+    /// rather than a broken wire.
+    GrammarChord,
 }
 
 /// The string `s` was not a recognised capability form.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` / `net:http:<host>` / `proc:spawn` / `state:write`)"
+    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` / `net:http:<host>` / `proc:spawn` / `state:write` / `grammar:chord`)"
 )]
 pub struct CapabilityParseError(pub String);
 
@@ -99,6 +122,7 @@ impl FromStr for Capability {
             }
             (Some("proc"), Some("spawn"), None) => Ok(Capability::ProcSpawn),
             (Some("state"), Some("write"), None) => Ok(Capability::StateWrite),
+            (Some("grammar"), Some("chord"), None) => Ok(Capability::GrammarChord),
             _ => Err(CapabilityParseError(s.to_string())),
         }
     }
@@ -112,6 +136,7 @@ impl std::fmt::Display for Capability {
             Capability::NetHttp(h) => write!(f, "net:http:{h}"),
             Capability::ProcSpawn => f.write_str("proc:spawn"),
             Capability::StateWrite => f.write_str("state:write"),
+            Capability::GrammarChord => f.write_str("grammar:chord"),
         }
     }
 }

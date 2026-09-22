@@ -149,6 +149,7 @@ pub mod keymap_mode_contributions;
 pub mod keymap_normal;
 pub mod keymap_registry;
 pub mod keymap_replace;
+pub mod operator_chord_wirer;
 // Terminal-mode T2.a (2026-05-25): keystroke → ANSI byte
 // encoder consumed by the Terminal-Insert translate branch.
 pub mod keymap_select;

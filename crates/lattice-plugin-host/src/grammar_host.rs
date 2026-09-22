@@ -252,6 +252,9 @@ mod tests {
                 args_schema: arg_schema(),
                 blockwise_per_row: false,
                 post_motion_char: false,
+                // This unit test records a contribution; it binds no keys.
+                chord: None,
+                doubled: None,
             },
             20,
         );

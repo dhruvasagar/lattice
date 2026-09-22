@@ -1423,7 +1423,39 @@ pub fn register_operator_bindings(
     syntax_motions: &SyntaxMotionIds,
     post_motion_char: bool,
 ) {
-    let layer = KeymapLayer::Builtin;
+    register_operator_bindings_in(
+        KeymapLayer::Builtin,
+        handle,
+        op_prefix,
+        op,
+        doubled_self,
+        builtins,
+        syntax_textobjects,
+        syntax_motions,
+        post_motion_char,
+    );
+}
+
+/// CM.2: [`register_operator_bindings`] with the layer chosen by the caller.
+///
+/// Extracted rather than adding a parameter to the function above, because
+/// fifteen native call sites all want `Builtin` and churning them to say so
+/// would be noise. The one caller that wants something else is the plugin
+/// path: a plugin operator's chords belong to its minor mode, not to the
+/// universal grammar. Bound at `Builtin` a plugin's `gc` would outlive
+/// `:set <id>.enabled=false`, pointing at a handler that is gone.
+#[allow(clippy::too_many_arguments)]
+pub fn register_operator_bindings_in(
+    layer: KeymapLayer,
+    handle: &KeymapHandle,
+    op_prefix: &[ChordPattern],
+    op: lattice_grammar::registry::OperatorId,
+    doubled_self: Option<ChordPattern>,
+    builtins: &Builtins,
+    syntax_textobjects: &SyntaxTextObjectIds,
+    syntax_motions: &SyntaxMotionIds,
+    post_motion_char: bool,
+) {
     let mode = BindingMode::Normal;
 
     // ---- Motion targets. Each operator's `[op_prefix..., motion_chord]`

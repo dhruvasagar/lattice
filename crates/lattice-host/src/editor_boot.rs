@@ -1982,6 +1982,22 @@ impl Editor {
         // visible). Registered as `KeymapHandle` (already a shareable handle — no
         // `Arc<X>` wrapper needed); the loader looks it up under the same type.
         boot.register_service::<crate::keymap_registry::KeymapHandle>(keymap_handle.clone());
+        // CM.2: the operator-chord wirer, beside the keymap handle it writes
+        // through and for the same ordering reason — `lattice_plugin_loader::
+        // install` below captures its services once, so a handle registered
+        // after it contributes nothing. That failure is loud rather than
+        // silent (`PluginLoaderError::NotWired`), but it should not happen at
+        // all. `builtins` / `syntax_*_ids` are resolved far above; the
+        // composition needs all three, which is why the loader cannot do this
+        // itself.
+        let chord_wirer: lattice_mode::OperatorChordWirerHandle =
+            std::sync::Arc::new(crate::operator_chord_wirer::HostOperatorChordWirer::new(
+                keymap_handle.clone(),
+                builtins,
+                syntax_textobject_ids,
+                syntax_motion_ids,
+            ));
+        boot.register_service::<lattice_mode::OperatorChordWirerHandle>(chord_wirer);
         // WK.6: the other half of which-key's install. Must follow the two
         // registrations above: the gate handler resolves the keymap (to fold
         // the composite the dispatcher walks) and the command registry (rungs

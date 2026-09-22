@@ -512,6 +512,13 @@ pub struct LoaderServices {
     /// seam `NotWired` — the load fails loudly rather than reporting success
     /// and contributing nothing to every `:agenda` forever.
     pub agenda_registry: Option<lattice_mode::ScannedExcerptSourceRegistryHandle>,
+    /// CM.2: binds a plugin operator's declared chord into the universal
+    /// operator-pending layer. The host owns it because the composition needs
+    /// host-resolved builtins; the plugin owns the spec and `apply`. Absent
+    /// leaves the seam `NotWired` for any plugin that declares a chord — an
+    /// operator that registered correctly and has no keys is indistinguishable
+    /// from one that never loaded.
+    pub operator_chords: Option<lattice_mode::OperatorChordWirerHandle>,
     /// MV.1: the provider-view registry a plugin's declared multibuffer views
     /// register openers into — the SAME one the agenda and magit's project-diff
     /// use, so a plugin view opens through `open-provider-view` and refreshes
@@ -2893,8 +2900,91 @@ impl PluginLoader {
         // retrying `rcu` closure is impossible; the serialized-load invariant
         // (doc above) makes the plain swap race-free in practice.
         let mut next = (**registry.load()).clone();
-        set.register_all(&mut next);
+        let operator_chords = set.register_all(&mut next);
         registry.store(Arc::new(next));
+
+        // CM.2: an operator that registered but has no keys is indistinguishable
+        // from one that never loaded — so a declared chord with nowhere to land
+        // fails the load rather than being skipped, the `agenda_registry`
+        // contract.
+        if !operator_chords.is_empty() {
+            // Degrades, like the two cases below it. The first draft made this
+            // `NotWired` on the `agenda_registry` precedent, and that precedent
+            // does not transfer: an agenda plugin whose registry is missing
+            // contributes NOTHING — its whole purpose is the view. A chord is
+            // one contribution among many, and refusing the load costs the
+            // plugin's motions, text objects and actions to punish a missing
+            // keybinding. A harness with no keymap would kill every grammar
+            // plugin too, which is how this was found.
+            let Some(wirer) = self.env.operator_chords.as_ref() else {
+                tracing::warn!(
+                    plugin = %manifest.id,
+                    "operator chord(s) declared but no chord wirer is wired; \
+                     the operator is reachable by name only"
+                );
+                return Ok(id);
+            };
+            // The chords belong to the plugin's own minor mode, not to the
+            // universal grammar: bound at `Builtin` they would outlive
+            // `:set <id>.enabled=false` and point at a handler that is gone.
+            // A chord with no mode to scope to has nowhere legitimate to land:
+            // `Builtin` is the universal grammar and a plugin does not belong
+            // there.
+            //
+            // But this DEGRADES rather than failing the load, for the same
+            // reason a withheld capability does — it is a plugin-authoring
+            // error, not broken infrastructure, and the rest of the plugin's
+            // contributions are fine. Only a missing wirer (above) fails the
+            // load, because that is a host wiring bug.
+            //
+            // Caught by `discovered_grammar_plugin_registers_and_dispatches_
+            // through_the_registry`: the fixture gained a chord, that test's
+            // manifest declares no modes, and the first draft of this refused
+            // the whole plugin. One contribution that cannot be bound must not
+            // cost the other nine.
+            let Some(mode) = manifest.default_modes.first() else {
+                tracing::warn!(
+                    plugin = %manifest.id,
+                    "operator chord(s) declared but the manifest has no \
+                     `default_modes` to scope them to; the operator is \
+                     reachable by name only"
+                );
+                return Ok(id);
+            };
+            // CM.2: the chord is a declared capability. `grant` is pure over
+            // (manifest, tier), so this resolves exactly what every seam spawn
+            // resolves internally.
+            //
+            // Withheld is NOT a load failure — distinct from the missing-wirer
+            // case above. That one is broken infrastructure; this one is the
+            // user's decision, and `register-binding`'s standing contract is
+            // that a plugin never silently mis-binds. The operator stays
+            // registered and reachable by name.
+            if !lattice_plugin_host::grant(manifest, tier)
+                .grant
+                .grammar_chord
+            {
+                tracing::info!(
+                    plugin = %manifest.id,
+                    "operator chord(s) not bound: `grammar:chord` was not \
+                     granted. The operator is still reachable by name."
+                );
+                return Ok(id);
+            }
+
+            let mode_id = lattice_mode::ModeId::new(mode);
+            for c in operator_chords {
+                if let Err(err) = wirer.wire(c.operator, &c.chord, c.doubled, mode_id, false) {
+                    tracing::warn!(
+                        plugin = %manifest.id,
+                        chord = %c.chord,
+                        %err,
+                        "operator chord could not be bound; the operator is \
+                         reachable by name only"
+                    );
+                }
+            }
+        }
 
         tracing::debug!(
             plugin = %manifest.id,

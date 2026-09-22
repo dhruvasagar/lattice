@@ -76,6 +76,7 @@ pub mod context_source;
 pub mod contributions;
 pub mod decoration_source;
 pub mod media_source;
+pub mod operator_chord;
 // BC.5: `emacs-keys-mode` — a default-on universal builtin minor mode (the
 // `<C-x>` leader tribute). Moved here from `lattice-host`; registered with the
 // foundation modes. The host keeps only the keymap-layer push (config + the
@@ -201,6 +202,7 @@ pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
     HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
+pub use crate::operator_chord::{OperatorChordWirer, OperatorChordWirerHandle};
 // TB.1: `table-mode` — the shared pipe-table minor. Re-exported beside the
 // other shared minors so boot reaches it by the same path.
 pub use crate::modes::table::mode::{TableMode, register_table_actions, register_table_mode};

@@ -204,3 +204,141 @@ async fn grammar_plugin_without_a_wired_command_registry_is_skipped_not_fatal() 
     assert_eq!(n, 0, "the grammar plugin is skipped, not loaded");
     assert!(!loader.is_loaded("grammar-fixture"), "nothing recorded");
 }
+
+// ─────────────────────────────────────────────────────────────────
+// CM.2 — a plugin operator's declared chord
+// ─────────────────────────────────────────────────────────────────
+
+/// Records what the loader asked to be bound, so both the granted and the
+/// withheld path assert on the SAME observation. A wirer that is never called
+/// and a wirer that is called are one boolean apart, and that boolean is the
+/// whole capability gate.
+#[derive(Default)]
+struct RecordingWirer {
+    wired: std::sync::Mutex<Vec<(String, Option<char>, String)>>,
+}
+
+impl lattice_mode::OperatorChordWirer for RecordingWirer {
+    fn wire(
+        &self,
+        _op: lattice_grammar::registry::OperatorId,
+        chord: &str,
+        doubled: Option<char>,
+        mode: lattice_mode::ModeId,
+        _post_motion_char: bool,
+    ) -> Result<(), String> {
+        self.wired
+            .lock()
+            .unwrap()
+            .push((chord.to_string(), doubled, mode.as_str().to_string()));
+        Ok(())
+    }
+}
+
+/// Write a manifest that declares the capability and the default mode a chord
+/// needs to scope to. `caps` is the raw TOML array body so a test can withhold
+/// `grammar:chord` by passing an empty one.
+fn write_chord_plugin_dir(root: &std::path::Path, id: &str, caps: &str, wasm: &[u8]) {
+    let dir = root.join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        format!(
+            "id = \"{id}\"\nprovides = [\"grammar\"]\ncapabilities = [{caps}]\n\
+             default_modes = [\"fixture-mode\"]\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("component.wasm"), wasm).unwrap();
+}
+
+#[tokio::test]
+async fn a_declared_operator_chord_is_wired_into_its_own_minor_mode() {
+    let Some(wasm) = grammar_guest_wasm() else {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_chord_plugin_dir(&plugins_dir, "chord-fixture", "\"grammar:chord\"", &wasm);
+
+    let wirer: Arc<RecordingWirer> = Arc::new(RecordingWirer::default());
+    let loader = PluginLoader::with_services(
+        temp_host(base.path()),
+        LoaderServices {
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(Arc::new(EventBus::new())),
+            command_registry: Some(empty_registry_handle()),
+            meta_sink: Some(Arc::new(RecordingSink::default()) as Arc<dyn PluginMetaSink>),
+            operator_chords: Some(wirer.clone() as lattice_mode::OperatorChordWirerHandle),
+            ..Default::default()
+        },
+    );
+    let n = loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    assert_eq!(n, 1, "the fixture loads");
+
+    let wired = wirer.wired.lock().unwrap().clone();
+    assert_eq!(
+        wired.len(),
+        1,
+        "the fixture declares exactly one operator chord; got {wired:?}"
+    );
+    let (chord, doubled, mode) = &wired[0];
+    assert_eq!(chord, "gX", "the chord the guest declared, verbatim");
+    assert_eq!(
+        *doubled,
+        Some('X'),
+        "the TRAILING key of the doubled form (`gXX`), not the whole chord"
+    );
+    assert_eq!(
+        mode, "fixture-mode",
+        "scoped to the plugin's own minor mode — at `Builtin` the chord would \
+         outlive `:set <id>.enabled=false` and point at a handler that is gone"
+    );
+}
+
+/// The pair. Without this the gate is a line nothing exercises, and a refactor
+/// that dropped the check would leave every other test green.
+#[tokio::test]
+async fn an_operator_chord_is_not_wired_without_the_grammar_chord_capability() {
+    let Some(wasm) = grammar_guest_wasm() else {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    // The ONLY difference from the test above: no `grammar:chord`.
+    write_chord_plugin_dir(&plugins_dir, "chord-fixture", "", &wasm);
+
+    let wirer: Arc<RecordingWirer> = Arc::new(RecordingWirer::default());
+    let registry = empty_registry_handle();
+    let loader = PluginLoader::with_services(
+        temp_host(base.path()),
+        LoaderServices {
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(Arc::new(EventBus::new())),
+            command_registry: Some(registry.clone()),
+            meta_sink: Some(Arc::new(RecordingSink::default()) as Arc<dyn PluginMetaSink>),
+            operator_chords: Some(wirer.clone() as lattice_mode::OperatorChordWirerHandle),
+            ..Default::default()
+        },
+    );
+    let n = loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    assert_eq!(n, 1, "the fixture loads");
+
+    assert!(
+        wirer.wired.lock().unwrap().is_empty(),
+        "a withheld `grammar:chord` binds nothing"
+    );
+    // But the plugin still loaded and its operator is reachable by name —
+    // withheld is a user decision, not a broken wire, so it degrades rather
+    // than failing the load.
+    assert!(
+        registry.load().id_by_name("comment-probe").is_some(),
+        "the operator still registers; only its chord is refused"
+    );
+}

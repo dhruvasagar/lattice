@@ -36,43 +36,12 @@ use crate::lattice::plugin_host::buffer::BufferSnapshot as WitBufferSnapshot;
 /// and [`HostDocument`] methods receive `Resource<DocumentResource>`.
 pub struct DocumentResource {
     snapshot: Arc<DocumentSnapshot>,
-    /// CM.1: the comment syntax the host resolved for this buffer's language.
-    ///
-    /// NOT a field on [`DocumentSnapshot`]: that type lives in
-    /// `lattice-runtime` and `CommentSyntax` in `lattice-grammar`, so putting
-    /// it there would point the dependency the wrong way. It belongs to the
-    /// per-call resource anyway — the trampoline knows it from the dispatch
-    /// context, and only the contexts that carry one can populate it.
-    ///
-    /// `None` is the honest answer on the paths whose native context has no
-    /// `comment_syntax` (action, motion, ex-command): the host genuinely does
-    /// not know it there, and a guess would write `//` into a Python file.
-    comment_syntax: Option<lattice_grammar::registry::CommentSyntax>,
 }
 
 impl DocumentResource {
     /// Wrap a document snapshot as a resource backing.
     pub fn new(snapshot: Arc<DocumentSnapshot>) -> Self {
-        Self {
-            snapshot,
-            comment_syntax: None,
-        }
-    }
-
-    /// CM.1: attach the comment syntax the dispatch context carried. Builder
-    /// rather than a `new` parameter so the dozen existing mint sites — none
-    /// of which has one — stay untouched.
-    pub fn with_comment_syntax(
-        mut self,
-        cs: Option<lattice_grammar::registry::CommentSyntax>,
-    ) -> Self {
-        self.comment_syntax = cs;
-        self
-    }
-
-    /// The resolved comment syntax, if the minting path knew one.
-    pub fn comment_syntax(&self) -> Option<&lattice_grammar::registry::CommentSyntax> {
-        self.comment_syntax.as_ref()
+        Self { snapshot }
     }
 
     /// The text of the `[start, end)` byte range. Slices only the requested

@@ -282,18 +282,14 @@ fn plugin_action_reads_buffer_text_at_the_cursor_via_the_document_handle() {
     }
 }
 
-/// CM.1: an operator reads the buffer AND its comment syntax through the
-/// `borrow<document>` that `apply-operator` was the last grammar callback to
-/// receive. Motion, text-object, action and ex-command got theirs in AP.0.1,
-/// OM.4b, OT.1 and OC.10; operators were skipped because no plugin had
-/// contributed one, and a comment operator cannot decide comment-vs-uncomment
-/// without reading its lines.
-///
-/// The env supplies a REAL `CommentSyntax`. A `None` leader would exercise the
-/// `<none>` branch and pass whether or not the accessor works — the seam has
-/// to be asserted through an answer only a working seam can produce.
+/// CM.1: an operator reads the buffer through the `borrow<document>` that
+/// `apply-operator` was the last grammar callback to receive. Motion,
+/// text-object, action and ex-command got theirs in AP.0.1, OM.4b, OT.1 and
+/// OC.10; operators were skipped because no plugin had contributed one, and a
+/// comment operator cannot decide comment-vs-uncomment without reading its
+/// lines.
 #[test]
-fn plugin_operator_reads_the_buffer_and_its_comment_leader() {
+fn plugin_operator_reads_the_buffer_it_operates_on() {
     if guest_wasm().is_none() {
         eprintln!("SKIP: grammar fixture guest not built");
         return;
@@ -304,14 +300,7 @@ fn plugin_operator_reads_the_buffer_and_its_comment_leader() {
 
     let mut document = lattice_core::Document::from_text("hello\nworld\n");
     let cancel = CancellationToken::never();
-    let comment = lattice_grammar::registry::CommentSyntax {
-        line: Some("//".to_string()),
-        block: None,
-    };
-    let env = lattice_grammar::registry::GrammarEnv {
-        comment_syntax: Some(&comment),
-        ..Default::default()
-    };
+    let env = lattice_grammar::registry::GrammarEnv::default();
     let effect = lattice_grammar::dispatcher::execute_with_env(
         &registry,
         &mut document,
@@ -328,9 +317,8 @@ fn plugin_operator_reads_the_buffer_and_its_comment_leader() {
             assert_eq!(
                 // `document.line()` yields the line WITHOUT its terminator.
                 text,
-                "//|world",
-                "the guest read line 1 through `document` and the leader \
-                 through `document.comment-syntax()` — both crossed"
+                "op|world",
+                "the guest read line 1 of the operated range through `document`"
             );
         }
         other => panic!("expected an Echo effect from the plugin operator, got {other:?}"),

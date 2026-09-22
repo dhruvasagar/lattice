@@ -223,6 +223,12 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         agenda_registry: boot
             .service::<lattice_mode::ScannedExcerptSourceRegistryHandle>()
             .map(|h| (*h).clone()),
+        // CM.2: absent only in harnesses that wire no keymap. A plugin that
+        // declares an operator chord then fails its load loudly rather than
+        // registering an operator nobody can press.
+        operator_chords: boot
+            .service::<lattice_mode::OperatorChordWirerHandle>()
+            .map(|h| (*h).clone()),
         runtime: Some(boot.runtime_handle().clone()),
         bus: Some(boot.event_bus().clone()),
         // MV.1: where a plugin's declared views register their openers, and

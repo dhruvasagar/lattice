@@ -6054,6 +6054,8 @@ dependencies = [
  "lattice-mode",
  "lattice-notify",
  "lattice-picker",
+ "lattice-plugin-host",
+ "lattice-plugin-loader",
  "lattice-protocol",
  "lattice-runtime",
  "lattice-snippet",

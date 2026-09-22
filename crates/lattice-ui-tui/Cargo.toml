@@ -82,6 +82,10 @@ notify = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
+# The shipped `comment` plugin's keystroke test (`app/comment_plugin.rs`)
+# loads the real component; both are already in the graph via lattice-host.
+lattice-plugin-host = { path = "../lattice-plugin-host" }
+lattice-plugin-loader = { path = "../lattice-plugin-loader" }
 lattice-magit = { path = "../lattice-magit" }
 lattice-keymap = { path = "../lattice-keymap" }
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "test-util", "time"] }

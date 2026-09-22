@@ -139,6 +139,9 @@ mod highlights;
 // Paramount goal #1's ratchet clause: the keystroke→glyph distribution
 // gate. Test-only — it measures the production path (translate → apply →
 // compose) rather than adding one.
+/// The shipped `comment` plugin, driven through the real keystroke path.
+#[cfg(test)]
+mod comment_plugin;
 #[cfg(test)]
 mod keystroke_glyph_ratchet;
 mod lifecycle;

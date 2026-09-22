@@ -813,7 +813,8 @@ is enough to check — and decline otherwise.
   `HOME` is a **string**, knowing a path does not mount it, and every filesystem access
   still goes through the preopens. A plugin that learns the home directory and asks to read
   it is refused exactly as before.
-- **Per-plugin data dir.** `${XDG_DATA_HOME}/lattice/plugins/<plugin-id>/data/` is mounted;
+- **Per-plugin data dir.** `${XDG_CONFIG_HOME}/lattice/plugins/<plugin-name>/data/` is mounted —
+  beside the plugin itself, and never inside an install prefix (see `plugin-data-location.md`);
   writes outside it require an explicit broader grant (§5.5.6 prerequisite 2).
 - **Trust tiers.** *Bundled* plugins inherit the editor's trust (capabilities pre-granted at
   build time, no prompt). *User-installed* plugins prompt for consent on first install

@@ -1,0 +1,88 @@
+# Where a plugin's data lives
+
+Companion to [`plugin-host.md`](plugin-host.md) §"Capability model" (the
+per-plugin data dir is a WASI preopen) and
+[`plugin-manager.md`](plugin-manager.md) §7 (the user plugin root).
+
+**The rule: everything lattice keeps lives under one root,
+`~/.config/lattice/` — on Linux and macOS alike.** Not
+`~/Library/Application Support` on macOS, not `~/.local/share` on Linux. The
+config loader already resolves it this way (`lattice_config::config_home`:
+`$XDG_CONFIG_HOME` when absolute, else `~/.config` on Unix), and the user
+plugin root, `init.rs` and the user's TOML all sit inside it.
+
+A plugin's private data is therefore
+**`~/.config/lattice/plugins/<plugin-name>/data/`** — the same directory the
+plugin itself is built into, so one directory is a plugin's whole home. The
+name is the manifest `id` (`org`, `comment`), which is the only identifier a
+plugin has; the numeric `PluginId` is a host-internal provenance token and
+never appears on disk.
+
+The two caches stay outside, in `dirs::cache_dir()`:
+`lattice/plugin-cache/` (wasmtime's AOT modules) and `lattice/picker-mru.bincode`.
+Both are regenerable, nothing deletes them, and `~/.config` is commonly
+synced as dotfiles — where a cache does not belong.
+
+## Why it moved: the installer deleted it
+
+Until 2026-09-22 the base was `dirs::data_dir()/lattice/plugins/`. That is
+`~/.local/share/lattice/plugins/` on Linux — and `install.sh` defaults to
+`--prefix ~/.local`, so it is *also* where the bundled plugins install. The
+installer upgrades by staging the archive's `plugins/`, moving the old
+directory aside and `rm -rf`-ing it:
+
+```sh
+mv "$PREFIX/share/lattice/plugins" "$PREFIX/share/lattice/plugins.old.$$"
+mv "$stage" "$PREFIX/share/lattice/plugins"
+rm -rf "$PREFIX/share/lattice/plugins.old.$$"
+```
+
+So **every reinstall or upgrade deleted every plugin's store**, user plugins
+included. Reproduced against the published v0.9.0 archive: a seeded
+`plugins/project/data/plugin-store.bin` was gone after `install.sh`.
+
+macOS never hit it (`Application Support` is not an install prefix), which is
+why it survived the 0.9 honesty pass: the layout was only wrong on the
+platform nobody tested the installer on twice.
+
+**Rejected: teach `install.sh` to preserve `*/data`.** It fixes the one path
+that bit us and leaves the layout that caused it — user state living inside
+an install tree. A distro package, an uninstall by `rm -rf share/lattice`, or
+a `cp -R` over the directory would each still delete it. Heuristic #1: the
+shared directory is the defect.
+
+**Rejected: change the installer's default prefix.** `~/.local` is the
+convention, and anyone passing `--prefix ~/.local` explicitly would still be
+exposed.
+
+## Migration
+
+`migrate_plugin_data(old, new)` runs once in `PluginHost::new`, moving each
+`<old>/<name>/data` to `<new>/<name>/data`.
+
+- **Only `data` moves.** On Linux the old base doubles as the install tree, so
+  its `<name>/` directories also hold components and manifests; moving a whole
+  `<name>` directory would uninstall the plugin.
+- **A destination that exists wins**, and the old copy stays where it is:
+  whatever a newer lattice wrote is the live state.
+- **Failures are logged and skipped.** A cross-device rename or a permission
+  error leaves that plugin's old data in place and the editor starts; it never
+  panics at boot.
+
+It is idempotent, and a no-op on a machine that never used the old base.
+
+## What this does not cover
+
+Linux users who reinstalled 0.9.0 with `install.sh` already lost that state,
+and nothing can recover it. The 0.9.1 notes say so.
+
+Tutor high scores moved in the same pass, from
+`dirs::data_local_dir()/lattice/tutor-scores.toml` to
+`~/.config/lattice/tutor-scores.toml`, with the same
+move-once-if-absent rule. They were never inside an install prefix — the move
+is the one-root rule, not a bug fix.
+
+The LSP **server manager** (lighthouse, unbuilt) is still specified in
+design.md §5.5 as installing into `${XDG_DATA_HOME}/lattice/lsp/`. That
+predates this rule and should be revisited when it is built: server binaries
+are not editor state, so the answer is not automatic.

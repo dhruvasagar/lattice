@@ -1126,7 +1126,7 @@ use-package `require` (git/local source, built on first boot into that cache).
 **WIT prerequisites that this design imposes on Phase 7's plugin host** (the first three are blockers for the LSP server manager specifically):
 
 1. `LspSupervisor` mutation through WIT -- plugins register `ServerConfig`s pointing at paths under their managed install dir. `ServerConfig` becomes a stable WIT type.
-2. **Filesystem capability** scoped per-plugin -- `${XDG_DATA_HOME}/lattice/plugins/<plugin-id>/data/` mounted via `wasi:filesystem`; writes outside it require an explicit broader capability.
+2. **Filesystem capability** scoped per-plugin -- `${XDG_CONFIG_HOME}/lattice/plugins/<plugin-name>/data/` mounted via `wasi:filesystem`; writes outside it require an explicit broader capability.
 3. **Network capability** -- `wasi:http` (preview2), gated; consent prompt on first install.
 4. **Subprocess capability** -- contentious, since "spawn arbitrary process" approximates "trust this plugin completely". v1: bundled plugins only get `proc:spawn`; user-installed plugins ship pre-built binary recipes (no source-build paths). Sandboxed subprocess primitives are post-1.0.
 5. **Long-running task surface** -- `start_task → push_output → finalize` so plugin-driven installs / scans stream stdout into a buffer-backed view without blocking the renderer.
@@ -1159,7 +1159,7 @@ use-package `require` (git/local source, built on first boot into that cache).
 **Loading.** The `lattice-plugin-loader` crate stands the host up at boot as a
 `PluginLoaderHandle` service and drives `compile → instantiate → activate` off the
 boot thread. On-disk discovery loads plugins from
-`${XDG_DATA_HOME}/lattice/plugins/`; `:plugin-load <path>` / `:plugin-unload
+`${XDG_CONFIG_HOME}/lattice/plugins/`; `:plugin-load <path>` / `:plugin-unload
 <name>` / `:plugin-reload <name>` load / reverse / re-instantiate on demand. The
 user's `init.rs` is itself a boot-capability plugin (keymaps / autocmds / custom
 commands as code), auto-reloaded on rebuild. Unload reverses every registry

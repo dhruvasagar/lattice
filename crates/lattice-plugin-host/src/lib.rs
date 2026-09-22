@@ -3154,15 +3154,95 @@ fn default_cache_dir() -> PathBuf {
         .join("plugin-cache")
 }
 
-/// The default per-plugin data-dir base, `<user-data>/lattice/plugins/`
-/// (`${XDG_DATA_HOME}` on Linux, Application Support on macOS, LocalAppData on
-/// Windows). Each plugin's private dir is `<base>/<plugin-id>/data/` (fragment
-/// §6). Falls back to the temp dir if no user data dir can be resolved.
+/// The default per-plugin data-dir base, `<config-home>/lattice/plugins/` —
+/// `~/.config/lattice/plugins/` on Linux AND macOS (honouring
+/// `$XDG_CONFIG_HOME`), `%APPDATA%\lattice\plugins` on Windows. Each plugin's
+/// private dir is `<base>/<plugin-name>/data/` (fragment §6), beside the
+/// plugin itself: that is the tree `require`d plugins are built into, so one
+/// directory is a plugin's whole home. Falls back to the temp dir if no config
+/// home resolves.
+///
+/// **It used to be `dirs::data_dir()/lattice/plugins/`, and that lost data.**
+/// On Linux `dirs::data_dir()` is `~/.local/share`, which is also where
+/// `install.sh` puts the bundled plugins under its default `--prefix ~/.local`
+/// — and the installer upgrades by replacing that directory and `rm -rf`-ing
+/// the old one. Every reinstall therefore deleted every plugin's store.
+/// Reproduced against the published v0.9.0 archive, 2026-09-22.
+/// [`migrate_plugin_data`] carries surviving directories to the new base.
 fn default_data_dir_base() -> PathBuf {
+    data_dir_base_from(lattice_config::config_home().as_deref())
+}
+
+/// The pure resolver behind [`default_data_dir_base`], split out so the
+/// layout is testable without touching the process environment.
+pub fn data_dir_base_from(config_home: Option<&Path>) -> PathBuf {
+    config_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("lattice")
+        .join("plugins")
+}
+
+/// The pre-2026-09-22 data-dir base, `dirs::data_dir()/lattice/plugins/`.
+/// Read once at boot by [`migrate_plugin_data`]; nothing else should use it.
+pub fn legacy_data_dir_base() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("lattice")
         .join("plugins")
+}
+
+/// Move each `<old>/<name>/data` directory to `<new>/<name>/data`, returning
+/// how many moved. Idempotent, and safe to call when `old` does not exist.
+///
+/// **Only the `data` subdirectory moves.** On Linux the old base doubles as
+/// the install tree, so its `<name>/` directories also hold the bundled
+/// plugins' components and manifests; moving a whole `<name>` directory would
+/// uninstall the plugin. A `data` directory already present at the
+/// destination is left alone and the old one stays put — whatever a newer
+/// lattice wrote wins over the copy this is carrying.
+///
+/// Failures are logged and skipped: a plugin whose data cannot be moved (a
+/// cross-device rename, a permission error) still starts, with its old state
+/// where it was, rather than taking the editor down at boot.
+pub fn migrate_plugin_data(old: &Path, new: &Path) -> usize {
+    if old == new {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(old) else {
+        return 0;
+    };
+    let mut moved = 0;
+    for entry in entries.flatten() {
+        let from = entry.path().join("data");
+        if !from.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let to = new.join(&name).join("data");
+        if to.exists() {
+            tracing::debug!(plugin = %name, "plugin data already migrated; leaving the old copy");
+            continue;
+        }
+        if let Some(parent) = to.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!(plugin = %name, error = %e, "could not create the plugin data directory");
+            continue;
+        }
+        match std::fs::rename(&from, &to) {
+            Ok(()) => {
+                tracing::info!(plugin = %name, to = %to.display(), "moved plugin data beside the plugin");
+                moved += 1;
+            }
+            Err(e) => {
+                tracing::warn!(plugin = %name, error = %e, "could not move plugin data; leaving it in place");
+            }
+        }
+    }
+    moved
 }
 
 /// The wasmtime engine, the (import-free) component linker, the on-disk module
@@ -3266,7 +3346,12 @@ impl PluginHost {
     /// ([`default_cache_dir`]) and per-plugin data-dir base
     /// ([`default_data_dir_base`]). This is the production constructor.
     pub fn new() -> Result<Self, PluginHostError> {
-        Self::with_dirs(default_cache_dir(), default_data_dir_base())
+        let base = default_data_dir_base();
+        // Once, at boot: carry plugin state written under the old base
+        // (`dirs::data_dir()/lattice/plugins`) beside the plugins. A no-op
+        // after the first run, and on a machine that never used it.
+        migrate_plugin_data(&legacy_data_dir_base(), &base);
+        Self::with_dirs(default_cache_dir(), base)
     }
 
     /// Build a host caching compiled components under `cache_dir`, with the

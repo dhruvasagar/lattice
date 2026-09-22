@@ -1,8 +1,10 @@
 //! T.B — Tutor high-score persistence.
 //!
 //! `TutorScores` is a thin wrapper around a per-lesson high-score map
-//! written to `~/.local/share/lattice/tutor-scores.toml` (XDG data
-//! dir on Linux/macOS; `%APPDATA%\lattice\` on Windows via `dirs`).
+//! written to `~/.config/lattice/tutor-scores.toml` — the config home on
+//! Linux AND macOS (honouring `$XDG_CONFIG_HOME`), `%APPDATA%\lattice\`
+//! on Windows. Everything lattice keeps lives under one root; scores used
+//! to sit in `dirs::data_local_dir()`, outside it.
 //!
 //! The file is read at `do_tutor` time so the HUD can show the current
 //! high score, and written whenever a lesson is completed or the final
@@ -104,5 +106,31 @@ impl TutorScores {
 }
 
 fn scores_path() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("lattice").join("tutor-scores.toml"))
+    let path = lattice_config::config_home().map(|d| d.join("lattice").join(SCORES_FILE))?;
+    if !path.exists()
+        && let Some(legacy) = dirs::data_local_dir().map(|d| d.join("lattice").join(SCORES_FILE))
+        && legacy.exists()
+    {
+        // Carry the scores from the pre-2026-09-22 location, once. A failure
+        // here is not worth a message: the game plays without persistence,
+        // and the next save writes the new path anyway.
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::rename(&legacy, &path) {
+            Ok(()) => tracing::debug!(
+                target: "lattice_host::tutor_scores",
+                to = %path.display(),
+                "tutor-scores: moved under the config home"
+            ),
+            Err(e) => tracing::debug!(
+                target: "lattice_host::tutor_scores",
+                error = %e,
+                "tutor-scores: could not move the old file"
+            ),
+        }
+    }
+    Some(path)
 }
+
+const SCORES_FILE: &str = "tutor-scores.toml";

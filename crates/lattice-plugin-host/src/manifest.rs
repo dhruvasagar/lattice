@@ -391,7 +391,7 @@ impl FromStr for PluginSeam {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginManifest {
     /// Stable, human-legible plugin id (`fuzzy-finder`). Keys the per-plugin
-    /// data dir (`<data>/lattice/plugins/<id>/data/`). Distinct from the
+    /// data dir (`<config-home>/lattice/plugins/<name>/data/`). Distinct from the
     /// host-issued numeric [`crate::PluginId`] used for compact provenance.
     pub id: String,
     /// The OS capabilities the plugin requests (its WASI view).

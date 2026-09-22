@@ -142,3 +142,43 @@ fn a_foreign_binding_under_an_operator_prefix_is_still_listed() {
          wearing a different heading:\n{body}"
     );
 }
+
+/// DK.6: the summary keeps the provenance the enumeration carried. Every
+/// folded row used to print `layer:` / `source:`; summarising them must not
+/// turn "who registered this operator, and in which layer" into a question the
+/// view no longer answers.
+///
+/// `gU` is the right probe because its grammar lives in TWO layers — Built-in
+/// and multibuffer-mode — so a summary that collapsed to one line, or dropped
+/// the layer, fails here.
+#[test]
+fn the_summary_names_each_layer_and_source_the_operator_came_from() {
+    let ed = editor();
+    let body = text(&ed.build_describe_key_content("gU"));
+
+    let (_, summary) = body
+        .split_once("─── gU is an operator ───")
+        .unwrap_or_else(|| panic!("the operator summary is present:\n{body}"));
+    let summary = summary.split("───").next().unwrap_or(summary);
+    let (_, origins) = summary
+        .split_once("Registered in:")
+        .unwrap_or_else(|| panic!("the summary says where it was registered:\n{body}"));
+    let origin_lines: Vec<&str> = origins.lines().filter(|l| l.contains("layer:")).collect();
+
+    for line in &origin_lines {
+        assert!(
+            line.contains("source:") && line.contains("continuation(s)"),
+            "each origin names layer, source and its share:\n{body}"
+        );
+    }
+    let has = |layer: &str| {
+        origin_lines
+            .iter()
+            .any(|l| l.contains(&format!("layer: {layer} ")) && l.contains("keymap_normal.rs"))
+    };
+    assert!(has("Built-in"), "the Built-in layer is named:\n{body}");
+    assert!(
+        has("multibuffer-mode"),
+        "and so is the second layer — collapsing to one would hide it:\n{body}"
+    );
+}

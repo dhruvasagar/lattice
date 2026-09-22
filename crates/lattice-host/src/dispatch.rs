@@ -39629,7 +39629,7 @@ impl Editor {
         // reverted to the full wall the moment one appeared, which buried it
         // among seventy rows that say nothing. The operator's own grammar is
         // summarised; anything else under the prefix is listed.
-        let (operator_summary, grammar_count, listable) = {
+        let (operator_summary, grammar, listable) = {
             let reg = self.registry.load();
             // The operator the subtree belongs to, if exactly one does.
             // `register_operator_bindings_in` builds one operator's surface at
@@ -39662,9 +39662,9 @@ impl Editor {
                         .iter()
                         .cloned()
                         .partition(|c| c.command.command.command == id);
-                    (op_name, grammar.len(), other)
+                    (op_name, grammar, other)
                 }
-                None => (None, 0, continuations.clone()),
+                None => (None, Vec::new(), continuations.clone()),
             }
         };
         if let Some(op_name) = operator_summary.as_deref() {
@@ -39691,9 +39691,34 @@ impl Editor {
                 "  {} continuation(s) are registered and not listed — they are \
                  the motion and text-object grammar, identical for every \
                  operator. See {} for what this one does.",
-                grammar_count,
+                grammar.len(),
                 lattice_help::command_link(op_name),
             ));
+            // DK.6: where the operator's chords came from, per layer. The rows
+            // that used to carry `layer:` / `source:` are the ones the summary
+            // folds away, so without this the view answers "what is gU" and
+            // drops "who registered it, and where". An operator's grammar can
+            // legitimately live in several layers — `gU` has a Built-in copy
+            // and a multibuffer-mode copy — so each distinct (layer, source)
+            // gets its own line and its share of the count.
+            let mut origins: Vec<((String, String), usize)> = Vec::new();
+            for cont in &grammar {
+                let origin = (
+                    self.keymap.layer_label_string(cont.layer),
+                    self.source_link_named(&cont.command.source),
+                );
+                match origins.iter_mut().find(|(o, _)| *o == origin) {
+                    Some((_, n)) => *n += 1,
+                    None => origins.push((origin, 1)),
+                }
+            }
+            lines.push(String::new());
+            lines.push("  Registered in:".to_string());
+            for ((layer, source), n) in &origins {
+                lines.push(format!(
+                    "    layer: {layer}   source: {source}   ({n} continuation(s))"
+                ));
+            }
         }
         // Foreign bindings under the prefix are listed whether or not the
         // operator was summarised — a minor mode's `gcs` is news either way.

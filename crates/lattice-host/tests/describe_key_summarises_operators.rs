@@ -252,3 +252,19 @@ fn a_composed_chord_names_its_motion_or_text_object() {
         );
     }
 }
+
+/// Bracket motions and text objects are chords with the link syntax's own
+/// punctuation in them. `]f`'s heading rendered as the raw `[]f](key:]f)`
+/// because the link label ended at the chord's own `]`.
+#[test]
+fn a_bracket_chord_renders_as_itself() {
+    let ed = editor();
+    for chord in ["]f", "[[", "di(", "da)"] {
+        let body = text(&ed.build_describe_key_content(chord));
+        let first = body.lines().next().unwrap_or_default();
+        assert!(
+            first.starts_with(&format!("{chord} ")),
+            "`{chord}`'s heading is the chord, not markdown: {first:?}"
+        );
+    }
+}

@@ -71,7 +71,12 @@ pub fn diagnostics_help(layer: &DiagnosticsLayer) -> HelpContent {
                 col0 + 1,
                 one_line(&d.message)
             );
-            lines.push(format!("[{sev}] [{label}](file:{path}:{line0})"));
+            // Escaped: a compiler message routinely contains `]` or `)`
+            // (`expected [u8; 4]`, `fn(i32)`), and unescaped either one
+            // ended the link early and left its tail as literal markdown.
+            let label = lattice_help::escape_link_text(&label);
+            let url = lattice_help::escape_link_text(&format!("{path}:{line0}"));
+            lines.push(format!("[{sev}] [{label}](file:{url})"));
         }
         lines.push(String::new());
     }
@@ -310,4 +315,67 @@ fn format_log_record(r: &LogRecord) -> String {
         r.source.tag(),
         one_line(&r.message)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::{DiagnosticEvent, LspLogger};
+    use lsp_types::{Diagnostic, Position, Range, Uri};
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    /// A compiler message routinely carries `]` and `)` — this one is
+    /// rust-analyzer's shape. Unescaped, the `]` ended the link's label and
+    /// the row rendered its URL as literal text with no jump target.
+    #[test]
+    fn a_message_with_brackets_keeps_its_row_a_single_link() {
+        let layer = DiagnosticsLayer::new(LspLogger::with_defaults());
+        let message = "expected `[u8; 4]`, found `fn(i32)`";
+        layer.apply(DiagnosticEvent {
+            server_id: Arc::from("rust"),
+            uri: Uri::from_str("file:///x.rs").unwrap(),
+            version: Some(1),
+            diagnostics: Arc::from(
+                vec![Diagnostic {
+                    range: Range {
+                        start: Position {
+                            line: 2,
+                            character: 4,
+                        },
+                        end: Position {
+                            line: 2,
+                            character: 9,
+                        },
+                    },
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    message: message.into(),
+                    ..Default::default()
+                }]
+                .into_boxed_slice(),
+            ),
+        });
+
+        let content = diagnostics_help(&layer);
+        let text = content.buffer.content.as_string();
+        let row = text
+            .lines()
+            .find(|l| l.starts_with("[E]"))
+            .unwrap_or_else(|| panic!("an error row:\n{text}"));
+        assert_eq!(
+            row,
+            format!("[E] /x.rs:3:5 {message}"),
+            "the whole label renders, with no markdown left over"
+        );
+        assert!(
+            content
+                .metadata
+                .links
+                .iter()
+                .any(|l| matches!(&l.target, lattice_help::HelpLinkTarget::Source { .. })),
+            "and the row still jumps to the file: {:?}",
+            content.metadata.links
+        );
+    }
 }

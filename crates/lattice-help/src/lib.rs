@@ -546,33 +546,97 @@ pub enum HelpLinkTarget {
 /// Helper for help-content formatters. Renders a chord link in
 /// standard markdown form: `[chord](key:chord)`.
 pub fn key_link(chord: &str) -> String {
-    format!("[{chord}](key:{chord})")
+    let c = escape_link_text(chord);
+    format!("[{c}](key:{c})")
+}
+
+/// Escape the link syntax's own punctuation — `\`, `[`, `]`, `(`, `)` — with a
+/// backslash, so a label or URL may contain it. Chords are the reason: `]f`,
+/// `di(`, `da)`, `ci]` are ordinary motions and text objects, and unescaped
+/// each one ended the label or the URL early. The parsers
+/// ([`extract_links_and_clean`], [`parse_help_links`]) unescape.
+///
+/// Every `*_link` helper applies it; a hand-built `[..](..)` whose text can
+/// contain these characters must too.
+pub fn escape_link_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '[' | ']' | '(' | ')') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Inverse of [`escape_link_text`]: a backslash makes the next char literal.
+fn unescape_link_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => out.extend(chars.next()),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Byte index of the first `target` at or after `from` that is not escaped.
+/// `target` is ASCII, so a match is always a char boundary.
+fn find_unescaped(bytes: &[u8], from: usize, target: u8) -> Option<usize> {
+    let mut j = from;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' => j += 2,
+            b if b == target => return Some(j),
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// `[label](url)` starting at the `[` at `open`: the byte bounds of the label
+/// and of the url, escape-aware. `None` when it is not a well-formed link.
+fn scan_link(bytes: &[u8], open: usize) -> Option<(usize, usize, usize, usize)> {
+    let label_start = open + 1;
+    let label_end = find_unescaped(bytes, label_start, b']')?;
+    if bytes.get(label_end + 1) != Some(&b'(') {
+        return None;
+    }
+    let url_start = label_end + 2;
+    let url_end = find_unescaped(bytes, url_start, b')')?;
+    Some((label_start, label_end, url_start, url_end))
 }
 
 /// Helper for help-content formatters. Renders a command link in
 /// standard markdown form: `[name](command:name)`.
 pub fn command_link(name: &str) -> String {
-    format!("[{name}](command:{name})")
+    let t = escape_link_text(name);
+    format!("[{t}](command:{t})")
 }
 
 /// Helper for help-content formatters. Renders a source link in
 /// standard markdown form: `[path:line](file:path:line)`.
 pub fn source_link(file_line: &str) -> String {
-    format!("[{file_line}](file:{file_line})")
+    let t = escape_link_text(file_line);
+    format!("[{t}](file:{t})")
 }
 
 /// Helper for help-content formatters. Renders a topic link in
 /// standard markdown form: `[name](help:name)`. Used by
 /// `:describe-*` cross-references.
 pub fn topic_link(name: &str) -> String {
-    format!("[{name}](help:{name})")
+    let t = escape_link_text(name);
+    format!("[{t}](help:{t})")
 }
 
 /// Helper for help-content formatters. Renders a mode link in
 /// standard markdown form: `[name](mode:name)`. Used by
 /// `:describe-buffer` (the "modes active here" section).
 pub fn mode_link(name: &str) -> String {
-    format!("[{name}](mode:{name})")
+    let t = escape_link_text(name);
+    format!("[{t}](mode:{t})")
 }
 
 /// Strip every `[label](url)` markdown link in `text` down to just
@@ -602,29 +666,20 @@ pub fn extract_links_and_clean(text: &str) -> (String, Vec<HelpLink>) {
             // Try to match `[label](url)` starting at i. On any
             // failure (no `]`, no `(`, no `)`) fall through and copy
             // the `[` byte literally.
-            let label_start = i + 1;
-            if let Some(label_end_rel) = bytes[label_start..].iter().position(|&b| b == b']')
-                && bytes.get(label_start + label_end_rel + 1) == Some(&b'(')
-            {
-                let label_end = label_start + label_end_rel;
-                let url_start = label_end + 2;
-                if let Some(url_end_rel) = bytes[url_start..].iter().position(|&b| b == b')') {
-                    let url_end = url_start + url_end_rel;
-                    let label = &text[label_start..label_end];
-                    let url = &text[url_start..url_end];
-                    let target = classify_link_url(url);
-                    let label_byte_start = out.len();
-                    out.push_str(label);
-                    let label_byte_end = out.len();
-                    let start_pos = byte_offset_to_position(&out, label_byte_start);
-                    let end_pos = byte_offset_to_position(&out, label_byte_end);
-                    links.push(HelpLink {
-                        range: ProtoRange::new(start_pos, end_pos),
-                        target,
-                    });
-                    i = url_end + 1;
-                    continue;
-                }
+            if let Some((label_start, label_end, url_start, url_end)) = scan_link(bytes, i) {
+                let label = unescape_link_text(&text[label_start..label_end]);
+                let target = classify_link_url(&unescape_link_text(&text[url_start..url_end]));
+                let label_byte_start = out.len();
+                out.push_str(&label);
+                let label_byte_end = out.len();
+                let start_pos = byte_offset_to_position(&out, label_byte_start);
+                let end_pos = byte_offset_to_position(&out, label_byte_end);
+                links.push(HelpLink {
+                    range: ProtoRange::new(start_pos, end_pos),
+                    target,
+                });
+                i = url_end + 1;
+                continue;
             }
         }
         // Copy one UTF-8 codepoint.
@@ -661,10 +716,8 @@ fn next_char_boundary(s: &str, byte: usize) -> usize {
 /// - `[label](file:PATH:LINE)` -> [`HelpLinkTarget::Source`]
 /// - any other URL -> [`HelpLinkTarget::Unresolved`]
 ///
-/// The parser is intentionally simple (no nested-bracket support,
-/// no escaping). Help-content authors compose links via the
-/// helper functions [`command_link`] / [`key_link`] /
-/// [`source_link`] which always emit well-formed input.
+/// No nested brackets; `\\` escapes the link punctuation, which the
+/// `*_link` helpers apply for you (see [`escape_link_text`]).
 pub fn parse_help_links(text: &str) -> Vec<HelpLink> {
     let mut out = Vec::new();
     let bytes = text.as_bytes();
@@ -674,27 +727,13 @@ pub fn parse_help_links(text: &str) -> Vec<HelpLink> {
             i += 1;
             continue;
         }
-        // Find `]` after the `[`.
-        let label_start = i + 1;
-        let Some(label_end_rel) = bytes[label_start..].iter().position(|&b| b == b']') else {
+        // Escape-aware (see `escape_link_text`); the range stays over the
+        // label AS WRITTEN, since this parser keeps the source verbatim.
+        let Some((label_start, label_end, url_start, url_end)) = scan_link(bytes, i) else {
             i += 1;
             continue;
         };
-        let label_end = label_start + label_end_rel;
-        // Must be followed by `(`.
-        if bytes.get(label_end + 1) != Some(&b'(') {
-            i = label_start;
-            continue;
-        }
-        let url_start = label_end + 2;
-        let Some(url_end_rel) = bytes[url_start..].iter().position(|&b| b == b')') else {
-            i = url_start;
-            continue;
-        };
-        let url_end = url_start + url_end_rel;
-
-        let url = &text[url_start..url_end];
-        let target = classify_link_url(url);
+        let target = classify_link_url(&unescape_link_text(&text[url_start..url_end]));
         let start_pos = byte_offset_to_position(text, label_start);
         let end_pos = byte_offset_to_position(text, label_end);
         out.push(HelpLink {
@@ -1061,6 +1100,33 @@ mod tests {
         let h = HelpContent::from_lines("t", vec![]);
         assert_eq!(h.line_count(), 1); // empty buffer reports one empty line
         assert!(h.metadata.links.is_empty());
+    }
+
+    /// Chords that carry the link syntax's own punctuation — most bracket
+    /// motions and text objects — must round-trip. Unescaped, `]f` closed the
+    /// label after `[`, `di(` survived only by luck, and `da)` ended the URL
+    /// early: `:describe-key ]f` rendered its own heading as `[]f](key:]f)`.
+    #[test]
+    fn a_chord_with_link_punctuation_round_trips() {
+        for chord in ["]f", "[[", "]]", "di(", "da)", "ci]", "a[", "\\", "g\\]"] {
+            let (clean, links) = extract_links_and_clean(&format!("see {} now", key_link(chord)));
+            assert_eq!(
+                clean,
+                format!("see {chord} now"),
+                "rendered label for `{chord}`"
+            );
+            assert_eq!(links.len(), 1, "one link for `{chord}`: {links:?}");
+            match &links[0].target {
+                HelpLinkTarget::Chord(c) => assert_eq!(c, chord, "target for `{chord}`"),
+                other => panic!("`{chord}` resolved to {other:?}"),
+            }
+            // The verbatim parser (markdown mode) must agree on the target.
+            let verbatim = parse_help_links(&key_link(chord));
+            assert!(
+                matches!(&verbatim[..], [l] if l.target == HelpLinkTarget::Chord(chord.into())),
+                "verbatim parse of `{chord}`: {verbatim:?}"
+            );
+        }
     }
 
     #[test]

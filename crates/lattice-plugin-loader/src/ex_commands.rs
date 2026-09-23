@@ -173,6 +173,13 @@ fn load_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
             let Some(path) = arg_string(ctx) else {
                 return Ok(echo(EchoLevel::Warn, "usage: :plugin-load <path>"));
             };
+            // `~` expands, as it does for a `PluginSource::Local` in `init.rs`
+            // and for every other path a user types at the `:` line. Without
+            // it `:plugin-load ~/.config/lattice/plugins/org` looks up a
+            // directory literally named `~`, and the error names the manifest
+            // rather than the expansion — which reads like the plugin is
+            // broken.
+            let path = lattice_core::home::expand_tilde(&path);
             loader.spawn_load_path(std::path::PathBuf::from(&path));
             Ok(echo(
                 EchoLevel::Info,

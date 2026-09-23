@@ -44,6 +44,11 @@ cp target/wasm32-wasip2/release/lattice_org_plugin.wasm \
 cp plugin.toml ~/.config/lattice/plugins/org/
 ```
 
+That build needs Rust and nothing else — no checkout of lattice. Org depends
+on the plugin API the way any crate depends on anything, by version:
+`lattice-wit` carries the WIT package and `lattice-plugin-sdk` the typed
+config helpers, both from crates.io.
+
 Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did
 not.
 

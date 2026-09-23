@@ -64,13 +64,152 @@ world you implement:
 ```rust
 wit_bindgen::generate!({
     world: "picker-source-plugin",
-    path: "../../wit",
+    path: "wit",
 });
 ```
+
+`path` is `"wit"` — a directory beside your `Cargo.toml`, which you do **not**
+write by hand and do **not** commit. Where it comes from is the next section,
+and it is the single most consequential thing to understand about building
+against lattice.
 
 You never hand-write the API surface — browse it with `:describe-plugin-api
 <seam>` in the editor, or dump it with `:export-plugin-api markdown` / `json` to
 generate scaffolding.
+
+## ABI, versions, and what happens when lattice moves
+
+The question this section answers: **a plugin was built months ago against an
+older API. The user upgrades lattice. What happens?**
+
+### Three versions, and they are not the same thing
+
+| | What it is | Where it lives |
+|---|---|---|
+| **The WIT package version** | The ABI identity. `package lattice:plugin-host@0.1.0` at the top of every `.wit` file. Component Model bakes it into the interface names your component imports, so the host either provides `lattice:plugin-host/buffer@0.1.0` or your component does not instantiate. | `crates/lattice-wit/wit/*.wit` |
+| **The `lattice-wit` crate version** | The delivery vehicle — the crate that carries those files to you. Versioned independently of the editor, because the ABI does not change every time the editor does. | `crates/lattice-wit/Cargo.toml` |
+| **The editor version** | `lattice --version`. Says nothing directly about the ABI. | `[workspace.package]` |
+
+A plugin does not "target lattice 0.9". It targets an ABI generation.
+
+### Plugins ship as source, and are built on boot
+
+This is the part that makes the whole model work, and it is unusual enough to
+state plainly: **the plugin manager clones a plugin's source and compiles it on
+the machine it will run on.** It does not download a prebuilt `.wasm`.
+
+So the upgrade question is not "does this old binary still run" — it is "does
+this source still compile, and against which WIT".
+
+Rebuilds are cached on a `.build-stamp` recording two fingerprints
+(`lattice-plugin-loader/src/build.rs`):
+
+- `source` — the plugin's source tree;
+- `abi` — `lattice_wit::ABI_FINGERPRINT`, an FNV-1a over the WIT files **the
+  running editor carries**.
+
+A stamp matching on *both* short-circuits to a pure load, so a warm boot with
+nothing changed invokes no toolchain — a machine without Rust installed still
+boots every already-built plugin. Either fingerprint differing forces a rebuild.
+
+The `abi` half is not symmetry. A source that did not change, compiled against
+an ABI that did, looks current under a source-only stamp: it gets loaded, fails
+to instantiate, and says nothing. No amount of source fingerprinting can see
+that, which is why the ABI is stamped explicitly.
+
+### Where your `wit/` actually comes from
+
+Two writers, and the order decides the outcome:
+
+1. **The loader refreshes it before cargo runs.** `refresh_wit_package` writes
+   the running editor's WIT into your source directory. Not the `lattice` that
+   happens to be on `PATH` — *the process that is about to instantiate your
+   component*. Left alone, this keeps every plugin automatically current: a new
+   editor means a new ABI fingerprint, a forced rebuild, and a component built
+   against the WIT it is about to be loaded by.
+
+2. **Your `lattice-wit` build-dependency overwrites it, and wins**, because
+   `build.rs` runs after the loader's refresh.
+
+That second point is the one to internalise:
+
+> **Declaring a `lattice-wit` build-dependency opts you OUT of automatic ABI
+> tracking.** A pin your repo declares deliberately overrides the ambient
+> refresh.
+
+You still want it, because without it `cargo build` outside the editor has no
+`wit/` at all and cannot compile. The cost is that the version you pin is the
+ABI you get, including when the editor has moved on.
+
+```toml
+[build-dependencies]
+lattice-wit = "0.1"      # this pin IS your ABI generation
+```
+
+```rust
+// build.rs
+fn main() {
+    lattice_wit::write_to("wit").expect("write the lattice WIT API package");
+}
+```
+
+Add `/wit` to `.gitignore`. Committing it is how a copy drifts behind the
+editor: it happened here, three ABI changes in one day, and the only symptom
+was a plugin that silently stopped loading.
+
+### So: old plugin, new editor
+
+Follow it through. Your plugin pins `lattice-wit = "0.1"`; the user upgrades to
+an editor whose WIT has moved to `0.2`.
+
+1. The editor's `ABI_FINGERPRINT` changed, so your stamp no longer matches and
+   the manager rebuilds you. Good.
+2. The loader refreshes `wit/` to the editor's 0.2 package. Then your `build.rs`
+   overwrites it back to 0.1, because your pin wins.
+3. You compile cleanly — against 0.1 — and your component imports
+   `lattice:plugin-host/…@0.1.0`.
+4. The host provides `@0.2.0`. The names do not match, and instantiation fails.
+
+The editor does not hide this. `warn_if_abi_skewed` logs one `warn!` naming
+both fingerprints — what you were built against, what this editor is — before
+loading you anyway, on the principle that a coarse signal does not justify
+refusing to try. If instantiation then fails, that line is already in the log
+explaining why.
+
+**A rebuild does not fix a generation mismatch.** Rebuilding against a pin
+produces the same mismatched component. The fixes are yours to make:
+
+- **bump the pin** — `lattice-wit = "0.2"`, fix whatever the compiler now
+  objects to, release;
+- **or drop the pin** and let the loader's refresh keep you current, accepting
+  that a standalone `cargo build` then needs the editor to have run once.
+
+### What "0.x" promises, which is not much
+
+The WIT is pre-1.0 and `plugin-host.md` §12 is explicit: **SemVer applies only
+post-1.0**, and the ABI-freeze policy is a deferred design fragment. Under
+Cargo's 0.x rules a `0.1 → 0.2` bump is allowed to break, and it will be used
+that way.
+
+What publishing `lattice-wit` buys is not stability — it is the ability to
+*name* a generation instead of pointing at a directory in somebody's checkout,
+and to be told when you are behind. Before it, the only way to express "this
+plugin targets that API" was a filesystem path, which is why the reference org
+plugin built on exactly one machine.
+
+Concretely, expect:
+
+- **Additive changes** — a new seam, a new function on an existing interface —
+  to leave your plugin compiling and loading. You import only what you use.
+- **A changed signature, a renamed record field, a removed function** to break
+  you at compile time, which is the good case: you get a compiler error and not
+  a plugin that loads and misbehaves.
+- **A WIT package version bump** to break you at instantiation, which is the
+  case the fingerprint warning exists to explain.
+
+The editor runs **one ABI generation at a time**. There is no compatibility
+shim and no side-by-side generation support; if that changes, it lands as the
+§12 fragment and this section changes with it.
 
 ## Lifecycle + manifest
 

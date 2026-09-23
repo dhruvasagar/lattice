@@ -3689,11 +3689,15 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                         pth
                     }
                 }
-                // No arg -> HOME.
-                None => match std::env::var_os("HOME") {
-                    Some(h) => std::path::PathBuf::from(h),
+                // No arg -> HOME. Through `dirs::home_dir`, not `$HOME`:
+                // the env var is POSIX-only, so a bare `:cd` on Windows read
+                // `None` and reported "HOME is not set" for a machine that
+                // has a perfectly good home directory under `%USERPROFILE%`.
+                // Same asymmetry `lattice_core::home` exists to end.
+                None => match dirs::home_dir() {
+                    Some(h) => h,
                     None => {
-                        editor.set_message(EchoLevel::Error, "cd: HOME is not set".to_string());
+                        editor.set_message(EchoLevel::Error, "cd: no home directory".to_string());
                         return;
                     }
                 },

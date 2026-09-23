@@ -18,22 +18,172 @@ use std::process::{Command, ExitCode};
 const CORE_PLUGINS: &[&str] = &["auto-pair", "treesitter-context", "project", "comment"];
 
 fn main() -> ExitCode {
-    match std::env::args().nth(1).as_deref() {
-        Some("build-core-plugins") => match build_core_plugins() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                eprintln!("xtask: {err}");
-                ExitCode::FAILURE
+    let mut args = std::env::args().skip(1);
+    let result = match args.next().as_deref() {
+        Some("build-core-plugins") => build_core_plugins(),
+        Some("bump-plugin-api") => match args.next() {
+            Some(version) => bump_plugin_api(&version),
+            None => {
+                Err("bump-plugin-api needs a version: cargo xtask bump-plugin-api 0.2.0".into())
             }
         },
         other => {
-            eprintln!("usage: cargo xtask build-core-plugins");
+            eprintln!(
+                "usage:\n  \
+                 cargo xtask build-core-plugins\n  \
+                 cargo xtask bump-plugin-api <X.Y.Z>"
+            );
             if let Some(cmd) = other {
                 eprintln!("unknown command: {cmd}");
             }
+            return ExitCode::FAILURE;
+        }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("xtask: {err}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// The three crates published under one plugin-API version.
+const PUBLISHED_CRATES: &[&str] = &[
+    "lattice-wit",
+    "lattice-plugin-sdk",
+    "lattice-plugin-sdk-derive",
+];
+
+/// `cargo xtask bump-plugin-api <X.Y.Z>` — move the plugin ABI to a new version.
+///
+/// The ABI version is stated in 37 places: `package lattice:plugin-host@X.Y.Z;`
+/// at the top of every `.wit` file, and the `version` of each published crate.
+/// Editing those by hand is how one file gets left behind, and a single
+/// disagreeing file produces a package that fails to parse or links half its
+/// interfaces — so the bump is one command and
+/// `the_crate_versions_track_the_wit_package_version` is the check that it
+/// landed everywhere.
+///
+/// This does NOT decide whether a bump is warranted. Changing the package
+/// version breaks every existing plugin at instantiation, because the Component
+/// Model puts it in the imported interface names; an additive seam usually does
+/// not need one. See `docs/dev/guides/plugin-authoring.md`.
+fn bump_plugin_api(version: &str) -> Result<(), String> {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|p| p.parse::<u32>().is_err()) {
+        return Err(format!("'{version}' is not an X.Y.Z version"));
+    }
+    let root = workspace_root();
+
+    let wit_dir = root.join("crates/lattice-wit/wit");
+    let mut wit_touched = 0usize;
+    let entries =
+        std::fs::read_dir(&wit_dir).map_err(|e| format!("reading {}: {e}", wit_dir.display()))?;
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().is_none_or(|e| e != "wit") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("reading {}: {e}", path.display()))?;
+        let mut out = String::with_capacity(text.len());
+        let mut replaced = false;
+        for line in text.lines() {
+            if !replaced
+                && line
+                    .trim_start()
+                    .starts_with("package lattice:plugin-host@")
+            {
+                out.push_str(&format!("package lattice:plugin-host@{version};"));
+                replaced = true;
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        if !replaced {
+            return Err(format!(
+                "{} declares no `package lattice:plugin-host@...;`",
+                path.display()
+            ));
+        }
+        std::fs::write(&path, out).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        wit_touched += 1;
+    }
+
+    for name in PUBLISHED_CRATES {
+        let path = root.join("crates").join(name).join("Cargo.toml");
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("reading {}: {e}", path.display()))?;
+        let mut out = String::with_capacity(text.len());
+        let mut replaced = false;
+        for line in text.lines() {
+            // The package's own `version`, not a dependency's: the first bare
+            // `version = "..."` at the start of a line. A dependency carries it
+            // inline inside `{ ... }`, so it is never at column zero.
+            if !replaced && line.starts_with("version = \"") {
+                out.push_str(&format!("version = \"{version}\""));
+                replaced = true;
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        if !replaced {
+            return Err(format!(
+                "{} has no literal `version = \"X.Y.Z\"` — is it still \
+                 version.workspace = true?",
+                path.display()
+            ));
+        }
+        std::fs::write(&path, out).map_err(|e| format!("writing {}: {e}", path.display()))?;
+    }
+
+    // The SDK's dependency on the derive crate carries the version too, and a
+    // stale one there fails `cargo publish`, not the build -- late, and after
+    // the ABI files are already committed.
+    let sdk = root.join("crates/lattice-plugin-sdk/Cargo.toml");
+    let text = std::fs::read_to_string(&sdk).map_err(|e| e.to_string())?;
+    let updated = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("lattice-plugin-sdk-derive") {
+                let (before, _) = line.split_once(", version = \"").unwrap_or((line, ""));
+                format!("{before}, version = \"{version}\" }}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&sdk, format!("{updated}\n")).map_err(|e| e.to_string())?;
+
+    // Cargo.lock records these three by version, so leaving it behind makes the
+    // lock and the manifests disagree -- which shows up as a diff on the next
+    // unrelated build rather than here, where it was caused.
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let status = Command::new(&cargo)
+        .args(["update", "--workspace", "--quiet"])
+        .current_dir(&root)
+        .status()
+        .map_err(|e| format!("cargo update --workspace: {e}"))?;
+    if !status.success() {
+        return Err(
+            "cargo update --workspace failed; Cargo.lock still names the old version".into(),
+        );
+    }
+
+    println!("plugin API -> {version}");
+    println!("  {wit_touched} .wit package declarations");
+    println!(
+        "  {} crate versions, and Cargo.lock",
+        PUBLISHED_CRATES.len()
+    );
+    println!();
+    println!("Next: cargo test -p lattice-wit   (the guard proves it landed everywhere)");
+    println!("      every existing plugin must rebuild; a pinned one will not instantiate.");
+    Ok(())
 }
 
 /// The workspace root — the `xtask` crate lives at `<workspace>/xtask`.

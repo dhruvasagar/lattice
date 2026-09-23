@@ -112,6 +112,56 @@ Two things to know:
   reads it from there — there is exactly one copy, and no guard keeping two in
   step.
 
+## Changing the plugin seam
+
+Editing anything under `crates/lattice-wit/wit/` changes the API every plugin
+compiles against. Two separate consequences, and conflating them is the mistake
+to avoid:
+
+| Change | Effect | Needs a package bump? |
+|---|---|---|
+| Any edit at all, including a doc comment | `ABI_FINGERPRINT` moves → every plugin's `.build-stamp` goes stale → they all **rebuild** | No |
+| Adding an interface, or a function to one | Existing plugins still compile and still link — they import only what they use | No |
+| Changing a signature, renaming a record field, removing a function | Existing plugins fail to **compile** on rebuild | Usually yes |
+| Bumping `package lattice:plugin-host@X.Y.Z` | Every existing component fails to **instantiate**, because the version is in the imported interface names | — |
+
+A rebuild is cheap and automatic. A package bump is neither: it strands every
+plugin pinned to the old generation until its author bumps and releases. Spend
+it when the shape genuinely changed, not to mark that something was added.
+
+### Doing the bump
+
+Never by hand — the version is stated in 37 places (36 `.wit` files plus three
+crate manifests), and one left behind produces a package that fails to parse or
+links half its interfaces:
+
+```bash
+cargo xtask bump-plugin-api 0.2.0
+cargo test -p lattice-wit      # the guard proves it landed everywhere
+```
+
+That rewrites every `package` declaration, all three published crate versions,
+the SDK's `version` on its dependency on the derive crate, and refreshes
+`Cargo.lock`. Then publish the three crates (above), because a plugin cannot
+target a generation that is not on the index.
+
+The rule the guard enforces: **the crates' `major.minor` equals the WIT
+package's `major.minor`**, so `lattice-wit = "0.2"` means
+`lattice:plugin-host@0.2.x` and an author tracks one number. Patch is the
+crates' own — use it for a packaging fix that leaves the ABI alone.
+
+### After a bump
+
+- In-tree plugins and fixtures rebuild on the next `cargo xtask
+  build-core-plugins` / test run; nothing to do.
+- Out-of-tree plugins that **do not** declare a `lattice-wit` build-dependency
+  follow automatically — the loader refreshes their `wit/` from the running
+  editor.
+- Out-of-tree plugins that **do** declare one are pinned to the old generation
+  and will warn (`warn_if_abi_skewed`) and then fail to instantiate. That is
+  working as designed; the author bumps their pin. `lattice-org-plugin` is one
+  of these, so bump it in the same sitting.
+
 ## Known gaps
 
 - aarch64-linux / aarch64-windows **GUI** builds are best-effort

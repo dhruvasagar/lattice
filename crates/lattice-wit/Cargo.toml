@@ -29,6 +29,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 # Four files in `wit/` are not public API and must not ship to a plugin author:
 # `auto-pair.wit` is a bundled plugin's own world, and the other three are this

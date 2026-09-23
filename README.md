@@ -62,6 +62,21 @@ tree.** Nothing in lattice knows what a headline is.
 
 Every plugin, bundled or not: [plugins](https://dhruvasagar.github.io/lattice/plugins/).
 
+The API is WIT, and you build against a published version of it rather than a
+checkout of this repo:
+
+```toml
+[build-dependencies]
+lattice-wit = "0.1"          # this pin IS the ABI generation you target
+[dependencies]
+lattice-plugin-sdk = "0.1"   # optional: typed config shapes
+```
+
+Plugins ship as **source** and are compiled on the machine that runs them, so
+an editor upgrade rebuilds them rather than breaking them. The exception, and
+the one thing to read before shipping a plugin, is what that pin commits you
+to: [plugin authoring guide](docs/dev/guides/plugin-authoring.md).
+
 ## Rough edges at 0.9
 
 Unsigned binaries (macOS quarantines browser downloads); LSP servers must be

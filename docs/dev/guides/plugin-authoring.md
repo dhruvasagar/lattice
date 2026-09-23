@@ -184,6 +184,31 @@ produces the same mismatched component. The fixes are yours to make:
 - **or drop the pin** and let the loader's refresh keep you current, accepting
   that a standalone `cargo build` then needs the editor to have run once.
 
+### One number: the crate version IS the ABI generation
+
+The three published crates — `lattice-wit`, `lattice-plugin-sdk` and
+`lattice-plugin-sdk-derive` — share one version, and its `major.minor` is
+always the WIT package's `major.minor`:
+
+```
+lattice-wit = "0.2"   ⟺   package lattice:plugin-host@0.2.x
+```
+
+So the dependency line answers "which ABI generation am I compiled against"
+without you looking anywhere else. Patch is the crates' own, which means a
+packaging fix ships as `0.2.1` without pretending to be an ABI change.
+
+This is why these crates are not `version.workspace = true`: the editor's
+version cannot answer that question, because the ABI does not move when the
+editor does.
+
+`the_crate_versions_track_the_wit_package_version` enforces all of it —
+that the crates agree with each other, that their `major.minor` matches the
+package, and that all 36 `.wit` files declare the *same* package version. That
+last check has no version rule behind it; it is there because one file drifting
+produces a package that fails to parse or links only half its interfaces, and
+nothing else would notice.
+
 ### What "0.x" promises, which is not much
 
 The WIT is pre-1.0 and `plugin-host.md` §12 is explicit: **SemVer applies only

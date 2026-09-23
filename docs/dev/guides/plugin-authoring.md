@@ -184,6 +184,61 @@ produces the same mismatched component. The fixes are yours to make:
 - **or drop the pin** and let the loader's refresh keep you current, accepting
   that a standalone `cargo build` then needs the editor to have run once.
 
+### Integration tests that boot a real editor
+
+Everything above concerns the **component**, whose dependencies are
+`lattice-wit` and `lattice-plugin-sdk` from crates.io and nothing else. Tests
+that drive a *running editor* — boot one, load your component through the
+loader, dispatch chords — are a different problem, because they need the host
+crates, and those are not published.
+
+**Put them in a separate package.** Cargo resolves `[dev-dependencies]` as part
+of the BUILD graph, not just the test graph, so a dev-dependency that cannot
+resolve stops `cargo build --release --target wasm32-wasip2` — the command the
+plugin manager runs on boot. Test-only dependencies in your component's
+manifest therefore gate every user's install. `lattice-org-plugin` shipped that
+way for months and could only be built on its author's laptop.
+
+Give the test package its own `[workspace]` and exclude it from the root, so
+the component's resolution never reaches it:
+
+```toml
+# integration/Cargo.toml
+[dev-dependencies]
+lattice-host = { path = "../../lattice/crates/lattice-host" }
+# ...
+
+[workspace]
+```
+
+```toml
+# the component's Cargo.toml
+[workspace]
+exclude = ["integration"]
+```
+
+Two ways to name the host crates from there, and the trade is not obvious:
+
+**Path dependencies to a sibling checkout** — what org does. Nothing extra on
+disk, and editing lattice and your plugin together just works. The cost is that
+running the tests requires that checkout, so contributors clone two repos.
+
+**Git dependencies** — `{ git = "https://github.com/dhruvasagar/lattice" }`.
+The tests then run from a bare clone of your plugin alone, which is friendlier
+for CI and for a contributor who only wants to run them once. Cargo clones the
+repo once and locks every crate to one commit, so it stays reproducible.
+
+The cost is disk, and it is larger than it looks. Measured on lattice at
+`32514ad`: a 194 MB bare repository under `~/.cargo/git/db/`, plus **~2 GB per
+revision** under `~/.cargo/git/checkouts/`. The bulk is not source — the
+plugin-host's `build.rs` compiles its guest fixtures into `target/` directories
+*inside the source tree*, so a git checkout of lattice accumulates two
+gigabytes of build output that cargo never prunes, once per revision your lock
+has pointed at.
+
+So: paths if you already keep a lattice checkout, git if you would rather trade
+disk for not needing one. Neither belongs in the component's own manifest.
+
 ### One number: the crate version IS the ABI generation
 
 The three published crates — `lattice-wit`, `lattice-plugin-sdk` and

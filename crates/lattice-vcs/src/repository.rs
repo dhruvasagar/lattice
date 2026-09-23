@@ -2,6 +2,42 @@ use std::path::Path;
 
 use crate::{Result, VcsError};
 
+/// Passed to EVERY git invocation, before the subcommand.
+///
+/// Several commands that only look like reads — `status` above all — take
+/// `.git/index.lock` in order to opportunistically rewrite the index with
+/// refreshed stat data. That write is optional; the lock it takes is not
+/// optional for anybody else. Git does not retry a contended index lock, it
+/// fails:
+///
+/// ```text
+/// fatal: Unable to create '.../.git/index.lock': File exists.
+/// Another git process seems to be running in this repository [...]
+/// ```
+///
+/// Magit runs its reads on `spawn_blocking` and refreshes every live status
+/// buffer after every mutation, so reads and index writes overlap by
+/// construction. On a 4418-file repository one refresh measures ~300ms, and
+/// staging several entries in a row is the commonest magit workflow — so the
+/// window is neither rare nor avoidable by the user, who gets an error
+/// blaming them for a race the editor caused. Reported 2026-09-23; racing
+/// `git status` against `git add` failed 28 of 200 attempts, and 0 of 200
+/// with this flag.
+///
+/// Applied globally rather than only to reads because it is precisely scoped
+/// already: it suppresses *optional* locks only. `git --no-optional-locks add`
+/// still takes the index lock and still stages, because there the lock is
+/// required. So there is no read/write classification to get wrong, and no
+/// call site that can forget it.
+///
+/// The cost, named honestly: a read no longer persists its refreshed stat
+/// cache, so the next one redoes that `lstat` work. That is real, and it is
+/// the right trade — the work happens off the UI thread, and a stage that
+/// fails outright is a correctness bug the user sees immediately.
+///
+/// Requires git ≥ 2.15 (2017).
+const NO_OPTIONAL_LOCKS: &str = "--no-optional-locks";
+
 /// Wraps a [`gix::Repository`], representing an open git repository.
 ///
 /// Created via [`Repository::discover`], which walks up from `path`
@@ -54,6 +90,7 @@ impl Repository {
             .workdir()
             .ok_or_else(|| VcsError::BareRepo("run_git".into()))?;
         let output = std::process::Command::new("git")
+            .arg(NO_OPTIONAL_LOCKS)
             .args(args)
             .current_dir(workdir)
             .output()
@@ -92,6 +129,7 @@ impl Repository {
             .workdir()
             .ok_or_else(|| VcsError::BareRepo("run_git_stdin".into()))?;
         let mut child = std::process::Command::new("git")
+            .arg(NO_OPTIONAL_LOCKS)
             .args(args)
             .current_dir(workdir)
             .stdin(std::process::Stdio::piped())

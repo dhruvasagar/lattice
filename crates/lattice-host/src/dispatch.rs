@@ -25367,7 +25367,12 @@ impl Editor {
     /// identically.
     pub fn do_open_file_tree(&mut self, root: Option<std::path::PathBuf>) -> Vec<RendererSignal> {
         let root = match root {
-            Some(p) => p,
+            // A root the user typed is resolved like every other typed path:
+            // `~` expands and a relative name joins the editor's working
+            // directory. `:Tree ~/notes` used to look for a directory called
+            // `~` beside the cwd and open an empty tree over it, which reads
+            // as "that directory is empty" rather than "that is not a path".
+            Some(p) => normalize_user_path_with_cwd(&p, self.current_dir.as_deref()),
             // A relative single-component document path (e.g. lattice was
             // opened as `lattice Cargo.toml`) has `Path::parent()` == `Some("")`,
             // not `None` -- that's documented Rust behaviour, not a missing-file

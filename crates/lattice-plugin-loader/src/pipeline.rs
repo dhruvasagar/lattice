@@ -58,7 +58,15 @@ pub fn to_required_spec(
     RequiredSpec {
         name: p.name,
         source: match p.source {
-            Host::Local(path) => PluginSource::Local(PathBuf::from(path)),
+            // `~` expands here, at the boundary where a user's string becomes
+            // a path. `init.rs` is meant to be portable — the same file on a
+            // Mac and a Linux box — and without this the only way to name a
+            // local checkout is one machine's absolute path. Every other path a
+            // user writes already takes `~`; this is the plugin source catching
+            // up with that, not a new convention.
+            Host::Local(path) => {
+                PluginSource::Local(PathBuf::from(lattice_core::home::expand_tilde(&path)))
+            }
             Host::Git { url, rev } => PluginSource::Git { url, rev },
             Host::Prebuilt { url } => PluginSource::Prebuilt { url },
         },
@@ -196,6 +204,60 @@ pub fn install_all(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    /// A `Local` plugin source expands a leading `~`.
+    ///
+    /// `init.rs` is a user's config and is meant to be portable — the same file
+    /// on a Mac and a Linux box, committed to a dotfiles repo. Without this the
+    /// only way to name a local checkout is an absolute path, so a config that
+    /// `require`s a plugin from disk names one machine's home directory and
+    /// silently fails to resolve anywhere else.
+    ///
+    /// Every other path a user writes in lattice already takes `~`
+    /// (`org.agenda-files = "~/org"`), so this is the plugin source catching up
+    /// with the convention rather than inventing one.
+    #[test]
+    fn a_local_source_expands_a_leading_tilde() {
+        use lattice_plugin_host::plugin_manager_host::{RequiredPlugin, RequiredSource};
+        let spec = to_required_spec(RequiredPlugin {
+            name: "org".into(),
+            source: RequiredSource::Local("~/src/lattice-org-plugin".into()),
+            enable_mode: None,
+            pinned: false,
+        });
+        let PluginSource::Local(path) = spec.source else {
+            panic!("a Local source stays Local");
+        };
+        let home = dirs::home_dir().expect("a home directory");
+        assert_eq!(
+            path,
+            home.join("src/lattice-org-plugin"),
+            "`~` must expand against the user's home, not be taken literally"
+        );
+    }
+
+    /// An absolute path is untouched, and `~user` is left alone rather than
+    /// mangled into `<home>user` — a plausible path to the wrong place.
+    #[test]
+    fn a_local_source_leaves_absolute_and_tilde_user_paths_alone() {
+        use lattice_plugin_host::plugin_manager_host::{RequiredPlugin, RequiredSource};
+        for raw in ["/opt/plugins/org", "~someone/org"] {
+            let spec = to_required_spec(RequiredPlugin {
+                name: "org".into(),
+                source: RequiredSource::Local(raw.into()),
+                enable_mode: None,
+                pinned: false,
+            });
+            let PluginSource::Local(path) = spec.source else {
+                panic!("a Local source stays Local");
+            };
+            assert_eq!(
+                path,
+                std::path::PathBuf::from(raw),
+                "{raw} must be verbatim"
+            );
+        }
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);

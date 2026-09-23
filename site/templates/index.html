@@ -23,6 +23,32 @@
   </div>
 </section>
 
+{# The differentiator gallery. `shots = []` in data/gallery.toml renders
+   NOTHING — no heading, no empty grid — so this ships before the captures do
+   and lights up when they land. See docs/media/screenshot-ideas.md. #}
+{% set gallery = load_data(path="data/gallery.toml") -%}
+{% if gallery.shots %}
+<section class="gallery">
+  <div class="container">
+    <h2 class="section-title">What it looks like</h2>
+    <div class="gallery-grid">
+      {% for shot in gallery.shots %}
+      <figure class="gallery-item">
+        <a href="{{ get_url(path='media/' ~ shot.file) }}">
+          <img src="{{ get_url(path='media/' ~ shot.file) }}"
+               alt="{{ shot.alt }}" loading="lazy" />
+        </a>
+        <figcaption>
+          <h3>{{ shot.title }}</h3>
+          <p>{{ shot.blurb }}</p>
+        </figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
 <section class="features">
   <div class="container">
     <h2 class="section-title">Four Paramount Goals</h2>

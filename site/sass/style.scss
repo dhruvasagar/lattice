@@ -283,6 +283,53 @@ img { max-width: 100%; height: auto; }
   color: $text;
 }
 
+// Differentiator gallery. Renders only when data/gallery.toml has entries —
+// see the comment in that file and docs/media/screenshot-ideas.md. Shots are
+// captured at 1400x800 and published 1920px wide, so the grid is two-up on
+// desktop and one-up below the docs breakpoint rather than shrinking them
+// into illegibility.
+.gallery {
+  padding: 80px 0;
+  background: $bg-alt;
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+}
+
+.gallery-item {
+  margin: 0;
+
+  img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 8px;
+    border: 1px solid $border;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.10);
+  }
+
+  figcaption {
+    margin-top: 16px;
+
+    h3 {
+      font-size: 1.0625rem;
+      font-weight: 600;
+      color: $text;
+      margin-bottom: 6px;
+    }
+
+    p {
+      font-size: 0.9375rem;
+      color: $text-muted;
+      line-height: 1.6;
+      margin: 0;
+    }
+  }
+}
+
 // Features section
 .features {
   padding: 80px 0;
@@ -1195,6 +1242,22 @@ img { max-width: 100%; height: auto; }
     .hero-tagline { color: $dark-text; }
   }
 
+  .gallery {
+    background: $dark-bg-alt;
+
+    .gallery-item {
+      img {
+        border-color: $dark-border;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+      }
+
+      figcaption {
+        h3 { color: $dark-text; }
+        p { color: $dark-text-muted; }
+      }
+    }
+  }
+
   .features {
     background: $dark-bg;
 
@@ -1473,6 +1536,8 @@ img { max-width: 100%; height: auto; }
   .features {
     .feature-grid { grid-template-columns: 1fr; }
   }
+
+  .gallery-grid { grid-template-columns: 1fr; }
 
   .docs-layout {
     flex-direction: column;

@@ -1,0 +1,62 @@
+# The landing-page differentiator gallery.
+#
+# EMPTY ON PURPOSE. `shots = []` renders nothing at all — no heading, no grid,
+# no empty shelf — so this file can ship before the captures do. The same rule
+# the plugin index follows for its unpopulated "community" group: a broken
+# image is worse than an absent one, so nothing is referenced until the file
+# exists.
+#
+# Add an entry per shot as it lands. `crates/lattice-cli/tests/`'s
+# `every_referenced_screenshot_exists` reads this file and fails if a `file`
+# here is missing from EITHER location it has to live in:
+#
+#   * assets/media/screenshots/<file>  — what README.md references
+#   * site/static/media/<file>         — what the site serves
+#
+# Nothing mirrors those directories automatically. Copy to both.
+#
+# Fields:
+#   file     the basename, present in both directories above
+#   alt      the accessible description — what is on screen, not the slogan
+#   title    the card heading, a claim rather than a feature name
+#   blurb    one sentence: what it shows and who cannot do it
+#
+# Capture conventions, per-shot setup and the destination of each file are in
+# docs/media/screenshot-ideas.md. Order here is the order on the page, and the
+# intended order is the differentiator order from
+# docs/dev/architecture/launch-0.9.md §10.
+
+shots = []
+
+# Ready to uncomment as each capture lands — copy verbatim from
+# screenshot-ideas.md's shot list so the alt text stays accurate.
+#
+# [[shots]]
+# file = "magit-gpui.png"
+# title = "A real magit, inside a modal editor"
+# alt = "The magit status buffer with staged and unstaged sections and the repo dispatch transient open"
+# blurb = "Stage by hunk, commit, rebase, blame — the porcelain, not a git wrapper. Neither Zed nor Helix has one, and fugitive is not magit."
+#
+# [[shots]]
+# file = "buffer-splits-gpui.png"
+# title = "Everything is a buffer"
+# alt = "A four-way split showing the file tree, a source file, project search results and a terminal, with the buffer list open over them"
+# blurb = "The file tree, search results and the terminal are buffers, not panels — so the same grammar moves through all of them."
+#
+# [[shots]]
+# file = "config-init-rs-gpui.png"
+# title = "Config is a program"
+# alt = "init.rs open beside the editor defining a custom ex-command, with the command's output visible after reload-config"
+# blurb = "Your config is Rust compiled to WebAssembly. Not JSON, not TOML, not a scripting language bolted on the side."
+#
+# [[shots]]
+# file = "org-and-agents-gpui.png"
+# title = "Org-mode and agents, as buffers"
+# alt = "An org agenda beside a coding-agent conversation buffer with a proposed diff under review"
+# blurb = "An agenda in one pane, an agent's proposed diff under review in the next. Org is a plugin, which is the point."
+#
+# [[shots]]
+# file = "two-renderers.png"
+# title = "Two first-class renderers"
+# alt = "The same file open side by side in the terminal renderer and the GPU-rendered window"
+# blurb = "The same core behind a terminal and a GPU window. Neither is the fallback."

@@ -19,14 +19,20 @@ section.
 
 ## Before you record
 
-- `lattice --version` prints `lattice 0.9.0`. Record the **released**
-  build, not `cargo run` — the viewer should be watching the thing they
-  can download.
-- `:plugins` lists `auto-pair`, `treesitter-context` and `project`, each
-  `bundled`. If it does not, the build is wrong and section 3's auto-pair
-  beat will silently do nothing.
+- `lattice --version` prints the **released** version — `0.9.1` or later,
+  never `cargo run`. The viewer should be watching the thing they can
+  download.
+- `:plugins` lists **four** bundled plugins: `auto-pair`,
+  `treesitter-context`, `project` and `comment`. Fewer means the build is
+  wrong, and section 3's auto-pair beat will silently do nothing. The
+  authoritative list is `CORE_PLUGINS` in `xtask/src/main.rs`; a test
+  (`lattice-cli`'s `the_demo_script_names_every_bundled_plugin`) fails if
+  this line and that constant disagree, so trust the constant over this
+  sentence if they ever do.
 - Terminal at 1400×800, 16pt, dark theme, Nerd Fonts on if that is your
-  daily setup. No transparency.
+  daily setup. No transparency. Same geometry as the stills
+  (`screenshot-ideas.md`), so a clip and a screenshot of the same feature
+  line up.
 - `cd` to a clean checkout of this repository. `git status` clean — the
   magit section creates its own scratch file and needs a predictable
   starting point.
@@ -272,13 +278,18 @@ loaded, because those are the two things that make a report actionable.
 
 ## Clips to cut
 
-| Clip | Section | Length | Goes to |
-|---|---|---|---|
-| A | magit staging | ~12s | README lead, site differentiator 1 |
-| B | `:terminal` → `<Esc>` → `:ls` | ~15s | site differentiator 2 |
-| C | `:reload-config` → `:hello` | ~10s | site differentiator 3, and the strongest clip |
-| D | agent diff review | ~12s | site differentiator 4 |
-| E | TUI + GPU side by side | ~8s | site differentiator 5 |
+| Clip | Section | Length | Pairs with the still | Goes to |
+|---|---|---|---|---|
+| A | magit staging | ~12s | `magit-{tui,gpui}.png` | README lead, gallery shot 1 |
+| B | `:terminal` → `<Esc>` → `:ls` | ~15s | `buffer-splits-{tui,gpui}.png` | gallery shot 2 |
+| C | `:reload-config` → `:hello` | ~10s | `config-init-rs-{tui,gpui}.png` | gallery shot 3, and the strongest clip |
+| D | agent diff review | ~12s | `org-and-agents-{tui,gpui}.png` | gallery shot 4 |
+| E | TUI + GPU side by side | ~8s | `two-renderers.png` | gallery shot 5 |
+
+Each clip has a still of the same moment — same geometry, same theme — so
+frame them alike. The stills are specified in
+[`screenshot-ideas.md`](./screenshot-ideas.md); the landing gallery reads
+`site/data/gallery.toml`, which renders nothing until the files exist.
 
 Keep each under 4 MB if committed; prefer linking a hosted video and
 committing only the stills.

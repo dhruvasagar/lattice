@@ -6,15 +6,46 @@
 # defeat its own purpose — the plugin would be compiling the editor in order to
 # compile against its API.
 #
-# Not published while the editor is unreleased (`plugin-host.md` §12: the WIT
-# is unstable until ≥3 real plugins have exercised it). Publishing is what lets
-# an out-of-tree plugin pin an ABI version, and it waits for the same gate.
+# **Versioned independently of the editor**, and published. Both halves are
+# deliberate.
+#
+# `plugin-host.md` §12 deferred publishing until ≥3 real plugins had exercised
+# the WIT. Five have — the four bundled plugins and org — so that gate is met.
+# What publishing buys is not an ABI freeze: §12 also says SemVer applies only
+# post-1.0, and under Cargo's 0.x rules a 0.x -> 0.(x+1) bump may break. It buys
+# the thing an out-of-tree plugin actually lacks, which is a way to NAME a
+# version of the API instead of a path into somebody's checkout. The org plugin
+# was pinned to `/Users/dhruva/...`, so it built on exactly one machine.
+#
+# The version is NOT `version.workspace = true`, because this package's
+# compatibility story is the WIT's, not the editor's. An editor patch release
+# that does not touch `wit/` must not push a new ABI version at every plugin
+# author, and a WIT change must be able to land without waiting for one.
 [package]
 name = "lattice-wit"
-version.workspace = true
+version = "0.1.0"
+description = "The WIT interface package for lattice editor plugins — the API definitions a WebAssembly Component Model plugin builds against."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+
+# Four files in `wit/` are not public API and must not ship to a plugin author:
+# `auto-pair.wit` is a bundled plugin's own world, and the other three are this
+# repo's host-test fixtures. They live in `wit/` because a world file has to sit
+# beside the interfaces it composes from for wit-bindgen to resolve it — moving
+# them out would break those builds — so they are filtered here instead.
+#
+# `build.rs` already excludes the same four from the embedded `FILES`, so the
+# ABI fingerprint is identical with or without them; this only keeps them out of
+# the published tarball. The two lists must agree, which
+# `the_package_excludes_exactly_what_the_build_script_does` asserts.
+exclude = [
+    "wit/auto-pair.wit",
+    "wit/init-fixture.wit",
+    "wit/multiseam-fixture.wit",
+    "wit/trampoline-fixture.wit",
+]
 
 [lib]
 doctest = false

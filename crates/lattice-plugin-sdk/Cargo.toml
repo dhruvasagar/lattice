@@ -1,12 +1,25 @@
+# Versioned independently of the editor, and published. The consumer of this
+# crate is an out-of-tree plugin author, and what they need is to name a
+# version rather than a path into a lattice checkout — see `lattice-wit`'s
+# manifest for the full argument and the `plugin-host.md` §12 gate it clears.
+#
+# Tying it to the workspace version would republish the SDK on every editor
+# patch release, each one a version bump a plugin author has to read and
+# decide about, for a crate that did not change.
 [package]
 name = "lattice-plugin-sdk"
-version.workspace = true
+version = "0.1.0"
+description = "Helpers for writing lattice editor plugins as WebAssembly components: typed config shapes and event payloads."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
-lattice-plugin-sdk-derive = { path = "../lattice-plugin-sdk-derive" }
+# `version` AND `path`: the path is what the workspace builds against, the
+# version is what a published release resolves to. Cargo requires the version
+# to publish at all, and drops the path when it packages.
+lattice-plugin-sdk-derive = { path = "../lattice-plugin-sdk-derive", version = "0.1.0" }
 serde = { workspace = true }
 rmp-serde = { workspace = true }
 

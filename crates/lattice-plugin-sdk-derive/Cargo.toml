@@ -1,9 +1,14 @@
+# Versioned independently of the editor, with `lattice-plugin-sdk` — see that
+# crate's manifest for why. Published because the SDK cannot be published
+# without it.
 [package]
 name = "lattice-plugin-sdk-derive"
-version.workspace = true
+version = "0.1.0"
+description = "Derive macros for lattice-plugin-sdk (`ConfigShape`)."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [lib]
 proc-macro = true

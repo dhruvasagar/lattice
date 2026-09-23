@@ -34,9 +34,9 @@ Design: `docs/dev/architecture/release-pipeline.md`.
 
 ### Why a script rather than `cargo-release`
 
-All 41 crates are `version.workspace = true` and nothing is published to
-crates.io, so the multi-crate version interdependence that `cargo-release` and
-`release-plz` exist to solve does not arise here. What *is* worth enforcing is
+38 of the 41 crates are `version.workspace = true`, so the multi-crate version
+interdependence that `cargo-release` and `release-plz` exist to solve barely
+arises here. What *is* worth enforcing is
 local policy — the changelog gate and the refusal to push — which a generic
 tool makes you work around. Helix, Alacritty and Zed all cut releases the same
 way, by hand or from a small in-repo script; the generic-tool adopters are
@@ -77,6 +77,40 @@ built, because a green build proves nothing about this failure.
 
 Design: `../architecture/launch-0.9.md` §3, which amends
 `../architecture/release-pipeline.md`.
+
+## The three published crates are released separately
+
+`lattice-wit`, `lattice-plugin-sdk` and `lattice-plugin-sdk-derive` go to
+crates.io. They are **not** part of the tag flow above and `scripts/release.sh`
+does not touch their versions — an editor patch release must not push a new
+version at every plugin author for a crate that did not change.
+
+They exist for one consumer: a plugin built outside this tree. Before they were
+published, the only way to name lattice's ABI was a path into a checkout, which
+is why the org plugin built on exactly one machine.
+
+Publish in dependency order — `lattice-plugin-sdk` will not resolve until the
+derive crate is on the index:
+
+```bash
+cargo publish -p lattice-plugin-sdk-derive
+cargo publish -p lattice-plugin-sdk        # after the index updates
+cargo publish -p lattice-wit               # independent of the other two
+```
+
+Dry-run each first (`--dry-run`); it catches a missing `description`, a path
+dep without a `version`, and — the one that actually bit — a build script
+reading files that are not inside the package.
+
+Two things to know:
+
+- **Bumping a version is a decision, not bookkeeping.** These are `0.x`, so
+  Cargo treats `0.1 -> 0.2` as breaking. That is the right signal when the WIT
+  changes shape and the wrong one when it does not.
+- **`wit/` lives in `crates/lattice-wit/wit/`**, not at the workspace root, so
+  the crate that publishes the ABI contains it. Everything else in the tree
+  reads it from there — there is exactly one copy, and no guard keeping two in
+  step.
 
 ## Known gaps
 

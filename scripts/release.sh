@@ -10,10 +10,17 @@
 #   scripts/release.sh 0.11.0           # an explicit version
 #   scripts/release.sh minor --dry-run  # print every step, change nothing
 #
-# All 41 crates are `version.workspace = true`, so a bump is ONE line in
+# 38 of the 41 crates are `version.workspace = true`, so a bump is ONE line in
 # Cargo.toml plus the workspace entries in Cargo.lock. The `prepare` job in
 # .github/workflows/release.yml hard-fails when the tag and that line
 # disagree; this script's job is to make them agree and never to guess.
+#
+# The three exceptions are the PUBLISHED crates — `lattice-wit`,
+# `lattice-plugin-sdk`, `lattice-plugin-sdk-derive` — which carry their own
+# versions and are deliberately NOT bumped here. Their compatibility story is
+# the plugin ABI's, not the editor's: an editor patch release must not push a
+# new version at every plugin author for a crate that did not change. Releasing
+# them is a separate act; see docs/dev/operations/releasing.md.
 #
 # It deliberately STOPS at the local tag and prints the push line. Pushing
 # the tag fires the release pipeline, which publishes public artefacts —

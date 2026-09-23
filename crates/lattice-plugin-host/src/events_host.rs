@@ -31,7 +31,7 @@ use crate::lattice::plugin_host::types::EventFilter as WitEventFilter;
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "events-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // Event delivery (`on-event`) is async — off the keystroke path, a
         // delivery suspends the guest, never pins the caller's thread.
         exports: { default: async },

@@ -29,7 +29,7 @@ use crate::{
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "plugin-manager-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // `register-plugins` shares the async linker with WASI + logging, so
         // the export is async; `require` itself is a sync host func (it only
         // records into `PluginState`) — the `modes` / `config` shape.

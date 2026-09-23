@@ -18,7 +18,7 @@
 
 wit_bindgen::generate!({
     world: "events-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use lattice::plugin_host::events;

@@ -36,7 +36,7 @@ use crate::{Component, PluginBudget, PluginHost, PluginHostError, PluginManifest
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "error-parser-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // Sync exports — see the module docs. `feed` runs once per captured
         // line and must not suspend.
     });

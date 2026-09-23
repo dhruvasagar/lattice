@@ -20,7 +20,7 @@ fn main() {
     let manifest_dir = PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
     );
-    let wit_dir = manifest_dir.join("..").join("..").join("wit");
+    let wit_dir = manifest_dir.join("..").join("lattice-wit").join("wit");
     // A change to the shared WIT (the worlds the guests target) rebuilds both.
     println!("cargo:rerun-if-changed={}", wit_dir.display());
 

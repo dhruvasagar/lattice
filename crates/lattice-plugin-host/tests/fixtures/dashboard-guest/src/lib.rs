@@ -18,7 +18,7 @@
 
 wit_bindgen::generate!({
     world: "dashboard-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 // `Ctx` and `Fragment` are NOT imported here: the world declares

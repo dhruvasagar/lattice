@@ -34,7 +34,7 @@
 
 wit_bindgen::generate!({
     world: "project-plugin",
-    path: "../../wit",
+    path: "../../crates/lattice-wit/wit",
 });
 
 use lattice::plugin_host::buffer::Document;

@@ -20,7 +20,7 @@
 
 wit_bindgen::generate!({
     world: "context-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use exports::lattice::plugin_host::context::Guest;

@@ -38,7 +38,7 @@ fn median(mut samples: Vec<Duration>) -> Duration {
 mod trampoline {
     wasmtime::component::bindgen!({
         world: "trampoline-fixture",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
     });
 }
 

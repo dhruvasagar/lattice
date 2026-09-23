@@ -87,7 +87,7 @@ mod fixture {
     // drives the calls directly without a tokio runtime.
     wasmtime::component::bindgen!({
         world: "trampoline-fixture",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         with: {
             "lattice:plugin-host/types": crate::lattice::plugin_host::types,
         },

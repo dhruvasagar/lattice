@@ -13,7 +13,7 @@
 
 wit_bindgen::generate!({
     world: "error-parser-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 // `Entry` arrives at the world root via the world's `use error-parser.{entry}`;

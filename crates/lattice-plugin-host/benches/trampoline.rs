@@ -23,7 +23,7 @@ use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiVie
 
 wasmtime::component::bindgen!({
     world: "trampoline-fixture",
-    path: "../../wit",
+    path: "../lattice-wit/wit",
 });
 
 struct State {

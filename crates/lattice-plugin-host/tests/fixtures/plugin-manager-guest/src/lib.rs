@@ -12,7 +12,7 @@
 
 wit_bindgen::generate!({
     world: "plugin-manager-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use lattice::plugin_host::plugin_manager;

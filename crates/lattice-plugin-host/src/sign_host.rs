@@ -26,7 +26,7 @@ use crate::{
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "sign-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // Wired into the same async linker as WASI + the `signs` host funcs, so
         // the export is async (the `theme-plugin` precedent). Registration is
         // off every hot path, so async costs nothing.

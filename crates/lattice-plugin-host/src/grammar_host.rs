@@ -32,7 +32,7 @@ use crate::lattice::plugin_host::types::{
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "grammar-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // No `exports: { default: async }` — the grammar seam is SYNCHRONOUS
         // (the PH7.7 fork): `register-grammar` + the `grammar-callbacks` `apply-*`
         // exports are sync-callable from the dispatch thread, bounded by

@@ -13,7 +13,7 @@
 
 wit_bindgen::generate!({
     world: "theme-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use lattice::plugin_host::theme::{

@@ -12,7 +12,7 @@
 
 wit_bindgen::generate!({
     world: "trampoline-fixture",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use std::sync::atomic::{AtomicU32, Ordering};

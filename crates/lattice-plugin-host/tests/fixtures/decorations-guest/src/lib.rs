@@ -17,7 +17,7 @@
 
 wit_bindgen::generate!({
     world: "decorations-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use exports::lattice::plugin_host::decorations::Guest;

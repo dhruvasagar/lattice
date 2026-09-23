@@ -13,7 +13,7 @@
 
 wit_bindgen::generate!({
     world: "multiseam-fixture",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;

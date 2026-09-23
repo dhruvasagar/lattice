@@ -16,7 +16,7 @@
 
 wit_bindgen::generate!({
     world: "preload-fixture",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use lattice::plugin_host::config::{self, OptionType};

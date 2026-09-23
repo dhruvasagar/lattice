@@ -21,7 +21,7 @@
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "scanned-excerpt-source-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // A scan call suspends the guest rather than pinning the caller's
         // thread — and it is never on the keystroke path.
         exports: { default: async },

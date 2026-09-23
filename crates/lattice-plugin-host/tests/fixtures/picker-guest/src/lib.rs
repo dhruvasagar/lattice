@@ -16,7 +16,7 @@
 
 wit_bindgen::generate!({
     world: "picker-source-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use exports::lattice::plugin_host::picker_source::{CandidatePair, Guest as PickerSourceGuest};

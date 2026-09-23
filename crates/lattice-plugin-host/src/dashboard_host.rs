@@ -41,7 +41,7 @@ use crate::{Component, PluginBudget, PluginHost, PluginHostError, PluginManifest
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "dashboard-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // Sync exports — see the module docs. `render-section` runs inside
         // the dashboard compositor on the actor thread and must not suspend.
         with: {

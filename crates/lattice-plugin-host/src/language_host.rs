@@ -82,7 +82,7 @@ pub use bindings::lattice::plugin_host::language::LanguageSpec as WitLanguageSpe
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "language-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // Same async linker as WASI + the host func, like `help-plugin`.
         // Registration is off every hot path, so async costs nothing.
         exports: { default: async },

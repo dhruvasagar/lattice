@@ -14,7 +14,7 @@
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "multibuffer-view-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // `build` is async: producing a view's excerpts may read a store or a
         // file, and it must never pin the caller's thread.
         exports: { default: async },

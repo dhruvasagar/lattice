@@ -36,7 +36,7 @@ use wit_parser::{Resolve, WorldItem};
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     // The canonical WIT package lives at the workspace root `wit/`.
-    let wit_dir = manifest_dir.join("../../wit");
+    let wit_dir = manifest_dir.join("../lattice-wit/wit");
 
     // Regenerate whenever any `.wit` file (or the directory listing) changes.
     println!("cargo:rerun-if-changed={}", wit_dir.display());

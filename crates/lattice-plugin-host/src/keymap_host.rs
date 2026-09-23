@@ -30,7 +30,7 @@ use crate::{
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "keymap-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // `register-keymap` is wired into the SAME async linker as WASI + the
         // `keymap` host func (`lib.rs`), so the export is async (the `config`
         // world precedent). Registration is off any hot path, so async is free;

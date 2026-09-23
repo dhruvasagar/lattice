@@ -17,7 +17,7 @@
 
 wit_bindgen::generate!({
     world: "multibuffer-view-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use exports::lattice::plugin_host::multibuffer_view_source::Guest as ViewGuest;

@@ -47,7 +47,7 @@ use crate::{
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "modes-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // `register-modes` is wired into the same async linker as WASI + the
         // `modes` host func, so the export is async (the `config` / `events`
         // precedent: async export, sync `register-mode` host func).

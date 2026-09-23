@@ -14,7 +14,7 @@
 
 wit_bindgen::generate!({
     world: "media-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use exports::lattice::plugin_host::media::Guest;

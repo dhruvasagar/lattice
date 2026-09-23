@@ -9,7 +9,7 @@
 
 wit_bindgen::generate!({
     world: "completion-source-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use exports::lattice::plugin_host::completion_source::Guest;

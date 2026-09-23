@@ -26,7 +26,7 @@
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "context-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // A produce call suspends the guest stack; the whole-buffer query it
         // runs must never pin the caller's thread (nor the render path).
         exports: { default: async },

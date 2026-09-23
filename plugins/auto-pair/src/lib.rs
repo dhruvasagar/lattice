@@ -34,7 +34,7 @@
 
 wit_bindgen::generate!({
     world: "auto-pair-plugin",
-    path: "../../wit",
+    path: "../../crates/lattice-wit/wit",
 });
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;

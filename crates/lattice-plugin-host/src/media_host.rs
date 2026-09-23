@@ -15,7 +15,7 @@
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "media-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // A produce call suspends the guest stack rather than pinning the
         // caller's thread — and never the render path.
         exports: { default: async },

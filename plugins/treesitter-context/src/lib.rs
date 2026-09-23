@@ -34,7 +34,7 @@
 
 wit_bindgen::generate!({
     world: "treesitter-context-plugin",
-    path: "../../wit",
+    path: "../../crates/lattice-wit/wit",
 });
 
 use exports::lattice::plugin_host::context::Guest as ContextGuest;

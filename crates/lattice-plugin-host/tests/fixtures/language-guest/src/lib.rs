@@ -40,7 +40,7 @@ wit_bindgen::generate!({
             include lattice:plugin-host/help-plugin@0.1.0;
         }
     "#,
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
     world: "language-guest",
     generate_all,
 });

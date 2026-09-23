@@ -16,7 +16,7 @@
 
 wit_bindgen::generate!({
     world: "init-fixture",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use lattice::plugin_host::types::{EventFilter, EventKind};

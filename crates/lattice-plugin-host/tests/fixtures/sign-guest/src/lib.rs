@@ -17,7 +17,7 @@
 
 wit_bindgen::generate!({
     world: "sign-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use lattice::plugin_host::signs::{SignSpec, define_sign};

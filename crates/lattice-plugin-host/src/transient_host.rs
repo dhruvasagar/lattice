@@ -17,7 +17,7 @@
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "transient-source-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // Building a menu suspends the guest rather than pinning the caller's
         // thread; it is never on the keystroke path.
         exports: { default: async },

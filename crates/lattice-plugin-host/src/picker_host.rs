@@ -24,7 +24,7 @@
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "picker-source-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // The guest exports (`init`/`accept`/`spec`) are async — a picker source
         // call suspends the guest stack, never pins the caller's thread.
         exports: { default: async },

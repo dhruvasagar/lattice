@@ -20,7 +20,7 @@
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "decorations-plugin",
-        path: "../../wit",
+        path: "../lattice-wit/wit",
         // The guest `gutter-decorations` producer is async — a produce call
         // suspends the guest stack, never pins the caller's thread (nor the
         // render path).

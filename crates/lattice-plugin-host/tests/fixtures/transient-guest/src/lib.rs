@@ -19,7 +19,7 @@
 
 wit_bindgen::generate!({
     world: "transient-source-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 use exports::lattice::plugin_host::transient_source::Guest;

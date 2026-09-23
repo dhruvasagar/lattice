@@ -17,7 +17,7 @@ const EXCLUDE: &[&str] = &[
 ];
 
 fn main() {
-    let wit_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../wit");
+    let wit_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("wit");
 
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&wit_dir)
         .expect("wit/ dir readable at build time")

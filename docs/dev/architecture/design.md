@@ -3266,7 +3266,10 @@ lattice/
 |   |-- lattice-plugin-sdk-derive/     # derive macros for the guest SDK
 |   # -- binary --
 |   `-- lattice-cli/                   # `lattice` binary (TUI default; `--features gui` links the GPUI peer)
-|-- wit/                               # canonical WIT interface definitions (package lattice:plugin-host@0.1.0)
+|   #    `wit/` lives INSIDE lattice-wit (below), not at the workspace root:
+|   #    the crate that publishes the ABI owns the files, so the published
+|   #    tarball contains them and there is exactly one copy.
+|-- crates/lattice-wit/wit/            # canonical WIT interface definitions (package lattice:plugin-host@0.1.0)
 |   |-- types.wit                      # shared record/variant types
 |   |-- plugin.wit                     # top-level plugin world
 |   |-- buffer.wit                     # read-only `document` resource

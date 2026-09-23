@@ -177,7 +177,7 @@ use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiVie
 // `call_deactivate` and an async `instantiate_async`.
 wasmtime::component::bindgen!({
     world: "plugin",
-    path: "../../wit",
+    path: "../lattice-wit/wit",
     // Generate async `call_activate` / `call_deactivate` + `instantiate_async`
     // for every export. (wasmtime 46 replaced the old top-level `async: true`
     // with this per-function form; async is always available on the engine,

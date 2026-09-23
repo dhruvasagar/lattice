@@ -52,7 +52,7 @@ the bindings, fixtures, and this guide use Rust.
 
 ## The WIT package
 
-The canonical API is the WIT package under [`wit/`](../../../wit) — the plugin
+The canonical API is the WIT package under [`wit/`](../../../crates/lattice-wit/wit) — the plugin
 API *is* WIT, not a Rust crate you link. Each `.wit` file is one seam; `types.wit`
 holds the shared record/enum vocabulary; `plugin.wit` defines the lifecycle world
 and composes the seam interfaces into per-seam **worlds** (`picker-source-plugin`,

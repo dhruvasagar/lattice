@@ -17,7 +17,7 @@
 
 wit_bindgen::generate!({
     world: "scanned-excerpt-source-plugin",
-    path: "../../../../../wit",
+    path: "../../../../lattice-wit/wit",
 });
 
 // Per-scan state. Single-threaded guest with its calls serialised by the

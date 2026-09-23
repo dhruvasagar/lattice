@@ -82,6 +82,9 @@ impl WasmMediaSource {
 }
 
 /// Convert one WIT block, resolving its path. `None` drops the block.
+///
+/// Three shapes, in order: `~` expands, an absolute path is taken as given, and
+/// anything else joins onto the buffer's directory.
 fn resolve_block(
     b: crate::media_task::MediaBlock,
     base: Option<&Path>,
@@ -90,7 +93,13 @@ fn resolve_block(
         tracing::warn!("media block with an empty path; dropped");
         return None;
     }
-    let raw = PathBuf::from(&b.path);
+    // `~` expands first, by the same rule as every other path a user writes
+    // (`lattice_core::home`). Without it a `[[file:~/pics/shot.png]]` is not
+    // absolute, so it falls through to the join below and becomes
+    // `<buffer dir>/~/pics/shot.png` — a path that cannot exist, and one that
+    // fails the way all of these fail: silently, with the picture simply not
+    // appearing.
+    let raw = lattice_core::home::expand_tilde_path(Path::new(&b.path));
     let resolved = if raw.is_absolute() {
         raw
     } else {
@@ -137,6 +146,26 @@ mod tests {
         let base = Path::new("/home/u/notes");
         let got = resolve_block(wit("img/diagram.png"), Some(base)).expect("resolves");
         assert_eq!(got.path, Path::new("/home/u/notes/img/diagram.png"));
+    }
+
+    /// `~/pics/shot.png` is not absolute, so without expansion it fell through
+    /// to the join and became `<buffer dir>/~/pics/shot.png`. The image then
+    /// never appeared and nothing said why.
+    #[test]
+    fn a_tilde_path_expands_rather_than_being_joined_onto_the_buffer_dir() {
+        let home = dirs::home_dir().expect("a home directory");
+        let got = resolve_block(wit("~/pics/shot.png"), Some(Path::new("/home/u/notes")))
+            .expect("resolves");
+        assert_eq!(got.path, home.join("pics/shot.png"));
+    }
+
+    /// `~someone` is not ours to resolve, and `<home>someone` would be a
+    /// plausible path to the wrong place. It stays relative, and so joins.
+    #[test]
+    fn a_tilde_user_path_is_not_resolved_against_our_home() {
+        let got = resolve_block(wit("~someone/x.png"), Some(Path::new("/home/u/notes")))
+            .expect("resolves");
+        assert_eq!(got.path, Path::new("/home/u/notes/~someone/x.png"));
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! reservation is built here, host-side, from a size the host resolves — the
 //! guest never says how tall anything is.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -151,10 +152,25 @@ impl Editor {
             if !any_ok {
                 return;
             }
+            // Resolve each path against the DOCUMENT's directory. org emits
+            // `[[file:./About/shot.png]]` — org's own link syntax is relative
+            // to the file the link is written in, and the guest says so
+            // ("the HOST resolves each path against the buffer's directory").
+            // Nothing did: the raw path was stored and later handed to the
+            // decoder, which resolved it against the PROCESS cwd. So a
+            // relative link rendered only when the editor happened to be
+            // started from that directory, and failed silently everywhere
+            // else — the decode error is `debug!`, so the image simply did
+            // not appear.
+            let base = path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(Path::to_path_buf);
             let blocks = merged
                 .into_iter()
                 .map(|req| {
-                    let mut block = lattice_cells::MediaBlock::new(req.path, req.alt);
+                    let resolved = resolve_media_path(&req.path, base.as_deref());
+                    let mut block = lattice_cells::MediaBlock::new(resolved, req.alt);
                     block.fit = req.fit;
                     (Arc::new(block), req.anchor_line, PROVISIONAL_ROWS)
                 })
@@ -169,6 +185,24 @@ impl Editor {
             generation.fetch_add(1, Ordering::Relaxed);
             async_landed.notify_one();
         });
+    }
+}
+
+/// Resolve a media path from a guest against the document's directory.
+///
+/// Three shapes, in order: `~` expands (the same rule as every other path a
+/// user writes); an absolute path is taken as given; anything else is joined
+/// onto `base`, the directory holding the document the link was written in.
+/// With no `base` — an unsaved buffer has no directory — a relative path is
+/// returned unchanged, which is the old behaviour and the only honest answer.
+fn resolve_media_path(raw: &Path, base: Option<&Path>) -> PathBuf {
+    let candidate = lattice_core::home::expand_tilde_path(raw);
+    if candidate.is_absolute() {
+        return candidate;
+    }
+    match base {
+        Some(dir) => dir.join(candidate),
+        None => candidate,
     }
 }
 
@@ -256,6 +290,49 @@ mod tests {
     /// One block of N rows becomes N virtual rows anchored to its line, each
     /// carrying the shared descriptor.
     #[test]
+    /// IM.7 — a relative image path resolves against the DOCUMENT's directory.
+    ///
+    /// org writes `[[file:./About/shot.png]]`, relative to the file the link is
+    /// in, which is org's own link semantics. The host stored that raw and the
+    /// decoder resolved it against the PROCESS cwd, so the image appeared only
+    /// when the editor happened to be started from that directory. It failed
+    /// silently everywhere else: the decode error is logged at `debug!`, so the
+    /// picture simply did not appear and nothing said why.
+    #[test]
+    fn a_relative_media_path_resolves_against_the_documents_directory() {
+        let doc_dir = std::path::Path::new("/notes/roam");
+        assert_eq!(
+            super::resolve_media_path(std::path::Path::new("./About/shot.png"), Some(doc_dir)),
+            std::path::PathBuf::from("/notes/roam/./About/shot.png"),
+            "a relative link is joined onto the document's directory"
+        );
+        assert_eq!(
+            super::resolve_media_path(std::path::Path::new("/abs/shot.png"), Some(doc_dir)),
+            std::path::PathBuf::from("/abs/shot.png"),
+            "an absolute path is taken as given"
+        );
+        // An unsaved buffer has no directory; returning the path unchanged is
+        // the old behaviour and the only honest answer.
+        assert_eq!(
+            super::resolve_media_path(std::path::Path::new("shot.png"), None),
+            std::path::PathBuf::from("shot.png"),
+        );
+    }
+
+    /// `~` expands, as it does for every other path a user writes.
+    #[test]
+    fn a_tilde_media_path_expands_rather_than_being_joined() {
+        let home = dirs::home_dir().expect("a home directory");
+        assert_eq!(
+            super::resolve_media_path(
+                std::path::Path::new("~/pics/shot.png"),
+                Some(std::path::Path::new("/notes/roam")),
+            ),
+            home.join("pics/shot.png"),
+            "`~` must expand, not be treated as a relative directory name"
+        );
+    }
+
     fn a_cached_block_becomes_its_reserved_rows() {
         let block = Arc::new(lattice_cells::MediaBlock::new("/x.png", None));
         let p = provider(vec![(block.clone(), 4, 5)]);

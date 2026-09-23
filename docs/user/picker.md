@@ -344,7 +344,7 @@ command, a register, a mark). Coordinate-only picks (a specific
 grep line, a jump entry) have no stable identity and are not
 ranked by history.
 
-The index persists to `~/.cache/lattice/` (or the `$XDG_CACHE_HOME`
+The index persists to `~/.config/lattice/cache/` (or the `$XDG_CONFIG_HOME`
 equivalent) between sessions. It's a derived cache, not config — if
 it's ever corrupt the picker discards it and starts fresh rather
 than refusing to open.

@@ -347,14 +347,21 @@ impl std::fmt::Display for MruPersistError {
 impl std::error::Error for MruPersistError {}
 
 /// Default path the host's boot uses for the MRU cache.
-/// `$XDG_CACHE_HOME/lattice/picker-mru.bincode` falling back
-/// to `$HOME/.cache/lattice/picker-mru.bincode` on Linux /
-/// the platform-appropriate cache dir elsewhere. Returns
-/// `None` when no cache directory can be resolved (e.g.
-/// sandboxed embedded runs); the host treats this as
-/// "persistence disabled" and runs MRU in-memory only.
+/// `~/.config/lattice/cache/picker-mru.bincode` (honouring
+/// `$XDG_CONFIG_HOME`), under the config home like every
+/// other lattice path. Returns `None` when no config home
+/// resolves (e.g. sandboxed embedded runs); the host treats
+/// this as "persistence disabled" and runs MRU in-memory
+/// only.
 pub fn default_persist_path() -> Option<std::path::PathBuf> {
-    dirs::cache_dir().map(|d| d.join("lattice").join("picker-mru.bincode"))
+    let path = lattice_config::cache_home()?.join("picker-mru.bincode");
+    // Once: carry the frecency index from the pre-0.9.2 `dirs::cache_dir()`
+    // location. Regenerable, but only by the user re-opening everything they
+    // had already taught it.
+    if let Some(legacy) = dirs::cache_dir().map(|d| d.join("lattice").join("picker-mru.bincode")) {
+        lattice_config::migrate_path(&legacy, &path);
+    }
+    Some(path)
 }
 
 /// Frecency bonus calculation. Pure function on the entry +

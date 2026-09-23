@@ -2499,7 +2499,7 @@ The intended progression: a new user copies an `options.toml` example. When they
 
 #### 5.12.3 The `init.rs` plugin (📝 planned — Phase 8)
 
-`init.rs` is a single source file. The host wraps it in a small generated crate (`Cargo.toml`, `src/lib.rs` shim, `[package.metadata.component]` entry) under `~/.cache/lattice/init-build/` and compiles it through `cargo-component build` against the published `lattice-config-api` crate, which re-exports the §5.5 / §9 WIT bindings under an ergonomic Rust-native shape.
+`init.rs` is a single source file. The host wraps it in a small generated crate (`Cargo.toml`, `src/lib.rs` shim, `[package.metadata.component]` entry) under `~/.config/lattice/cache/init-build/` and compiles it through `cargo-component build` against the published `lattice-config-api` crate, which re-exports the §5.5 / §9 WIT bindings under an ergonomic Rust-native shape.
 
 ```rust
 // ~/.config/lattice/init.rs
@@ -2537,9 +2537,9 @@ The user does not run a build command manually. Boot sequence:
 1. Read `options.toml` if present -- pure data; deserialize and apply.
 2. Look for `~/.config/lattice/init.rs` (or escalate to `init/` if the user has split into a multi-file crate).
 3. Compute cache key: `sha256(source + lattice_version + wit_revision)`.
-4. Probe `~/.cache/lattice/init-<key>.wasm`.
+4. Probe `~/.config/lattice/cache/init-<key>.wasm`.
    - **Hit:** load via the §5.5 plugin host with the `boot` capability set; run `init(...)`.
-   - **Miss:** spawn a background tokio task that materialises the build scaffold, runs `cargo-component build`, places the artifact at `~/.cache/lattice/init-<key>.wasm`, then loads it. The UI shows a "Compiling config..." splash if the build doesn't complete within ~200 ms; cargo's stdout streams to `:messages`.
+   - **Miss:** spawn a background tokio task that materialises the build scaffold, runs `cargo-component build`, places the artifact at `~/.config/lattice/cache/init-<key>.wasm`, then loads it. The UI shows a "Compiling config..." splash if the build doesn't complete within ~200 ms; cargo's stdout streams to `:messages`.
 5. If toolchain is missing (rustup / cargo-component), boot continues with defaults and a non-fatal banner: *init.rs found but no Rust toolchain detected; install rustup + cargo-component to enable, or run `lattice config build --help`.*
 6. If the build fails, boot continues with defaults; the compile error is rendered in a help-style buffer (Rust syntax-highlighted) reachable via `:describe-config-error` and surfaced as a non-fatal banner.
 

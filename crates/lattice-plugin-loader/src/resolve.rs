@@ -155,7 +155,7 @@ pub fn git_cache_dir(cache_root: &Path, name: &str) -> PathBuf {
 
 /// Resolve `source` for the plugin called `name`.
 ///
-/// `cache_root` holds git checkouts (`~/.cache/lattice/sources/`);
+/// `cache_root` holds git checkouts (`~/.config/lattice/cache/sources/`);
 /// `user_root` is the plugin cache (`~/.config/lattice/plugins/`) a
 /// `Prebuilt` artifact lands in.
 ///

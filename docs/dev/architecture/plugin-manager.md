@@ -125,7 +125,7 @@ eventual-consistency the UX contract already permits for plugin cold-start.
   place** (the artifact still caches under `<plugins>/<name>/`; the source tree is
   not copied). The dev + monorepo case; auto-pair uses this today (§9).
 - **`Git{url, rev}`** — cloned/fetched into a **source cache**
-  `~/.cache/lattice/sources/<name>/` (checked out at `rev`, default the remote
+  `~/.config/lattice/cache/sources/<name>/` (checked out at `rev`, default the remote
   head), then built like `Local`. A re-`require` fetches + rebuilds only when the
   resolved rev differs from the cached one (or `pinned` skips the fetch).
 
@@ -169,7 +169,7 @@ cache) and the **runtime root** that ships with lattice (core plugins, prebuilt)
     plugin.toml           # the manifest (from source, or synthesized for Prebuilt)
     <name>.wasm           # the built/downloaded component  ← discover_one reads this
     .build-stamp          # source rev / mtime the artifact was built from (§5)
-~/.cache/lattice/sources/<name>/   # git checkouts (Git sources only)
+~/.config/lattice/cache/sources/<name>/   # git checkouts (Git sources only)
 ```
 
 Once the artifact + manifest are in either root, the **existing** discovery /

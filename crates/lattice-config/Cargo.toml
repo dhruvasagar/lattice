@@ -25,6 +25,8 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+# `migrate_path`'s tests move real files around.
+tempfile = { workspace = true }
 
 [[bench]]
 name = "options"

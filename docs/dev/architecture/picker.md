@@ -1200,8 +1200,8 @@ keystroke path.
 
 ### 6.4 Persistence
 
-`PickerMruIndex` serializes to `~/.cache/lattice/picker-mru.bincode`
-(or `$XDG_CACHE_HOME` equivalent). bincode chosen
+`PickerMruIndex` serializes to `~/.config/lattice/cache/picker-mru.bincode`
+(honouring `$XDG_CONFIG_HOME`). bincode chosen
 deliberately:
 
 - Hot-write file: every accept records an entry, and we

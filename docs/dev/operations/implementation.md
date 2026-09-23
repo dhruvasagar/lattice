@@ -5694,7 +5694,7 @@ slice boundary.
    for static data; `~/.config/lattice/init.rs` compiled to WASM
    Component, loaded by the §5.5 plugin host with a `boot`
    capability, for programmable config. Auto-build on first boot
-   (cargo-component under `~/.cache/lattice/`); cache by source
+   (cargo-component under `~/.config/lattice/cache/`); cache by source
    hash + lattice version + WIT revision. `lattice config build`
    exists as a diagnostic CLI. Project-local code-config deferred
    behind a future per-directory trust prompt; project-local

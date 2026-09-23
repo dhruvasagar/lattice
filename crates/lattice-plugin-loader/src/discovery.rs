@@ -106,18 +106,22 @@ pub fn default_init_dir() -> Option<PathBuf> {
     config_root().map(|d| d.join("lattice").join("init"))
 }
 
-/// PM.6/PM.7b: the git source cache — `~/.cache/lattice/sources/`.
+/// PM.6/PM.7b: the git source cache — `~/.config/lattice/cache/sources/`.
 ///
-/// A *cache*, not config: a deleted checkout is re-cloned, so it belongs under
-/// the cache root rather than beside the user's `plugin.toml`s. Falls back to
-/// the config root when the platform has no cache dir, which keeps the
-/// resolver working rather than failing on an unusual platform.
+/// A *cache*, not config: a deleted checkout is re-cloned, so it belongs in
+/// `<config-home>/lattice/cache/sources/` rather than beside the user's
+/// `plugin.toml`s. Falls back to the temp dir when no config home resolves,
+/// which keeps the resolver working rather than failing.
 pub fn default_source_cache_dir() -> std::path::PathBuf {
-    dirs::cache_dir()
-        .or_else(config_root)
+    let dir = lattice_config::cache_home()
         .unwrap_or_else(std::env::temp_dir)
-        .join("lattice")
-        .join("sources")
+        .join("sources");
+    // Once: carry checkouts from the pre-0.9.2 `dirs::cache_dir()` location
+    // rather than re-cloning (and rebuilding) every `require`d plugin.
+    if let Some(legacy) = dirs::cache_dir().map(|d| d.join("lattice").join("sources")) {
+        lattice_config::migrate_path(&legacy, &dir);
+    }
+    dir
 }
 
 /// Scan `dir` for plugin subdirectories, returning every one that parses. A

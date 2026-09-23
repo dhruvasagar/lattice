@@ -184,6 +184,49 @@ pub fn config_home() -> Option<PathBuf> {
     resolve_config_home(xdg, fallback)
 }
 
+/// The cache root, `<config-home>/lattice/cache/`.
+///
+/// Lattice keeps every path it owns under one root (see
+/// `docs/dev/architecture/plugin-data-location.md`), caches included — they
+/// used to sit in `dirs::cache_dir()`, the last paths outside it. The `cache`
+/// subdirectory names the one directory that is always safe to delete: every
+/// entry is regenerable (wasmtime's compiled modules, plugin source
+/// checkouts, the picker's MRU index).
+///
+/// `None` when no config home resolves, which callers read as "persistence
+/// disabled" rather than an error.
+pub fn cache_home() -> Option<PathBuf> {
+    cache_home_from(config_home().as_deref())
+}
+
+/// Pure resolver behind [`cache_home`].
+pub fn cache_home_from(config_home: Option<&Path>) -> Option<PathBuf> {
+    config_home.map(|d| d.join("lattice").join("cache"))
+}
+
+/// Move `old` to `new` if `old` exists and `new` does not, returning whether
+/// anything moved. Works for a file or a directory.
+///
+/// The one-time carry behind every path this project has relocated. A
+/// destination that already exists wins and the old copy is left alone:
+/// whatever a newer lattice wrote is the live state. A failure is reported as
+/// `false` rather than an error — a cache that cannot be moved is rebuilt,
+/// and nothing here is worth failing a boot over.
+pub fn migrate_path(old: &Path, new: &Path) -> bool {
+    if old == new || !old.exists() || new.exists() {
+        return false;
+    }
+    if let Some(parent) = new.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    // `rename` failing (a cross-device move, a permission error) is not worth
+    // a message from a crate with no logger: the caller carries on with the
+    // old path absent, and a cache rebuilds itself.
+    std::fs::rename(old, new).is_ok()
+}
+
 /// Pure resolver behind [`config_home`], split out so the precedence logic is
 /// unit-testable without mutating process-global environment variables.
 fn resolve_config_home(

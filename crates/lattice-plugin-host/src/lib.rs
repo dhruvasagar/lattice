@@ -3144,14 +3144,33 @@ impl PluginState {
 pub struct PluginId(pub u32);
 
 /// The default on-disk module-cache directory,
-/// `<user-cache>/lattice/plugin-cache/` (XDG on Linux, Application Support on
-/// macOS, LocalAppData on Windows). Falls back to the temp dir if no user
-/// cache dir can be resolved.
+/// `<config-home>/lattice/cache/plugin-modules/` — wasmtime's AOT-compiled
+/// components, keyed by wasmtime on the component bytes and its own version.
+/// Under the config home like every other lattice path, in the `cache`
+/// subdirectory that says it is safe to delete. Falls back to the temp dir
+/// when no config home resolves.
+///
+/// Was `dirs::cache_dir()/lattice/plugin-cache/`; [`migrate_cache_dirs`]
+/// carries an existing one over so the first launch after an upgrade does not
+/// recompile every plugin.
 fn default_cache_dir() -> PathBuf {
-    dirs::cache_dir()
+    lattice_config::cache_home()
         .unwrap_or_else(std::env::temp_dir)
-        .join("lattice")
-        .join("plugin-cache")
+        .join("plugin-modules")
+}
+
+/// The pre-0.9.2 cache directory, read once by [`migrate_cache_dirs`].
+fn legacy_cache_dir() -> Option<PathBuf> {
+    dirs::cache_dir().map(|d| d.join("lattice").join("plugin-cache"))
+}
+
+/// Carry the module cache under the config home, once. Returns whether
+/// anything moved. A cache that cannot be moved is simply rebuilt.
+pub fn migrate_cache_dirs() -> bool {
+    let Some(legacy) = legacy_cache_dir() else {
+        return false;
+    };
+    lattice_config::migrate_path(&legacy, &default_cache_dir())
 }
 
 /// The default per-plugin data-dir base, `<config-home>/lattice/plugins/` —
@@ -3347,6 +3366,9 @@ impl PluginHost {
     /// ([`default_data_dir_base`]). This is the production constructor.
     pub fn new() -> Result<Self, PluginHostError> {
         let base = default_data_dir_base();
+        // Once, at boot: the module cache moved under the config home too, and
+        // carrying it saves recompiling every plugin on the first launch.
+        migrate_cache_dirs();
         // Once, at boot: carry plugin state written under the old base
         // (`dirs::data_dir()/lattice/plugins`) beside the plugins. A no-op
         // after the first run, and on a machine that never used it.

@@ -120,7 +120,7 @@ The `lattice-plugin-host` crate owns the wasmtime engine and the per-plugin life
   Reflex-class fuel + epoch budget so a runaway traps well inside the frame. The renderer never
   calls WASM regardless. See the supersession note at the top of this fragment + audit I2 / F1.
 - **AOT compile at install; module cache on disk.** Cranelift compiles the component ahead
-  of time; the artifact is cached under `<user-cache>/lattice/plugin-cache/`
+  of time; the artifact is cached under `<config-home>/lattice/cache/plugin-modules/`
   (`${XDG_CACHE_HOME}` on Linux, Application Support on macOS, LocalAppData on Windows) so a
   second launch reuses it (resolves `design.md` §15 Q17). Re-installs and editor upgrades reuse
   artifacts. Per-instantiation cost is linear-memory allocation + import resolution, not codegen.

@@ -144,7 +144,7 @@ Subscribe with an `EventFilter` — any combination of event **kinds**, path
 
 ```rust
 // init.rs — an events-plugin. plugin.toml: provides = ["events"]
-wit_bindgen::generate!({ world: "events-plugin", path: "../../wit" });
+wit_bindgen::generate!({ world: "events-plugin", path: "wit" });
 
 use lattice::plugin_host::events;
 use lattice::plugin_host::host_services;
@@ -335,7 +335,7 @@ You implement two halves of the `grammar-plugin` world:
 
 ```rust
 // init.rs — a grammar-plugin. plugin.toml: provides = ["grammar"]
-wit_bindgen::generate!({ world: "grammar-plugin", path: "../../wit" });
+wit_bindgen::generate!({ world: "grammar-plugin", path: "wit" });
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as Callbacks;
 use lattice::plugin_host::grammar;
@@ -501,7 +501,7 @@ vim grammar, so your bindings win.
 
 ```rust
 // init.rs — a keymap-plugin. plugin.toml: provides = ["keymap"]
-wit_bindgen::generate!({ world: "keymap-plugin", path: "../../wit" });
+wit_bindgen::generate!({ world: "keymap-plugin", path: "wit" });
 
 use lattice::plugin_host::keymap;
 use lattice::plugin_host::keymap::BindingMode;
@@ -537,7 +537,7 @@ value — it never mis-sets.
 
 ```rust
 // init.rs — a config-plugin. plugin.toml: provides = ["config"]
-wit_bindgen::generate!({ world: "config-plugin", path: "../../wit" });
+wit_bindgen::generate!({ world: "config-plugin", path: "wit" });
 
 use lattice::plugin_host::config;
 use lattice::plugin_host::config::OptionType;
@@ -746,7 +746,7 @@ Then in a running editor, `:reload-config` — no restart. (Or start the editor;
 it loads `init/` at boot.)
 
 Point `wit_bindgen::generate!(path: …)` at wherever you keep the
-[`wit/`](../../wit) package (a copy in your config repo, or a checkout path).
+[`wit/`](../../crates/lattice-wit/wit) package (a copy in your config repo, or a checkout path).
 Browse the exact signatures for any seam with `:describe-plugin-api <seam>`, or
 dump scaffolding with `:export-plugin-api markdown`.
 

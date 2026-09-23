@@ -425,6 +425,24 @@ fn format_mtime_relative(mtime: std::time::SystemTime) -> String {
 /// `node_modules`, `dist`, `.cache`). Capped at
 /// `FILE_PICKER_MAX_ENTRIES` (5000) -- larger workspaces fall
 /// back to `:picker grep`.
+/// The root a rooted picker walks: the caller's explicit argument when there
+/// is one, else the resolved workspace root.
+///
+/// `~` expands, as it does everywhere else a user writes a path. Without it
+/// `:picker files ~/notes` walked a directory literally named `~`, found
+/// nothing, and reported "no files under ~/notes" — a message that blames the
+/// directory for being empty rather than the path for never having resolved.
+///
+/// A relative argument is left relative: `canonicalize` resolves it against
+/// the process cwd, which is what a relative path typed at a picker prompt
+/// already meant, and this is a bug fix rather than a change of meaning.
+fn explicit_root_or(args: &[String], workspace_root: &std::path::Path) -> std::path::PathBuf {
+    match args.first() {
+        Some(p) if !p.is_empty() => std::path::PathBuf::from(lattice_core::home::expand_tilde(p)),
+        _ => workspace_root.to_path_buf(),
+    }
+}
+
 pub struct FilesSource {
     pub spec: PickerSourceSpec,
 }
@@ -484,10 +502,7 @@ impl PickerSourceGenerator for FilesSource {
         //
         // An explicit `:picker files <path>` still wins — that is the
         // user saying "not that project, this one".
-        let root: std::path::PathBuf = match args.first() {
-            Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
-            _ => ctx.workspace_root.clone(),
-        };
+        let root = explicit_root_or(args, &ctx.workspace_root);
         let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
         let entries = walk_files_for_picker(&canonical_root);
         if entries.is_empty() {
@@ -1011,10 +1026,7 @@ impl PickerSourceGenerator for FilePickSource {
     fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
         // PR.4: as above — the resolved project root, with an explicit
         // argument still winning.
-        let root: std::path::PathBuf = match args.first() {
-            Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
-            _ => ctx.workspace_root.clone(),
-        };
+        let root = explicit_root_or(args, &ctx.workspace_root);
         let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
         let entries = walk_files_for_picker(&canonical_root);
         if entries.is_empty() {
@@ -2799,6 +2811,42 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
+
+    /// `:picker files ~/notes` used to walk a directory literally named `~`.
+    /// It found nothing and said "no files under ~/notes", which blames the
+    /// directory for being empty rather than the path for never resolving.
+    #[test]
+    fn an_explicit_tilde_root_expands() {
+        let home = lattice_core::home::expand_tilde("~");
+        if !std::path::Path::new(&home).is_dir() {
+            eprintln!("SKIP: no home directory to expand against");
+            return;
+        }
+        let got =
+            super::explicit_root_or(&["~/notes".to_string()], std::path::Path::new("/workspace"));
+        assert_eq!(got, std::path::Path::new(&home).join("notes"));
+    }
+
+    /// No argument means the workspace root — the whole point of `rooted`.
+    #[test]
+    fn no_argument_falls_back_to_the_workspace_root() {
+        let ws = std::path::Path::new("/workspace");
+        assert_eq!(super::explicit_root_or(&[], ws), ws);
+        assert_eq!(super::explicit_root_or(&[String::new()], ws), ws);
+    }
+
+    /// An absolute argument wins outright: the user saying "not that project,
+    /// this one".
+    #[test]
+    fn an_absolute_root_is_taken_as_given() {
+        assert_eq!(
+            super::explicit_root_or(
+                &["/elsewhere".to_string()],
+                std::path::Path::new("/workspace")
+            ),
+            std::path::Path::new("/elsewhere")
+        );
+    }
 
     /// Marginalia helpers: `format_size` matches the
     /// `ls -h` convention (bytes / K / M / G with one-decimal

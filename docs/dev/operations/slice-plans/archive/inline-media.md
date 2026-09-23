@@ -4,10 +4,12 @@
 > Design contracts live in
 > [`../../../../architecture/inline-media.md`](../../../../architecture/inline-media.md).
 
-**Status:** IM.8 ✅ (2026-08-25) — **the plan is complete.** An org
-`[[file:diagram.png]]` becomes rows the host reserves and the GPUI peer
-draws; the TUI shows its alt text in the same rows. IM.2 was **closed as
-not needed** rather than built — see below.
+**Status:** IM.8 ✅ (2026-08-25), IM.7a ✅ (2026-09-23) — **the plan is
+complete.** An org `[[file:diagram.png]]` becomes rows the host reserves
+and the GPUI peer draws; the TUI shows its alt text in the same rows.
+IM.2 was **closed as not needed** rather than built — see below. IM.7a is
+a post-archive follow-up: IM.7's provider was never registered, so until
+2026-09-23 none of this reached a frame.
 
 Earlier: IM.5 ✅ GPUI draws images. The scroll
 arithmetic is tall-row-aware (IM.1), blocks reserve rows and declare alt
@@ -332,6 +334,30 @@ probes files the user never asked about. Off by default.
 `MediaVirtualRowProvider`. `PROVISIONAL_ROWS = 8` is the reservation
 before a file is measured — not 0 (invisible but holding a slot) and not 1
 (every image visibly jumping to its real height as reads land).
+
+### IM.7a — register the provider ✅ (2026-09-23)
+
+IM.7 shipped both halves and never joined them. `maybe_refresh_wasm_media`
+filled the per-buffer cache and `MediaVirtualRowProvider` read one, but
+nothing outside the provider's own unit tests ever CONSTRUCTED a provider,
+so the cache had no reader and no inline image has ever reached a frame.
+Every layer tested green on its own, which is exactly how a missing wire
+survives: there was no test that asked for the rows.
+
+The pump now registers the buffer's provider (`ensure_media_virtual_rows`),
+once per buffer, on the tick that produces its blocks — the pump is already
+version- and registry-gated, so this costs nothing on a buffer with no
+media. The id is namespaced + buffer-mixed like the diff overlay's, so the
+empty-registry path (`:plugin-unload`) can unregister without holding the
+provider, and closed buffers are pruned when the next one registers.
+
+Width comes from the active pane and is then held. It only decides where
+the alt caption centres, so a resize mis-centres one line until the next
+produce rather than earning a provider rebuild.
+
+`crates/lattice-host/tests/wasm_media_rows.rs` asserts the rows exist with
+**no keystroke dispatched** — the version of this test that presses a key
+first passes against the unwired code too.
 
 ### IM.8 — docs, ledger, site nav ✅ (2026-08-25)
 

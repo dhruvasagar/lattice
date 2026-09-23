@@ -38,6 +38,10 @@ pub struct WasmMediaState {
     pub generation: Arc<AtomicU64>,
     /// Single-flight guard for a `(buffer, version)` already in flight.
     pending: Option<(BufferId, u64)>,
+    /// Buffers this state has registered a [`MediaVirtualRowProvider`] for, so
+    /// registration happens once per buffer and can be undone when the last
+    /// producer goes away.
+    registered: std::collections::HashSet<BufferId>,
     /// Pointer identity of the last registry snapshot driven — a change means
     /// producers were added or removed, forcing an immediate refresh.
     last_registry_epoch: usize,
@@ -93,6 +97,14 @@ impl Editor {
                 self.wasm_media.generation.fetch_add(1, Ordering::Relaxed);
                 self.wasm_media.last_registry_epoch = epoch;
                 self.wasm_media.pending = None;
+                // The cache is empty, so the providers would now draw nothing.
+                // Unregister rather than leaving them: a provider that answers
+                // `collect() -> []` still costs the worker a wake and a call,
+                // and a `:plugin-unload` should leave no trace.
+                for buffer in self.wasm_media.registered.drain().collect::<Vec<_>>() {
+                    self.virtual_row_providers
+                        .unregister(buffer, media_virtual_row_provider_id(buffer));
+                }
             }
             return;
         }
@@ -117,6 +129,8 @@ impl Editor {
 
         self.wasm_media.last_registry_epoch = epoch;
         self.wasm_media.pending = Some((buffer_id, version));
+
+        self.ensure_media_virtual_rows(buffer_id);
 
         let path = self.buffers.document_path(buffer_id);
         // One copy of the buffer per refresh. A media scan reads every line, so
@@ -169,6 +183,73 @@ impl Editor {
             generation.fetch_add(1, Ordering::Relaxed);
             async_landed.notify_one();
         });
+    }
+}
+
+/// Namespace prefix for inline-media [`ProviderId`]s, with the buffer's id
+/// mixed into the low bits — the same scheme the diff overlay uses, and for the
+/// same reason: `:plugin-unload` has to be able to unregister without holding
+/// the provider.
+const MEDIA_PROVIDER_NAMESPACE: u64 = 0xED1A_0000_0000_0000;
+
+/// The [`lattice_cells::ProviderId`] of `buffer_id`'s media provider.
+pub fn media_virtual_row_provider_id(buffer_id: BufferId) -> lattice_cells::ProviderId {
+    MEDIA_PROVIDER_NAMESPACE | u64::from(buffer_id.0)
+}
+
+impl Editor {
+    /// Register `buffer_id`'s [`MediaVirtualRowProvider`], once.
+    ///
+    /// IM.7 shipped the producer pump and the provider and never connected
+    /// them: nothing outside the provider's own tests ever constructed one, so
+    /// the cache the pump fills had no reader and no image has ever reached a
+    /// frame. This is that wire.
+    ///
+    /// Per buffer, not global, because the registry is buffer-scoped and the
+    /// provider reads one buffer's cache. Called from the pump, which is
+    /// already version- and registry-gated, so this runs on the ticks where a
+    /// buffer's blocks are (re)produced rather than every tick.
+    ///
+    /// The width is the pane's, resolved once and then held: it only decides
+    /// where the alt-text caption centres, so a stale value after a resize
+    /// mis-centres a caption until the next produce — not worth a provider
+    /// rebuild on every resize.
+    fn ensure_media_virtual_rows(&mut self, buffer_id: BufferId) {
+        if self.wasm_media.registered.contains(&buffer_id) {
+            return;
+        }
+        // Prune buffers that have since been closed. Cheap here (this runs
+        // once per buffer that gains media) and it keeps a long session from
+        // accumulating providers for buffers nobody can look at.
+        let closed: Vec<BufferId> = self
+            .wasm_media
+            .registered
+            .iter()
+            .copied()
+            .filter(|b| !self.buffers.contains(*b))
+            .collect();
+        for buffer in closed {
+            self.virtual_row_providers
+                .unregister(buffer, media_virtual_row_provider_id(buffer));
+            self.wasm_media.registered.remove(&buffer);
+        }
+
+        let pane = self.pane_tree.active();
+        let width_cols = match (pane.viewport_width, self.terminal_width) {
+            (w, _) if w > 0 => w as usize,
+            (_, Some(w)) if w > 0 => w as usize,
+            _ => 80,
+        };
+        let provider: Arc<dyn lattice_cells::VirtualRowProvider> =
+            Arc::new(MediaVirtualRowProvider::new(
+                media_virtual_row_provider_id(buffer_id),
+                buffer_id,
+                self.wasm_media.cache.clone(),
+                self.wasm_media.generation.clone(),
+                width_cols,
+            ));
+        self.virtual_row_providers.register(buffer_id, provider);
+        self.wasm_media.registered.insert(buffer_id);
     }
 }
 

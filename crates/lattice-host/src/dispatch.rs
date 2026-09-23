@@ -29815,6 +29815,15 @@ impl Editor {
             }
             return;
         }
+        // `:w <path>` takes a path the USER typed, so it is resolved the way
+        // every other user-typed path is: `~` expands and a relative path
+        // joins the editor's working directory (`:cd`), not the process cwd.
+        // It did neither. `:w ~/notes/x.org` handed `~/notes/x.org` to the
+        // filesystem verbatim, which fails outright — or, if a directory
+        // literally named `~` exists beside you, SUCCEEDS into the wrong
+        // place, which is the shape worth fearing: the write reports success
+        // and the file the user meant never changes.
+        let path = path.map(|p| normalize_user_path_with_cwd(&p, self.current_dir.as_deref()));
         // IN.9: format before writing, best-effort. Cannot fail the
         // write — see the method's doc.
         self.format_before_write_blocking();

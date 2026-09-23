@@ -1,0 +1,66 @@
+#+TITLE: Lattice demo agenda
+#+ANCHOR: 2026-09-23
+#+TODO: TODO NEXT(n) WAITING(w@/!) | DONE(d!) CANCELLED(c@/!)
+
+# A capture fixture for screenshot 4 (org agenda + agent diff review), see
+# ../screenshot-ideas.md. It exists so the agenda shot never contains anyone's
+# real notes.
+#
+# Every date below is written relative to #+ANCHOR above. Before capturing,
+# shift them onto the capture day:
+#
+#     python3 docs/media/fixtures/refresh-agenda-dates.py
+#
+# That rewrites every timestamp by (today - anchor) and resets the anchor, so
+# the agenda's "today" section is populated whenever the shot is retaken. Run
+# it first — an agenda whose today section is empty is not the shot.
+#
+# Keyword sequence matches the documented default (docs/user/org.md:60). The
+# content is deliberately generic project work: nothing here is real, and
+# nothing here should ever be replaced with something that is.
+
+* Editor
+** NEXT Review the rope benchmark regression
+   SCHEDULED: <2026-09-23 Wed 09:30>
+   :PROPERTIES:
+   :EFFORT:   1:00
+   :END:
+   The p99 moved after the incremental-reparse change. Compare against the
+   recorded distribution before deciding whether it is real.
+
+** TODO Draft the plugin capability matrix
+   SCHEDULED: <2026-09-23 Wed 11:00>
+   DEADLINE: <2026-09-25 Fri>
+   One row per seam, one column per capability grant.
+
+** TODO Pair on the multibuffer scroll anchor
+   SCHEDULED: <2026-09-23 Wed 14:00>
+
+** WAITING Upstream fix for the wasm component linker
+   SCHEDULED: <2026-09-22 Tue>
+   :LOGBOOK:
+   - State "WAITING"    from "NEXT"       [2026-09-22 Tue 16:40] \\
+     Filed upstream; nothing to do until it lands.
+   :END:
+
+** DONE Ship the comment plugin
+   CLOSED: [2026-09-22 Tue 18:05]
+   SCHEDULED: <2026-09-22 Tue>
+
+* Writing
+** TODO Finish the extensibility chapter
+   DEADLINE: <2026-09-24 Thu>
+   Two sections left: capability gating and fuel limits.
+
+** TODO Outline the performance post
+   SCHEDULED: <2026-09-26 Sat>
+
+* Maintenance
+** TODO Triage the issue backlog
+   SCHEDULED: <2026-09-23 Wed 16:30>
+
+** TODO Rotate the signing key
+   DEADLINE: <2026-09-30 Wed>
+
+** NEXT Update the dependency lockfiles
+   SCHEDULED: <2026-09-24 Thu 10:00>

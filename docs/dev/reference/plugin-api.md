@@ -300,7 +300,7 @@ object returns the `range` it resolved; a motion its `motion-result`.
 - `apply-action` — 
 - `apply-ex-command` — OC.10 gave this `doc` and `tree`, so a plugin ex-command can read the
 - `apply-motion` — OM.4: a motion receives `borrow<document>` too. The `apply-action`
-- `apply-operator` — 
+- `apply-operator` — CM.1: an operator receives `borrow<document>`, the pair the motion,
 - `apply-text-object` — OM.4b: a text object receives `borrow<document>` too — `text-object-context`
 - `parse-ex-args` — 
 

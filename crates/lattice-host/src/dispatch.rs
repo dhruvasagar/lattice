@@ -6765,6 +6765,7 @@ impl Editor {
                 &self.mode_registry.load(),
                 lattice_core::BufferKind::Document,
                 lang,
+                self.buffers.document_path(id).as_deref(),
             );
             if Some(winner) != current {
                 tracing::debug!(
@@ -16067,14 +16068,37 @@ impl Editor {
         action: DoEditOpenAction,
         seed: Option<&str>,
     ) -> DoEditOutcome {
+        // A file type some major PRESENTS is never read as text: its buffer
+        // holds one empty line and the major renders the file some other way
+        // (`image-mode`, through a media block). `Document::open` is
+        // `read_to_string`, so without this `:e diagram.png` fails on the
+        // UTF-8 read and the picture is unreachable.
+        //
+        // The placeholder is what makes `:w` dangerous rather than merely
+        // useless, which is why the major declares read-only twice and
+        // `do_write` refuses a third time.
+        let presented = self
+            .mode_registry
+            .load()
+            .presenting_major_for_path(&target)
+            .is_some();
         // CD.2: a path with nothing on disk opens an empty buffer that the
         // first `:w` creates — vim's `:e newfile`. This refused before, and so
         // did `lattice newfile`.
-        let (mut new_doc, is_new) = match lattice_core::Document::open_or_new(&target) {
-            Ok(opened) => opened,
-            Err(e) => {
-                self.set_message(EchoLevel::Error, format!("open error: {e}"));
-                return DoEditOutcome::Failed;
+        let (mut new_doc, is_new) = if presented {
+            (
+                lattice_core::DocumentBuilder::default()
+                    .with_path(target.clone())
+                    .build(),
+                false,
+            )
+        } else {
+            match lattice_core::Document::open_or_new(&target) {
+                Ok(opened) => opened,
+                Err(e) => {
+                    self.set_message(EchoLevel::Error, format!("open error: {e}"));
+                    return DoEditOutcome::Failed;
+                }
             }
         };
         // Seeded BEFORE the actor spawns, so syntax is built from the real
@@ -20101,7 +20125,13 @@ impl Editor {
             }
             _ => lattice_syntax::Lang::Plain,
         };
-        let major_id = crate::modes::resolve_major_mode(&self.mode_registry.load(), kind, lang);
+        let doc_path = self.buffers.document_path(buffer_id);
+        let major_id = crate::modes::resolve_major_mode(
+            &self.mode_registry.load(),
+            kind,
+            lang,
+            doc_path.as_deref(),
+        );
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         match self.mode_registry.load_full().activate_major(
@@ -29843,6 +29873,24 @@ impl Editor {
         // place, which is the shape worth fearing: the write reports success
         // and the file the user meant never changes.
         let path = path.map(|p| normalize_user_path_with_cwd(&p, self.current_dir.as_deref()));
+        // vim's E45: a `:w` with no argument writes the buffer's OWN file, and
+        // a read-only buffer refuses. `:w <other>` is still allowed, as in vim
+        // — that writes somewhere the user explicitly named.
+        //
+        // This is the third read-only gate and the only one that matters for a
+        // PRESENTED buffer: `ReadOnly` gates insert-mode typing and
+        // `read-only-mode` refuses the operators, but a save goes through
+        // neither. Without it `:w` on an `image-mode` buffer replaces the
+        // picture with the placeholder — one empty line.
+        if path.is_none()
+            && *self.resolved_option::<lattice_config::ReadOnly>(self.document_buffer_id)
+        {
+            self.set_message(
+                EchoLevel::Error,
+                "buffer is read-only (use :w <path> to write a copy)".to_string(),
+            );
+            return;
+        }
         // IN.9: format before writing, best-effort. Cannot fail the
         // write — see the method's doc.
         self.format_before_write_blocking();

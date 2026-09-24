@@ -4,7 +4,7 @@
 > Design contracts live in
 > [`../../../../architecture/inline-media.md`](../../../../architecture/inline-media.md).
 
-**Status:** IM.8 ✅ (2026-08-25), IM.7a ✅ (2026-09-23) — **the plan is
+**Status:** IM.8 ✅ (2026-08-25), IM.7a ✅ (2026-09-23), IM.9 ✅ (2026-09-24) — **the plan is
 complete.** An org `[[file:diagram.png]]` becomes rows the host reserves
 and the GPUI peer draws; the TUI shows its alt text in the same rows.
 IM.2 was **closed as not needed** rather than built — see below. IM.7a is
@@ -384,6 +384,37 @@ Three things fell out of it worth naming:
   `(buffer, version)`, a resize changed neither, so the staleness check
   let the re-measure through and the guard turned it straight back. The
   resize test caught it; the key is `(buffer, version, geometry)` now.
+
+### IM.9 — `image-mode`: the file itself ✅ (2026-09-24)
+
+Carved after IM.7a, because the moment inline blocks drew it was obvious
+that `:e diagram.png` did not — and that was the backwards half. Design
+§8.1.
+
+The mode is an ordinary major producing one block at line 0 through its
+own `AsyncMediaSource`, so nothing in the renderer or the host knows what
+an image buffer is. The new seam is `Mode::presents_extensions`: a major
+names the file types it presents rather than edits, and the open path
+consults it before reading, building a placeholder buffer instead of
+loading bytes into a rope. Deliberately general — a PDF viewer is the
+same shape.
+
+**The write gate was a real hole, not a precaution.** `ReadOnly` gates
+insert-mode typing and `read-only-mode` refuses the operators, but a save
+goes through neither; `do_write` never checked. It had never mattered
+because every read-only buffer so far was synthetic and pathless, so
+`save_blocking` failed with "no file name". An `image-mode` buffer has a
+real path and a placeholder text, so `:w` would have written one empty
+line over the picture. `do_write` now refuses a bare `:w` on any
+read-only buffer — vim's E45 — while `:w <other-path>` still works, as in
+vim.
+
+One perf fix fell out of it. Registering a built-in media producer means
+the pump runs for EVERY buffer on every document version, i.e. every
+keystroke. The pump now compares the produced blocks with the cached ones
+and skips the generation bump and the `async_landed` wake when they are
+equal — so an unchanged picture costs no rebuild and no paint request.
+That helps org too: it was doing this on every keystroke already.
 
 ### IM.8 — docs, ledger, site nav ✅ (2026-08-25)
 

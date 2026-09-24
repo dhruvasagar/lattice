@@ -268,6 +268,7 @@ fn the_buffer_open_path_defers_too() {
         &editor.mode_registry.load(),
         BufferKind::Help,
         lattice_syntax::Lang::Plain,
+        None,
     );
     assert_eq!(
         resolved, id,

@@ -389,6 +389,27 @@ pub trait Mode: Send + Sync + 'static {
         &[]
     }
 
+    /// File extensions (lowercase, no dot) this major PRESENTS rather than
+    /// edits — the file is never loaded as text.
+    ///
+    /// The open path consults this before reading: a match builds a
+    /// placeholder buffer with the real path and no content, and this major
+    /// renders the file some other way. `image-mode` shows it as a media
+    /// block; a future PDF or archive viewer is the same shape.
+    ///
+    /// Default empty, which is every ordinary major: its buffer IS the file's
+    /// text.
+    ///
+    /// A mode declaring this **must** also be read-only in both of the ways
+    /// that matter — `ReadOnly = true` in [`options`](Self::options) AND
+    /// `read-only-mode` in [`implies`](Self::implies) — because the buffer's
+    /// text is a placeholder and saving it would overwrite the real file with
+    /// nothing. The option alone gates typing; the implied mode is what
+    /// refuses the operators.
+    fn presents_extensions(&self) -> &[&'static str] {
+        &[]
+    }
+
     /// Declarative mirror hint for "this mode is the on/off
     /// switch for a typed option of the same observable state".
     /// `Some(canonical_name)` ⇒ a host-driven cascade keeps the
@@ -590,6 +611,7 @@ pub trait DynMode: Send + Sync + 'static {
     fn required_capabilities(&self) -> CapabilitySet;
     fn conflicts_with(&self) -> &[ModeId];
     fn implies(&self) -> &[ModeId];
+    fn presents_extensions(&self) -> &[&'static str];
     fn mirrors_option(&self) -> Option<&'static str>;
     fn invocation_runner(&self) -> Option<ModeId>;
     fn refresh_action(&self) -> Option<&'static str>;
@@ -647,6 +669,9 @@ impl<M: Mode> DynMode for M {
     }
     fn implies(&self) -> &[ModeId] {
         <M as Mode>::implies(self)
+    }
+    fn presents_extensions(&self) -> &[&'static str] {
+        <M as Mode>::presents_extensions(self)
     }
     fn mirrors_option(&self) -> Option<&'static str> {
         <M as Mode>::mirrors_option(self)

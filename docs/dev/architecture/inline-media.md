@@ -349,6 +349,46 @@ WASM is a paramount-#1 violation).
   images need intra-line variable height, which the `row_scale` substrate
   does not provide.
 
+## 8.1 The image file itself (`image-mode`)
+
+An `[[file:diagram.png]]` link drew before `:e diagram.png` did, which is
+backwards: the same picture, and opening it directly was the failing case.
+`Document::open` is `read_to_string`, so a PNG never became a buffer at
+all — it failed on the UTF-8 read, and the substrate above was
+unreachable for the file it was built to draw.
+
+**`image-mode` is an ordinary major on an ordinary buffer.** Not a
+`BufferKind`: the file is listed by `:ls`, reached by `:bn`, named in the
+modeline and closed by `:bd` like anything else, and no renderer or host
+code branches on it. What it shows is one media block anchored at line 0,
+produced by the mode's own `AsyncMediaSource` — the same registry, pump,
+sizing and decode path org's inline blocks use. The mode's whole rendering
+is that producer.
+
+**`Mode::presents_extensions` is the new seam**, and the general one: a
+major names the file types it PRESENTS rather than edits, and the open
+path consults it *before* reading. A match builds a buffer with the real
+path and a single empty line; the bytes are never loaded into a rope. A
+PDF or archive viewer is the same shape, which is why the seam is on the
+trait rather than a branch for pictures.
+
+**Read-only is load-bearing here, not tidy.** The buffer's text is a
+placeholder, so writing it back replaces the image with nothing — a
+data-loss shape rather than a wrong-message one. Three gates cover three
+different paths and none of them subsumes another:
+
+| gate | covers |
+|---|---|
+| `ReadOnly = true` in `options()` | insert-mode typing |
+| `read-only-mode` in `implies()` | the operators (`dd`, `x`, `cw`, `p`) |
+| `do_write`'s refusal | the save, which goes through neither of the above |
+
+The third is vim's E45 and applies to every read-only buffer, not just
+this one: a bare `:w` refuses, while `:w <other-path>` is still allowed,
+as in vim. It had never been enforced because every read-only buffer
+until now was synthetic and pathless, so `save_blocking` failed with "no
+file name" and the gap did not show.
+
 ## 9. Rejected alternatives
 
 **Whole-row blocks (§3a).** Cheaper, ships inside the existing substrate,

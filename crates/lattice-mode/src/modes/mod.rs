@@ -36,6 +36,7 @@ pub mod completion;
 pub mod display;
 pub mod help;
 pub mod hover;
+pub mod image;
 pub mod messages;
 pub mod surround;
 pub mod table;
@@ -52,6 +53,7 @@ pub use display::{
 };
 pub use help::HelpMode;
 pub use hover::HoverMode;
+pub use image::{ImageFileMediaSource, ImageMode, is_image_path, register_image_media_source};
 pub use messages::MessagesMode;
 pub use text::TextMode;
 pub use which_key::{
@@ -76,6 +78,12 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(HelpMode)
         .expect("help-mode must register without conflict");
+    // `image-mode`: the major for a buffer backed by a picture. It PRESENTS
+    // its file types rather than editing them, so the open path never reads
+    // the bytes as text — which is what `:e diagram.png` used to fail on.
+    registry
+        .register(ImageMode)
+        .expect("image-mode must register without conflict");
     // `repl-mode`: the REPL input surface (i/a/o/… → jump-to-prompt+Insert).
     // A `Manual` minor mode; REPL majors (`ai-conversation`, terminal, claude)
     // pull it in via `implies()`, so it never touches an ordinary buffer.

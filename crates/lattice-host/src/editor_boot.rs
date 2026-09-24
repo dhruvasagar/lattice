@@ -1201,6 +1201,11 @@ impl Editor {
             arc_swap::ArcSwap::from_pointee(lattice_mode::MediaSourceRegistry::new()),
         );
         boot.register_service::<lattice_mode::MediaSourceRegistryHandle>(media_registry.clone());
+        // `image-mode`'s own producer: a buffer backed by a picture draws that
+        // picture. Registered here because this is where the registry is
+        // created; the producer itself lives with the mode, so the major and
+        // the thing that renders its buffers stay one surface.
+        lattice_mode::modes::register_image_media_source(&media_registry);
 
         // OM.A1: the sibling registry for agenda-row producers. Same shape and
         // the same reason — RCU-registered by the loader, read wait-free by

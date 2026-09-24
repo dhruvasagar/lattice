@@ -88,6 +88,9 @@ pub struct ModeRegistry {
     /// because a plugin language's identity IS its name — the host has no
     /// enum arm for it.
     lang_index: HashMap<String, ModeId>,
+    /// Lowercase extension → the major that PRESENTS that file type without
+    /// loading it as text. Built at register-time, like `lang_index`.
+    presents_index: HashMap<String, ModeId>,
     /// CI.1/CI.3: minor modes the user has ENABLED. `auto_activatable_minors`
     /// gates on this — a registered minor auto-activates only when enabled.
     /// Native modes are auto-enabled at [`register`](Self::register); plugin
@@ -127,6 +130,7 @@ impl ModeRegistry {
             modes: HashMap::new(),
             kind_index: HashMap::new(),
             lang_index: HashMap::new(),
+            presents_index: HashMap::new(),
             enabled: std::collections::HashSet::new(),
         }
     }
@@ -194,8 +198,35 @@ impl ModeRegistry {
                 None
             }
         };
+        // A major that PRESENTS a file type claims its extensions, so the
+        // open path can decide not to read the file as text before it tries.
+        // Minors never present: the decision belongs to the buffer's identity.
+        let presented: Vec<String> = if matches!(<M as Mode>::kind(&mode), ModeKind::Major) {
+            <M as Mode>::presents_extensions(&mode)
+                .iter()
+                .map(|e| e.to_ascii_lowercase())
+                .collect()
+        } else {
+            Vec::new()
+        };
         let arc: Arc<dyn DynMode> = Arc::new(mode);
         self.modes.insert(id, arc);
+        for ext in presented {
+            match self.presents_index.entry(ext) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(id);
+                }
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    tracing::warn!(
+                        existing = %e.get(),
+                        rejected = %id,
+                        extension = %e.key(),
+                        "ModeRegistry: ignoring duplicate presents_extensions \
+                         claim; first registration wins"
+                    );
+                }
+            }
+        }
         if let Some(lang) = target_lang {
             match self.lang_index.entry(lang) {
                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -276,6 +307,7 @@ impl ModeRegistry {
             // language claim would resolve documents to a mode that no
             // longer exists.
             self.lang_index.retain(|_, claimed| *claimed != id);
+            self.presents_index.retain(|_, claimed| *claimed != id);
         }
         removed
     }
@@ -313,6 +345,17 @@ impl ModeRegistry {
     /// Index built at register-time, so lookup is `HashMap`-cheap.
     pub fn find_major_for_lang(&self, lang: &str) -> Option<ModeId> {
         self.lang_index.get(lang).copied()
+    }
+
+    /// The major that PRESENTS `path`'s file type without loading it as text,
+    /// if one claims that extension.
+    ///
+    /// The open path asks this BEFORE reading: a match means the bytes are
+    /// never read into a rope, which for a PNG is the difference between a
+    /// picture and a UTF-8 error.
+    pub fn presenting_major_for_path(&self, path: &std::path::Path) -> Option<ModeId> {
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        self.presents_index.get(&ext).copied()
     }
 
     /// Iterate every registered mode's `(id, kind)`.

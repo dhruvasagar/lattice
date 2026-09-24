@@ -428,8 +428,19 @@ pub fn register_buffer_kind_modes(_registry: &mut ModeRegistry) {
 /// `rust-mode`'s language out from under it. When the built-in majors
 /// eventually migrate onto `Mode::target_language` the table shrinks,
 /// the index grows, and the order between them stops mattering.
-pub fn resolve_major_mode(registry: &ModeRegistry, kind: BufferKind, lang: Lang) -> ModeId {
+pub fn resolve_major_mode(
+    registry: &ModeRegistry,
+    kind: BufferKind,
+    lang: Lang,
+    path: Option<&std::path::Path>,
+) -> ModeId {
     if let Some(id) = major_mode_id_for_buffer_kind(registry, kind) {
+        return id;
+    }
+    // A major that PRESENTS this file type wins over any language mapping:
+    // the file was never loaded as text, so a language claim on it would be a
+    // claim about content nobody read. `image-mode` is the first of these.
+    if let Some(id) = path.and_then(|p| registry.presenting_major_for_path(p)) {
         return id;
     }
     // Document kind (or any kind with no registered major): pick by
@@ -576,15 +587,15 @@ mod tests {
         // (Option B); help-mode is the minor.
         let registry = populated_registry();
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::Help, Lang::Rust),
+            resolve_major_mode(&registry, BufferKind::Help, Lang::Rust, None),
             lattice_syntax::MarkdownMode::mode_id()
         );
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::FileTree, Lang::Plain),
+            resolve_major_mode(&registry, BufferKind::FileTree, Lang::Plain, None),
             FileTreeMode::mode_id()
         );
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::Oil, Lang::Markdown),
+            resolve_major_mode(&registry, BufferKind::Oil, Lang::Markdown, None),
             OilMode::mode_id()
         );
     }
@@ -593,11 +604,11 @@ mod tests {
     fn resolve_major_mode_for_document_picks_by_lang() {
         let registry = populated_registry();
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::Document, Lang::Rust),
+            resolve_major_mode(&registry, BufferKind::Document, Lang::Rust, None),
             lattice_syntax::RustMode::mode_id()
         );
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::Document, Lang::Markdown),
+            resolve_major_mode(&registry, BufferKind::Document, Lang::Markdown, None),
             lattice_syntax::MarkdownMode::mode_id()
         );
     }
@@ -607,7 +618,7 @@ mod tests {
         // Document + Plain ⇒ text-mode (foundation catch-all).
         let registry = populated_registry();
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::Document, Lang::Plain),
+            resolve_major_mode(&registry, BufferKind::Document, Lang::Plain, None),
             TextMode::mode_id()
         );
     }
@@ -660,7 +671,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::Document, org_lang()),
+            resolve_major_mode(&registry, BufferKind::Document, org_lang(), None),
             ModeId::new("org-mode")
         );
     }
@@ -672,7 +683,7 @@ mod tests {
         // org buffer with no org-mode is a perfectly good outcome.
         let registry = populated_registry();
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::Document, org_lang()),
+            resolve_major_mode(&registry, BufferKind::Document, org_lang(), None),
             TextMode::mode_id()
         );
     }
@@ -690,7 +701,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::Document, Lang::Rust),
+            resolve_major_mode(&registry, BufferKind::Document, Lang::Rust, None),
             lattice_syntax::RustMode::mode_id()
         );
     }
@@ -708,7 +719,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::Help, org_lang()),
+            resolve_major_mode(&registry, BufferKind::Help, org_lang(), None),
             lattice_syntax::MarkdownMode::mode_id()
         );
     }
@@ -724,7 +735,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::Document, org_lang()),
+            resolve_major_mode(&registry, BufferKind::Document, org_lang(), None),
             TextMode::mode_id()
         );
     }
@@ -736,7 +747,7 @@ mod tests {
         // language-detection catch-all on `Lang::Plain`).
         let registry = ModeRegistry::new();
         assert_eq!(
-            resolve_major_mode(&registry, BufferKind::FileTree, Lang::Plain),
+            resolve_major_mode(&registry, BufferKind::FileTree, Lang::Plain, None),
             TextMode::mode_id()
         );
     }

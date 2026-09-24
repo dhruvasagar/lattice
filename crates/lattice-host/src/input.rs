@@ -383,6 +383,7 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // `keymap_insert::tests` is the regression net.
         ModalState::Insert => dispatch_insert(
             ctx.keymap,
+            lattice_keymap::BindingMode::Insert,
             &chord,
             ctx.partial_chord,
             ctx.active_minor_modes,
@@ -405,6 +406,7 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // earlier at the top of `translate`.
         ModalState::Command => dispatch_insert(
             ctx.keymap,
+            lattice_keymap::BindingMode::Command,
             &chord,
             ctx.partial_chord,
             ctx.active_minor_modes,
@@ -416,6 +418,7 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // keymap supplies submit / cancel.
         ModalState::Search(_) => dispatch_insert(
             ctx.keymap,
+            lattice_keymap::BindingMode::Search,
             &chord,
             ctx.partial_chord,
             ctx.active_minor_modes,
@@ -440,6 +443,7 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // `lattice-ui-tui`, which presses real keys.
         ModalState::Prompt => dispatch_insert(
             ctx.keymap,
+            lattice_keymap::BindingMode::Prompt,
             &chord,
             ctx.partial_chord,
             ctx.active_minor_modes,

@@ -68,9 +68,9 @@ fn prompt_line_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
         vec![
-            lattice_mode::keymap_entry! { mode: Insert, chord: "<CR>", doc: "Submit the prompt", cmd: "action:prompt-line-submit" },
-            lattice_mode::keymap_entry! { mode: Insert, chord: "<Esc>", doc: "Cancel the prompt", cmd: "action:prompt-line-cancel" },
-            lattice_mode::keymap_entry! { mode: Insert, chord: "<C-c>", doc: "Cancel the prompt", cmd: "action:prompt-line-cancel" },
+            lattice_mode::keymap_entry! { mode: Prompt, chord: "<CR>", doc: "Submit the prompt", cmd: "action:prompt-line-submit" },
+            lattice_mode::keymap_entry! { mode: Prompt, chord: "<Esc>", doc: "Cancel the prompt", cmd: "action:prompt-line-cancel" },
+            lattice_mode::keymap_entry! { mode: Prompt, chord: "<C-c>", doc: "Cancel the prompt", cmd: "action:prompt-line-cancel" },
         ]
     })
 }

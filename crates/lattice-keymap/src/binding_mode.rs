@@ -30,6 +30,16 @@ pub enum BindingMode {
     Command,
     /// `/` `?` minibuffer.
     Search,
+    /// `Effect::OpenPrompt`'s generic one-line prompt — the third
+    /// buffer-backed readline surface, peer of [`Self::Command`] and
+    /// [`Self::Search`].
+    ///
+    /// Its own table for the same reason they have theirs: a minibuffer is
+    /// not an Insert buffer. Resolving these surfaces against the Insert
+    /// table let every globally-active minor's Insert bindings leak onto
+    /// them — auto-pair's `<BS>` shadowed the builtin backspace on the `:`
+    /// line, so backspace did nothing there in either renderer.
+    Prompt,
     /// After `d` / `y` / `c` / `>` / `<` / `gU` / `gu` / `g~` -- waiting
     /// for a motion or text-object target.
     OperatorPending,
@@ -95,6 +105,7 @@ impl BindingMode {
             BindingMode::Replace => "Replace",
             BindingMode::Command => "Command",
             BindingMode::Search => "Search",
+            BindingMode::Prompt => "Prompt",
             BindingMode::OperatorPending => "Operator-Pending",
             BindingMode::AfterG => "After-g",
             BindingMode::AfterZ => "After-z",

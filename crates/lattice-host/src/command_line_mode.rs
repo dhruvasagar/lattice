@@ -110,22 +110,22 @@ fn command_line_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
         vec![
-            keymap_entry! { mode: Insert, chord: "<CR>", doc: "Submit the command line", cmd: "action:command-line-submit" },
-            keymap_entry! { mode: Insert, chord: "<Esc>", doc: "Cancel the command line", cmd: "action:command-line-cancel" },
-            keymap_entry! { mode: Insert, chord: "<C-c>", doc: "Cancel the command line", cmd: "action:command-line-cancel" },
-            keymap_entry! { mode: Insert, chord: "<C-p>", doc: "Previous history entry", cmd: "action:command-line-history-prev" },
-            keymap_entry! { mode: Insert, chord: "<C-n>", doc: "Next history entry", cmd: "action:command-line-history-next" },
-            keymap_entry! { mode: Insert, chord: "<Up>", doc: "Previous history entry", cmd: "action:command-line-history-prev" },
-            keymap_entry! { mode: Insert, chord: "<Down>", doc: "Next history entry", cmd: "action:command-line-history-next" },
-            keymap_entry! { mode: Insert, chord: "<Tab>", doc: "Complete / next candidate", cmd: "action:command-line-complete" },
-            keymap_entry! { mode: Insert, chord: "<S-Tab>", doc: "Previous candidate", cmd: "action:command-line-complete-prev" },
-            keymap_entry! { mode: Insert, chord: "<C-h>", doc: "Describe command / arg under cursor", cmd: "action:command-line-describe-under-cursor" },
-            keymap_entry! { mode: Insert, chord: "<C-x><C-e>", doc: "Expand the `:` line into the full-modal mini-buffer band (or collapse it)", cmd: "action:command-line-toggle-expand" },
+            keymap_entry! { mode: Command, chord: "<CR>", doc: "Submit the command line", cmd: "action:command-line-submit" },
+            keymap_entry! { mode: Command, chord: "<Esc>", doc: "Cancel the command line", cmd: "action:command-line-cancel" },
+            keymap_entry! { mode: Command, chord: "<C-c>", doc: "Cancel the command line", cmd: "action:command-line-cancel" },
+            keymap_entry! { mode: Command, chord: "<C-p>", doc: "Previous history entry", cmd: "action:command-line-history-prev" },
+            keymap_entry! { mode: Command, chord: "<C-n>", doc: "Next history entry", cmd: "action:command-line-history-next" },
+            keymap_entry! { mode: Command, chord: "<Up>", doc: "Previous history entry", cmd: "action:command-line-history-prev" },
+            keymap_entry! { mode: Command, chord: "<Down>", doc: "Next history entry", cmd: "action:command-line-history-next" },
+            keymap_entry! { mode: Command, chord: "<Tab>", doc: "Complete / next candidate", cmd: "action:command-line-complete" },
+            keymap_entry! { mode: Command, chord: "<S-Tab>", doc: "Previous candidate", cmd: "action:command-line-complete-prev" },
+            keymap_entry! { mode: Command, chord: "<C-h>", doc: "Describe command / arg under cursor", cmd: "action:command-line-describe-under-cursor" },
+            keymap_entry! { mode: Command, chord: "<C-x><C-e>", doc: "Expand the `:` line into the full-modal mini-buffer band (or collapse it)", cmd: "action:command-line-toggle-expand" },
             // YR.6: vim's omni-completion chord, and it means the same
             // thing here — ask whatever knows about this position.
             // `<Tab>` stays inline completion from `ArgSpec.completion`;
             // this opens the picker from `ArgSpec.picker`.
-            keymap_entry! { mode: Insert, chord: "<C-x><C-o>", doc: "Open the picker for the argument under the cursor", cmd: "action:open-arg-picker" },
+            keymap_entry! { mode: Command, chord: "<C-x><C-o>", doc: "Open the picker for the argument under the cursor", cmd: "action:open-arg-picker" },
             // MB.2: also from the expanded band's Normal mode, so collapse
             // works without first re-entering Insert.
             keymap_entry! { mode: Normal, chord: "<C-x><C-e>", doc: "Collapse the mini-buffer band back to the one-row `:` line", cmd: "action:command-line-toggle-expand" },

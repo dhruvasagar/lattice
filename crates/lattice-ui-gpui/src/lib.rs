@@ -1926,6 +1926,42 @@ mod tests {
         assert_eq!(app.editor.modal, ModalState::Insert);
     }
 
+    /// The `:` line resolves keys in the Command context in THIS peer too.
+    ///
+    /// Both peers call `lattice_host::input::translate`, so routing
+    /// `ModalState::Command` at `BindingMode::Command` reaches GPUI for free —
+    /// which is exactly the kind of claim that was asserted in a comment and
+    /// never checked before, and cost a renderer its fall-through for a month.
+    /// Backspace on the `:` line is the observable: it deletes a character,
+    /// rather than being eaten by whichever Insert-bound minor happens to be
+    /// globally active.
+    #[test]
+    fn the_command_line_edits_in_the_command_context_in_this_peer_too() {
+        use lattice_host::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
+
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        app.dispatch_chord(KeyChord::new(KeyKind::Char(':'), KeyMods::NONE));
+        assert_eq!(
+            app.editor.modal,
+            ModalState::Command,
+            "precondition: `:` opens the command line"
+        );
+        for c in ['a', 'b', 'c'] {
+            app.dispatch_chord(KeyChord::new(KeyKind::Char(c), KeyMods::NONE));
+        }
+        assert_eq!(app.editor.command_line(), "abc");
+
+        app.dispatch_chord(KeyChord::new(
+            KeyKind::Special(SpecialKey::Backspace),
+            KeyMods::NONE,
+        ));
+        assert_eq!(
+            app.editor.command_line(),
+            "ab",
+            "backspace must delete on the `:` line"
+        );
+    }
+
     /// AP.0.2 — a DECLINED chord falls through to the layer below.
     ///
     /// This peer had no fall-through at all, and the cost was not subtle: a

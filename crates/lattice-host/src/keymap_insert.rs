@@ -156,8 +156,32 @@ pub fn completion_popup_mode_id() -> ModeId {
 /// `[<C-x>]` return [`LookupResult::Partial`]. Same for
 /// `[<C-x>, <C-s>]`.
 pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
+    // The builtin Insert set is registered into every readline surface, not
+    // just Insert: the `:` line, the `/`·`?` line and the generic prompt are
+    // buffer-backed readline buffers that need the same backspace, word-erase,
+    // line-edit and cursor keys.
+    //
+    // They used to GET them by resolving against the Insert table itself,
+    // which is the bug this closes — that also pulled in every globally-active
+    // minor's Insert bindings. auto-pair binds `<BS>` at
+    // `MinorMode(auto-pair-mode)`, so on the `:` line its handler shadowed the
+    // builtin backspace and backspace did nothing, in both renderers, for as
+    // long as the minibuffer has been a buffer. Registering the BUILTIN set
+    // per surface keeps every key that worked and leaves the minor layers
+    // behind, because a minor that binds in Insert binds in Insert only.
+    for mode in [
+        BindingMode::Insert,
+        BindingMode::Command,
+        BindingMode::Search,
+        BindingMode::Prompt,
+    ] {
+        register_readline_bindings(handle, actions, mode);
+    }
+}
+
+/// The builtin Insert/readline chord set, bound into one [`BindingMode`].
+fn register_readline_bindings(handle: &KeymapHandle, actions: &ActionIds, mode: BindingMode) {
     let layer = KeymapLayer::Builtin;
-    let mode = BindingMode::Insert;
 
     handle.bind(
         layer,
@@ -477,6 +501,7 @@ pub fn completion_popup_layer_bindings(actions: &ActionIds) -> HashMap<BindingMo
 ///      chars without CONTROL; otherwise `Action::None`.
 pub fn dispatch_insert(
     handle: &KeymapHandle,
+    mode: BindingMode,
     chord: &KeyChord,
     partial_chord: &[KeyChord],
     active_minor_modes: &[ModeId],
@@ -502,13 +527,7 @@ pub fn dispatch_insert(
     // normalized form when the raw lookup found nothing. See that
     // function's docs for why raw must go first.
     if !partial_chord.is_empty() {
-        let lookup = lookup_insert_chord(
-            handle,
-            BindingMode::Insert,
-            partial_chord,
-            *chord,
-            active_minor_modes,
-        );
+        let lookup = lookup_insert_chord(handle, mode, partial_chord, *chord, active_minor_modes);
         return match lookup.result {
             LookupResult::Bound { command, captured } => bound_or_fall_through(
                 handle,
@@ -545,7 +564,7 @@ pub fn dispatch_insert(
         };
     }
 
-    let lookup = lookup_insert_chord(handle, BindingMode::Insert, &[], *chord, active_minor_modes);
+    let lookup = lookup_insert_chord(handle, mode, &[], *chord, active_minor_modes);
     match lookup.result {
         LookupResult::Bound { command, captured } => {
             bound_or_fall_through(handle, &[], *chord, active_minor_modes, &command, &captured)
@@ -904,7 +923,7 @@ mod os0b_tests {
     fn alt_enter_still_reaches_the_builtin_newline_when_nothing_binds_it() {
         let h = builtin_handle();
         let chord = alt(KeyKind::Special(SpecialKey::Enter));
-        let action = dispatch_insert(&h, &chord, &[], &[]);
+        let action = dispatch_insert(&h, lattice_keymap::BindingMode::Insert, &chord, &[], &[]);
         assert_eq!(
             invoked_command(&action),
             shared_actions().insert_newline,
@@ -919,7 +938,7 @@ mod os0b_tests {
     fn alt_x_still_types_a_literal_x() {
         let h = builtin_handle();
         let chord = alt(KeyKind::Char('x'));
-        match dispatch_insert(&h, &chord, &[], &[]) {
+        match dispatch_insert(&h, lattice_keymap::BindingMode::Insert, &chord, &[], &[]) {
             Action::Insert(s) => assert_eq!(s, "x"),
             other => panic!("expected a literal 'x' insert, got {other:?}"),
         }
@@ -946,7 +965,13 @@ mod os0b_tests {
         );
 
         let shift_tab = KeyChord::new(KeyKind::Special(SpecialKey::Tab), KeyMods::SHIFT);
-        let action = dispatch_insert(&h, &shift_tab, &[], &[mode_id]);
+        let action = dispatch_insert(
+            &h,
+            lattice_keymap::BindingMode::Insert,
+            &shift_tab,
+            &[],
+            &[mode_id],
+        );
         assert_eq!(
             invoked_command(&action),
             shift_tab_command,
@@ -954,7 +979,13 @@ mod os0b_tests {
         );
 
         let plain_tab = KeyChord::special(SpecialKey::Tab);
-        let action = dispatch_insert(&h, &plain_tab, &[], &[mode_id]);
+        let action = dispatch_insert(
+            &h,
+            lattice_keymap::BindingMode::Insert,
+            &plain_tab,
+            &[],
+            &[mode_id],
+        );
         assert_eq!(
             invoked_command(&action),
             shared_actions().insert_tab,
@@ -985,7 +1016,13 @@ mod os0b_tests {
         // ALT/SUPER, so raw == normalized here and this costs one
         // lookup, same as before OS.0b.
         let ctrl_x = KeyChord::ctrl('x');
-        let absorbed = match dispatch_insert(&h, &ctrl_x, &[], &[mode_id]) {
+        let absorbed = match dispatch_insert(
+            &h,
+            lattice_keymap::BindingMode::Insert,
+            &ctrl_x,
+            &[],
+            &[mode_id],
+        ) {
             Action::AbsorbPartialChord(c) => c,
             other => panic!("expected <C-x> to absorb as a partial prefix, got {other:?}"),
         };
@@ -993,7 +1030,13 @@ mod os0b_tests {
         // Second key: <M-o> completes the sequence via the
         // partial-chord branch.
         let alt_o = alt(KeyKind::Char('o'));
-        let action = dispatch_insert(&h, &alt_o, &[absorbed], &[mode_id]);
+        let action = dispatch_insert(
+            &h,
+            lattice_keymap::BindingMode::Insert,
+            &alt_o,
+            &[absorbed],
+            &[mode_id],
+        );
         assert_eq!(
             invoked_command(&action),
             two_chord_command,

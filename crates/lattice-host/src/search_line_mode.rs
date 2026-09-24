@@ -95,15 +95,15 @@ fn search_line_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
         vec![
-            keymap_entry! { mode: Insert, chord: "<CR>", doc: "Submit the search pattern", cmd: "action:search-line-submit" },
-            keymap_entry! { mode: Insert, chord: "<Esc>", doc: "Cancel the search line", cmd: "action:search-line-cancel" },
-            keymap_entry! { mode: Insert, chord: "<C-c>", doc: "Cancel the search line", cmd: "action:search-line-cancel" },
-            keymap_entry! { mode: Insert, chord: "<BS>", doc: "Delete a character, or cancel the search when the pattern is empty", cmd: "action:search-line-backspace" },
-            keymap_entry! { mode: Insert, chord: "<C-p>", doc: "Previous search history entry", cmd: "action:search-line-history-prev" },
-            keymap_entry! { mode: Insert, chord: "<C-n>", doc: "Next search history entry", cmd: "action:search-line-history-next" },
-            keymap_entry! { mode: Insert, chord: "<Up>", doc: "Previous search history entry", cmd: "action:search-line-history-prev" },
-            keymap_entry! { mode: Insert, chord: "<Down>", doc: "Next search history entry", cmd: "action:search-line-history-next" },
-            keymap_entry! { mode: Insert, chord: "<C-x><C-e>", doc: "Expand the `/`·`?` line into the full-modal mini-buffer band (or collapse it)", cmd: "action:search-line-toggle-expand" },
+            keymap_entry! { mode: Search, chord: "<CR>", doc: "Submit the search pattern", cmd: "action:search-line-submit" },
+            keymap_entry! { mode: Search, chord: "<Esc>", doc: "Cancel the search line", cmd: "action:search-line-cancel" },
+            keymap_entry! { mode: Search, chord: "<C-c>", doc: "Cancel the search line", cmd: "action:search-line-cancel" },
+            keymap_entry! { mode: Search, chord: "<BS>", doc: "Delete a character, or cancel the search when the pattern is empty", cmd: "action:search-line-backspace" },
+            keymap_entry! { mode: Search, chord: "<C-p>", doc: "Previous search history entry", cmd: "action:search-line-history-prev" },
+            keymap_entry! { mode: Search, chord: "<C-n>", doc: "Next search history entry", cmd: "action:search-line-history-next" },
+            keymap_entry! { mode: Search, chord: "<Up>", doc: "Previous search history entry", cmd: "action:search-line-history-prev" },
+            keymap_entry! { mode: Search, chord: "<Down>", doc: "Next search history entry", cmd: "action:search-line-history-next" },
+            keymap_entry! { mode: Search, chord: "<C-x><C-e>", doc: "Expand the `/`·`?` line into the full-modal mini-buffer band (or collapse it)", cmd: "action:search-line-toggle-expand" },
             // MB.5c: also from the expanded band's Normal mode, so collapse
             // works without first re-entering Insert.
             keymap_entry! { mode: Normal, chord: "<C-x><C-e>", doc: "Collapse the mini-buffer band back to the one-row `/`·`?` line", cmd: "action:search-line-toggle-expand" },

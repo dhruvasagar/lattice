@@ -141,7 +141,13 @@ mod tests {
     fn esc_in_base_insert_returns_to_normal() {
         let h = populated_handle();
         let a = shared_actions();
-        match dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), &[], &[]) {
+        match dispatch_insert(
+            &h,
+            lattice_keymap::BindingMode::Insert,
+            &ev(KeyCode::Esc, KeyModifiers::NONE),
+            &[],
+            &[],
+        ) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_normal),
             other => panic!("expected Invoke(enter_mode_normal), got {other:?}"),
         }
@@ -151,7 +157,13 @@ mod tests {
     fn backspace_in_base_insert_deletes_char_backward() {
         let h = populated_handle();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Backspace, KeyModifiers::NONE), &[], &[]);
+        let r = dispatch_insert(
+            &h,
+            lattice_keymap::BindingMode::Insert,
+            &ev(KeyCode::Backspace, KeyModifiers::NONE),
+            &[],
+            &[],
+        );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.delete_char_backward),
             other => panic!("expected Invoke(delete_char_backward), got {other:?}"),
@@ -162,7 +174,13 @@ mod tests {
     fn enter_in_base_insert_inserts_newline() {
         let h = populated_handle();
         let a = shared_actions();
-        match dispatch_insert(&h, &ev(KeyCode::Enter, KeyModifiers::NONE), &[], &[]) {
+        match dispatch_insert(
+            &h,
+            lattice_keymap::BindingMode::Insert,
+            &ev(KeyCode::Enter, KeyModifiers::NONE),
+            &[],
+            &[],
+        ) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.insert_newline),
             other => panic!("expected Invoke(insert_newline), got {other:?}"),
         }
@@ -172,7 +190,13 @@ mod tests {
     fn tab_in_base_insert_inserts_tab() {
         let h = populated_handle();
         let a = shared_actions();
-        match dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), &[], &[]) {
+        match dispatch_insert(
+            &h,
+            lattice_keymap::BindingMode::Insert,
+            &ev(KeyCode::Tab, KeyModifiers::NONE),
+            &[],
+            &[],
+        ) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.insert_tab),
             other => panic!("expected Invoke(insert_tab), got {other:?}"),
         }
@@ -182,7 +206,13 @@ mod tests {
     fn printable_char_in_base_insert_falls_through_to_insert() {
         let h = populated_handle();
         for c in ['a', 'A', '1', '$', ' '] {
-            match dispatch_insert(&h, &ev(KeyCode::Char(c), KeyModifiers::NONE), &[], &[]) {
+            match dispatch_insert(
+                &h,
+                lattice_keymap::BindingMode::Insert,
+                &ev(KeyCode::Char(c), KeyModifiers::NONE),
+                &[],
+                &[],
+            ) {
                 Action::Insert(s) => assert_eq!(s, c.to_string()),
                 other => panic!("char {c:?}: expected Insert, got {other:?}"),
             }
@@ -193,7 +223,13 @@ mod tests {
     fn ctrl_letter_unbound_in_base_insert_yields_none() {
         let h = populated_handle();
         // <C-y> isn't bound at base; legacy returned None.
-        let r = dispatch_insert(&h, &ev(KeyCode::Char('y'), KeyModifiers::CONTROL), &[], &[]);
+        let r = dispatch_insert(
+            &h,
+            lattice_keymap::BindingMode::Insert,
+            &ev(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            &[],
+            &[],
+        );
         assert!(matches!(r, Action::None));
     }
 
@@ -201,7 +237,13 @@ mod tests {
     fn ctrl_space_in_base_insert_triggers_completion() {
         let h = populated_handle();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Char(' '), KeyModifiers::CONTROL), &[], &[]);
+        let r = dispatch_insert(
+            &h,
+            lattice_keymap::BindingMode::Insert,
+            &ev(KeyCode::Char(' '), KeyModifiers::CONTROL),
+            &[],
+            &[],
+        );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
             other => panic!("expected Invoke(completion_trigger), got {other:?}"),
@@ -224,6 +266,7 @@ mod tests {
         let h = populated_handle_with_snippet();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
             &[],
             &snippet_minors(),
@@ -242,6 +285,7 @@ mod tests {
         let h = populated_handle();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
             &[KeyChord::ctrl('x')],
             &[],
@@ -262,6 +306,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('s'), KeyModifiers::CONTROL),
             &[KeyChord::ctrl('x')],
             &snippet_minors(),
@@ -282,6 +327,7 @@ mod tests {
         let h = populated_handle();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('q'), KeyModifiers::CONTROL),
             &[KeyChord::ctrl('x')],
             &[],
@@ -297,6 +343,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('n'), KeyModifiers::CONTROL),
             &[],
             &popup_minors(),
@@ -313,6 +360,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Down, KeyModifiers::NONE),
             &[],
             &popup_minors(),
@@ -329,6 +377,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Tab, KeyModifiers::NONE),
             &[],
             &popup_minors(),
@@ -345,6 +394,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Enter, KeyModifiers::NONE),
             &[],
             &popup_minors(),
@@ -361,6 +411,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Esc, KeyModifiers::NONE),
             &[],
             &popup_minors(),
@@ -379,6 +430,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('e'), KeyModifiers::CONTROL),
             &[],
             &popup_minors(),
@@ -396,6 +448,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
             &[],
             &popup_minors(),
@@ -421,6 +474,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('b'), KeyModifiers::CONTROL),
             &[],
             &popup_minors(),
@@ -449,6 +503,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
             &[],
             &popup_minors(),
@@ -476,6 +531,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char(' '), KeyModifiers::CONTROL),
             &[],
             &popup_minors(),
@@ -496,6 +552,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::PageDown, KeyModifiers::NONE),
             &[],
             &popup_minors(),
@@ -524,6 +581,7 @@ mod tests {
         let h = populated_handle_with_both();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
             &[],
             &both_minors(),
@@ -542,6 +600,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Tab, KeyModifiers::NONE),
             &[],
             &snippet_minors(),
@@ -560,6 +619,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::BackTab, KeyModifiers::NONE),
             &[],
             &snippet_minors(),
@@ -578,6 +638,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Tab, KeyModifiers::SHIFT),
             &[],
             &snippet_minors(),
@@ -596,6 +657,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Esc, KeyModifiers::NONE),
             &[],
             &snippet_minors(),
@@ -621,6 +683,7 @@ mod tests {
         let h = populated_handle_with_snippet();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Char('z'), KeyModifiers::NONE),
             &[],
             &snippet_minors(),
@@ -639,6 +702,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Tab, KeyModifiers::NONE),
             &[],
             &both_minors(),
@@ -658,6 +722,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::Esc, KeyModifiers::NONE),
             &[],
             &both_minors(),
@@ -678,6 +743,7 @@ mod tests {
         let a = shared_actions();
         let r = dispatch_insert(
             &h,
+            lattice_keymap::BindingMode::Insert,
             &ev(KeyCode::BackTab, KeyModifiers::NONE),
             &[],
             &both_minors(),

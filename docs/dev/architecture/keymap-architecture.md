@@ -422,6 +422,44 @@ and is generated per-operator, NOT a multi-mode binding of the same
 `CommandInvocation` (the Normal op-pending and Visual forms carry
 different `Range` / target semantics).
 
+### 5.7 A minibuffer is not an Insert buffer
+
+The `:` line, the `/`·`?` line and the generic prompt are buffer-backed
+readline surfaces, and each resolves keys in **its own binding context** —
+`BindingMode::Command`, `Search` and `Prompt` respectively. They do not
+borrow Insert's.
+
+This is load-bearing, not tidiness. `ModalState::Command` used to route
+through `dispatch_insert`, which resolved against `BindingMode::Insert`, so a
+minibuffer inherited the Insert table entire — including every
+globally-active minor's Insert bindings. `auto-pair` declares
+`ActivationPolicy::Global` and binds `<BS>`, so on the `:` line its handler
+shadowed the builtin backspace: **backspace did nothing while typing a
+command**, in both renderers, for as long as the minibuffer has been a buffer.
+
+It failed in the other direction too. `BindingMode::Command` existed;
+`:describe-key` reported `c_` bindings against it (vim's convention); the WIT
+layer mapped a plugin's `command` binding onto it. None of them could ever
+fire, because the live path asked the Insert table. A plugin binding a
+command-line key was writing into a table nothing read.
+
+Two rules follow:
+
+- **A minor that binds in Insert binds in Insert only.** That is what keeps
+  editing-buffer behaviour out of the minibuffers, and it is enforced by the
+  tables being distinct rather than by anyone remembering.
+- **Each surface's table must be complete.** `register_insert_bindings`
+  registers the builtin readline set — `<BS>`, `<C-w>`, `<C-u>`,
+  `<C-a>`/`<C-e>`/`<C-k>`, arrows, `<Home>`/`<End>` — into all four contexts,
+  and `a_minibuffer_is_not_an_insert_buffer.rs` asserts every one of them
+  resolves on every surface. Miss one and that key dies on that surface, which
+  is the original bug with a different victim.
+
+Both renderers get this from one place: `lattice_host::input::translate` picks
+the context from the `ModalState`, so the TUI and GPUI cannot disagree. The
+GPUI peer has its own test for it anyway (`lattice-ui-gpui`), because a parity
+claim that nothing checks is how the last one stayed wrong for a month.
+
 ## 6. Conflict resolution + provenance
 
 - **Cross-layer conflict**: top layer wins (priority order in

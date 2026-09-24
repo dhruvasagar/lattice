@@ -512,6 +512,12 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("TreeClose", "ex:filetree-close"),
     ("FiletreeClose", "ex:filetree-close"),
     ("filetree-close", "ex:filetree-close"),
+    // `:Oil` is oil.nvim's spelling; `:oil` matches `:tree` beside it.
+    ("Oil", "ex:oil"),
+    ("oil", "ex:oil"),
+    // IN.8b's LSP-independent formatter, so the generic name is honest.
+    ("format", "ex:format"),
+    ("reload-snippets", "ex:reload-snippets"),
     ("describe-option", "ex:describe-option"),
     // T.9.d (2026-06-18): theme-element / face introspection. Both the
     // element-name and the emacs `face` framing route to the one
@@ -1831,6 +1837,37 @@ mod tests {
                 "expected `:{line}` to parse, got {:?}",
                 result.err()
             );
+        }
+    }
+
+    /// Every `ex:*` command the grammar registers is reachable from the `:`
+    /// line. The parser has no `ex:<typed>` fallback — a command with no
+    /// alias row answers "unknown command" however it is spelled, which is
+    /// how `:Oil` (documented in `ex-commands.md` and `oil-mode.md`), `:format`
+    /// and `:reload-snippets` all shipped dead. `:s/` and `:g/` are
+    /// delimiter-form and reached by their own parsers, not the table.
+    #[test]
+    fn every_ex_command_has_a_typed_name() {
+        let r = fixture();
+        let table = aliases();
+        let delimiter_form = ["ex:substitute", "ex:global"];
+        let mut missing: Vec<&str> = r
+            .names()
+            .filter(|n| n.starts_with("ex:") && !delimiter_form.contains(n))
+            .filter(|n| !table.values().any(|c| c == n))
+            .collect();
+        missing.sort_unstable();
+        assert!(
+            missing.is_empty(),
+            "ex-commands with no `:` spelling: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn oil_resolves_in_both_spellings() {
+        let r = fixture();
+        for line in ["oil", "Oil", "oil /tmp", "Oil /tmp"] {
+            assert!(parse(line, &r).is_ok(), "expected `:{line}` to parse");
         }
     }
 

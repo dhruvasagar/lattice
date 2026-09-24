@@ -92,11 +92,17 @@ pub struct MediaBlock {
     /// differ from the reserved row count. A 3.4-line-height image reserves
     /// 4 rows and draws 3.4 of them.
     ///
-    /// Only the renderer that actually draws media populates it (through
-    /// `RowWeights`), and only one renderer runs in a process — so there is
-    /// no question of two peers disagreeing. What both peers *do* agree on is
-    /// the row count, which is why `scroll` (a row index) still anchors the
-    /// same line on each.
+    /// The HOST populates it, in the media pump's sizing pass, from the
+    /// file's header and the drawing peer's published cell metrics
+    /// (`inline-media.md` §7.1). This comment used to say the renderer did,
+    /// "through `RowWeights`" — which was the intent and never the code: no
+    /// renderer ever wrote it, so it stayed `None` on every block and the
+    /// GPUI peer skipped each one as unresolved.
+    ///
+    /// `None` still means "not measured", and a peer that draws pixels must
+    /// treat it that way: on a peer that published no metrics, and for a file
+    /// whose header could not be read, it stays `None` and the alt text is
+    /// the rendering.
     pub height_lh: Option<f32>,
 }
 

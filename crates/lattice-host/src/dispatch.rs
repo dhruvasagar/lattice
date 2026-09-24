@@ -2667,6 +2667,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::EnsureCursorVisible
             | Action::SetViewportHeight(_)
             | Action::SetTerminalWidth(_)
+            | Action::SetCellMetrics { .. }
             | Action::AcknowledgeRedraw
     );
     if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_))
@@ -2779,6 +2780,15 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         }
         Action::SetTerminalWidth(w) => {
             editor.terminal_width = Some(w);
+        }
+        Action::SetCellMetrics { row_px, col_px } => {
+            // Rejected rather than stored when either is not a positive
+            // finite number: a zero or NaN would propagate into the row
+            // reservation, and a block reserving NaN rows is a worse failure
+            // than one that stays provisional.
+            if row_px.is_finite() && col_px.is_finite() && row_px > 0.0 && col_px > 0.0 {
+                editor.cell_metrics = Some(crate::editor::CellMetrics { row_px, col_px });
+            }
         }
         Action::AcknowledgeRedraw => {
             editor.pending_redraw = false;

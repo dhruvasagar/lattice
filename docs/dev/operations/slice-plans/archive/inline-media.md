@@ -335,7 +335,7 @@ probes files the user never asked about. Off by default.
 before a file is measured — not 0 (invisible but holding a slot) and not 1
 (every image visibly jumping to its real height as reads land).
 
-### IM.7a — register the provider ✅ (2026-09-23)
+### IM.7a — join the halves: register the provider, measure the block ✅ (2026-09-23/24)
 
 IM.7 shipped both halves and never joined them. `maybe_refresh_wasm_media`
 filled the per-buffer cache and `MediaVirtualRowProvider` read one, but
@@ -358,6 +358,32 @@ produce rather than earning a provider rebuild.
 `crates/lattice-host/tests/wasm_media_rows.rs` asserts the rows exist with
 **no keystroke dispatched** — the version of this test that presses a key
 first passes against the unwired code too.
+
+**The second wire, found by testing the first.** With rows on screen the
+blocks were still eight rows of alt text, because `lattice_media::probe`
+and `block_geometry` had no production caller either — `intrinsic` and
+`height_lh` stayed `None`, and GPUI collects a media row for painting
+only when `height_lh` is `Some`. Nothing was ever measured, so nothing
+was ever decoded.
+
+The pump measures now (`size_blocks`), on `spawn_blocking` because a
+probe is a file read. It needs pixels, and the host had none —
+`terminal_width` is columns, `viewport_height` is rows — so the drawing
+peer publishes `Action::SetCellMetrics { row_px, col_px }` on change, and
+the host multiplies `col_px` by the pane's column count. Design §7.1.
+
+Three things fell out of it worth naming:
+
+- **No metrics ⇒ no file is read.** The TUI draws alt text and publishes
+  nothing, so it keeps the provisional reservation and never opens an
+  image. It is listed in the TUI's action band so the decision is
+  recorded rather than merely absent.
+- **A failed probe is an answer.** One row, for the alt text, not eight
+  held for a picture that is not coming (`UNREADABLE_ROWS`).
+- **The single-flight guard had to learn about geometry.** Keyed on
+  `(buffer, version)`, a resize changed neither, so the staleness check
+  let the re-measure through and the guard turned it straight back. The
+  resize test caught it; the key is `(buffer, version, geometry)` now.
 
 ### IM.8 — docs, ledger, site nav ✅ (2026-08-25)
 

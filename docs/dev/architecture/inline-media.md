@@ -4,9 +4,20 @@
 > alternatives, paramount-goal alignment. Sequencing lives in
 > [`../operations/slice-plans/archive/inline-media.md`](../operations/slice-plans/archive/inline-media.md).
 
-**Status: design only.** Nothing here is built. This fragment exists
-because Path 4 was pulled back from post-1.0 (2026-08-24) and the
-reasons it was deferred deserve an answer rather than a reversal.
+**Status: built** (IM.0–IM.8, 2026-08-25; IM.7a, 2026-09-24). This
+fragment was written while Path 4 was still design-only, after it was
+pulled back from post-1.0 (2026-08-24) and the reasons it had been
+deferred deserved an answer rather than a reversal. The contracts below
+are what shipped; the sequencing is in the archived slice plan.
+
+Two of them shipped **unwired**, and both are worth recording because
+they failed the same way — every layer green on its own, and nothing that
+asked for the end result. No `MediaVirtualRowProvider` was ever
+constructed, so the block cache had no reader; and `probe` /
+`block_geometry` had no caller at all, so `intrinsic` and `height_lh`
+stayed `None` and the drawing peer skipped every block as unresolved. An
+inline image therefore reserved eight blank rows and showed its alt text,
+from August until IM.7a.
 
 ## 1. What this is
 
@@ -296,6 +307,27 @@ The guest names a file and a line. The **host** resolves the intrinsic
 size, computes rows and `height_lh`, and builds the virtual rows — so
 sizing policy stays in one place and a plugin cannot reserve arbitrary
 vertical space or paint outside its block.
+
+### 7.1 How the host learns a pixel (IM.7a)
+
+`block_geometry` needs a line height and a pane width **in pixels**, and
+the host has neither: `terminal_width` is columns and `viewport_height`
+is rows. The drawing peer publishes its *cell* geometry —
+`Action::SetCellMetrics { row_px, col_px }` — and the host multiplies
+`col_px` by the pane's column count, which it already receives per pane.
+Two scalars rather than a per-pane pixel rectangle, sent on change rather
+than per frame.
+
+It is also the gate on the whole sizing pass. A peer that publishes no
+metrics gets the provisional reservation and **no image file is read at
+all** — which is the TUI, whose entire rendering of a block is the alt
+text and which has nothing to learn from a header. The probe itself is a
+file read on `spawn_blocking`, never on the actor thread and never on the
+LSP runtime's async threads.
+
+A measurement that *fails* is an answer, not a pending one: a missing or
+undecodable file reserves one row, for the alt text to sit in, rather
+than holding eight blank ones for a picture that is not coming.
 
 The guest never sends pixels. Beyond avoiding a large copy across the
 boundary per image, this keeps `fs:read` gating host-side: the guest names

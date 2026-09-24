@@ -98,6 +98,10 @@ lattice-theme = { path = "../lattice-theme" }
 # renderers (S3 TUI, S4 GPU). See
 # `docs/dev/architecture/cell-grid-renderer.md`.
 lattice-cells = { path = "../lattice-cells" }
+# IM.7a: header-read sizing for inline media. The HOST computes a block's
+# rows and `height_lh` (`inline-media.md` §7), so the probe lives here rather
+# than in whichever renderer happens to draw the pixels.
+lattice-media = { path = "../lattice-media" }
 # D.2.a (2026-05-28): diff-subsystem skeleton. `DiffSubsystem`
 # holds per-buffer `DiffSession` registry; sessions wrap
 # `lattice-diff`'s `HunkIndex` in `ArcSwap` for RCU-published
@@ -197,6 +201,10 @@ fancy-regex = { workspace = true }
 memchr = { workspace = true }
 
 [dev-dependencies]
+# IM.7a: `wasm_media_rows.rs` writes real PNGs so the sizing pass has genuine
+# headers to read. Same codec set as `lattice-media`, which is what actually
+# probes them.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Phase 5.8.AF.6 / Slice X2.9 (gut + rename B4.2): overlay worker
 # bench (`benches/overlay_worker.rs`) needs criterion + a real
 # `Syntax` instance to feed the worker recompute path.

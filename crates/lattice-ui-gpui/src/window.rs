@@ -1138,6 +1138,13 @@ pub(crate) struct EditorView {
     /// pane's `EditorElement`. Written only by the media landing (off the UI
     /// thread's critical path); read by `paint`, which never loads.
     media_pixels: std::sync::Arc<crate::editor_element::MediaPixels>,
+    /// IM.7a: last `(row_px, col_px)` published to the host, so the metrics
+    /// are sent on CHANGE rather than every frame. Same diff-then-send
+    /// discipline as `set_pane_viewport` above it, and for the same reason:
+    /// an unconditional per-frame dispatch is an actor RPC plus a full
+    /// `publish_render_state` at 60fps for a field that only moves on a
+    /// resize or a font change.
+    last_cell_metrics: Option<(f32, f32)>,
     pub(crate) app: GpuiApp,
     focus_handle: FocusHandle,
     /// Perf plan A.3: per-frame ensure-work delta cache.
@@ -1216,6 +1223,7 @@ impl EditorView {
         .detach();
         Self {
             media_pixels: Default::default(),
+            last_cell_metrics: None,
             app,
             focus_handle: cx.focus_handle(),
             ensure_gate: EnsureGateCache::default(),
@@ -3660,6 +3668,28 @@ impl Render for EditorView {
             if needs_update {
                 self.app.set_pane_viewport(*idx, *rows, *cols);
             }
+        }
+        // IM.7a: publish this peer's CELL geometry, so the host can size an
+        // inline media block. `block_geometry` wants a line height and a pane
+        // width in pixels; the host has neither (`terminal_width` is columns,
+        // `viewport_height` is rows), and combining these two scalars with
+        // the pane column count just published above gives it both.
+        //
+        // AFTER the pane loop, deliberately: the host multiplies `col_px` by
+        // the pane's column count, so sending the metrics first would size
+        // one refresh against the previous frame's pane width.
+        //
+        // The TUI publishes nothing here and is meant not to — it draws alt
+        // text, so the host keeps the provisional reservation and reads no
+        // image header at all.
+        let cell_metrics = (estimated_row_px, glyph_advance_px);
+        if self.last_cell_metrics != Some(cell_metrics) {
+            self.app
+                .dispatch_action(lattice_host::action::Action::SetCellMetrics {
+                    row_px: cell_metrics.0,
+                    col_px: cell_metrics.1,
+                });
+            self.last_cell_metrics = Some(cell_metrics);
         }
         // total_rows + the old chrome_rows / new_viewport
         // arithmetic retires; `set_pane_viewport` carries the

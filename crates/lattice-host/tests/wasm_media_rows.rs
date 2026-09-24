@@ -21,7 +21,10 @@ use std::time::Duration;
 
 use lattice_core::Document as CoreDocument;
 use lattice_host::editor::Editor;
-use lattice_host::wasm_media::{PROVISIONAL_ROWS, WasmMediaState, media_virtual_row_provider_id};
+use lattice_host::per_buffer_cache::PerBufferCacheExt;
+use lattice_host::wasm_media::{
+    PROVISIONAL_ROWS, UNREADABLE_ROWS, WasmMediaState, media_virtual_row_provider_id,
+};
 use lattice_mode::{
     AsyncMediaSource, MediaBlockRequest, MediaFuture, MediaSourceRegistry,
     MediaSourceRegistryHandle,
@@ -50,12 +53,32 @@ impl AsyncMediaSource for StubProducer {
 }
 
 fn block_at(line: u32) -> MediaBlockRequest {
+    block_for(line, std::path::PathBuf::from("/tmp/shot.png"))
+}
+
+fn block_for(line: u32, path: std::path::PathBuf) -> MediaBlockRequest {
     MediaBlockRequest {
         anchor_line: line,
-        path: std::path::PathBuf::from("/tmp/shot.png"),
+        path,
         alt: Some("a shot".into()),
         fit: lattice_cells::MediaFit::Contain,
     }
+}
+
+/// A real PNG, so the sizing pass has a genuine header to read.
+fn write_png(dir: &std::path::Path, name: &str, w: u32, h: u32) -> std::path::PathBuf {
+    let path = dir.join(name);
+    image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]))
+        .save(&path)
+        .expect("write png");
+    path
+}
+
+/// Publish the cell geometry a drawing peer would, and give the pane a width
+/// in columns, so `media_geometry` resolves.
+fn with_metrics(editor: &mut Editor, row_px: f32, col_px: f32, cols: u32) {
+    editor.pane_tree.active_mut().viewport_width = cols;
+    editor.dispatch(lattice_host::action::Action::SetCellMetrics { row_px, col_px });
 }
 
 fn registry_with(producer: StubProducer) -> MediaSourceRegistryHandle {
@@ -71,6 +94,34 @@ async fn settle(editor: &Editor) {
         .await
         .is_ok()
     {}
+}
+
+/// Wait for the cache to hold blocks measured against `geometry`.
+///
+/// A single `async_landed` await is not enough here: by the second refresh
+/// there are other async producers in the editor firing the same wake, so one
+/// notification proves only that *something* landed. Poll the thing actually
+/// under test instead — this is an eventually-consistent path by design, and
+/// the assertion should say so.
+async fn measured_at(
+    editor: &Editor,
+    buffer: lattice_core::BufferId,
+    geometry: (f32, f32),
+) -> bool {
+    for _ in 0..40 {
+        if editor
+            .wasm_media
+            .cache
+            .get_for(buffer)
+            .and_then(|c| c.geometry)
+            == Some(geometry)
+        {
+            return true;
+        }
+        let _ =
+            tokio::time::timeout(Duration::from_millis(50), editor.async_landed.notified()).await;
+    }
+    false
 }
 
 async fn landed(editor: &Editor) -> bool {
@@ -108,6 +159,188 @@ async fn a_produced_block_becomes_virtual_rows_without_a_keystroke() {
         rows.iter()
             .all(|r| r.anchor_line == 2 && r.kind == lattice_cells::VirtualRowKind::MediaBlock)
     );
+}
+
+/// IM.7a — a block is MEASURED, not left provisional.
+///
+/// Until this landed, `intrinsic` and `height_lh` stayed `None` forever:
+/// `lattice_media::probe` and `block_geometry` had no production caller at
+/// all. GPUI collects a media row for painting only when `height_lh` is
+/// `Some`, so no block was ever collected, no decode was ever dispatched, and
+/// every inline image in the editor was eight blank rows with its file name
+/// in the middle.
+#[tokio::test]
+async fn a_measured_block_carries_its_intrinsic_size_and_drawn_height() {
+    let dir = tempfile::tempdir().unwrap();
+    // 200 wide in a 400px pane: `Contain` never upscales, so it draws at its
+    // natural 100px, which is five 20px line-heights.
+    let png = write_png(dir.path(), "shot.png", 200, 100);
+
+    let mut editor = Editor::boot(CoreDocument::from_text("a\nb\n"));
+    let buffer = editor.document_buffer_id;
+    with_metrics(&mut editor, 20.0, 10.0, 40);
+    editor.wasm_media = WasmMediaState::with_registry(registry_with(StubProducer {
+        id: 1,
+        blocks: vec![block_for(0, png)],
+    }));
+    settle(&editor).await;
+
+    editor.maybe_refresh_wasm_media();
+    assert!(landed(&editor).await);
+
+    let rows = editor.virtual_row_providers.snapshot(buffer)[0].collect();
+    let block = rows[0]
+        .media
+        .as_ref()
+        .expect("a media row carries its block");
+    assert_eq!(block.intrinsic, Some((200, 100)), "the header was read");
+    assert_eq!(
+        block.height_lh,
+        Some(5.0),
+        "100px drawn at a 20px line height is five line-heights"
+    );
+    assert_eq!(
+        rows.len(),
+        5,
+        "the reservation follows the measurement, not PROVISIONAL_ROWS"
+    );
+}
+
+/// A wider pane draws a `Contain` image no larger — it never upscales — but a
+/// NARROWER one shrinks it, and the reservation has to follow. Otherwise a
+/// resize leaves the image drawn inside a box reserved for the old size.
+#[tokio::test]
+async fn resizing_the_pane_re_measures_the_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = write_png(dir.path(), "shot.png", 400, 200);
+
+    let mut editor = Editor::boot(CoreDocument::from_text("a\nb\n"));
+    let buffer = editor.document_buffer_id;
+    // 400px pane, 400px-wide image: drawn at natural size, 200px = 10 rows.
+    with_metrics(&mut editor, 20.0, 10.0, 40);
+    editor.wasm_media = WasmMediaState::with_registry(registry_with(StubProducer {
+        id: 1,
+        blocks: vec![block_for(0, png)],
+    }));
+    settle(&editor).await;
+    editor.maybe_refresh_wasm_media();
+    assert!(landed(&editor).await);
+    assert_eq!(
+        editor.virtual_row_providers.snapshot(buffer)[0]
+            .collect()
+            .len(),
+        10
+    );
+
+    // Halve the pane: the image scales to 200×100, which is five rows.
+    with_metrics(&mut editor, 20.0, 10.0, 20);
+    editor.maybe_refresh_wasm_media();
+    assert!(
+        measured_at(&editor, buffer, (20.0, 200.0)).await,
+        "a resize must re-measure; the document version did not change"
+    );
+    assert_eq!(
+        editor.virtual_row_providers.snapshot(buffer)[0]
+            .collect()
+            .len(),
+        5
+    );
+}
+
+/// A measurement is taken once per path, not once per keystroke.
+///
+/// The pump refreshes on every document version, so a naive sizing pass opens
+/// every referenced image on every keypress. Proven by DELETING the file after
+/// the first measurement: a block that still knows its size cannot have
+/// re-read the header.
+#[tokio::test]
+async fn a_measurement_is_not_retaken_on_every_refresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = write_png(dir.path(), "shot.png", 200, 100);
+
+    let mut editor = Editor::boot(CoreDocument::from_text("a\nb\n"));
+    let buffer = editor.document_buffer_id;
+    with_metrics(&mut editor, 20.0, 10.0, 40);
+    editor.wasm_media = WasmMediaState::with_registry(registry_with(StubProducer {
+        id: 1,
+        blocks: vec![block_for(0, png.clone())],
+    }));
+    settle(&editor).await;
+    editor.maybe_refresh_wasm_media();
+    assert!(landed(&editor).await);
+    assert_eq!(
+        editor.virtual_row_providers.snapshot(buffer)[0]
+            .collect()
+            .len(),
+        5
+    );
+
+    std::fs::remove_file(&png).unwrap();
+    // A resize forces a fresh sizing pass without touching the document.
+    with_metrics(&mut editor, 20.0, 10.0, 20);
+    editor.maybe_refresh_wasm_media();
+    assert!(measured_at(&editor, buffer, (20.0, 200.0)).await);
+
+    let rows = editor.virtual_row_providers.snapshot(buffer)[0].collect();
+    assert_eq!(
+        rows[0].media.as_ref().unwrap().intrinsic,
+        Some((200, 100)),
+        "the intrinsic size was remembered, so the header was not re-read"
+    );
+    assert_eq!(rows.len(), 5, "and the re-fit is arithmetic on it");
+}
+
+/// A file that cannot be measured is not a pending answer — it IS the answer.
+/// One row, so the alt text has somewhere to sit, rather than eight blank
+/// ones held for a picture that is never coming.
+#[tokio::test]
+async fn an_unreadable_file_reserves_one_row_for_its_alt_text() {
+    let mut editor = Editor::boot(CoreDocument::from_text("a\nb\n"));
+    let buffer = editor.document_buffer_id;
+    with_metrics(&mut editor, 20.0, 10.0, 40);
+    editor.wasm_media = WasmMediaState::with_registry(registry_with(StubProducer {
+        id: 1,
+        blocks: vec![block_for(0, "/nowhere/missing.png".into())],
+    }));
+    settle(&editor).await;
+
+    editor.maybe_refresh_wasm_media();
+    assert!(landed(&editor).await);
+
+    let rows = editor.virtual_row_providers.snapshot(buffer)[0].collect();
+    assert_eq!(rows.len(), usize::from(UNREADABLE_ROWS));
+    let block = rows[0].media.as_ref().unwrap();
+    assert_eq!(
+        block.height_lh, None,
+        "unmeasured, so the peer draws alt text"
+    );
+    assert!(!block.alt.is_empty());
+}
+
+/// A peer that publishes no cell metrics — the TUI — keeps the provisional
+/// reservation AND reads no image header at all. The path here does not
+/// exist: if anything probed it, the block would have come back as
+/// `UNREADABLE_ROWS`.
+#[tokio::test]
+async fn without_cell_metrics_nothing_is_measured_and_no_file_is_read() {
+    let mut editor = Editor::boot(CoreDocument::from_text("a\nb\n"));
+    let buffer = editor.document_buffer_id;
+    editor.wasm_media = WasmMediaState::with_registry(registry_with(StubProducer {
+        id: 1,
+        blocks: vec![block_for(0, "/nowhere/missing.png".into())],
+    }));
+    settle(&editor).await;
+
+    editor.maybe_refresh_wasm_media();
+    assert!(landed(&editor).await);
+
+    let rows = editor.virtual_row_providers.snapshot(buffer)[0].collect();
+    assert_eq!(
+        rows.len(),
+        usize::from(PROVISIONAL_ROWS),
+        "no metrics means no measurement, so the provisional reservation stands"
+    );
+    assert_eq!(rows[0].media.as_ref().unwrap().intrinsic, None);
 }
 
 /// A second refresh must not register a second provider. The registry refuses

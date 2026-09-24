@@ -808,6 +808,23 @@ pub enum Action {
     /// Mirror the TUI's terminal width into editor state so
     /// status-line layout matches what crossterm reported.
     SetTerminalWidth(u16),
+    /// IM.7a — the drawing peer's CELL geometry in pixels: one row's
+    /// height and one column's advance.
+    ///
+    /// The host sizes an inline media block (`block_geometry` wants a line
+    /// height and a pane width, both in pixels) and has no other way to
+    /// learn either — `terminal_width` is columns and `viewport_height` is
+    /// rows. Combined with the pane's existing column count this yields the
+    /// pane's pixel width, so this is two numbers rather than a per-pane
+    /// channel.
+    ///
+    /// A peer that cannot draw images never sends it, and the host then
+    /// reserves the provisional row count and reads no image file at all.
+    /// That is the TUI: it shows alt text, which needs no header read.
+    SetCellMetrics {
+        row_px: f32,
+        col_px: f32,
+    },
     /// Clear `pending_redraw` after the renderer has cleared the
     /// terminal buffer in response to `<C-l>` (`RedrawScreen`).
     AcknowledgeRedraw,

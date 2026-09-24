@@ -256,6 +256,20 @@ pub struct PendingTransientArgument {
     pub name: String,
 }
 
+/// IM.7a — the drawing peer's cell geometry, in pixels.
+///
+/// Two numbers rather than a pane-width channel: combined with a pane's
+/// column count (already published per pane) they give that pane's pixel
+/// width, which is what `lattice_media::block_geometry` needs alongside the
+/// line height.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellMetrics {
+    /// One display row's height in pixels — GPUI's `font_size * 1.3`.
+    pub row_px: f32,
+    /// One column's advance in pixels.
+    pub col_px: f32,
+}
+
 /// Renderer-agnostic editor state.
 ///
 /// The renderer-agnostic half of every editor App. Each
@@ -1555,6 +1569,13 @@ pub struct Editor {
     /// which pane is horizontally adjacent). `None` until
     /// the renderer first records it.
     pub terminal_width: Option<u16>,
+    /// IM.7a: the drawing peer's cell geometry in pixels, published through
+    /// [`crate::action::Action::SetCellMetrics`].
+    ///
+    /// `None` until a peer that draws images reports it, and forever on one
+    /// that does not — which is how a media block stays at its provisional
+    /// reservation in the TUI without the host reading any image header.
+    pub cell_metrics: Option<CellMetrics>,
     /// Which buffer the input pipeline currently routes to.
     /// When a help overlay is open this is `Help`; otherwise
     /// `Document`. Denormalized from

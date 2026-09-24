@@ -10,6 +10,7 @@
 //! reservation is built here, host-side, from a size the host resolves — the
 //! guest never says how tall anything is.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19,11 +20,26 @@ use lattice_mode::{MediaBlockRequest, MediaSourceRegistryHandle};
 use crate::editor::Editor;
 use crate::per_buffer_cache::{PerBufferCache, PerBufferCacheExt};
 
+/// `(line_height_px, pane_width_px)` — what sizing a block needs, and the
+/// only pixel geometry the host holds. `None` means no peer that draws
+/// images has published its cell metrics.
+pub type MediaGeometry = (f32, f32);
+
+/// What a refresh is single-flighted on: which buffer, at which document
+/// version, measured against which geometry. The geometry is part of the key
+/// because a resize changes neither of the other two.
+type RefreshKey = (BufferId, u64, Option<MediaGeometry>);
+
 /// Per-buffer cache of a media plugin's blocks, resolved and sized.
 #[derive(Debug, Clone, Default)]
 pub struct WasmMediaCache {
     /// Document version the blocks were produced against — the staleness key.
     pub document_version: u64,
+    /// IM.7a: the geometry the blocks were SIZED against, so a window resize
+    /// re-measures. Without this a block keeps the row count it earned at the
+    /// old pane width: widen the window and a `Contain` image is drawn larger
+    /// inside a box still reserved for the smaller one.
+    pub geometry: Option<MediaGeometry>,
     /// One entry per block: the descriptor plus the rows it reserves.
     pub blocks: Vec<(Arc<lattice_cells::MediaBlock>, u32, u16)>,
 }
@@ -36,8 +52,14 @@ pub struct WasmMediaState {
     pub registry: Option<MediaSourceRegistryHandle>,
     /// Off-keystroke paint gate, bumped on every cache write.
     pub generation: Arc<AtomicU64>,
-    /// Single-flight guard for a `(buffer, version)` already in flight.
-    pending: Option<(BufferId, u64)>,
+    /// Single-flight guard for a refresh already in flight.
+    ///
+    /// Keyed on the GEOMETRY as well as the buffer and version: a resize
+    /// changes neither of the other two, so a version-only key made the
+    /// re-measure unreachable — the staleness check let it through and this
+    /// guard turned it straight back, and an image kept the row count it
+    /// earned at the old pane width for the rest of the session.
+    pending: Option<RefreshKey>,
     /// Buffers this state has registered a [`MediaVirtualRowProvider`] for, so
     /// registration happens once per buffer and can be undone when the last
     /// producer goes away.
@@ -65,6 +87,15 @@ impl WasmMediaState {
 /// arranged to avoid. Eight rows is roughly a small figure, so the common case
 /// settles with little or no movement.
 pub const PROVISIONAL_ROWS: u16 = 8;
+
+/// Rows reserved for a block whose file could not be measured.
+///
+/// One, not [`PROVISIONAL_ROWS`]: a header read that failed is not a pending
+/// answer, it IS the answer — the file is missing, unreadable or not an image
+/// this build decodes, and no later frame will improve on it. The alt text
+/// stands in, and it needs one row. Eight blank rows around it would reserve
+/// most of a screen for a picture that is never coming.
+pub const UNREADABLE_ROWS: u16 = 1;
 
 impl Editor {
     /// IM.7 per-tick media refresh pump.
@@ -114,21 +145,43 @@ impl Editor {
         let version = snapshot.version;
         let line_count = snapshot.buffer.content_line_count();
 
+        let geometry = self.media_geometry();
         let cache_current = self
             .wasm_media
             .cache
             .get_for(buffer_id)
-            .map(|c| c.document_version == version)
+            .map(|c| c.document_version == version && c.geometry == geometry)
             .unwrap_or(false);
         if !registry_changed && cache_current {
             return;
         }
-        if !registry_changed && self.wasm_media.pending == Some((buffer_id, version)) {
+        if !registry_changed && self.wasm_media.pending == Some((buffer_id, version, geometry)) {
             return;
         }
 
         self.wasm_media.last_registry_epoch = epoch;
-        self.wasm_media.pending = Some((buffer_id, version));
+        self.wasm_media.pending = Some((buffer_id, version, geometry));
+
+        // Measurements already taken, keyed by path. The pump refreshes on
+        // every document version — that is, on every keystroke in the buffer
+        // — so without this an org file with twenty images would open twenty
+        // files per keypress. A header read is cheap; doing it per keystroke
+        // per image is not, and it is I/O nobody asked for.
+        //
+        // Carried across a RESIZE too: an intrinsic size does not depend on
+        // the pane, so a resize re-runs `block_geometry`, which is
+        // arithmetic, and reads nothing.
+        let known: std::collections::HashMap<PathBuf, (u32, u32)> = self
+            .wasm_media
+            .cache
+            .get_for(buffer_id)
+            .map(|c| {
+                c.blocks
+                    .iter()
+                    .filter_map(|(b, _, _)| Some((b.path()?.to_path_buf(), b.intrinsic?)))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         self.ensure_media_virtual_rows(buffer_id);
 
@@ -165,24 +218,104 @@ impl Editor {
             if !any_ok {
                 return;
             }
-            let blocks = merged
-                .into_iter()
-                .map(|req| {
-                    let mut block = lattice_cells::MediaBlock::new(req.path, req.alt);
-                    block.fit = req.fit;
-                    (Arc::new(block), req.anchor_line, PROVISIONAL_ROWS)
-                })
-                .collect();
+            // IM.7a — measure each block, then size it. `inline-media.md` §7:
+            // the HOST resolves the intrinsic size and computes rows +
+            // `height_lh`, so sizing policy lives in one place and both peers
+            // reserve the same rows.
+            //
+            // On `spawn_blocking` because a probe is a FILE READ. This task
+            // runs on the LSP runtime beside other async work, and a batch of
+            // header reads parked on one of its threads is the pattern the
+            // provider rules exist to forbid.
+            let blocks = tokio::task::spawn_blocking(move || size_blocks(merged, geometry, &known))
+                .await
+                .unwrap_or_default();
             cache_slot.insert_for(
                 buffer_id,
                 WasmMediaCache {
                     document_version: version,
+                    geometry,
                     blocks,
                 },
             );
             generation.fetch_add(1, Ordering::Relaxed);
             async_landed.notify_one();
         });
+    }
+}
+
+/// IM.7a — measure each request and turn it into a sized block.
+///
+/// Off the actor thread and off the LSP runtime's async threads (the caller
+/// puts this on `spawn_blocking`), because every `probe` is a file read.
+///
+/// `geometry` is `(line_height_px, pane_width_px)` from the drawing peer.
+/// `None` — no peer published cell metrics, which is the TUI — means the
+/// block keeps its provisional reservation and **no file is read at all**:
+/// a renderer that draws alt text has nothing to learn from an image header.
+fn size_blocks(
+    requests: Vec<MediaBlockRequest>,
+    geometry: Option<MediaGeometry>,
+    known: &std::collections::HashMap<PathBuf, (u32, u32)>,
+) -> Vec<(Arc<lattice_cells::MediaBlock>, u32, u16)> {
+    requests
+        .into_iter()
+        .map(|req| {
+            let mut block = lattice_cells::MediaBlock::new(req.path.clone(), req.alt);
+            block.fit = req.fit;
+            let rows = match geometry {
+                None => PROVISIONAL_ROWS,
+                Some((line_height_px, pane_width_px)) => match known
+                    .get(&req.path)
+                    .copied()
+                    .map(Ok)
+                    .unwrap_or_else(|| lattice_media::probe(&req.path))
+                {
+                    Ok(intrinsic) => {
+                        let (rows, height_lh) = lattice_media::block_geometry(
+                            intrinsic,
+                            req.fit,
+                            line_height_px,
+                            pane_width_px,
+                        );
+                        block.intrinsic = Some(intrinsic);
+                        block.height_lh = Some(height_lh);
+                        rows
+                    }
+                    Err(err) => {
+                        // `debug!`, not `warn!`: a buffer full of links to
+                        // images that are not there would otherwise log on
+                        // every refresh forever. The alt text is the visible
+                        // report, and it names the file.
+                        tracing::debug!(
+                            path = %req.path.display(),
+                            error = %err,
+                            "inline media could not be measured; alt text stands in"
+                        );
+                        UNREADABLE_ROWS
+                    }
+                },
+            };
+            (Arc::new(block), req.anchor_line, rows)
+        })
+        .collect()
+}
+
+impl Editor {
+    /// IM.7a — `(line_height_px, pane_width_px)` for the active pane, if a
+    /// peer that draws images has published its cell metrics.
+    ///
+    /// The pane's width comes from the column count it already publishes,
+    /// multiplied by the column advance — which is why the metric channel is
+    /// two scalars rather than a per-pane pixel rectangle.
+    fn media_geometry(&self) -> Option<MediaGeometry> {
+        let m = self.cell_metrics?;
+        let cols = match self.pane_tree.active().viewport_width {
+            0 => u32::from(self.terminal_width?),
+            w => w,
+        };
+        let pane_width_px = cols as f32 * m.col_px;
+        (pane_width_px > 0.0).then_some((m.row_px, pane_width_px))
     }
 }
 
@@ -328,6 +461,7 @@ mod tests {
             BufferId(1),
             WasmMediaCache {
                 document_version: 1,
+                geometry: None,
                 blocks,
             },
         );

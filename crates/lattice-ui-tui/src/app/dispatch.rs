@@ -521,6 +521,12 @@ impl App {
             | Action::EnsureCursorVisible
             | Action::DismissPopup
             | Action::SetTerminalWidth(_)
+            // IM.7a: the TUI never DISPATCHES this one — it draws alt text,
+            // not pixels, so it has no cell geometry worth publishing and
+            // the host reserves the provisional rows without reading a
+            // single image header. Listed here so the exhaustiveness check
+            // records the decision rather than the absence.
+            | Action::SetCellMetrics { .. }
             | Action::AcknowledgeRedraw
             // W.6 (2026-06-07): display-line motions (gj/gk/g0/g$)
             // and insert-mode entry variants (I/A) — host-resident

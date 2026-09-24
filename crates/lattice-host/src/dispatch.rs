@@ -11715,34 +11715,29 @@ impl Editor {
         // SEQUENCE. Re-translating the final chord alone is why a declined
         // `<leader>oJ` ran vim's `J` and joined two lines.
         if std::mem::take(&mut out.declined) {
-            let binding_mode = match self.modal {
-                lattice_grammar::ModalState::Insert => crate::keymap::BindingMode::Insert,
-                lattice_grammar::ModalState::Visual(_) | lattice_grammar::ModalState::Select(_) => {
-                    crate::keymap::BindingMode::Visual
-                }
-                lattice_grammar::ModalState::OperatorPending => {
-                    crate::keymap::BindingMode::OperatorPending
-                }
-                lattice_grammar::ModalState::Replace => crate::keymap::BindingMode::Replace,
-                _ => crate::keymap::BindingMode::Normal,
-            };
-            let mut layers: Vec<lattice_mode::ModeId> = active_minors.clone();
+            // The walk itself — which layer to drop, that the prefix survives,
+            // when to stop — lives in `decline::DeclinePeel`, because this is
+            // not the only caller. The GPUI peer had no peel at all and every
+            // key auto-pair binds was dead there; the shared walk is what stops
+            // the three copies drifting again.
+            let mut peel = crate::decline::DeclinePeel::new(
+                self.modal,
+                prefix_before.clone(),
+                chord,
+                active_minors.clone(),
+            );
             let mut last = action.clone();
             // Bounded by the number of active mode layers: each pass removes
             // exactly one, and a pass that finds no mode layer stops.
             loop {
-                match crate::keymap_normal::binding_layer_mode(
-                    &self.keymap,
-                    binding_mode,
-                    &prefix_before,
-                    &chord,
-                    &layers,
-                ) {
-                    Some(declining) => layers.retain(|m| *m != declining),
-                    // The winner came from Builtin / User — nothing left to
-                    // peel, and those cannot decline.
-                    None => break,
-                }
+                // `None` ⇒ the winner came from Builtin / User, which cannot
+                // decline, so there is nothing left to peel.
+                let Some(layers) = peel
+                    .peel(&self.keymap)
+                    .map(<[lattice_mode::ModeId]>::to_vec)
+                else {
+                    break;
+                };
                 let mut fresh_partial: Vec<crate::chord::KeyChord> = prefix_before.clone();
                 let fallthrough = crate::input::translate(
                     crate::input::TranslateContext {
@@ -11782,7 +11777,7 @@ impl Editor {
                 if !std::mem::take(&mut out.declined) {
                     break;
                 }
-                if layers.is_empty() {
+                if peel.exhausted() {
                     break;
                 }
             }

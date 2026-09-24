@@ -17,6 +17,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use lattice_core::Document as CoreDocument;
@@ -288,6 +289,68 @@ async fn a_measurement_is_not_retaken_on_every_refresh() {
         "the intrinsic size was remembered, so the header was not re-read"
     );
     assert_eq!(rows.len(), 5, "and the re-fit is arithmetic on it");
+}
+
+/// A refresh that produces the same blocks must not ask for a repaint.
+///
+/// The pump runs on every document version — every keystroke — and a buffer's
+/// pictures are the same after almost all of them. Bumping the generation
+/// moves the provider's fingerprint, which rebuilds the virtual rows, and the
+/// wake publishes render state and requests a paint. Doing that per keystroke
+/// for an unchanged image is the per-keystroke work paramount #1 forbids.
+#[tokio::test]
+async fn an_unchanged_refresh_does_not_bump_the_paint_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = write_png(dir.path(), "shot.png", 200, 100);
+
+    let mut editor = Editor::boot(CoreDocument::from_text("a\nb\n"));
+    let buffer = editor.document_buffer_id;
+    with_metrics(&mut editor, 20.0, 10.0, 40);
+    editor.wasm_media = WasmMediaState::with_registry(registry_with(StubProducer {
+        id: 1,
+        blocks: vec![block_for(0, png)],
+    }));
+    settle(&editor).await;
+    editor.maybe_refresh_wasm_media();
+    assert!(landed(&editor).await);
+    let generation = editor.wasm_media.generation.load(Ordering::Relaxed);
+
+    // A fresh document version with the SAME image at the same anchor.
+    let _ = editor
+        .document
+        .apply_edit(lattice_protocol::edit::Edit::insert(
+            lattice_protocol::position::Position::new(1, 0),
+            "c\n",
+        ));
+    editor.maybe_refresh_wasm_media();
+    assert!(
+        cached_version_advanced(&editor, buffer).await,
+        "the refresh must still run and re-stamp the version"
+    );
+    assert_eq!(
+        editor.wasm_media.generation.load(Ordering::Relaxed),
+        generation,
+        "same blocks ⇒ no fingerprint move, no rebuild, no paint request"
+    );
+}
+
+/// Wait for the cache to carry a document version newer than the buffer had
+/// when the last refresh landed.
+async fn cached_version_advanced(editor: &Editor, buffer: lattice_core::BufferId) -> bool {
+    let want = editor.document.snapshot().version;
+    for _ in 0..40 {
+        if editor
+            .wasm_media
+            .cache
+            .get_for(buffer)
+            .is_some_and(|c| c.document_version == want)
+        {
+            return true;
+        }
+        let _ =
+            tokio::time::timeout(Duration::from_millis(50), editor.async_landed.notified()).await;
+    }
+    false
 }
 
 /// A file that cannot be measured is not a pending answer — it IS the answer.

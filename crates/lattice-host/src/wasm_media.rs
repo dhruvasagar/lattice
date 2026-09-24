@@ -230,6 +230,18 @@ impl Editor {
             let blocks = tokio::task::spawn_blocking(move || size_blocks(merged, geometry, &known))
                 .await
                 .unwrap_or_default();
+            // Did anything actually change? The pump runs on every document
+            // version — that is, on every keystroke — and a buffer's blocks
+            // are the same after almost all of them. Writing the cache is
+            // cheap and has to happen (the version stamp is what stops the
+            // next tick re-running), but the WAKE is not: bumping the
+            // generation moves the provider's fingerprint, which rebuilds the
+            // virtual rows, and `notify_one` publishes render state and asks
+            // for a paint. Doing that per keystroke for an unchanged picture
+            // is exactly the per-keystroke work paramount #1 forbids.
+            let unchanged = cache_slot
+                .get_for(buffer_id)
+                .is_some_and(|prior| same_blocks(&prior.blocks, &blocks));
             cache_slot.insert_for(
                 buffer_id,
                 WasmMediaCache {
@@ -238,10 +250,27 @@ impl Editor {
                     blocks,
                 },
             );
-            generation.fetch_add(1, Ordering::Relaxed);
-            async_landed.notify_one();
+            if !unchanged {
+                generation.fetch_add(1, Ordering::Relaxed);
+                async_landed.notify_one();
+            }
         });
     }
+}
+
+/// Are two sized block lists the same picture in the same place?
+///
+/// Compared by VALUE, not by `Arc` identity: every refresh builds fresh
+/// `MediaBlock`s, so pointer equality would report "changed" every time and
+/// defeat the whole check.
+fn same_blocks(
+    a: &[(Arc<lattice_cells::MediaBlock>, u32, u16)],
+    b: &[(Arc<lattice_cells::MediaBlock>, u32, u16)],
+) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|((ab, aa, ar), (bb, ba, br))| aa == ba && ar == br && **ab == **bb)
 }
 
 /// IM.7a — measure each request and turn it into a sized block.

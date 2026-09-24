@@ -44,6 +44,20 @@ image = { version = "0.25", default-features = false, features = [
   "gif",
   "webp",
 ] }
+# SVG is a vector format, so `image`'s raster decoders cannot touch it: an
+# `.svg` probed as a picture and failed, and the block fell back to alt text.
+# resvg brings its own `usvg` (parse + text layout) and `tiny-skia` (raster)
+# and re-exports both, so this one line is the whole dependency.
+#
+# It is the largest thing in this crate's tree and it is NOT free for a
+# TUI-only build, where gpui — which already pulls the same pinned 0.45 — is
+# absent. Taken deliberately: an SVG in a notes corpus is as ordinary as a
+# PNG, and a diagram that silently shows its filename instead of itself is
+# the failure this crate exists to prevent.
+resvg = { version = "0.45", default-features = false, features = [
+  "text",
+  "system-fonts",
+] }
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
 

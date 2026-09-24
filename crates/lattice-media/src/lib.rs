@@ -125,8 +125,76 @@ impl std::fmt::Display for MediaError {
 /// shows its alt text".
 pub const MAX_PIXELS: u64 = 64 * 1024 * 1024;
 
+/// True when `path` is an SVG, which is a document rather than a raster and
+/// takes an entirely different route through this crate.
+fn is_svg(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+}
+
+/// System fonts, loaded at most once.
+///
+/// SVG text is converted to paths at PARSE time, so a tree built without
+/// fonts silently drops every `<text>` element — a diagram renders with its
+/// boxes and none of its labels, which looks like a rendering bug rather than
+/// a missing font. Loading is slow enough (tens to hundreds of milliseconds,
+/// walking the system font directories) that it must happen once, and it is
+/// only ever reached from `decode`, which the callers run on a blocking
+/// thread.
+///
+/// `probe` deliberately does NOT take this path: a document's size comes from
+/// its root element, so measuring needs no fonts and must not pay for them.
+fn system_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
+    static FONTS: std::sync::OnceLock<std::sync::Arc<resvg::usvg::fontdb::Database>> =
+        std::sync::OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let mut db = resvg::usvg::fontdb::Database::new();
+            db.load_system_fonts();
+            std::sync::Arc::new(db)
+        })
+        .clone()
+}
+
+/// Parse an SVG into a `usvg` tree.
+///
+/// `with_fonts` decides whether `<text>` survives — see [`system_fonts`].
+/// `resources_dir` is the file's own directory, so an SVG that references a
+/// bitmap or a stylesheet beside it resolves relative to ITSELF rather than
+/// to wherever the editor was launched — the same rule the host applies to an
+/// org link, for the same reason.
+fn svg_tree(path: &Path, with_fonts: bool) -> Result<resvg::usvg::Tree, MediaError> {
+    let data = std::fs::read(path).map_err(|e| MediaError::Unreadable(e.to_string()))?;
+    let mut opt = resvg::usvg::Options {
+        resources_dir: path.parent().map(std::path::Path::to_path_buf),
+        ..Default::default()
+    };
+    if with_fonts {
+        opt.fontdb = system_fonts();
+    }
+    resvg::usvg::Tree::from_data(&data, &opt).map_err(|e| MediaError::Undecodable(e.to_string()))
+}
+
+/// An SVG's natural size, rounded UP to whole pixels.
+///
+/// Up, not nearest: a 24.2-pixel-wide drawing needs 25 pixels to hold it, and
+/// rounding down would clip a column.
+fn svg_size(tree: &resvg::usvg::Tree) -> (u32, u32) {
+    let size = tree.size();
+    (
+        size.width().ceil().max(1.0) as u32,
+        size.height().ceil().max(1.0) as u32,
+    )
+}
+
 /// A file's natural size, from its header alone.
 pub fn probe(path: &Path) -> Result<(u32, u32), MediaError> {
+    if is_svg(path) {
+        let (w, h) = svg_size(&svg_tree(path, /* with_fonts */ false)?);
+        guard_size(w, h)?;
+        return Ok((w, h));
+    }
     let reader = image::ImageReader::open(path)
         .map_err(|e| MediaError::Unreadable(e.to_string()))?
         .with_guessed_format()
@@ -149,6 +217,9 @@ pub fn decode(
     target: (u32, u32),
     format: PixelFormat,
 ) -> Result<DecodedImage, MediaError> {
+    if is_svg(path) {
+        return decode_svg(path, target, format);
+    }
     let (w, h) = probe(path)?;
     let img = image::ImageReader::open(path)
         .map_err(|e| MediaError::Unreadable(e.to_string()))?
@@ -175,6 +246,81 @@ pub fn decode(
         format,
         rgba: Arc::from(bytes.into_boxed_slice()),
     })
+}
+
+/// Rasterise an SVG straight to the size it will be drawn at.
+///
+/// The one place in this crate where scaling is not a loss. A raster is
+/// decoded at its natural size and resampled down; a vector is *rendered* at
+/// the target, so a diagram shown at 300px is as crisp as the same diagram
+/// shown at 3000. That is also why the render transform is built from the
+/// fitted size rather than the pixmap being resized afterwards.
+///
+/// [`fit_within`] still applies, so the never-upscale rule holds: a 24×24
+/// icon stays 24×24 rather than being blown across the pane. Faithful, and
+/// consistent with what the raster path does with the same picture.
+fn decode_svg(
+    path: &Path,
+    target: (u32, u32),
+    format: PixelFormat,
+) -> Result<DecodedImage, MediaError> {
+    let tree = svg_tree(path, /* with_fonts */ true)?;
+    let natural = svg_size(&tree);
+    guard_size(natural.0, natural.1)?;
+    let (tw, th) = fit_within(natural, target);
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(tw.max(1), th.max(1))
+        .ok_or_else(|| MediaError::Undecodable(format!("cannot allocate a {tw}x{th} pixmap")))?;
+    let size = tree.size();
+    let transform = resvg::tiny_skia::Transform::from_scale(
+        tw as f32 / size.width(),
+        th as f32 / size.height(),
+    );
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    // tiny-skia hands back PREMULTIPLIED RGBA, which is not what either of
+    // our formats is by default. The raster path premultiplies on the way to
+    // BGRA; this one is already premultiplied and only needs the channel
+    // swap — running `premultiply_to_bgra` here would multiply by alpha a
+    // second time and darken every soft edge.
+    let (w, h) = (pixmap.width(), pixmap.height());
+    let mut bytes = pixmap.take();
+    match format {
+        PixelFormat::BgraPremultiplied8 => swap_rb(&mut bytes),
+        PixelFormat::Rgba8 => unpremultiply(&mut bytes),
+    }
+    Ok(DecodedImage {
+        width: w,
+        height: h,
+        format,
+        rgba: Arc::from(bytes.into_boxed_slice()),
+    })
+}
+
+/// In-place channel swap: premultiplied RGBA8 → premultiplied BGRA8.
+///
+/// No arithmetic — the alpha has already been applied by the rasteriser.
+fn swap_rb(bytes: &mut [u8]) {
+    for px in bytes.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+}
+
+/// In-place premultiplied RGBA8 → straight RGBA8.
+///
+/// The inverse of what [`premultiply_to_bgra`] does to the colour channels,
+/// for the peers that want straight alpha (a terminal graphics protocol).
+/// `a == 0` keeps the pixel black rather than dividing by zero: a fully
+/// transparent pixel has no colour to recover.
+fn unpremultiply(bytes: &mut [u8]) {
+    for px in bytes.chunks_exact_mut(4) {
+        let a = px[3];
+        if a == 0 || a == 255 {
+            continue;
+        }
+        for c in &mut px[..3] {
+            *c = ((*c as u16 * 255 + (a as u16 / 2)) / a as u16).min(255) as u8;
+        }
+    }
 }
 
 /// In-place RGBA8 → premultiplied BGRA8.
@@ -414,6 +560,120 @@ mod tests {
         let buf = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]));
         buf.save(&path).expect("write png");
         path
+    }
+
+    fn write_svg(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("write svg");
+        path
+    }
+
+    /// A 40×20 drawing, opaque red, no text — so it renders identically with
+    /// or without fonts.
+    const RED_40X20: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">
+        <rect x="0" y="0" width="40" height="20" fill="#ff0000"/>
+    </svg>"##;
+
+    /// An SVG is measured from its root element — no rasterising, and no
+    /// fonts. Before this, `image` did not recognise the file at all and the
+    /// block fell back to its alt text.
+    #[test]
+    fn probe_reads_an_svgs_declared_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_svg(dir.path(), "d.svg", RED_40X20);
+        assert_eq!(probe(&path).unwrap(), (40, 20));
+    }
+
+    /// A fractional size needs the whole pixel that holds it; rounding down
+    /// would clip a column.
+    #[test]
+    fn an_svgs_size_rounds_up_to_whole_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_svg(
+            dir.path(),
+            "f.svg",
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10.2" height="4.1"></svg>"#,
+        );
+        assert_eq!(probe(&path).unwrap(), (11, 5));
+    }
+
+    /// A vector is RENDERED at the target rather than resampled to it, but
+    /// the never-upscale rule still holds — so a small drawing in a large
+    /// box stays its own size.
+    #[test]
+    fn an_svg_renders_at_the_fitted_size_and_is_never_upscaled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_svg(dir.path(), "d.svg", RED_40X20);
+
+        let small = decode(&path, (20, 10), PixelFormat::Rgba8).unwrap();
+        assert_eq!((small.width, small.height), (20, 10), "scaled down to fit");
+
+        let huge = decode(&path, (4000, 4000), PixelFormat::Rgba8).unwrap();
+        assert_eq!(
+            (huge.width, huge.height),
+            (40, 20),
+            "never upscaled, exactly as a raster of the same size is not"
+        );
+    }
+
+    /// The colour has to survive the trip. tiny-skia returns PREMULTIPLIED
+    /// RGBA, so running the raster path's `premultiply_to_bgra` over it would
+    /// apply alpha twice; `Rgba8` has to undo the premultiplication instead.
+    /// Both directions are checked against a known pixel, because either
+    /// mistake shows up as "slightly wrong colours" rather than as a failure.
+    #[test]
+    fn an_opaque_svg_pixel_survives_both_pixel_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_svg(dir.path(), "d.svg", RED_40X20);
+
+        let rgba = decode(&path, (40, 20), PixelFormat::Rgba8).unwrap();
+        assert_eq!(
+            &rgba.rgba[..4],
+            &[255, 0, 0, 255],
+            "straight RGBA: opaque red stays opaque red"
+        );
+
+        let bgra = decode(&path, (40, 20), PixelFormat::BgraPremultiplied8).unwrap();
+        assert_eq!(
+            &bgra.rgba[..4],
+            &[0, 0, 255, 255],
+            "premultiplied BGRA: the channels swap and nothing is multiplied twice"
+        );
+    }
+
+    /// A half-transparent pixel is the case that exposes a double
+    /// premultiply: at alpha 128, red premultiplied once is ~128 and twice is
+    /// ~64.
+    #[test]
+    fn a_semi_transparent_svg_pixel_is_premultiplied_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_svg(
+            dir.path(),
+            "t.svg",
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">
+                <rect x="0" y="0" width="4" height="4" fill="#ff0000" fill-opacity="0.5"/>
+            </svg>"##,
+        );
+
+        let bgra = decode(&path, (4, 4), PixelFormat::BgraPremultiplied8).unwrap();
+        let (b, g, r, a) = (bgra.rgba[0], bgra.rgba[1], bgra.rgba[2], bgra.rgba[3]);
+        assert_eq!((b, g), (0, 0));
+        assert!((120..=136).contains(&a), "half transparent, got alpha {a}");
+        assert!(
+            r.abs_diff(a) <= 2,
+            "red premultiplied ONCE is ~alpha ({a}); got {r}.              Twice would be ~{}",
+            (a as u16 * a as u16 / 255)
+        );
+    }
+
+    /// Malformed SVG is a typed error and the alt text stands in — never a
+    /// panic, exactly like a truncated PNG.
+    #[test]
+    fn a_malformed_svg_is_an_error_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_svg(dir.path(), "bad.svg", "<svg this is not xml");
+        assert!(matches!(probe(&path), Err(MediaError::Undecodable(_))));
+        assert!(decode(&path, (10, 10), PixelFormat::Rgba8).is_err());
     }
 
     #[test]

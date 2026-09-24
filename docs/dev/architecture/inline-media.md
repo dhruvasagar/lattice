@@ -389,6 +389,45 @@ as in vim. It had never been enforced because every read-only buffer
 until now was synthetic and pathless, so `save_blocking` failed with "no
 file name" and the gap did not show.
 
+## 8.2 Formats, and the one that is not a raster
+
+`lattice-media` carries a deliberate codec set rather than `image`'s
+default: PNG, JPEG, GIF and WebP, each added as a choice rather than
+inherited as a transitive surprise.
+
+**SVG is not one of them, because it is not a raster.** It takes a
+separate route through the crate — `usvg` parses it, `resvg` rasterises
+it — and that route is better, not merely different:
+
+- **Measuring needs no rasterising.** A document's size is its root
+  element, so `probe` parses and reads `Tree::size` and draws nothing.
+- **Scaling is not a loss.** A raster is decoded at its natural size and
+  resampled down; a vector is *rendered at the target*, so the same
+  diagram is as crisp at 300px as at 3000. The render transform is built
+  from the fitted size for exactly this reason.
+- **`fit_within` still applies.** A 24×24 icon stays 24×24 rather than
+  being blown across the pane — the never-upscale rule is about fidelity,
+  and it means the same thing for a vector.
+
+Two things about it are easy to get wrong and are pinned by tests:
+
+**tiny-skia returns PREMULTIPLIED RGBA.** The raster path premultiplies
+on its way to BGRA; running that same conversion over a rasterised SVG
+applies alpha twice and darkens every soft edge. The SVG path swaps
+channels for `BgraPremultiplied8` and *un*-premultiplies for `Rgba8`.
+Both directions are asserted against a known pixel, because either
+mistake reads as "slightly wrong colours" rather than as a failure.
+
+**SVG text becomes paths at parse time**, so a tree built without fonts
+silently drops every `<text>` element — a diagram with its boxes and none
+of its labels, which looks like a rendering bug. `decode` loads system
+fonts once, lazily, on a blocking thread. `probe` deliberately does not:
+a size comes from the root element and must not pay for a font walk.
+
+The cost is honest and worth stating: `resvg` is the largest thing in
+this crate's tree, and in a TUI-only build — where gpui, which pins the
+same version, is absent — it is genuinely new compile time.
+
 ## 9. Rejected alternatives
 
 **Whole-row blocks (§3a).** Cheaper, ships inside the existing substrate,

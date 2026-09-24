@@ -5656,6 +5656,7 @@ version = "0.9.1"
 dependencies = [
  "image",
  "lattice-cells",
+ "resvg",
  "tempfile",
  "tokio",
  "tracing",

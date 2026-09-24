@@ -86,15 +86,15 @@ id has its own page — the same one `<C-h>` opens inside that picker.
 | [`lines`](help:picker-lines) | Lines of the active buffer | Jump to the line | — |
 | [`outline`](help:picker-outline) | Tree-sitter symbols in the active buffer | Jump to the symbol | — |
 | [`grep`](help:picker-grep) | Live recursive text search (`rg` / `ag` / `grep`) | Jump to the hit | `[pattern]` — seeds the prompt; omit to start empty |
-| `jumps` | Position-history ring (jump list + mark ring, newest first) | Jump to the entry | — |
-| `marks` | Vim marks | Jump to the mark (same as `` ` ``) | — |
-| `registers` | Vim registers (unnamed, numbered, named) | Paste the register at the cursor | — |
-| `commands` | The ex-command palette | Invoke the command | — |
-| `history` | Command-line history (newest first) | Load it into the `:` line — **does not run it** | — |
-| `search-history` | Search-line history (newest first) | Load it into the `/` line — **does not run it** | — |
-| `pane-buffer-history` | This pane's buffer trail | Walk to that entry | — |
-| `snippets` | Snippets for the active buffer's language | Expand the snippet at the cursor | — |
-| `colorscheme` | Registered themes (live preview) | Commit the theme | — (usually reached via bare `:colorscheme`) |
+| [`jumps`](help:picker-jumps) | Position-history ring (jump list + mark ring, newest first) | Jump to the entry | — |
+| [`marks`](help:picker-marks) | Vim marks | Jump to the mark (same as `` ` ``) | — |
+| [`registers`](help:picker-registers) | Vim registers (unnamed, numbered, named) | Paste the register at the cursor | — |
+| [`commands`](help:picker-commands) | The ex-command palette | Invoke the command | — |
+| [`history`](help:picker-history) | Command-line history (newest first) | Load it into the `:` line — **does not run it** | — |
+| [`search-history`](help:picker-search-history) | Search-line history (newest first) | Load it into the `/` line — **does not run it** | — |
+| [`pane-buffer-history`](help:picker-pane-buffer-history) | This pane's buffer trail | Walk to that entry | — |
+| [`snippets`](help:picker-snippets) | Snippets for the active buffer's language | Expand the snippet at the cursor | — |
+| [`colorscheme`](help:picker-colorscheme) | Registered themes (live preview) | Commit the theme | — (usually reached via bare `:colorscheme`) |
 
 `:picker grep` is a **live** source: it re-runs the search backend
 as you type and streams hits in. It jumps to a single chosen hit —
@@ -259,8 +259,7 @@ friends) does nothing: those rows are single keys and there is no
 query to fill.
 
 Picking from your *yank history* rather than the system clipboard
-is a separate thing and is not built yet — see
-[Not yet](#not-yet).
+is `<C-r>` — see [`yank-ring`](help:picker-yank-ring).
 
 ---
 
@@ -405,10 +404,3 @@ the muscle memory carries across.
   full-editor preview ships; a per-row colour chip does not).
 - **Keybinding marginalia for non-command pickers** (e.g. showing
   the open-in-split chord on file rows).
-- **A yank-history picker.** Emacs' `M-y` — pick from what you have
-  previously yanked, rather than from the system clipboard. It wants
-  a picker that *returns a value into whatever opened it* (so it can
-  fill the query of the picker you were already in), and that
-  primitive does not exist yet. The same primitive is what would let
-  any command taking a revision offer a commit picker for that
-  argument.

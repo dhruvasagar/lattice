@@ -101,6 +101,16 @@ docs = [
   "picker-grep",
   "picker-lines",
   "picker-outline",
+  "picker-jumps",
+  "picker-marks",
+  "picker-registers",
+  "picker-yank-ring",
+  "picker-commands",
+  "picker-history",
+  "picker-search-history",
+  "picker-pane-buffer-history",
+  "picker-snippets",
+  "picker-colorscheme",
 ]
 
 [[section]]

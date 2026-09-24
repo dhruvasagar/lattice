@@ -122,6 +122,16 @@ same surface).
 |   — grep                   | [`picker-grep`](help:picker-grep) | ✅      |
 |   — lines                  | [`picker-lines`](help:picker-lines) | ✅      |
 |   — outline                | [`picker-outline`](help:picker-outline) | ✅      |
+|   — jumps                  | [`picker-jumps`](help:picker-jumps) | ✅      |
+|   — marks                  | [`picker-marks`](help:picker-marks) | ✅      |
+|   — registers              | [`picker-registers`](help:picker-registers) | ✅      |
+|   — yank-ring              | [`picker-yank-ring`](help:picker-yank-ring) | ✅      |
+|   — commands               | [`picker-commands`](help:picker-commands) | ✅      |
+|   — history                | [`picker-history`](help:picker-history) | ✅      |
+|   — search-history         | [`picker-search-history`](help:picker-search-history) | ✅      |
+|   — pane-buffer-history    | [`picker-pane-buffer-history`](help:picker-pane-buffer-history) | ✅      |
+|   — snippets               | [`picker-snippets`](help:picker-snippets) | ✅      |
+|   — colorscheme            | [`picker-colorscheme`](help:picker-colorscheme) | ✅      |
 | Options and configuration  | [`options`](help:options)                | ✅      |
 | When a key does nothing    | [`troubleshooting-keys`](help:troubleshooting-keys) | ✅      |
 | Key hints as you type      | [`which-key-mode`](help:which-key-mode)  | ✅      |

@@ -205,6 +205,17 @@ pub enum PickerAcceptOutcome {
     /// and `<CR>` to execute. Emitted by the `search-history` picker
     /// source (`q/` / `q?` / `:history search`).
     LoadSearchLine { text: String },
+    /// PBH.5: walk the active pane's buffer trail to `index` — a MOVE of
+    /// the walk position, not a new visit, so the forward tail stays
+    /// reachable. Host routes through `Editor::do_pane_history_jump`.
+    /// Emitted by the `pane-buffer-history` source; host-internal (a
+    /// plugin has no pane trail to name).
+    ///
+    /// Its own variant rather than `NoOp`-plus-host-fallback: the source
+    /// used to return `NoOp` expecting the legacy routing arm to do the
+    /// walk, but a registered generator's outcome is applied INSTEAD of
+    /// that arm, so `<CR>` closed the picker and went nowhere.
+    WalkPaneHistory { index: u32 },
     /// Open a generic one-line minibuffer text prompt —
     /// picker-accept's peer of `Effect::OpenPrompt` (same fields, same
     /// name-based `on_submit_action` lookup, no closures). Lets a

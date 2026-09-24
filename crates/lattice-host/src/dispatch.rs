@@ -32126,6 +32126,10 @@ impl Editor {
                 self.open_search_line(lattice_grammar::SearchDirection::Forward);
                 self.set_search_line_text(&text);
             }
+            WalkPaneHistory { index } => {
+                // PBH.5: a walk, not a visit — see `do_pane_history_jump`.
+                self.do_pane_history_jump(index);
+            }
             OpenPrompt {
                 prompt,
                 initial,

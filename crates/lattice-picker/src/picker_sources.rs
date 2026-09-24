@@ -1935,11 +1935,11 @@ impl PickerSourceGenerator for PaneBufferHistorySource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            // The host performs the cursor move; see
-            // `Editor::do_pane_history_jump`. Returning `NoOp` here keeps
-            // the generic accept path from ALSO switching the buffer,
-            // which would double-activate and record a visit.
-            RoutingPayload::PaneHistoryEntry { .. } => Ok(PickerAcceptOutcome::NoOp),
+            // A walk, not a visit: `SwitchBuffer` would activate the
+            // buffer through the generic path and record a new visit.
+            RoutingPayload::PaneHistoryEntry { index } => {
+                Ok(PickerAcceptOutcome::WalkPaneHistory { index: *index })
+            }
             other => Err(format!(
                 "pane-buffer-history: unexpected routing payload {other:?}"
             )),

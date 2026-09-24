@@ -487,6 +487,12 @@ impl WitBoundary for NativePickerAcceptOutcome {
                         .into(),
                 );
             }
+            NativePickerAcceptOutcome::WalkPaneHistory { .. } => {
+                return Err(
+                    "walk-pane-history is a host-internal picker outcome, not representable over WIT"
+                        .into(),
+                );
+            }
             NativePickerAcceptOutcome::OpenPrompt { .. } => {
                 return Err(
                     "open-prompt is a host-internal picker outcome, not representable over WIT"

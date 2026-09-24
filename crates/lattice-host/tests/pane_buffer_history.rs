@@ -736,3 +736,33 @@ fn reloading_repoints_the_entry_instead_of_appending() {
         "the repointed entry must track the new buffer id: {after:?} (current {current:?})",
     );
 }
+
+/// PBH.5 through the PICKER, not the helper. The test above calls
+/// `do_pane_history_jump` directly, which proves the jump works and says
+/// nothing about whether `<CR>` in `:history pane-buffers` reaches it.
+#[test]
+fn accepting_a_picker_row_walks_to_it() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 950, "b\n", "*B*");
+    let c = add_document(&mut e, 951, "c\n", "*C*");
+    e.activate_buffer(b);
+    e.activate_buffer(c);
+
+    let _ = e.open_picker("pane-buffer-history".to_string(), Vec::new());
+    let picker = e.picker.as_mut().expect("the trail picker seats");
+    // Newest first, so the origin is the LAST row.
+    picker.selected = picker.candidates.len() - 1;
+    let mut partial = Vec::new();
+    let _ = e.dispatch_chord(
+        lattice_protocol::KeyChord::special(lattice_protocol::SpecialKey::Enter),
+        &mut partial,
+    );
+
+    assert!(e.picker.is_none(), "accept closes the picker");
+    assert_eq!(
+        e.pane_tree.active().committed_id(),
+        origin,
+        "`<CR>` on the oldest row walks the pane back to it",
+    );
+}

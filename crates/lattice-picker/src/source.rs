@@ -665,6 +665,10 @@ pub trait PickerSourceGenerator: Send + Sync {
     /// by asking for a topic ending `.picker-<id>` **registered by this same
     /// plugin**. The ownership check is the point — a suffix match alone
     /// would let any plugin answer `<C-h>` for another plugin's picker.
+    ///
+    /// This is the id of the plugin's PICKER seam; its help topics carry its
+    /// HELP seam's id. The host compares the plugins both resolve to
+    /// (`PluginMetaRegistry::primary_of`), never the raw ids.
     fn owner_plugin(&self) -> Option<u64> {
         None
     }

@@ -402,7 +402,10 @@ here as everywhere else.
    (`project.picker-projects`), and the rung accepts a `.picker-<id>` topic
    **only from the plugin that owns the source**
    (`PickerSourceGenerator::owner_plugin`). A bare suffix match would let any
-   plugin answer `<C-h>` for another's picker. Pickers seated without a registry id (LSP locations,
+   plugin answer `<C-h>` for another's picker. Ownership compares *plugins*,
+   not ids: a plugin is instantiated once per seam, so its picker source
+   reports the picker seam's id and its pages carry the help seam's; both
+   resolve to one plugin through `PluginMetaRegistry::primary_of`. Pickers seated without a registry id (LSP locations,
    `:lsp-log`, `:ai-log`) answer this rung through `PickerSource::help_topic`.
 3. The general `picker` page, with an echo naming the source, so the user
    knows they are reading the shared keys and not this picker's.

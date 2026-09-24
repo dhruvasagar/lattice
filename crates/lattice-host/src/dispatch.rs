@@ -9973,9 +9973,25 @@ impl Editor {
                 .and_then(|g| g.owner_plugin())
         });
         if let (Some(owner), Some(conventional)) = (owner, conventional.as_deref()) {
+            // A plugin is instantiated once per seam and each instance gets its
+            // own id: the picker source reports the PICKER seam's, the topic
+            // carries the HELP seam's. Compare the plugins they resolve to, not
+            // the raw ids, or a plugin's own page is rejected as a stranger's.
+            let meta = self.services.get::<PluginMetaRegistry>();
+            let plugin_of = |id: u64| -> u64 {
+                match (&meta, u32::try_from(id)) {
+                    (Some(reg), Ok(seam)) => u64::from(reg.primary_of(seam)),
+                    _ => id,
+                }
+            };
+            let owner = plugin_of(owner);
             let suffix = format!(".{conventional}");
             if let Some(name) = help.names().find(|n| {
-                n.ends_with(&suffix) && help.lookup(n).is_some_and(|t| t.plugin_id == Some(owner))
+                n.ends_with(&suffix)
+                    && help
+                        .lookup(n)
+                        .and_then(|t| t.plugin_id)
+                        .is_some_and(|id| plugin_of(id) == owner)
             }) {
                 return (name.to_string(), None);
             }

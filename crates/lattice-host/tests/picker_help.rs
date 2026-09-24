@@ -36,6 +36,9 @@ const MISDECLARED: &str = "ph1-misdeclared";
 const PLUGIN_OWNED: &str = "ph1-plugin-owned";
 /// Owned by plugin 7 too — but only plugin 8 registered a page for it.
 const PLUGIN_HIJACKED: &str = "ph1-plugin-hijacked";
+/// Owned by plugin 7's PICKER seam (id 20); its page arrives through the
+/// HELP seam (id 21). Production shape: one instance, and one id, per seam.
+const PLUGIN_TWO_SEAMS: &str = "ph1-plugin-two-seams";
 
 struct EmptySource {
     spec: PickerSourceSpec,
@@ -97,6 +100,10 @@ fn boot() -> Editor {
     ] {
         pickers.register_generator(Arc::new(EmptySource { spec, owner: None }));
     }
+    pickers.register_generator(Arc::new(EmptySource {
+        spec: PickerSourceSpec::no_args(PLUGIN_TWO_SEAMS, "PH.4: a source from a later seam."),
+        owner: Some(20),
+    }));
     for id in [PLUGIN_OWNED, PLUGIN_HIJACKED] {
         pickers.register_generator(Arc::new(EmptySource {
             spec: PickerSourceSpec::no_args(id, "PH.1: a plugin's source."),
@@ -106,6 +113,13 @@ fn boot() -> Editor {
     editor.picker_registry.store(Arc::new(pickers));
     register_plugin_topic(&editor, format!("fixture.picker-{PLUGIN_OWNED}"), 7);
     register_plugin_topic(&editor, format!("impostor.picker-{PLUGIN_HIJACKED}"), 8);
+    register_plugin_topic(&editor, format!("fixture.picker-{PLUGIN_TWO_SEAMS}"), 21);
+    // What the loader tells the host: seams 20 and 21 are both plugin 7.
+    let meta = editor
+        .services
+        .get::<lattice_host::dispatch::PluginMetaRegistry>()
+        .expect("plugin meta is a boot service");
+    lattice_mode::PluginMetaSink::register_seam_ids(meta.as_ref(), 7, &[7, 20, 21]);
 
     // The convention's page, registered the way a plugin's help seam does it.
     editor.help_topics.rcu(|current| {
@@ -267,4 +281,18 @@ fn another_plugins_page_does_not_answer_for_a_source_it_does_not_own() {
     let mut editor = boot();
     let _ = editor.open_picker(PLUGIN_HIJACKED.to_string(), Vec::new());
     assert_eq!(press_help(&mut editor).as_deref(), Some("help picker"));
+}
+
+/// The ids differ per SEAM, so ownership is decided by the plugin both ids
+/// resolve to. Comparing raw ids rejected every real plugin's own page:
+/// `project_picker_help.rs` (loader) caught the picker seam reporting 4 and the
+/// help seam stamping 6.
+#[test]
+fn a_page_from_another_seam_of_the_same_plugin_is_the_plugins_own() {
+    let mut editor = boot();
+    let _ = editor.open_picker(PLUGIN_TWO_SEAMS.to_string(), Vec::new());
+    assert_eq!(
+        press_help(&mut editor).as_deref(),
+        Some(format!("help fixture.picker-{PLUGIN_TWO_SEAMS}").as_str())
+    );
 }

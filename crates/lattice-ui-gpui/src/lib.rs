@@ -890,6 +890,62 @@ impl GpuiApp {
     /// `:describe-key` (and any `ArgKind::Chord` arg) captures the next
     /// keystroke instead of dispatching it — was hard-wired `false`.
     pub fn dispatch_chord(&mut self, chord: KeyChord) -> DispatchOutcome {
+        // AP.0.2 — captured BEFORE the dispatch, which mutates both.
+        //
+        // `partial_chord` is the sequence this chord COMPLETES; re-resolving
+        // the trailing key alone is what turned a declined `<leader>oJ` into
+        // vim's `J`. `active_minor_modes` is the layer set the peel walks
+        // down, one layer per decline.
+        let (prefix_before, layers_before) = {
+            let t = self.render_state.load().translator.clone();
+            (t.partial_chord.to_vec(), t.active_minor_modes.to_vec())
+        };
+        let modal_before = self.ad().modal;
+        let mut outcome = self.dispatch_chord_in_layers(chord, &prefix_before, &layers_before);
+        if !outcome.declined {
+            return outcome;
+        }
+        // The binding was a mode action that DECLINED — it did nothing, so
+        // re-resolve the chord with the declining layer removed, until
+        // something handles it or only the always-on Builtin / User layers
+        // are left. Without this every key auto-pair binds — `( [ { ) ] } " '
+        // and backspace — is dead in this renderer, and `<Tab>` never falls
+        // through to org's fold cycle.
+        let mut peel = lattice_host::decline::DeclinePeel::new(
+            modal_before,
+            prefix_before,
+            chord,
+            layers_before,
+        );
+        loop {
+            let keymap = self.render_state.load().translator.keymap.clone();
+            let Some(layers) = peel.peel(&keymap) else {
+                // The winner came from Builtin / User: nothing left to peel,
+                // and those cannot decline.
+                break;
+            };
+            let layers = layers.to_vec();
+            outcome = self.dispatch_chord_in_layers(chord, peel.prefix(), &layers);
+            if !outcome.declined || peel.exhausted() {
+                break;
+            }
+        }
+        outcome.declined = false;
+        outcome
+    }
+
+    /// Resolve `chord` against an explicit prefix and layer set, and dispatch
+    /// what it resolves to.
+    ///
+    /// Both the first resolution and every peel pass go through here, so a
+    /// fall-through is translated with exactly the context the original
+    /// keystroke was — only the layer set narrows.
+    fn dispatch_chord_in_layers(
+        &mut self,
+        chord: KeyChord,
+        prefix: &[KeyChord],
+        layers: &[lattice_mode::ModeId],
+    ) -> DispatchOutcome {
         // Investigation 2026-05-22: trace partial_chord at
         // dispatch_chord entry so we can see if it survives
         // publishes between keystrokes. info! so it lands in
@@ -935,8 +991,8 @@ impl GpuiApp {
                 terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
                 terminal_visual_active: ad.terminal_visual_active,
                 keymap: &translator.keymap,
-                partial_chord: &translator.partial_chord,
-                active_minor_modes: &translator.active_minor_modes,
+                partial_chord: prefix,
+                active_minor_modes: layers,
             };
             lattice_host::input::translate(ctx, chord)
         };
@@ -1868,6 +1924,54 @@ mod tests {
             "`i` should normalise to a chord and dispatch"
         );
         assert_eq!(app.editor.modal, ModalState::Insert);
+    }
+
+    /// AP.0.2 — a DECLINED chord falls through to the layer below.
+    ///
+    /// This peer had no fall-through at all, and the cost was not subtle: a
+    /// mode that binds a chord it only *sometimes* wants made that key dead.
+    /// `auto-pair` binds `( [ { ) ] } " ' \`` and `<BS>` in Insert with a
+    /// Global policy and declines whenever the situation is not a pair — so
+    /// every one of those keys did nothing in GPUI, while `<C-w>` (the one
+    /// insert key auto-pair does not bind) worked. `<Tab>` was the same bug
+    /// through `table-mode`.
+    ///
+    /// Driven here with `table-mode`, which is native — no plugin fixture
+    /// needed — and binds `<Tab>` in Insert, declining outside a table. The
+    /// fall-through is the builtin insert-tab, so the observable is a tab
+    /// character actually reaching the buffer.
+    #[test]
+    fn a_declined_chord_falls_through_to_the_layer_below() {
+        use lattice_host::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
+
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        let buffer = app.editor.document_buffer_id;
+        let _ = app
+            .editor
+            .activate_mode_by_id(buffer, lattice_mode::TableMode::mode_id());
+        app.editor.publish_render_state();
+        assert!(
+            app.render_state
+                .load()
+                .translator
+                .active_minor_modes
+                .contains(&lattice_mode::TableMode::mode_id()),
+            "precondition: table-mode must be an active layer, or there is \
+             nothing to decline and the test proves nothing"
+        );
+
+        app.dispatch_chord(KeyChord::new(KeyKind::Char('i'), KeyMods::NONE));
+        app.dispatch_chord(KeyChord::new(
+            KeyKind::Special(SpecialKey::Tab),
+            KeyMods::NONE,
+        ));
+
+        assert!(
+            app.editor.document.text().contains('\t'),
+            "`<Tab>` outside a table must fall through to insert-tab; the \
+             buffer is {:?}",
+            app.editor.document.text()
+        );
     }
 
     /// `dispatch_chord` is the path tests + programmatic drivers

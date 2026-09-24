@@ -1189,6 +1189,11 @@ impl App {
                     e.bury_buffer();
                 });
             }
+            Effect::KillBuffer => {
+                self.mutate_editor(|e| {
+                    e.kill_buffer();
+                });
+            }
             Effect::OpenPopup {
                 name,
                 mode_id,
@@ -1485,6 +1490,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DismissPopup
         | Effect::DismissPopupNamed { .. }
         | Effect::BuryBuffer
+        | Effect::KillBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
@@ -1638,6 +1644,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DismissPopup
         | Effect::DismissPopupNamed { .. }
         | Effect::BuryBuffer
+        | Effect::KillBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics

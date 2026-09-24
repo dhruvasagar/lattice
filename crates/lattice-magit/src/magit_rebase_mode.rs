@@ -189,7 +189,7 @@ impl Mode for MagitRebaseMode {
                             tracing::error!(target: "lattice_magit", "rebase failed: {e}");
                         }
                     }));
-                    Some(Effect::BuryBuffer)
+                    Some(Effect::KillBuffer)
                 }),
             },
             // abort (C-c C-k) — MG.12. No rebase has necessarily
@@ -216,7 +216,7 @@ impl Mode for MagitRebaseMode {
                     if rebase_in_progress(&gitdir) {
                         Some(abort_rebase_confirm())
                     } else {
-                        Some(Effect::BuryBuffer)
+                        Some(Effect::KillBuffer)
                     }
                 }),
             },
@@ -231,7 +231,7 @@ impl Mode for MagitRebaseMode {
                             return;
                         };
                         // Nothing in progress is nothing to report: the
-                        // buffer was already stale, and burying it is
+                        // buffer was already stale, and closing it is
                         // the whole outcome.
                         if !rebase_in_progress(repo.gitdir()) {
                             return;
@@ -245,7 +245,7 @@ impl Mode for MagitRebaseMode {
                             .map_err(|e| e.to_string());
                         crate::magit_global_mode::finish_task(&workdir, "abort rebase", result);
                     }));
-                    Some(Effect::BuryBuffer)
+                    Some(Effect::KillBuffer)
                 }),
             },
             // <CR> — show commit detail for the todo line at cursor,

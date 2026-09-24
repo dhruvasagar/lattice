@@ -41272,6 +41272,18 @@ impl Editor {
             return false;
         };
         let ran_full = self.activate_buffer(successor);
+        self.forget_buffer(to_remove);
+        self.set_message(EchoLevel::Info, format!("buffer #{} deleted", to_remove.0));
+        ran_full
+    }
+
+    /// Drop `to_remove` from the registry and every structure that refers to
+    /// it, once something else is already showing in the active pane.
+    ///
+    /// The teardown half of `:bd`, shared with [`Self::kill_buffer`] so the
+    /// two cannot drift: a buffer ended by a mode (`Effect::KillBuffer`) must
+    /// leave no more behind than one ended by the user.
+    fn forget_buffer(&mut self, to_remove: BufferId) {
         // Detach from LSP before dropping the buffer registry
         // entry so the supervisor sees the URI go away while the
         // BufferId is still mapped.
@@ -41303,11 +41315,45 @@ impl Editor {
                 pane.buffer = new_kind;
             }
         }
-        self.set_message(EchoLevel::Info, format!("buffer #{} deleted", to_remove.0));
         // AR.3: a file-backed buffer left the registry — resync the
         // autoread watch set (tears the watcher down if it was the last).
         self.refresh_autoread_watcher();
-        ran_full
+    }
+
+    /// `Effect::KillBuffer` — end the buffer in the active pane: return the
+    /// pane to where it was before this buffer took it (what
+    /// [`Self::bury_buffer`] does), then delete the buffer.
+    ///
+    /// Bury keeps the buffer; this is for the ones whose life ends at a
+    /// verb. magit's commit buffer is the case that needed it: burying on
+    /// `C-c C-c` left `*magit:commit*` alive, and the next commit REUSED it —
+    /// a reused synthetic buffer is deliberately not re-seeded — so the old
+    /// message and the old staged diff came back. magit (with-editor) kills
+    /// the compose buffer on finish and on cancel.
+    ///
+    /// **No dirty check.** The mode asking has decided the buffer is done —
+    /// a finished commit message is not "unsaved work" — the same judgement
+    /// `:bd!` expresses. With no origin to return to (the buffer was reached
+    /// some other way), it falls back to exactly `:bd!`, so the pane still
+    /// ends up on a real buffer.
+    pub fn kill_buffer(&mut self) -> bool {
+        let to_remove = self.active_pane_buffer_id();
+        if self.bury_target.is_none() {
+            return self.do_buffer_delete(true);
+        }
+        // Leave Insert against the buffer that is still alive, for the reason
+        // `do_buffer_delete` gives (OC.10): the undo group closes on the
+        // document it belongs to rather than leaking into the successor.
+        if matches!(self.modal, ModalState::Insert | ModalState::Replace) {
+            self.enter_mode(ModalState::Normal);
+        }
+        if !self.bury_buffer() || self.active_pane_buffer_id() == to_remove {
+            // The origin could not be restored (or WAS this buffer): delete
+            // the ordinary way rather than removing what is on screen.
+            return self.do_buffer_delete(true);
+        }
+        self.forget_buffer(to_remove);
+        true
     }
 
     /// Switch the active pane to the file-tree buffer with `id`.
@@ -43005,6 +43051,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DismissPopup
         | Effect::DismissPopupNamed { .. }
         | Effect::BuryBuffer
+        | Effect::KillBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
@@ -43158,6 +43205,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DismissPopup
         | Effect::DismissPopupNamed { .. }
         | Effect::BuryBuffer
+        | Effect::KillBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics

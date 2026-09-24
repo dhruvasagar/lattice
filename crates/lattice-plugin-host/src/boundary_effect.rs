@@ -726,6 +726,15 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::OpenHover { markdown } => WitEffect::OpenHover(markdown.clone()),
         NativeEffect::DismissPopup => WitEffect::DismissPopup,
         NativeEffect::DismissPopupNamed { name } => WitEffect::DismissPopupNamed(name.clone()),
+        // Same pending-mirror shape as `BuryBuffer`, and for the same reason:
+        // a WIT variant is a versioned plugin-API change with its own slice.
+        NativeEffect::KillBuffer => {
+            return Err(
+                "Effect::KillBuffer has no WIT mirror yet — native-only until the \
+                 plugin-API slice adds it"
+                    .to_string(),
+            );
+        }
         NativeEffect::BuryBuffer => {
             // No WIT mirror yet. Adding one is a versioned plugin-API
             // change and deserves its own slice rather than riding

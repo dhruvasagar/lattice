@@ -323,7 +323,10 @@ impl Mode for MagitCommitMode {
                     // (unlike `git status`/`git diff`, it never scans
                     // the working tree) — but it's still disk I/O, so it
                     // stays off the actor thread like every other
-                    // mutation. The buffer closes optimistically; a
+                    // mutation. The buffer is KILLED, not buried: a
+                    // buried `*magit:commit*` is reused by the next
+                    // commit without being re-seeded, which brought the
+                    // previous message back. It closes optimistically; a
                     // failure surfaces via `tracing::error!` (no
                     // synchronous path back to the echo area from a
                     // detached task) rather than leaving the compose
@@ -362,7 +365,7 @@ impl Mode for MagitCommitMode {
                             tracing::error!(target: "lattice_magit", "commit failed: {e}");
                         }
                     }));
-                    Some(Effect::BuryBuffer)
+                    Some(Effect::KillBuffer)
                 }),
             },
             // ── abort (C-c C-k) ─────────────────────────
@@ -370,7 +373,7 @@ impl Mode for MagitCommitMode {
                 action_name: "action:magit-commit-abort",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let _ = state(ctx)?;
-                    Some(Effect::BuryBuffer)
+                    Some(Effect::KillBuffer)
                 }),
             },
             // <CR> — visit the file at cursor AS STAGED (the index

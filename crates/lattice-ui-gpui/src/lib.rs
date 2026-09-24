@@ -1618,6 +1618,13 @@ impl GpuiApp {
                     e.bury_buffer();
                 });
             }
+            Effect::KillBuffer => {
+                // Bury, then delete what was buried — same swap-back as
+                // above, so the same reason it is not a DismissPopup.
+                self.mutate_editor(|e| {
+                    e.kill_buffer();
+                });
+            }
             Effect::OpenPopup {
                 name,
                 mode_id,

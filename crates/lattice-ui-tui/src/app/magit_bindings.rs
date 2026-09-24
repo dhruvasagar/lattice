@@ -1093,3 +1093,179 @@ mod confirm_seeding {
         );
     }
 }
+
+/// Compose buffers (commit, note, rebase-todo) END on finish and cancel —
+/// `Effect::KillBuffer`, not `BuryBuffer`.
+#[cfg(test)]
+mod compose_buffers {
+    use crate::app::Action;
+    use crate::app::test_helpers::*;
+
+    /// The commit buffer's whole text, read through the buffer store so it is
+    /// the buffer's own content wherever the pane is.
+    fn commit_text(app: &crate::app::App, name: &str) -> Option<String> {
+        let id = app.editor.buffers.by_name(name)?;
+        let handle = app.editor.buffers.document_handle(id)?;
+        let snap = handle.snapshot();
+        Some(
+            (0..snap.buffer.content_line_count())
+                .map(|l| snap.buffer.line(l).unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
+    /// Finishing a commit ends its compose buffer.
+    ///
+    /// The report: `C-c C-c` in the commit buffer left it in the registry, so
+    /// the NEXT commit reopened the same buffer — old message and all —
+    /// because a reused synthetic buffer is not re-seeded (on purpose: that is
+    /// what keeps a half-written org capture). magit's with-editor kills the
+    /// buffer on both finish and cancel; burying it is what made the old
+    /// message a time capsule.
+    ///
+    /// Driven through `C-c C-k`, which ends in the same place as `C-c C-c`
+    /// without running `git commit` against whatever checkout the suite is
+    /// in.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ending_a_commit_kills_its_compose_buffer() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        const NAME: &str = "*magit:commit*";
+        let mut app = app_with("committed\n", 20);
+        app.editor.open_synthetic_buffer(NAME, "magit-commit-mode");
+        assert!(
+            settle_mode(&mut app, "magit-commit-mode").await,
+            "precondition: commit mode active"
+        );
+
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+        );
+        press_chars(&mut app, "stale message");
+        press(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            commit_text(&app, NAME).is_some_and(|t| t.contains("stale message")),
+            "precondition: the message is in the compose buffer"
+        );
+
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        );
+
+        assert!(
+            app.editor.buffers.by_name(NAME).is_none(),
+            "the compose buffer is gone once the commit is ended"
+        );
+
+        // And the next commit starts clean.
+        app.editor.open_synthetic_buffer(NAME, "magit-commit-mode");
+        assert!(settle_mode(&mut app, "magit-commit-mode").await);
+        assert!(
+            !commit_text(&app, NAME)
+                .unwrap_or_default()
+                .contains("stale message"),
+            "a new commit must not reopen the previous one's message"
+        );
+    }
+
+    /// The reported case itself: `C-c C-c` in a real repository. The commit
+    /// lands, the compose buffer is gone, and the NEXT commit opens empty of
+    /// the previous message.
+    ///
+    /// Runs in a throwaway repository. The commit buffer is opened from a file
+    /// inside it, so it scopes to that repo — and the test refuses to press
+    /// `C-c C-c` unless the buffer's name says so, because a fallback to the
+    /// working directory would commit into whatever checkout the suite runs in.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn committing_ends_the_compose_buffer_and_the_next_commit_starts_clean() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        fn git(dir: &std::path::Path, args: &[&str]) -> String {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        let repo = unique_tempdir().join("killbuf-repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "t"]);
+        git(&repo, &["config", "commit.gpgsign", "false"]);
+        let file = repo.join("a.txt");
+        std::fs::write(&file, "base\n").unwrap();
+        git(&repo, &["add", "a.txt"]);
+        git(&repo, &["commit", "-q", "-m", "base"]);
+        std::fs::write(&file, "base\nchange one\n").unwrap();
+        git(&repo, &["add", "a.txt"]);
+
+        let mut app = app_with_path("base\nchange one\n", 20, file.clone());
+        app.apply(Action::EnterCommandLine);
+        press_chars(&mut app, "magit-commit");
+        app.apply(Action::CommandLineSubmit);
+        assert!(
+            settle_mode(&mut app, "magit-commit-mode").await,
+            "precondition: commit buffer open"
+        );
+        let id = app.editor.active_pane_buffer_id();
+        let name = app
+            .editor
+            .buffers
+            .name_of(id)
+            .expect("the commit buffer is named");
+        assert!(
+            name.contains("killbuf-repo"),
+            "refusing to commit: `{name}` is not scoped to the throwaway repo"
+        );
+
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+        );
+        press_chars(&mut app, "first message");
+        press(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        press(&mut app, ctrl('c'));
+        press(&mut app, ctrl('c'));
+
+        // The commit runs off-thread; wait for it to land.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while git(&repo, &["log", "-1", "--format=%s"]) != "first message" {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the commit never landed"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            app.editor.buffers.by_name(&name).is_none(),
+            "`{name}` must be gone after C-c C-c, not buried"
+        );
+
+        // Stage another change and start the next commit.
+        std::fs::write(&file, "base\nchange one\nchange two\n").unwrap();
+        git(&repo, &["add", "a.txt"]);
+        app.apply(Action::EnterCommandLine);
+        press_chars(&mut app, "magit-commit");
+        app.apply(Action::CommandLineSubmit);
+        assert!(settle_mode(&mut app, "magit-commit-mode").await);
+        assert!(
+            !commit_text(&app, &name)
+                .unwrap_or_default()
+                .contains("first message"),
+            "the next commit must not reopen the previous one's message"
+        );
+    }
+}

@@ -572,7 +572,7 @@ mod compose_buffers_are_not_browsers {
             assert!(
                 !src.contains("Effect::QuitEditor"),
                 "{name} returns `Effect::QuitEditor` — on a single-pane layout that \
-                 exits lattice. Compose buffers close with `Effect::BuryBuffer`."
+                 exits lattice. Compose buffers close with `Effect::KillBuffer`."
             );
         }
     }

@@ -1486,6 +1486,20 @@ pub enum Effect {
     /// mode can bind it unconditionally.
     BuryBuffer,
 
+    /// [`Effect::BuryBuffer`], then delete the buffer that was buried:
+    /// the pane returns to where it came from and the buffer is gone.
+    ///
+    /// For a buffer whose life ends at a verb — a compose buffer on
+    /// finish or cancel (magit's commit, note and rebase-todo buffers;
+    /// with-editor's `C-c C-c` / `C-c C-k`). Bury alone keeps the buffer,
+    /// and a synthetic buffer reopened by name is reused WITHOUT being
+    /// re-seeded, so the next commit came back holding the previous
+    /// message.
+    ///
+    /// No dirty check: the emitting mode has decided the buffer is done.
+    /// With no origin to return to it behaves as `:bd!`.
+    KillBuffer,
+
     /// Open a named transient picker menu. `source` is a name
     /// registered into a `TransientSourceRegistry` (`lattice-picker`)
     /// by the owning mode crate at boot — mirrors `OpenPicker`'s

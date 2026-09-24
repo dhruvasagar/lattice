@@ -358,10 +358,11 @@ impl WitBoundary for NativePickerSourceSpec {
             // silently does nothing.
             delete_command: wit.delete_command.map(Into::into),
             // PH.1: no WIT slot, deliberately. A guest documents its picker by
-            // registering `picker-<id>` through the help seam, which
-            // `Editor::do_picker_help` finds by convention — the same page a
-            // user reaches with `:help picker-<id>`, so there is one name and
-            // no declaration to keep in sync with it.
+            // registering a topic named `picker-<id>` through the help seam;
+            // the host namespaces it to `<plugin>.picker-<id>`, and
+            // `Editor::do_picker_help` finds it by convention through the
+            // source's `owner_plugin` — so there is one name (the one
+            // `:help` shows) and no declaration to keep in sync with it.
             help_topic: None,
         })
     }

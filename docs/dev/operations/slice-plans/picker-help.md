@@ -24,9 +24,13 @@ table could not answer without listing every exception.
   falls through to delete-word, so it never does nothing. `<C-j>` / `<C-k>`
   were rejected: `j` / `k` are the vertical pair, and fzf binds them to select
   next / prev.
-- **Pages are `docs/user/pickers/picker-<id>.md`.** The file stem is the topic
+- **Pages are `docs/user/picker-<id>.md`, flat.** The file stem is the topic
   name, so the `picker-<id>` convention finds every builtin page with no spec
-  declaration. Only a page shared by several sources is declared.
+  declaration; only a page shared by several sources is declared. Flat, not a
+  `pickers/` subdirectory: `docs/user/` is a flat corpus on purpose, and both
+  the site sync (`sync-docs.sh`) and the `:help`-index guard glob only its top
+  level — a subdirectory page would register as a topic and reach neither the
+  website nor the index check. (PH.1 wrote `pickers/`; corrected in PH.2.)
 - **Transient menus are not in this batch** (PH.6).
 
 ## Slices

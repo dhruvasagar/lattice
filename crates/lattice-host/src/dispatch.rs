@@ -9873,9 +9873,11 @@ impl Editor {
     ///
     /// 1. the topic the source declares (`PickerSourceSpec::help_topic`), so a
     ///    family of sources can share one page;
-    /// 2. `picker-<id>`, if a page by that name is registered — the rung a
-    ///    plugin meets through its help seam without a spec field crossing WIT,
-    ///    and the one every builtin page is named for;
+    /// 2. `picker-<id>`, if a page by that name is registered — the one every
+    ///    builtin page is named for — or, for a plugin's source, the page ending
+    ///    `.picker-<id>` that SAME plugin registered (its topics are namespaced,
+    ///    `project.picker-projects`). This is how a plugin documents its picker
+    ///    without a spec field crossing WIT;
     /// 3. the general `picker` page, with an echo naming the source, so the
     ///    user knows they are reading the shared keys and not this picker's.
     ///
@@ -9956,8 +9958,27 @@ impl Editor {
             Some(id) => Some(format!("picker-{id}")),
             None => picker.source.help_topic().map(str::to_string),
         };
-        if let Some(topic) = conventional.filter(|t| exists(t)) {
-            return (topic, None);
+        if let Some(topic) = conventional.as_deref().filter(|t| exists(t)) {
+            return (topic.to_string(), None);
+        }
+        // A plugin's topics are namespaced (`project.picker-projects`), so its
+        // page is the one ending `.picker-<id>` that THE SAME PLUGIN
+        // registered. Ownership, not the suffix alone: otherwise any plugin
+        // could answer `<C-h>` for another's picker.
+        let owner = picker.source_id.as_deref().and_then(|id| {
+            self.picker_registry
+                .load()
+                .entry(id)
+                .and_then(|e| e.generator.as_ref())
+                .and_then(|g| g.owner_plugin())
+        });
+        if let (Some(owner), Some(conventional)) = (owner, conventional.as_deref()) {
+            let suffix = format!(".{conventional}");
+            if let Some(name) = help.names().find(|n| {
+                n.ends_with(&suffix) && help.lookup(n).is_some_and(|t| t.plugin_id == Some(owner))
+            }) {
+                return (name.to_string(), None);
+            }
         }
 
         let name = picker.source_id.as_deref().unwrap_or(picker.title.as_str());

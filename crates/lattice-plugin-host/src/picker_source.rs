@@ -118,6 +118,13 @@ impl PickerSourceGenerator for WasmPickerSource {
         &self.spec
     }
 
+    /// PH.1: the plugin behind this source, so `<C-h>` can find the page the
+    /// plugin registered as `<plugin>.picker-<id>` — and only that plugin's.
+    /// Same `u64` widening the loader applies to `HelpTopic::plugin_id`.
+    fn owner_plugin(&self) -> Option<u64> {
+        Some(u64::from(self.plugin_id().0))
+    }
+
     fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
         // Sync prelude: project the borrowed context now, then release the
         // borrow. Everything the future needs is owned + `'static`.

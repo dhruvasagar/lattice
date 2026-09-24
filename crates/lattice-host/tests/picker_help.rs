@@ -32,9 +32,15 @@ const DECLARED: &str = "ph1-declared";
 const CONVENTIONAL: &str = "ph1-conventional";
 const UNDOCUMENTED: &str = "ph1-undocumented";
 const MISDECLARED: &str = "ph1-misdeclared";
+/// Owned by plugin 7, which registers its page through the namespaced seam.
+const PLUGIN_OWNED: &str = "ph1-plugin-owned";
+/// Owned by plugin 7 too — but only plugin 8 registered a page for it.
+const PLUGIN_HIJACKED: &str = "ph1-plugin-hijacked";
 
 struct EmptySource {
     spec: PickerSourceSpec,
+    /// Stands in for `WasmPickerSource::owner_plugin`.
+    owner: Option<u64>,
 }
 
 impl PickerSourceGenerator for EmptySource {
@@ -53,6 +59,26 @@ impl PickerSourceGenerator for EmptySource {
     ) -> SourceResult<PickerAcceptOutcome> {
         Err("PH.1 fixture never accepts".to_string())
     }
+
+    fn owner_plugin(&self) -> Option<u64> {
+        self.owner
+    }
+}
+
+/// Register a topic exactly as the plugin help seam does: namespaced name,
+/// owning plugin recorded.
+fn register_plugin_topic(editor: &Editor, name: String, plugin_id: u64) {
+    editor.help_topics.rcu(|current| {
+        let mut next = (**current).clone();
+        next.register(lattice_help::topics::HelpTopic {
+            name: name.clone(),
+            summary: "PH.1 plugin fixture page.".to_string(),
+            body: lattice_help::topics::HelpTopicBody::Owned("# plugin page\n".to_string()),
+            related_command_patterns: Vec::new(),
+            plugin_id: Some(plugin_id),
+        });
+        Arc::new(next)
+    });
 }
 
 fn boot() -> Editor {
@@ -69,9 +95,17 @@ fn boot() -> Editor {
         PickerSourceSpec::no_args(MISDECLARED, "PH.1: declares a page that is not there.")
             .with_help_topic("ph1-no-such-page"),
     ] {
-        pickers.register_generator(Arc::new(EmptySource { spec }));
+        pickers.register_generator(Arc::new(EmptySource { spec, owner: None }));
+    }
+    for id in [PLUGIN_OWNED, PLUGIN_HIJACKED] {
+        pickers.register_generator(Arc::new(EmptySource {
+            spec: PickerSourceSpec::no_args(id, "PH.1: a plugin's source."),
+            owner: Some(7),
+        }));
     }
     editor.picker_registry.store(Arc::new(pickers));
+    register_plugin_topic(&editor, format!("fixture.picker-{PLUGIN_OWNED}"), 7);
+    register_plugin_topic(&editor, format!("impostor.picker-{PLUGIN_HIJACKED}"), 8);
 
     // The convention's page, registered the way a plugin's help seam does it.
     editor.help_topics.rcu(|current| {
@@ -193,4 +227,26 @@ fn ctrl_h_with_no_picker_open_is_not_picker_help() {
     // not have been captured by the picker binding.
     let title = press_help(&mut editor);
     assert_ne!(title.as_deref(), Some("help picker"));
+}
+
+/// The plugin rung. A guest registers `picker-<id>`; the host namespaces it to
+/// `<plugin>.picker-<id>`, so an exact-name lookup can never find it — which
+/// is what PH.1 first shipped, with a comment claiming otherwise.
+#[test]
+fn a_plugin_source_finds_the_page_its_own_plugin_registered() {
+    let mut editor = boot();
+    let _ = editor.open_picker(PLUGIN_OWNED.to_string(), Vec::new());
+    assert_eq!(
+        press_help(&mut editor).as_deref(),
+        Some(format!("help fixture.picker-{PLUGIN_OWNED}").as_str())
+    );
+}
+
+/// Ownership, not the suffix: another plugin's `.picker-<id>` page must not
+/// answer for a picker it does not own.
+#[test]
+fn another_plugins_page_does_not_answer_for_a_source_it_does_not_own() {
+    let mut editor = boot();
+    let _ = editor.open_picker(PLUGIN_HIJACKED.to_string(), Vec::new());
+    assert_eq!(press_help(&mut editor).as_deref(), Some("help picker"));
 }

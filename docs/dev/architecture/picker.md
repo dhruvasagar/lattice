@@ -395,10 +395,14 @@ here as everywhere else.
    page. The magit sources are one set of keys over six ref kinds; a page each
    would be six copies of the same table.
 2. `picker-<id>`, if a topic by that name is registered. Every builtin page is
-   named for it (`docs/user/pickers/picker-files.md` → `picker-files`), so
+   named for it (`docs/user/picker-files.md` → `picker-files`), so
    builtins declare nothing unless they share. It is also the rung a **plugin**
-   meets: it registers `picker-<id>` through its help seam and is found, with
-   no field crossing WIT. Pickers seated without a registry id (LSP locations,
+   meets, with no field crossing WIT: it registers a topic named `picker-<id>`
+   through its help seam, the host namespaces that to `<plugin>.picker-<id>`
+   (`project.picker-projects`), and the rung accepts a `.picker-<id>` topic
+   **only from the plugin that owns the source**
+   (`PickerSourceGenerator::owner_plugin`). A bare suffix match would let any
+   plugin answer `<C-h>` for another's picker. Pickers seated without a registry id (LSP locations,
    `:lsp-log`, `:ai-log`) answer this rung through `PickerSource::help_topic`.
 3. The general `picker` page, with an echo naming the source, so the user
    knows they are reading the shared keys and not this picker's.

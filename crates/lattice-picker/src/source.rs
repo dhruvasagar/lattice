@@ -141,8 +141,10 @@ pub struct PickerSourceSpec {
     /// **A declaration, so several sources can share one page** — the magit
     /// sources are one family with one set of keys, and a page per source
     /// would be six copies of the same table. The convention is the peer a
-    /// plugin can meet without this field crossing WIT: register
-    /// `picker-<id>` through the help seam and it is found.
+    /// plugin can meet without this field crossing WIT: register a topic
+    /// named `picker-<id>` through the help seam — the host namespaces it to
+    /// `<plugin>.picker-<id>` — and it is found through
+    /// [`PickerSourceGenerator::owner_plugin`].
     pub help_topic: Option<Cow<'static, str>>,
 }
 
@@ -547,7 +549,7 @@ pub trait PickerSourceGenerator: Send + Sync {
         None
     }
 
-    /// PC.10: `<C-h>` — [`descend`](Self::descend)'s peer, one level out.
+    /// PC.10: `<C-w>` (`<C-h>` until PH.1) — [`descend`](Self::descend)'s peer, one level out.
     ///
     /// Takes the QUERY rather than a candidate: going up is a statement about
     /// where you are, and the row you happen to have selected has nothing to
@@ -652,6 +654,18 @@ pub trait PickerSourceGenerator: Send + Sync {
     /// user an option to turn the feature off, and a guard on how much
     /// work the fetch can be.
     fn preview_debounce(&self) -> Option<std::time::Duration> {
+        None
+    }
+
+    /// PH.1: the host-issued id of the plugin that contributed this source,
+    /// `None` for a native one.
+    ///
+    /// Exists for `<C-h>`: a plugin's help topics are namespaced
+    /// (`project.picker-projects`), so the host finds a plugin source's page
+    /// by asking for a topic ending `.picker-<id>` **registered by this same
+    /// plugin**. The ownership check is the point — a suffix match alone
+    /// would let any plugin answer `<C-h>` for another plugin's picker.
+    fn owner_plugin(&self) -> Option<u64> {
         None
     }
 }

@@ -700,7 +700,7 @@ impl DirPickSource {
                 doc: "Browse to a directory and supply its path as a value (for a transient \
                       argument, a command argument, or other caller awaiting one). Lists one \
                       level at a time: `<Tab>` (or `<C-l>`) descends into the selected \
-                      directory, `<C-h>` goes up, `<CR>` chooses — except on the `../` row, \
+                      directory, `<C-w>` goes up, `<CR>` chooses — except on the `../` row, \
                       where it goes up."
                     .into(),
                 args_hint: "[start]".into(),
@@ -743,7 +743,7 @@ impl DirPickSource {
     /// The directory one level above `prefix`, spelled the way the query
     /// spells it.
     ///
-    /// Shared by `<C-h>` and the `../` row so the two cannot disagree about
+    /// Shared by `<C-w>` and the `../` row so the two cannot disagree about
     /// where "up" is — two ways to go up that arrive somewhere different is
     /// the kind of inconsistency nobody reports and everybody trips on.
     ///
@@ -763,7 +763,7 @@ impl DirPickSource {
             // No separator left in the spelling: `~`, the one case where the
             // query's own text cannot name its parent. Resolve it and answer
             // absolutely, rather than reporting that the home directory has no
-            // parent — `<C-h>` at `~/` used to clear the query, which re-listed
+            // parent — ascend (then on `<C-h>`) at `~/` used to clear the query, which re-listed
             // `~/` and so read as a key that did nothing.
             //
             // A bare word (a query the user typed over) is not a path we can
@@ -975,7 +975,7 @@ impl PickerSourceGenerator for DirPickSource {
         (candidate.display == PARENT_ROW_DISPLAY).then(|| candidate.text.clone())
     }
 
-    /// `<C-h>`: drop the last path component.
+    /// `<C-w>`: drop the last path component.
     ///
     /// [`parent_of`](Self::parent_of) does the work, shared with the `../`
     /// row so the key and the row cannot land in different places. `/` stays
@@ -992,7 +992,7 @@ impl PickerSourceGenerator for DirPickSource {
     ///
     /// The query IS the directory being listed here, so an empty one leaves
     /// the prompt unable to say where you are — every row carries a path and
-    /// the one line meant to orient you carries nothing. It also left `<C-h>`
+    /// the one line meant to orient you carries nothing. It also left ascend
     /// with no last component to drop, so the first press did nothing and the
     /// second worked.
     ///
@@ -3282,7 +3282,7 @@ mod dir_pick_tests {
         );
     }
 
-    /// **`../` and `<C-h>` must land in the same place.** They share
+    /// **`../` and `<C-w>` must land in the same place.** They share
     /// `parent_of` for exactly this reason: two ways to go up that arrive
     /// somewhere different is an inconsistency nobody reports and everybody
     /// trips on.
@@ -3294,12 +3294,12 @@ mod dir_pick_tests {
             assert_eq!(
                 row,
                 source.ascend(query),
-                "`../` and `<C-h>` disagree about the parent of {query}"
+                "`../` and `<C-w>` disagree about the parent of {query}"
             );
         }
     }
 
-    /// `<C-h>` at `~/` used to CLEAR the query, which re-listed `~/` — a key
+    /// ascend at `~/` used to CLEAR the query, which re-listed `~/` — a key
     /// that visibly did nothing. Home's parent is spelled absolutely because
     /// the tilde form cannot name it, which is the one case where the query's
     /// own text is not enough.

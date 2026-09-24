@@ -15,9 +15,9 @@ picks the branch to merge), or a command run without the argument it
 needs (`:magit-revert` with no commit under the cursor). Every one is
 also reachable as `:picker <source>`.
 
-(`<C-h>` inside the transient **menus** that lead here — the `<C-c>g`
-dispatch and its submenus — is not this page; menus do not have their
-own help pages yet.)
+(The transient **menus** that lead here — the `<C-c>g` dispatch and its
+submenus — need no page: every row already shows its key and what it
+does.)
 
 ---
 

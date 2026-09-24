@@ -9897,11 +9897,11 @@ impl Editor {
             return Vec::new();
         };
         if picker.transient.is_some() {
-            // PH.6: transient menus (magit's, a plugin's) are keyed by their
-            // spec's title, not a registry id, and their pages do not exist
-            // yet. Say so rather than opening the general picker page, whose
-            // keys are not theirs.
-            self.set_message(EchoLevel::Info, "no help page for transient menus yet");
+            // A transient menu (magit's, a plugin's) IS its own help: every
+            // row shows its key and what it does. It gets no page (PH.6 was
+            // dropped for exactly that reason), and opening the general
+            // picker page here would describe keys that are not the menu's.
+            self.set_message(EchoLevel::Info, "this menu lists its own keys");
             return Vec::new();
         }
         let (topic, note) = self.resolve_picker_help_topic(picker);

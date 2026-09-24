@@ -428,10 +428,10 @@ costs the query; re-opening is one command. Keeping the picker and rendering
 help inside it (telescope's `<C-/>` which-key float) was the alternative, and
 it answers a smaller question — a key list, not a page.
 
-**Transient menus are out of scope** (PH.6, deferred). They seat on the picker
-substrate with no registry id, and their keys are their own; `<C-h>` there
-echoes that no page exists rather than opening the general picker page, whose
-keys are not theirs.
+**Transient menus get no page, by design** (PH.6, dropped). A transient menu is
+already its own help — every row shows its key and what it does — so a page
+would repeat the menu. `<C-h>` there echoes that the menu lists its own keys
+rather than opening the general picker page, whose keys are not the menu's.
 
 **The docs are pinned to the specs.** A guard test walks every builtin source
 and asserts its page resolves, and that the page's *Keys* table names every key

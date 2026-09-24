@@ -1,7 +1,7 @@
 //! PH.1 — `<C-h>` in a picker opens that picker's own help page.
 //!
 //! Design: [`docs/dev/architecture/picker.md`](../../../docs/dev/architecture/picker.md)
-//! §4.2quinquies. Slice plan: `slice-plans/picker-help.md` PH.1.
+//! §4.2quinquies. Slice plan: `slice-plans/archive/picker-help.md` PH.1.
 //!
 //! ## What is at risk
 //!

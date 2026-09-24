@@ -1,12 +1,12 @@
 # Per-picker help on `<C-h>` — slice plan (PH)
 
-> Design: [`../../architecture/picker.md`](../../architecture/picker.md)
+> Design: [`../../../architecture/picker.md`](../../../architecture/picker.md)
 > §4.2quinquies (the key, the three-rung page resolution, the guard test) and
 > §4.2bis (depth, whose "up" key this moved).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
-**Status:** 🚧 PH.1–PH.5 ✅ (2026-09-24); PH.6 ⛔ deferred, which is what keeps this plan active.
+**Status:** ✅ complete (2026-09-24) — PH.1–PH.5 ✅, PH.6 ❌ dropped.
 
 ## Why
 
@@ -31,7 +31,7 @@ table could not answer without listing every exception.
   the site sync (`sync-docs.sh`) and the `:help`-index guard glob only its top
   level — a subdirectory page would register as a topic and reach neither the
   website nor the index check. (PH.1 wrote `pickers/`; corrected in PH.2.)
-- **Transient menus are not in this batch** (PH.6).
+- **Transient menus get no page** (PH.6, dropped): the menu is its own help.
 
 ## Slices
 
@@ -42,7 +42,7 @@ table could not answer without listing every exception.
 | PH.3 | Pages for history / editing sources: `jumps`, `marks`, `registers`, `yank-ring`, `commands`, `history`, `search-history`, `pane-buffer-history`, `snippets`, `colorscheme`. Writing them surfaced that `<CR>` in `pane-buffer-history` walked nowhere (fixed separately, `553c79d4`) and that `picker.md` still called the yank picker unbuilt | ✅ |
 | PH.4 | Pages for magit (one shared `picker-magit`, declared by all twelve sources), LSP (`picker-lsp-locations` — every LSP result list incl. `:diagnostics` and the error list — `picker-lsp-instances`, `picker-lsp-message-request`), AI sessions, and the `project` plugin's `projects` / `project-buffers`, registered through its help seam (`project.picker-*`). The loader test against the real plugin found that ownership must compare plugins, not seam ids (`6cd10436`) | ✅ |
 | PH.5 | Guard test `picker_help_pages_cover_every_source.rs`: every source in the boot registry resolves a page with a keys table listing `<C-h>`; each page's table ROWS name every key its spec enables (`delete_command` → `<C-d>`, depth → `<C-l>` / `<C-w>` / `<Tab>`, `create_label` → the create row); every id-less `PickerSource` names a registered page. Mutation-checked: dropping `<C-w>` from dir-pick's table fails it (the first cut read the whole section and let the prose paragraph stand in for the row) | ✅ |
-| PH.6 | `<C-h>` in transient menus opens a page for the menu | ⛔ deferred — transients have no registry id to key a page on; revisit with a `TransientSpec` help field when the magit transient docs are next reworked |
+| PH.6 | `<C-h>` in transient menus opens a page for the menu | ❌ dropped — a transient menu already shows every key and what it does, so a page would only repeat it (Dhruva, 2026-09-24). `<C-h>` there echoes "this menu lists its own keys" |
 
 ## PH.1 notes
 

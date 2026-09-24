@@ -2,7 +2,7 @@
 //! its source enables.
 //!
 //! Design: `docs/dev/architecture/picker.md` §4.2quinquies. Slice plan:
-//! `slice-plans/picker-help.md` PH.5.
+//! `slice-plans/archive/picker-help.md` PH.5.
 //!
 //! The pages are prose, and prose drifts: a source gains `<C-d>` and its page
 //! keeps saying the key does nothing, or a new source ships with no page and

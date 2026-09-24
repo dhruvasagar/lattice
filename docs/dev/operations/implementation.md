@@ -997,11 +997,11 @@ sources" subsection).
 `<C-h>` in a picker closes it and opens that picker's own `:help` page; ascend
 moved from `<C-h>` to `<C-w>` (delete-word where a source has no depth). Design:
 [`../architecture/picker.md`](../architecture/picker.md) §4.2quinquies. Slice
-plan: [`slice-plans/picker-help.md`](slice-plans/picker-help.md) — PH.1–PH.5
+plan: [`slice-plans/archive/picker-help.md`](slice-plans/archive/picker-help.md) — PH.1–PH.5
 ✅ (25 pages: every builtin source, the id-less LSP / AI / `:b` pickers, one
 shared magit page, and the `project` plugin's two through its help seam;
-guarded by `picker_help_pages_cover_every_source.rs`), PH.6 (transient menus)
-⛔.
+guarded by `picker_help_pages_cover_every_source.rs`); PH.6 (transient menus)
+❌ dropped — a transient menu is its own help. Plan complete.
 
 ---
 

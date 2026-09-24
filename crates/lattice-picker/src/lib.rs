@@ -356,16 +356,19 @@ impl PickerSource {
     /// peer of the `picker-<id>` convention for the imperative pickers, which
     /// have no id to form it from.
     ///
-    /// `Buffers` and `Files` answer `None`: both are shared shells (the
-    /// transient menu seats on `Buffers`), so the variant says nothing about
-    /// which picker the user is looking at.
+    /// `Buffers` without an id is `:buffers` / `:b` — the transient menu seats
+    /// on `Buffers` too, but `do_picker_help` answers transients before it
+    /// gets here — so it shares `:picker buffers`' page. `Files` answers
+    /// `None`: only the trait path seats on it, and that path always carries
+    /// an id.
     pub fn help_topic(&self) -> Option<&'static str> {
         match self {
+            Self::Buffers => Some("picker-buffers"),
             Self::LspLocations => Some("picker-lsp-locations"),
             Self::LspInstances { .. } => Some("picker-lsp-instances"),
             Self::AiSessions { .. } => Some("picker-ai-sessions"),
             Self::LspShowMessageRequest { .. } => Some("picker-lsp-message-request"),
-            Self::Buffers | Self::Files => None,
+            Self::Files => None,
         }
     }
 }

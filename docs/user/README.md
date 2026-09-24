@@ -114,6 +114,14 @@ same surface).
 |   — as completions         | [`snippet-completion-mode`](help:snippet-completion-mode) | ✅      |
 |   — while expanding        | [`active-snippet-mode`](help:active-snippet-mode) | ✅      |
 | Picker & marginalia        | [`picker`](help:picker)                  | ✅      |
+|   — files                  | [`picker-files`](help:picker-files) | ✅      |
+|   — file-pick              | [`picker-file-pick`](help:picker-file-pick) | ✅      |
+|   — dir-pick               | [`picker-dir-pick`](help:picker-dir-pick) | ✅      |
+|   — recent                 | [`picker-recent`](help:picker-recent) | ✅      |
+|   — buffers (`:b`)         | [`picker-buffers`](help:picker-buffers) | ✅      |
+|   — grep                   | [`picker-grep`](help:picker-grep) | ✅      |
+|   — lines                  | [`picker-lines`](help:picker-lines) | ✅      |
+|   — outline                | [`picker-outline`](help:picker-outline) | ✅      |
 | Options and configuration  | [`options`](help:options)                | ✅      |
 | When a key does nothing    | [`troubleshooting-keys`](help:troubleshooting-keys) | ✅      |
 | Key hints as you type      | [`which-key-mode`](help:which-key-mode)  | ✅      |

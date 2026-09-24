@@ -75,16 +75,17 @@ that picker's own page: press `<C-h>` inside it, or
 ## The sources
 
 Every id below is valid as `:picker <id>`. Sources marked "active
-buffer" read the buffer you were in when you opened the picker.
+buffer" read the buffer you were in when you opened the picker. A linked
+id has its own page — the same one `<C-h>` opens inside that picker.
 
 | Source | Lists | `<CR>` does | Args |
 |---|---|---|---|
-| `files` | Files under the workspace root | Open the file | `[root]` — directory to walk (default: the active buffer's project root) |
-| `recent` | Recently-edited files (MRU) | Open the file | — |
-| `buffers` | Every open buffer | Switch to it | — |
-| `lines` | Lines of the active buffer | Jump to the line | — |
-| `outline` | Tree-sitter symbols in the active buffer | Jump to the symbol | — |
-| `grep` | Live recursive text search (`rg` / `ag` / `grep`) | Jump to the hit | `[pattern]` — seeds the prompt; omit to start empty |
+| [`files`](help:picker-files) | Files under the workspace root | Open the file | `[root]` — directory to walk (default: the active buffer's project root) |
+| [`recent`](help:picker-recent) | Recently-edited files (MRU) | Open the file | — |
+| [`buffers`](help:picker-buffers) | Every open buffer | Switch to it | — |
+| [`lines`](help:picker-lines) | Lines of the active buffer | Jump to the line | — |
+| [`outline`](help:picker-outline) | Tree-sitter symbols in the active buffer | Jump to the symbol | — |
+| [`grep`](help:picker-grep) | Live recursive text search (`rg` / `ag` / `grep`) | Jump to the hit | `[pattern]` — seeds the prompt; omit to start empty |
 | `jumps` | Position-history ring (jump list + mark ring, newest first) | Jump to the entry | — |
 | `marks` | Vim marks | Jump to the mark (same as `` ` ``) | — |
 | `registers` | Vim registers (unnamed, numbered, named) | Paste the register at the cursor | — |

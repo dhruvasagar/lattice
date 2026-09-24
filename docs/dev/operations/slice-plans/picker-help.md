@@ -38,9 +38,9 @@ table could not answer without listing every exception.
 | Slice | Description | Status |
 |---|---|---|
 | PH.1 | `PickerSourceSpec::help_topic`, `Action::PickerHelp` on `<C-h>`, three-rung resolution, ascend → `<C-w>` with delete-word fallback (`Picker::delete_word_backward`), `PickerSource::help_topic` for id-less pickers | ✅ |
-| PH.2 | Pages for the file / navigation sources: `files`, `file-pick`, `dir-pick`, `recent`, `buffers`, `projects`, `grep`, `lines`, `outline`. `dir-pick` documents `<C-l>` / `<C-w>` / `<Tab>` | 📝 |
+| PH.2 | Pages for the file / navigation sources: `files`, `file-pick`, `dir-pick`, `recent`, `buffers` (both `:b` and `:picker buffers` — `PickerSource::Buffers` now answers `picker-buffers`), `grep`, `lines`, `outline`. `dir-pick` documents `<C-l>` / `<C-w>` / `<Tab>`. README index rows, `nav.toml` "Pickers, one by one" group | ✅ |
 | PH.3 | Pages for history / editing sources: `jumps`, `marks`, `registers`, `yank`, `commands`, `history`, `search-history`, `pane-buffer-history`, `snippets`, `colorscheme` | 📝 |
-| PH.4 | Pages for magit (one shared `picker-magit`, declared), LSP (`picker-lsp-locations`, `picker-lsp-instances`, …), AI sessions, org-roam | 📝 |
+| PH.4 | Pages for magit (one shared `picker-magit`, declared), LSP (`picker-lsp-locations`, `picker-lsp-instances`, `picker-lsp-message-request`), AI sessions, and the `project` plugin's `projects` / `project-buffers` (registered through its help seam as `picker-projects` → `project.picker-projects`) | 📝 |
 | PH.5 | Guard test (every builtin source resolves a page; its *Keys* table names every key its spec enables), `picker.md` links out, README index, `nav.toml` | 📝 |
 | PH.6 | `<C-h>` in transient menus opens a page for the menu | ⛔ deferred — transients have no registry id to key a page on; revisit with a `TransientSpec` help field when the magit transient docs are next reworked |
 

@@ -207,16 +207,34 @@ fn a_declared_topic_that_is_missing_is_a_warning_not_silence() {
     );
 }
 
-/// The builtin path end to end: `files` declares `picker-files` (PH.2), and
-/// until that page exists this still has to land somewhere sensible.
+/// The builtin path end to end: each page is named for its source, so the
+/// convention finds it with no declaration.
 #[test]
-fn a_builtin_source_opens_a_help_page() {
+fn builtin_sources_open_their_own_pages() {
+    for (source, args) in [("buffers", vec![]), ("dir-pick", vec!["/".to_string()])] {
+        let mut editor = Editor::boot(CoreDocument::from_text("committed\n"));
+        let _ = editor.open_picker(source.to_string(), args);
+        assert!(editor.picker.is_some(), "precondition: `{source}` seats");
+        assert_eq!(
+            press_help(&mut editor),
+            Some(format!("help picker-{source}")),
+            "`<C-h>` in `{source}` opens that source's page"
+        );
+    }
+}
+
+/// `:b` / `:buffers` seat WITHOUT a registry id, so the convention has no id
+/// to form the name from. `PickerSource::help_topic` answers for it, and it
+/// shares `:picker buffers`' page — the buffer picker people actually use
+/// must not be the one that falls back to the general page.
+#[test]
+fn the_id_less_buffer_picker_opens_the_buffers_page() {
     let mut editor = Editor::boot(CoreDocument::from_text("committed\n"));
-    let _ = editor.open_picker("buffers".to_string(), Vec::new());
-    assert!(editor.picker.is_some(), "precondition: `buffers` seats");
-    assert!(
-        press_help(&mut editor).is_some(),
-        "`<C-h>` in a builtin picker opens a help page"
+    let _ = editor.do_open_buffer_picker();
+    assert!(editor.picker.is_some(), "precondition: `:b` seats");
+    assert_eq!(
+        press_help(&mut editor).as_deref(),
+        Some("help picker-buffers")
     );
 }
 

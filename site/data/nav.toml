@@ -77,6 +77,7 @@ slug = "navigation"
 title = "Navigating your project"
 description = "Buffers, panes and splits, the fuzzy picker, filesystem views, and project-wide search."
 [[section.group]]
+title = "Buffers, views and search"
 docs = [
   "buffers",
   "picker",
@@ -87,6 +88,19 @@ docs = [
   "narrow-mode",
   "scan-view-mode",
   "scan-view-clockreport-mode",
+]
+[[section.group]]
+title = "Pickers, one by one"
+description = "Each picker's own page — the one `<C-h>` opens inside it."
+docs = [
+  "picker-files",
+  "picker-file-pick",
+  "picker-dir-pick",
+  "picker-recent",
+  "picker-buffers",
+  "picker-grep",
+  "picker-lines",
+  "picker-outline",
 ]
 
 [[section]]

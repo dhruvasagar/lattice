@@ -992,6 +992,16 @@ sources" subsection).
 
 ---
 
+## picker-help (per-picker `<C-h>` help pages, 2026-09-24)
+
+`<C-h>` in a picker closes it and opens that picker's own `:help` page; ascend
+moved from `<C-h>` to `<C-w>` (delete-word where a source has no depth). Design:
+[`../architecture/picker.md`](../architecture/picker.md) §4.2quinquies. Slice
+plan: [`slice-plans/picker-help.md`](slice-plans/picker-help.md) — PH.1 ✅,
+PH.2–PH.5 📝, PH.6 (transient menus) ⛔.
+
+---
+
 ## Vim grammar coverage (Phase 1 catalog)
 
 This section enumerates every named primitive in vim's grammar against its

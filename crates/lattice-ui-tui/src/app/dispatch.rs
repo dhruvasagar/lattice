@@ -456,11 +456,14 @@ impl App {
             | Action::PickerBackspace
             | Action::PickerSelectNext
             | Action::PickerSelectPrev
-            // PC.10: `<C-l>` / `<C-h>` — host-side, like every other picker
+            // PC.10: `<C-l>` / `<C-w>` — host-side, like every other picker
             // navigation arm above. The source answers; the renderer has
             // nothing to add.
             | Action::PickerDescend
-            | Action::PickerAscend
+            | Action::PickerAscendOrDeleteWord
+            // PH.1: `<C-h>` — the host picks the page and returns the same
+            // `DisplayBuffer` signal `:help` does.
+            | Action::PickerHelp
             // PP.5: `<Tab>` — drills in where the source has depth, selects
             // next everywhere else. Host-side like its two neighbours; an
             // action missing from THIS list is a key that silently does

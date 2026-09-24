@@ -3260,8 +3260,12 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             let signals = editor.do_picker_descend();
             _out.renderer_signals.extend(signals);
         }
-        Action::PickerAscend => {
-            let signals = editor.do_picker_ascend();
+        Action::PickerAscendOrDeleteWord => {
+            let signals = editor.do_picker_ascend_or_delete_word();
+            _out.renderer_signals.extend(signals);
+        }
+        Action::PickerHelp => {
+            let signals = editor.do_picker_help();
             _out.renderer_signals.extend(signals);
         }
         Action::PickerDescendOrSelectNext => {
@@ -9825,6 +9829,145 @@ impl Editor {
             return Vec::new();
         }
         self.set_live_picker_query(next)
+    }
+
+    /// PH.1: `<C-w>` — [`Self::do_picker_ascend`] where the source has depth,
+    /// the command-line's delete-word everywhere else.
+    ///
+    /// Decided by whether the source ANSWERS `ascend` at all, not — as
+    /// [`Self::do_picker_tab`] decides — by whether the query moved. The
+    /// difference is the fixed point: `dir-pick` at `/` answers `Some("/")`,
+    /// and a moved-query test would read that as "no depth" and delete the
+    /// `/`, leaving a directory picker with no directory.
+    #[must_use]
+    pub fn do_picker_ascend_or_delete_word(&mut self) -> Vec<RendererSignal> {
+        let Some(picker) = self.picker.as_ref() else {
+            return Vec::new();
+        };
+        if picker.transient.is_some() {
+            // A transient menu has no query to edit.
+            return Vec::new();
+        }
+        let has_depth = self
+            .live_picker_query
+            .as_ref()
+            .is_some_and(|s| s.generator.ascend(&picker.query).is_some());
+        if has_depth {
+            return self.do_picker_ascend();
+        }
+        let Some(p) = self.picker.as_mut() else {
+            return Vec::new();
+        };
+        if !p.delete_word_backward() {
+            return Vec::new();
+        }
+        // The same tail `<BS>` runs: a live source re-queries on the edit, a
+        // static one has already refiltered inside the picker.
+        self.bump_live_picker_debounce();
+        self.preview_picker_selection()
+    }
+
+    /// PH.1: `<C-h>` — close the picker and open its help page.
+    ///
+    /// **The page is chosen in three rungs**, most specific first:
+    ///
+    /// 1. the topic the source declares (`PickerSourceSpec::help_topic`), so a
+    ///    family of sources can share one page;
+    /// 2. `picker-<id>`, if a page by that name is registered — the rung a
+    ///    plugin meets through its help seam without a spec field crossing WIT,
+    ///    and the one every builtin page is named for;
+    /// 3. the general `picker` page, with an echo naming the source, so the
+    ///    user knows they are reading the shared keys and not this picker's.
+    ///
+    /// Pickers seated without a registry id (LSP locations, `:lsp-log`,
+    /// `:ai-log`) answer rung 2 through [`lattice_picker::PickerSource::help_topic`].
+    ///
+    /// A DECLARED topic that is not registered warns rather than falling back
+    /// quietly: it is a wiring bug (a renamed page, a plugin that failed to
+    /// load), and the echo naming the topic is the only thing that points at it.
+    ///
+    /// **The picker closes first**, including a parent it was stacked over.
+    /// It is a modal overlay that owns every key; a help page opened beneath it
+    /// could be neither scrolled nor dismissed.
+    #[must_use]
+    pub fn do_picker_help(&mut self) -> Vec<RendererSignal> {
+        let Some(picker) = self.picker.as_ref() else {
+            return Vec::new();
+        };
+        if picker.transient.is_some() {
+            // PH.6: transient menus (magit's, a plugin's) are keyed by their
+            // spec's title, not a registry id, and their pages do not exist
+            // yet. Say so rather than opening the general picker page, whose
+            // keys are not theirs.
+            self.set_message(EchoLevel::Info, "no help page for transient menus yet");
+            return Vec::new();
+        }
+        let (topic, note) = self.resolve_picker_help_topic(picker);
+
+        let mut signals = self.do_picker_dismiss();
+        // A picker stacked over another (the yank picker over a query) restores
+        // its parent on dismiss; help leaves both.
+        if self.picker.is_some() {
+            signals.extend(self.do_picker_dismiss());
+        }
+        signals.extend(self.do_open_help_topic(Some(&topic)));
+        // After the open, so a failed open's own error is not overwritten by
+        // a note about which page was chosen.
+        if let Some((level, text)) = note
+            && signals
+                .iter()
+                .any(|s| matches!(s, RendererSignal::DisplayBuffer(_)))
+        {
+            self.set_message(level, text);
+        }
+        signals
+    }
+
+    /// The help topic for `picker` and, when it is not that picker's own
+    /// page, the echo that says so. See [`Self::do_picker_help`].
+    fn resolve_picker_help_topic(
+        &self,
+        picker: &lattice_picker::Picker,
+    ) -> (String, Option<(EchoLevel, String)>) {
+        const GENERAL: &str = "picker";
+        let help = self.help_topics.load();
+        let exists = |name: &str| help.lookup(name).is_some();
+
+        let declared = picker.source_id.as_deref().and_then(|id| {
+            self.picker_registry
+                .load()
+                .entry(id)
+                .and_then(|e| e.spec.help_topic.as_ref().map(|t| t.to_string()))
+        });
+        if let Some(topic) = declared {
+            if exists(&topic) {
+                return (topic, None);
+            }
+            return (
+                GENERAL.to_string(),
+                Some((
+                    EchoLevel::Warn,
+                    format!("picker help: declared topic `{topic}` is not registered"),
+                )),
+            );
+        }
+
+        let conventional = match picker.source_id.as_deref() {
+            Some(id) => Some(format!("picker-{id}")),
+            None => picker.source.help_topic().map(str::to_string),
+        };
+        if let Some(topic) = conventional.filter(|t| exists(t)) {
+            return (topic, None);
+        }
+
+        let name = picker.source_id.as_deref().unwrap_or(picker.title.as_str());
+        (
+            GENERAL.to_string(),
+            Some((
+                EchoLevel::Info,
+                format!("no help page for the `{name}` picker; showing the general picker keys"),
+            )),
+        )
     }
 
     /// PP.5: `<Tab>` — drill in if this source has depth, else select the next

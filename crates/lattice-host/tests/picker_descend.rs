@@ -1,4 +1,6 @@
-//! PC.10 — `<C-l>` goes into the selected candidate, `<C-h>` comes back out.
+//! PC.10 — `<C-l>` goes into the selected candidate, `<C-w>` comes back out.
+//! (PC.10 shipped the pair as `<C-l>` / `<C-h>`; PH.1 gave `<C-h>` to picker
+//! help and moved ascend to `<C-w>`.)
 //!
 //! Design:
 //! [`docs/dev/architecture/project-commands.md`](../../../docs/dev/architecture/project-commands.md)
@@ -118,7 +120,7 @@ fn descending_makes_the_selected_directory_the_query() {
     );
 }
 
-/// `<C-h>` drops the last component. Round-tripping is the assertion, because
+/// `<C-w>` drops the last component. Round-tripping is the assertion, because
 /// an ascend that merely *changed* the query would pass a one-sided test.
 #[test]
 fn ascending_undoes_a_descend() {
@@ -131,7 +133,7 @@ fn ascending_undoes_a_descend() {
     press(&mut editor, 'l');
     assert_ne!(query(&editor), before, "precondition: the descend moved");
 
-    press(&mut editor, 'h');
+    press(&mut editor, 'w');
 
     assert_eq!(
         query(&editor),
@@ -141,7 +143,7 @@ fn ascending_undoes_a_descend() {
 }
 
 /// PP.1: `../` descends OUT, which is the whole reason it is a row rather than
-/// a legend. `<C-l>` on it must land exactly where `<C-h>` would — they share
+/// a legend. `<C-l>` on it must land exactly where `<C-w>` would — they share
 /// `parent_of` so they cannot drift, and this is what says so through the real
 /// keystroke path.
 #[test]
@@ -163,13 +165,13 @@ fn descending_into_the_parent_row_goes_up() {
     press(&mut up_by_row, 'l');
 
     let mut up_by_key = open_dir_pick(&root);
-    press(&mut up_by_key, 'h');
+    press(&mut up_by_key, 'w');
 
     assert_eq!(query(&up_by_row), parent, "`<C-l>` on `../` goes up");
     assert_eq!(
         query(&up_by_key),
         parent,
-        "and `<C-h>` goes to the same place"
+        "and `<C-w>` goes to the same place"
     );
 }
 
@@ -269,7 +271,7 @@ fn ascending_stops_at_the_filesystem_root() {
     assert!(editor.picker.is_some(), "precondition: `/` seats a picker");
 
     for _ in 0..5 {
-        press(&mut editor, 'h');
+        press(&mut editor, 'w');
     }
 
     assert_eq!(
@@ -288,7 +290,7 @@ fn ascending_stops_at_the_filesystem_root() {
 /// source's rows come from `init` and are fuzzy-refiltered, so rewriting its
 /// query would filter the rows it already has rather than fetch new ones.
 #[test]
-fn a_picker_with_no_notion_of_depth_ignores_both_keys() {
+fn a_picker_with_no_notion_of_depth_ignores_descend() {
     let mut editor = Editor::boot(CoreDocument::from_text("committed\n"));
     let _ = editor.open_picker("buffers".to_string(), Vec::new());
     assert!(editor.picker.is_some(), "precondition: `buffers` seats");
@@ -297,19 +299,43 @@ fn a_picker_with_no_notion_of_depth_ignores_both_keys() {
     let before_rows = rows(&editor);
 
     press(&mut editor, 'l');
-    press(&mut editor, 'h');
 
     assert_eq!(
         query(&editor),
         before_query,
-        "`<C-l>` / `<C-h>` must not touch the query of a picker whose source \
-         takes the `None` default"
+        "`<C-l>` must not touch the query of a picker whose source takes the \
+         `None` default"
     );
     assert_eq!(
         rows(&editor),
         before_rows,
         "and must not disturb its candidates either"
     );
+}
+
+/// PH.1: where there is no depth, `<C-w>` is the command-line's delete-word —
+/// vim's `c_CTRL-W`, readline's `unix-word-rubout`. It used to be `<C-h>`,
+/// which in a picker with no depth did nothing at all; a key that visibly does
+/// nothing in most pickers is worse than one whose fallback is the meaning
+/// every prompt already gives it.
+///
+/// `ascend` still goes first, which is what keeps a grep pattern containing a
+/// `/` safe: `grep` declines `ascend`, so its query loses a WORD, not
+/// everything back to the slash.
+#[test]
+fn ctrl_w_deletes_a_word_where_there_is_no_depth() {
+    let mut editor = Editor::boot(CoreDocument::from_text("committed\n"));
+    let _ = editor.open_picker("buffers".to_string(), Vec::new());
+    for c in "foo bar".chars() {
+        editor.dispatch(Action::PickerAppend(c));
+    }
+    press(&mut editor, 'w');
+    assert_eq!(query(&editor), "foo ", "one word, not the whole query");
+    press(&mut editor, 'w');
+    assert_eq!(query(&editor), "", "then the space and the word before it");
+    press(&mut editor, 'w');
+    assert_eq!(query(&editor), "", "an empty query stays empty");
+    assert!(editor.picker.is_some(), "and the picker stays open");
 }
 
 /// Neither key may close the picker or accept anything. They are navigation,
@@ -324,8 +350,8 @@ fn neither_key_accepts_or_dismisses() {
     press(&mut editor, 'l');
     assert!(editor.picker.is_some(), "`<C-l>` leaves the picker open");
 
-    press(&mut editor, 'h');
-    assert!(editor.picker.is_some(), "`<C-h>` leaves the picker open");
+    press(&mut editor, 'w');
+    assert!(editor.picker.is_some(), "`<C-w>` leaves the picker open");
 }
 
 /// **The listing must follow the descend with NO further keystroke.**

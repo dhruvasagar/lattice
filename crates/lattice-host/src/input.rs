@@ -564,19 +564,24 @@ fn translate_picker(chord: KeyChord) -> Action {
             // one chord for "give me something I copied", wherever you
             // are. It was unbound here.
             KeyKind::Char('r') => Action::OpenYankPicker,
-            // PC.10: go INTO / back OUT of the selected candidate, for a live
-            // source that has a notion of depth (`dir-pick` today). Both are
-            // no-ops elsewhere — the source's `descend` / `ascend` default to
-            // `None`.
+            // PC.10: go INTO the selected candidate, for a live source that
+            // has a notion of depth (`dir-pick` today); a no-op elsewhere —
+            // the source's `descend` defaults to `None`.
             //
-            // `<C-l>` / `<C-h>` rather than `<Tab>`: `<Tab>` is
-            // `PickerSelectNext` in EVERY picker (below), and giving one
-            // picker a `<Tab>` that means something different from all the
-            // others is the inconsistency the UX-convention rule exists to
-            // prevent. These are the keys ranger / lf / nnn / vifm use for
-            // exactly this, and both were unbound here.
+            // `l` is ranger / lf / nnn / vifm's "enter" — there it is plain
+            // `l`, which a picker cannot use because its query takes every
+            // printable key, so the control variant carries it.
             KeyKind::Char('l') => Action::PickerDescend,
-            KeyKind::Char('h') => Action::PickerAscend,
+            // PH.1: back OUT where the source has depth, delete the previous
+            // word everywhere else — vim's `c_CTRL-W`, which on a path IS
+            // "up one component". Moved here from `<C-h>`: `j`/`k` would read
+            // as the vertical pair (fzf binds them to select next / prev), and
+            // `h` is the help key everywhere else in the editor.
+            KeyKind::Char('w') => Action::PickerAscendOrDeleteWord,
+            // PH.1: this picker's help page. `<C-h>` is the editor's help
+            // prefix in Normal mode (`<C-h>k`, `<C-h>m`) and emacs's in the
+            // minibuffer, so it means the same thing here.
+            KeyKind::Char('h') => Action::PickerHelp,
             _ => Action::None,
         };
     }

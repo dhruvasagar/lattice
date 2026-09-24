@@ -351,6 +351,25 @@ pub enum PickerSource {
     AiSessions { prefilter: Option<String> },
 }
 
+impl PickerSource {
+    /// PH.1: the help page for a picker seated WITHOUT a registry id — the
+    /// peer of the `picker-<id>` convention for the imperative pickers, which
+    /// have no id to form it from.
+    ///
+    /// `Buffers` and `Files` answer `None`: both are shared shells (the
+    /// transient menu seats on `Buffers`), so the variant says nothing about
+    /// which picker the user is looking at.
+    pub fn help_topic(&self) -> Option<&'static str> {
+        match self {
+            Self::LspLocations => Some("picker-lsp-locations"),
+            Self::LspInstances { .. } => Some("picker-lsp-instances"),
+            Self::AiSessions { .. } => Some("picker-ai-sessions"),
+            Self::LspShowMessageRequest { .. } => Some("picker-lsp-message-request"),
+            Self::Buffers | Self::Files => None,
+        }
+    }
+}
+
 /// What `<CR>` does to the selected candidate. Variants stay
 /// dumb data; the App's `App::accept_picker`
 /// dispatcher pattern-matches and calls the right method.
@@ -1238,6 +1257,36 @@ impl Picker {
         }
     }
 
+    /// PH.1: `<C-w>` — vim's `c_CTRL-W`. Drop trailing whitespace, then the
+    /// run of characters of the class before it: a word (alphanumerics and
+    /// `_`) or a run of punctuation. `foo bar` → `foo `; `src/lib` → `src/`.
+    ///
+    /// Returns whether anything was deleted, so the host can skip the
+    /// re-query tail on an empty query.
+    pub fn delete_word_backward(&mut self) -> bool {
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let trimmed = self.query.trim_end_matches(char::is_whitespace);
+        let cut = match trimmed.chars().last() {
+            None => 0,
+            Some(last) => {
+                let class = is_word(last);
+                trimmed
+                    .char_indices()
+                    .rev()
+                    .find(|&(_, c)| c.is_whitespace() || is_word(c) != class)
+                    .map_or(0, |(i, c)| i + c.len_utf8())
+            }
+        };
+        if cut == self.query.len() {
+            return false;
+        }
+        self.query.truncate(cut);
+        self.query_cursor = self.query.len();
+        self.selected = 0;
+        self.refilter();
+        true
+    }
+
     pub fn clear_query(&mut self) {
         self.query.clear();
         self.query_cursor = 0;
@@ -1830,6 +1879,46 @@ mod tests {
         assert_eq!(p.selected, 1);
         p.select_next(); // wraps back to 0
         assert_eq!(p.selected, 0);
+    }
+
+    /// PH.1: `c_CTRL-W`'s classes, checked against vim 9.2 on the `:` line.
+    #[test]
+    fn delete_word_backward_follows_vim_ctrl_w() {
+        let mut p = Picker::new("t", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        let mut after = |q: &str| {
+            p.query = q.to_string();
+            let deleted = p.delete_word_backward();
+            (p.query.clone(), deleted)
+        };
+        assert_eq!(after("foo bar"), ("foo ".into(), true));
+        assert_eq!(
+            after("foo bar  "),
+            ("foo ".into(), true),
+            "trailing blanks go with the word"
+        );
+        assert_eq!(
+            after("src/lib"),
+            ("src/".into(), true),
+            "a word stops at punctuation"
+        );
+        assert_eq!(
+            after("src/"),
+            ("src".into(), true),
+            "a punctuation run is its own word"
+        );
+        assert_eq!(after("a::b::"), ("a::b".into(), true));
+        assert_eq!(
+            after("héllo wörld"),
+            ("héllo ".into(), true),
+            "non-ASCII letters are word chars"
+        );
+        assert_eq!(after("snake_case"), ("".into(), true), "`_` is a word char");
+        assert_eq!(after("   "), ("".into(), true));
+        assert_eq!(
+            after(""),
+            ("".into(), false),
+            "nothing to delete reports it"
+        );
     }
 
     #[test]

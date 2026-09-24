@@ -543,11 +543,21 @@ pub enum Action {
     /// going deeper (every one but `dir-pick` today) returns `None` and
     /// this does nothing at all.
     PickerDescend,
-    /// PC.10: `<C-h>` — the peer of [`Self::PickerDescend`], one level
-    /// up. Needs no source involvement: it deletes back through the
-    /// previous `/`, which is a pure query edit and generic over any
-    /// path-shaped query.
-    PickerAscend,
+    /// PC.10 / PH.1: `<C-w>` — the peer of [`Self::PickerDescend`], one
+    /// level up where the source has depth (`PickerSourceGenerator::ascend`),
+    /// and the command-line's delete-word everywhere else.
+    ///
+    /// The shape of [`Self::PickerDescendOrSelectNext`], for the same reason:
+    /// only the dispatcher can ask which source seated the picker. Ascend is
+    /// asked FIRST, so a source with depth gets its own notion of "up" rather
+    /// than a word boundary; a grep pattern, whose source declines, loses a
+    /// word rather than everything back to a `/`.
+    ///
+    /// Was `<C-h>` until PH.1 gave that key to picker help.
+    PickerAscendOrDeleteWord,
+    /// PH.1: `<C-h>` — close the picker and open its help page. See
+    /// `Editor::do_picker_help` for how the page is chosen.
+    PickerHelp,
     /// PP.5: `<Tab>` — drill in where the source has depth, select the next
     /// row everywhere else.
     ///

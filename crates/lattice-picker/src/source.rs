@@ -134,6 +134,16 @@ pub struct PickerSourceSpec {
     /// focus, which is exactly the inconsistency this repo's key rules exist
     /// to prevent.
     pub delete_command: Option<Cow<'static, str>>,
+    /// PH.1: the `:help` topic `<C-h>` opens while this source's picker has
+    /// focus. `None` falls through to the `picker-<id>` convention and then to
+    /// the general `picker` page (see `Editor::do_picker_help`).
+    ///
+    /// **A declaration, so several sources can share one page** — the magit
+    /// sources are one family with one set of keys, and a page per source
+    /// would be six copies of the same table. The convention is the peer a
+    /// plugin can meet without this field crossing WIT: register
+    /// `picker-<id>` through the help seam and it is found.
+    pub help_topic: Option<Cow<'static, str>>,
 }
 
 impl PickerSourceSpec {
@@ -149,7 +159,15 @@ impl PickerSourceSpec {
             create_label: None,
             rooted: false,
             delete_command: None,
+            help_topic: None,
         }
+    }
+
+    /// Builder-style: PH.1's [`help_topic`](Self::help_topic) — the page
+    /// `<C-h>` opens.
+    pub fn with_help_topic(mut self, topic: impl Into<Cow<'static, str>>) -> Self {
+        self.help_topic = Some(topic.into());
+        self
     }
 
     /// Builder-style: offer a create row whenever the query is non-empty.

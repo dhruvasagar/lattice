@@ -228,9 +228,10 @@ fn descend(&self, ctx: &PickerContext, candidate: &RawCandidate) -> Option<Strin
 fn ascend(&self, query: &str) -> Option<String>;
 ```
 
-`<C-l>` and `<C-h>`. For a source whose candidates are **containers**, "go
-into this" and "choose this" are different questions, and a picker with only
-`<CR>` can ask one of them. Returning `Some(query)` replaces the query and
+`<C-l>` and `<C-w>` (`<C-h>` until PH.1 — see §4.2quinquies). For a source
+whose candidates are **containers**, "go into this" and "choose this" are
+different questions, and a picker with only `<CR>` can ask one of them.
+Returning `Some(query)` replaces the query and
 re-lists; the picker stays open and nothing is accepted.
 
 **`None` is the answer for every source but `dir-pick` today**, and that is
@@ -247,13 +248,18 @@ candidate.
 `ascend` takes the QUERY, not the selection: going up is a statement about
 where you are, and the row you happen to be on has nothing to do with it. It
 is a hook rather than a generic "delete back through the last `/`" because
-*live* is not *path-shaped* — `grep` is live, and a generic `<C-h>` would have
-silently truncated a grep pattern at a slash.
+*live* is not *path-shaped* — `grep` is live, and a generic up-a-level would
+have silently truncated a grep pattern at a slash. Since PH.1 the key falls
+through to delete-word where a source declines `ascend`, so `grep` loses one
+word on `<C-w>`, never everything back to a `/`.
 
-**`<C-l>` / `<C-h>` come from the file managers** — ranger, lf, nnn and vifm
-all use them for exactly this surface, and both were unbound here. Plain `h` /
-`l` cannot be used: a picker's query takes every printable key, so the
-directional pair has to be the control variants.
+**`<C-l>` comes from the file managers** — ranger, lf, nnn and vifm use plain
+`l` for "enter" (and plain `h` for "up"). Plain letters cannot be used: a
+picker's query takes every printable key, so the control variant carries it.
+PC.10 shipped the pair as `<C-l>` / `<C-h>`; PH.1 moved "up" to `<C-w>`
+because `<C-h>` is the editor's help key, and because `c_CTRL-W` on a path IS
+"drop the last component". `<C-j>` / `<C-k>` were considered and rejected:
+`j` / `k` are the vertical pair, and fzf binds them to select next / prev.
 
 **And `<Tab>` drills in too, which reverses this section (PP.5).** It used to
 read: *"`<Tab>` is `PickerSelectNext` in every picker and `<S-Tab>` its peer.
@@ -374,6 +380,58 @@ per keystroke rather than a walk. See
 [`project-commands.md`](project-commands.md) §9 H5 for why incremental beats
 the recursive alternative, and `benchmarks.md` PC.9 for what a keystroke costs.
 
+### 4.2quinquies. `<C-h>` — the picker's own help page (PH.1)
+
+`<C-h>` closes the picker and opens a `:help` page about *that* picker: its
+rows, what accepting one does, its arguments, and — the part the shared keys
+table cannot say — which of `<C-d>` / `<C-l>` / `<C-w>` / `<C-q>` / the create
+row mean something in it. The key is the editor's help prefix in Normal mode
+(`<C-h>k`, `<C-h>m`) and emacs's in the minibuffer, so it means the same thing
+here as everywhere else.
+
+**Three rungs choose the page**, most specific first:
+
+1. `PickerSourceSpec.help_topic` — a declaration, so a family can share one
+   page. The magit sources are one set of keys over six ref kinds; a page each
+   would be six copies of the same table.
+2. `picker-<id>`, if a topic by that name is registered. Every builtin page is
+   named for it (`docs/user/pickers/picker-files.md` → `picker-files`), so
+   builtins declare nothing unless they share. It is also the rung a **plugin**
+   meets: it registers `picker-<id>` through its help seam and is found, with
+   no field crossing WIT. Pickers seated without a registry id (LSP locations,
+   `:lsp-log`, `:ai-log`) answer this rung through `PickerSource::help_topic`.
+3. The general `picker` page, with an echo naming the source, so the user
+   knows they are reading the shared keys and not this picker's.
+
+A **declared** topic that is not registered warns rather than falling back
+quietly. It is a wiring bug — a renamed page, a plugin that failed to load —
+and the echo naming the topic is the only thing that points at it. An
+undeclared source with no page is not a bug, so rung 3's echo is `Info`.
+
+**Why a field and a convention, not one of them.** A convention alone cannot
+share a page between sources; a field alone would have to cross WIT before a
+plugin could document its picker, and would give the page two names (the
+field's value and whatever `:help` calls it) to keep in step. Each covers the
+case the other cannot.
+
+**The picker closes first**, including a parent it was stacked over (the yank
+picker over a query). A picker is a modal overlay that owns every key, so a
+help page opened beneath it could be neither scrolled nor dismissed. Closing
+costs the query; re-opening is one command. Keeping the picker and rendering
+help inside it (telescope's `<C-/>` which-key float) was the alternative, and
+it answers a smaller question — a key list, not a page.
+
+**Transient menus are out of scope** (PH.6, deferred). They seat on the picker
+substrate with no registry id, and their keys are their own; `<C-h>` there
+echoes that no page exists rather than opening the general picker page, whose
+keys are not theirs.
+
+**The docs are pinned to the specs.** A guard test walks every builtin source
+and asserts its page resolves, and that the page's *Keys* table names every key
+the spec enables (`delete_command` → `<C-d>`, `descend` → `<C-l>` / `<C-w>`,
+`create_label` → the create row). A page cannot quietly miss a key its source
+gained.
+
 ### 4.2ter Where the picker is: the query, and the root (PP.1 / PP.2)
 
 Two separate answers to one complaint — *"which project is this list from?"* —
@@ -384,9 +442,9 @@ project-shaped one.
 `initial_query(&self, args) -> Option<String>`, defaulting to `None` (the
 host's existing rule: a live source's first argument seeds the query). For
 `dir-pick` the query is not a filter over a fixed list — it is the directory
-being listed, the thing `<C-l>` / `<C-h>` rewrite and the thing every row is
+being listed, the thing `<C-l>` / `<C-w>` rewrite and the thing every row is
 spelled against. Opening empty left the prompt blank while every row carried a
-path, and left `<C-h>` with no last component to drop, so the first press did
+path, and left ascend with no last component to drop, so the first press did
 nothing and the second worked.
 
 The hook exists rather than the host reading `args[0]` because the default

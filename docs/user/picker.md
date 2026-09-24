@@ -53,11 +53,22 @@ code in the buffer's own syntax colours.
 | `<C-v>` | Accept, opening the file in a vertical split |
 | `<C-t>` | Accept, opening the file in a new tab |
 | `<BS>` | Delete the last query character |
+| `<C-w>` | Delete the previous word of the query — or, in a picker with depth (`dir-pick`), go up one level |
 | `<C-u>` | Clear the query |
+| `<C-r>` | Pick from your yank history and append it to the query |
+| `<C-h>` | **Help for this picker** — closes it and opens its own page |
 
 `<C-s>` / `<C-v>` / `<C-t>` only change *where* a file-opening
 accept lands; for sources that don't open a file (registers,
 commands, …) they behave like `<CR>`.
+
+**Some keys mean something only in some pickers.** `<C-l>` goes
+into a directory, `<C-d>` removes a row from the list behind it,
+`<C-q>` sends every remaining row somewhere editable, and `<Tab>`
+drills in rather than moving down where the picker has depth. Which
+of these a picker supports — and what exactly they do there — is on
+that picker's own page: press `<C-h>` inside it, or
+`:help picker-<source>` (`:help picker-dir-pick`).
 
 ---
 

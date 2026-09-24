@@ -2704,11 +2704,24 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // block. `_out.consumed` short-circuits the renderer's
     // post-dispatch match (App::apply); 5.5.G removes the field once
     // App's match collapses entirely.
-    if matches!(
-        editor.active_buffer,
-        BufferKind::Help | BufferKind::Dashboard
-    ) && action_is_document_mutation(&action)
-    {
+    // Conditioned on the read-only PROPERTY, not on a buffer kind.
+    //
+    // This read `matches!(editor.active_buffer, Help | Dashboard)`, which is
+    // the kind-branch the architecture rules forbid — and it behaved like one:
+    // a buffer that was read-only for any other reason was not covered, while
+    // anything reaching the same state off the Action path (a mouse drag sets
+    // Visual directly) walked straight around it. `ReadOnly` is contributed by
+    // the MODE, so the mode still decides; the dispatcher only asks the
+    // property.
+    //
+    // The editable-tail carve-out is why this is not a bare option read: a
+    // prompt buffer (the agent's) is read-only ABOVE its tail and typed into
+    // below it, so refusing Insert outright there would break the thing the
+    // tail exists for. Same predicate `read_only_edit_rejected` uses.
+    let wholly_read_only = *editor
+        .resolved_option::<lattice_config::ReadOnly>(editor.document_buffer_id)
+        && editor.active_editable_tail().is_none();
+    if wholly_read_only && action_is_document_mutation(&action) {
         editor.set_message(EchoLevel::Info, "buffer is read-only".to_string());
         editor.ensure_cursor_visible();
         editor.maybe_reparse_syntax();

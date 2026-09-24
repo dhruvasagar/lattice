@@ -23,10 +23,11 @@
 
 #![allow(clippy::unwrap_used)]
 
-use lattice_core::{BufferKind, Document as CoreDocument};
+use lattice_core::Document as CoreDocument;
 use lattice_grammar::ModalState;
 use lattice_host::chord::KeyChord;
 use lattice_host::editor::Editor;
+use lattice_mode::ModeActivator;
 
 fn press(editor: &mut Editor, keys: &str) {
     let mut partial = Vec::new();
@@ -43,41 +44,48 @@ fn esc(editor: &mut Editor) {
     );
 }
 
-/// Every read-only, link-bearing buffer kind the gate covers.
-fn read_only_kinds() -> [BufferKind; 2] {
-    [BufferKind::Help, BufferKind::Dashboard]
+/// A read-only buffer, made read-only the way any buffer is: by activating
+/// `read-only-mode` on it.
+///
+/// Deliberately NOT by faking a `BufferKind`. The gate reads the read-only
+/// PROPERTY, which is what "everything is a buffer" requires — a buffer is
+/// read-only because a mode said so, not because of what kind it is. A test
+/// that set `active_buffer = Dashboard` would be asserting against a
+/// kind-branch that no longer exists, and would pass or fail for the wrong
+/// reason.
+fn read_only_editor(text: &str) -> Editor {
+    let mut editor = Editor::boot(CoreDocument::from_text(text));
+    let buffer = editor.document_buffer_id;
+    editor.activate_minor_by_id(buffer, lattice_mode::modes::ReadOnlyMode::mode_id());
+    editor
 }
 
 /// `v` selects, `<Esc>` returns. The second half is the trap: without it the
 /// only way out was the mouse.
 #[test]
 fn visual_can_be_entered_and_left_on_a_read_only_buffer() {
-    for kind in read_only_kinds() {
-        let mut editor = Editor::boot(CoreDocument::from_text("alpha\nbeta\ngamma\n"));
-        editor.active_buffer = kind;
+    let mut editor = read_only_editor("alpha\nbeta\ngamma\n");
 
-        press(&mut editor, "v");
-        assert!(
-            matches!(editor.modal, ModalState::Visual(_)),
-            "{kind:?}: `v` must select — you cannot yank a range you cannot select"
-        );
+    press(&mut editor, "v");
+    assert!(
+        matches!(editor.modal, ModalState::Visual(_)),
+        "`v` must select — you cannot yank a range you cannot select"
+    );
 
-        esc(&mut editor);
-        assert_eq!(
-            editor.modal,
-            ModalState::Normal,
-            "{kind:?}: `<Esc>` must leave Visual. Refusing it wedges the buffer: \
-             the modeline says VIS and every Normal chord stops resolving"
-        );
-    }
+    esc(&mut editor);
+    assert_eq!(
+        editor.modal,
+        ModalState::Normal,
+        "`<Esc>` must leave Visual. Refusing it wedges the buffer: the modeline \
+         says VIS and every Normal chord stops resolving"
+    );
 }
 
 /// The other two selection entries, same rule.
 #[test]
 fn linewise_and_blockwise_select_too() {
     for keys in ["V", "v"] {
-        let mut editor = Editor::boot(CoreDocument::from_text("alpha\nbeta\n"));
-        editor.active_buffer = BufferKind::Dashboard;
+        let mut editor = read_only_editor("alpha\nbeta\n");
         press(&mut editor, keys);
         assert!(
             matches!(editor.modal, ModalState::Visual(_)),
@@ -97,23 +105,20 @@ fn linewise_and_blockwise_select_too() {
 /// pass or fail for reasons unrelated to the line being guarded here.
 #[test]
 fn entering_insert_is_still_refused() {
-    for kind in read_only_kinds() {
-        let mut editor = Editor::boot(CoreDocument::from_text("alpha\nbeta\n"));
-        editor.active_buffer = kind;
+    let mut editor = read_only_editor("alpha\nbeta\n");
 
-        press(&mut editor, "i");
-        assert_eq!(
-            editor.modal,
-            ModalState::Normal,
-            "{kind:?}: the gate must still refuse Insert — selecting is not \
-             writing, but typing is"
-        );
+    press(&mut editor, "i");
+    assert_eq!(
+        editor.modal,
+        ModalState::Normal,
+        "the gate must still refuse Insert — selecting is not writing, but \
+         typing is"
+    );
 
-        press(&mut editor, "o");
-        assert_eq!(
-            editor.document.text(),
-            "alpha\nbeta\n",
-            "{kind:?}: `o` opens a line, which writes"
-        );
-    }
+    press(&mut editor, "o");
+    assert_eq!(
+        editor.document.text(),
+        "alpha\nbeta\n",
+        "`o` opens a line, which writes"
+    );
 }

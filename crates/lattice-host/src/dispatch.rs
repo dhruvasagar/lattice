@@ -2507,16 +2507,31 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::PasteAfter
             | Action::PasteBefore
             | Action::PasteText(_)
-            | Action::EnterVisual(_)
-            | Action::ExitVisual
-            // SN.3d: Select entry/overtype/exit/toggle change buffer or
-            // selection state — gated off read-only help buffers like
-            // their Visual peers.
-            | Action::EnterSelect(_)
+            // SN.3d: only the Select action that WRITES is gated.
+            // `SelectOvertype` replaces the selection with the typed
+            // character, so it is a mutation; entering, leaving or toggling
+            // a selection is not.
+            //
+            // Entering / leaving Visual and Select used to be listed here,
+            // "gated off read-only help buffers like their Visual peers",
+            // and that conflated two different things — the comment said so
+            // itself: "change buffer OR selection state". A selection writes
+            // nothing.
+            //
+            // What it cost: `v` was refused on `:help` and the dashboard, so
+            // you could not select a line to copy — which directly
+            // contradicts the yank carve-out in `run_read_only_motion`, whose
+            // whole point is copying a snippet out of one of these buffers.
+            // Worse, `ExitVisual` was refused too, so a Visual state reached
+            // any other way — a mouse drag, which sets the state directly and
+            // never passes this gate — could not be left with `<Esc>`. The
+            // buffer looked wedged: the modeline said VIS, every Normal-mode
+            // chord stopped resolving (correctly, for Visual), and clicking
+            // elsewhere was the only way out. Reported as "`<C-x>g` and other
+            // keys are broken in GPUI".
+            //
+            // The rule is gate the WRITE, not the selection.
             | Action::SelectOvertype(_)
-            | Action::ExitSelect
-            | Action::ToggleVisualSelect
-            | Action::ReselectLastVisual
             | Action::JoinLines { .. }
             | Action::ToggleCaseAtCursor
             | Action::CreateFoldFromVisual

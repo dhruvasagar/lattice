@@ -61,6 +61,16 @@ pub fn syntax_element_id(ids: &BuiltinElementIds, style: Style) -> ElementId {
         S::DiagnosticHint => ids.diagnostic_hint,
         S::DiffAdd => ids.diff_add_text,
         S::DiffRemove => ids.diff_remove_text,
+        // `*messages*`: the mode publishes these, and BOTH renderers resolve
+        // them here — which is the whole point. The TUI used to colour the log
+        // itself behind `if is_messages_buffer` and GPUI had no equivalent, so
+        // the same buffer was highlighted in one peer and plain in the other.
+        S::MessagesTimestamp => ids.messages_timestamp,
+        S::MessagesTrace => ids.messages_trace,
+        S::MessagesDebug => ids.messages_debug,
+        S::MessagesInfo => ids.messages_info,
+        S::MessagesWarn => ids.messages_warn,
+        S::MessagesError => ids.messages_error,
         S::MagitSha => ids.magit_sha,
         S::MagitBranchCurrent => ids.magit_branch_current,
         S::MagitRefDecoration => ids.magit_ref_decoration,

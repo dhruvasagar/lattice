@@ -110,7 +110,49 @@ impl Editor {
             return;
         }
         let id = self.ensure_messages_buffer();
+        let first_new_line = self.messages_line_count(id);
         self.append_to_owned_buffer(id, &text);
+        self.publish_messages_highlights(id, first_new_line, &text);
+    }
+
+    /// Lines already in the `*messages*` buffer — the index the next appended
+    /// record lands on.
+    fn messages_line_count(&self, id: crate::buffers::BufferId) -> u32 {
+        self.buffers
+            .document_handle(id)
+            .map(|h| h.snapshot().buffer.content_line_count())
+            .unwrap_or(0)
+    }
+
+    /// Publish `messages-mode`'s spans for the lines just appended.
+    ///
+    /// **The mode owns the syntax; this only delivers it.** The TUI used to
+    /// compose `*messages*` bodies itself behind `if is_messages_buffer`, and
+    /// the GPUI peer had no equivalent — so the log was coloured in one
+    /// renderer and plain in the other. Going through
+    /// `PendingSyntheticHighlights` means neither renderer knows what a log
+    /// line is, which is what makes them agree.
+    ///
+    /// Incremental (`insert_at_and_wake`) rather than re-spanning the whole
+    /// buffer: this runs on every drain, and the ring is thousands of lines
+    /// long in a busy session.
+    fn publish_messages_highlights(
+        &self,
+        id: crate::buffers::BufferId,
+        start_line: u32,
+        appended: &str,
+    ) {
+        let Some(pending) = self
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>()
+        else {
+            return;
+        };
+        let spans = lattice_mode::modes::messages::buffer_spans(appended);
+        if spans.is_empty() {
+            return;
+        }
+        pending.insert_at_and_wake(id, start_line, spans);
     }
 
     /// Find-or-create the `*messages*` Document buffer.
@@ -171,7 +213,9 @@ impl Editor {
             })
             .collect();
         if !backlog.is_empty() {
+            let first_new_line = self.messages_line_count(id);
             self.append_to_owned_buffer(id, &backlog);
+            self.publish_messages_highlights(id, first_new_line, &backlog);
         }
         id
     }

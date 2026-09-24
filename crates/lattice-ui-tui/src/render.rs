@@ -4712,13 +4712,6 @@ pub(crate) fn compose_pane_lines(
     // active buffer (byte-identical).
     // Slice 3c.final.B.11: active_modes via published `modes()`
     // sub-state — wait-free Arc-bump lookup, no actor round-trip.
-    let is_messages_buffer = app
-        .modes()
-        .map
-        .get(&ctx.buffer_id)
-        .and_then(|m| m.major())
-        .map(|m| m == lattice_mode::MessagesMode::mode_id())
-        .unwrap_or(false);
     // §5.6.8 contract: one snapshot per frame, used for everything.
     // The snapshot was loaded by the runtime via
     // `app.editor.snapshot_cache.load_arc()` and threaded through.
@@ -5197,27 +5190,7 @@ pub(crate) fn compose_pane_lines(
         // inside a block is exactly the row a guide has to carry through,
         // and gating on emptiness would drop it.
         let mut body_is_display_row = false;
-        let mut body = if is_messages_buffer {
-            // `body_trunc_w`, not `buffer_w`: with `wrap` on that is
-            // `u32::MAX`, so the line is NOT truncated and the shared
-            // wrap-segmentation below breaks it like every other buffer's
-            // body.
-            //
-            // Passing `buffer_w` here truncated every `*messages*` line to the
-            // pane width whatever `wrap` said, so the body emitted one display
-            // row per source line while the caret walk
-            // (`buffer_line_to_visible_row_with` + `own_segment`) computed
-            // segments from the UNtruncated line. The caret therefore counted
-            // rows the body never painted — one per wrapped line above the
-            // cursor — which is the cursor/cursorline drift on `*messages*`,
-            // and why `G` landed the caret several rows below the last line.
-            //
-            // The deeper issue is that this branch exists at all: a
-            // kind-specific body composer is what let the two geometries
-            // diverge silently. Removing it is the standing rule's answer
-            // (`feedback_buffers_no_special_case`); this makes it agree.
-            messages_line_spans(&line_text, &app.theme, body_trunc_w)
-        } else {
+        let mut body = {
             // S3.c.final (2026-05-26): cell-derived spans are the
             // ONLY source for document-buffer bodies. The
             // `cell_row_to_source_spans` converter (S3.b) filters
@@ -7294,68 +7267,6 @@ pub(crate) fn apply_indent_guides(
         col = col.saturating_add(1);
     }
     out
-}
-
-/// msg-mode.3: build a styled line for a single record in the
-/// `*messages*` buffer. The format is fixed
-/// (`HH:MM:SS.mmm LEVEL text...` produced by
-/// `crate::app::messages::format_message_record`) so the
-/// scanner is byte-offset based:
-///
-/// - bytes `0..12`: `HH:MM:SS.mmm` timestamp
-/// - byte `12`: separator space
-/// - bytes `13..18`: 5-char level token (`TRACE` / `DEBUG` /
-///   ` INFO` / ` WARN` / `ERROR`; the two short names are
-///   space-padded so the token width is constant)
-/// - byte `18`: separator space
-/// - bytes `19..`: message body
-///
-/// Lines that don't fit the shape (empty rope-tail lines, or
-/// future records produced by a different formatter) fall
-/// through to plain rendering — no panic, no wrong color.
-fn messages_line_spans(
-    line: &str,
-    theme: &crate::theme::Theme,
-    max_width: u32,
-) -> Vec<Span<'static>> {
-    // Strip a single trailing newline so the level scan + the
-    // span pushes don't see it. `snap.buffer.line(...)` returns
-    // text *with* the trailing `\n` for non-final lines.
-    let trimmed = line.strip_suffix('\n').unwrap_or(line);
-    let bytes = trimmed.as_bytes();
-    if bytes.len() < 19 || bytes[12] != b' ' || bytes[18] != b' ' {
-        // Doesn't match the messages format. Render plain.
-        return truncate_spans_to_width(vec![Span::raw(trimmed.to_string())], max_width);
-    }
-    let level_token = &trimmed[13..18];
-    let level_style = match level_token {
-        "TRACE" => theme.messages_trace_style,
-        "DEBUG" => theme.messages_debug_style,
-        " INFO" => theme.messages_info_style,
-        " WARN" => theme.messages_warn_style,
-        "ERROR" => theme.messages_error_style,
-        _ => {
-            // Unknown level token -- treat the whole line as
-            // plain. Keeps a misformatted record readable
-            // instead of mid-line-colored.
-            return truncate_spans_to_width(vec![Span::raw(trimmed.to_string())], max_width);
-        }
-    };
-    let timestamp = &trimmed[0..12];
-    // Byte 12 + byte 18 are spaces; carry them in the
-    // adjacent (timestamp / level) span so the styled tokens
-    // stay visually distinct without an extra raw span.
-    let body = &trimmed[19..];
-    let mut spans = vec![
-        Span::styled(timestamp.to_string(), theme.messages_timestamp_style),
-        Span::raw(" ".to_string()),
-        Span::styled(level_token.to_string(), level_style),
-        Span::raw(" ".to_string()),
-        Span::raw(body.to_string()),
-    ];
-    // Drop empty spans so the line length math stays sane.
-    spans.retain(|s| !s.content.is_empty());
-    truncate_spans_to_width(spans, max_width)
 }
 
 // DR.2 (decoration-retention): `render_styled_line` (the legacy
@@ -11084,103 +10995,6 @@ mod tests {
     /// msg-mode.3: a well-formed messages record produces a
     /// styled level token. Order: timestamp (dim), space,
     /// LEVEL (themed), space, body.
-
-    /// The `*messages*` body must honour `wrap` like every other buffer.
-    ///
-    /// It did not: `messages_line_spans` was handed `buffer_w` unconditionally
-    /// and truncated, so the body emitted ONE display row per source line
-    /// while the caret walk computed wrap segments from the untruncated line.
-    /// The caret counted rows the body never painted — one per wrapped line
-    /// above the cursor — which is the cursor/cursorline drift, and why `G`
-    /// put the caret several rows below the last line.
-    #[test]
-    fn messages_body_wraps_when_wrap_is_on() {
-        // A line far wider than the pane.
-        let long = "x".repeat(200);
-        // With wrap ON the generic path passes `u32::MAX`, so nothing is
-        // truncated and the shared segmenter breaks the line up.
-        let unwrapped = messages_line_spans(&long, &crate::theme::Theme::default(), u32::MAX);
-        let total: usize = unwrapped.iter().map(|s| s.content.chars().count()).sum();
-        assert_eq!(
-            total, 200,
-            "with wrap on the body is handed the whole line; truncating here \
-             is what made the caret and the body disagree about how many rows \
-             the line occupies"
-        );
-
-        // With wrap OFF it still truncates to the pane width, as before.
-        let truncated = messages_line_spans(&long, &crate::theme::Theme::default(), 40);
-        let total: usize = truncated.iter().map(|s| s.content.chars().count()).sum();
-        assert!(
-            total <= 40,
-            "wrap off still truncates to the pane width, got {total}"
-        );
-    }
-
-    #[test]
-    fn messages_line_spans_styles_each_level() {
-        let theme = crate::theme::Theme::default();
-        for (token, expected) in [
-            ("TRACE", theme.messages_trace_style),
-            ("DEBUG", theme.messages_debug_style),
-            (" INFO", theme.messages_info_style),
-            (" WARN", theme.messages_warn_style),
-            ("ERROR", theme.messages_error_style),
-        ] {
-            let line = format!("00:01:23.456 {token} hello world\n");
-            let spans = messages_line_spans(&line, &theme, 200);
-            let level_span = spans
-                .iter()
-                .find(|s| s.content.as_ref() == token)
-                .unwrap_or_else(|| panic!("level token `{token}` missing"));
-            assert_eq!(
-                level_span.style, expected,
-                "level token `{token}` style mismatch",
-            );
-        }
-    }
-
-    /// msg-mode.3: timestamp prefix carries the dim theme
-    /// style so it doesn't compete with the level + body.
-    #[test]
-    fn messages_line_spans_dims_timestamp() {
-        let theme = crate::theme::Theme::default();
-        let spans = messages_line_spans("00:01:23.456  WARN hello\n", &theme, 200);
-        let timestamp = spans
-            .iter()
-            .find(|s| s.content.as_ref() == "00:01:23.456")
-            .expect("timestamp span");
-        assert_eq!(timestamp.style, theme.messages_timestamp_style);
-    }
-
-    /// msg-mode.3: malformed lines (empty rope tail, future
-    /// records from a different formatter) fall through to
-    /// plain rendering. No panic, no wrong color.
-    #[test]
-    fn messages_line_spans_falls_back_to_plain_on_unknown_format() {
-        let theme = crate::theme::Theme::default();
-        let spans = messages_line_spans("just some random text\n", &theme, 200);
-        let total: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(total, "just some random text");
-        // No styled spans (everything default).
-        assert!(
-            spans.iter().all(|s| s.style == TuiStyle::default()),
-            "fallback should not apply any custom styles"
-        );
-    }
-
-    /// msg-mode.3: a line whose format prefix is right but
-    /// whose level token isn't recognised renders plain. Keeps
-    /// future formatter changes from mid-line-coloring random
-    /// text.
-    #[test]
-    fn messages_line_spans_falls_back_on_unknown_level() {
-        let theme = crate::theme::Theme::default();
-        let spans = messages_line_spans("00:01:23.456 OTHER hi\n", &theme, 200);
-        let total: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(total, "00:01:23.456 OTHER hi");
-        assert!(spans.iter().all(|s| s.style == TuiStyle::default()));
-    }
 
     #[test]
     fn truncation_does_not_overrun_max_width() {

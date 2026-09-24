@@ -83,6 +83,17 @@ pub enum Style {
     // source-code concepts) keeps the mapping honest and lets a theme
     // retune magit's palette independently of its code-syntax colors.
     /// A commit SHA (magit-log, magit-blame, magit-rebase's todo).
+    // `*messages*` log levels. Their own family rather than the
+    // `Diagnostic*` one, because `messages.timestamp` / `messages.error` /
+    // … are registered, user-settable theme elements: folding them into the
+    // diagnostic colours would silently orphan a vocabulary people can
+    // already theme.
+    MessagesTimestamp,
+    MessagesTrace,
+    MessagesDebug,
+    MessagesInfo,
+    MessagesWarn,
+    MessagesError,
     MagitSha,
     /// The checked-out branch in a branch list (magit-branch's `* `
     /// marker + name).

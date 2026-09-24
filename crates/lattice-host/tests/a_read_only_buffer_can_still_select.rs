@@ -96,6 +96,40 @@ fn linewise_and_blockwise_select_too() {
     }
 }
 
+/// Folding is not mutation. A read-only buffer folds.
+///
+/// This regressed the moment the read-only guard widened from two buffer
+/// kinds to every read-only buffer: the fold actions were sitting in
+/// `action_is_document_mutation`, so `<Tab>` stopped folding a diff in
+/// magit-status — in both renderers. They were never there because folding
+/// writes; they were there to mask a popup-focus aliasing bug (PIC.2), which
+/// is now guarded on its own condition.
+#[test]
+fn folding_works_on_a_read_only_buffer() {
+    let mut editor = read_only_editor("alpha\nbeta\ngamma\ndelta\n");
+    let before = editor.document.text();
+
+    // `zc` / `za` / `zo` reach the buffer as fold actions; none of them may
+    // be refused for being "a mutation", and none of them may edit the text.
+    for chord in ["zc", "za", "zo", "zR", "zM"] {
+        press(&mut editor, chord);
+    }
+
+    assert_eq!(
+        editor.document.text(),
+        before,
+        "folding must not change the text — that is why it is not a mutation"
+    );
+    assert!(
+        !editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.contains("read-only"))
+            .unwrap_or(false),
+        "folding must not be refused as a write on a read-only buffer"
+    );
+}
+
 /// What the gate is actually for still holds: entering Insert is refused.
 ///
 /// Scoped deliberately to what THIS gate decides. `x` / `dd` / `p` are

@@ -2487,7 +2487,47 @@ impl Editor {
 /// per-action active-buffer routing. The read-only-help guard in
 /// [`handle_action`] short-circuits these when `active_buffer ==
 /// Help` so a stray `i` / `p` / `u` / `dd` while reading help
+/// Does `action` change the buffer's FOLD state?
+///
+/// Folding writes nothing, so this is not a read-only concern. It exists for
+/// the one place fold state is genuinely unsafe: `self.folds` is keyed to
+/// `document_buffer_id` and is not swapped when a popup takes focus, so a fold
+/// chord pressed at a focused popup edits the folds of the buffer *behind* it
+/// (PIC.2). Refusing it there is a guard on that aliasing, not on writability.
+///
+/// The real fix is to key fold state to the focused buffer; until then this
+/// keeps the damage out without pretending a fold is an edit.
+pub fn action_mutates_fold_state(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::CreateFoldFromVisual
+            | Action::OpenFoldAtCursor
+            | Action::CloseFoldAtCursor
+            | Action::ToggleFoldAtCursor
+            | Action::OpenAllFolds
+            | Action::CloseAllFolds
+            | Action::DeleteFoldAtCursor
+            | Action::OpenFoldsRecursively
+            | Action::CloseFoldsRecursively
+            | Action::DeleteFoldsRecursively
+            | Action::CycleFoldAtCursor
+            | Action::CycleFoldsGlobal
+    )
+}
+
 /// doesn't fall through onto the underlying document.
+///
+/// **Folding is not here, because folding is not a mutation.** A fold changes
+/// what is displayed, not what the buffer contains — `:help` has folds and a
+/// magit buffer is almost nothing but folds. They were listed here once, and
+/// the reason was never that they write: their handlers mutate `self.folds`,
+/// a slot keyed to `document_buffer_id` — the buffer BEHIND a focused popup,
+/// never swapped for the popup (PIC.2). Grouping them with writes masked that
+/// bug instead of fixing it, and the moment this guard widened from two buffer
+/// kinds to every read-only buffer, the mask became a regression:
+/// `<Tab>` stopped folding a diff in magit-status, in both renderers.
+/// [`action_mutates_fold_state`] carries them now, gated on the condition
+/// PIC.2 was actually about.
 pub fn action_is_document_mutation(action: &Action) -> bool {
     matches!(
         action,
@@ -2534,25 +2574,6 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::SelectOvertype(_)
             | Action::JoinLines { .. }
             | Action::ToggleCaseAtCursor
-            | Action::CreateFoldFromVisual
-            | Action::OpenFoldAtCursor
-            | Action::CloseFoldAtCursor
-            | Action::ToggleFoldAtCursor
-            | Action::OpenAllFolds
-            | Action::CloseAllFolds
-            | Action::DeleteFoldAtCursor
-            | Action::OpenFoldsRecursively
-            | Action::CloseFoldsRecursively
-            | Action::DeleteFoldsRecursively
-            // PIC.2: the org-cycle fold ops (`z<Space>` / `z<Tab>`) were
-            // absent here, so they skipped the read-only-help guard and
-            // their handlers mutated `self.folds` — a hot-slot keyed to
-            // `document_buffer_id` (the buffer BEHIND a focused popup),
-            // never swapped for the popup. Grouped with the sibling fold
-            // mutations so a read-only Help / Dashboard buffer consumes
-            // them like `zo` / `zc` / `za`.
-            | Action::CycleFoldAtCursor
-            | Action::CycleFoldsGlobal
             | Action::RepeatLastChange
             | Action::StartMacroRecord(_)
             | Action::StopMacroRecord
@@ -2721,6 +2742,16 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     let wholly_read_only = *editor
         .resolved_option::<lattice_config::ReadOnly>(editor.document_buffer_id)
         && editor.active_editable_tail().is_none();
+    // PIC.2: a fold chord at a FOCUSED popup would edit the folds of the
+    // buffer behind it, because the fold slot is keyed to
+    // `document_buffer_id` and is not swapped for the popup. That is an
+    // aliasing bug, not a writability one — so it is guarded here, on the
+    // condition it is actually about, and folding works everywhere else
+    // including every read-only buffer.
+    if editor.popup_buffer.is_some() && editor.popup_focused && action_mutates_fold_state(&action) {
+        _out.consumed = true;
+        return;
+    }
     if wholly_read_only && action_is_document_mutation(&action) {
         editor.set_message(EchoLevel::Info, "buffer is read-only".to_string());
         editor.ensure_cursor_visible();

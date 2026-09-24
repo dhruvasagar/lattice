@@ -23,7 +23,8 @@ code in the buffer's own syntax colours.
 > across every source, syntax-highlighted previews for
 > `lines` / `outline` / `grep`, and frecency (MRU) ranking with
 > disk persistence. LSP-backed pickers (references, symbols, code
-> actions) live in [`lsp`](help:lsp); the theme picker lives in
+> actions) are [`picker-lsp-locations`](help:picker-lsp-locations) and
+> live in [`lsp`](help:lsp); the theme picker lives in
 > [`themes`](help:themes). Plugin-contributed sources are Phase 7.
 
 ---
@@ -138,12 +139,13 @@ trail and [`modal-editing`](help:modal-editing) for the jump list.
 
 ### The magit sources
 
-[magit](help:magit) registers eleven more. You rarely type these —
+[magit](help:magit) registers twelve more — one page covers them all,
+[`picker-magit`](help:picker-magit). You rarely type these —
 they are what a magit menu row opens when it needs you to name
 something — but they are ordinary sources and `:picker` reaches them
 like any other.
 
-Six list git objects and take **the ex-command to run on your pick**
+Seven list git objects and take **the ex-command to run on your pick**
 as an argument:
 
 | Source | Lists | Example |
@@ -154,6 +156,7 @@ as an argument:
 | `magit-ref` | Everything `git for-each-ref` returns | `:picker magit-ref magit-note-merge` |
 | `magit-tag` | `refs/tags/*` | `:picker magit-tag magit-tag-delete` |
 | `magit-remote` | Configured remotes (`origin`, not `origin/main`) | `:picker magit-remote magit-tag-prune` |
+| `magit-stash-pick` | Stashes | `:picker magit-stash-pick magit-stash-apply` |
 
 The pick is appended to the command, or substituted for a `{}`
 placeholder if there is one — which is how `magit-find-file {} <path>`

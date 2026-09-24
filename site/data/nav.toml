@@ -111,6 +111,11 @@ docs = [
   "picker-pane-buffer-history",
   "picker-snippets",
   "picker-colorscheme",
+  "picker-magit",
+  "picker-lsp-locations",
+  "picker-lsp-instances",
+  "picker-lsp-message-request",
+  "picker-ai-sessions",
 ]
 
 [[section]]

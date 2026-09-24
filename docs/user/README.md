@@ -132,6 +132,11 @@ same surface).
 |   — pane-buffer-history    | [`picker-pane-buffer-history`](help:picker-pane-buffer-history) | ✅      |
 |   — snippets               | [`picker-snippets`](help:picker-snippets) | ✅      |
 |   — colorscheme            | [`picker-colorscheme`](help:picker-colorscheme) | ✅      |
+|   — magit                  | [`picker-magit`](help:picker-magit) | ✅      |
+|   — lsp-locations          | [`picker-lsp-locations`](help:picker-lsp-locations) | ✅      |
+|   — lsp-instances          | [`picker-lsp-instances`](help:picker-lsp-instances) | ✅      |
+|   — lsp-message-request    | [`picker-lsp-message-request`](help:picker-lsp-message-request) | ✅      |
+|   — ai-sessions            | [`picker-ai-sessions`](help:picker-ai-sessions) | ✅      |
 | Options and configuration  | [`options`](help:options)                | ✅      |
 | When a key does nothing    | [`troubleshooting-keys`](help:troubleshooting-keys) | ✅      |
 | Key hints as you type      | [`which-key-mode`](help:which-key-mode)  | ✅      |

@@ -792,6 +792,21 @@ impl Guest for Component {
             include_str!("../doc/project.md"),
             &["project".to_string()],
         );
+        // PH.4: one page per picker source, named `picker-<source id>`. The
+        // host namespaces them to `project.picker-<id>` and `<C-h>` inside
+        // the picker finds them through the source's owning plugin.
+        let _ = lattice::plugin_host::help::register_topic(
+            "picker-projects",
+            "The projects picker: switch project, <C-d> forgets one, `… (choose a dir)` browses for a new one.",
+            include_str!("../doc/picker-projects.md"),
+            &["project-switch".to_string()],
+        );
+        let _ = lattice::plugin_host::help::register_topic(
+            "picker-project-buffers",
+            "The project-buffers picker: the open buffers of the current project.",
+            include_str!("../doc/picker-project-buffers.md"),
+            &["project-buffers".to_string()],
+        );
     }
 
     /// PC.5: declare the `projects` picker through the registry import — the

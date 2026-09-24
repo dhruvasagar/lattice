@@ -270,6 +270,16 @@
   registered from plugins
 - [X] If a plugin fails to load, it should not impact other plugin
   functionality, currently a failed plugin seems to stop others from working
+- [X] GPUI: Org <Tab> does not cycle headlines, on introspection <Tab> is mapped
+  to =action:table-next-cell=, which should only be active within a table, even
+  if this is active, it should fall through to cycle. TUI works as expected.
+- [ ] *messages* no syntax highlighting in GPUI, TUI was fine
+- [X] GPUI: <BS> does not work in insert mode 
+- [X] GPUI: Many keys like backtick, special characters like bracket,
+  paranthesis, etc. dont work in insert mode
+- [X] GPUI: <C-x>g does not do anything, :magit-status works, C-x C-s to save
+  works, <C-x>b also doesnt work, quotes also dont work
+
 
 * Documentation
 - [X] lattice-tutor

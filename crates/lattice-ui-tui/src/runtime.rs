@@ -69,20 +69,6 @@ type TermBackend = CrosstermBackend<CountingWriter<Stdout>>;
 /// The chord table a modal state resolves against — the same mapping the host
 /// uses. Needed by the AP.0.2 fall-through to ask the trie which layer bound a
 /// declined chord.
-fn binding_mode_for(modal: lattice_grammar::ModalState) -> lattice_host::keymap::BindingMode {
-    match modal {
-        lattice_grammar::ModalState::Insert => lattice_host::keymap::BindingMode::Insert,
-        lattice_grammar::ModalState::Visual(_) | lattice_grammar::ModalState::Select(_) => {
-            lattice_host::keymap::BindingMode::Visual
-        }
-        lattice_grammar::ModalState::OperatorPending => {
-            lattice_host::keymap::BindingMode::OperatorPending
-        }
-        lattice_grammar::ModalState::Replace => lattice_host::keymap::BindingMode::Replace,
-        _ => lattice_host::keymap::BindingMode::Normal,
-    }
-}
-
 pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
     let mut terminal = setup().context("setup terminal")?;
     let mut app = App::new(document);
@@ -377,24 +363,32 @@ fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut O
                 // cycle and hit the builtin. The TUI's translate→apply path
                 // lost the chord by dispatch time, so the re-translate happens
                 // here where `k` is still in hand.
-                let mut layers = layers_before.clone();
                 // `k` is still the crossterm event; the trie speaks `KeyChord`.
                 let Some(k_chord) = crate::chord::from_event(&k) else {
                     return;
                 };
+                // The walk is `lattice_host::decline::DeclinePeel`'s, not this
+                // loop's. It was this loop's, and the host dispatcher had a
+                // second copy, and the GPUI peer had none — which is how every
+                // key auto-pair binds came to be dead in that renderer while
+                // this one was fine.
+                let mut peel = lattice_host::decline::DeclinePeel::new(
+                    app.ad().modal,
+                    prefix_before.clone(),
+                    k_chord,
+                    layers_before.clone(),
+                );
                 loop {
                     let ad = app.ad();
                     let translator = app.render_state.load().translator.clone();
-                    match lattice_host::keymap_normal::binding_layer_mode(
-                        &translator.keymap,
-                        binding_mode_for(ad.modal),
-                        &prefix_before,
-                        &k_chord,
-                        &layers,
-                    ) {
-                        Some(declining) => layers.retain(|m| *m != declining),
-                        None => break,
-                    }
+                    // `None` ⇒ the winner came from Builtin / User, which
+                    // cannot decline: nothing left to peel.
+                    let Some(layers) = peel
+                        .peel(&translator.keymap)
+                        .map(<[lattice_mode::ModeId]>::to_vec)
+                    else {
+                        break;
+                    };
                     let ctx = TranslateContext {
                         modal: ad.modal,
                         builtins: &translator.builtins,
@@ -418,7 +412,7 @@ fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut O
                     };
                     let fallthrough = translate(ctx, k);
                     let declined_again = app.apply(fallthrough);
-                    if !declined_again || layers.is_empty() {
+                    if !declined_again || peel.exhausted() {
                         break;
                     }
                 }

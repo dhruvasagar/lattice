@@ -150,7 +150,20 @@ impl Editor {
             return;
         };
         let snap = handle.snapshot();
-        let last_line = last_addressable_line(&snap.buffer);
+        // Append at the TRUE end of the rope, past any trailing newline —
+        // ROPE space, phantom trailing line included, exactly as
+        // `replace_owned_buffer` does and for the same reason.
+        //
+        // `last_addressable_line` deliberately backs off a trailing-empty
+        // line (right for motions/ranges), but here it puts the insertion
+        // point BEFORE the buffer's terminating `\n`, so the first appended
+        // line fuses onto the previous last line. The synthetic-highlight
+        // pipeline then publishes one span row per appended record while the
+        // append created one fewer buffer line, so every span after the seam
+        // paints one row low and the tail span drops off the end — `*messages*`
+        // rendered its last lines unhighlighted and mis-coloured INFO as
+        // ERROR/WARN. Spanning to the rope end keeps record N on buffer line N.
+        let last_line = snap.buffer.rope_line_count().saturating_sub(1);
         let line_len = snap.buffer.line_byte_len(last_line);
         let pos = Position::new(last_line, line_len);
         let edit = Edit::insert(pos, text);

@@ -2866,18 +2866,17 @@ impl EditorView {
             cell_matrix: {
                 let cells = rs_guard.cells.load();
                 let ws = cells.whitespace_version_for_pane(pane.id);
-                // Folds belong in this guard for the same reason they
-                // belong in `display_matrix`'s below — see there. Both
-                // sites had the identical hole, which is what a copied
-                // guard does when an axis is added to only one axis list.
-                let folds = cells.fold_version_for_pane(pane.id);
+                // NO fold axis — see `display_matrix` below for the full
+                // rationale. In short: the row→source-line mapping comes from
+                // the live, fold-aware `visible_source_lines` walk
+                // (`self.gutter`), not from the matrix; the matrix is consumed
+                // only as a per-source-line styling lookup
+                // (`row_at_source_line`), whose result is fold-independent.
                 cells
                     .matrix_for_pane(pane.id)
                     .map(|cell| cell.load_full())
                     .filter(|m| {
-                        m.version.text == snapshot.text_version
-                            && m.version.whitespace == ws
-                            && m.version.folds == folds
+                        m.version.text == snapshot.text_version && m.version.whitespace == ws
                     })
             },
             // B3 (2026-06-04): the canonical DisplayMatrix is the GPU's
@@ -2902,29 +2901,44 @@ impl EditorView {
             display_matrix: {
                 let cells = rs_guard.cells.load();
                 let ws = cells.whitespace_version_for_pane(pane.id);
-                // The FOLD axis belongs in this guard too, and its
-                // absence was a real bug: fold a hunk in a commit view
-                // and half the viewport stopped painting, `j` walked the
-                // caret off into rows that were never drawn, and a big
-                // motion like `G` "fixed" it only because the rebuild it
-                // forced happened to line up — scrolling back to the fold
-                // brought it straight back.
+                // The fold axis is deliberately NOT in this guard (parity with
+                // the TUI peer, which never gated on it).
                 //
-                // A closed fold changes which physical lines occupy which
-                // visible rows, so a matrix built under a different fold
-                // state disagrees with the cursor model about what row the
-                // cursor is on. The worker already refuses its incremental
-                // path when `version.folds` differs; without the matching
-                // refusal here that invalidation was invisible to this
-                // peer, which painted the superseded matrix anyway.
-                let folds = cells.fold_version_for_pane(pane.id);
+                // Commit 39fd5379 once added it to fix a real "fold a hunk and
+                // half the viewport stops painting" bug — but that bug lived in
+                // a paint path that trusted the MATRIX's row geometry for the
+                // physical-line→visible-row mapping. The display-line / gutter
+                // rework since then made both renderers walk the host's live,
+                // fold-aware `visible_source_lines` (`self.gutter`) for that
+                // mapping instead. The matrix is now consumed ONLY as a
+                // per-source-line styling lookup
+                // (`DisplayMatrix::row_at_source_line`), which binary-searches
+                // by `source_line` and returns that line's style or `None` —
+                // never a different line's, and never a value that depends on
+                // which OTHER regions are folded. A source line's syntax colour
+                // is fold-independent.
+                //
+                // So gating the whole matrix on the fold hash is unsound: it
+                // buys no mapping correctness (the mapping is already live) and
+                // it drops EVERY row to the empty-span `build_line_with_inlays`
+                // fallback — a whole-viewport restyle to plain text — the moment
+                // any edit shifts a fold's line numbers (`compute_fold_hash`
+                // includes start/end lines). That violates the keystroke UX
+                // contract (only the edited line may change) and
+                // `feedback_decorations_update_in_place`. Worst case without it:
+                // a line just revealed by an opened fold isn't in the (older)
+                // matrix yet, so `row_at_source_line` returns `None` and THAT
+                // row alone falls back for a frame until the worker republishes
+                // — the same bounded, self-healing trade-off the text axis makes.
+                //
+                // `text` and `whitespace` stay: those invalidate every row of
+                // the matrix uniformly (stale line text everywhere; wrong
+                // whitespace glyphs everywhere).
                 cells
                     .display_matrix_for_pane(pane.id)
                     .map(|cell| cell.load_full())
                     .filter(|m| {
-                        m.version.text == snapshot.text_version
-                            && m.version.whitespace == ws
-                            && m.version.folds == folds
+                        m.version.text == snapshot.text_version && m.version.whitespace == ws
                     })
             },
             // IG.4 (2026-08-16): this pane's indentation guides. No stale
@@ -6658,36 +6672,60 @@ mod matrix_staleness_guard_tests {
     /// other, so an axis added to one and not the other is exactly how
     /// this recurs.
     #[test]
-    fn both_matrix_guards_compare_every_axis() {
+    fn both_matrix_guards_compare_matrix_wide_axes_only() {
         let src = include_str!("window.rs");
-        // The axes a matrix can go stale on. `syntax`, `inlay_hints`
-        // and `theme` are deliberately absent: a matrix carrying older
-        // syntax or hint decoration is *visually* behind for a frame,
-        // which the incremental path is designed to tolerate. `text`,
-        // `whitespace` and `folds` change row GEOMETRY — what occupies
-        // which visible row — so painting a mismatched one puts the
-        // caret and the rows out of agreement.
-        const GEOMETRY_AXES: &[&str] = &["text", "whitespace", "folds"];
+        // Axes on which a stale matrix is wrong for EVERY row uniformly:
+        // `text` (each line's characters) and `whitespace` (each line's
+        // baked display markers). Both guards must refuse the matrix when
+        // either disagrees, or the peer paints stale text / wrong glyphs.
+        const MATRIX_WIDE_AXES: &[&str] = &["text", "whitespace"];
+        // `folds` is deliberately NOT a guard axis. The row→source-line
+        // mapping comes from the live, fold-aware `visible_source_lines`
+        // walk, and the matrix is a per-source-line styling lookup whose
+        // result is fold-independent — so gating on the fold hash buys no
+        // correctness and would drop the whole viewport to plain text on
+        // any fold-shifting edit. (`syntax` / `inlay_hints` / `theme` are
+        // absent for the original reason: they go visually behind for a
+        // frame, which the incremental path is designed to tolerate.)
+        const FORBIDDEN_AXES: &[&str] = &["folds"];
 
-        for guard in ["cell_matrix: {", "display_matrix: {"] {
+        // Bound each guard's body by the field that follows it, so the scan
+        // does not depend on the (comment-length-sensitive) distance to the
+        // `.filter(` — and cannot bleed into the next guard.
+        for (guard, next_field) in [
+            ("cell_matrix: {", "display_matrix: {"),
+            ("display_matrix: {", "indent_guides: {"),
+        ] {
             let idx = src
                 .find(guard)
                 .unwrap_or_else(|| panic!("`{guard}` not found — renamed?"));
-            // The guard body ends at its `.filter(...)` close; take a
-            // generous window and require every axis inside it.
-            let body = &src[idx..(idx + 1600).min(src.len())];
+            let end = src[idx + guard.len()..]
+                .find(next_field)
+                .map(|e| idx + guard.len() + e)
+                .unwrap_or(src.len());
+            let body = &src[idx..end];
             let filter = body
                 .find(".filter(")
                 .map(|f| &body[f..])
                 .unwrap_or_else(|| panic!("`{guard}` has no `.filter(` staleness guard"));
-            for axis in GEOMETRY_AXES {
+            for axis in MATRIX_WIDE_AXES {
                 assert!(
                     filter.contains(&format!("m.version.{axis}")),
                     "`{guard}` does not compare `m.version.{axis}`. The worker \
-                     invalidates on it, so this peer will paint a matrix that \
-                     rebuild superseded — and for a geometry axis that means \
-                     the painted rows and the cursor disagree about which row \
-                     is which.",
+                     invalidates on it, so this peer would paint a matrix the \
+                     rebuild superseded — and a stale `{axis}` is wrong for \
+                     every row of the matrix.",
+                );
+            }
+            for axis in FORBIDDEN_AXES {
+                assert!(
+                    !filter.contains(&format!("m.version.{axis}")),
+                    "`{guard}` gates on `m.version.{axis}`, but the fold axis \
+                     must NOT gate the matrix: the fold-aware row mapping is \
+                     live (`visible_source_lines`), styling is a fold-independent \
+                     per-source-line lookup, and refusing the matrix on a fold \
+                     shift drops the whole viewport to plain text. See the guard \
+                     comment.",
                 );
             }
         }

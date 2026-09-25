@@ -106,11 +106,16 @@ pub(crate) const COMPLETION_DOCS_W_PX: f32 = 360.0;
 pub(crate) const COMPLETION_DOCS_MAX_ROWS: u32 = 16;
 
 pub(crate) const POPUP_MAX_W_PX: f32 = 900.0;
-pub(crate) const POPUP_MAX_H_PX: f32 = 600.0;
 pub(crate) const POPUP_MIN_W_PX: f32 = 480.0;
 pub(crate) const POPUP_MIN_H_PX: f32 = 240.0;
 pub(crate) const POPUP_W_RATIO: f32 = 0.70;
-pub(crate) const POPUP_H_RATIO: f32 = 0.60;
+// Three-quarters of the viewport, matching the TUI (`popup_outer_size`). Height
+// has NO upper ceiling (only the `POPUP_MIN_H_PX` floor): a large help doc
+// should use the vertical room the screen allows, and ¾ still leaves a quarter
+// of the window for context. The old `POPUP_MAX_H_PX = 600.0` ceiling made the
+// popup feel cramped on tall / high-resolution displays — the reason it "looked
+// the same size" no matter how big the window got.
+pub(crate) const POPUP_H_RATIO: f32 = 0.75;
 /// Popup TITLE is rendered at this multiple of the body font size (bold).
 /// The title row's locked height is `row_px * POPUP_TITLE_SCALE` (the larger
 /// font's line height), which `popup_chrome_v_px` reserves so the body
@@ -118,11 +123,12 @@ pub(crate) const POPUP_H_RATIO: f32 = 0.60;
 pub(crate) const POPUP_TITLE_SCALE: f32 = 1.2;
 
 /// Compute the popup's outer pixel dimensions from the window's
-/// viewport pixels. Window-relative with hard min/max caps so the
-/// popup is readable on small windows and not absurd on large ones.
+/// viewport pixels. Window-relative: width stays capped for readable line
+/// length; height is a true three-quarters of the viewport (floor only, no
+/// ceiling) so large help docs use the room a tall screen gives them.
 pub(crate) fn popup_outer_dims_px(viewport_w_px: f32, viewport_h_px: f32) -> (f32, f32) {
     let w = (viewport_w_px * POPUP_W_RATIO).clamp(POPUP_MIN_W_PX, POPUP_MAX_W_PX);
-    let h = (viewport_h_px * POPUP_H_RATIO).clamp(POPUP_MIN_H_PX, POPUP_MAX_H_PX);
+    let h = (viewport_h_px * POPUP_H_RATIO).max(POPUP_MIN_H_PX);
     (w, h)
 }
 

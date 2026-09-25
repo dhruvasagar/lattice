@@ -1310,7 +1310,26 @@ impl GpuiApp {
         // see slice X1b (`docs/dev/operations/render-thread-
         // discipline-remediation.md` §X1b) for the wake-bridge
         // that closes that gap.
-        let tick_signals = self.mutate_editor_with(|e| e.run_tick_pending());
+        // Parity with the TUI keystroke tail (`Editor::dispatch_fused`, which
+        // TUI reaches via `App::apply`): reparse the buffer's syntax BEFORE
+        // draining ticks. This peer dispatches via bare `Editor::dispatch`,
+        // which does NOT run the post-dispatch tail, so `maybe_reparse_syntax`
+        // was never called on a GPUI edit. The consequence was subtle and
+        // permanent: the syntax tree stayed at the pre-edit text, so
+        // `SyntaxSnapshot::tree_reflects(new_text)` was false and the cells
+        // worker's rebuild skipped highlighting; and because the syntax
+        // `render_version` never advanced, the worker then CACHE-HIT that
+        // uncoloured matrix on every later wake — syntax colour "disappeared"
+        // on the first edit and never came back (recoverable only by `:e!`).
+        // Especially visible on async-parsed / plugin-grammar buffers (e.g.
+        // `.org`). `maybe_reparse_syntax` no-ops when the text did not change
+        // (motions), so it is cheap on the hot path, and it also drives
+        // `recompute_folds`, matching TUI. Folded into the same actor crossing
+        // as `run_tick_pending` to keep the keystroke a single round-trip.
+        let tick_signals = self.mutate_editor_with(|e| {
+            e.maybe_reparse_syntax();
+            e.run_tick_pending()
+        });
         for signal in tick_signals {
             self.handle_renderer_signal(signal);
         }

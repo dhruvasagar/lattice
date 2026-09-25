@@ -5855,6 +5855,15 @@ pub(crate) fn compose_pane_lines(
             Some((start, end, bg, fg)) => apply_compilation_location_tint(body, start, end, bg, fg),
             None => body,
         };
+        // MC.3: fenced/indented code-block background — the weakest, widest
+        // tint, applied LAST so any narrower background already set (diff line,
+        // compilation location, search match, visual selection) wins on
+        // overlap. `apply_diff_tint` only fills spans without their own bg,
+        // including the trailing pad, so the tint spans the full row width.
+        let body = match code_block_tint_bg(view, ctx.buffer_id, line_idx) {
+            Some(bg) => apply_diff_tint(body, bg),
+            None => body,
+        };
         // DR.3: inactive panes are a paint-time opacity (the design's
         // §Render contract). Dim the fully-decorated body (syntax +
         // semantic + diagnostics + inlays + diff tint) uniformly AFTER
@@ -6794,6 +6803,22 @@ fn diff_tint_bg(
         // is readable at a glance.
         DiffSignKind::Conflict => Some(view.app.theme.diff_conflict_line_bg),
     }
+}
+
+/// MC.3: full-width background for a line inside a fenced/indented code block.
+/// Reads the per-buffer code-block line set from the render-state snapshot
+/// (sorted, so `binary_search` is O(log n)) and returns the resolved
+/// `syntax.code_block` background for `line_idx`, or `None` when the line is
+/// not in a code block. Painted via [`apply_diff_tint`] like the diff tint.
+fn code_block_tint_bg(
+    view: &FrameView<'_>,
+    buffer_id: crate::buffers::BufferId,
+    line_idx: u32,
+) -> Option<Color> {
+    let rs = view.app.render_state.load();
+    let lines = rs.code_block_lines.get(&buffer_id)?;
+    lines.binary_search(&line_idx).ok()?;
+    Some(view.app.theme.code_block_bg)
 }
 
 /// D.3.e: layer a background tint over every span in

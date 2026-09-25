@@ -2352,6 +2352,25 @@ impl EditorView {
                     })
             })
             .collect();
+        // MC.3: fenced/indented code-block bg tint, from the render-state
+        // code-block line set (sorted, so `binary_search` is O(log n)). Same
+        // shape as the diff / compilation tints above.
+        let code_block_tint_per_row: Vec<Option<u32>> = visible_lines
+            .iter()
+            .map(|l| *l as usize)
+            .map(|line_idx| {
+                rs_guard
+                    .code_block_lines
+                    .get(&pane.buffer_id)
+                    .filter(|lines| lines.binary_search(&(line_idx as u32)).is_ok())
+                    .and_then(|_| {
+                        resolved_theme
+                            .get(theme_ids.syntax_code_block)
+                            .bg
+                            .map(|c| c.to_rgb_u32(0))
+                    })
+            })
+            .collect();
 
         // Active-pane cursor state. `None` on inactive panes so the
         // element doesn't paint a cursor marker there.
@@ -2728,6 +2747,7 @@ impl EditorView {
             },
             diff_tint_per_row,
             compilation_location_tint_per_row,
+            code_block_tint_per_row,
             // D.3.b.1.gpui (2026-05-29): snapshot the virtual-
             // row matrix from RenderState — the prepaint walk
             // interleaves Above- and Below-anchored virtual
@@ -4192,6 +4212,7 @@ impl Render for EditorView {
                         sticky_context: Default::default(),
                         diff_tint_per_row: Vec::new(),
                         compilation_location_tint_per_row: Vec::new(),
+                        code_block_tint_per_row: Vec::new(),
                         cursorline_bg: 0,
                         cursorline_enabled: false,
                         diff_deletion_block_bg: 0,
@@ -4866,6 +4887,7 @@ impl Render for EditorView {
                 sticky_context: Default::default(),
                 diff_tint_per_row: Vec::new(),
                 compilation_location_tint_per_row: Vec::new(),
+                code_block_tint_per_row: Vec::new(),
                 cursorline_bg: 0,
                 cursorline_enabled: false,
                 diff_deletion_block_bg: 0,

@@ -169,6 +169,9 @@ pub struct Theme {
     /// Background tint applied to lines changed in the current
     /// side (D.3.e).
     pub diff_change_line_bg: Color,
+    /// MC.3: full-width background tint for lines inside a fenced/indented
+    /// code block (`syntax.code_block`).
+    pub code_block_bg: Color,
     /// D-fix.3b: background tint for lines removed on the baseline
     /// (left) side of a side-by-side diff. Reuses the deletion-block
     /// palette role (red).
@@ -290,6 +293,7 @@ impl Default for Theme {
                 .add_modifier(Modifier::BOLD),
             diff_add_line_bg: Color::Rgb(0, 50, 0),
             diff_change_line_bg: Color::Rgb(50, 50, 0),
+            code_block_bg: Color::Rgb(0x31, 0x32, 0x44),
             diff_remove_line_bg: Color::Rgb(60, 0, 0),
             diff_deletion_block_bg: Color::Rgb(60, 0, 0),
             diff_conflict_line_bg: Color::Rgb(60, 0, 60),
@@ -555,6 +559,7 @@ pub fn build_tui_theme(
         diff_conflict_sign_style: resolved_style(ids.diff_conflict_sign),
         diff_add_line_bg: resolved_bg(ids.diff_add_line),
         diff_change_line_bg: resolved_bg(ids.diff_change_line),
+        code_block_bg: resolved_bg(ids.syntax_code_block),
         diff_remove_line_bg: resolved_bg(ids.diff_remove_line),
         diff_deletion_block_bg: resolved_bg(ids.diff_deletion_block),
         diff_conflict_line_bg: resolved_bg(ids.diff_conflict_line),

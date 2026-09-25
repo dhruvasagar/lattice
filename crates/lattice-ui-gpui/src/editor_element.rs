@@ -380,6 +380,11 @@ pub(crate) struct EditorElement {
     /// `diff_tint_per_row`: `Some(color)` per visible row that
     /// carries a file-location path.
     pub(crate) compilation_location_tint_per_row: Vec<Option<u32>>,
+    /// MC.3: fenced/indented code-block background tint, pre-computed once per
+    /// prepaint. Parallel to `diff_tint_per_row`: `Some(color)` per visible row
+    /// inside a code block. Painted FIRST (under diff / compilation tints and
+    /// every cursor/search/selection overlay) as the weakest, widest backdrop.
+    pub(crate) code_block_tint_per_row: Vec<Option<u32>>,
     /// Background colour for the cursor line
     /// (`host_theme.cursor_line_bg` resolved by the caller, fallback
     /// Catppuccin surface0).
@@ -1450,6 +1455,18 @@ impl Element for EditorElement {
                                      inlay_offsets: &RowCoords|
          -> Vec<(u32, u32, u32)> {
             let mut quads: Vec<(u32, u32, u32)> = Vec::new();
+            // MC.3: full-row code-block tint, pushed FIRST so it sits UNDER the
+            // diff / compilation tints and every cursor/selection/search overlay
+            // — a code block is the weakest, widest statement about a row. Same
+            // full-row shape as the diff tint below.
+            let code_block_tint_per_row = &self.code_block_tint_per_row;
+            if let Some(&Some(tint_color)) = code_block_tint_per_row.get(vis_row) {
+                let source_cols = line_text.chars().count() as u32;
+                let inlay_cols: u32 = inlay_offsets.inlays.iter().map(|(_, w)| *w).sum();
+                let total_cols = source_cols + inlay_cols;
+                let width = total_cols.max(1);
+                quads.push((0, width, tint_color));
+            }
             // D.3.e: full-row diff tint, painted FIRST so
             // every cursor / selection / search overlay
             // composites OVER it. Width is the line's

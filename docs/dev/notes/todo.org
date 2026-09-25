@@ -279,8 +279,7 @@
   paranthesis, etc. dont work in insert mode
 - [X] GPUI: <C-x>g does not do anything, :magit-status works, C-x C-s to save
   works, <C-x>b also doesnt work, quotes also dont work
-- [X] GPUI: line numbers should respect image virtual row height.
-
+- [X] GPUI: line numbers should respect image virtual row height
 
 * Documentation
 - [X] lattice-tutor

@@ -32,15 +32,15 @@ These supersede the previous "1440×900 / 14px" note, which agreed with
 neither the tapes (1400×800 / 16pt) nor the shipped hero (1920×1242). One
 convention, so stills and video clips share framing:
 
-| | |
-|---|---|
-| **Window** | 1400×800 logical. Same as `tapes/*.tape` and `demo-script.md`, so a still and a clip of the same feature line up. |
-| **Capture** | Native retina — macOS gives ~2800×1600. Do not capture at 1x. |
+|             |                                                                                                                                         |
+|-------------|-----------------------------------------------------------------------------------------------------------------------------------------|
+| **Window**  | 1400×800 logical. Same as `tapes/*.tape` and `demo-script.md`, so a still and a clip of the same feature line up.                       |
+| **Capture** | Native retina — macOS gives ~2800×1600. Do not capture at 1x.                                                                           |
 | **Publish** | Downscale to **1920 px wide**, PNG, **under 400 KB**. The hero was made this way (3680×2382 → 1920×1242 / 196 KB) and is the reference. |
-| **Font** | A patched Nerd Font at 16pt, `ui.nerd_fonts=on`. |
-| **Theme** | Default dark. Light only where a shot is explicitly the light variant. |
-| **Opacity** | None. No terminal transparency — pure dark background. |
-| **Frame** | Editor content only. No window chrome, no desktop, no dock, unless the shot is *about* window management. |
+| **Font**    | A patched Nerd Font at 16pt, `ui.nerd_fonts=on`.                                                                                        |
+| **Theme**   | Default dark. Light only where a shot is explicitly the light variant.                                                                  |
+| **Opacity** | None. No terminal transparency — pure dark background.                                                                                  |
+| **Frame**   | Editor content only. No window chrome, no desktop, no dock, unless the shot is *about* window management.                               |
 
 **Both renderers.** Every differentiator shot is captured twice — once in
 the TUI, once in GPUI. That is not only for the gallery: "TUI and GPUI

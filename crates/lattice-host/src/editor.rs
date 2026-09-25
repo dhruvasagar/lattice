@@ -499,6 +499,13 @@ pub struct Editor {
     pub compilation_location_lines: std::sync::Arc<
         std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<Vec<(u32, u32, u32)>>>,
     >,
+    /// MC.2b: per-buffer set of source lines inside a fenced/indented code
+    /// block, for the full-width `syntax.code_block` background tint. Recomputed
+    /// from the syntax tree in `recompute_folds_because` (the same reparse-driven
+    /// trigger folds ride) and snapshotted into `RenderState::code_block_lines`.
+    /// Outer `Arc` = O(1) publish clone; inner per-buffer `Arc` = wait-free read.
+    pub code_block_lines:
+        std::sync::Arc<std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<Vec<u32>>>>,
     /// MG.21a (2026-07-29): per-buffer diff sign maps published by a
     /// *mode*, for buffers whose content is itself a unified diff.
     /// Written by the `AppEffect::DiffLineSigns` arm and merged into

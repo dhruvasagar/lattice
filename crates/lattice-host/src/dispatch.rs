@@ -1803,6 +1803,7 @@ impl Editor {
             // `CompilationSeverityData`.
             compilation_severity: self.compilation_severity.clone(),
             compilation_location_lines: self.compilation_location_lines.clone(),
+            code_block_lines: self.code_block_lines.clone(),
             compilation_theme_colors: self.compilation_theme_colors.clone(),
         }
     }
@@ -21264,6 +21265,26 @@ impl Editor {
             next.extend(overlay.compute(&ctx));
         }
         drop(fold_reg);
+
+        // MC.2b: refresh this buffer's fenced/indented code-block line set from
+        // the SAME syntax snapshot, on the same reparse-driven trigger folds
+        // ride (actor thread, off the paint path). An empty result clears the
+        // entry, so a buffer that stops being markdown — or loses its blocks —
+        // drops its tint on the next recompute.
+        {
+            let lines = syntax_snapshot
+                .as_deref()
+                .and_then(crate::folds::compute_code_block_lines)
+                .unwrap_or_default();
+            let bid = self.document_buffer_id;
+            let mut map = (*self.code_block_lines).clone();
+            if lines.is_empty() {
+                map.remove(&bid);
+            } else {
+                map.insert(bid, std::sync::Arc::new(lines));
+            }
+            self.code_block_lines = std::sync::Arc::new(map);
+        }
 
         // Carry over closed-state. Identity hash (heading text +
         // depth, node-kind for syntax, etc.) is the primary key so

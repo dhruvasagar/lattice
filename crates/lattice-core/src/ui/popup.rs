@@ -70,10 +70,11 @@ pub enum PopupFocus {
 ///   ceiling preserves a comfortable line length for reading
 ///   markdown -- wider lines are harder to scan, so even on a
 ///   200-cell terminal the popup stops at 120.
-/// - Height: `min(buffer_height * 3 / 4, 40)`, floor 5. Three-
-///   quarters leaves a strip of the underlying buffer visible at
-///   top and bottom; the 40-row ceiling keeps the popup
-///   navigable (longer help docs scroll within the popup).
+/// - Height: `buffer_height * 3 / 4`, floor 5, no upper ceiling.
+///   Three-quarters leaves a strip of the underlying buffer
+///   visible at top and bottom while giving a large help doc all
+///   the vertical room the screen allows; anything longer than the
+///   box scrolls within the popup.
 ///
 /// Cursor-anchored popups are tooltips (hover, signature help);
 /// they sit adjacent to the cursor and want to *not* dominate
@@ -92,7 +93,14 @@ pub fn popup_outer_size(
     let line_count = line_count.max(1);
     let (max_h, max_w) = match placement {
         PopupPlacement::Centered => {
-            let max_h = ((buffer_height as u32 * 3 / 4).clamp(5, 40)) as u16;
+            // Height is a true three-quarters of the viewport (floor 5, no upper
+            // ceiling): a large help doc should use all the vertical room the
+            // screen allows, while ¾ still leaves a strip of buffer above and
+            // below for context. The old 40-row cap made the popup feel cramped
+            // on tall / high-resolution displays — a 70-row screen stopped at 40
+            // and scrolled the rest. The `.max(5)` keeps `max_h >= 5` so the
+            // `clamp(5, max_h)` below never inverts on a tiny terminal.
+            let max_h = ((buffer_height as u32 * 3 / 4).max(5)) as u16;
             let max_w = (buffer_width.saturating_sub(4)).clamp(30, 120);
             (max_h, max_w)
         }
@@ -159,8 +167,17 @@ mod tests {
         let (w, h) = popup_outer_size(200, 60, 50, PopupPlacement::Centered);
         // Width caps at 120 (not buffer_width - 4 = 196).
         assert_eq!(w, 120);
-        // Height caps at min(45, 40) = 40 (3/4 of 60 = 45 > 40).
-        assert_eq!(h, 40);
+        // Height is 3/4 of 60 = 45 — content (50+2) exceeds it, so it fills the
+        // three-quarters. No 40-row ceiling anymore.
+        assert_eq!(h, 45);
+    }
+
+    #[test]
+    fn centered_popup_has_no_40_row_ceiling_on_tall_screens() {
+        // A tall / high-resolution viewport: 3/4 of 100 = 75, and a long help
+        // doc uses all of it rather than stopping at the old 40-row cap.
+        let (_w, h) = popup_outer_size(200, 100, 200, PopupPlacement::Centered);
+        assert_eq!(h, 75, "large docs fill three-quarters of a tall screen");
     }
 
     #[test]
@@ -188,7 +205,8 @@ mod tests {
 
     #[test]
     fn small_buffer_shrinks_centered_height_proportionally() {
-        // 30-row buffer: 3/4 = 22.5 → 22; capped at 40 (not hit).
+        // 30-row buffer: 3/4 = 22.5 → 22. Content exceeds it, so it fills the
+        // three-quarters.
         let (_w, h) = popup_outer_size(100, 30, 50, PopupPlacement::Centered);
         assert_eq!(h, 22);
     }

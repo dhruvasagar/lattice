@@ -3930,7 +3930,28 @@ fn push_virtual_row(
                     }],
                     None,
                 );
+                // A media block reserves N whole display rows; each MUST push a
+                // gutter entry too, or `shaped_gutter` falls short of
+                // `shaped_text` and every line number after the image is painted
+                // at the wrong `row_top(i)` — drifting up by the block's row
+                // count. `gutter_line` is `None` for a media row, so this renders
+                // blank, exactly as the BrandingBlock and generic paths below do.
+                let blank_gutter: String = virtual_row_gutter_text(vrow.gutter_line, gutter_width);
+                let shaped_g = window.text_system().shape_line(
+                    SharedString::from(blank_gutter.clone()),
+                    font_size,
+                    &[TextRun {
+                        len: blank_gutter.len(),
+                        font: font.clone(),
+                        color: rgb(GUTTER_NORMAL_COLOR).into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                );
                 shaped_text.push(blank);
+                shaped_gutter.push(shaped_g);
                 row_meta.push(Default::default());
                 row_segment.push(0);
                 row_scale.push(1.0);

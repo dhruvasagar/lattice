@@ -217,6 +217,19 @@ impl Editor {
             self.append_to_owned_buffer(id, &backlog);
             self.publish_messages_highlights(id, first_new_line, &backlog);
         }
+        // The ring backlog we just seeded and the event channel are fed by the
+        // SAME `MessagesLayer::emit` from boot: every record now in the buffer
+        // is ALSO still queued in `pending_message_event_rx`, waiting for the
+        // next `drain_message_events` — which would append the entire boot log a
+        // second time (the duplicated transcript). Discard whatever is queued
+        // now; it is exactly the backlog we just rendered. Records emitted after
+        // this point still flow through the channel and are appended once by the
+        // live drain. (Snapshot-then-discard order means a record emitted in the
+        // gap is deferred to a later re-seed rather than duplicated.)
+        if let Some(mut rx) = self.pending_message_event_rx.take() {
+            while rx.try_recv().is_ok() {}
+            self.pending_message_event_rx = Some(rx);
+        }
         id
     }
 

@@ -85,6 +85,18 @@ fn backlog_seed_then_drain_never_merges_and_keeps_spans_aligned() {
         );
     }
 
+    // No record is delivered twice: the ring backlog seeded on creation and the
+    // event channel drained afterwards are fed by the same emit, so without the
+    // discard-on-seed the whole boot log appears a second time. Each record we
+    // control must appear exactly once.
+    for needle in ["backlog one", "backlog two", "live three"] {
+        let n = text.lines().filter(|l| l.ends_with(needle)).count();
+        assert_eq!(
+            n, 1,
+            "record {needle:?} appeared {n} times, expected once:\n{text}"
+        );
+    }
+
     // The last non-empty line must be the ERROR we just appended — proof the
     // tail record was not swallowed into a merge.
     let last = text.lines().rfind(|l| !l.is_empty()).unwrap();

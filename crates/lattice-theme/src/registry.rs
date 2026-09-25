@@ -1406,6 +1406,11 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Inline code / raw markup.",
     );
     reg_one(
+        "syntax.code_block",
+        spec().bg("surface0"),
+        "Full-width background tint for a fenced/indented code block.",
+    );
+    reg_one(
         "syntax.markup",
         spec().fg("subtext").bold(),
         "Generic markup punctuation.",
@@ -1561,6 +1566,8 @@ pub struct BuiltinElementIds {
     pub syntax_link: ElementId,
     pub syntax_url: ElementId,
     pub syntax_markup_raw: ElementId,
+    /// MC.1: full-width background tint for fenced/indented code blocks.
+    pub syntax_code_block: ElementId,
     pub syntax_markup: ElementId,
     pub whitespace: ElementId,
     pub whitespace_trailing: ElementId,
@@ -1718,6 +1725,7 @@ impl Default for BuiltinElementIds {
             syntax_link: ElementId::INVALID,
             syntax_url: ElementId::INVALID,
             syntax_markup_raw: ElementId::INVALID,
+            syntax_code_block: ElementId::INVALID,
             syntax_markup: ElementId::INVALID,
             whitespace: ElementId::INVALID,
             whitespace_trailing: ElementId::INVALID,
@@ -1927,6 +1935,7 @@ impl BuiltinElementIds {
             syntax_link: id("syntax.link"),
             syntax_url: id("syntax.url"),
             syntax_markup_raw: id("syntax.markup_raw"),
+            syntax_code_block: id("syntax.code_block"),
             syntax_markup: id("syntax.markup"),
             whitespace: id("whitespace"),
             whitespace_trailing: id("whitespace.trailing"),

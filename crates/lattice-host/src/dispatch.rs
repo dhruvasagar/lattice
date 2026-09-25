@@ -6774,23 +6774,38 @@ impl Editor {
         // `document_handle` and `mode_registry.load()` borrow it.
         let ids = self.buffers.document_ids_sorted();
         for id in ids {
-            let current = self.active_modes.get(&id).and_then(|m| m.major());
-            // `None` counts as fallback: a buffer whose major never activated
-            // has no user intent to preserve either.
-            if current.is_some_and(|m| m != lattice_mode::TextMode::mode_id()) {
-                continue;
-            }
             let Some(handle) = self.buffers.document_handle(id) else {
                 continue;
             };
             let path = handle.path();
             let lang = lattice_syntax::Lang::detect_from_path(path.as_deref());
 
-            // ── 1. the language, as the open path derives it ──────────────
-            if self.document_syntax_for(id).map(|h| h.lang()) != Some(lang) {
+            // ── 1. the grammar handle, as the open path derives it ────────
+            //
+            // Runs for EVERY buffer, BEFORE the major-mode gate below. A plugin
+            // RCUs its GRAMMAR into the live registry on a different
+            // catalog-change tick than it registers its MAJOR MODE, so a
+            // buffer can already carry the plugin's major (e.g. `org-mode`)
+            // while its grammar handle is still absent. This block used to sit
+            // behind a `major != TextMode` fallback gate, which stranded
+            // exactly those buffers with no handle FOREVER: the first edit lost
+            // highlighting on the edited chunk only (the rest keeps its
+            // Arc-reused coloured cells), and `:w` lost it on the whole doc (a
+            // whole-doc rebuild with no handle → every row default), recoverable
+            // only by `:e!` — which re-opens through the live registry. Grammar
+            // attachment tracks the FILE's language, which is orthogonal to the
+            // major mode; conflating the two was the bug.
+            //
+            // Only when the handle is MISSING, never on a mere language
+            // mismatch: a mismatch can be a deliberate user choice —
+            // `:markdown-mode` on a `.rs` buffer carries a Markdown grammar the
+            // path does not imply — and re-deriving from the path would clobber
+            // it. The trap this fixes is always an ABSENT handle, so gating on
+            // `is_none()` closes it without overriding intent.
+            if self.document_syntax_for(id).is_none() {
                 let text = handle.text();
                 let version = handle.text_version();
-                let (syntax, _parsed_sync) = self.build_open_syntax(lang, &text, version);
+                let (syntax, parsed_sync) = self.build_open_syntax(lang, &text, version);
                 // The catalog changed but still cannot serve this language —
                 // leave whatever the buffer has rather than replacing a working
                 // handle with nothing.
@@ -6800,18 +6815,59 @@ impl Editor {
                         buffer = ?id,
                         ?lang,
                         text_version = version,
+                        parsed_sync,
                         "catalog_change_reattached_syntax"
                     );
-                    self.install_document_syntax(id, syntax, version);
+                    // Stamp version-1 for an ASYNC parse so `maybe_reparse_syntax`
+                    // sees a mismatch and kicks the full parse — mirroring
+                    // `do_open` (see its `wrapping_sub(1)`). This was the bug that
+                    // made a large `.org` file (whose parse is async) highlight
+                    // dead: the re-attach installed a seeded handle stamped at the
+                    // CURRENT version, so `tv == last_parsed` and the parse was
+                    // never kicked — a grammar with no tree, hence `syntax=0`, no
+                    // highlights, and (with `foldmethod=syntax`) churning folds
+                    // that trip GPUI's fold guard. A sync-parsed (small) file is
+                    // already current, which is why the existing test — tiny — did
+                    // not catch this.
+                    let stamp = if parsed_sync {
+                        version
+                    } else {
+                        version.wrapping_sub(1)
+                    };
+                    self.install_document_syntax(id, syntax, stamp);
+                    // The ACTIVE buffer must parse OFF-KEYSTROKE. A fallback
+                    // buffer gets its parse kicked by the major activation below,
+                    // but a buffer already on its (plugin) major is not
+                    // re-activated here, so nothing would kick it until the next
+                    // keypress. Kick it explicitly; the async reparse's completion
+                    // wakes the render pipeline (SyntaxReparsed → cells_wake), so
+                    // the colour lands without a key. No-op for a sync parse
+                    // (already current) and for inactive buffers (parsed on their
+                    // next activation, `do_open`-style).
+                    if id == self.document_buffer_id && !parsed_sync {
+                        self.maybe_reparse_syntax();
+                    }
                 }
             }
 
             // ── 2. the major, through §7.4's ordered resolver ─────────────
             //
+            // Gated on the fallback check: a user-chosen (or already
+            // plugin-activated) non-`TextMode` major is preserved. `None`
+            // counts as fallback: a buffer whose major never activated has no
+            // user intent to preserve either. The gate lives HERE, not around
+            // the grammar block above, because it protects the *major mode*
+            // choice — not the grammar handle, which must follow the file's
+            // language regardless of which major is active.
+            //
             // No syntax, fold, keymap or LSP logic here on purpose: activation
             // emits `MajorEntered`, and minors, keymaps, folds and LSP attach
             // all follow the ordinary open path from it. If this branch ever
             // grows one of those, the design was not implemented.
+            let current = self.active_modes.get(&id).and_then(|m| m.major());
+            if current.is_some_and(|m| m != lattice_mode::TextMode::mode_id()) {
+                continue;
+            }
             let winner = crate::modes::resolve_major_mode(
                 &self.mode_registry.load(),
                 lattice_core::BufferKind::Document,
@@ -56262,6 +56318,87 @@ mod tests {
             !editor.folds.is_empty(),
             "folds must be recomputed against the new tree, not left stamped \
              from the grammarless boot pass"
+        );
+
+        lattice_syntax::plugin_lang::unregister_plugin(PROV);
+    }
+
+    /// The ordering trap the fix closes: a plugin registers its MAJOR MODE on
+    /// one catalog tick and its GRAMMAR on a LATER one. Between the two, the
+    /// buffer is already on the plugin's (non-`TextMode`) major but has no
+    /// grammar handle. The re-attach pass used to `continue` past any
+    /// non-fallback major BEFORE re-deriving the grammar, so the handle
+    /// registered on the second tick never attached — the buffer highlighted
+    /// on open, lost colour on the first edit (edited chunk only) and lost it
+    /// entirely on `:w`, recoverable only by `:e!`. This is the org-file
+    /// symptom reduced to its mechanism.
+    ///
+    /// Driven through `run_tick_pending` (the actor's off-keystroke arm), so a
+    /// pass that only worked on the next keypress would fail here.
+    #[test]
+    fn a_grammar_registered_after_its_major_still_attaches() {
+        const PROV: u64 = 0xA11C_E0F7;
+        let ext = "tlanggrammarlate";
+        let mode_id = "tlanggrammarlate-mode";
+
+        let mut editor = Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path(format!("argv.{ext}"))
+                .with_text("fn a()\n{\n}\n")
+                .build(),
+        );
+        let id = editor.document_buffer_id;
+        let _ = editor.activate_major_for_buffer_kind(id, lattice_core::BufferKind::Document);
+        let _ = editor.do_set("foldmethod=syntax");
+
+        // ── Phase 1: the plugin's MAJOR registers; its grammar does NOT yet. ──
+        // Activate the major directly to model "org-mode activated before the
+        // org grammar landed": the buffer is now on a non-fallback major with
+        // no grammar handle — the exact state the old gate stranded.
+        register_major_at_runtime(
+            &editor,
+            PluginLangMajor {
+                id: mode_id,
+                lang: ext,
+            },
+        );
+        let _ = editor.activate_mode_by_id(id, lattice_mode::ModeId::new(mode_id));
+        assert_eq!(
+            editor.active_modes.get(&id).and_then(|m| m.major()),
+            Some(lattice_mode::ModeId::new(mode_id)),
+            "sanity: the plugin major is active before the grammar exists"
+        );
+        assert!(
+            editor.document_syntax_for(id).is_none(),
+            "sanity: no grammar is registered yet, so there is no handle"
+        );
+
+        // ── Phase 2: the grammar registers on a LATER catalog tick. ──────────
+        let spec = lattice_syntax::registry::GrammarSpec {
+            grammar: tree_sitter_rust::LANGUAGE.into(),
+            highlights: Some(tree_sitter_rust::HIGHLIGHTS_QUERY.to_string()),
+            folds: Some("[(function_item)] @fold".to_string()),
+            injections: None,
+            indents: None,
+            textobjects: None,
+            conceal_rules: Vec::new(),
+        };
+        lattice_syntax::plugin_lang::register_with_grammar(ext, &[ext], &spec, PROV)
+            .expect("the test grammar registers");
+
+        publish_catalog_change(&editor);
+        editor.run_tick_pending();
+
+        assert!(
+            editor.document_syntax_for(id).is_some(),
+            "a grammar registered AFTER its major must still attach — the \
+             re-attach must not be gated behind the major-is-fallback check, or \
+             the buffer highlights only until its first edit"
+        );
+        assert_eq!(
+            editor.active_modes.get(&id).and_then(|m| m.major()),
+            Some(lattice_mode::ModeId::new(mode_id)),
+            "and the grammar re-attach must not disturb the already-active major"
         );
 
         lattice_syntax::plugin_lang::unregister_plugin(PROV);

@@ -78,6 +78,15 @@ use crate::GpuiTheme;
 use crate::cells_paint::{RowCoords, display_line_to_text_runs};
 use crate::glyph_resolver::GlyphResolver;
 
+/// Sentinel `col_end` for a full-row background quad: `paint` resolves it to
+/// the pane's right edge rather than `col_x(row, col_end)`. Used by the
+/// code-block tint so a fenced block reads as a solid rectangle to the edge
+/// (including blank lines and trailing space) — a column can't name the edge,
+/// and the pane's pixel width is only known at paint time. No real column
+/// reaches `u32::MAX`, and only the code-block tint emits it, so the paint
+/// loop's branch is unambiguous.
+const FULL_ROW_COL_END: u32 = u32::MAX;
+
 /// Adapter: host-canonical syntax style -> packed 24-bit `0xRRGGBB`.
 /// T.5.b: resolves `style` through the active theme's resolved table
 /// (`resolved` + `ids`) via `resolve_syntax_style`, the replacement
@@ -1461,11 +1470,13 @@ impl Element for EditorElement {
             // full-row shape as the diff tint below.
             let code_block_tint_per_row = &self.code_block_tint_per_row;
             if let Some(&Some(tint_color)) = code_block_tint_per_row.get(vis_row) {
-                let source_cols = line_text.chars().count() as u32;
-                let inlay_cols: u32 = inlay_offsets.inlays.iter().map(|(_, w)| *w).sum();
-                let total_cols = source_cols + inlay_cols;
-                let width = total_cols.max(1);
-                quads.push((0, width, tint_color));
+                // Full-row rectangle to the pane's right edge — NOT just the
+                // text width — so the fenced block reads as a solid rectangle
+                // including blank lines and trailing space. The TUI peer gets
+                // this for free (its `apply_diff_tint` fills the row's trailing
+                // pad); this peer had no pad, so short/blank lines left the row
+                // ragged. `FULL_ROW_COL_END` is resolved to the edge in `paint`.
+                quads.push((0, FULL_ROW_COL_END, tint_color));
             }
             // D.3.e: full-row diff tint, painted FIRST so
             // every cursor / selection / search overlay
@@ -2475,7 +2486,14 @@ impl Element for EditorElement {
             }
             for (col_start, col_end, color) in quads {
                 let quad_x = col_x(row_idx, *col_start);
-                let quad_w = col_x(row_idx, *col_end) - quad_x;
+                // `FULL_ROW_COL_END` (code-block tint) extends to the pane's
+                // right edge; a column can't name the edge, and the pane pixel
+                // width is only known here. Everything else is column-bounded.
+                let quad_w = if *col_end == FULL_ROW_COL_END {
+                    (bounds.origin.x + bounds.size.width - quad_x).max(px(0.))
+                } else {
+                    col_x(row_idx, *col_end) - quad_x
+                };
                 let quad_bounds = Bounds::new(point(quad_x, row_y), size(quad_w, row_h(row_idx)));
                 window.paint_quad(fill(quad_bounds, rgb(*color)));
             }

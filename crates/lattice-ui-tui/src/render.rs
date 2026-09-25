@@ -5858,10 +5858,23 @@ pub(crate) fn compose_pane_lines(
         // MC.3: fenced/indented code-block background — the weakest, widest
         // tint, applied LAST so any narrower background already set (diff line,
         // compilation location, search match, visual selection) wins on
-        // overlap. `apply_diff_tint` only fills spans without their own bg,
-        // including the trailing pad, so the tint spans the full row width.
+        // overlap. `apply_diff_tint` fills spans without their own bg (the
+        // text), then a trailing pad fills the rest of the row to `buffer_w`
+        // so the block reads as a solid rectangle including blank lines and
+        // trailing space (mirrors the cursorline pad above; matches the GPUI
+        // peer's full-row code-block quad). The pad only fills the gap, so a
+        // row already padded to full width by a stronger tint (e.g. the
+        // cursorline on a code line) is left untouched.
         let body = match code_block_tint_bg(view, ctx.buffer_id, line_idx) {
-            Some(bg) => apply_diff_tint(body, bg),
+            Some(bg) => {
+                let mut body = apply_diff_tint(body, bg);
+                let used: usize = body.iter().map(|s| s.content.len()).sum();
+                let pad_width = (buffer_w as usize).saturating_sub(used);
+                if pad_width > 0 {
+                    body.push(Span::styled(" ".repeat(pad_width), TuiStyle::default().bg(bg)));
+                }
+                body
+            }
             None => body,
         };
         // DR.3: inactive panes are a paint-time opacity (the design's

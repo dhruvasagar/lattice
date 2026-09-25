@@ -187,7 +187,8 @@ pub fn display_line_to_text_runs(
     let mut current: Option<(Cell, RichAttrs, usize)> = None;
     for run in line.runs.iter() {
         let run_len = run.len as usize;
-        let (cell, rich) = display_run_to_synthetic_cell(run, resolved, ids, trailing_fg);
+        let (cell, rich) =
+            display_run_to_synthetic_cell(run, resolved, ids, trailing_fg, default_fg);
         match &mut current {
             Some((sample, sample_rich, len))
                 if style_key(sample) == style_key(&cell)
@@ -319,6 +320,7 @@ fn display_run_to_synthetic_cell(
     resolved: &lattice_host::ui::theme::ResolvedTheme,
     ids: &lattice_host::ui::theme::BuiltinElementIds,
     trailing_fg: u32,
+    default_fg: u32,
 ) -> (Cell, RichAttrs) {
     let host = lattice_host::ui::theme::resolve_syntax_style(resolved, ids, run.style);
     let style_fg = host.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0);
@@ -387,7 +389,15 @@ fn display_run_to_synthetic_cell(
             RichAttrs::default(),
         )
     } else {
-        (Cell::new(0, style_fg, refine_bg, mods), rich)
+        // A style with no foreground (e.g. `messages.info`, which is meant to
+        // inherit the buffer's default text colour) resolves to `style_fg == 0`.
+        // Fall back to the default text foreground, exactly as the active-pane
+        // painter does (`paint_cells::paint_cells_row`) and as the TUI's per-run
+        // resolver does (`cells_render::display_run_to_style`). Without it this
+        // Site-B path paints `rgb(0)` = pure black — the symptom was INFO log
+        // lines rendering black in GPUI.
+        let fg = if style_fg != 0 { style_fg } else { default_fg };
+        (Cell::new(0, fg, refine_bg, mods), rich)
     }
 }
 
@@ -559,11 +569,12 @@ mod tests {
     #[test]
     fn a_refined_run_paints_the_refine_background() {
         let (resolved, ids) = theme_defaults();
-        let (plain, _) = display_run_to_synthetic_cell(&refined_run(None), &resolved, &ids, 0);
+        let (plain, _) = display_run_to_synthetic_cell(&refined_run(None), &resolved, &ids, 0, 0);
         let (refined, _) = display_run_to_synthetic_cell(
             &refined_run(Some(lattice_cells::RefineKind::Removed)),
             &resolved,
             &ids,
+            0,
             0,
         );
         assert_eq!(plain.bg, 0, "an unrefined run carries no background");
@@ -574,13 +585,50 @@ mod tests {
         );
     }
 
+    /// A style with no foreground (e.g. `messages.info`, which inherits the
+    /// buffer's default text colour) must fall back to the caller's default
+    /// foreground — not paint `rgb(0)` = black. Regression: this Site-B path
+    /// had no `default_fg` fallback, so INFO log lines rendered black in GPUI
+    /// while the active-pane painter and the TUI showed them in the default fg.
+    #[test]
+    fn a_run_with_no_foreground_inherits_default_fg_not_black() {
+        let (resolved, ids) = theme_defaults();
+        let info_run = DisplayRun {
+            len: 5,
+            style: lattice_syntax::Style::MessagesInfo,
+            flags: 0,
+            refine: None,
+        };
+        const DEFAULT_FG: u32 = 0x00AB_CDEF;
+        let (cell, _) = display_run_to_synthetic_cell(&info_run, &resolved, &ids, 0, DEFAULT_FG);
+        assert_eq!(
+            cell.fg, DEFAULT_FG,
+            "a no-foreground style must inherit default_fg, not 0 (black)"
+        );
+
+        // Sanity: an explicit-fg level (ERROR) is unaffected by the fallback.
+        let error_run = DisplayRun {
+            len: 5,
+            style: lattice_syntax::Style::MessagesError,
+            flags: 0,
+            refine: None,
+        };
+        let (err_cell, _) =
+            display_run_to_synthetic_cell(&error_run, &resolved, &ids, 0, DEFAULT_FG);
+        assert_ne!(err_cell.fg, 0, "ERROR resolves to an explicit colour");
+        assert_ne!(
+            err_cell.fg, DEFAULT_FG,
+            "ERROR must keep its own colour, not the default fallback"
+        );
+    }
+
     /// The two sides paint DIFFERENT backgrounds — a shared colour
     /// would render an addition and a deletion identically.
     #[test]
     fn the_two_refine_sides_paint_different_backgrounds() {
         let (resolved, ids) = theme_defaults();
         let paint = |kind| {
-            display_run_to_synthetic_cell(&refined_run(Some(kind)), &resolved, &ids, 0)
+            display_run_to_synthetic_cell(&refined_run(Some(kind)), &resolved, &ids, 0, 0)
                 .0
                 .bg
         };

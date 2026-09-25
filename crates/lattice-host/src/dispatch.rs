@@ -3551,23 +3551,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             _out.merge(editor.do_picker_accept());
         }
         Action::PickerAccept => {
-            // In transient mode `<CR>` fires whatever `<C-n>` / `<C-p>`
-            // walked to. Routed through `do_transient_trigger` by the
-            // item's own key rather than reimplementing activation, so
-            // submenus, flag toggles and argument prompts behave
-            // identically however the item was reached — and a
-            // selection with no key (there are none today) falls
-            // through to the ordinary accept rather than doing nothing.
-            let transient_key = editor
-                .picker
-                .as_ref()
-                .filter(|p| p.transient.is_some())
-                .and_then(|p| p.transient_selected_item())
-                .and_then(|item| item.key.first().cloned());
-            match transient_key {
-                Some(key) => editor.do_transient_trigger(key, _out),
-                None => _out.merge(editor.do_picker_accept()),
-            }
+            // In transient mode `<CR>` fires whatever `<C-n>` / `<C-p>` walked
+            // to; otherwise the ordinary accept. Shared with the GPUI peer via
+            // `do_picker_or_transient_accept` so both renderers behave the same.
+            editor.do_picker_or_transient_accept(_out);
         }
         Action::PickerBulkAccept => {
             editor.do_picker_bulk_accept(_out);
@@ -36007,6 +35994,30 @@ impl Editor {
             .transient_state
             .insert(name, lattice_picker::TransientValue::Bool(new_val));
         Vec::new()
+    }
+
+    /// `<CR>` in the picker: in transient mode fire whatever `<C-n>` / `<C-p>`
+    /// walked to — by the SELECTED item's own key, through
+    /// [`Self::do_transient_trigger`], so submenus / flag toggles / argument
+    /// prompts behave identically however the item was reached — otherwise the
+    /// ordinary [`Self::do_picker_accept`].
+    ///
+    /// The single source of truth for both renderers. The GPUI peer's
+    /// `PickerAccept` interceptor used to call `do_picker_accept` directly,
+    /// which is a no-op for a transient, so `<CR>` on a `C-n`/`C-p`-selected
+    /// transient row ran in the TUI (through the dispatch arm) but did nothing
+    /// in GPUI. Both now route here.
+    pub fn do_picker_or_transient_accept(&mut self, out: &mut DispatchOutcome) {
+        let transient_key = self
+            .picker
+            .as_ref()
+            .filter(|p| p.transient.is_some())
+            .and_then(|p| p.transient_selected_item())
+            .and_then(|item| item.key.first().cloned());
+        match transient_key {
+            Some(key) => self.do_transient_trigger(key, out),
+            None => out.merge(self.do_picker_accept()),
+        }
     }
 
     /// Full `Action::PickerAccept`. Phase 5.8.AF: complete body

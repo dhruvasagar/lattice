@@ -1170,7 +1170,16 @@ impl GpuiApp {
         // migrate.
         match &action {
             Action::PickerAccept => {
-                let mut outcome = self.mutate_editor_with(|e| e.do_picker_accept());
+                // Route through the transient-aware accept, NOT `do_picker_accept`
+                // directly: in transient mode `<CR>` must fire whatever
+                // `<C-n>`/`<C-p>` selected. Calling `do_picker_accept` here is a
+                // no-op for a transient, which is why a scrolled-to transient
+                // action ran in the TUI but did nothing in GPUI.
+                let mut outcome = self.mutate_editor_with(|e| {
+                    let mut out = DispatchOutcome::default();
+                    e.do_picker_or_transient_accept(&mut out);
+                    out
+                });
                 outcome.consumed = true;
                 for s in std::mem::take(&mut outcome.renderer_signals) {
                     self.handle_renderer_signal(s);

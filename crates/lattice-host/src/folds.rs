@@ -320,6 +320,62 @@ pub fn compute_syntax_folds(syntax: &SyntaxSnapshot) -> Option<Vec<Fold>> {
     Some(folds)
 }
 
+/// MC.2: the source lines that lie inside a fenced (or indented) code block,
+/// for the full-width `syntax.code_block` background tint (markdown and any
+/// grammar exposing those node kinds).
+///
+/// Mirrors [`compute_syntax_folds`]: it runs the language's fold query — the one
+/// registered query that already captures `fenced_code_block` /
+/// `indented_code_block` — and keeps only the code-block captures, expanding
+/// each to the individual source lines it covers. A grammar whose fold query
+/// captures no code block (every language but markdown today) yields an empty
+/// set, so no tint. Runs on the actor thread off the paint path, exactly like
+/// the fold recompute it rides beside.
+///
+/// Returned lines are sorted and de-duplicated (a `BTreeSet` collapses the
+/// overlap tree-sitter can report for the same range under multiple patterns).
+pub fn compute_code_block_lines(syntax: &SyntaxSnapshot) -> Option<Vec<u32>> {
+    let tree = syntax.tree()?;
+    let source = syntax.source();
+    let registry = syntax.registry();
+    let query = registry.folds_query(syntax.lang().name())?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(query, tree.root_node(), source);
+
+    let mut lines: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    while let Some(m) = matches.next() {
+        for cap in m.captures {
+            let node = cap.node;
+            if !is_code_block_kind(node.kind()) {
+                continue;
+            }
+            let start_line = node.start_position().row as u32;
+            let mut end_line = node.end_position().row as u32;
+            // Same trailing-newline pullback as `compute_syntax_folds`: a node
+            // ending in '\n' reports `end_position` on the following line, which
+            // would tint one blank row past the block.
+            if end_line > start_line && node.end_byte() > 0 {
+                let last_byte = node.end_byte().saturating_sub(1);
+                if source.get(last_byte) == Some(&b'\n') {
+                    end_line = end_line.saturating_sub(1);
+                }
+            }
+            for line in start_line..=end_line {
+                lines.insert(line);
+            }
+        }
+    }
+    Some(lines.into_iter().collect())
+}
+
+/// Node kinds that earn the code-block background: fenced (```lang … ``` and
+/// generic ``` … ```) and 4-space-indented blocks. Both are markdown grammar
+/// kinds; other grammars don't emit them, so they get no tint.
+fn is_code_block_kind(kind: &str) -> bool {
+    matches!(kind, "fenced_code_block" | "indented_code_block")
+}
+
 /// Hash the user-visible signature of the current fold set.
 ///
 /// Used as part of the highlights cache key
@@ -1826,6 +1882,26 @@ impl Buffer {
             folds.iter().any(|f| f.start_line == 0),
             "expected H1 section fold: {folds:?}"
         );
+    }
+
+    #[test]
+    fn markdown_code_block_lines_cover_the_fence_only() {
+        // 0: prose  1: ```rust  2: content  3: ```  4: prose
+        let src = "text before\n```rust\nfn main() {}\n```\ntext after\n";
+        let syntax = markdown_syntax_with(src);
+        let lines = compute_code_block_lines(syntax.snapshot()).expect("markdown code-block lines");
+        for tinted in [1u32, 2, 3] {
+            assert!(
+                lines.contains(&tinted),
+                "line {tinted} is inside the fence and must be tinted: {lines:?}"
+            );
+        }
+        for prose in [0u32, 4] {
+            assert!(
+                !lines.contains(&prose),
+                "line {prose} is prose and must NOT be tinted: {lines:?}"
+            );
+        }
     }
 
     #[test]

@@ -266,7 +266,7 @@ impl Default for Theme {
                 .add_modifier(Modifier::DIM),
             messages_trace_style: Style::new().add_modifier(Modifier::DIM),
             messages_debug_style: Style::new().fg(Color::Rgb(0x74, 0xc7, 0xec)),
-            messages_info_style: Style::new(),
+            messages_info_style: Style::new().fg(Color::Rgb(0xa6, 0xe3, 0xa1)),
             messages_warn_style: Style::new()
                 .fg(Color::Rgb(0xf9, 0xe2, 0xaf))
                 .add_modifier(Modifier::BOLD),

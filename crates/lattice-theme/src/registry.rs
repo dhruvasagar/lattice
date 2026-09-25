@@ -796,7 +796,7 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     );
     reg_one("messages.trace", spec().dim(), "TRACE-level message.");
     reg_one("messages.debug", spec().fg("cyan"), "DEBUG-level message.");
-    reg_one("messages.info", spec(), "INFO-level message.");
+    reg_one("messages.info", spec().fg("green"), "INFO-level message.");
     reg_one(
         "messages.warn",
         spec().fg("yellow").bold(),

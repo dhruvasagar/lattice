@@ -282,6 +282,8 @@
 - [X] GPUI: line numbers should respect image virtual row height
 - [ ] magit-dispatch -> select branch delete, doesn't ask for confirmation in
   GPUI and halts the action, in TUI it works fine
+- [ ] org file looses syntax highlighting in TUI after switching to org agenda
+  buffer, not broken in GPUI
 
 * Documentation
 - [X] lattice-tutor

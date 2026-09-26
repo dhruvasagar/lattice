@@ -273,11 +273,11 @@ update the alt text with it.
 
 ## Where the shots land
 
-| Surface | Slot | State |
-|---|---|---|
-| `README.md` | Hero at line 13; a **new gallery section** after *What works today* (lines 32-42), before `## Org-mode, and what a plugin can be` (line 44) | gallery does not exist yet |
-| `site/templates/index.html` | `.hero-shot` at line 20; a **new `<section class="gallery">`** between `features` (line 26) and `principles` (line 54) | gallery does not exist yet |
-| `site/content/plugins/*.md` | One shot per plugin page: `auto-pair`, `treesitter-context`, `project`, `comment`, `org` | slots deliberately left empty at L.11 — "a broken image is worse than an absent one" |
+| Surface                     | Slot                                                                                                                                        | State                                                                                |
+|-----------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------|
+| `README.md`                 | Hero at line 13; a **new gallery section** after *What works today* (lines 32-42), before `## Org-mode, and what a plugin can be` (line 44) | gallery does not exist yet                                                           |
+| `site/templates/index.html` | `.hero-shot` at line 20; a **new `<section class="gallery">`** between `features` (line 26) and `principles` (line 54)                      | gallery does not exist yet                                                           |
+| `site/content/plugins/*.md` | One shot per plugin page: `auto-pair`, `treesitter-context`, `project`, `comment`, `org`                                                    | slots deliberately left empty at L.11 — "a broken image is worse than an absent one" |
 
 The README gallery should stay compact — the file is 164 lines against a
 143-line discipline, so thumbnails in a two-column table linking to the full
@@ -382,7 +382,7 @@ one does not duplicate it.
 
 Differentiators — each needs both renderers:
 
-- [ ] 1. Magit status + transient — `magit-tui.png`, `magit-gpui.png`
+- [X] 1. Magit status + transient — `magit-tui.png`, `magit-gpui.png`
 - [ ] 2. Buffer splits + `:ls` — `buffer-splits-tui.png`, `buffer-splits-gpui.png`
 - [ ] 3. `init.rs` + `:reload-config` — `config-init-rs-tui.png`, `config-init-rs-gpui.png`
 - [ ] 4. Org agenda + agent diff review — `org-and-agents-tui.png`, `org-and-agents-gpui.png`
@@ -391,7 +391,7 @@ Differentiators — each needs both renderers:
 
 Blocking work before capture:
 
-- [ ] Write `docs/media/fixtures/demo-agenda.org` (shot 4)
+- [X] Write `docs/media/fixtures/demo-agenda.org` (shot 4)
 - [ ] Install the org plugin in the capture environment (shot 4)
 
 After capture:

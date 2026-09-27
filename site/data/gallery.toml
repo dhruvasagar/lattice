@@ -26,37 +26,38 @@
 # intended order is the differentiator order from
 # docs/dev/architecture/launch-0.9.md §10.
 
-shots = []
+# Order is the differentiator order from launch-0.9.md §10. Shot 3
+# (config-init-rs) is not captured yet and stays commented in place, so it
+# slots back into order when its files land. `every_referenced_screenshot_exists`
+# requires every uncommented `file` to be present in BOTH media directories.
 
-# Ready to uncomment as each capture lands — copy verbatim from
-# screenshot-ideas.md's shot list so the alt text stays accurate.
-#
-# [[shots]]
-# file = "magit-gpui.png"
-# title = "A real magit, inside a modal editor"
-# alt = "The magit status buffer with staged and unstaged sections and the repo dispatch transient open"
-# blurb = "Stage by hunk, commit, rebase, blame — the porcelain, not a git wrapper. Neither Zed nor Helix has one, and fugitive is not magit."
-#
-# [[shots]]
-# file = "buffer-splits-gpui.png"
-# title = "Everything is a buffer"
-# alt = "A four-way split showing the file tree, a source file, project search results and a terminal, with the buffer list open over them"
-# blurb = "The file tree, search results and the terminal are buffers, not panels — so the same grammar moves through all of them."
-#
+[[shots]]
+file = "magit-gpui.png"
+title = "A real magit, inside a modal editor"
+alt = "The magit status buffer with staged and unstaged sections and the repo dispatch transient open"
+blurb = "Stage by hunk, commit, rebase, blame — the porcelain, not a git wrapper. Neither Zed nor Helix has one, and fugitive is not magit."
+
+[[shots]]
+file = "buffer-splits-gpui.png"
+title = "Everything is a buffer"
+alt = "A four-way split showing the file tree, a source file, project search results and a terminal, with the buffer list open over them"
+blurb = "The file tree, search results and the terminal are buffers, not panels — so the same grammar moves through all of them."
+
+# Awaiting capture (shot 3). Uncomment when config-init-rs-gpui.png lands in both dirs.
 # [[shots]]
 # file = "config-init-rs-gpui.png"
 # title = "Config is a program"
 # alt = "init.rs open beside the editor defining a custom ex-command, with the command's output visible after reload-config"
 # blurb = "Your config is Rust compiled to WebAssembly. Not JSON, not TOML, not a scripting language bolted on the side."
-#
-# [[shots]]
-# file = "org-and-agents-gpui.png"
-# title = "Org-mode and agents, as buffers"
-# alt = "An org agenda beside a coding-agent conversation buffer with a proposed diff under review"
-# blurb = "An agenda in one pane, an agent's proposed diff under review in the next. Org is a plugin, which is the point."
-#
-# [[shots]]
-# file = "two-renderers.png"
-# title = "Two first-class renderers"
-# alt = "The same file open side by side in the terminal renderer and the GPU-rendered window"
-# blurb = "The same core behind a terminal and a GPU window. Neither is the fallback."
+
+[[shots]]
+file = "org-and-agents-gpui.png"
+title = "Org-mode and agents, as buffers"
+alt = "An org agenda beside a coding-agent conversation buffer with a proposed diff under review"
+blurb = "An agenda in one pane, an agent's proposed diff under review in the next. Org is a plugin, which is the point."
+
+[[shots]]
+file = "two-renderers.png"
+title = "Two first-class renderers"
+alt = "The same file open side by side in the terminal renderer and the GPU-rendered window"
+blurb = "The same core behind a terminal and a GPU window. Neither is the fallback."

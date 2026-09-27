@@ -41,6 +41,19 @@ Full instructions, including building from source (Rust 1.94+): [install guide](
 | **Two renderers** | Terminal (first-class, for SSH) and GPU (`--gui`) |
 | **AI agents** | Claude Code over MCP; opencode's own TUI in a terminal buffer, or an ACP conversation buffer with diff review |
 
+## See it
+
+<table>
+<tr>
+<td width="50%"><a href="./assets/media/screenshots/magit-gpui.png"><img src="./assets/media/screenshots/magit-gpui.png" alt="The magit status buffer with staged and unstaged sections and the repo dispatch transient open" width="100%"></a><br><sub><b>A real magit, inside a modal editor.</b> Stage by hunk, commit, rebase, blame — the porcelain, not a git wrapper. Neither Zed nor Helix has one, and fugitive is not magit.</sub></td>
+<td width="50%"><a href="./assets/media/screenshots/buffer-splits-gpui.png"><img src="./assets/media/screenshots/buffer-splits-gpui.png" alt="A four-way split showing the file tree, a source file, project search results and a terminal, with the buffer list open over them" width="100%"></a><br><sub><b>Everything is a buffer.</b> The file tree, search results and the terminal are buffers, not panels — so the same grammar moves through all of them.</sub></td>
+</tr>
+<tr>
+<td width="50%"><a href="./assets/media/screenshots/org-and-agents-gpui.png"><img src="./assets/media/screenshots/org-and-agents-gpui.png" alt="An org agenda beside a coding-agent conversation buffer with a proposed diff under review" width="100%"></a><br><sub><b>Org-mode and agents, as buffers.</b> An agenda in one pane, an agent's proposed diff under review in the next. Org is a plugin, which is the point.</sub></td>
+<td width="50%"><a href="./assets/media/screenshots/two-renderers.png"><img src="./assets/media/screenshots/two-renderers.png" alt="The same file open side by side in the terminal renderer and the GPU-rendered window" width="100%"></a><br><sub><b>Two first-class renderers.</b> The same core behind a terminal and a GPU window. Neither is the fallback.</sub></td>
+</tr>
+</table>
+
 ## Org-mode, and what a plugin can be
 
 Org in lattice is a **plugin**, not a feature —

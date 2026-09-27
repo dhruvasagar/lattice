@@ -105,6 +105,7 @@ docs = [
   "architecture/gutter-signs",
   "architecture/ligatures",
   "architecture/theme-system",
+  "architecture/theme-authoring",
   "architecture/headerline",
   "architecture/modeline",
   "architecture/marginalia",

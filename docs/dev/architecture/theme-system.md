@@ -15,7 +15,9 @@ resolution stack this composes with), `cell-grid-renderer.md` and
 `display-line.md` (the read consumers), and `multibuffer-views.md`
 §3.8 (whose ad-hoc header theme fields this subsumes). Owns the
 *what* and *why*. Sequencing lives in
-`docs/dev/operations/slice-plans/theme-system.md`.
+`docs/dev/operations/slice-plans/theme-system.md`. The practical
+step-by-step — add a theme, restyle an element, register a new element
+— is the how-to guide [`theme-authoring.md`](theme-authoring.md).
 
 ---
 

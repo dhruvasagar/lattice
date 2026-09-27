@@ -117,6 +117,32 @@ the right trade exactly when the name has to be the obvious one.
 `Language` costs ~100 ms of Cranelift (§2.5), and doing that inside the
 guest call would hold a `wasmtime::Store` alive across it for nothing.
 
+### 2.2.1 Query-capture conventions the host reads
+
+Two capture names in these queries are load-bearing beyond ordinary syntax
+highlighting — the host reads them **by name**, so a plugin grammar opts into
+the behaviour purely by declaring the capture, with no host change:
+
+- **`@fold`** (folds query) — every `@fold` capture becomes a foldable range
+  (`compute_syntax_folds`). Captures under any other name in the folds query
+  are ignored by folding.
+- **`@codeblock`** (folds query) — marks a full-row **code-block-background**
+  region. `compute_code_block_lines` collects `@codeblock` captures and both
+  renderers paint those lines edge-to-edge (blank lines and trailing space
+  included) in the **`syntax.code_block`** theme element — the same rectangle
+  markdown's fenced / indented blocks get. The host knows no language-specific
+  node kinds; a grammar earns the tint solely by declaring the capture.
+
+The two are independent: a node tagged only `@codeblock` tints without folding;
+a node tagged both tints and folds. Markdown declares its `(fenced_code_block)`
+/ `(indented_code_block)` under both; org (§7) declares `(block)` /
+`(dynamic_block)` the same way, reusing the `syntax.code_block` element with
+zero host edits. Other capture names in the folds query are free-form
+(tree-sitter accepts any name); only `@fold` and `@codeblock` carry host
+meaning today. A theme author styles the fill by setting the
+`syntax.code_block` element's background — see the theme-authoring guide
+(`theme-authoring.md`).
+
 ### 2.3 `Lang` stops being a closed enum
 
 The one genuinely invasive change. `Lang` is a `Copy + Eq + Hash` enum
@@ -556,6 +582,10 @@ Org exercises the seam properly rather than thinly, which is what
   size.
 - **Folding is queries only.** `(section)`, `(block)`, `(drawer)`,
   `(list)` map onto the same fold pipeline markdown's `(section)` uses.
+- **Code-block tint is queries only, too.** Org's folds query declares a
+  `@codeblock` capture on `(block)` / `(dynamic_block)` (§2.2.1), so its
+  `#+BEGIN…#+END` blocks get the same full-row `syntax.code_block`
+  rectangle markdown's fenced blocks get — no host code knows about org.
 
 **The plugin is not in this repo's `plugins/`, deliberately.**
 [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin) carries its source — queries, `build.rs`, the

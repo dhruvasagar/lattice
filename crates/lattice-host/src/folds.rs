@@ -236,6 +236,13 @@ pub fn compute_syntax_folds(syntax: &SyntaxSnapshot) -> Option<Vec<Fold>> {
     let source = syntax.source();
     let registry = syntax.registry();
     let query = registry.folds_query(syntax.lang().name())?;
+    // Only `@fold` captures fold. The folds query may ALSO carry `@codeblock`
+    // captures — read by `compute_code_block_lines` for the code-block tint —
+    // and those must not become folds. Every in-repo grammar uses `@fold`, so
+    // this is a no-op for them; it exists so the two concerns can share one
+    // query without a `@codeblock`-only region silently folding. A query with
+    // no `@fold` capture folds nothing, which is the correct answer for it.
+    let fold_cap = query.capture_index_for_name("fold");
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), source);
@@ -273,6 +280,10 @@ pub fn compute_syntax_folds(syntax: &SyntaxSnapshot) -> Option<Vec<Fold>> {
 
     while let Some(m) = matches.next() {
         for cap in m.captures {
+            // Ignore non-`@fold` captures (e.g. `@codeblock`) sharing this query.
+            if Some(cap.index) != fold_cap {
+                continue;
+            }
             let node = cap.node;
             let start_line = node.start_position().row as u32;
             let end_line = node.end_position().row as u32;
@@ -339,6 +350,13 @@ pub fn compute_code_block_lines(syntax: &SyntaxSnapshot) -> Option<Vec<u32>> {
     let source = syntax.source();
     let registry = syntax.registry();
     let query = registry.folds_query(syntax.lang().name())?;
+    // A grammar declares its code-block-background regions with a `@codeblock`
+    // capture in its folds query; the host tints whatever is captured, so it
+    // knows no language-specific node kinds. Markdown captures its fenced /
+    // indented blocks; a plugin grammar (e.g. org) captures its own src blocks
+    // the same way, reusing the `syntax.code_block` theme element. No
+    // `@codeblock` capture ⇒ this language has no code-block tint.
+    let codeblock_cap = query.capture_index_for_name("codeblock")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), source);
@@ -346,10 +364,10 @@ pub fn compute_code_block_lines(syntax: &SyntaxSnapshot) -> Option<Vec<u32>> {
     let mut lines: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     while let Some(m) = matches.next() {
         for cap in m.captures {
-            let node = cap.node;
-            if !is_code_block_kind(node.kind()) {
+            if cap.index != codeblock_cap {
                 continue;
             }
+            let node = cap.node;
             let start_line = node.start_position().row as u32;
             let mut end_line = node.end_position().row as u32;
             // Same trailing-newline pullback as `compute_syntax_folds`: a node
@@ -367,13 +385,6 @@ pub fn compute_code_block_lines(syntax: &SyntaxSnapshot) -> Option<Vec<u32>> {
         }
     }
     Some(lines.into_iter().collect())
-}
-
-/// Node kinds that earn the code-block background: fenced (```lang … ``` and
-/// generic ``` … ```) and 4-space-indented blocks. Both are markdown grammar
-/// kinds; other grammars don't emit them, so they get no tint.
-fn is_code_block_kind(kind: &str) -> bool {
-    matches!(kind, "fenced_code_block" | "indented_code_block")
 }
 
 /// Hash the user-visible signature of the current fold set.
@@ -1902,6 +1913,20 @@ impl Buffer {
                 "line {prose} is prose and must NOT be tinted: {lines:?}"
             );
         }
+    }
+
+    #[test]
+    fn code_block_lines_none_without_a_codeblock_capture() {
+        // Rust's folds query has `@fold` but no `@codeblock` capture, so the
+        // capture-driven detection reports no code-block tint — the contract
+        // that replaced the hardcoded markdown node-kind list. A grammar earns
+        // the tint only by declaring `@codeblock` (markdown does; a plugin
+        // grammar such as org declares it the same way).
+        let syntax = rust_syntax_with("fn main() {\n    let x = 1;\n}\n");
+        assert!(
+            compute_code_block_lines(syntax.snapshot()).is_none(),
+            "a language without a @codeblock capture must have no code-block tint"
+        );
     }
 
     #[test]

@@ -74,20 +74,23 @@ proportion afterwards.
 
 Files are named `<shot>-<renderer>.png`, renderer being `tui` or `gpui`.
 
-**Every published asset is committed in two places.** No script mirrors
-them:
+**Every published asset is committed in two places:**
 
-- `assets/media/screenshots/<name>.png` — what `README.md` references
-  (`./assets/media/screenshots/…`).
+- `assets/media/screenshots/<name>.png` — the source of truth, what
+  `README.md` references (`./assets/media/screenshots/…`).
 - `site/static/media/<name>.png` — what the site references
-  (`get_url(path='media/…')`).
+  (`get_url(path='media/…')`), generated from the source by
+  `sync_media()` in `site/scripts/sync-docs.sh`.
 
-Miss the second and the README looks right while the site 404s — the
-failure a human reviewer does not catch, because the image renders fine in
-the diff. `crates/lattice-cli/tests/every_referenced_screenshot_exists.rs`
-binds the references to the files: README refs, site-template refs, every
-`gallery.toml` entry present in **both** directories, and every published
-PNG inside the 400 KB budget.
+`sync_media()` keeps the two in step: it normalises any over-spec source shot
+in place (downscale to 1920 px, 256-colour, under budget) and copies every
+shot into `site/static/media/`. Both dirs stay committed so the Rust test
+suite — which does not run the sync — can still verify them:
+`crates/lattice-cli/tests/every_referenced_screenshot_exists.rs` binds the
+references to the files (README refs, site-template refs, every
+`gallery.toml` entry present in **both** directories, every PNG inside the
+400 KB budget). The script is the belt (it can't be forgotten if you run the
+sync); the test is the suspenders (it fails the build if you did).
 
 **Screenshots never go in `docs/user/`.** That tree is the offline `:help`
 corpus embedded in the binary (`crates/lattice-help/build.rs` reads it), so
@@ -390,7 +393,10 @@ Differentiators — each needs both renderers:
 - [ ] Hero recapture — `hero-tui.png`, `hero-gpui.png`
 
 Captured shots are processed to publish spec (1920px wide, 256-colour PNG,
-under budget) and committed in both media dirs.
+under budget) and committed in both media dirs. Dropping a fresh capture into
+`assets/media/screenshots/` and running `python3 site/scripts/sync-docs.sh`
+does both: `sync_media()` normalises any over-spec shot in place and mirrors
+every shot into `site/static/media/`.
 
 Blocking work before capture:
 
@@ -399,7 +405,8 @@ Blocking work before capture:
 
 After capture:
 
-- [X] Mirror every published file into `site/static/media/`
+- [X] Run `python3 site/scripts/sync-docs.sh` — converts any over-spec shot and
+      mirrors every one into `site/static/media/`
 - [X] Uncomment each shot's entry in `site/data/gallery.toml` (config-init-rs
       stays commented until shot 3 lands)
 - [X] Build the README gallery section (same commit as the assets)

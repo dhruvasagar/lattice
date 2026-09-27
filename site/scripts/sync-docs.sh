@@ -20,11 +20,13 @@ Dev docs are synced flat into content/dev/<subdir>/ as before; only their
 link rewriting shares code with the user path.
 """
 
+import filecmp
 import glob
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tomllib
 
@@ -42,6 +44,17 @@ XTASK_MAIN = os.path.join(repo_root, 'xtask', 'src', 'main.rs')
 DOCS_DST = os.path.join(site_dir, 'content', 'docs')
 DEV_DST = os.path.join(site_dir, 'content', 'dev')
 DEV_SUBDIRS = ['guides', 'architecture', 'operations', 'audit', 'notes', 'reference']
+
+# Launch screenshots. `assets/media/screenshots/` is the source of truth (what
+# README.md links); `site/static/media/` is what the site serves and is
+# GENERATED from it by sync_media(), so the two cannot drift — the failure that
+# shipped the old images after a screenshot update. The publish spec is
+# docs/media/screenshot-ideas.md: 1920 px wide, PNG, under 400 KB.
+SHOTS_SRC = os.path.join(repo_root, 'assets', 'media', 'screenshots')
+MEDIA_DST = os.path.join(site_dir, 'static', 'media')
+SHOT_MAX_WIDTH = 1920
+SHOT_MAX_BYTES = 400 * 1024
+SHOT_COLORS = 256
 
 GH_BLOB = 'https://github.com/dhruvasagar/lattice/blob/main'
 GH_TREE = 'https://github.com/dhruvasagar/lattice/tree/main'
@@ -686,6 +699,96 @@ def sync_plugin_pages(topic_section):
     print(f'  {len(plugins)} plugin pages ({len(bundled)} bundled, matching CORE_PLUGINS)')
 
 
+# --------------------------------------------------------------------------
+# Media: convert launch screenshots to the publish spec, generate served copies
+# --------------------------------------------------------------------------
+
+def png_width(path):
+    """Width of a PNG from its IHDR header, or None if it isn't a PNG.
+
+    Dependency-free (no `identify` call) — the "does this shot need
+    processing?" decision reads the header directly; ImageMagick is only
+    invoked when a conversion is actually required.
+    """
+    with open(path, 'rb') as fh:
+        head = fh.read(24)
+    if head[:8] != b'\x89PNG\r\n\x1a\n':
+        return None
+    return int.from_bytes(head[16:20], 'big')
+
+
+def imagemagick_bin():
+    """ImageMagick's entry point: `magick` (v7) or `convert` (v6), or None."""
+    return shutil.which('magick') or shutil.which('convert')
+
+
+def sync_media():
+    """Convert launch screenshots to the publish spec and generate the served
+    copies, so a fresh capture only has to be dropped into
+    assets/media/screenshots/ and re-synced.
+
+    For each source shot: if it is wider than SHOT_MAX_WIDTH or heavier than
+    SHOT_MAX_BYTES it is normalised IN PLACE (downscale to 1920 px wide,
+    quantise to 256 colours, strip metadata) — the same pass that took the
+    reference hero to 1920 px / <400 KB. An already-compliant shot is left
+    untouched, so re-running does not churn git. Every shot is then mirrored
+    into site/static/media/ (generated, gitignored), and served copies whose
+    source is gone are removed — so the two dirs can never drift.
+
+    ImageMagick is required only when a shot actually needs converting; an
+    all-compliant tree (the committed state) syncs with a plain copy and needs
+    no toolchain, which is why CI does not have to install one.
+    """
+    if not os.path.isdir(SHOTS_SRC):
+        return
+    os.makedirs(MEDIA_DST, exist_ok=True)
+    magick = imagemagick_bin()
+    shots = sorted(glob.glob(os.path.join(SHOTS_SRC, '*.png')))
+    converted = mirrored = removed = 0
+
+    for src in shots:
+        name = os.path.basename(src)
+        width = png_width(src)
+        too_wide = width is not None and width > SHOT_MAX_WIDTH
+        oversize = os.path.getsize(src) > SHOT_MAX_BYTES
+        if too_wide or oversize:
+            if not magick:
+                die(f'{name} is over the publish spec (>{SHOT_MAX_WIDTH}px wide '
+                    f'or >{SHOT_MAX_BYTES // 1024} KB) but ImageMagick is not '
+                    'installed — install it (`magick`/`convert`) or pre-size the '
+                    'capture per docs/media/screenshot-ideas.md')
+            tmp = f'{src}.tmp.png'
+            cmd = [magick, src, '-strip']
+            if too_wide:
+                cmd += ['-resize', f'{SHOT_MAX_WIDTH}x']
+            cmd += ['-colors', str(SHOT_COLORS),
+                    '-define', 'png:compression-level=9', tmp]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True)
+            except subprocess.CalledProcessError as exc:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+                detail = exc.stderr.decode('utf-8', 'replace').strip()
+                die(f'converting {name} failed: {detail}')
+            os.replace(tmp, src)
+            converted += 1
+
+        dst = os.path.join(MEDIA_DST, name)
+        if not (os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False)):
+            shutil.copy2(src, dst)
+            mirrored += 1
+
+    for served in glob.glob(os.path.join(MEDIA_DST, '*.png')):
+        if not os.path.isfile(os.path.join(SHOTS_SRC, os.path.basename(served))):
+            os.remove(served)
+            removed += 1
+
+    note = f'{len(shots)} shots ({converted} converted, {mirrored} synced'
+    if removed:
+        note += f', {removed} stale removed'
+    print(f'  media: {note})')
+
+
 def main():
     print('Reading navigation manifest...')
     sections, topic_section, labels = load_nav()
@@ -716,6 +819,9 @@ def main():
 
     print('Syncing dev docs...')
     sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labels)
+
+    print('Syncing media...')
+    sync_media()
 
     print('\nDone.')
 

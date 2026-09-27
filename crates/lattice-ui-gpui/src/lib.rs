@@ -1181,6 +1181,20 @@ impl GpuiApp {
                     out
                 });
                 outcome.consumed = true;
+                // Drain the accept's follow-up effects. A picker accept can
+                // invoke a command that returns one — magit branch-delete picks
+                // a branch and returns `Effect::Confirm` — and Confirm (like the
+                // other renderer-owned effects) is left in `outcome.effects` for
+                // the renderer to apply; the host does not. This early-return arm
+                // drained only `renderer_signals`, skipping the generic
+                // effect-drain further down (`for effect in outcome.effects ...
+                // apply_effect_gpui`), so the confirm prompt never opened in
+                // GPUI and the flow "ended abruptly" after the pick. The TUI has
+                // always drained these (`App::apply_effect_app_arms`). Effects
+                // before signals, matching the generic path.
+                for effect in outcome.effects.iter().cloned() {
+                    self.apply_effect_gpui(effect);
+                }
                 for s in std::mem::take(&mut outcome.renderer_signals) {
                     self.handle_renderer_signal(s);
                 }

@@ -5871,7 +5871,10 @@ pub(crate) fn compose_pane_lines(
                 let used: usize = body.iter().map(|s| s.content.len()).sum();
                 let pad_width = (buffer_w as usize).saturating_sub(used);
                 if pad_width > 0 {
-                    body.push(Span::styled(" ".repeat(pad_width), TuiStyle::default().bg(bg)));
+                    body.push(Span::styled(
+                        " ".repeat(pad_width),
+                        TuiStyle::default().bg(bg),
+                    ));
                 }
                 body
             }

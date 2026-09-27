@@ -99,11 +99,13 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
     );
     registry.register_ex_command(
         "reload-config",
-        "Reload the user's `init.rs` configuration (`:reload-config`) — unload the \
-         `init` plugin and re-instantiate it from `<config>/lattice/init/` with a \
-         fresh, untripped quarantine, so edited keymaps / commands / options take \
-         effect without restarting. Reloads asynchronously (reported in \
-         `*messages*`). A no-op if no `init` config is loaded.",
+        "Reload the user's `init.rs` configuration (`:reload-config`) — recompile \
+         `init.rs` in place, then re-instantiate the `init` plugin from \
+         `<config>/lattice/init/` with a fresh, untripped quarantine, so edited \
+         keymaps / commands / options (e.g. `tabstop`) take effect without \
+         restarting. Runs asynchronously; the detailed result — rebuilt / already \
+         current / a build failure with the compiler error — is reported in \
+         `*messages*`. On a build failure the previous config keeps running.",
         reload_config_spec(Arc::clone(loader)),
     );
 }
@@ -352,8 +354,6 @@ fn reload_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
     }
 }
 
-use crate::INIT_PLUGIN_ID;
-
 fn reload_config_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
     ExCommandSpec {
         latency_class: LatencyClass::Reflex,
@@ -362,8 +362,14 @@ fn reload_config_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
         // `:reload-config` takes no argument — ignore any trailing text.
         parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
         apply: Arc::new(move |_ctx: &ExCommandContext| {
-            loader.spawn_reload(INIT_PLUGIN_ID.to_string());
-            Ok(echo(EchoLevel::Info, "reloading user config (init.rs)…"))
+            // Recompiles init.rs THEN reloads (unlike `:plugin-reload`, which
+            // re-instantiates the on-disk artifact). The success/failure detail
+            // — including the compiler error — lands in `*messages*`.
+            loader.spawn_reload_config();
+            Ok(echo(
+                EchoLevel::Info,
+                "reloading user config (init.rs): rebuilding — result in *messages*…",
+            ))
         }),
         args_schema: Vec::new(),
         surface_form: SurfaceForm::Keyword,

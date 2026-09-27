@@ -8,9 +8,11 @@
 //!
 //! **Why the artifact, not the source.** `init.rs` is Rust *source*; the editor
 //! loads the compiled `init.wasm`. Saving the source doesn't change the artifact,
-//! so the watch is on the directory holding the `.wasm` (a `:plugin-build`
-//! command that compiles source → artifact is future work — until then you build
-//! externally and this fires on the resulting write).
+//! so the watch is on the directory holding the `.wasm` and fires on the write a
+//! build produces. To compile source → artifact *without* an external `cargo`
+//! step, use [`PluginLoader::reload_config`] (the `:reload-config` command) or
+//! the plugins view's `b` on the `init` row — both recompile in place, then
+//! reload; a full source-watching auto-rebuild loop is future work.
 //!
 //! **Debounce.** A build rewrites the file in a burst (truncate, write, rename);
 //! the watcher coalesces events, waiting for [`SETTLE`] of quiet before it

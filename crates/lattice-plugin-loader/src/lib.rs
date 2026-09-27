@@ -762,6 +762,68 @@ pub enum PluginLoaderError {
 /// declares.
 pub(crate) const INIT_PLUGIN_ID: &str = "init";
 
+/// How the source → artifact build went during [`reload_config`] — a
+/// `:reload-config` or a plugins-view rebuild of the `init` row. Carried in
+/// [`ReloadConfigReport`] so the surface (the `*messages*` echo, the plugins
+/// view row) can say precisely what happened, and on a failure show the
+/// compiler diagnostics rather than a bare "it failed".
+///
+/// [`reload_config`]: PluginLoader::reload_config
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigBuildStatus {
+    /// The cargo project was rebuilt from source; the fresh artifact was loaded.
+    Rebuilt,
+    /// The source was already current (stamp match); the cached artifact was
+    /// reloaded — no toolchain ran.
+    AlreadyCurrent,
+    /// The init dir holds no cargo project — a hand-built `init.wasm` was
+    /// reloaded as-is (nothing to compile).
+    HandBuilt,
+    /// The build failed. A previous artifact (if any) is still loaded, so the
+    /// editor keeps running the LAST good config — but the edit did NOT take.
+    /// Carries the compiler diagnostics (the tail of cargo's stderr).
+    BuildFailed(String),
+}
+
+/// The detailed outcome of a [`reload_config`](PluginLoader::reload_config) —
+/// enough for the user to see what happened and, on a build failure, the
+/// compiler error.
+#[derive(Debug, Clone)]
+pub struct ReloadConfigReport {
+    /// The host id of the (re)loaded `init` plugin.
+    pub id: PluginId,
+    /// How the build went.
+    pub build: ConfigBuildStatus,
+}
+
+impl ReloadConfigReport {
+    /// Did the edited `init.rs` actually take effect? `false` when the build
+    /// failed and the previous artifact is what is running.
+    pub fn applied_new_config(&self) -> bool {
+        !matches!(self.build, ConfigBuildStatus::BuildFailed(_))
+    }
+
+    /// A user-facing message for `*messages*` / an echo — a one-line verdict,
+    /// plus the compiler diagnostics on a build failure.
+    pub fn summary(&self) -> String {
+        match &self.build {
+            ConfigBuildStatus::Rebuilt => {
+                "config reloaded: rebuilt init.rs and applied it".to_string()
+            }
+            ConfigBuildStatus::AlreadyCurrent => {
+                "config reloaded: init.rs already up to date, re-applied".to_string()
+            }
+            ConfigBuildStatus::HandBuilt => {
+                "config reloaded: re-applied the prebuilt init.wasm (no cargo project)".to_string()
+            }
+            ConfigBuildStatus::BuildFailed(error) => format!(
+                "config reload FAILED to rebuild init.rs — still running the previous \
+                 config. Fix the error and reload again:\n{error}"
+            ),
+        }
+    }
+}
+
 /// Match a loaded record against a `:plugin-unload` / `:plugin-reload` target —
 /// its manifest id (the common case) or its numeric host-issued plugin id.
 fn record_matches(record: &LoadedRecord, target: &str) -> bool {
@@ -1714,7 +1776,10 @@ impl PluginLoader {
                 Err(why) => BulkLeg::Failed(error_chain(&why)),
             },
             BulkOp::Rebuild => {
-                if !source.is_buildable() {
+                // `init` is buildable in place even though its `SourceRecord` is
+                // `Unknown` (see `rebuild`), so it is the one exception to the
+                // buildable-source skip — `rebuild` routes it correctly.
+                if name != INIT_PLUGIN_ID && !source.is_buildable() {
                     // Bundled ships prebuilt; Unknown has nowhere to build from.
                     return BulkLeg::Skipped(format!("no buildable source ({})", source.label()));
                 }
@@ -1920,8 +1985,44 @@ impl PluginLoader {
     ///
     /// Blocking work runs on `spawn_blocking`; only the reload is awaited.
     pub async fn rebuild(&self, name: &str) -> Result<(), String> {
+        // `init` compiles in place in the config dir and carries no buildable
+        // `SourceRecord`, so the generic `rebuild_with` pipeline (stage-into-
+        // cache, refuses a non-buildable source) cannot rebuild it — the
+        // plugins view's `b` on the `init` row would fail with "no buildable
+        // source". Route it to the in-place build the boot path and
+        // `:reload-config` share, so `b` on `init` does the thing the user
+        // pressed it for and surfaces the compiler error on failure.
+        if name == INIT_PLUGIN_ID {
+            return self.rebuild_init().await;
+        }
         self.rebuild_with(name, resolve::RefreshPolicy::UseCache, "rebuild")
             .await
+    }
+
+    /// The plugins-view `b` on the `init` row (and `B` when it reaches `init`):
+    /// build `init.rs` in place, reload, and reflect the build in the view's
+    /// activity flag so the row reads `cached` on success or `build-failed` on
+    /// failure. A build failure returns `Err` with the compiler diagnostics —
+    /// even though the previous config keeps running — so the handler logs the
+    /// detail to `*messages*` and the row flips to `build-failed`.
+    async fn rebuild_init(&self) -> Result<(), String> {
+        self.set_build_activity(INIT_PLUGIN_ID, Some(BuildActivity::Running));
+        match self.reload_config().await {
+            Ok(report) => match report.build {
+                ConfigBuildStatus::BuildFailed(error) => {
+                    self.set_build_activity(INIT_PLUGIN_ID, Some(BuildActivity::Failed));
+                    Err(error)
+                }
+                _ => {
+                    self.set_build_activity(INIT_PLUGIN_ID, None);
+                    Ok(())
+                }
+            },
+            Err(err) => {
+                self.set_build_activity(INIT_PLUGIN_ID, Some(BuildActivity::Failed));
+                Err(error_chain(&err))
+            }
+        }
     }
 
     /// Bring `name` up to date with its upstream, then rebuild and reload it.
@@ -2164,6 +2265,114 @@ impl PluginLoader {
         } else {
             self.load_path(init_dir, tier).await
         }
+    }
+
+    /// The `source_dir` of the loaded `init` plugin, if it is loaded — the dir
+    /// `reload_config` rebuilds and reloads from. `None` before init's first
+    /// load (the caller then falls back to [`default_init_dir`](crate::default_init_dir)).
+    fn init_source_dir(&self) -> Option<std::path::PathBuf> {
+        let loaded = self.loaded.lock().ok()?;
+        loaded
+            .iter()
+            .find(|r| r.name == INIT_PLUGIN_ID)?
+            .source_dir
+            .clone()
+    }
+
+    /// Rebuild the user's `init.rs` **in place**, then (re)load it — the
+    /// source → artifact step `:reload-config` and the plugins view's
+    /// rebuild-of-`init` need and that the bare artifact reload
+    /// ([`reload`](Self::reload) / [`load_path`](Self::load_path)) cannot do.
+    ///
+    /// This mirrors the boot path ([`install::build_init`](crate::install) +
+    /// [`sync_init`](Self::sync_init)). Before it existed, `:reload-config`
+    /// re-instantiated the **stale** on-disk `init.wasm`, so an edited option
+    /// (e.g. `tabstop`) took effect only after a full restart — the one path
+    /// that recompiled. `init`'s `SourceRecord` is `Unknown` (it is discovered
+    /// directly, never "installed", so it has no `.source` marker) and it
+    /// compiles in place rather than staging into the plugin cache, so it
+    /// cannot go through the generic [`rebuild_with`](Self::rebuild_with)
+    /// pipeline — hence this dedicated seam.
+    ///
+    /// Loads at the [`Bundled`](TrustTier::Bundled) tier the boot path uses —
+    /// the user's own config is trusted, not a third-party plugin.
+    ///
+    /// A build failure with a previous artifact present keeps the last good
+    /// config running and reports [`ConfigBuildStatus::BuildFailed`] with the
+    /// compiler error (an `Ok` whose [`applied_new_config`] is `false`); a build
+    /// failure with **no** previous artifact surfaces as `Err` — there is
+    /// nothing to load.
+    ///
+    /// [`applied_new_config`]: ReloadConfigReport::applied_new_config
+    pub async fn reload_config(&self) -> Result<ReloadConfigReport, PluginLoaderError> {
+        // Rebuild exactly what is loaded: prefer the loaded `init` record's own
+        // source dir (which `sync_init` → `reload` reloads from), so the build
+        // target and the reload target can never diverge; fall back to the
+        // default config dir for the first load (init not yet loaded).
+        let init_dir = self
+            .init_source_dir()
+            .or_else(crate::default_init_dir)
+            .ok_or_else(|| {
+                PluginLoaderError::Discovery(
+                    "no config directory for init.rs (set XDG_CONFIG_HOME / HOME)".to_string(),
+                )
+            })?;
+        // Compile source → artifact in place first (the step reload cannot do).
+        let outcome = crate::install::build_init(&init_dir).await;
+        let build = match &outcome {
+            // No cargo project: a hand-built init.wasm is loaded as-is.
+            None => ConfigBuildStatus::HandBuilt,
+            Some(o) => match o.error() {
+                // A `Fresh` build recompiled; a `Cached` one was already current.
+                None => {
+                    if matches!(o, crate::build::BuildOutcome::Fresh { .. }) {
+                        ConfigBuildStatus::Rebuilt
+                    } else {
+                        ConfigBuildStatus::AlreadyCurrent
+                    }
+                }
+                // `StaleKept` / `Failed`: the build failed. If a previous
+                // artifact survived (`StaleKept`) `sync_init` reloads it below;
+                // if not (`Failed`, no artifact) the load errors and the `?`
+                // propagates — either way the user gets the compiler error.
+                Some(error) => ConfigBuildStatus::BuildFailed(error.to_string()),
+            },
+        };
+        let id = self.sync_init(&init_dir, TrustTier::Bundled).await?;
+        Ok(ReloadConfigReport { id, build })
+    }
+
+    /// Spawn [`reload_config`](Self::reload_config) on the runtime and report the
+    /// detailed result to `*messages*`: `info!` when the edited config applied,
+    /// `warn!` when the build failed but the previous config still runs, `error!`
+    /// when `init` did not load at all. The ex-command's `apply` returns
+    /// immediately (it must not block the dispatch path); this is where the
+    /// success/failure detail the user asked for lands.
+    ///
+    /// `info!` / `warn!` / `error!` route to `*messages*` via `MessagesLayer`
+    /// (the one-shot, user-actionable log-level rule), so the compiler error on
+    /// a failed rebuild is visible to `:messages` without a keypress.
+    pub(crate) fn spawn_reload_config(self: &Arc<Self>) {
+        let Some(runtime) = self.env.runtime.clone() else {
+            tracing::warn!("no runtime wired; :reload-config cannot run");
+            return;
+        };
+        let this = Arc::clone(self);
+        runtime.spawn(async move {
+            match this.reload_config().await {
+                Ok(report) if report.applied_new_config() => {
+                    tracing::info!(id = report.id.0, "{}", report.summary());
+                }
+                Ok(report) => {
+                    // Build failed; the previous config is still running.
+                    tracing::warn!(id = report.id.0, "{}", report.summary());
+                }
+                Err(err) => tracing::error!(
+                    error = %error_chain(&err),
+                    "config reload FAILED — init.rs did not load"
+                ),
+            }
+        });
     }
 
     /// Reverse a plugin's registry contributions against the live registries.

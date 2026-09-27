@@ -468,26 +468,34 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     }
 }
 
-/// PM.7b: build the user's `init.rs` if its source changed.
+/// PM.7b: build the user's `init.rs` in place, returning the [`BuildOutcome`] —
+/// or `None` when the directory holds no cargo project (the common case is a
+/// hand-built `init.wasm` dropped in place, which must keep working, so this
+/// returns `None` rather than an error and the caller loads the artifact as-is).
 ///
-/// A no-op when the directory holds no cargo project — the common case today
-/// is a hand-built `init.wasm` dropped in place, and that must keep working.
+/// This is the reusable core the boot build ([`build_init_if_needed`]),
+/// `:reload-config`, and the plugins view's rebuild-of-`init` all share, so all
+/// three compile source → artifact identically. Returning the outcome (rather
+/// than logging and discarding it, as the boot-only helper used to) is what lets
+/// `:reload-config` surface the compiler error to the user instead of leaving it
+/// in a log they were not watching.
+///
 /// The build stages into the same directory the loader then discovers, so
 /// nothing downstream needs to know a build happened.
 ///
-/// Runs on `spawn_blocking`: a cold component build is seconds to minutes and
-/// this is inside the boot task, which shares the async runtime with the
-/// editor (paramount goal #1 / #4).
-async fn build_init_if_needed(init_dir: &std::path::Path) {
+/// Runs on `spawn_blocking`: a cold component build is seconds to minutes, and
+/// every caller is either the boot task or an off-keystroke reload task, both of
+/// which share the async runtime with the editor (paramount goal #1 / #4).
+pub(crate) async fn build_init(init_dir: &std::path::Path) -> Option<crate::build::BuildOutcome> {
     if !init_dir.join("Cargo.toml").is_file() {
         tracing::debug!(
             dir = %init_dir.display(),
             "init dir is not a cargo project; loading any prebuilt init.wasm as-is"
         );
-        return;
+        return None;
     }
     let dir = init_dir.to_path_buf();
-    let outcome = match tokio::task::spawn_blocking(move || {
+    match tokio::task::spawn_blocking(move || {
         let parent = dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
         crate::build::build_plugin(
             &crate::build::CargoComponentBuilder,
@@ -499,11 +507,24 @@ async fn build_init_if_needed(init_dir: &std::path::Path) {
     })
     .await
     {
-        Ok(o) => o,
+        Ok(outcome) => Some(outcome),
         Err(e) => {
             tracing::warn!(error = %e, "init.rs build task failed to run");
-            return;
+            Some(crate::build::BuildOutcome::Failed {
+                error: format!("init.rs build task failed to run: {e}"),
+            })
         }
+    }
+}
+
+/// PM.7b: build the user's `init.rs` if its source changed (the boot path).
+///
+/// A thin wrapper over [`build_init`] that logs and discards the outcome — at
+/// boot there is no user watching a `*messages*` echo, and a build failure
+/// falls back to the previous artifact regardless.
+async fn build_init_if_needed(init_dir: &std::path::Path) {
+    let Some(outcome) = build_init(init_dir).await else {
+        return;
     };
     match outcome.error() {
         Some(error) => tracing::warn!(

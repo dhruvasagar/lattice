@@ -16,7 +16,9 @@ use lattice_keymap::{BindingMode, KeymapHandle, LookupResult};
 use lattice_mode::{ModeRegistry, ModeRegistryHandle, PluginMetaSink};
 use lattice_picker::PickerRegistry;
 use lattice_plugin_host::{PluginHost, TrustTier};
-use lattice_plugin_loader::{LoaderServices, PluginLoader, PluginLoaderHandle};
+use lattice_plugin_loader::{
+    ConfigBuildStatus, LoaderServices, PluginLoader, PluginLoaderHandle, ReloadConfigReport,
+};
 use lattice_runtime::EventBus;
 
 fn keymap_wasm() -> Option<Vec<u8>> {
@@ -172,4 +174,102 @@ async fn sync_init_loads_when_absent_then_reloads_when_present() {
         1,
         "reload did not accumulate bindings"
     );
+}
+
+/// `:reload-config` → `reload_config()`: for a hand-built `init.wasm` (no cargo
+/// project) the build is a no-op and the artifact is reloaded, reported as
+/// [`ConfigBuildStatus::HandBuilt`] — the edited config applied, no error. This
+/// is the fixture's shape; the cargo-project rebuild path needs a real toolchain
+/// and is exercised by the boot build, not here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reload_config_reloads_hand_built_init_and_reports_handbuilt() {
+    let Some(wasm) = keymap_wasm() else {
+        eprintln!("skipping: keymap-guest fixture not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let init_dir = base.path().join("config").join("lattice").join("init");
+    write_init_dir(&init_dir, &wasm);
+
+    let keymap = KeymapHandle::new();
+    let loader = loader(base.path(), keymap.clone());
+
+    // First load from the config dir, then `reload_config`. It resolves the
+    // loaded record's source dir (this tempdir), so it does not touch the real
+    // `~/.config/lattice/init`.
+    loader
+        .load_path(&init_dir, TrustTier::Bundled)
+        .await
+        .unwrap();
+    assert_eq!(keymap.binding_count(), 1);
+
+    let report = loader
+        .reload_config()
+        .await
+        .expect("reload_config reloads the hand-built init.wasm");
+    assert_eq!(
+        report.build,
+        ConfigBuildStatus::HandBuilt,
+        "no cargo project → nothing to compile, artifact reloaded as-is"
+    );
+    assert!(
+        report.applied_new_config(),
+        "a hand-built reload applied the config (no build failure)"
+    );
+    assert!(loader.is_loaded("init"), "init still loaded after reload");
+    assert_eq!(
+        keymap.binding_count(),
+        1,
+        "reload did not accumulate bindings"
+    );
+
+    // The BuildFailed surface (which a real cargo error produces) reports the
+    // failure and carries the compiler detail — verified as a pure report, so
+    // the assertion needs no toolchain.
+    let failed = ReloadConfigReport {
+        id: report.id,
+        build: ConfigBuildStatus::BuildFailed("error[E0308]: mismatched types".to_string()),
+    };
+    assert!(
+        !failed.applied_new_config(),
+        "a build failure means the edit did NOT take"
+    );
+    let summary = failed.summary();
+    assert!(summary.contains("FAILED"), "summary flags the failure");
+    assert!(
+        summary.contains("error[E0308]"),
+        "summary carries the compiler diagnostics for the user to see"
+    );
+}
+
+/// Regression: the plugins view's `b` (rebuild) on the `init` row routes through
+/// `reload_config` rather than the generic build pipeline. Before the fix,
+/// `rebuild("init")` refused with "no buildable source" because init's
+/// `SourceRecord` is `Unknown` — so the button did nothing and the user had to
+/// restart. It must now succeed (here: a hand-built reload).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rebuild_of_the_init_row_succeeds_instead_of_no_buildable_source() {
+    let Some(wasm) = keymap_wasm() else {
+        eprintln!("skipping: keymap-guest fixture not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let init_dir = base.path().join("config").join("lattice").join("init");
+    write_init_dir(&init_dir, &wasm);
+
+    let keymap = KeymapHandle::new();
+    let loader = loader(base.path(), keymap.clone());
+    loader
+        .load_path(&init_dir, TrustTier::Bundled)
+        .await
+        .unwrap();
+
+    // The `b` handler calls `loader.rebuild(name)`. For "init" this used to be
+    // `Err("`init` has no buildable source (—)")`.
+    loader
+        .rebuild("init")
+        .await
+        .expect("rebuild of the init row succeeds (routes through reload_config)");
+    assert!(loader.is_loaded("init"), "init still loaded after rebuild");
+    assert_eq!(keymap.binding_count(), 1);
 }

@@ -383,24 +383,29 @@ one does not duplicate it.
 Differentiators — each needs both renderers:
 
 - [X] 1. Magit status + transient — `magit-tui.png`, `magit-gpui.png`
-- [ ] 2. Buffer splits + `:ls` — `buffer-splits-tui.png`, `buffer-splits-gpui.png`
+- [X] 2. Buffer splits + `:ls` — `buffer-splits-tui.png`, `buffer-splits-gpui.png`
 - [ ] 3. `init.rs` + `:reload-config` — `config-init-rs-tui.png`, `config-init-rs-gpui.png`
-- [ ] 4. Org agenda + agent diff review — `org-and-agents-tui.png`, `org-and-agents-gpui.png`
-- [ ] 5. Two renderers composite — `two-renderers.png`
+- [X] 4. Org agenda + agent diff review — `org-and-agents-tui.png`, `org-and-agents-gpui.png`
+- [X] 5. Two renderers composite — `two-renderers.png`
 - [ ] Hero recapture — `hero-tui.png`, `hero-gpui.png`
+
+Captured shots are processed to publish spec (1920px wide, 256-colour PNG,
+under budget) and committed in both media dirs.
 
 Blocking work before capture:
 
 - [X] Write `docs/media/fixtures/demo-agenda.org` (shot 4)
-- [ ] Install the org plugin in the capture environment (shot 4)
+- [X] Install the org plugin in the capture environment (shot 4)
 
 After capture:
 
-- [ ] Mirror every published file into `site/static/media/`
-- [ ] Uncomment each shot's entry in `site/data/gallery.toml`
-- [ ] Build the README gallery section (same commit as the assets)
-- [ ] Retire `hero-dark.png` — three references
-- [ ] Fill the five plugin-page slots
+- [X] Mirror every published file into `site/static/media/`
+- [X] Uncomment each shot's entry in `site/data/gallery.toml` (config-init-rs
+      stays commented until shot 3 lands)
+- [X] Build the README gallery section (same commit as the assets)
+- [ ] Retire `hero-dark.png` — three references (blocked on the hero recapture)
+- [ ] Fill the five plugin-page slots — pending a site content-image mechanism
+      (no shortcode today; a bare `/media/` path breaks under the subpath deploy)
 - [x] Landing `<section class="gallery">` — scaffolded, renders nothing until
       `gallery.toml` has entries
 - [x] Asset existence + size guard —

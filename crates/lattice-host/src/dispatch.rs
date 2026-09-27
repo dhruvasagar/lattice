@@ -36635,25 +36635,30 @@ impl Editor {
     ///   (defensive — shouldn't happen in practice).
     fn sync_active_document_to_pane(&mut self) {
         let pane = *self.pane_tree.active();
-        // K.4.X follow-up (2026-06-02): include Messages and
-        // Multibuffer alongside Document. All three carry
-        // `Arc<dyn Document>` handles in the registry and the
-        // active pane reads its content via
-        // `app.ad().snapshot`. Pre-fix this match was
-        // `Document`-only, so cycling active to a Multibuffer
-        // pane via `<C-w>w` (or any other path through
-        // activate_pane) left `self.document` pointing at the
-        // previously-active Document — `app.ad().snapshot`
-        // kept returning the file's snapshot and the renderer
-        // painted file content into the multibuffer's pane
-        // area. Same shape as K.4.2 / K.4.3 / K.4.9 kind-gate
-        // widenings. See [[feedback_buffers_no_special_case]].
-        if !matches!(
-            pane.buffer,
-            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
-        ) {
-            return;
-        }
+        // 2026-09-27: NO kind gate. The active pane reads its body via
+        // `app.ad().snapshot` == `self.document.snapshot()`, so `self.document`
+        // MUST follow the focused pane's buffer for EVERY kind that renders
+        // through the shared active-document path — the real gate is "does this
+        // buffer have a document handle", checked below, exactly as
+        // `activate_document` (the `:b` path) already does with no kind list.
+        //
+        // The removed gate was `Document | Messages | Multibuffer`. It grew by
+        // kind-widening (K.4.2 / K.4.3 / K.4.9 added Messages / Multibuffer for
+        // this very symptom) and still omitted `Oil` / `FileTree`, so cycling
+        // active onto an oil or file-tree pane via `<C-w>w` left `self.document`
+        // pointing at the previously-active buffer and the renderer painted THAT
+        // buffer's content into the oil/filetree pane — while the same pane
+        // painted correctly when UNFOCUSED (the inactive branch reads its own
+        // `pane.buffer_id` handle). The stale comment claimed "Oil / FileTree
+        // have their own dispatch paths"; DL.4 / DL.5 removed those paths — they
+        // render through `draw_pane_document`'s active branch like any Document.
+        //
+        // Terminal (no document handle) hits the `else { return }` below and
+        // stays a no-op, keeping its own render path — so dropping the gate
+        // never mis-points `self.document` at a non-document buffer. This is the
+        // "no kind-branching in render/motion/scroll" rule applied to the pane
+        // switch, which IS a change of active buffer. See
+        // [[feedback_buffers_no_special_case]].
         if pane.buffer_id == self.document_buffer_id {
             return;
         }

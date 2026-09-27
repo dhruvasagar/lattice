@@ -746,3 +746,71 @@ fn syntax_highlights_per_excerpt_use_source_language() {
          did not apply. Check highlight_range_multibuffer wiring in recompute_pane."
     );
 }
+
+/// Bug (2026-09-27): an open source file lost its syntax highlighting the moment
+/// the user switched focus to an org AGENDA buffer (a `Multibuffer`) in another
+/// pane. Root cause: `load_active_pane` set `active_buffer` to the destination
+/// kind BEFORE `snapshot_active_document` ran, and that stash is guarded by
+/// `active_buffer == Document` — so the outgoing file's live syntax handle was
+/// dropped unsaved instead of parked in its `buffer_locals`. The agenda is a
+/// `Multibuffer`, which was always inside the pane-sync gate, so this reproduces
+/// the ordering bug independently of the Oil/FileTree gate widening. Driven
+/// through the real `<C-w>w` pane-cycle (`next_pane` + `activate_pane`), not
+/// `activate_document`.
+#[test]
+fn cycling_a_source_pane_to_a_multibuffer_pane_keeps_the_source_syntax() {
+    let (mut editor, view_id) = boot_with_multibuffer();
+
+    // Order matters: put the multibuffer (the agenda's kind) in its pane FIRST,
+    // then open the .rs fresh into a split. This is what leaves the .rs's syntax
+    // live in `self.syntax` with `buffer_locals[rs]` still None at the moment of
+    // the pane-cycle — the state the org file is in when the user `<C-w>w`s to
+    // the agenda. Opening the .rs first and reaching the agenda via
+    // `activate_document` would pre-stash the .rs syntax (the safe path) and
+    // mask the bug.
+    editor.activate_document(view_id);
+    assert_eq!(
+        editor.active_pane_buffer_id(),
+        view_id,
+        "sanity: the multibuffer is in the active pane"
+    );
+    editor.do_split_pane(lattice_core::ui::pane::SplitOrientation::Vertical);
+
+    let rs_path = std::env::temp_dir().join(format!(
+        "lattice_agenda_syntax_test_{}.rs",
+        std::process::id()
+    ));
+    std::fs::write(&rs_path, "fn main() {\n    let x = 1;\n}\n").expect("write tmp .rs");
+    editor.do_edit(Some(rs_path.clone()), false);
+    let rs_id = editor.active_pane_buffer_id();
+    assert_ne!(
+        rs_id, view_id,
+        "sanity: the .rs replaced the split pane's buffer"
+    );
+    if editor.document_syntax_for(rs_id).is_none() {
+        // No rust grammar in this build → the retention assertion would be
+        // vacuous. Skip loudly rather than pass emptily.
+        eprintln!("skipping: no live syntax handle for the .rs (rust grammar unavailable)");
+        let _ = std::fs::remove_file(&rs_path);
+        return;
+    }
+
+    // The .rs is active with its syntax live and unstashed. Cycle to the
+    // multibuffer (agenda) pane — the FIRST switch away from the .rs, via the
+    // real pane-cycle. This is where the org file used to lose its colour.
+    let to_mb = editor.pane_tree.next_pane();
+    editor.activate_pane(to_mb);
+    assert_eq!(
+        editor.active_pane_buffer_id(),
+        view_id,
+        "sanity: the multibuffer (agenda) pane is focused"
+    );
+
+    assert!(
+        editor.document_syntax_for(rs_id).is_some(),
+        "the source file's syntax handle survived the switch to the multibuffer \
+         (agenda) pane — this is the org-agenda highlight-loss regression"
+    );
+
+    let _ = std::fs::remove_file(&rs_path);
+}

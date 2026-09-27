@@ -40788,7 +40788,6 @@ impl Editor {
     /// is free on the hot paths that already agree.
     pub fn load_active_pane(&mut self) {
         let pane = *self.pane_tree.active();
-        self.active_buffer = pane.buffer;
         self.cursor = pane.cursor;
         self.scroll = pane.scroll;
         self.leftcol = pane.leftcol;
@@ -40798,7 +40797,22 @@ impl Editor {
         {
             self.popup_buffer = Some(pane.buffer_id);
         }
+        // Stash the OUTGOING document and swap to the pane's buffer BEFORE
+        // reassigning `active_buffer`. `sync_active_document_to_pane` calls
+        // `snapshot_active_document`, whose guard checks `active_buffer ==
+        // Document` to decide whether the outgoing buffer's live `self.syntax`
+        // handle must be saved into its `buffer_locals`. If `active_buffer` were
+        // already the DESTINATION kind — as it was when this assignment ran
+        // first — the guard would skip for a switch onto a non-Document pane
+        // (e.g. the org agenda, a Multibuffer), and the outgoing org file's
+        // syntax handle would be dropped unsaved: the file then repaints
+        // UNcoloured the moment focus moves to the agenda, and no redraw brings
+        // it back (the handle is gone from both `self.syntax` and locals).
+        // Setting `active_buffer` after the sync keeps the guard reading the
+        // buffer we are LEAVING — the same ordering `activate_document` already
+        // relies on (it snapshots before its own `active_buffer` write).
         self.sync_active_document_to_pane();
+        self.active_buffer = pane.buffer;
         // AFTER the document swap, so `active_text()` is the buffer the
         // pane now shows. Every pane / tab / close switch funnels here,
         // and so does `activate_document`'s tail — see

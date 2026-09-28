@@ -2762,6 +2762,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// LM.4 (integration): pressing `<C-s>` on a file row in a file-tree
+    /// buffer opens that file in a NEW split — chord → file-tree-mode keymap
+    /// → `action:file-tree-follow-split` → `Effect::OpenInTarget` → pane
+    /// split, end to end.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_tree_ctrl_s_opens_the_file_under_cursor_in_a_split() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let tmp = std::env::temp_dir().join(format!("lattice-lm4-ctrls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("file.txt"), "hi").unwrap();
+
+        let mut a = app_with("scratch\n", 20);
+        a.do_open_file_tree(Some(tmp.clone()));
+        assert!(
+            settle_mode(&mut a, "file-tree-mode").await,
+            "file-tree-mode must activate on the tree buffer",
+        );
+        let before_panes = a.editor.pane_tree.len();
+        let id = a.editor.active_pane_buffer_id();
+        let line = a
+            .editor
+            .file_tree_entries_for(id)
+            .and_then(|es| {
+                es.iter()
+                    .position(|e| e.path.file_name().map(|n| n == "file.txt").unwrap_or(false))
+            })
+            .expect("file.txt row present");
+        a.editor.cursor.line = line as u32;
+
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(
+            a.editor.pane_tree.len(),
+            before_panes + 1,
+            "<C-s> opened the file in a new split",
+        );
+        assert_eq!(
+            a.editor.document.path().map(|p| p.to_path_buf()),
+            Some(tmp.join("file.txt")),
+            "the new split shows the file under the cursor",
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn open_oil_seeds_oil_locals() {
         let tmp = std::env::temp_dir().join(format!("lattice-m3-2-c-3-{}", std::process::id()));

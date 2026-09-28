@@ -29,13 +29,18 @@
 
 use std::path::PathBuf;
 
+use std::sync::{Arc, OnceLock};
+
 use lattice_config::OptionOverrideSet;
 use lattice_core::BufferKind;
+use lattice_core::ui::pane::OpenTarget;
+use lattice_grammar::Effect;
 use lattice_mode::{
-    BufferLocal, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
+    ActionContext, ActionHandler, ActionHandlerContribution, BufferLocal, CapabilitySet, Keymap,
+    KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry, keymap_entry,
 };
 
-use super::FileTreeEntry;
+use super::{FileTreeEntry, FileTreeEntryKind};
 
 /// Major mode for file-tree buffers. Read-only contribution
 /// (`ReadOnly = true`); any buffer whose major is
@@ -82,8 +87,137 @@ impl Mode for FileTreeMode {
     fn invocation_runner(&self) -> Option<ModeId> {
         Some(Self::mode_id())
     }
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(file_tree_mode_keymap_entries())
+    }
+    /// LM.4: the navigation/open chord bodies, mode-owned (they were the
+    /// host's `do_file_tree_follow` + the `do_oil_navigate_up` file-tree
+    /// branch, reached through the shared `Help | FileTree` input-gate).
+    /// Each reads the tree's entries from the `ActionContext`'s buffer-locals
+    /// (LM.1) and the row under the cursor, then hands the host an `Effect`
+    /// (the diff/oil pattern). Bound globally at boot; each names its own
+    /// `view` (`ctx.buffer_id`) so many trees stay independent (design §3.2).
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        // `<CR>`: a directory toggles expansion; a file opens in the current
+        // pane.
+        let follow: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let (path, is_dir, line) = file_tree_entry_at(ctx)?;
+            let view = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            Some(if is_dir {
+                Effect::FileTreeToggle {
+                    view,
+                    entry_index: line,
+                }
+            } else {
+                Effect::OpenBufferAt {
+                    path: Some(path),
+                    position: lattice_protocol::Position::ZERO,
+                    force: false,
+                    content: None,
+                    activate_minor: None,
+                }
+            })
+        });
+        // `-`: open an oil browser at the row's directory (the directory
+        // itself for a directory row, the file's parent for a file row) —
+        // the file-tree branch of the old `do_oil_navigate_up`.
+        let up: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let (path, is_dir, _line) = file_tree_entry_at(ctx)?;
+            let dir = if is_dir {
+                path
+            } else {
+                path.parent().map(std::path::Path::to_path_buf)?
+            };
+            Some(Effect::OpenOil { dir: Some(dir) })
+        });
+        vec![
+            ActionHandlerContribution {
+                action_name: "action:file-tree-follow",
+                handler: follow,
+            },
+            ActionHandlerContribution {
+                action_name: "action:file-tree-navigate-up",
+                handler: up,
+            },
+            // `<C-s>` / `<C-v>` / `<C-t>`: open the row in a split / vsplit /
+            // tab. A file opens directly; a directory path resolves to
+            // `DoEditOutcome::Directory` in the new pane, opening oil there.
+            file_tree_open_in_target("action:file-tree-follow-split", OpenTarget::Split),
+            file_tree_open_in_target("action:file-tree-follow-vsplit", OpenTarget::VSplit),
+            file_tree_open_in_target("action:file-tree-follow-tab", OpenTarget::Tab),
+        ]
+    }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
+    }
+}
+
+fn file_tree_mode_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry!(
+                mode: Normal,
+                chord: "<CR>",
+                doc: "Open the row under the cursor: toggle a directory's expansion, or open a file in the current pane.",
+                cmd: "action:file-tree-follow"
+            ),
+            keymap_entry!(
+                mode: Normal,
+                chord: "-",
+                doc: "Open an oil browser at the row's directory.",
+                cmd: "action:file-tree-navigate-up"
+            ),
+            keymap_entry!(
+                mode: Normal,
+                chord: "<C-s>",
+                doc: "Open the row under the cursor in a horizontal split.",
+                cmd: "action:file-tree-follow-split"
+            ),
+            keymap_entry!(
+                mode: Normal,
+                chord: "<C-v>",
+                doc: "Open the row under the cursor in a vertical split.",
+                cmd: "action:file-tree-follow-vsplit"
+            ),
+            keymap_entry!(
+                mode: Normal,
+                chord: "<C-t>",
+                doc: "Open the row under the cursor in a new tab.",
+                cmd: "action:file-tree-follow-tab"
+            ),
+        ]
+    })
+}
+
+/// LM.4: resolve the tree row under the cursor — `(path, is-dir, line)` —
+/// from the `ActionContext`'s buffer-locals. `None` when the buffer carries
+/// no tree state or the cursor is past the last row.
+fn file_tree_entry_at(ctx: &ActionContext<'_>) -> Option<(std::path::PathBuf, bool, u32)> {
+    let entries = ctx.buffer_local::<FileTreeEntries>()?;
+    let line = ctx.cursor.line;
+    let entry = entries.0.get(line as usize)?;
+    let is_dir = matches!(entry.kind, FileTreeEntryKind::Directory { .. });
+    Some((entry.path.clone(), is_dir, line))
+}
+
+/// LM.4: a `<C-s>`/`<C-v>`/`<C-t>` handler that opens the row under the
+/// cursor in `target`. Shared body for the three chords.
+fn file_tree_open_in_target(
+    action_name: &'static str,
+    target: OpenTarget,
+) -> ActionHandlerContribution {
+    let handler: ActionHandler = Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let (path, _is_dir, _line) = file_tree_entry_at(ctx)?;
+        Some(Effect::OpenInTarget {
+            path: Some(path),
+            position: lattice_protocol::Position::ZERO,
+            target,
+        })
+    });
+    ActionHandlerContribution {
+        action_name,
+        handler,
     }
 }
 
@@ -197,5 +331,26 @@ mod tests {
         let mut registry = ModeRegistry::new();
         register_file_tree_modes(&mut registry);
         assert!(registry.is_registered(FileTreeMode::mode_id()));
+    }
+
+    #[test]
+    fn file_tree_mode_binds_navigation_and_open_chords() {
+        use lattice_mode::Mode as _;
+        let km = FileTreeMode.keymap();
+        // LM.4: assert by identity, not count — the set will keep growing.
+        let bound: Vec<(&str, Option<&str>)> =
+            km.entries.iter().map(|e| (e.chord, e.command)).collect();
+        for (chord, cmd) in [
+            ("<CR>", "action:file-tree-follow"),
+            ("-", "action:file-tree-navigate-up"),
+            ("<C-s>", "action:file-tree-follow-split"),
+            ("<C-v>", "action:file-tree-follow-vsplit"),
+            ("<C-t>", "action:file-tree-follow-tab"),
+        ] {
+            assert!(
+                bound.contains(&(chord, Some(cmd))),
+                "file-tree-mode must bind {chord} → {cmd}; got {bound:?}",
+            );
+        }
     }
 }

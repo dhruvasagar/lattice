@@ -256,17 +256,18 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
     // `<C-o>` / `<C-i>`, motions, viewport jumps) works identically
     // to the document path. The cursor that those motions move is
     // decided at apply time by `App::active_buffer`, not here.
-    if matches!(ctx.active_buffer, BufferKind::Help | BufferKind::FileTree)
+    // LM.4: FileTree left this shared gate — `file-tree-mode` owns `<CR>` /
+    // `-` / `<C-s>` / `<C-v>` / `<C-t>` through its `MajorMode` keymap +
+    // `action_handlers` now. Help keeps its gate: Esc dismisses; `q` does NOT
+    // (it falls through to macro-record start); `-` opens an oil browser at
+    // the active document's parent (the `do_oil_navigate_up` default branch,
+    // still host-owned for Help / dashboard / document buffers). The only
+    // explicit Help close paths are Esc here, `:bd`, and the State-A
+    // auto-dismiss in App::apply.
+    if matches!(ctx.active_buffer, BufferKind::Help)
         && matches!(ctx.modal, ModalState::Normal)
         && ctx.partial_chord.is_empty()
     {
-        // Esc dismisses; `q` does NOT (it falls through to its
-        // normal Normal-mode meaning -- macro-record start). Help
-        // and log buffers should behave like other buffers per
-        // the user's everything-is-a-buffer expectation; the only
-        // explicit close paths are Esc here, `:bd`, and
-        // `Action::HelpDismiss` triggered by the State-A auto-
-        // dismiss in App::apply.
         match chord.key {
             KeyKind::Special(SpecialKey::Esc) => return Action::HelpDismiss,
             KeyKind::Special(SpecialKey::Enter) => return Action::FollowLink,

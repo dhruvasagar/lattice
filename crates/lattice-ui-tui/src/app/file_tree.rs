@@ -90,12 +90,7 @@ impl App {
         }
     }
 
-    /// `<CR>` on a tree row. Phase 5.8.AD.1: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_file_tree_follow`].
-    pub(super) fn do_file_tree_follow(&mut self) {
-        let signals = self.mutate_editor_with(|e| e.do_file_tree_follow());
-        for s in signals {
-            self.handle_renderer_signal(s);
-        }
-    }
+    // LM.4: `do_file_tree_follow` delegate removed — file-tree `<CR>` is
+    // owned by `FileTreeMode::action_handlers()`, dispatched through the
+    // generic chord path.
 }

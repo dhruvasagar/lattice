@@ -3627,10 +3627,6 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             _out.renderer_signals.extend(signals);
         }
         Action::FollowLink => match editor.active_buffer {
-            BufferKind::FileTree => {
-                let signals = editor.do_file_tree_follow();
-                _out.renderer_signals.extend(signals);
-            }
             // Dashboard groups with Help: same read-only, link-bearing,
             // help-style follow behaviour (dashboard.md §9.2). Its HelpLinks
             // local is seeded at creation; do_help_follow_link reads it by id.
@@ -3639,13 +3635,14 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 // so the GPUI peer reaches the same dispatch.
                 editor.do_help_follow_link(_out);
             }
-            // LM.3: Oil no longer routes here — oil-mode's `<CR>` handler
-            // emits the open/re-list effect directly. FollowLink stays for
-            // Help / Dashboard / FileTree (FileTree until LM.4).
+            // LM.3/LM.4: Oil and FileTree no longer route here — their modes'
+            // `<CR>` handlers emit the open / re-list / toggle effect directly.
+            // FollowLink stays for Help / Dashboard only.
             BufferKind::Document
             | BufferKind::Terminal
             | BufferKind::Messages
             | BufferKind::Oil
+            | BufferKind::FileTree
             | BufferKind::Multibuffer => {}
         },
     }
@@ -25827,39 +25824,11 @@ impl Editor {
         signals
     }
 
-    /// `<CR>` on a tree row: directory → toggle expansion;
-    /// file → `:e` it. Phase 5.8.AD.1.
-    pub fn do_file_tree_follow(&mut self) -> Vec<RendererSignal> {
-        let active_id = self.active_pane_buffer_id();
-        let idx = self.cursor.line as usize;
-        let Some(mut entries) = self.file_tree_entries_for(active_id) else {
-            return Vec::new();
-        };
-        let Some(entry) = entries.get(idx).cloned() else {
-            return Vec::new();
-        };
-        match entry.kind {
-            lattice_listing::file_tree::FileTreeEntryKind::Directory { .. } => {
-                if let Err(e) = lattice_listing::file_tree::toggle_entries_at(&mut entries, idx) {
-                    self.set_message(EchoLevel::Error, format!("toggle error: {e}"));
-                    return Vec::new();
-                }
-                self.set_file_tree_entries(active_id, entries);
-                Vec::new()
-            }
-            lattice_listing::file_tree::FileTreeEntryKind::File => {
-                let path = entry.path.clone();
-                let outcome = self.do_edit(Some(path), false);
-                match outcome {
-                    DoEditOutcome::Opened(s)
-                    | DoEditOutcome::Activated(s)
-                    | DoEditOutcome::Reloaded(s) => s,
-                    DoEditOutcome::Directory(d) => self.do_open_oil(Some(d)),
-                    DoEditOutcome::NoFileName | DoEditOutcome::Failed => Vec::new(),
-                }
-            }
-        }
-    }
+    // LM.4: `do_file_tree_follow` is gone — file-tree `<CR>` is owned by
+    // `FileTreeMode::action_handlers()` (`action:file-tree-follow`), which
+    // reads the row via `ctx.buffer_local` and emits `Effect::FileTreeToggle`
+    // (a directory) or `Effect::OpenBufferAt` (a file). The toggle applier is
+    // `apply_file_tree_toggle` (LM.2).
 }
 
 /// 5.5.G.17: modal-state transitions + blockwise-Visual I/A.

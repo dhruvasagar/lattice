@@ -20,6 +20,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     crate::file_tree::register_file_tree_modes(boot.modes_mut());
     crate::listing_mode::register_listing_modes(boot.modes_mut());
     register_oil_commands(boot.commands_mut());
+    register_file_tree_commands(boot.commands_mut());
 }
 
 /// The `action:oil-*` command names the oil-mode chords resolve to. All are
@@ -47,6 +48,43 @@ fn register_oil_commands(registry: &mut CommandRegistry) {
         (
             "action:oil-follow-tab",
             "oil `<C-t>`: open the entry under the cursor in a new tab.",
+        ),
+    ] {
+        registry.register_action(
+            name,
+            doc,
+            ActionSpec {
+                apply: Arc::new(|_| Ok(Effect::None)),
+                args_schema: vec![],
+            },
+        );
+    }
+}
+
+/// The `action:file-tree-*` command names the file-tree-mode chords resolve
+/// to. Mode-owned like the oil ones: bodies are
+/// `FileTreeMode::action_handlers()`; the `apply` fallback is `Effect::None`.
+fn register_file_tree_commands(registry: &mut CommandRegistry) {
+    for (name, doc) in [
+        (
+            "action:file-tree-follow",
+            "file-tree `<CR>`: toggle a directory row's expansion, or open a file in the current pane.",
+        ),
+        (
+            "action:file-tree-navigate-up",
+            "file-tree `-`: open an oil browser at the row's directory.",
+        ),
+        (
+            "action:file-tree-follow-split",
+            "file-tree `<C-s>`: open the row under the cursor in a horizontal split.",
+        ),
+        (
+            "action:file-tree-follow-vsplit",
+            "file-tree `<C-v>`: open the row under the cursor in a vertical split.",
+        ),
+        (
+            "action:file-tree-follow-tab",
+            "file-tree `<C-t>`: open the row under the cursor in a new tab.",
         ),
     ] {
         registry.register_action(

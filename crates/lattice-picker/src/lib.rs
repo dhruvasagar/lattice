@@ -300,6 +300,101 @@ pub enum RoutingPayload {
     Create { query: String },
 }
 
+/// Resolves a picker-relative buffer id to its on-disk path, for the one
+/// routing variant ([`RoutingPayload::JumpInBuffer`]) whose location is
+/// buffer-relative rather than a filesystem path.
+///
+/// The host supplies it — it owns the buffer↔path map — so `lattice-picker`
+/// stays free of any dependency on the editor (the off-thread guarantee is
+/// structural, not by discipline). A buffer with no path (a synthetic
+/// `*scratch*`, an unsaved buffer) yields `None`, and the entry is skipped:
+/// there is no file the error list could jump to.
+pub trait BufferPathResolver {
+    fn path_for_buffer(&self, buffer_id: u32) -> Option<PathBuf>;
+}
+
+/// A place in a file the error list can navigate to: `(path, line, col)`,
+/// line and column 0-based to match `lattice_protocol::error_list::ErrorEntry`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorLocation {
+    pub path: PathBuf,
+    pub line: u32,
+    pub col: u32,
+}
+
+impl RoutingPayload {
+    /// Where this entry points, when it points into a file on disk — the
+    /// picker's own translation of a row into an error-list location.
+    ///
+    /// This is what makes `<C-q>` (send-to-error-list) **generic over every
+    /// picker**: the host no longer decides which payloads have a location,
+    /// the payload does. A plugin picker that emits [`Self::FileLocation`]
+    /// across the WIT boundary gets error-list support for free, without the
+    /// host learning about it.
+    ///
+    /// **Exhaustive by construction — there is deliberately no `_` arm.** Every
+    /// variant decides here: a location (and how), or `None` (a register, a
+    /// command, a buffer id — nothing to jump to). A new payload variant will
+    /// not compile until it declares its mapping. The earlier host-side match
+    /// carried a wildcard and silently dropped [`Self::FileLocation`], so a
+    /// plugin picker's file rows sent nothing; folding coverage into the type
+    /// turns that silent gap into a compile error.
+    pub fn error_location(&self, resolver: &dyn BufferPathResolver) -> Option<ErrorLocation> {
+        match self {
+            // Already a filesystem `(path, line, col)`.
+            RoutingPayload::LspLocation { path, line, col }
+            | RoutingPayload::FileLocation { path, line, col } => Some(ErrorLocation {
+                path: path.clone(),
+                line: *line,
+                col: *col,
+            }),
+            // A file with no recorded position lands at its top, matching
+            // `:edit` and the single-accept `OpenFile` path.
+            RoutingPayload::OpenFile { path } => Some(ErrorLocation {
+                path: path.clone(),
+                line: 0,
+                col: 0,
+            }),
+            // Buffer-relative: navigable only if the buffer is file-backed.
+            // Synthetic / unsaved buffers resolve to `None` and are skipped.
+            RoutingPayload::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => resolver
+                .path_for_buffer(*buffer_id)
+                .map(|path| ErrorLocation {
+                    path,
+                    line: *line,
+                    col: *col,
+                }),
+            // Everything else stands for an action, a value, or an ephemeral
+            // key — not a place in a file. Listed explicitly so the compiler
+            // forces a decision when a variant is added.
+            RoutingPayload::Buffer { .. }
+            | RoutingPayload::PaneHistoryEntry { .. }
+            | RoutingPayload::ResolveDiff { .. }
+            | RoutingPayload::LspInstance { .. }
+            | RoutingPayload::AiSession { .. }
+            | RoutingPayload::LspCompletion { .. }
+            | RoutingPayload::LspCodeAction { .. }
+            | RoutingPayload::InvokeCommand { .. }
+            | RoutingPayload::PasteRegister { .. }
+            | RoutingPayload::JumpToMark { .. }
+            | RoutingPayload::ExpandSnippet { .. }
+            | RoutingPayload::AcceptShowMessageAction { .. }
+            | RoutingPayload::LspCodeLens { .. }
+            | RoutingPayload::ColorPresentation { .. }
+            | RoutingPayload::Colorscheme { .. }
+            | RoutingPayload::LoadCommandLine { .. }
+            | RoutingPayload::LoadSearchLine { .. }
+            | RoutingPayload::BranchBase { .. }
+            | RoutingPayload::SuppliedValue { .. }
+            | RoutingPayload::Create { .. } => None,
+        }
+    }
+}
+
 /// Where a picker pulls its raw candidates from. The App resolves
 /// this on `populate` / `refresh` and walks the appropriate source.
 /// One enum variant per first-party source so the App stays
@@ -1548,6 +1643,109 @@ mod tests {
 
     use super::*;
     use lattice_completion::CandidateKind;
+
+    /// A `BufferPathResolver` that answers every buffer with a fixed path
+    /// (or `None`, standing for an unsaved / synthetic buffer).
+    struct FixedResolver(Option<PathBuf>);
+    impl BufferPathResolver for FixedResolver {
+        fn path_for_buffer(&self, _buffer_id: u32) -> Option<PathBuf> {
+            self.0.clone()
+        }
+    }
+
+    /// The regression that motivated payload-owned translation: a
+    /// `FileLocation` (what plugin pickers emit) used to fall through the
+    /// host's wildcard and send nothing. It must now yield its location.
+    #[test]
+    fn error_location_maps_file_location() {
+        let none = FixedResolver(None);
+        let loc = RoutingPayload::FileLocation {
+            path: PathBuf::from("/tmp/a.rs"),
+            line: 7,
+            col: 3,
+        }
+        .error_location(&none);
+        assert_eq!(
+            loc,
+            Some(ErrorLocation {
+                path: PathBuf::from("/tmp/a.rs"),
+                line: 7,
+                col: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn error_location_maps_lsp_and_open_file() {
+        let none = FixedResolver(None);
+        assert_eq!(
+            RoutingPayload::LspLocation {
+                path: PathBuf::from("/tmp/b.rs"),
+                line: 4,
+                col: 1,
+            }
+            .error_location(&none),
+            Some(ErrorLocation {
+                path: PathBuf::from("/tmp/b.rs"),
+                line: 4,
+                col: 1,
+            })
+        );
+        // A path with no recorded position lands at the file's top.
+        assert_eq!(
+            RoutingPayload::OpenFile {
+                path: PathBuf::from("/tmp/c.rs"),
+            }
+            .error_location(&none),
+            Some(ErrorLocation {
+                path: PathBuf::from("/tmp/c.rs"),
+                line: 0,
+                col: 0,
+            })
+        );
+    }
+
+    /// The one buffer-relative variant leans on the host resolver: a
+    /// file-backed buffer yields a location, an unsaved buffer yields
+    /// `None` so it is skipped rather than pointed at a phantom path.
+    #[test]
+    fn error_location_resolves_jump_in_buffer_via_resolver() {
+        let backed = FixedResolver(Some(PathBuf::from("/tmp/d.rs")));
+        let unsaved = FixedResolver(None);
+        let row = || RoutingPayload::JumpInBuffer {
+            buffer_id: 42,
+            line: 9,
+            col: 5,
+        };
+        assert_eq!(
+            row().error_location(&backed),
+            Some(ErrorLocation {
+                path: PathBuf::from("/tmp/d.rs"),
+                line: 9,
+                col: 5,
+            })
+        );
+        assert_eq!(row().error_location(&unsaved), None);
+    }
+
+    /// Rows that stand for an action or a value, not a place, have no
+    /// location — `<C-q>` skips them.
+    #[test]
+    fn error_location_is_none_for_non_locations() {
+        let none = FixedResolver(None);
+        assert_eq!(
+            RoutingPayload::Colorscheme {
+                name: "dawn".into(),
+            }
+            .error_location(&none),
+            None
+        );
+        assert_eq!(
+            RoutingPayload::PasteRegister { name: 'a' }.error_location(&none),
+            None
+        );
+        assert_eq!(RoutingPayload::Buffer { id: 3 }.error_location(&none), None);
+    }
 
     fn unwind_spec(title: &str) -> std::sync::Arc<TransientSpec> {
         std::sync::Arc::new(TransientSpec {

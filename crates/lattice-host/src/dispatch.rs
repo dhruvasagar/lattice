@@ -13951,38 +13951,38 @@ impl Editor {
     /// swallowing the key — the dead-key failure RV.1 spent a slice
     /// removing from `gr`.
     pub fn do_picker_bulk_accept(&mut self, out: &mut DispatchOutcome) {
-        use lattice_picker::RoutingPayload;
         use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity, ErrorSource, ErrorWrite};
+
+        // The picker owns the row→location translation now (see
+        // `RoutingPayload::error_location`): the mapping is exhaustive, so
+        // this stays generic over every picker and a new routing variant
+        // cannot be silently dropped the way `FileLocation` once was. The
+        // host contributes only the buffer→path resolver that the one
+        // buffer-relative variant (`JumpInBuffer`) needs.
+        struct HostResolver<'a>(&'a Editor);
+        impl lattice_picker::BufferPathResolver for HostResolver<'_> {
+            fn path_for_buffer(&self, buffer_id: u32) -> Option<std::path::PathBuf> {
+                self.0.path_for_buffer(lattice_core::BufferId(buffer_id))
+            }
+        }
 
         let Some(picker) = self.picker.as_ref() else {
             return;
         };
 
+        let resolver = HostResolver(&*self);
         let mut entries: Vec<ErrorEntry> = Vec::new();
         for routing in picker.filtered_routing() {
-            // Only location-bearing payloads can become entries. The
-            // rest (a register, a command, a buffer id) have nowhere to
-            // jump to, so they are skipped rather than faked.
-            let (path, line, col) = match routing {
-                RoutingPayload::LspLocation { path, line, col } => (path.clone(), *line, *col),
-                RoutingPayload::OpenFile { path } => (path.clone(), 0, 0),
-                RoutingPayload::JumpInBuffer {
-                    buffer_id,
-                    line,
-                    col,
-                } => {
-                    let Some(path) = self.path_for_buffer(lattice_core::BufferId(*buffer_id))
-                    else {
-                        continue;
-                    };
-                    (path, *line, *col)
-                }
-                _ => continue,
+            // Location-less rows (a register, a command, a buffer id, an
+            // unsaved buffer) have nowhere to jump to, so they contribute
+            // nothing rather than being faked.
+            let Some(loc) = routing.error_location(&resolver) else {
+                continue;
             };
             entries.push(ErrorEntry {
-                path,
-                line,
-                col,
+                path: loc.path,
+                line: loc.line,
+                col: loc.col,
                 severity: ErrorSeverity::Info,
                 message: String::new(),
             });

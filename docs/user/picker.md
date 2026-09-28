@@ -53,6 +53,7 @@ code in the buffer's own syntax colours.
 | `<C-s>` | Accept, opening the file in a horizontal split |
 | `<C-v>` | Accept, opening the file in a vertical split |
 | `<C-t>` | Accept, opening the file in a new tab |
+| `<C-q>` | Send the **filtered** rows to the [error list](help:error-list) and open `*problems*` — then walk them with `:cnext` / `]q`. Rows with no location (registers, commands, …) are skipped |
 | `<BS>` | Delete the last query character |
 | `<C-w>` | Delete the previous word of the query — or, in a picker with depth (`dir-pick`), go up one level |
 | `<C-u>` | Clear the query |
@@ -63,11 +64,22 @@ code in the buffer's own syntax colours.
 accept lands; for sources that don't open a file (registers,
 commands, …) they behave like `<CR>`.
 
-**Some keys mean something only in some pickers.** `<C-l>` goes
-into a directory, `<C-d>` removes a row from the list behind it,
-`<C-q>` sends every remaining row somewhere editable, and `<Tab>`
-drills in rather than moving down where the picker has depth. Which
-of these a picker supports — and what exactly they do there — is on
+**`<C-q>` sends the filtered rows to the [error list](help:error-list).**
+This is telescope's `send_to_qflist`, and it is generic over every
+picker. It takes the rows that survived your query — not the whole
+result set, so the narrowing you just did is the point — turns each one
+with a location into an entry, and skips the rest (a register, a
+command, a colour have nowhere to jump to; a picker made entirely of
+them says so and stays open). The row text you saw becomes the entry's
+line, so the list reads the way the picker did. By default it also opens
+the `*problems*` view over the result; set
+`picker.send-opens-problems=false` to populate the list silently and
+`:copen` on your own terms. Either way `:cnext` / `]q` walk the entries.
+
+**Some other keys mean something only in some pickers.** `<C-l>` goes
+into a directory, `<C-d>` removes a row from the list behind it, and
+`<Tab>` drills in rather than moving down where the picker has depth.
+Which of these a picker supports — and what exactly they do there — is on
 that picker's own page: press `<C-h>` inside it, or
 `:help picker-<source>` (`:help picker-dir-pick`).
 

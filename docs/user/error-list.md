@@ -55,7 +55,7 @@ returns you.
 
 ## Populating the list
 
-The error list is filled by a **producer**. Today the producer is
+The error list is filled by a **producer**. The main one is
 [compilation mode](help:compilation-mode): running
 
 ```
@@ -89,10 +89,19 @@ A new run **replaces** the list (its first action clears the previous
 entries). Entries stream in as the tool runs, so `:next-error` works
 before a long build finishes.
 
-> Other producers (e.g. project search) may feed the *same* list in
-> future, leaving the navigation below unchanged. LSP diagnostics are
-> **not** a producer — they have their own navigation (`[d`/`]d`,
-> `:diagnostics`); the error list is for tool output.
+**Any picker can feed the list too.** Press `<C-q>` in a picker (grep,
+references, outline, jumps, files, …) to send its **filtered** rows to
+the error list — telescope's `send_to_qflist`. It is the quick way to
+turn a search into a walkable list: narrow with a query, `<C-q>`, then
+`:next-error` through the hits. The row text you saw becomes each
+entry's message. See [the picker](help:picker) for the details and the
+`picker.send-opens-problems` option (open `*problems*` on send, or not).
+
+> Each producer owns its own slice, so a picker send does not disturb a
+> compile run you are walking, and vice versa. LSP diagnostics are
+> **not** a producer by default — they have their own navigation
+> (`[d` / `]d`, `:diagnostics`) — though `lsp.diagnostics-to-error-list`
+> can opt them in.
 
 ---
 

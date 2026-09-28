@@ -16,12 +16,14 @@
 //! consumer's App surface.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use lattice_core::BufferKind;
+use lattice_core::ui::pane::OpenTarget;
+use lattice_grammar::Effect;
 use lattice_mode::{
-    BufferLocal, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId,
-    ModeKind, ModeRegistry, keymap_entry,
+    ActionContext, ActionHandler, ActionHandlerContribution, BufferLocal, CapabilitySet, Keymap,
+    KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry, keymap_entry,
 };
 
 /// Major mode for oil-style directory-listing buffers. Any
@@ -38,12 +40,38 @@ impl OilMode {
 fn oil_mode_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
-        vec![keymap_entry!(
-            mode: Normal,
-            chord: "-",
-            doc: "Navigate to the parent directory in the oil buffer.",
-            cmd: "action:oil-navigate-up"
-        )]
+        vec![
+            keymap_entry!(
+                mode: Normal,
+                chord: "-",
+                doc: "Navigate to the parent directory in the oil buffer.",
+                cmd: "action:oil-navigate-up"
+            ),
+            keymap_entry!(
+                mode: Normal,
+                chord: "<CR>",
+                doc: "Open the entry under the cursor: descend into a directory, or open a file in the current pane.",
+                cmd: "action:oil-follow"
+            ),
+            keymap_entry!(
+                mode: Normal,
+                chord: "<C-s>",
+                doc: "Open the entry under the cursor in a horizontal split.",
+                cmd: "action:oil-follow-split"
+            ),
+            keymap_entry!(
+                mode: Normal,
+                chord: "<C-v>",
+                doc: "Open the entry under the cursor in a vertical split.",
+                cmd: "action:oil-follow-vsplit"
+            ),
+            keymap_entry!(
+                mode: Normal,
+                chord: "<C-t>",
+                doc: "Open the entry under the cursor in a new tab.",
+                cmd: "action:oil-follow-tab"
+            ),
+        ]
     })
 }
 
@@ -71,8 +99,102 @@ impl Mode for OilMode {
     fn keymap(&self) -> Keymap {
         Keymap::from_entries(oil_mode_keymap_entries())
     }
+    /// LM.3: the navigation/open chord bodies, mode-owned (they were the
+    /// host's `do_oil_follow` / `do_oil_navigate_up` + the `BufferKind::Oil`
+    /// input-gate). Each reads the oil buffer's dir + snapshot from the
+    /// `ActionContext`'s buffer-locals (LM.1) and the entry under the cursor,
+    /// then hands the host an `Effect` (the diff-mode pattern): the mode owns
+    /// the *decision*, the host owns the *apply*. Bound globally at boot by
+    /// `register_mode_action_handlers` — oil-mode can be active on many
+    /// buffers at once, and each handler names its own `view`
+    /// (`ctx.buffer_id`), so many oil buffers stay independent (design §3.2).
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        // `<CR>`: a directory re-lists in place; a file opens in the current
+        // pane.
+        let follow: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let (dir, name, is_dir) = oil_entry_at(ctx)?;
+            let view = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let target = dir.join(&name);
+            Some(if is_dir {
+                Effect::OilNavigate {
+                    view,
+                    dir: target,
+                    focus: None,
+                }
+            } else {
+                Effect::OpenBufferAt {
+                    path: Some(target),
+                    position: lattice_protocol::Position::ZERO,
+                    force: false,
+                    content: None,
+                    activate_minor: None,
+                }
+            })
+        });
+        // `-`: re-list to the parent, landing the cursor on the directory we
+        // stepped out of (oil.nvim's round-trip).
+        let up: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+            let dir = ctx.buffer_local::<OilDir>()?.0.clone();
+            let parent = dir.parent()?.to_path_buf();
+            let view = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let focus = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+            Some(Effect::OilNavigate {
+                view,
+                dir: parent,
+                focus,
+            })
+        });
+        vec![
+            ActionHandlerContribution {
+                action_name: "action:oil-follow",
+                handler: follow,
+            },
+            ActionHandlerContribution {
+                action_name: "action:oil-navigate-up",
+                handler: up,
+            },
+            // `<C-s>` / `<C-v>` / `<C-t>`: open the entry in a split / vsplit /
+            // tab. A file opens directly; a directory path resolves to
+            // `DoEditOutcome::Directory` in the new pane, which opens oil there
+            // (`handle_do_edit_outcome`), so the same effect serves both.
+            oil_open_in_target("action:oil-follow-split", OpenTarget::Split),
+            oil_open_in_target("action:oil-follow-vsplit", OpenTarget::VSplit),
+            oil_open_in_target("action:oil-follow-tab", OpenTarget::Tab),
+        ]
+    }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
+    }
+}
+
+/// LM.3: resolve the oil entry under the cursor — `(oil dir, entry name,
+/// is-dir)` — from the `ActionContext`'s buffer-locals. `None` when the
+/// buffer carries no oil state or the cursor is past the last row, which a
+/// handler treats as "nothing to open".
+fn oil_entry_at(ctx: &ActionContext<'_>) -> Option<(PathBuf, String, bool)> {
+    let dir = ctx.buffer_local::<OilDir>()?.0.clone();
+    let snapshot = ctx.buffer_local::<OilSnapshotLocal>()?;
+    let entry = snapshot
+        .0
+        .snapshot_entries()
+        .get(ctx.cursor.line as usize)?;
+    Some((dir, entry.name.clone(), entry.is_dir))
+}
+
+/// LM.3: a `<C-s>`/`<C-v>`/`<C-t>` handler that opens the entry under the
+/// cursor in `target`. Shared body for the three chords.
+fn oil_open_in_target(action_name: &'static str, target: OpenTarget) -> ActionHandlerContribution {
+    let handler: ActionHandler = Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let (dir, name, _is_dir) = oil_entry_at(ctx)?;
+        Some(Effect::OpenInTarget {
+            path: Some(dir.join(&name)),
+            position: lattice_protocol::Position::ZERO,
+            target,
+        })
+    });
+    ActionHandlerContribution {
+        action_name,
+        handler,
     }
 }
 
@@ -153,10 +275,25 @@ mod tests {
     }
 
     #[test]
-    fn oil_mode_keymap_has_one_entry() {
+    fn oil_mode_keymap_binds_navigation_and_open_chords() {
         use lattice_mode::Mode as _;
         let km = OilMode.keymap();
-        assert_eq!(km.entries.len(), 1);
+        // Assert by identity, not count: LM.3 added `<CR>` + the three
+        // open-in-target chords beside `-`, and the set will keep growing.
+        let bound: Vec<(&str, Option<&str>)> =
+            km.entries.iter().map(|e| (e.chord, e.command)).collect();
+        for (chord, cmd) in [
+            ("-", "action:oil-navigate-up"),
+            ("<CR>", "action:oil-follow"),
+            ("<C-s>", "action:oil-follow-split"),
+            ("<C-v>", "action:oil-follow-vsplit"),
+            ("<C-t>", "action:oil-follow-tab"),
+        ] {
+            assert!(
+                bound.contains(&(chord, Some(cmd))),
+                "oil-mode must bind {chord} → {cmd}; got {bound:?}",
+            );
+        }
     }
 
     #[test]

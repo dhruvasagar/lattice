@@ -45,12 +45,9 @@ impl App {
         }
     }
 
-    pub(super) fn do_oil_follow(&mut self) {
-        let signals = self.mutate_editor_with(move |e| e.do_oil_follow());
-        for s in signals {
-            self.handle_renderer_signal(s);
-        }
-    }
+    // LM.3: `do_oil_follow` delegate removed — oil `<CR>` is owned by
+    // `OilMode::action_handlers()` now, dispatched through the generic chord
+    // path, so there is no App-layer follow shim.
 
     pub(super) fn do_oil_navigate_up(&mut self) {
         let signals = self.mutate_editor_with(move |e| e.do_oil_navigate_up());

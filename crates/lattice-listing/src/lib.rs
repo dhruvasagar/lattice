@@ -57,5 +57,8 @@
 
 pub mod dir;
 pub mod file_tree;
+pub mod install;
 pub mod listing_mode;
 pub mod oil;
+
+pub use install::install;

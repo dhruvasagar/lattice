@@ -461,9 +461,12 @@ impl Editor {
         // `lattice_lsp::install(boot)` (Phase-B list below). The completion mode
         // reads the supervisor handle via `boot.service::<LspSupervisorHandle>()`
         // (registered in Phase A above), so no host-side handle threading.
-        lattice_listing::oil::register_oil_modes(boot.modes_mut());
-        lattice_listing::file_tree::register_file_tree_modes(boot.modes_mut());
-        lattice_listing::listing_mode::register_listing_modes(boot.modes_mut());
+        // LM.3: one install() registers the listing modes (oil / file-tree /
+        // directory-listing) AND the oil chord `action:*` commands, so
+        // oil-mode's keymap + action_handlers wire up through the generic
+        // K.2.4 + register_mode_action_handlers walks — no host-side oil
+        // dispatch code.
+        lattice_listing::install(&mut boot);
         let snippet_activation_policy = lattice_snippet::register_snippet_modes(
             boot.modes_mut(),
             snippet_registry_handle.clone(),

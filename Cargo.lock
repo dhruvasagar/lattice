@@ -5589,6 +5589,7 @@ dependencies = [
  "lattice-cells",
  "lattice-config",
  "lattice-core",
+ "lattice-grammar",
  "lattice-mode",
  "lattice-protocol",
  "lattice-theme",

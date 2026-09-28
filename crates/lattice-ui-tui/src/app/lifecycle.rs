@@ -587,11 +587,46 @@ mod tests {
 
     use super::*;
     use crate::app::test_helpers::{
-        app_with, attach_test_syntax, fresh_workspace, invoke_motion, set_rust_syntax, submit_ex,
-        unique_tempdir, write_temp_file, write_workspace_config,
+        app_with, attach_test_syntax, fresh_workspace, invoke_motion, press, set_rust_syntax,
+        settle_mode, submit_ex, unique_tempdir, write_temp_file, write_workspace_config,
     };
     use crate::app::*;
     use lattice_protocol::edit::Edit;
+
+    /// LM.3 test driver: reproduce oil `<CR>` the way
+    /// `OilMode::action_handlers()` (`action:oil-follow`) does — resolve the
+    /// entry under the cursor from the oil buffer's locals and apply the
+    /// effect it emits (`OilNavigate` for a directory, `OpenBufferAt` for a
+    /// file). A faithful double of the mode handler, so the pre-LM.3
+    /// `do_oil_follow` behavioural tests keep asserting the same outcomes
+    /// through the new effect path. The keymap→handler wiring itself is
+    /// covered separately by the press-through-mode integration test.
+    fn oil_follow(a: &mut App) {
+        let id = a.editor.active_pane_buffer_id();
+        let line = a.editor.cursor.line as usize;
+        let dir = a.editor.oil_dir_for(id).expect("oil dir");
+        let entry = a
+            .editor
+            .oil_snapshot_for(id)
+            .and_then(|s| s.snapshot_entries().get(line).cloned())
+            .expect("entry under cursor");
+        let target = dir.join(&entry.name);
+        if entry.is_dir {
+            a.apply_effect(lattice_grammar::Effect::OilNavigate {
+                view: id,
+                dir: target,
+                focus: None,
+            });
+        } else {
+            a.apply_effect(lattice_grammar::Effect::OpenBufferAt {
+                path: Some(target),
+                position: lattice_protocol::Position::ZERO,
+                force: false,
+                content: None,
+                activate_minor: None,
+            });
+        }
+    }
 
     #[test]
     fn maybe_reparse_syntax_drains_pending_edits_and_updates_version() {
@@ -2261,7 +2296,7 @@ mod tests {
             .position(|n| n == "a.txt")
             .expect("a.txt in listing");
         a.editor.cursor.line = a_txt_row as u32;
-        a.do_oil_follow();
+        oil_follow(&mut a);
         let opened = a.editor.document.path().map(|p| p.to_path_buf());
         assert_eq!(opened, Some(tmp.join("a.txt")));
 
@@ -2369,7 +2404,7 @@ mod tests {
             .expect("sub in listing");
         a.editor.cursor.line = sub_row as u32;
         a.editor.cursor.byte = 0;
-        a.do_oil_follow();
+        oil_follow(&mut a);
         // Now in oil rooted at tmp/sub (read via OilDir, the
         // canonical buffer-local).
         let dir_after = a.oil_dir_for(oil_id).unwrap_or_default();
@@ -2390,7 +2425,7 @@ mod tests {
             .position(|n| n == "inside.txt")
             .expect("inside.txt in listing");
         a.editor.cursor.line = inside_row as u32;
-        a.do_oil_follow();
+        oil_follow(&mut a);
         let opened = a.editor.document.path().map(|p| p.to_path_buf());
         assert_eq!(opened, Some(tmp.join("sub/inside.txt")));
 
@@ -2446,7 +2481,7 @@ mod tests {
         // would open alpha.txt regardless.
         a.editor.cursor.line = 2;
         a.editor.cursor.byte = 0;
-        a.do_oil_follow();
+        oil_follow(&mut a);
 
         // Follow on a file routes through `do_edit`, which
         // opens the file as a Document. The active buffer's
@@ -2507,7 +2542,7 @@ mod tests {
             .expect("subdir in snapshot");
         a.editor.cursor.line = subdir_line as u32;
         a.editor.cursor.byte = 0;
-        a.do_oil_follow();
+        oil_follow(&mut a);
 
         // Listing now shows subdir's contents (`inner.txt`).
         let listing_after = a
@@ -2672,6 +2707,58 @@ mod tests {
             "the second tree must be unchanged by toggling the first",
         );
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// LM.3 (integration): pressing `<C-s>` on a file row in an oil buffer
+    /// opens that file in a NEW split — the full chord → oil-mode keymap →
+    /// `action:oil-follow-split` handler → `Effect::OpenInTarget` → pane
+    /// split path, proven end to end (not just the effect). This is the
+    /// keybinding the whole LM series is for.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oil_ctrl_s_opens_the_file_under_cursor_in_a_split() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let tmp = std::env::temp_dir().join(format!("lattice-lm3-ctrls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("file.txt"), "hi").unwrap();
+
+        let mut a = app_with("scratch\n", 20);
+        a.do_open_oil(Some(tmp.clone()));
+        // oil-mode activates through the async cascade; wait so its keymap
+        // layer is live before the press.
+        assert!(
+            settle_mode(&mut a, "oil-mode").await,
+            "oil-mode must activate on the oil buffer",
+        );
+        let before_panes = a.editor.pane_tree.len();
+        let id = a.editor.active_pane_buffer_id();
+        let line = a
+            .editor
+            .oil_snapshot_for(id)
+            .and_then(|s| {
+                s.snapshot_entries()
+                    .iter()
+                    .position(|e| e.name == "file.txt")
+            })
+            .expect("file.txt row present");
+        a.editor.cursor.line = line as u32;
+
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(
+            a.editor.pane_tree.len(),
+            before_panes + 1,
+            "<C-s> opened the file in a new split",
+        );
+        assert_eq!(
+            a.editor.document.path().map(|p| p.to_path_buf()),
+            Some(tmp.join("file.txt")),
+            "the new split shows the file under the cursor",
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

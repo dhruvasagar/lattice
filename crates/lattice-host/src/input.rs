@@ -290,16 +290,12 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         return Action::FollowLink;
     }
 
-    if matches!(ctx.active_buffer, BufferKind::Oil)
-        && matches!(ctx.modal, ModalState::Normal)
-        && ctx.partial_chord.is_empty()
-    {
-        match chord.key {
-            KeyKind::Special(SpecialKey::Enter) => return Action::FollowLink,
-            KeyKind::Char('-') => return Action::OilNavigateUp,
-            _ => {}
-        }
-    }
+    // LM.3: the `BufferKind::Oil` gate (Enter → FollowLink, `-` →
+    // OilNavigateUp) is gone — `oil-mode` owns `<CR>` / `-` / `<C-s>` /
+    // `<C-v>` / `<C-t>` through its `MajorMode` keymap + `action_handlers`,
+    // resolved by the generic chord dispatcher scoped to oil buffers.
+    // (The shared `Help | FileTree` gate above still routes file-tree until
+    // LM.4 migrates `file-tree-mode`.)
 
     // Terminal-mode T2.a / T2.b (2026-05-25) — Normal-in-terminal
     // buffer-local bindings. Vim's full insert-entry set

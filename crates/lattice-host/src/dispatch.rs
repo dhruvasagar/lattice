@@ -3627,10 +3627,6 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             _out.renderer_signals.extend(signals);
         }
         Action::FollowLink => match editor.active_buffer {
-            BufferKind::Oil => {
-                let signals = editor.do_oil_follow();
-                _out.renderer_signals.extend(signals);
-            }
             BufferKind::FileTree => {
                 let signals = editor.do_file_tree_follow();
                 _out.renderer_signals.extend(signals);
@@ -3643,9 +3639,13 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 // so the GPUI peer reaches the same dispatch.
                 editor.do_help_follow_link(_out);
             }
+            // LM.3: Oil no longer routes here — oil-mode's `<CR>` handler
+            // emits the open/re-list effect directly. FollowLink stays for
+            // Help / Dashboard / FileTree (FileTree until LM.4).
             BufferKind::Document
             | BufferKind::Terminal
             | BufferKind::Messages
+            | BufferKind::Oil
             | BufferKind::Multibuffer => {}
         },
     }
@@ -25332,47 +25332,11 @@ impl Editor {
         signals
     }
 
-    /// `<CR>` on an oil row: navigate into directory or `:e`
-    /// the file. Phase 5.8.AD.1: hoisted from TUI App.
-    pub fn do_oil_follow(&mut self) -> Vec<RendererSignal> {
-        let active_id = self.active_pane_buffer_id();
-        let idx = self.cursor.line as usize;
-        let Some(entry) = self
-            .oil_snapshot_for(active_id)
-            .and_then(|s| s.snapshot_entries().get(idx).cloned())
-        else {
-            return Vec::new();
-        };
-        let Some(dir) = self.oil_dir_for(active_id) else {
-            return Vec::new();
-        };
-        if entry.is_dir {
-            let new_dir = dir.join(&entry.name);
-            let mut snapshot = self.oil_snapshot_for(active_id).unwrap_or_default();
-            match snapshot.reload(&new_dir) {
-                Err(e) => {
-                    self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
-                }
-                Ok(()) => {
-                    self.set_oil_dir(active_id, new_dir);
-                    self.write_oil_listing(active_id, snapshot);
-                    self.cursor = lattice_protocol::Position::ZERO;
-                    self.scroll = 0;
-                }
-            }
-            Vec::new()
-        } else {
-            let path = dir.join(&entry.name);
-            let outcome = self.do_edit(Some(path), false);
-            match outcome {
-                DoEditOutcome::Opened(s)
-                | DoEditOutcome::Activated(s)
-                | DoEditOutcome::Reloaded(s) => s,
-                DoEditOutcome::Directory(d) => self.do_open_oil(Some(d)),
-                DoEditOutcome::NoFileName | DoEditOutcome::Failed => Vec::new(),
-            }
-        }
-    }
+    // LM.3: `do_oil_follow` is gone — oil `<CR>` is owned by
+    // `OilMode::action_handlers()` (`action:oil-follow`), which reads the
+    // entry via `ctx.buffer_local` and emits `Effect::OilNavigate` (a
+    // directory) or `Effect::OpenBufferAt` (a file). The re-list applier is
+    // `apply_oil_navigate` below.
 
     /// LM.2: applier for [`Effect::OilNavigate`] — re-list oil `view` to
     /// `dir` in place, landing the cursor on `focus` (or the top). Shares

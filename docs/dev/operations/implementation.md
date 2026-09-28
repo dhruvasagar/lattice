@@ -307,6 +307,7 @@ provider, because the gaps turned out to be mostly substrate.
 | [`lsp-references-view.md`](slice-plans/archive/lsp-references-view.md) | LR.1–3, LR.5 ✅ | `:lsp-references` opens an **editable** references multibuffer (catalogue A.3); `<C-q>` sends any picker's filtered results to the error list. |
 | [`multibuffer-stale-sources.md`](slice-plans/archive/multibuffer-stale-sources.md) | SS.1–3 ✅ | **Data-loss fix:** `:w` on a multibuffer silently overwrote source files that had changed on disk. |
 | [`diff-refinement.md`](slice-plans/archive/diff-refinement.md) | DR.1–4 ✅ | Word-level intra-line diff highlighting — which *part* of a changed line changed. |
+| [`picker-error-list.md`](slice-plans/picker-error-list.md) | PE.1–5 ✅ | Extends LR.5: `<C-q>` send made generic *in fact* via payload-owned exhaustive `RoutingPayload::error_location`, carries the row text as the entry message, and opens `*problems*` (default on). Adds the programmatic producer-API dev doc. |
 
 Two catalogue entries were **struck rather than built**: **A.4
 `DiagnosticsProvider`** (making the language server an `ErrorList`

@@ -142,14 +142,15 @@ Entries therefore carry a **source tag**, and a write replaces only
 that source's slice:
 
 ```
-ErrorSource { Compilation, Lsp }        // in lattice-protocol
+ErrorSource { Compilation, Lsp, References, Picker }  // in lattice-protocol
 AppEffect::SetErrorList { source, entries }
 ErrorList { slices: Vec<(ErrorSource, Vec<ErrorEntry>)>, index: usize }
 ```
 
 A producer never sees the other slices; it hands over its own full set
-and the list splices it in. `ErrorSource` is a small closed enum today
-— a plugin-producer variant lands with the plugin path (§6), not
+and the list splices it in. `ErrorSource` is a small closed enum —
+`Compilation`, `Lsp` (§3.2), `References` (§3.2b), `Picker` (§3.2c); a
+plugin-producer variant lands with the plugin path (§6), not
 speculatively.
 
 **Slices concatenate in a fixed source order (`Compilation`, then
@@ -260,6 +261,36 @@ survives it. What remains is the taste question of whether they belong
 in that list at all, and the option is the answer: the user decides,
 and the default says no.
 
+### 3.2c The picker send is a fourth producer
+
+`<C-q>` in any picker sends its **filtered** candidates to the `Picker`
+slice — telescope's `send_to_qflist`, the universal "turn these results
+into a walkable list" gesture. §3.1's tagged slices mean a send never
+disturbs a compile run being walked, and each send is an
+`ErrorWrite::NewRun`: a fresh narrowing deserves a fresh list at the
+top. Severity is `Info` — a picked location is not a problem — and the
+visible row text becomes the entry message, so the list reads as the
+picker did.
+
+**The row→location translation is owned by the picker, not the host.**
+Each `RoutingPayload` answers `error_location(&dyn BufferPathResolver)
+-> Option<ErrorLocation>` with an *exhaustive* match: a row that points
+into a file yields its `(path, line, col)`, everything else yields
+`None` and is skipped. The exhaustiveness is the design — a new routing
+variant will not compile until it declares whether it has a location —
+so `<C-q>` stays generic over every current *and future* picker,
+including plugin pickers whose `FileLocation` rows cross the WIT
+boundary and need no host change. This is the paramount-goal-#2
+(extensibility) win over the earlier host-side `match … _ => continue`,
+which silently dropped the variants it forgot. The host supplies only
+the buffer→path resolver the one buffer-relative variant
+(`JumpInBuffer`) needs, keeping `lattice-picker` free of any host
+dependency.
+
+Whether a send also opens `*problems*` is `picker.send-opens-problems`
+(default on, telescope parity); off leaves the list populated for
+`:copen` on demand. See [the picker](../../user/picker.md).
+
 ### 3.3 Two properties that make a live feed safe
 
 Without both of these, a default-on feed is worse than no feed.
@@ -277,6 +308,49 @@ A slice write re-points the index at the **same entry** — matched on
 `(path, message)`, tolerant of line drift — and falls back, in order,
 to the first entry of the same path at-or-after the old line, then to
 0. Producer-initiated replacement (a new compile run) keeps the reset.
+
+### 3.4 Feeding the list programmatically (the producer API)
+
+Any code with `&mut Editor` writes the list directly; an off-thread
+producer writes through the inbound seam. The whole surface:
+
+	// value types — in lattice-protocol, so producers BELOW the host share them
+	ErrorEntry    { path: PathBuf, line: u32 /*0-based*/, col: u32,
+	                severity: ErrorSeverity, message: String }
+	ErrorSeverity { Error, Warning, Info, Note }   // producers map their own onto this
+	ErrorSource   { Compilation, Lsp, References, Picker }
+	ErrorWrite    { NewRun, Refresh }
+
+	// host-side, synchronous (holds &mut Editor)
+	Editor::write_error_list(source, write, entries)   // the general entry point
+	Editor::set_error_list(source, entries)            // == write_error_list(_, NewRun, _)
+	Editor::error_list() -> &ErrorList                 // read-only
+
+	// off-thread (a producer task with no &mut Editor)
+	AppEffect::SetErrorList { source, entries }        // via InboundBus; the host arm writes
+
+**Choose your `ErrorWrite`.** `NewRun` resets the walk index to the top
+— right for a fresh compile run or a `<C-q>` send. `Refresh` re-anchors
+the index on the same entry (matched on `(path, message)`, tolerant of
+line drift, §3.3) — right for a live feed that republishes while the
+user walks. `NewRun` on a live feed throws the user back to entry 1 on
+every tick; `Refresh` on a one-shot run is harmless but pointless.
+
+**Tag with your own `ErrorSource`.** A write replaces only that slice
+(§3.1), so producers compose without coordinating — a picker send does
+not disturb a compile run, and vice versa. A genuinely new producer
+adds a variant, but only when it exists, not speculatively.
+
+**Stay off the UI thread.** A producer that *computes* entries (parsing
+tool output, walking an LSP response, scanning files) does it on its
+own task and crosses the `InboundBus → AppEffect::SetErrorList` seam,
+exactly as compilation and LSP do — never on the render path (paramount
+goal #1). `write_error_list` itself is a cheap splice; the work that
+precedes it is what must not block.
+
+Navigation (§2), the three views (§4), and `*problems*` all read
+whatever is in the list, so a new producer inherits every one of them
+for free — that is the whole point of a producer-agnostic substrate.
 
 ## 4. Three views of one list
 

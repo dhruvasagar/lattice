@@ -3677,35 +3677,26 @@ mod tests {
     }
 
     #[test]
-    fn opening_help_in_pane_keeps_document_syntax_live() {
-        // Bug: opening `:lsp-log` (which routes through
-        // `open_help_in_pane`) stashed the document's syntax onto
-        // the registry entry, leaving `self.editor.syntax = None` for the
-        // duration of the help session. The help buffer renders as
-        // a popup overlay over the underlying document; the
-        // document paint reads `self.editor.syntax`, so the document
-        // appeared unhighlighted under the popup.
+    fn opening_help_in_pane_swaps_document_and_preserves_underlying_syntax() {
+        // Help opened in a pane is a real buffer switch, NOT a popup overlay
+        // over the underlying document: the active pane is Help, the floating
+        // overlay is suppressed (`render.rs` `active_pane_kind != Help`), so the
+        // pane paints `self.document` — which must therefore FOLLOW the help
+        // buffer, exactly as Messages / Multibuffer / Oil / FileTree do. When it
+        // did not, a `:help` / `:describe-*` split rendered the buffer help
+        // replaced instead of the help content ("describe-in-split shows the
+        // previous buffer").
         //
-        // Fix: `activate_help_in_pane` does NOT call
-        // `snapshot_active_document`. Hot-path state stays live;
-        // the round-trip back via `activate_document` early-returns
-        // for the same-doc case and skips the restore (entry has
-        // nothing to give).
+        // The underlying document must not LOSE its syntax across the switch:
+        // `activate_help_in_pane` -> `load_active_pane` ->
+        // `snapshot_active_document` stashes it into the document's
+        // buffer-locals while `active_buffer` is still Document, and the round
+        // trip back restores it — the same invariant
+        // `dismissing_tree_preserves_document_syntax_state` checks for the tree.
         let mut a = app_with("fn main() {}\n", 10);
         a.editor.terminal_width = Some(80);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         assert!(a.editor.syntax.is_some(), "fixture syntax wired");
-        // Open a help buffer in pane (mimics `:lsp-log rust`).
-        let _help_id =
-            a.open_help_in_pane(HelpContent::from_lines("lsp:rust", vec!["log line".into()]));
-        assert!(matches!(a.editor.active_buffer, BufferKind::Help));
-        // The document's syntax must remain on the hot path so the
-        // pane underneath paints with highlights.
-        assert!(
-            a.editor.syntax.is_some(),
-            "syntax must stay live during help-in-pane overlay"
-        );
-        // Round-trip back to the document.
         let doc_id = a
             .editor
             .buffers
@@ -3713,6 +3704,18 @@ mod tests {
             .first()
             .copied()
             .unwrap();
+        // Open a help buffer in pane (mimics `:lsp-log rust`).
+        let help_id =
+            a.open_help_in_pane(HelpContent::from_lines("lsp:rust", vec!["log line".into()]));
+        assert!(matches!(a.editor.active_buffer, BufferKind::Help));
+        // The active document now IS the help buffer — the pane renders help,
+        // not the buffer it replaced. This is what failed before the fix.
+        assert_eq!(
+            a.editor.document_buffer_id, help_id,
+            "the active document must follow the help buffer so the pane paints \
+             help content, not the underlying buffer"
+        );
+        // Round-trip back to the document: its syntax survived the switch.
         a.activate_document(doc_id);
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
         assert!(

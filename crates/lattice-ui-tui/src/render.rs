@@ -8448,6 +8448,95 @@ mod tests {
         a
     }
 
+    /// Regression (2026-09-29): describe/help opened in a horizontal split
+    /// (`help.describe-display=split-h`) must not leak the underlying
+    /// document into the help pane's rows below the (short) help content.
+    ///
+    /// `PaneTree::split_active` clones the source leaf, so the new pane's
+    /// region already belongs to the original document; `draw_pane_document`
+    /// paints a full-height `Paragraph`, but a composed line shorter than the
+    /// pane width leaves its trailing cells untouched and the `~`-filler rows
+    /// past EOF paint only one glyph — so without a per-pane `Clear` those
+    /// cells read as the cloned document. The user's report: "after the
+    /// content of describe ends, I see the contents of the previous buffer
+    /// where the help was triggered."
+    #[tokio::test]
+    async fn describe_in_split_does_not_leak_underlying_buffer_below_help() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (tw, th): (u16, u16) = (40, 24);
+        // A tall, visually-distinct underlying document — every content column
+        // is `Z`, so any leak into the help pane is unmistakable.
+        let underlying: String = "ZZZZZZZZZZZZ\n".repeat(60);
+        let mut a = app_with(&underlying, th as u32);
+
+        // Describe content is deliberately SHORT so the help pane has many
+        // rows below it where a leak would show.
+        let content = crate::help::HelpContent::from_lines(
+            "describe-test",
+            vec!["describe line one".into(), "describe line two".into()],
+        );
+        let _id = a.open_help_in_split(content, crate::pane::SplitOrientation::Horizontal);
+        // Drive the app the way production does between the split and its next
+        // frame: the actor republishes `ad()` keyed on the freshly-activated
+        // buffer. Without settling, `ad().snapshot` (which `draw_frame` hands
+        // the active pane) stays on the underlying document.
+        for _ in 0..50 {
+            a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+                e.publish_render_state();
+            });
+            let sigs =
+                a.mutate_editor_with(|e: &mut lattice_host::editor::Editor| e.run_tick_pending());
+            for s in sigs {
+                a.handle_renderer_signal(s);
+            }
+            if a.ad().snapshot.buffer.as_string().contains("describe line") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let snap = a.ad().snapshot.clone();
+        let mut terminal = Terminal::new(TestBackend::new(tw, th)).unwrap();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &a, &snap);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let rows: Vec<String> = (0..th)
+            .map(|y| {
+                (0..tw)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect();
+
+        // The last help-content row.
+        let describe_row = rows
+            .iter()
+            .rposition(|r| r.contains("describe line two"))
+            .unwrap_or_else(|| panic!("describe content must paint:\n{rows:#?}"));
+
+        // Rows between the help content and the help pane's status line must be
+        // help-pane filler (blank / `~`), NEVER the underlying `Z`s. The status
+        // line ("[help] …") ends the help pane; the underlying buffer resumes
+        // only in the SECOND (bottom) pane, below that status line.
+        for (i, row) in rows.iter().enumerate().skip(describe_row + 1) {
+            if row.contains("help") || row.contains("describe-test") {
+                break; // reached the help pane's status line
+            }
+            assert!(
+                !row.contains("ZZZ"),
+                "row {i} sits between the help content and the help pane's \
+                 status line but shows the underlying buffer (`Z`s) — the \
+                 describe-in-split leak:\n{rows:#?}"
+            );
+        }
+    }
+
     /// **CV.5: in a pane-scoped listing the cursor highlight and the
     /// caret must land on the same screen row, at any scroll.**
     ///

@@ -41570,12 +41570,6 @@ impl Editor {
             });
         }
         self.snapshot_active_pane();
-        // Note: do NOT call snapshot_active_document here. Help is
-        // rendered as a popup overlay over the underlying document;
-        // the pane's per-frame paint still draws the active
-        // document via the snapshot path which reads self.syntax /
-        // self.folds. Stashing those into locals would leave
-        // self.syntax = None for the help session.
         if self.popup_buffer != Some(id) && self.buffers.contains_help(id) {
             self.popup_buffer = Some(id);
         }
@@ -41583,14 +41577,38 @@ impl Editor {
             .popup_help()
             .map(|h| (h.cursor, h.scroll as u32))
             .unwrap_or((lattice_protocol::position::Position::ZERO, 0));
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
-        self.active_buffer = BufferKind::Help;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::Help;
-        pane.buffer_id = id;
-        pane.cursor = stash_cursor;
-        pane.scroll = stash_scroll;
+        // Point the active PANE at the help buffer, then follow `self.document`
+        // to it through the SAME no-kind-gate swap every other in-pane kind
+        // uses (`load_active_pane` -> `sync_active_document_to_pane`).
+        //
+        // This code used to skip the swap, on the theory that "help is a popup
+        // overlay over the underlying document, so the pane keeps painting the
+        // document and `self.syntax` must stay live". That is true only for a
+        // FLOATING popup (a distinct path via `open_popup`). For in-pane and
+        // SPLIT help the overlay is SUPPRESSED — the active pane is Help, so
+        // `render.rs`'s `active_pane_kind != Help` gate turns it off — and the
+        // pane then paints `app.ad().snapshot == self.document.snapshot()`.
+        // Left on the underlying document, that snapshot made a `:help` /
+        // `:describe-*` split render the buffer help REPLACED instead of the
+        // help content (the "describe-in-split shows the previous buffer" bug).
+        // Help now follows Messages / Multibuffer / Oil / FileTree, which the
+        // no-kind-gate rule already covers.
+        //
+        // `load_active_pane` swaps the document BEFORE flipping `active_buffer`
+        // to Help, so `snapshot_active_document`'s `active_buffer == Document`
+        // guard still stashes the OUTGOING document's syntax handle into its
+        // buffer-locals (restored on the round trip back) — the ordering rule
+        // that method documents. `active_buffer` / `self.cursor` / `self.scroll`
+        // are therefore NOT set here; `load_active_pane` derives them from the
+        // pane we just pointed at the help buffer.
+        {
+            let pane = self.pane_tree.active_mut();
+            pane.buffer = BufferKind::Help;
+            pane.buffer_id = id;
+            pane.cursor = stash_cursor;
+            pane.scroll = stash_scroll;
+        }
+        self.load_active_pane();
     }
 
     /// 5.5.F.3: build the `:describe-event <name>` content.

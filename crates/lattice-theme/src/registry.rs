@@ -1402,7 +1402,13 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     reg_one("syntax.url", spec().fg("cyan").underline(), "Bare URLs.");
     reg_one(
         "syntax.markup_raw",
-        spec().fg("overlay").dim(),
+        // Inline code is CONTENT the reader reads, so it takes a legible
+        // accent (the string/literal `green`), not the muted `overlay` +
+        // `.dim()` it once shared with whitespace markers. Foreground-only
+        // by the span-layering contract, it must stay readable on any
+        // background the row can acquire — the cursorline tint above all,
+        // where `overlay`+dim dropped to ~1.5:1 on the light theme.
+        spec().fg("green"),
         "Inline code / raw markup.",
     );
     reg_one(
@@ -2598,6 +2604,39 @@ mod tests {
         assert_eq!(
             resolved.get(ids.whitespace),
             Style::empty().fg(Color::Rgb(0x6c, 0x70, 0x86)).dim()
+        );
+    }
+
+    #[test]
+    fn inline_code_is_legible_on_the_cursorline() {
+        // Regression: `syntax.markup_raw` (markdown `` `code` ``, org
+        // `~code~` / `=code=`) used to be `fg=overlay` + `.dim()` — the
+        // muted whitespace-marker role, dimmed — which on the cursorline
+        // background fell to ~1.5:1 and was very hard to read. Inline code
+        // is content, so it now takes the string/literal accent and is
+        // never dimmed. The span-layering contract keeps it foreground-only,
+        // so it must be legible on ANY row background, the cursorline tint
+        // especially.
+        let reg = reg();
+        let ids = BuiltinElementIds::capture(&reg);
+        let resolved = reg.resolved();
+
+        let raw = resolved.get(ids.syntax_markup_raw);
+        // Never dimmed — the dim modifier was half the readability loss.
+        assert!(!raw.modifiers.dim, "inline code must not be dimmed");
+        // A legible content accent — the string/literal colour, not the
+        // muted `overlay` role it once shared with whitespace markers.
+        assert_eq!(
+            raw.fg,
+            resolved.get(ids.syntax_string).fg,
+            "inline code takes the string/literal accent"
+        );
+        // …and distinct from the cursorline background, so it stays readable
+        // when the cursor is on its line (the reported bug).
+        assert_ne!(
+            raw.fg,
+            resolved.get(ids.editor_cursor_line).bg,
+            "inline code foreground must differ from the cursorline background"
         );
     }
 

@@ -292,6 +292,12 @@ three
     assert_eq!(sent[0].line, 0);
     assert_eq!(sent[1].line, 2);
     assert_eq!(sent[0].col, 2, "the column survives the round trip");
+    // PE.2: the row text rides along as the entry message, so the error
+    // list and `*problems*` read as the picker did, not as blank file:lines.
+    assert!(
+        !sent[0].message.is_empty(),
+        "the picker row's display text becomes the entry message"
+    );
     assert!(e.picker.is_none(), "a successful send dismisses the picker");
 
     let _ = std::fs::remove_dir_all(&dir);

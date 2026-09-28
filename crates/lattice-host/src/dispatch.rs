@@ -13972,7 +13972,7 @@ impl Editor {
 
         let resolver = HostResolver(&*self);
         let mut entries: Vec<ErrorEntry> = Vec::new();
-        for routing in picker.filtered_routing() {
+        for (display, routing) in picker.filtered_entries() {
             // Location-less rows (a register, a command, a buffer id, an
             // unsaved buffer) have nowhere to jump to, so they contribute
             // nothing rather than being faked.
@@ -13984,7 +13984,11 @@ impl Editor {
                 line: loc.line,
                 col: loc.col,
                 severity: ErrorSeverity::Info,
-                message: String::new(),
+                // The row as the user saw it in the picker — the grep match
+                // text, the symbol, the reference preview — so the error
+                // list and `*problems*` read as the picker did rather than
+                // as a column of blank `file:line`s.
+                message: display.trim().to_string(),
             });
         }
 

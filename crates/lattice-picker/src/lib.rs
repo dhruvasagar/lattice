@@ -840,6 +840,22 @@ impl Picker {
             .collect()
     }
 
+    /// PE.2: the filtered candidates paired with their routing payload AND
+    /// the visible row text (`display`) — the peer of
+    /// [`Self::filtered_routing`] for a send that wants to carry the matched
+    /// line as the error-list entry's message, not just its coordinates.
+    ///
+    /// `<C-q>`'s result should read the way the rows looked in the picker
+    /// (the grep match text, the symbol name, the reference preview), so the
+    /// error list and `*problems*` are a column of meaningful lines rather
+    /// than bare `file:line`s the user must jump to one by one to tell apart.
+    pub fn filtered_entries(&self) -> Vec<(&str, &RoutingPayload)> {
+        self.candidates
+            .iter()
+            .filter_map(|c| self.routing_for(c).map(|r| (c.raw.display.as_str(), r)))
+            .collect()
+    }
+
     pub fn transient_unwind(&mut self) -> bool {
         if self.transient.is_none() {
             return false;

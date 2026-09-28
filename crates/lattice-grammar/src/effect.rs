@@ -468,6 +468,24 @@ pub enum Effect {
         /// `on_activate`, so this is how a guest gives its buffer chords.
         activate_minor: Option<String>,
     },
+    /// LM.0: open `path` at `position` in a target pane —
+    /// split / vsplit / new tab. The peer-applied sibling of
+    /// [`Effect::OpenBufferAt`] with a pane target: its peer arm runs
+    /// `Editor::prepare_open_target_pane(target)` (the picker-accept
+    /// split sequence) then `Editor::open_buffer_at(path, position, …)`.
+    ///
+    /// `<CR>` (current pane) still returns plain [`Effect::OpenBufferAt`];
+    /// this is what the listing majors' `<C-s>`/`<C-v>`/`<C-t>` chords
+    /// return so a file lands in a new split / vsplit / tab. `target =
+    /// Default` is equivalent to `OpenBufferAt` and kept for uniformity.
+    ///
+    /// Host/peer-only for now: no WIT mirror (a plugin opening in a split
+    /// is a deliberate future WIT addition, see `boundary_effect`).
+    OpenInTarget {
+        path: Option<PathBuf>,
+        position: lattice_protocol::position::Position,
+        target: lattice_core::ui::pane::OpenTarget,
+    },
     /// BC.8c: open `uri` via the OS handler (`open` / `xdg-open` /
     /// `explorer`). Emitted by the LSP `window/showDocument` handler for
     /// `external: true` requests; generic enough to reuse for any "open

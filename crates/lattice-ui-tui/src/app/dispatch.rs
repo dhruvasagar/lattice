@@ -1125,6 +1125,20 @@ impl App {
                 });
                 self.handle_do_edit_outcome(outcome);
             }
+            // LM.0: open in a target pane. Same host body as OpenBufferAt,
+            // preceded by the picker-accept split sequence. GPUI peer runs
+            // the identical pair.
+            Effect::OpenInTarget {
+                path,
+                position,
+                target,
+            } => {
+                let outcome = self.mutate_editor_with(move |e| {
+                    e.prepare_open_target_pane(target);
+                    e.open_buffer_at(path, position, false, None, None)
+                });
+                self.handle_do_edit_outcome(outcome);
+            }
             // 5.5.E.7.5: `Substitute` migrated to
             // `Editor::handle_effect`; routed through the grouped
             // no-op above.
@@ -1445,6 +1459,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }
+        // LM.0: opens a buffer in a target pane — same class as OpenBufferAt.
+        | Effect::OpenInTarget { .. }
         // BC.8c: host-applied open effects (showDocument) — non-mutating,
         // non-yanking, same as OpenBuffer / OpenBufferAt.
         | Effect::OpenExternalUri { .. }
@@ -1599,6 +1615,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }
+        // LM.0: opens a buffer in a target pane — same class as OpenBufferAt.
+        | Effect::OpenInTarget { .. }
         // BC.8c: host-applied open effects (showDocument) — non-mutating,
         // non-yanking, same as OpenBuffer / OpenBufferAt.
         | Effect::OpenExternalUri { .. }
@@ -1726,6 +1744,83 @@ mod tests {
         app_in_command_mode, app_with, attach_test_syntax, invoke_motion, press, press_chars,
         subscribe_all_events, write_temp_file,
     };
+
+    fn lm0_temp_file(name: &str, contents: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "lattice-lm0-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    /// LM.0: `Effect::OpenInTarget { target: Split }` opens the file in a
+    /// NEW pane — the pane tree grows by one, the new active pane shows the
+    /// opened file, and the pane the user was in survives. Proves the peer
+    /// arm runs the picker-accept split sequence, not an in-place open.
+    /// Asserted on the pane tree, not just the effect (design §8).
+    #[test]
+    fn open_in_target_split_opens_in_a_new_pane() {
+        use lattice_core::ui::pane::OpenTarget;
+        let target = lm0_temp_file("opened.rs", "fn opened() {}\n");
+
+        let mut a = app_with("original\n", 20);
+        let before_panes = a.editor.pane_tree.len();
+        let before_buf = a.editor.document_buffer_id;
+
+        a.apply_effect(lattice_grammar::Effect::OpenInTarget {
+            path: Some(target.clone()),
+            position: lattice_protocol::position::Position::ZERO,
+            target: OpenTarget::Split,
+        });
+
+        assert_eq!(
+            a.editor.pane_tree.len(),
+            before_panes + 1,
+            "Split target grows the pane tree by one leaf"
+        );
+        assert_ne!(
+            a.editor.document_buffer_id, before_buf,
+            "the new active pane shows the opened file, not the original buffer"
+        );
+        assert!(
+            a.editor
+                .pane_tree
+                .leaves()
+                .iter()
+                .any(|p| p.buffer_id == before_buf),
+            "the original pane still exists after the split-open"
+        );
+    }
+
+    /// LM.0: `target: Default` behaves like `OpenBufferAt` — opens in the
+    /// CURRENT pane, no split.
+    #[test]
+    fn open_in_target_default_opens_in_place() {
+        use lattice_core::ui::pane::OpenTarget;
+        let target = lm0_temp_file("inplace.rs", "fn inplace() {}\n");
+
+        let mut a = app_with("original\n", 20);
+        let before_panes = a.editor.pane_tree.len();
+
+        a.apply_effect(lattice_grammar::Effect::OpenInTarget {
+            path: Some(target.clone()),
+            position: lattice_protocol::position::Position::ZERO,
+            target: OpenTarget::Default,
+        });
+
+        assert_eq!(
+            a.editor.pane_tree.len(),
+            before_panes,
+            "Default target does not split — opens in the current pane"
+        );
+    }
 
     /// MG.50: the `Open*At` effects carry a position computed **before
     /// the target buffer exists**, so it can name an offset the

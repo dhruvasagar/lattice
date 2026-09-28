@@ -43229,6 +43229,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::Tutor { .. }
         | Effect::RecordJump
         | Effect::OpenBufferAt { .. }
+        // LM.0: opens a buffer in a target pane — same class as OpenBufferAt.
+        | Effect::OpenInTarget { .. }
         // BC.8c: host-applied open effects — neither mutates a buffer nor
         // yanks (the open swaps the active slot; no edit/register write).
         | Effect::OpenExternalUri { .. }
@@ -43383,6 +43385,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::Tutor { .. }
         | Effect::RecordJump
         | Effect::OpenBufferAt { .. }
+        // LM.0: opens a buffer in a target pane — same class as OpenBufferAt.
+        | Effect::OpenInTarget { .. }
         // BC.8c: host-applied open effects — neither mutates a buffer nor
         // yanks (the open swaps the active slot; no edit/register write).
         | Effect::OpenExternalUri { .. }

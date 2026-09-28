@@ -61,27 +61,19 @@ pub enum FillTarget {
     Action { command: String },
 }
 
-/// Issue #32 (2026-05-22): where a picker's file-opening
-/// outcome should land. `<CR>` uses `Default` and the host's
-/// preference (typically the active pane). `<C-s>` / `<C-v>` /
-/// `<C-t>` override to a split / vsplit / new tab respectively.
+/// Issue #32 (2026-05-22): where a picker's file-opening outcome should
+/// land. `<CR>` uses `Default`; `<C-s>` / `<C-v>` / `<C-t>` override to a
+/// split / vsplit / new tab.
 ///
-/// Only the file-targeting outcome arms (`OpenFile`,
-/// `SwitchBuffer`, `JumpInBuffer`, `JumpToLocation`) honor
-/// this. Non-file outcomes (commands, registers, snippets,
-/// LSP code actions) ignore it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum OpenTarget {
-    /// `<CR>` — host preference (active pane by default).
-    #[default]
-    Default,
-    /// `<C-s>` — open in a new horizontal split below.
-    Split,
-    /// `<C-v>` — open in a new vertical split to the right.
-    VSplit,
-    /// `<C-t>` — open in a brand-new tab.
-    Tab,
-}
+/// Defined in `lattice_core::ui::pane` (LM.0) so `Effect::OpenInTarget`
+/// can name the same canonical type; re-exported here so the picker's
+/// accept vocabulary and every `lattice_picker::OpenTarget` call site are
+/// unchanged.
+///
+/// Only the file-targeting outcome arms (`OpenFile`, `SwitchBuffer`,
+/// `JumpInBuffer`, `JumpToLocation`) honor this. Non-file outcomes
+/// (commands, registers, snippets, LSP code actions) ignore it.
+pub use lattice_core::ui::pane::OpenTarget;
 
 /// MG.54: result of [`PickerSourceGenerator::preview`], the hook that
 /// fires as the SELECTION moves rather than on `<CR>`.

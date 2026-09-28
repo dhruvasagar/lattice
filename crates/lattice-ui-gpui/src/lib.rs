@@ -1505,6 +1505,20 @@ impl GpuiApp {
                 });
                 self.handle_do_edit_outcome(outcome);
             }
+            // LM.0: open in a target pane — GPUI parity with the TUI peer
+            // ([[feedback_tui_gpui_parity]]). Same host body as OpenBufferAt,
+            // preceded by the picker-accept split sequence.
+            Effect::OpenInTarget {
+                path,
+                position,
+                target,
+            } => {
+                let outcome = self.mutate_editor_with(move |e| {
+                    e.prepare_open_target_pane(target);
+                    e.open_buffer_at(path, position, false, None, None)
+                });
+                self.handle_do_edit_outcome(outcome);
+            }
             // I3/BC.8c follow-up: `SaveBuffer` is now HOST-applied in
             // `Editor::handle_effect` (reuses `do_write`; works on the
             // off-keystroke inbound tick path) — the peer arm is retired to the

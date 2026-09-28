@@ -385,6 +385,32 @@ pub enum SplitOrientation {
     Vertical,
 }
 
+/// Where a file-opening action should land the opened buffer.
+///
+/// `<CR>` uses `Default` (the host's preference, typically the active
+/// pane). `<C-s>` / `<C-v>` / `<C-t>` override to a horizontal split,
+/// vertical split or new tab respectively.
+///
+/// Owned in lattice-core (alongside the pane geometry) so both the
+/// picker's accept vocabulary (`lattice_picker::OpenTarget` re-exports
+/// this) and the grammar's `Effect::OpenInTarget` payload reference one
+/// canonical type without lattice-grammar depending on lattice-picker
+/// (wrong layering direction). Moved here from `lattice-picker` when
+/// `Effect::OpenInTarget` landed (LM.0); the picker re-exports it so
+/// every existing `lattice_picker::OpenTarget` call site is untouched.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OpenTarget {
+    /// `<CR>` -- host preference (active pane by default).
+    #[default]
+    Default,
+    /// `<C-s>` -- open in a new horizontal split below.
+    Split,
+    /// `<C-v>` -- open in a new vertical split to the right.
+    VSplit,
+    /// `<C-t>` -- open in a brand-new tab.
+    Tab,
+}
+
 /// `<C-w>h/j/k/l` cardinal navigation. Geometry-aware: walks the
 /// tree to find the spatial neighbour of the active pane.
 ///

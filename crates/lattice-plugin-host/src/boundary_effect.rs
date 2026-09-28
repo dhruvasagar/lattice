@@ -961,6 +961,16 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                         when a plugin needs it)"
                 .to_string());
         }
+        // LM.0: host/peer-only by intent. Opening in a split/vsplit/tab is
+        // pane geometry the host owns; a plugin that wants it is a deliberate
+        // future WIT addition, not a silent drop. Loud like the other
+        // mirror-less variants.
+        NativeEffect::OpenInTarget { .. } => {
+            return Err("Effect::OpenInTarget has no WIT mirror yet \
+                        (host-only pane targeting; add a payload to wit/types.wit \
+                        when a plugin needs to open in a split)"
+                .to_string());
+        }
         NativeEffect::Many(_) => {
             return Err(
                 "Effect::Many is flattened to list<effect> at the boundary and must not \

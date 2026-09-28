@@ -2538,7 +2538,14 @@ mod tests {
             resolved.get(ids.messages_debug),
             Style::empty().fg(Color::Rgb(0x74, 0xc7, 0xec))
         );
-        assert_eq!(resolved.get(ids.messages_info), Style::empty());
+        // INFO carries a distinct colour (green) since `feat(messages):
+        // give INFO a distinct colour in *messages*`; this parity net was
+        // not updated when that landed and still asserted the pre-colour
+        // `empty()`, leaving the test red on main.
+        assert_eq!(
+            resolved.get(ids.messages_info),
+            Style::empty().fg(Color::Rgb(0xa6, 0xe3, 0xa1))
+        );
         assert_eq!(
             resolved.get(ids.messages_warn),
             Style::empty().fg(Color::Rgb(0xf9, 0xe2, 0xaf)).bold()

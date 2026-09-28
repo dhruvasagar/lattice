@@ -1384,9 +1384,28 @@ impl MultibufferDocumentHandle {
     /// added before this call (the common case: `new(sources, ...)` is
     /// called first, then `set_lang_registry` wires highlighting).
     pub fn set_lang_registry(&self, lr: Arc<LangRegistry>) {
-        if self.inner.lang_registry.set(lr.clone()).is_err() {
+        if self.inner.lang_registry.set(lr).is_err() {
             return;
         }
+        // AH.1 (mirrored from `add_source`): the back-fill must resolve
+        // grammars against the LIVE process-global registry, NOT the `lr`
+        // just stored. `lr` is a boot snapshot — bundled-only, captured before
+        // any plugin grammar RCUs itself in — so resolving against it silently
+        // drops every excerpt over a plugin-language file (the whole org agenda
+        // painted uncoloured while the same file highlighted fine opened
+        // directly). This is the path `*problems*` and the references view take
+        // (all sources handed to `new` up front, then back-filled here), where
+        // `add_source`'s streaming path — already on the live registry — is
+        // what project-search uses; the asymmetry was why search highlighted
+        // and `*problems*` did not. The stored field survives as the "is
+        // highlighting wired" gate; only its VALUE could not be trusted.
+        let live = match lattice_syntax::registry::live() {
+            Ok(reg) => reg,
+            Err(e) => {
+                tracing::debug!(error = ?e, "set_lang_registry: no live registry; back-fill skipped");
+                return;
+            }
+        };
         let mut state = self.lock_state();
         let ids: Vec<(BufferId, Arc<dyn Document>)> = state
             .sources
@@ -1400,7 +1419,7 @@ impl MultibufferDocumentHandle {
             if lang == Lang::Plain {
                 continue;
             }
-            if let Ok(Some(mut syntax)) = Syntax::for_language_with_registry(lang, lr.clone()) {
+            if let Ok(Some(mut syntax)) = Syntax::for_language_with_registry(lang, live.clone()) {
                 let snap = source.snapshot();
                 let text = snap.buffer.as_string();
                 syntax.parse(&text);
@@ -4884,6 +4903,75 @@ mod tests {
             "the composed rows must be the edit and nothing else — a second \
              anchor slide shows up here as duplicated or dropped rows"
         );
+    }
+
+    /// Regression (2026-09-28): the back-fill path — `new(sources)` then
+    /// `set_lang_registry` — must resolve grammars against the LIVE registry,
+    /// not the `lr` it is handed. `*problems*` and the references view take
+    /// this path, and production wires it with the host's BOOT-SNAPSHOT
+    /// registry (bundled-only, and for a plugin grammar or a stale capture it
+    /// lacks the language entirely), so every excerpt painted uncoloured while
+    /// project-search — which streams through `add_source` on the live
+    /// registry — highlighted fine. That asymmetry was the whole bug: "the
+    /// *problems* buffer should have syntax highlighting like any other
+    /// multibuffer view."
+    ///
+    /// The test hands `set_lang_registry` a DELIBERATELY-EMPTY registry as the
+    /// snapshot. Pre-fix that empty registry was what `.rs` resolved against,
+    /// so `excerpt_highlights()` came back empty; post-fix resolution goes
+    /// through `registry::live()` and the excerpt highlights regardless of
+    /// what the snapshot held. A test that passed `live()` here (as the two
+    /// above do) would pass on the broken build too — the empty snapshot is
+    /// the point.
+    #[test]
+    fn back_fill_resolves_against_live_not_the_passed_registry() {
+        // Skip only when this process has no bundled `.rs` grammar at all —
+        // then even the correct behaviour cannot produce a handle, so an empty
+        // result would be a false negative rather than the regression.
+        let Ok(live) = lattice_syntax::registry::live() else {
+            eprintln!("skipping: no live language registry in this process");
+            return;
+        };
+        if !matches!(
+            Syntax::for_language_with_registry(Lang::Rust, live.clone()),
+            Ok(Some(_))
+        ) {
+            eprintln!("skipping: no .rs grammar registered in this process");
+            return;
+        }
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("lattice-mb-backfill-{unique}.rs"));
+        let text = "fn main() { let x = 1; }\n";
+        std::fs::write(&path, text).unwrap();
+
+        let id = BufferId::next();
+        let doc = lattice_core::DocumentBuilder::default()
+            .with_text(text)
+            .with_path(path.clone())
+            .build();
+        let source: Arc<dyn Document> = Arc::new(spawn_document(id, doc, empty_registry()));
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(id, source);
+        let excerpts = vec![Excerpt::new(id, 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+
+        // The boot-snapshot analogue: a registry that contains NO grammars.
+        // Pre-fix, this is what `.rs` would (fail to) resolve against.
+        let empty_snapshot = Arc::new(LangRegistry::default());
+        mb.set_lang_registry(empty_snapshot);
+
+        assert!(
+            !mb.excerpt_highlights().is_empty(),
+            "the back-fill must resolve grammars against the LIVE registry, not \
+             the (here empty) snapshot it was handed; an empty result means \
+             *problems* / references excerpts paint uncoloured while search does not"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test(flavor = "multi_thread")]

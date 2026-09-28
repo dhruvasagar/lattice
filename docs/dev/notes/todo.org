@@ -280,9 +280,9 @@
 - [X] GPUI: <C-x>g does not do anything, :magit-status works, C-x C-s to save
   works, <C-x>b also doesnt work, quotes also dont work
 - [X] GPUI: line numbers should respect image virtual row height
-- [ ] magit-dispatch -> select branch delete, doesn't ask for confirmation in
+- [X] magit-dispatch -> select branch delete, doesn't ask for confirmation in
   GPUI and halts the action, in TUI it works fine
-- [ ] org file looses syntax highlighting in TUI after switching to org agenda
+- [X] org file looses syntax highlighting in TUI after switching to org agenda
   buffer, not broken in GPUI
 
 * Documentation

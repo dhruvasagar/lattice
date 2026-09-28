@@ -1553,6 +1553,7 @@ mod tests {
                 events: &events,
                 prompt_value: None,
                 args: Args::None,
+                buffer_locals: None,
             };
             let handler = MagitProjectDiffMode
                 .action_handlers()

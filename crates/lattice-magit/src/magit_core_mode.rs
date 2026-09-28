@@ -1974,6 +1974,7 @@ index 111..222 100644
             events: &events,
             prompt_value: None,
             args: lattice_grammar::Args::None,
+            buffer_locals: None,
         };
 
         // A body that acted and had nothing to return — every mutating magit
@@ -2003,6 +2004,7 @@ index 111..222 100644
             events: &events,
             prompt_value: None,
             args: lattice_grammar::Args::None,
+            buffer_locals: None,
         };
         assert!(
             consuming_selection(|_| None)(&ctx).is_none(),
@@ -2033,6 +2035,7 @@ index 111..222 100644
             events: &events,
             prompt_value: None,
             args: lattice_grammar::Args::None,
+            buffer_locals: None,
         };
         let pending = || {
             Some(Effect::Confirm {
@@ -2071,6 +2074,7 @@ index 111..222 100644
             events: &events,
             prompt_value: None,
             args: lattice_grammar::Args::None,
+            buffer_locals: None,
         };
         resolve_hunk(&ctx, op)
     }
@@ -2223,6 +2227,7 @@ index 111..222 100644
                 events: &events,
                 prompt_value: None,
                 args: lattice_grammar::Args::None,
+                buffer_locals: None,
             };
             match apply_or_reverse(&ctx, op) {
                 Some(Effect::Echo { text, .. }) => {

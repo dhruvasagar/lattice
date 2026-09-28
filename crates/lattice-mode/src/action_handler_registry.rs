@@ -99,6 +99,35 @@ pub struct ActionContext<'a> {
     /// [`Self::flag`] / [`Self::arg_str`] rather than matching the
     /// list positionally.
     pub args: Args,
+    /// LM.1: the active buffer's typed mode-owned locals, read-only, for
+    /// the duration of the dispatch. `Some` on the host chord-dispatch
+    /// path (where a mode handler may need to read its buffer's state —
+    /// oil's dir/snapshot, a file tree's entries — to resolve the entry
+    /// under the cursor); `None` on the auxiliary firing paths (prompt
+    /// submit, transient item, a `Confirm` yes-action) and wherever a
+    /// caller builds a context without a buffer-locals store.
+    ///
+    /// Read it through [`Self::buffer_local`] rather than the field, so a
+    /// handler that runs with `None` degrades to "no such local" — the
+    /// same answer as an unseeded buffer — instead of a branch.
+    ///
+    /// Keeping the state in `buffer_locals` (rather than a separate
+    /// service) is deliberate: it stays enumerable by `:describe-buffer`
+    /// via `iter_descriptors`, so a mode owning per-buffer state does not
+    /// trade introspection for handler-reachability.
+    pub buffer_locals: Option<&'a crate::locals::BufferLocals>,
+}
+
+impl<'a> ActionContext<'a> {
+    /// LM.1: read one of the active buffer's mode-owned locals, if the
+    /// context carries a buffer-locals store and the local is seeded.
+    ///
+    /// Total: `None` covers a context built without locals (an auxiliary
+    /// firing path) and a buffer that never seeded `T`, which a handler
+    /// treats the same way — there is nothing to act on.
+    pub fn buffer_local<T: crate::locals::BufferLocal>(&self) -> Option<&T> {
+        self.buffer_locals.and_then(|l| l.get::<T>())
+    }
 }
 
 impl ActionContext<'_> {
@@ -427,9 +456,56 @@ mod tests {
             events: &events,
             prompt_value: None,
             args: lattice_grammar::Args::None,
+            buffer_locals: None,
         };
         let effect = h(&ctx);
         assert!(matches!(effect, Some(Effect::None)));
+    }
+
+    /// LM.1: a mode handler reads its buffer's mode-owned local through
+    /// `ctx.buffer_local::<T>()`, and the accessor degrades to `None` on a
+    /// firing path that carries no locals — the mechanism the oil /
+    /// file-tree navigation handlers (LM.3/LM.4) rely on to resolve the
+    /// entry under the cursor.
+    #[test]
+    fn buffer_local_reads_the_active_buffers_local_and_degrades_to_none() {
+        use crate::locals::BufferLocals;
+        let services = ServiceRegistry::new();
+        let events = EventBus::new();
+
+        let mut locals = BufferLocals::default();
+        locals.insert(crate::BufferScopeDir(std::path::PathBuf::from("/scope")));
+
+        let ctx = ActionContext {
+            buffer_id: BufferId::new(0),
+            cursor: Position::ZERO,
+            selection: None,
+            services: &services,
+            events: &events,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+            buffer_locals: Some(&locals),
+        };
+        assert_eq!(
+            ctx.buffer_local::<crate::BufferScopeDir>()
+                .map(|d| d.0.clone()),
+            Some(std::path::PathBuf::from("/scope")),
+            "a handler reads its buffer's mode-owned local through the context",
+        );
+
+        // An auxiliary firing path (prompt submit, transient) carries no
+        // locals; the accessor answers None rather than panicking.
+        let ctx_none = ActionContext {
+            buffer_id: BufferId::new(0),
+            cursor: Position::ZERO,
+            selection: None,
+            services: &services,
+            events: &events,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+            buffer_locals: None,
+        };
+        assert!(ctx_none.buffer_local::<crate::BufferScopeDir>().is_none());
     }
 
     #[test]

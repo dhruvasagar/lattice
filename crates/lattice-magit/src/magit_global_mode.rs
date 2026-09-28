@@ -5108,6 +5108,7 @@ mod tests {
                 events: &events,
                 prompt_value: None,
                 args,
+                buffer_locals: None,
             };
             assert!(
                 handler(&ctx).is_none(),
@@ -5430,6 +5431,7 @@ mod tests {
                 events: &events,
                 prompt_value: Some(blank),
                 args: lattice_grammar::Args::None,
+                buffer_locals: None,
             };
             assert!(
                 handler(&ctx).is_none(),
@@ -5465,6 +5467,7 @@ mod tests {
                 events: &events,
                 prompt_value: None,
                 args: lattice_grammar::Args::None,
+                buffer_locals: None,
             };
             match handler(&ctx) {
                 Some(Effect::OpenPrompt {
@@ -5523,6 +5526,7 @@ mod tests {
                 events: &events,
                 prompt_value: None,
                 args: lattice_grammar::Args::None,
+                buffer_locals: None,
             };
             match handler(&ctx) {
                 Some(Effect::OpenPicker { source, args, .. }) => {
@@ -5592,6 +5596,7 @@ mod tests {
                 events: &events,
                 prompt_value: None,
                 args: lattice_grammar::Args::None,
+                buffer_locals: None,
             };
             match handler(&ctx) {
                 Some(Effect::OpenPicker { source, .. }) => source,
@@ -5652,6 +5657,7 @@ mod tests {
                 events: &events,
                 prompt_value: None,
                 args: lattice_grammar::Args::None,
+                buffer_locals: None,
             };
             match handler(&ctx) {
                 Some(Effect::OpenPicker { source, args, .. }) => {
@@ -5714,6 +5720,7 @@ mod tests {
                 events: &events,
                 prompt_value: None,
                 args,
+                buffer_locals: None,
             };
             match handler(&ctx) {
                 Some(Effect::OpenPicker { source, args, .. }) => {

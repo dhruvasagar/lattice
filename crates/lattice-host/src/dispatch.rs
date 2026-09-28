@@ -9475,6 +9475,9 @@ impl Editor {
             events: &self.event_bus,
             prompt_value: Some(text.as_str()),
             args: lattice_grammar::Args::None,
+            // LM.1: prompt-submit path — the handler acts on the prompt's
+            // typed value, not a listing buffer's locals.
+            buffer_locals: None,
         };
         if let Some(effect) = handler(&ctx) {
             // `apply_effect_host` already pushes non-`None` effects
@@ -34493,6 +34496,7 @@ impl Editor {
             events: &self.event_bus,
             prompt_value: None,
             args: lattice_grammar::Args::None,
+            buffer_locals: None,
         };
         if let Some(effect) = handler(&ctx) {
             tracing::warn!(
@@ -35844,6 +35848,9 @@ impl Editor {
                         events: &self.event_bus,
                         prompt_value: None,
                         args,
+                        // LM.1: transient/confirm execute path — not a
+                        // listing chord; no buffer-locals read needed.
+                        buffer_locals: None,
                     };
                     if let Some(effect) = handler(&ctx) {
                         // `apply_effect_host` already pushes non-`None`
@@ -44504,6 +44511,10 @@ impl Editor {
                     events: &self.event_bus,
                     prompt_value: None,
                     args: lattice_grammar::Args::None,
+                    // LM.1: the chord-dispatch path — a mode handler (oil /
+                    // file-tree navigation) reads its buffer's locals here to
+                    // resolve the entry under the cursor.
+                    buffer_locals: self.buffer_locals.get(&buf_id),
                 };
                 if let Some(effect) = handler(&ctx) {
                     // M.10.x bug fix (2026-06-03): route through

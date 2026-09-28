@@ -546,6 +546,7 @@ mod tests {
             events: &events,
             prompt_value: None,
             args: lattice_grammar::Args::None,
+            buffer_locals: None,
         };
         assert!(
             reload_handler()(&ctx).is_none(),

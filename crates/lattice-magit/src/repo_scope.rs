@@ -1097,6 +1097,7 @@ mod tests {
             events: &events,
             prompt_value: None,
             args: Args::None,
+            buffer_locals: None,
         })
         .expect("the chord opens something");
 

@@ -5999,6 +5999,7 @@ mod tests {
             events: &events,
             prompt_value: None,
             args: lattice_grammar::Args::None,
+            buffer_locals: None,
         };
 
         match handler(&ctx) {
@@ -6112,6 +6113,7 @@ mod tests {
             args: lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
                 "Cargo.toml".to_string(),
             )]),
+            buffer_locals: None,
         };
 
         match handler(&ctx) {
@@ -6194,6 +6196,7 @@ mod tests {
             events: &events,
             prompt_value: None,
             args: lattice_grammar::Args::None,
+            buffer_locals: None,
         })
     }
 

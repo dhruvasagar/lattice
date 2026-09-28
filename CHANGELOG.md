@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.9.2 — 2026-09-28
+
+Inline images and SVG, any picker's results into the error list, and a
+wide sweep of path-handling and GPUI-parity fixes.
+
+### Added
+- **Send any picker's results to the error list.** `<C-q>` in any picker
+  sends the rows that survived your query to the error list — telescope's
+  `send_to_qflist` — and opens the `*problems*` view over them. Narrow a
+  grep or references list, `<C-q>`, then walk it with `:cnext` / `]q`. The
+  row text you saw becomes each entry's line. Turn the auto-open off with
+  `picker.send-opens-problems=false` to populate the list silently.
+- **Inline images and SVG.** `:e diagram.png` opens a picture, and images
+  and SVG render inline in a document, sized to their block.
+- **Open a listing entry into a split or tab.** In oil and the file tree,
+  `<C-s>` / `<C-v>` / `<C-t>` open the entry under the cursor in a
+  horizontal split, a vertical split, or a new tab — the chords the picker
+  already uses.
+- **Every picker has a help page.** `<C-h>` inside a picker opens that
+  picker's own page, and each built-in source — files, grep, jumps,
+  history, marks, LSP, magit — now has one.
+- **Full-width code-block background in markdown**, in both renderers,
+  driven by a `@codeblock` capture; and a distinct colour for INFO lines
+  in `*messages*`.
+- **Taller help popups** — the 40-row cap on centered help popups is gone.
+
+### Changed
+- **The plugin ABI is versioned on its own.** `lattice-wit` and the plugin
+  SDK crates now carry their own versions, independent of the editor's,
+  and the `wit/` package moved into the crate that publishes it — so an
+  editor patch release no longer churns a new version at every plugin
+  author. The ABI contract a plugin author signs is now documented.
+
+### Fixed
+- **Path handling honours what you typed.** `~` expands in the rooted file
+  pickers, `:w <path>`, `:Tree <root>`, `:plugin-load` and inline media
+  paths; a bare `:cd` finds `HOME` on Windows; caches moved under the
+  config home.
+- **GPUI parity.** Syntax now reparses on every keystroke (it was lost on
+  the first edit and never returned); a declined chord falls through, so a
+  plugin's keys (auto-pair) are no longer dead; the transient `<CR>` fires
+  the `<C-n>` / `<C-p>`-selected row; the gutter stays parallel to content
+  across image rows; and a picker accept's follow-up effects (the
+  branch-delete confirm) run.
+- **Oil / file-tree focus.** The active pane follows its buffer, and a file
+  keeps its syntax highlighting when focus moves to a non-Document pane.
+- **Unreachable commands.** `:oil`, `:format` and `:reload-snippets` are
+  reachable again, and `<CR>` in `:history pane-buffers` now walks.
+- **`:reload-config` recompiles `init.rs`**, so a config change takes
+  effect on reload.
+- **Read-only buffers** gate on the buffer's read-only property, not its
+  kind, and folding no longer counts as a mutation the gate rejects.
+- **A minibuffer resolves keys in its own context**, not Insert's.
+- **Git.** Reads no longer take the index lock out from under writes, and
+  finishing a magit commit starts the next one clean.
+- **A plugin grammar registered after its major mode re-attaches**, so its
+  syntax highlighting appears instead of staying plain.
+
 ## 0.9.1 — 2026-09-23
 
 A fourth bundled plugin, one data-loss fix, and an honesty pass over the

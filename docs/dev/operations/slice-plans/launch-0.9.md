@@ -24,15 +24,25 @@ a row in the table below rather than living only in this paragraph, because
 prose-only open work is how `ML.4` and `DB.8` got buried:
 
 - the **announcement** (L.8 Step 11, Dhruva's to make);
-- **L.5**'s differentiator screenshot gallery ⛔ (1 of 6 captured) and the
-  hero recapture Dhruva chose;
+- **L.5b**'s differentiator screenshot gallery ⛔ — **4 of 5 landing shots
+  captured and the README + landing galleries are now wired** (magit, buffer
+  splits, org+agents, two-renderers composite). Still open: shot **3**
+  (`init.rs` + `:reload-config`) and the **hero recapture** Dhruva chose;
+  then two follow-ons blocked on that hero — retiring `hero-dark.png` (3
+  references) and filling the five plugin-page image slots (pending a site
+  content-image mechanism);
 - **L.9b**, recording the demo video — the script is written and ✅, but the
   recording is what every motion clip is now cut from, so it gates L.5's
-  moving assets as well as its own;
-- **L.10** and **L.11**, added 2026-09-21: org-mode is the fourth
-  differentiator in the launch contract (§10) and nothing user-facing says
-  so. L.11 grows a `/plugins/` section that the community can be listed in
-  later.
+  moving assets as well as its own.
+
+**Update 2026-09-28.** L.10 and L.11/L.11b are now ✅ (org-mode is surfaced
+across the README, landing card and org repo; the `/plugins/` section ships
+with a page per bundled plugin built from each plugin's own manual) — they
+were listed here as open at the 2026-09-21 snapshot and have since landed.
+L.5b advanced from 1 to 4 captured landing shots plus wired galleries over
+the same week (`888bccf5`, `93120c32`, `d49f5bf0`, `0d99daed`); the two
+capturable remainders (shot 3, hero) and the two hero-blocked follow-ons are
+all that stand between L.5b and ✅.
 
 L.4b's GIF rendering is ❌ **dropped**, not deferred — headless Chrome's
 screencast is broken on this machine, reproduced minimally on a real
@@ -47,7 +57,7 @@ terminal, so motion comes from the demo video instead (L.9). Nothing to do.
 | L.4   | `install.sh`                                                | installs from a real release on macOS + Linux   | ✅     |
 | L.4b  | Positioning, re-cut shot list, VHS capture harness          | tapes keystroke-verified; GIFs ⛔ (VHS sandbox)  | ✅     |
 | L.5   | README restructure + hero                                   | README 143 lines, hero wired, paths verified    | ✅     |
-| L.5b  | Differentiator screenshot gallery + hero recapture          | 5 landing shots captured; README gallery wired  | ⛔     |
+| L.5b  | Differentiator screenshot gallery + hero recapture          | 4/5 shots + galleries wired; shot 3 + hero left | ⛔     |
 | L.6   | known-limitations, troubleshooting, cheatsheet, dashboard   | sync + zola clean; budget 12.2% headroom        | ✅     |
 | L.7   | CONTRIBUTING / SECURITY / CoC / issue templates / CHANGELOG | YAML validates; 9 silent 404s fixed             | ✅     |
 | L.8   | Tag `v0.9.0`, notes, announce                               | released; announcement is Dhruva's              | 🚧     |
@@ -2481,11 +2491,21 @@ session produces both.
 
 ### Task L.5b: The differentiator screenshot gallery ⛔
 
-1 of 6 captured (`hero-dark.png`). The five landing shots and the ~20
-supporting shots are listed in `docs/media/screenshot-ideas.md`, which is
-derived from `docs/user/` rather than remembered. Shots 1-3 have verified
-choreography in `docs/media/tapes/`; shots 4 and 5 are hand-only. Dhruva
-also chose to recapture the hero.
+**4 of 5 landing shots captured; README + landing galleries wired
+(2026-09-28).** Shots 1 (magit), 2 (buffer splits), 4 (org+agents) and 5
+(two-renderers composite) are captured against the pinned geometry and both
+galleries render them (`888bccf5`, `93120c32`, `d49f5bf0`, `0d99daed`). The
+five landing shots and the ~20 supporting shots are listed in
+`docs/media/screenshot-ideas.md`, which is derived from `docs/user/` rather
+than remembered. Shots 1-3 have verified choreography in `docs/media/tapes/`;
+shots 4 and 5 are hand-only.
+
+Still open before this slice is ✅:
+- shot **3** (`init.rs` + `:reload-config`) — the last landing shot;
+- the **hero recapture** Dhruva chose (`hero-tui.png` / `hero-gpui.png`);
+- retiring `hero-dark.png` (3 references) — blocked on the hero recapture;
+- filling the five plugin-page image slots — pending a site content-image
+  mechanism.
 
 ### Task L.10: Org-mode in the launch communications ✅
 

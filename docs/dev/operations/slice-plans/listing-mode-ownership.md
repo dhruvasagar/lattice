@@ -17,7 +17,7 @@ scoped to touched crates; `--features window` auto-added when
 `lattice-ui-gpui` is in scope). Targeted tests per slice; no whole-crate
 gate per slice.
 
-- **LM.0 📝 — `OpenInTarget` effect primitive.**
+- **LM.0 ✅ (`2e82ac66`) — `OpenInTarget` effect primitive.**
   - Move `OpenTarget` (`Default|Split|VSplit|Tab`) from `lattice-picker`
     to `lattice-core` (beside `SplitOrientation`); re-export from
     `lattice-picker` so existing `lattice_picker::OpenTarget` sites are
@@ -35,24 +35,21 @@ gate per slice.
     behaviour change to any existing path.
   - Deps: none. Lowest-risk, independent.
 
-- **LM.1 📝 — `ListingRegistry` service + state relocation.**
-  - New `lattice-listing::registry`: `ListingRegistry` trait +
-    `InMemoryListingRegistry` + `ListingRegistryHandle = Arc<dyn ...>`,
-    keyed `BufferId → ListingState` (oil `{dir,snapshot}` / file-tree
-    `{root,entries,nerd_fonts}`), `RwLock` interior mutability. Mirror
-    `MultibufferRegistry`.
-  - `lattice-listing::install(boot)` registering the handle in
-    `ServiceRegistry`; wire into `editor_boot`. `DocumentClosed`
-    subscriber for cleanup (multibuffer precedent).
-  - Relocate oil/file-tree state out of `Editor::buffer_locals` into the
-    registry as source of truth; repoint host accessors
-    (`oil_dir_for`/`oil_snapshot_for`/`file_tree_entries_for`/…), host
-    writers (`set_oil_dir`/`set_oil_snapshot`/`set_file_tree_entries` +
-    open/close paths), and renderer presentation reads.
-  - **Pure refactor — no behaviour change.** All existing oil/file-tree
-    tests stay green; that is the slice's proof. Split LM.1a (oil) /
-    LM.1b (file-tree) if the diff is too large to review as one.
-  - Deps: none (parallel to LM.0), but LM.3/LM.4 need it.
+- **LM.1 ✅ (`2ced3d9e`) — `ActionContext` exposes the buffer's locals.**
+  - Pivoted from the original registry design (rejected mid-build: it
+    dropped oil/tree state from `:describe-buffer` introspection; see
+    design §3.1). Instead: `ActionContext` gains
+    `buffer_locals: Option<&BufferLocals>` + a `buffer_local::<T>()`
+    accessor. State stays in `Editor::buffer_locals` — no relocation, no
+    service, no `Editor` field, no dual-boot wiring.
+  - Host chord-dispatch site passes the active buffer's locals; auxiliary
+    firing paths (prompt/transient/confirm) pass `None`; the accessor
+    degrades to `None`. Every existing `ActionContext { .. }` literal
+    (magit/snippet/lsp/plugin-manager/tests) gains `buffer_locals: None`.
+  - Test: a handler reads its buffer's local via `ctx.buffer_local::<T>()`;
+    `None` on a no-locals path. Introspection preserved (the 6 tests that
+    assert oil/tree locals via `iter_descriptors` keep passing, untouched).
+  - Deps: none (parallel to LM.0); LM.3/LM.4 consume the accessor.
 
 - **LM.2 📝 — re-list / toggle data-effects.**
   - `Effect::OilNavigate { view, dir }` (re-list oil `view` to `dir`),
@@ -70,8 +67,8 @@ gate per slice.
   - `oil-mode` keymap: `<CR>`, `-`, `<C-s>`, `<C-v>`, `<C-t>` at
     `MajorMode(oil-mode)` via `Keymap::from_entries`. Register the
     `action:oil-*` command names in a `lattice-listing` `install` path.
-  - Mode-owned handler closures (read `ListingRegistry` via
-    `ctx.services`, resolve the entry at `ctx.cursor`, emit
+  - Mode-owned handler closures (read the buffer's locals via
+    `ctx.buffer_local::<T>()`, resolve the entry at `ctx.cursor`, emit
     `OpenInTarget` / `OpenBufferAt` / `OilNavigate` / `OpenOil`). File →
     open (targeted); dir → re-list (`<CR>`/`-`) or oil-in-target
     (`<C-s/v/t>`).

@@ -57,39 +57,40 @@ even read the entry under the cursor.
 Contrast diff (`DiffSubsystemHandle`) and multibuffer
 (`MultibufferRegistryHandle`): their per-buffer state lives in an
 Arc-shared service handle a handler pulls from `ctx.services`. Oil and
-the file tree have no such service. Building one is the gating
-dependency for everything else.
+the file tree keep theirs in `buffer_locals` instead — so rather than
+build a service, LM.1 widens the handler boundary to read it (§3.1).
 
-### 3.1 Chosen: `ListingRegistry` holds the state (supersedes the buffer-local placement)
+### 3.1 Chosen (LM.1): `ActionContext` exposes the buffer's locals
 
-`directory-listing-mode.md` §3 placed oil's snapshot in a buffer-local
-"joining `OilDir`". That placement is **superseded** for the
-navigation-relevant state: it moves into a `ListingRegistry` service,
-mirroring `MultibufferRegistry` — an `Arc`-shared, `RwLock`-guarded map
-`BufferId → ListingState`, registered in `ServiceRegistry` at boot,
-with a `DocumentClosed` subscriber for cleanup.
+The state stays in `Editor::buffer_locals` exactly where the DL series
+put it. What changes is that the mode-handler boundary gains a read path
+to it: `ActionContext` grows
 
-`ListingState` is per-buffer: oil carries `{ dir, snapshot }`,
-file-tree carries `{ root, entries, nerd_fonts }`. It is the single
-source of truth — the host's write paths (`set_oil_dir`,
-`set_oil_snapshot`, `set_file_tree_entries`, the open paths) write it,
-and the host read accessors (`oil_dir_for`, `oil_snapshot_for`,
-`file_tree_entries_for`, …) and the renderers' presentation reads read
-it.
+```rust
+pub buffer_locals: Option<&'a BufferLocals>,   // the active buffer's locals
+pub fn buffer_local<T: BufferLocal>(&self) -> Option<&T>;
+```
 
-**Why the registry, not a shared handle over `buffer_locals`.** Making
-`buffer_locals` itself `Arc`-shared would put a lock on generic
-`&mut Editor` core state that every mode's per-buffer state runs
-through — a concurrency smell on the actor's single-threaded state, for
-a two-major need. A dedicated registry isolates the sharing to exactly
-the two kinds that need it and matches the in-repo precedent. This is
-heuristic #1: the genuinely-better long-term design (isolated service,
-precedented) over the lighter-but-messier generic Arc-wrap.
+The host's chord-dispatch site passes the active buffer's locals; the
+auxiliary firing paths (prompt submit, transient item, `Confirm`
+yes-action) pass `None`, and the accessor degrades to "no such local"
+rather than branching. A handler resolves the entry under the cursor by
+reading `ctx.buffer_local::<OilSnapshotLocal>()` etc.
 
-**Paramount goals:** protects #2 (extensibility — a listing-shaped
-provider can read state through the service seam, as multibuffer's does)
-and #3 (the majors own their full grammar surface). Sacrifices nothing
-perf-wise: reads are an indexed `RwLock` read, off the render hot path.
+**Why this, not a `ListingRegistry` service (rejected).** The registry
+was the first design here and is recorded as rejected: relocating the
+state out of `buffer_locals` into a service would have dropped it from
+`:describe-buffer`'s `iter_descriptors` enumeration — trading the
+self-documenting-help pillar (§5.11) for handler-reachability. Reading a
+buffer's own locals from its handler is also the more general mechanism
+(any mode handler wants it), not a listing special-case, and it is
+smaller: no state move, no `Editor` field, no dual-boot-path wiring, no
+`DocumentClosed` cleanup subscriber.
+
+**Paramount goals + UX:** protects #2/#3 (the majors reach per-buffer
+state and own their grammar surface) *and* the introspection pillar
+(state stays enumerable). Perf-neutral: one `HashMap` lookup on the
+dispatch path, off the render hot path.
 
 ### 3.2 Many listings, each independent — the everything-is-a-buffer contract
 
@@ -103,8 +104,9 @@ tree pixel-stable.
 
 This is a hard contract, and the design keeps it structurally:
 
-- `ListingRegistry` keys `ListingState` by `BufferId`. There is no
-  process-global listing state and no "active listing" singleton.
+- `buffer_locals` keys `BufferLocals` by `BufferId`, and a handler reads
+  only `ctx.buffer_id`'s locals. There is no process-global listing
+  state and no "active listing" singleton.
 - Every navigation/open effect carries an explicit
   `view: BufferId` — `OilNavigate { view, dir }`,
   `FileTreeToggle { view, entry_index }` — and the applier mutates only
@@ -188,8 +190,9 @@ handler emits, each naming the `view` it acts on (§3.2):
 - `Effect::FileTreeToggle { view, entry_index }` — toggle expansion.
 
 Their appliers reuse the existing render/rewrite machinery
-(`write_oil_listing` / `set_file_tree_entries`, now reading/writing the
-registry) and the owner-write path (`replace_owned_buffer`, which
+(`write_oil_listing` / `set_file_tree_entries`, unchanged — still
+reading/writing `buffer_locals`) and the owner-write path
+(`replace_owned_buffer`, which
 bypasses the read-only gate for a subsystem-owned synthetic buffer).
 This is the diff pattern — the service/mode decides, the host applies a
 typed data effect — not a half-migration: no `Editor::do_<x>` remains
@@ -230,7 +233,7 @@ block — **Help and Dashboard keep their gate wiring (Esc-dismiss,
 A new listing-shaped provider crate lands with **zero** `Editor::`
 method additions in `lattice-host` and **zero** new host `Action`
 variants — it registers a mode (keymap + handler closures) and reads
-state through `ListingRegistry`. The removal of `do_oil_follow` /
+state through `ctx.buffer_local::<T>()`. The removal of `do_oil_follow` /
 `do_file_tree_follow` / `do_oil_navigate_up` from `lattice-host`, and the
 disappearance of the `BufferKind::{Oil,FileTree}` gate branches, is what
 proves the migration is not a half-migration.

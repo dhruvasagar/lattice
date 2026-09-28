@@ -116,7 +116,9 @@ should not have been carrying.
 It owns no keymap. `<CR>` means "open" in the tree and "nothing" in
 oil; entry *navigation* is major-owned. Per "modes own their full
 surface", a mode owning no chords is fine — what it must not do is own
-half of something.
+half of something. That major-owned navigation is designed and
+implemented in `listing-mode-ownership.md` (LM.0–LM.4): oil-mode and
+file-tree-mode own `<CR>` / `-` / `<C-s>` / `<C-v>` / `<C-t>`.
 
 ## 3. Storage: apply PU.1a to the last two kinds
 

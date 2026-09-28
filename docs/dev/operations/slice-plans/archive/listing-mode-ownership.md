@@ -51,7 +51,7 @@ gate per slice.
     assert oil/tree locals via `iter_descriptors` keep passing, untouched).
   - Deps: none (parallel to LM.0); LM.3/LM.4 consume the accessor.
 
-- **LM.2 📝 — re-list / toggle data-effects.**
+- **LM.2 ✅ (`c70c317f`) — re-list / toggle data-effects.**
   - `Effect::OilNavigate { view, dir }` (re-list oil `view` to `dir`),
     `Effect::FileTreeToggle { view, entry_index }`. Appliers reuse
     `write_oil_listing` / `set_file_tree_entries` (now via the registry)
@@ -63,7 +63,7 @@ gate per slice.
     listing buffer is byte-for-byte unchanged (independence guard).
   - Deps: LM.1.
 
-- **LM.3 📝 — oil-mode owns its surface.**
+- **LM.3 ✅ (`f6b841ec`) — oil-mode owns its surface.**
   - `oil-mode` keymap: `<CR>`, `-`, `<C-s>`, `<C-v>`, `<C-t>` at
     `MajorMode(oil-mode)` via `Keymap::from_entries`. Register the
     `action:oil-*` command names in a `lattice-listing` `install` path.
@@ -79,7 +79,12 @@ gate per slice.
     grammar (`gg`/motions) still resolves; two oil buffers independent.
   - Deps: LM.0, LM.1, LM.2.
 
-- **LM.4 📝 — file-tree-mode owns its surface.**
+- **LM.4 ✅ (`71f8cd29`) — file-tree-mode owns its surface.** Two deliberate
+  everything-is-a-buffer behaviour changes: file-tree `-` no longer lands the
+  cursor on the came-from entry (OpenOil carries no focus); file-tree Esc no
+  longer dismisses via the Help gate (`:bd` / `:TreeClose` instead).
+  `Action::OilNavigateUp` + `do_oil_navigate_up` stay host-owned for `-` from
+  Help / dashboard / document buffers (not file-tree-mode surface).
   - Same shape for `file-tree-mode`. **Split `FileTree` out of the shared
     `Help | FileTree` gate block** in `input.rs` — Help + Dashboard keep
     Esc-dismiss + `<CR>`-follow unchanged; only file-tree's keys migrate.

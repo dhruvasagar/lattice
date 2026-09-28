@@ -1,11 +1,14 @@
 # Listing mode-ownership — the majors own entry navigation
 
-> **Status: in progress.** Sequencing + status live in the slice plan
-> (`docs/dev/operations/slice-plans/listing-mode-ownership.md`, LM.0–LM.4).
+> **Status: implemented (LM.0–LM.4, 2026-09-28).** Sequencing + commit
+> hashes live in the archived slice plan
+> (`docs/dev/operations/slice-plans/archive/listing-mode-ownership.md`).
 >
-> Opened 2026-09-28. `directory-listing-mode.md` §2 states *"entry
-> navigation is major-owned"* but never designs how — today it is not.
-> This fragment is that design.
+> `directory-listing-mode.md` §2 states *"entry navigation is major-owned"*
+> but never designed how; this fragment is that design, now realized —
+> oil-mode and file-tree-mode own `<CR>` / `-` / `<C-s>` / `<C-v>` / `<C-t>`
+> through their keymaps + `action_handlers`, and the host keeps no
+> `BufferKind::{Oil,FileTree}` navigation branch.
 
 ## 1. What this fixes
 

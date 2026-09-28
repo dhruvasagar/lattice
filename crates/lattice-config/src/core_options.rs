@@ -993,6 +993,18 @@ crate::options! {
     #[name("picker.orderless")]
     pub PickerOrderless: bool = true;
 
+    /// Whether sending a picker's filtered rows to the error list with
+    /// `<C-q>` also opens the `*problems*` view over the result.
+    ///
+    /// On (the default) matches telescope's `<C-q>`, which populates the
+    /// quickfix list AND opens it — the results are on screen ready to
+    /// walk. Off is the vim `:grep` habit: the list is populated silently
+    /// and you `:copen` / `:cnext` when you choose. Either way the entries
+    /// land in the error list and `:cnext` / `]q` walk them, so this only
+    /// changes whether the view pops up on send.
+    #[name("picker.send-opens-problems")]
+    pub PickerSendOpensProblems: bool = true;
+
     /// Where the picker UI is drawn. `"minibuffer"` renders
     /// vertico-style: prompt sits on the cmdline row and the
     /// candidate list fans above it (TUI) / above the status

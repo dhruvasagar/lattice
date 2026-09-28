@@ -11440,18 +11440,10 @@ impl Editor {
                 if self.error_list().is_empty() {
                     self.set_message(EchoLevel::Warn, "no error list".to_string());
                 } else {
-                    let entries = self.error_list().entries().to_vec();
-                    let registry = self.registry.clone();
-                    let lr = Some(self.lang_registry.clone());
-                    match lattice_multibuffer::providers::problems::create_problems_view(
-                        self, &entries, registry, lr,
-                    ) {
-                        Some(view_id) => {
-                            let _ = self.activate_buffer(view_id);
-                            self.set_message(
-                                EchoLevel::Info,
-                                format!("[problems] {} items", entries.len()),
-                            );
+                    let n = self.error_list().entries().len();
+                    match self.open_problems_view() {
+                        Some(_) => {
+                            self.set_message(EchoLevel::Info, format!("[problems] {n} items"));
                         }
                         None => {
                             self.set_message(
@@ -14006,7 +13998,48 @@ impl Editor {
         self.write_error_list(ErrorSource::Picker, ErrorWrite::NewRun, entries);
         let signals = self.do_picker_dismiss();
         out.renderer_signals.extend(signals);
-        self.set_message(EchoLevel::Info, format!("error list: {n} item(s)"));
+
+        // PE.3: telescope's `<C-q>` populates the list AND opens it, so the
+        // results are on screen ready to walk. `picker.send-opens-problems`
+        // (default on) keeps that; off is the vim `:grep` habit — populate
+        // silently, `:copen` when you choose. Either way the entries are in
+        // the error list and `:cnext` / `]q` walk them.
+        let open_view = self
+            .config
+            .get_typed::<lattice_config::core_options::PickerSendOpensProblems>()
+            .map(|v| *v)
+            .unwrap_or(true);
+        if open_view && self.open_problems_view().is_some() {
+            self.set_message(
+                EchoLevel::Info,
+                format!("error list: {n} item(s) — :problems"),
+            );
+        } else {
+            // Option off, or no source in the list could be read; the list
+            // is populated regardless.
+            self.set_message(EchoLevel::Info, format!("error list: {n} item(s)"));
+        }
+    }
+
+    /// Open the `*problems*` multibuffer over the CURRENT error list (all
+    /// sources) and activate it, returning the view id — or `None` when no
+    /// source file in the list could be read.
+    ///
+    /// Shared by `:problems` (`AppEffect::ProblemsOpen`) and the picker send
+    /// (`<C-q>`, PE.3) so the two openers cannot drift; callers own their
+    /// own echo.
+    fn open_problems_view(&mut self) -> Option<crate::buffers::BufferId> {
+        let entries = self.error_list().entries().to_vec();
+        let registry = self.registry.clone();
+        let lang_registry = Some(self.lang_registry.clone());
+        let view = lattice_multibuffer::providers::problems::create_problems_view(
+            self,
+            &entries,
+            registry,
+            lang_registry,
+        )?;
+        let _ = self.activate_buffer(view);
+        Some(view)
     }
 
     /// LR.2 (2026-08-11): open the references multibuffer over

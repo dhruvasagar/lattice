@@ -360,3 +360,94 @@ b
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// PE.3: a send opens `*problems*` by default (telescope parity) — the
+/// results are on screen ready to walk, not populated silently. The view
+/// takes focus, so the active buffer changes.
+#[test]
+fn bulk_accept_opens_problems_by_default() {
+    use lattice_lsp::lsp_types::{Location, Position, Range, Uri};
+
+    let dir = std::env::temp_dir().join(format!("lattice-pe3a-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("z.rs");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    let loc = Location {
+        uri: format!("file://{}", file.display()).parse::<Uri>().unwrap(),
+        range: Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 1,
+            },
+        },
+    };
+
+    let mut e = editor();
+    let before = e.active_pane_buffer_id();
+    e.open_lsp_locations_picker("refs", &[loc]);
+
+    let mut out = lattice_host::dispatch::DispatchOutcome::default();
+    e.do_picker_bulk_accept(&mut out);
+
+    assert_ne!(
+        e.active_pane_buffer_id(),
+        before,
+        "with picker.send-opens-problems on (default), the send opens and focuses *problems*"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// With `picker.send-opens-problems` off, the send populates the list but
+/// leaves the view closed — the vim `:grep` habit. The entries still land,
+/// so `:copen` / `:cnext` work when the user chooses.
+#[test]
+fn bulk_accept_off_populates_without_opening() {
+    use lattice_host::error_list::ErrorSource;
+    use lattice_lsp::lsp_types::{Location, Position, Range, Uri};
+
+    let dir = std::env::temp_dir().join(format!("lattice-pe3b-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("z.rs");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    let loc = Location {
+        uri: format!("file://{}", file.display()).parse::<Uri>().unwrap(),
+        range: Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 1,
+            },
+        },
+    };
+
+    let mut e = editor();
+    e.config
+        .set_typed::<lattice_config::core_options::PickerSendOpensProblems>(false)
+        .unwrap();
+    let before = e.active_pane_buffer_id();
+    e.open_lsp_locations_picker("refs", &[loc]);
+
+    let mut out = lattice_host::dispatch::DispatchOutcome::default();
+    e.do_picker_bulk_accept(&mut out);
+
+    assert_eq!(
+        e.active_pane_buffer_id(),
+        before,
+        "with the option off, the send does not open a view"
+    );
+    assert_eq!(
+        e.error_list().entries_from(ErrorSource::Picker).len(),
+        1,
+        "the entry still lands in the error list"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

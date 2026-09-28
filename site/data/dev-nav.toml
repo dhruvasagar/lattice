@@ -136,6 +136,7 @@ docs = [
   "architecture/focused-surface",
   "architecture/rich-minibuffer",
   "architecture/directory-listing-mode",
+  "architecture/listing-mode-ownership",
   "architecture/terminal-as-document",
   "architecture/terminal-mode",
   "architecture/notifications",

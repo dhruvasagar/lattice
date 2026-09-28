@@ -5003,18 +5003,33 @@ impl Render for EditorView {
                         .child(editor_element.into_any_element()),
                 )
         };
-        let popup_overlay: Option<gpui::Div> = popup_sub.buffer_id.map(|id| {
-            build_overlay(
-                &popup_sub,
-                id,
-                lattice_core::ui::pane::PaneId::POPUP,
-                popup_w_px,
-                popup_h_px,
-                popup_inner_rows,
-                popup_body_h_px,
-                self.app.ad().popup_focused,
-            )
-        });
+        // Suppress the floating popup when help lives in a real pane
+        // (active-pane or split). `popup_buffer` is set even for in-pane help
+        // (host `activate_help_in_pane` mirrors it), so without this gate the
+        // split / active pane AND a floating popup both paint — the reported
+        // "shows both popup and split pane" GPUI symptom. The TUI gates its
+        // overlay identically (`render.rs` `active_pane_kind != Help`), and
+        // this renderer already gates popup SIZING on the same `in_pane_help`
+        // condition above; this brings the PAINT site into line so the two
+        // cannot disagree (sizing off + paint on is exactly the empty-box
+        // symptom).
+        let in_pane_help = matches!(
+            self.app.render_state.load().panes.tree.active().buffer,
+            lattice_core::BufferKind::Help
+        );
+        let popup_overlay: Option<gpui::Div> =
+            popup_sub.buffer_id.filter(|_| !in_pane_help).map(|id| {
+                build_overlay(
+                    &popup_sub,
+                    id,
+                    lattice_core::ui::pane::PaneId::POPUP,
+                    popup_w_px,
+                    popup_h_px,
+                    popup_inner_rows,
+                    popup_body_h_px,
+                    self.app.ad().popup_focused,
+                )
+            });
         // The band is advisory and never takes focus — `popup_focused` names
         // the popup slot, so passing it here would draw a focused border
         // around a hint nobody is in.

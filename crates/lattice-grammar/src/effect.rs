@@ -486,6 +486,31 @@ pub enum Effect {
         position: lattice_protocol::position::Position,
         target: lattice_core::ui::pane::OpenTarget,
     },
+    /// LM.2: re-list an existing oil buffer `view` to `dir` in place —
+    /// the peer-applied sibling of the directory-navigation half of the
+    /// old `do_oil_follow` / `do_oil_navigate_up`. The applier reloads
+    /// the directory snapshot (fs I/O), rewrites the buffer's rope, and
+    /// resets cursor/scroll. `focus` is the entry name to land the cursor
+    /// on afterwards (the came-from directory for `-` parent-navigation);
+    /// `None` lands at the top (a `<CR>` descent into a child).
+    ///
+    /// Names `view` explicitly so many oil buffers stay independent: the
+    /// applier touches only that buffer's dir/snapshot/rope (design §3.2).
+    /// Host/peer-only — no WIT mirror.
+    OilNavigate {
+        view: lattice_core::BufferId,
+        dir: PathBuf,
+        focus: Option<String>,
+    },
+    /// LM.2: toggle the expansion of file-tree `view`'s directory entry
+    /// at `entry_index` (the row under the cursor), re-rendering the
+    /// tree's rope — the peer-applied sibling of the directory half of
+    /// `do_file_tree_follow`. Names `view` so trees stay independent.
+    /// Host/peer-only — no WIT mirror.
+    FileTreeToggle {
+        view: lattice_core::BufferId,
+        entry_index: u32,
+    },
     /// BC.8c: open `uri` via the OS handler (`open` / `xdg-open` /
     /// `explorer`). Emitted by the LSP `window/showDocument` handler for
     /// `external: true` requests; generic enough to reuse for any "open

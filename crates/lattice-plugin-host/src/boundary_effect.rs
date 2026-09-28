@@ -971,6 +971,19 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                         when a plugin needs to open in a split)"
                 .to_string());
         }
+        // LM.2: host-only in-place listing re-list / toggle. A plugin
+        // that wants to drive an oil re-list or a tree toggle is a
+        // deliberate future WIT addition, not a silent drop.
+        NativeEffect::OilNavigate { .. } => {
+            return Err("Effect::OilNavigate has no WIT mirror yet \
+                        (host-only oil re-list)"
+                .to_string());
+        }
+        NativeEffect::FileTreeToggle { .. } => {
+            return Err("Effect::FileTreeToggle has no WIT mirror yet \
+                        (host-only file-tree expand/collapse)"
+                .to_string());
+        }
         NativeEffect::Many(_) => {
             return Err(
                 "Effect::Many is flattened to list<effect> at the boundary and must not \

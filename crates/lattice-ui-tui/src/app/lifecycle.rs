@@ -2537,6 +2537,144 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// LM.2: `Effect::OilNavigate` re-lists the named oil buffer in place
+    /// (the peer path the LM.3 handler emits), and a SECOND oil buffer is
+    /// byte-for-byte untouched — the everything-is-a-buffer independence
+    /// contract (design §3.2). The navigated view is the ACTIVE one, as it
+    /// is when a chord fires; `other` stays inactive and must not move.
+    #[test]
+    fn oil_navigate_effect_relists_only_the_named_view() {
+        let tmp = std::env::temp_dir().join(format!("lattice-lm2-oilnav-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        // Distinct roots so `do_open_oil` does not dedup the two buffers.
+        let dir_view = tmp.join("view");
+        let dir_other = tmp.join("other");
+        std::fs::create_dir_all(dir_view.join("subdir")).unwrap();
+        std::fs::write(dir_view.join("subdir/inner.txt"), "hi").unwrap();
+        std::fs::create_dir_all(&dir_other).unwrap();
+        std::fs::write(dir_other.join("othermark.txt"), "o").unwrap();
+
+        let mut a = app_with("hi", 5);
+        // `other` first (tab 0), then `view` in a new tab so `view` is active.
+        a.do_open_oil(Some(dir_other.clone()));
+        let other = a.active_pane_buffer_id();
+        let other_before = a
+            .editor
+            .buffers
+            .document_handle(other)
+            .map(|h| h.snapshot().buffer.as_string());
+
+        a.editor.do_new_tab();
+        a.do_open_oil(Some(dir_view.clone()));
+        let view = a.active_pane_buffer_id();
+        assert_ne!(view, other, "two distinct oil buffers");
+
+        let subdir = dir_view.join("subdir");
+        a.apply_effect(lattice_grammar::Effect::OilNavigate {
+            view,
+            dir: subdir.clone(),
+            focus: None,
+        });
+
+        let listing = a
+            .editor
+            .buffers
+            .document_handle(view)
+            .map(|h| h.snapshot().buffer.as_string())
+            .unwrap_or_default();
+        assert!(
+            listing.contains("inner.txt"),
+            "the navigated view re-listed to subdir: {listing:?}",
+        );
+        assert_eq!(
+            a.editor.oil_dir_for(view).as_deref(),
+            Some(subdir.as_path())
+        );
+
+        let other_after = a
+            .editor
+            .buffers
+            .document_handle(other)
+            .map(|h| h.snapshot().buffer.as_string());
+        assert_eq!(
+            other_before, other_after,
+            "the second oil buffer must be unchanged by navigating the first",
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// LM.2: `Effect::FileTreeToggle` expands the named tree's directory
+    /// row in place, and a SECOND tree is untouched (independence §3.2).
+    #[test]
+    fn file_tree_toggle_effect_expands_only_the_named_view() {
+        let tmp = std::env::temp_dir().join(format!("lattice-lm2-fttoggle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        // Distinct roots so `do_open_file_tree` does not dedup the two trees.
+        let dir_view = tmp.join("view");
+        let dir_other = tmp.join("other");
+        std::fs::create_dir_all(dir_view.join("subdir")).unwrap();
+        std::fs::write(dir_view.join("subdir/inner.txt"), "hi").unwrap();
+        std::fs::create_dir_all(&dir_other).unwrap();
+        std::fs::write(dir_other.join("othermark.txt"), "o").unwrap();
+
+        let mut a = app_with("hi", 5);
+        // `other` tree first (inactive), then `view` tree active.
+        a.do_open_file_tree(Some(dir_other.clone()));
+        let other = a.active_pane_buffer_id();
+        let other_before = a
+            .editor
+            .buffers
+            .document_handle(other)
+            .map(|h| h.snapshot().buffer.as_string());
+
+        a.editor.do_new_tab();
+        a.do_open_file_tree(Some(dir_view.clone()));
+        let view = a.active_pane_buffer_id();
+        assert_ne!(view, other, "two distinct file-tree buffers");
+
+        // Find the `subdir` directory row.
+        let entries = a.editor.file_tree_entries_for(view).expect("tree entries");
+        let subdir_idx = entries
+            .iter()
+            .position(|e| {
+                e.path.file_name().map(|n| n == "subdir").unwrap_or(false)
+                    && matches!(
+                        e.kind,
+                        lattice_listing::file_tree::FileTreeEntryKind::Directory { .. }
+                    )
+            })
+            .expect("subdir row present");
+
+        a.apply_effect(lattice_grammar::Effect::FileTreeToggle {
+            view,
+            entry_index: subdir_idx as u32,
+        });
+
+        let listing = a
+            .editor
+            .buffers
+            .document_handle(view)
+            .map(|h| h.snapshot().buffer.as_string())
+            .unwrap_or_default();
+        assert!(
+            listing.contains("inner.txt"),
+            "toggling subdir expands it to show inner.txt: {listing:?}",
+        );
+
+        let other_after = a
+            .editor
+            .buffers
+            .document_handle(other)
+            .map(|h| h.snapshot().buffer.as_string());
+        assert_eq!(
+            other_before, other_after,
+            "the second tree must be unchanged by toggling the first",
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn open_oil_seeds_oil_locals() {
         let tmp = std::env::temp_dir().join(format!("lattice-m3-2-c-3-{}", std::process::id()));

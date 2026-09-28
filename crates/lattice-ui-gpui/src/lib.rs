@@ -1843,6 +1843,22 @@ impl GpuiApp {
                     self.handle_renderer_signal(s);
                 }
             }
+            // LM.2: in-place re-list / toggle — GPUI parity with the TUI
+            // peer ([[feedback_tui_gpui_parity]]). Peer-applied like OpenOil.
+            Effect::OilNavigate { view, dir, focus } => {
+                let signals =
+                    self.mutate_editor_with(move |e| e.apply_oil_navigate(view, dir, focus));
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+            Effect::FileTreeToggle { view, entry_index } => {
+                let signals =
+                    self.mutate_editor_with(move |e| e.apply_file_tree_toggle(view, entry_index));
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
             Effect::CloseFileTree => {
                 let signals = self.mutate_editor_with(|e| e.dismiss_file_tree());
                 for s in signals {

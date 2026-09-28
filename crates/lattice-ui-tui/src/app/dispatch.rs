@@ -1186,6 +1186,16 @@ impl App {
             Effect::OpenFileTree { root } => self.do_open_file_tree(root),
             Effect::CloseFileTree => self.dismiss_file_tree(),
             Effect::OpenOil { dir } => self.do_open_oil(dir),
+            // LM.2: in-place re-list / toggle. Peer-applied like OpenOil;
+            // the host applier owns the reload + rope rewrite, the mode
+            // handler (LM.3/LM.4) owns the decision.
+            Effect::OilNavigate { view, dir, focus } => {
+                let _ = self.mutate_editor_with(move |e| e.apply_oil_navigate(view, dir, focus));
+            }
+            Effect::FileTreeToggle { view, entry_index } => {
+                let _ =
+                    self.mutate_editor_with(move |e| e.apply_file_tree_toggle(view, entry_index));
+            }
             // 5.5.F.3: `DescribeOption` / `ListOptions` migrated
             // to `Editor::handle_effect`; routed through the
             // grouped no-op above.
@@ -1493,6 +1503,10 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
+        // LM.2: in-place re-list / toggle — navigation, not a user
+        // edit-mutation or yank.
+        | Effect::OilNavigate { .. }
+        | Effect::FileTreeToggle { .. }
         | Effect::DescribeOption { .. }
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
@@ -1649,6 +1663,10 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
+        // LM.2: in-place re-list / toggle — navigation, not a user
+        // edit-mutation or yank.
+        | Effect::OilNavigate { .. }
+        | Effect::FileTreeToggle { .. }
         | Effect::DescribeOption { .. }
         | Effect::DescribeElement { .. }
         | Effect::ListOptions

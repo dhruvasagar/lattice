@@ -25374,6 +25374,63 @@ impl Editor {
         }
     }
 
+    /// LM.2: applier for [`Effect::OilNavigate`] — re-list oil `view` to
+    /// `dir` in place, landing the cursor on `focus` (or the top). Shares
+    /// the reload + write + cursor logic the old `do_oil_follow` dir
+    /// branch and `do_oil_navigate_up` oil branch had; the mode handler
+    /// (LM.3) now owns the *decision* (which dir, which focus) and emits
+    /// the effect, while this owns the *apply*. Names `view` so a second
+    /// oil buffer is untouched. Returns no renderer signals (the re-list
+    /// is applied in place, like the old dir branch).
+    pub fn apply_oil_navigate(
+        &mut self,
+        view: BufferId,
+        dir: std::path::PathBuf,
+        focus: Option<String>,
+    ) -> Vec<RendererSignal> {
+        let mut snapshot = self.oil_snapshot_for(view).unwrap_or_default();
+        match snapshot.reload(&dir) {
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
+            }
+            Ok(()) => {
+                self.set_oil_dir(view, dir);
+                self.write_oil_listing(view, snapshot);
+                self.cursor = lattice_protocol::Position::ZERO;
+                self.scroll = 0;
+                if let Some(name) = focus {
+                    self.focus_oil_entry(&name);
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// LM.2: applier for [`Effect::FileTreeToggle`] — toggle the
+    /// directory entry at `entry_index` in file-tree `view` and re-render
+    /// its rope. The apply half of the old `do_file_tree_follow` dir
+    /// branch; the mode handler (LM.4) decides which row and emits the
+    /// effect. Names `view` so a second tree is untouched.
+    pub fn apply_file_tree_toggle(
+        &mut self,
+        view: BufferId,
+        entry_index: u32,
+    ) -> Vec<RendererSignal> {
+        let idx = entry_index as usize;
+        let Some(mut entries) = self.file_tree_entries_for(view) else {
+            return Vec::new();
+        };
+        if entries.get(idx).is_none() {
+            return Vec::new();
+        }
+        if let Err(e) = lattice_listing::file_tree::toggle_entries_at(&mut entries, idx) {
+            self.set_message(EchoLevel::Error, format!("toggle error: {e}"));
+            return Vec::new();
+        }
+        self.set_file_tree_entries(view, entries);
+        Vec::new()
+    }
+
     /// `-` -- navigate to the parent of the current buffer's
     /// dir. In oil: compute the parent from `OilDir`. In file-
     /// tree: open oil rooted at the parent of the entry under
@@ -43152,6 +43209,10 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
+        // LM.2: in-place re-list / toggle — like OpenOil, navigation, not a
+        // user edit-mutation or yank.
+        | Effect::OilNavigate { .. }
+        | Effect::FileTreeToggle { .. }
         | Effect::DescribeOption { .. }
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
@@ -43308,6 +43369,10 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
+        // LM.2: in-place re-list / toggle — like OpenOil, navigation, not a
+        // user edit-mutation or yank.
+        | Effect::OilNavigate { .. }
+        | Effect::FileTreeToggle { .. }
         | Effect::DescribeOption { .. }
         | Effect::DescribeElement { .. }
         | Effect::ListOptions

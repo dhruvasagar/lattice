@@ -335,7 +335,7 @@ pub(crate) fn walk_within_grant(
     let paths = lattice_picker::picker_sources::walk_files_for_picker(&root_path);
     Ok(paths
         .into_iter()
-        .filter_map(|p| p.to_str().map(str::to_string))
+        .filter_map(|(p, _meta)| p.to_str().map(str::to_string))
         .collect())
 }
 

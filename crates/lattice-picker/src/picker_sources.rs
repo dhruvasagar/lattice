@@ -512,29 +512,25 @@ impl PickerSourceGenerator for FilesSource {
                 canonical_root.display()
             ));
         }
-        // MARG §8: stat each entry for marginalia (perms / size /
-        // mtime) and attach it as typed `Annotation::Styled` cells —
-        // the renderer color-codes each per its theme slot (per-bit
-        // permission colors, gold size, green mtime). One syscall per
-        // file -- on a fast disk O(N µs); the walker's 5000-entry cap
-        // keeps this bounded. The candidate `display` is just the path
-        // (so fuzzy matching runs on the path, not the metadata text);
-        // column alignment comes from `AnnotationColumns`, so the old
-        // manual per-column width / clip math is gone. A file we can't
-        // stat carries no metadata annotations → blank cells, the path
-        // still shows. This stat walk runs in the source's init (off
-        // the UI thread), never in a renderer.
+        // MARG §8: the marginalia (perms / size / mtime) is attached as typed
+        // `Annotation::Styled` cells — the renderer color-codes each per its
+        // theme slot (per-bit permission colors, gold size, green mtime). The
+        // metadata was gathered by `walk_files_for_picker` DURING the parallel
+        // walk (reusing the walk's own stat), so there is no separate ≤5000-stat
+        // pass here — that eager pass was the bulk of the first-open latency.
+        // The candidate `display` is just the path (so fuzzy matching runs on
+        // the path, not the metadata text); column alignment comes from
+        // `AnnotationColumns`. A file whose metadata could not be read carries
+        // no annotations → blank cells, the path still shows.
         let pairs = entries
             .into_iter()
-            .map(|abs| {
+            .map(|(abs, meta)| {
                 let rel = abs
                     .strip_prefix(&canonical_root)
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|_| abs.clone());
                 let rel_display = rel.display().to_string();
-                let annotations = std::fs::metadata(&abs)
-                    .map(|m| metadata_annotations(&m))
-                    .unwrap_or_default();
+                let annotations = meta.as_ref().map(metadata_annotations).unwrap_or_default();
                 let mut cand = RawCandidate::plain(rel_display, CandidateKind::Plain);
                 cand.annotations = annotations;
                 // Slice 7b.2: typed accept payload.
@@ -1040,7 +1036,7 @@ impl PickerSourceGenerator for FilePickSource {
         }
         let pairs = entries
             .into_iter()
-            .map(|abs| {
+            .map(|(abs, _meta)| {
                 let rel = abs
                     .strip_prefix(&canonical_root)
                     .map(|p| p.to_path_buf())
@@ -2695,77 +2691,95 @@ impl PickerSourceGenerator for OutlineSource {
 pub const FILE_PICKER_MAX_ENTRIES: usize = 5000;
 
 /// Walk `root` recursively (BFS) and return the absolute paths
-/// of every regular file, capped at [`FILE_PICKER_MAX_ENTRIES`].
-/// Skips the conventional ignore directories (`.git`, `target`,
-/// `node_modules`, `dist`, `.cache`) and dotfiles at the top of
-/// each directory entry. Symlinks aren't followed -- a cycle on
-/// disk would silently consume the cap.
+/// of every regular file (with its metadata), capped at
+/// [`FILE_PICKER_MAX_ENTRIES`].
+///
+/// Uses the parallel, gitignore-aware `ignore` walker (the one
+/// `lattice-multibuffer::search` uses): dotfiles are skipped (`hidden`),
+/// .gitignore / .ignore / global + parent ignores are honoured, and the
+/// build / VCS directories (`.git`, `target`, `node_modules`, `dist`,
+/// `.cache`) are pruned even outside a git checkout. Symlinks aren't followed.
+/// Each file's metadata is gathered during the walk (reusing the walk's own
+/// stat) so a source's `init` need not run a second sequential stat pass —
+/// that pass was the bulk of the first-open latency on a large tree.
 ///
 /// Errors are silently absorbed (unreadable directories show up
 /// as gaps in the listing); the picker UX prefers "some results"
 /// over a hard failure when the workspace has a permission
 /// pocket somewhere.
-///
-/// Moved here from `lattice-ui-tui::app::picker` in slice 5.7.B.0;
-/// the only consumer today is `FilesSource` below. Future
-/// non-picker callers (file-tree, oil) can either pull this from
-/// `lattice-picker` or get their own walker -- file-walk
-/// traversal patterns diverge per use case, so co-location with
-/// the current single consumer is honest until that second
-/// caller appears.
-pub fn walk_files_for_picker(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    const IGNORE_DIRS: &[&str] = &[".git", "target", "node_modules", "dist", ".cache"];
-    let mut out: Vec<std::path::PathBuf> = Vec::new();
-    let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        if out.len() >= FILE_PICKER_MAX_ENTRIES {
-            break;
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
-        let mut files: Vec<std::path::PathBuf> = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
+pub fn walk_files_for_picker(root: &std::path::Path) -> Vec<WalkedFile> {
+    use ignore::{WalkBuilder, WalkState};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Non-git safety net: prune the heavy build / VCS directories even when the
+    // tree is not a git checkout (where `ignore`'s .gitignore handling would not
+    // catch them). In a real repo these are almost always gitignored too, so
+    // this only matters in a bare directory.
+    const PRUNE_DIRS: &[&str] = &[".git", "target", "node_modules", "dist", ".cache"];
+
+    let out: std::sync::Arc<Mutex<Vec<WalkedFile>>> =
+        std::sync::Arc::new(Mutex::new(Vec::new()));
+    let count = std::sync::Arc::new(AtomicUsize::new(0));
+
+    // `WalkBuilder`'s defaults already skip dotfiles (`hidden`) and honour
+    // .gitignore / .ignore / global + parent ignores — the same walker
+    // `lattice-multibuffer::search` uses. `build_parallel` fans the walk across
+    // cores (the first-open win over the old single-threaded recursion), and
+    // each file's `metadata()` is gathered HERE, reusing the walk's own stat,
+    // rather than in a second sequential ≤5000-stat pass in the source's `init`.
+    let mut builder = WalkBuilder::new(root);
+    builder.filter_entry(|entry| {
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        let pruned = entry
+            .file_name()
+            .to_str()
+            .map(|name| PRUNE_DIRS.contains(&name))
+            .unwrap_or(false);
+        !(is_dir && pruned)
+    });
+
+    builder.build_parallel().run(|| {
+        let out = std::sync::Arc::clone(&out);
+        let count = std::sync::Arc::clone(&count);
+        Box::new(move |result| {
+            let Ok(entry) = result else {
+                return WalkState::Continue;
             };
-            if name.starts_with('.') {
-                continue;
+            let is_file = entry.file_type().map(|ft| ft.is_file()).unwrap_or(false);
+            if !is_file {
+                return WalkState::Continue;
             }
-            let Ok(ft) = entry.file_type() else {
-                continue;
-            };
-            if ft.is_dir() {
-                if IGNORE_DIRS.contains(&name) {
-                    continue;
-                }
-                subdirs.push(path);
-            } else if ft.is_file() {
-                files.push(path);
+            // A few threads may pass the cap before all observe the Quit; the
+            // trailing `truncate` trims the overshoot.
+            if count.fetch_add(1, Ordering::Relaxed) >= FILE_PICKER_MAX_ENTRIES {
+                return WalkState::Quit;
             }
-        }
-        // Stable order: alphabetic. Files first so they show up
-        // before deep subdirs in the candidate list (relative-
-        // path sort still scrambles them, but the matcher is
-        // fuzzy so order isn't load-bearing).
-        files.sort();
-        subdirs.sort();
-        for f in files {
-            if out.len() >= FILE_PICKER_MAX_ENTRIES {
-                break;
+            let meta = entry.metadata().ok();
+            if let Ok(mut guard) = out.lock() {
+                guard.push((entry.into_path(), meta));
             }
-            out.push(f);
-        }
-        // BFS-ish: push subdirs in reverse so pop() drains
-        // alphabetically.
-        for sub in subdirs.into_iter().rev() {
-            stack.push(sub);
-        }
-    }
+            WalkState::Continue
+        })
+    });
+
+    let mut out = std::sync::Arc::try_unwrap(out)
+        .ok()
+        .and_then(|m| m.into_inner().ok())
+        .unwrap_or_default();
+    // Deterministic order: the parallel walk yields entries nondeterministically
+    // and the fuzzy matcher reorders anyway, but a stable list keeps the
+    // pre-filter view and the tests predictable.
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.truncate(FILE_PICKER_MAX_ENTRIES);
     out
 }
+
+/// One walked file: its absolute path plus the metadata gathered during the
+/// walk (`None` when the entry could not be stat'd). Returned by
+/// [`walk_files_for_picker`] so a source's `init` builds candidates + their
+/// marginalia without a second stat pass.
+pub type WalkedFile = (std::path::PathBuf, Option<std::fs::Metadata>);
 
 /// Convenience: build the first-party source generators as
 /// `Arc<dyn PickerSourceGenerator>` ready to register against
@@ -3183,13 +3197,63 @@ mod tests {
         let entries = walk_files_for_picker(&tmp);
         let names: Vec<String> = entries
             .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert!(names.iter().any(|n| n == "a.rs"));
         assert!(names.iter().any(|n| n == "b.rs"));
         assert!(names.iter().any(|n| n == "c.rs"));
         assert!(!names.iter().any(|n| n == ".secret"));
         assert!(!names.iter().any(|n| n == "d.rs"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The parallel walk honours a repo `.gitignore` (the old hand-rolled walk
+    /// only knew a hardcoded dir list), and the ≤`FILE_PICKER_MAX_ENTRIES` cap
+    /// holds even though threads race past it before all observe the quit.
+    #[test]
+    fn walk_files_for_picker_respects_gitignore_and_caps() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-walk-gi-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // A real git repo so `ignore` activates .gitignore handling.
+        std::fs::create_dir_all(tmp.join(".git")).unwrap();
+        std::fs::write(tmp.join(".gitignore"), "ignored.rs\nbuildout/\n").unwrap();
+        std::fs::write(tmp.join("kept.rs"), "").unwrap();
+        std::fs::write(tmp.join("ignored.rs"), "").unwrap();
+        std::fs::create_dir(tmp.join("buildout")).unwrap();
+        std::fs::write(tmp.join("buildout").join("gen.rs"), "").unwrap();
+
+        let names: Vec<String> = walk_files_for_picker(&tmp)
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n == "kept.rs"), "tracked file kept");
+        assert!(
+            !names.iter().any(|n| n == "ignored.rs"),
+            "gitignored file excluded (the hand-rolled walk could not do this)"
+        );
+        assert!(
+            !names.iter().any(|n| n == "gen.rs"),
+            "file under a gitignored dir excluded"
+        );
+
+        // Cap: many files, walked in parallel, must not exceed the ceiling.
+        let big = tmp.join("many");
+        std::fs::create_dir(&big).unwrap();
+        for i in 0..(FILE_PICKER_MAX_ENTRIES + 200) {
+            std::fs::write(big.join(format!("f{i}.rs")), "").unwrap();
+        }
+        assert!(
+            walk_files_for_picker(&tmp).len() <= FILE_PICKER_MAX_ENTRIES,
+            "the parallel walk must honour the entry cap"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

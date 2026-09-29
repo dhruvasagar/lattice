@@ -522,12 +522,17 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         // ---- Help buffer (DESIGN.md §5.11, §5.9) ----
         //
         // Help is a regular buffer routed through Normal-mode chord
-        // grammar. Only three buffer-local bindings differ -- they
+        // grammar. Only these buffer-local bindings differ -- they
         // appear here. Motions, page motions, viewport jumps, marks,
         // `<C-o>` / `<C-i>`, etc. all inherit from the Normal-mode
         // entries above; describe-key in Help mode reports them
         // through the `Normal` rows.
-        keymap_entry! { mode: Help, chord: "<Esc>", doc: "Dismiss help" },
+        //
+        // `<Esc>` is NOT here: it is owned by `help-mode`'s own keymap
+        // (`action:help-dismiss`), the LM.4 file-tree pattern, so its
+        // descriptor comes from the mode layer rather than this host catalog
+        // (the drift guard resolves catalog chords through `translate`, which
+        // no longer intercepts help's Esc).
         keymap_entry! { mode: Help, chord: "q", doc: "Dismiss help" },
         keymap_entry! { mode: Help, chord: "<CR>", doc: "Follow link under cursor" },
     ]

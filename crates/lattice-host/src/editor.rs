@@ -682,6 +682,13 @@ pub struct Editor {
     /// in-pane synthetic buffer lives in [`Self::bury_target`]
     /// and is deliberately a different field -- see there.
     pub prev_pane_for_popup: Option<PrevPaneState>,
+    /// The pane [`Editor::open_help_in_split`] created for a help buffer, when
+    /// help was opened in its OWN split (not layered over an existing pane).
+    /// `dismiss_popup` reads it to decide between CLOSING that pane (help
+    /// brought it into being, so `<Esc>` removes it) and restoring the buffer
+    /// an active-pane help displaced. `None` for popup / active-pane help and
+    /// once the pane is gone. Cleared on dismiss.
+    pub help_split_pane: Option<lattice_core::ui::pane::PaneId>,
     /// Where `Effect::BuryBuffer` (magit's `q`) returns the pane
     /// after an in-pane synthetic buffer is closed. Written by
     /// `open_synthetic_buffer_seeded`, consumed by

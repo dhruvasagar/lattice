@@ -8267,6 +8267,24 @@ impl Editor {
     }
 
     pub fn dismiss_popup(&mut self) {
+        // In-pane help that opened its OWN split pane closes that pane instead
+        // of restoring a buffer into it — help brought the pane into being, so
+        // `<Esc>` removes it and returns focus to the sibling. `do_close_pane`
+        // -> `load_active_pane` swaps `self.document` to the surviving pane.
+        // Floating popups and active-pane help fall through to the restore
+        // paths below.
+        if matches!(self.active_buffer, BufferKind::Help)
+            && self.pane_tree.len() > 1
+            && self.help_split_pane == Some(self.pane_tree.active().id)
+        {
+            self.help_split_pane = None;
+            self.dismiss_stale_popup_registry();
+            self.popup_buffer = None;
+            self.popup_focused = false;
+            self.prev_pane_for_popup = None;
+            self.do_close_pane();
+            return;
+        }
         self.dismiss_stale_popup_registry();
         self.popup_buffer = None;
         self.popup_back_stack.clear();
@@ -8313,12 +8331,20 @@ impl Editor {
         // writes `bury_target` instead, precisely so this branch cannot
         // restore over a buffer no popup ever displaced.
         else if let Some(prev) = self.prev_pane_for_popup.take() {
-            self.cursor = prev.cursor;
-            self.scroll = prev.scroll;
-            let pane = self.pane_tree.active_mut();
-            pane.buffer = prev.buffer;
-            pane.buffer_id = prev.buffer_id;
-            self.active_buffer = prev.buffer;
+            {
+                let pane = self.pane_tree.active_mut();
+                pane.buffer = prev.buffer;
+                pane.buffer_id = prev.buffer_id;
+                pane.cursor = prev.cursor;
+                pane.scroll = prev.scroll;
+            }
+            // In-pane help now swaps `self.document` to the help buffer on open
+            // (it renders in the pane, not as an overlay), so dismiss must swap
+            // it back or the pane keeps painting help. `load_active_pane` does
+            // the document swap + cursor / scroll + option re-resolve from the
+            // pane we just restored; it runs while `active_buffer` is still Help
+            // so the outgoing help buffer needs no syntax stash.
+            self.load_active_pane();
             // PU-A.1b: restore the modal state a focus-stealing popup
             // normalized to Normal on open — a user mid-Insert returns to
             // their prompt in Insert. Passive floats leave prev None (they
@@ -31553,6 +31579,10 @@ impl Editor {
     ) -> (BufferId, Vec<RendererSignal>) {
         use crate::buffers::BufferFlags;
         let mut signals = Vec::new();
+        // Active-pane help layers over the existing pane, so `<Esc>` restores
+        // its buffer rather than closing the pane. Clear any stale split marker
+        // a prior split-help left; `open_help_in_split` re-sets it afterwards.
+        self.help_split_pane = None;
         // Re-running a help opener with the same title surfaces the
         // existing buffer rather than allocating a duplicate.
         if let Some(existing_id) = self.buffers.help_with_title(&content.buffer.title) {
@@ -31592,7 +31622,13 @@ impl Editor {
         self.snapshot_active_pane();
         let new_idx = self.pane_tree.split_active(orientation);
         self.pane_tree.set_active(new_idx);
-        self.open_help_in_pane(content)
+        let split_pane = self.pane_tree.active().id;
+        let result = self.open_help_in_pane(content);
+        // Mark this pane as help-owned so `<Esc>` CLOSES it (help brought it
+        // into being) rather than restoring a buffer into it — set AFTER
+        // `open_help_in_pane`, which clears the marker for the active-pane case.
+        self.help_split_pane = Some(split_pane);
+        result
     }
 
     /// Open a popup with `content` as its body at `placement`.

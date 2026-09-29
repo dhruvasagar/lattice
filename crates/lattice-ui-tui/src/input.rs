@@ -1482,9 +1482,15 @@ mod tests {
     }
 
     #[test]
-    fn help_active_intercepts_esc_to_dismiss() {
+    fn help_esc_is_mode_owned_not_intercepted_by_translate() {
+        // `<Esc>` for help is now owned by `help-mode`'s keymap
+        // (`action:help-dismiss` → `Effect::DismissPopup`), the LM.4 file-tree
+        // pattern — so the host input gate must NOT special-case it into
+        // `HelpDismiss` any more. The close behavior itself (split pane /
+        // popup / active-pane) is covered end-to-end where the mode keymap is
+        // wired; here we only assert the host stopped intercepting Esc.
         let (_, b) = fixture();
-        assert!(matches!(
+        assert!(!matches!(
             translate(ctx_help_active(ModalState::Normal, &b), key(KeyCode::Esc)),
             Action::HelpDismiss
         ));

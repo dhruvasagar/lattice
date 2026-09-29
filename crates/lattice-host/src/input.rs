@@ -258,18 +258,18 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
     // decided at apply time by `App::active_buffer`, not here.
     // LM.4: FileTree left this shared gate — `file-tree-mode` owns `<CR>` /
     // `-` / `<C-s>` / `<C-v>` / `<C-t>` through its `MajorMode` keymap +
-    // `action_handlers` now. Help keeps its gate: Esc dismisses; `q` does NOT
-    // (it falls through to macro-record start); `-` opens an oil browser at
-    // the active document's parent (the `do_oil_navigate_up` default branch,
-    // still host-owned for Help / dashboard / document buffers). The only
-    // explicit Help close paths are Esc here, `:bd`, and the State-A
-    // auto-dismiss in App::apply.
+    // `action_handlers` now. Help is following the same path: `<Esc>` is now
+    // owned by `help-mode`'s keymap (`action:help-dismiss` → `Effect::DismissPopup`,
+    // which the host applies as close-split-pane / dismiss-popup / restore), so
+    // it is NOT intercepted here. `<CR>` follow-link and `-` oil-up stay on this
+    // gate for now (`q` does NOT dismiss — it falls through to macro-record
+    // start). The other Help close paths are `:bd` and the State-A auto-dismiss
+    // in App::apply.
     if matches!(ctx.active_buffer, BufferKind::Help)
         && matches!(ctx.modal, ModalState::Normal)
         && ctx.partial_chord.is_empty()
     {
         match chord.key {
-            KeyKind::Special(SpecialKey::Esc) => return Action::HelpDismiss,
             KeyKind::Special(SpecialKey::Enter) => return Action::FollowLink,
             KeyKind::Char('-') => return Action::OilNavigateUp,
             _ => {}

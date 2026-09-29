@@ -1244,6 +1244,49 @@ mod tests {
     }
 
     #[test]
+    fn esc_closes_a_help_split_pane() {
+        // `help.describe-display=split-h` opens help in its OWN split pane.
+        // `<Esc>` — now owned by help-mode's keymap — must CLOSE that pane and
+        // return to the sibling, NOT restore a buffer into it (the reported
+        // "Esc should close help buffers even when opened in splits"). Driven
+        // end-to-end through `apply_event` so the whole path is exercised: the
+        // help-mode `<Esc>` keymap → `action:help-dismiss` → `Effect::DismissPopup`
+        // → `dismiss_popup`'s split-close branch. `App::new` runs `Editor::boot`,
+        // so the mode keymap + the command are wired exactly as in production.
+        let mut app = App::new(Document::from_text("fn main() {}\n"));
+        let content = crate::help::HelpContent::from_lines("describe", vec!["body".to_string()]);
+        app.open_help_in_split(
+            content,
+            lattice_core::ui::pane::SplitOrientation::Horizontal,
+        );
+        assert_eq!(
+            app.editor.pane_tree.len(),
+            2,
+            "split-h opens a second pane holding help"
+        );
+        assert_eq!(app.editor.active_buffer, crate::buffers::BufferKind::Help);
+
+        let mut last = None;
+        apply_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            false,
+            &mut last,
+        );
+
+        assert_eq!(
+            app.editor.pane_tree.len(),
+            1,
+            "Esc must CLOSE the help split pane, not restore a buffer into it"
+        );
+        assert_ne!(
+            app.editor.active_buffer,
+            crate::buffers::BufferKind::Help,
+            "focus returns to the surviving (document) pane"
+        );
+    }
+
+    #[test]
     fn normal_mode_uses_block_cursor() {
         assert!(matches!(
             cursor_style_for(ModalState::Normal, false),

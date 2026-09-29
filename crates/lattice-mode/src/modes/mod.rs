@@ -51,7 +51,7 @@ pub use display::{
     CurrentLineHighlightMode, LineNumbersMode, ReadOnlyMode, RelativeLineNumbersMode,
     WhitespaceShowMode, WrapMode,
 };
-pub use help::HelpMode;
+pub use help::{HelpMode, register_help_mode_actions};
 pub use hover::HoverMode;
 pub use image::{ImageFileMediaSource, ImageMode, is_image_path, register_image_media_source};
 pub use messages::MessagesMode;

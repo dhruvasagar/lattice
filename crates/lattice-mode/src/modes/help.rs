@@ -18,9 +18,15 @@
 //! user's display preference (popup / split / tab / minibuffer)
 //! is orthogonal to which mode the buffer carries.
 
-use lattice_config::OptionOverrideSet;
+use std::sync::Arc;
 
-use crate::{CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
+use lattice_config::OptionOverrideSet;
+use lattice_grammar::effect::Effect;
+
+use crate::{
+    CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
+    keymap_entry,
+};
 
 pub struct HelpMode;
 
@@ -101,9 +107,57 @@ impl Mode for HelpMode {
     fn invocation_runner(&self) -> Option<ModeId> {
         Some(Self::mode_id())
     }
+    /// `<Esc>` closes the help buffer — the mode owns both the chord and the
+    /// dismiss, rather than the host's input layer intercepting Esc for help
+    /// (the LM.4 file-tree pattern). Pushed at boot under
+    /// `MinorMode(help-mode)` by `translate_mode_keymaps` and gated to
+    /// help-active buffers by K.1.c. The command it names
+    /// (`action:help-dismiss`) is registered by [`register_help_mode_actions`];
+    /// its body emits [`Effect::DismissPopup`], which the host applies as the
+    /// right dismiss for the buffer's display — close the split pane help
+    /// opened, dismiss a floating popup, or restore an active-pane buffer.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(help_mode_keymap_entries())
+    }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
+}
+
+/// The `<Esc>` → `action:help-dismiss` entry. Interned once; `Keymap::from_entries`
+/// resolves the `cmd` name against the command registry at boot.
+fn help_mode_keymap_entries() -> &'static [KeymapEntry] {
+    use std::sync::OnceLock;
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES
+        .get_or_init(|| {
+            vec![keymap_entry! {
+                mode: Normal, chord: "<Esc>",
+                doc: "help: close the popup / split pane",
+                cmd: "action:help-dismiss"
+            }]
+        })
+        .as_slice()
+}
+
+/// Register `help-mode`'s `action:help-dismiss` command so
+/// `translate_mode_keymaps` can resolve the `<Esc>` binding's `cmd` name. Its
+/// body emits [`Effect::DismissPopup`]; the host resolves HOW to dismiss (close
+/// the help-owned split pane, dismiss a floating popup, or restore the buffer
+/// active-pane help displaced) — the mode owns the chord + the decision, the
+/// pane/popup mechanism stays host-side behind the effect boundary. Called at
+/// boot beside `register_repl_mode_actions` while the registry is mutable; an
+/// unresolvable name would drop the whole binding with a warn.
+pub fn register_help_mode_actions(registry: &mut lattice_grammar::CommandRegistry) {
+    use lattice_grammar::registry::ActionSpec;
+    registry.register_action(
+        "action:help-dismiss",
+        "help: close the popup or split pane (mode-owned).",
+        ActionSpec {
+            apply: Arc::new(|_| Ok(Effect::DismissPopup)),
+            args_schema: vec![],
+        },
+    );
 }
 
 #[cfg(test)]

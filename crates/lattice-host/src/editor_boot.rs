@@ -759,6 +759,14 @@ impl Editor {
         // mode's own crate.
         lattice_mode::register_repl_mode_actions(boot.commands_mut());
 
+        // `help-mode` owns `<Esc>` → `action:help-dismiss` (the LM.4 file-tree
+        // pattern). Register the command here so `translate_mode_keymaps`
+        // resolves the mode's keymap `cmd` name; its body emits
+        // `Effect::DismissPopup`, which the host applies as the right dismiss
+        // for the help buffer's display (close split pane / dismiss popup /
+        // restore active-pane). Without this the binding drops with a warn.
+        lattice_mode::register_help_mode_actions(boot.commands_mut());
+
         // RV.1: same shape for `refreshable-view-mode`'s
         // `action:view-refresh` — the generic target the shared `gr`
         // binds to. Its registered `apply` never runs: chord dispatch

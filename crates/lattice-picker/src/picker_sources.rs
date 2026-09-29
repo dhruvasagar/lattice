@@ -505,7 +505,31 @@ impl PickerSourceGenerator for FilesSource {
         // user saying "not that project, this one".
         let root = explicit_root_or(args, &ctx.workspace_root);
         let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
-        let entries = walk_files_for_picker(&canonical_root);
+        // Slice C: serve the warmed session cache instantly when present. A
+        // stale entry (older than the TTL) is still served immediately, with a
+        // background re-walk kicked off so the NEXT open reflects on-disk
+        // changes — the open never blocks on the walk once warmed. A cold cache
+        // walks now and populates it. All of this is off the UI thread (init
+        // runs on a picker worker); the refresh thread keeps it that way.
+        let entries = match cached_files(&canonical_root) {
+            Some((cached, stale)) => {
+                if stale {
+                    let refresh_root = canonical_root.clone();
+                    std::thread::spawn(move || warm_files_cache(&refresh_root));
+                }
+                cached
+            }
+            None => {
+                let walked = walk_files_for_picker(&canonical_root);
+                if let Ok(mut cache) = file_walk_cache().lock() {
+                    cache.insert(
+                        canonical_root.clone(),
+                        (walked.clone(), std::time::Instant::now()),
+                    );
+                }
+                walked
+            }
+        };
         if entries.is_empty() {
             return Err(format!(
                 "files: no files under {}",
@@ -2718,8 +2742,7 @@ pub fn walk_files_for_picker(root: &std::path::Path) -> Vec<WalkedFile> {
     // this only matters in a bare directory.
     const PRUNE_DIRS: &[&str] = &[".git", "target", "node_modules", "dist", ".cache"];
 
-    let out: std::sync::Arc<Mutex<Vec<WalkedFile>>> =
-        std::sync::Arc::new(Mutex::new(Vec::new()));
+    let out: std::sync::Arc<Mutex<Vec<WalkedFile>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
     let count = std::sync::Arc::new(AtomicUsize::new(0));
 
     // `WalkBuilder`'s defaults already skip dotfiles (`hidden`) and honour
@@ -2780,6 +2803,56 @@ pub fn walk_files_for_picker(root: &std::path::Path) -> Vec<WalkedFile> {
 /// [`walk_files_for_picker`] so a source's `init` builds candidates + their
 /// marginalia without a second stat pass.
 pub type WalkedFile = (std::path::PathBuf, Option<std::fs::Metadata>);
+
+/// A cache hit older than this is served immediately AND refreshed in the
+/// background, so the next `:files` reflects on-disk changes without the open
+/// re-walking. Short enough that a stale entry never lasts more than a beat;
+/// long enough that rapid re-opens don't spawn a walk each time.
+const FILE_WALK_REFRESH_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Process-global, in-memory session cache for the `:files` walk (Slice C:
+/// background warm-up). Keyed by canonical root. **Never persisted** — the
+/// picker must not show a stale tree across launches, so this lives and dies
+/// with the process; the only staleness it can carry is bounded by
+/// [`FILE_WALK_REFRESH_TTL`] within a session.
+#[allow(clippy::type_complexity)]
+fn file_walk_cache() -> &'static std::sync::Mutex<
+    std::collections::HashMap<std::path::PathBuf, (Vec<WalkedFile>, std::time::Instant)>,
+> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<std::path::PathBuf, (Vec<WalkedFile>, std::time::Instant)>,
+        >,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Pre-walk `root` into the session cache so the first `:files` open is
+/// instant. The host calls this from a background thread at boot (and on
+/// project change); `FilesSource::init` also calls it to refresh a warm entry.
+/// Runs the same [`walk_files_for_picker`] — off whatever thread the caller
+/// spawns it on, never the UI thread.
+pub fn warm_files_cache(root: &std::path::Path) {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let walked = walk_files_for_picker(&canonical);
+    if let Ok(mut cache) = file_walk_cache().lock() {
+        cache.insert(canonical, (walked, std::time::Instant::now()));
+    }
+}
+
+/// The cached walk for `root` if it was warmed this session, cloned for the
+/// caller. Returns `(entries, stale)` where `stale` marks an entry past
+/// [`FILE_WALK_REFRESH_TTL`] — the caller serves it but should kick a refresh.
+/// `None` on a cold cache.
+fn cached_files(root: &std::path::Path) -> Option<(Vec<WalkedFile>, bool)> {
+    let canonical = std::fs::canonicalize(root).ok()?;
+    let cache = file_walk_cache().lock().ok()?;
+    let (entries, walked_at) = cache.get(&canonical)?;
+    Some((
+        entries.clone(),
+        walked_at.elapsed() >= FILE_WALK_REFRESH_TTL,
+    ))
+}
 
 /// Convenience: build the first-party source generators as
 /// `Arc<dyn PickerSourceGenerator>` ready to register against
@@ -3254,6 +3327,42 @@ mod tests {
             walk_files_for_picker(&tmp).len() <= FILE_PICKER_MAX_ENTRIES,
             "the parallel walk must honour the entry cap"
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Slice C: warming the session cache (what the host does on a background
+    /// thread at boot) makes a subsequent read a hit — the first `:files` open
+    /// is then served instantly instead of re-walking. A never-warmed root is a
+    /// cold miss.
+    #[test]
+    fn warm_files_cache_serves_a_subsequent_read() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-walk-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("one.rs"), "").unwrap();
+        std::fs::write(tmp.join("two.rs"), "").unwrap();
+
+        // Cold: nothing cached for this fresh dir.
+        assert!(cached_files(&tmp).is_none(), "cold cache is a miss");
+
+        // Warm it, then the read is a hit — served from the session cache and,
+        // being freshly walked, not stale.
+        warm_files_cache(&tmp);
+        let (entries, stale) = cached_files(&tmp).expect("warmed cache is a hit");
+        assert!(!stale, "a just-warmed entry is fresh");
+        let names: Vec<String> = entries
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n == "one.rs"));
+        assert!(names.iter().any(|n| n == "two.rs"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

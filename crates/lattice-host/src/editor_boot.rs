@@ -210,6 +210,12 @@ impl Editor {
         // in (lattice_lsp::fan_in) at spawn time using this
         // bus, and the post-spawn handle does not expose
         // `set_event_bus`.
+        // Slice C (`:files` warm-up, real launches only): the opened file's
+        // path, captured before `document` is consumed below so the tail can
+        // pre-walk its project. Gated out of test builds — `Editor::boot` runs
+        // in thousands of unit tests, and each must not spawn a project walk.
+        #[cfg(not(test))]
+        let boot_doc_path = document.path().map(|p| p.to_path_buf());
         let event_bus = Arc::new(EventBus::new());
         // Canonical LSP runtime handle: a process-wide singleton
         // lazily initialised on first call so every later caller
@@ -2725,6 +2731,28 @@ impl Editor {
             lattice_mode::modes::ReadOnlyMode::mode_id(),
             Editor::run_read_only_motion,
         );
+
+        // Slice C (`:files` warm-up): pre-walk the project's file list in the
+        // background so the FIRST `:files` open is served from the session
+        // cache instead of paying the full walk. Resolve the SAME root `:files`
+        // resolves — the project root of the opened file (or the cwd for a
+        // no-file launch) via the project resolver — then hand the walk to a
+        // detached thread: boot never blocks on I/O (paramount #1 / #4), and a
+        // cold cache simply means the first open walks, exactly as before.
+        #[cfg(not(test))]
+        {
+            let start = boot_doc_path.or_else(|| std::env::current_dir().ok());
+            if let Some(start) = start {
+                let root = editor
+                    .services
+                    .get::<lattice_core::ProjectResolverHandle>()
+                    .map(|resolver| resolver.for_path(&start).root)
+                    .unwrap_or(start);
+                std::thread::spawn(move || {
+                    lattice_picker::picker_sources::warm_files_cache(&root);
+                });
+            }
+        }
         editor
     }
 }

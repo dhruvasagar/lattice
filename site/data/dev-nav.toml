@@ -267,6 +267,7 @@ docs = [
   "architecture/release-pipeline",
   "architecture/launch-0.9",
   "operations/embedded-docs-budget",
+  "architecture/api-docs",
   "architecture/lighthouse",
 ]
 
@@ -299,6 +300,7 @@ docs = [
 "notes/pickers" = "Picker implementation notes"
 "operations/implementation" = "Implementation ledger"
 "reference/plugin-api" = "Plugin API reference"
+"architecture/api-docs" = "How the API docs are generated"
 "operations/benchmarks" = "Benchmark record"
 "operations/verify" = "Verification checklist"
 "operations/releasing" = "Cutting a release"

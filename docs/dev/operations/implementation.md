@@ -7369,6 +7369,21 @@ which also records three as-built deviations from the design.
 
 ---
 
+## API documentation (AD, 2026-09-30 — 🚧 in progress)
+
+Generated, example-backed API docs for both APIs, each with a guard that
+fails when it drifts: the plugin-API reference (derived from `wit/` by
+`lattice-plugin-api`, extended from function names to full types,
+signatures and CI-compiled examples), the Rust API (per-crate
+`missing_docs` ratchet, doctests, published rustdoc, a generated crate
+map), and an agent layer (`llms.txt`, `llms-full.txt`, `plugin-api.json`,
+`AGENTS.md`). No new crate.
+
+Design: [`../architecture/api-docs.md`](../architecture/api-docs.md).
+Slice plan: [`slice-plans/api-docs.md`](slice-plans/api-docs.md).
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

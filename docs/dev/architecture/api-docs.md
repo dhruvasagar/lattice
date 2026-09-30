@@ -118,6 +118,10 @@ a region in a guest `lattice-plugin-host` does not build fails.
   capability, function and type counts, a one-line summary), and the
   conventions a reader needs once (resources, `result<_, string>` errors,
   sync vs async seams).
+- `docs/dev/reference/plugin-api/worlds.md` — every world with what it
+  imports and exports and its freestanding functions: the `register-*`
+  entry points the host calls on a guest at load. They belong to no
+  interface, so this is the only page they appear on.
 - `docs/dev/reference/plugin-api/<interface>.md` — one page per seam: full
   docs, every function with its signature and examples, every type with its
   fields/cases, and the worlds it appears in.

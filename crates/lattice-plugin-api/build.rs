@@ -206,28 +206,7 @@ fn parse_catalog(wit_dir: &Path) -> String {
         writeln!(out, "\t\t\tcapability: Capability::None,").unwrap();
         writeln!(out, "\t\t\tfunctions: vec![").unwrap();
         for f in funcs {
-            let (kind, is_async) = function_kind(&resolve, &f.kind);
-            let params = f
-                .params
-                .iter()
-                .map(|p| {
-                    format!(
-                        "ApiParam {{ name: {}.to_string(), ty: {}.to_string() }}",
-                        lit(&p.name),
-                        lit(&type_str(&resolve, &p.ty))
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            writeln!(
-                out,
-                "\t\t\t\tApiFunction {{ name: {}.to_string(), doc: {}, kind: {kind}, \
-                 is_async: {is_async}, params: vec![{params}], result: {} }},",
-                lit(&f.name),
-                opt_lit(f.docs.contents.as_deref()),
-                opt_lit(f.result.as_ref().map(|t| type_str(&resolve, t)).as_deref()),
-            )
-            .unwrap();
+            writeln!(out, "\t\t\t\t{},", function_literal(&resolve, f)).unwrap();
         }
         writeln!(out, "\t\t\t],").unwrap();
 
@@ -317,11 +296,64 @@ fn parse_catalog(wit_dir: &Path) -> String {
         .unwrap();
         writeln!(out, "\t\t\timports: vec![{}],", str_vec(&imports)).unwrap();
         writeln!(out, "\t\t\texports: vec![{}],", str_vec(&exports)).unwrap();
+        // Freestanding functions at WORLD level (`export register-grammar:
+        // func();`) — the entry points the host calls on a guest, and the
+        // imports it offers outside any interface. Source order: authors
+        // list them in the order the host calls them.
+        let world_functions = |items: &wit_parser::IndexMap<_, WorldItem>| {
+            items
+                .values()
+                .filter_map(|item| match item {
+                    WorldItem::Function(f) => {
+                        Some(format!("\t\t\t\t{},\n", function_literal(&resolve, f)))
+                    }
+                    _ => None,
+                })
+                .collect::<String>()
+        };
+        writeln!(
+            out,
+            "\t\t\texport_functions: vec![\n{}\t\t\t],",
+            world_functions(&world.exports)
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "\t\t\timport_functions: vec![\n{}\t\t\t],",
+            world_functions(&world.imports)
+        )
+        .unwrap();
         writeln!(out, "\t\t}},").unwrap();
     }
     out.push_str("\t]\n}\n");
 
     out
+}
+
+/// An `ApiFunction { .. }` literal for one WIT function — shared by
+/// interface functions and the freestanding functions a world exports or
+/// imports.
+fn function_literal(resolve: &Resolve, f: &wit_parser::Function) -> String {
+    let (kind, is_async) = function_kind(resolve, &f.kind);
+    let params = f
+        .params
+        .iter()
+        .map(|p| {
+            format!(
+                "ApiParam {{ name: {}.to_string(), ty: {}.to_string() }}",
+                lit(&p.name),
+                lit(&type_str(resolve, &p.ty))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "ApiFunction {{ name: {}.to_string(), doc: {}, kind: {kind}, \
+         is_async: {is_async}, params: vec![{params}], result: {} }}",
+        lit(&f.name),
+        opt_lit(f.docs.contents.as_deref()),
+        opt_lit(f.result.as_ref().map(|t| type_str(resolve, t)).as_deref()),
+    )
 }
 
 /// The name an interface is referred to by. Every seam lives in the one

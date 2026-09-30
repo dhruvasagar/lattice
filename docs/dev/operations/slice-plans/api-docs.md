@@ -30,6 +30,7 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 | **AD.3** | Example regions: extraction, render, validation tests; `comment` compiled in CI | ✅ |
 | **AD.4** | Seed examples across the guest-facing seams; shrink-only pending list | ✅ |
 | **AD.5** | WIT prose accuracy: path-rot guard + fix stale references | ✅ |
+| **AD.6a** | World-level functions (the `register-*` entry points) in the catalog, a worlds page, the JSON | ✅ |
 | **AD.6** | `plugin-patterns.md` guide with synced examples + reference guard; fix `plugin-authoring.md` | 📝 |
 
 ## Agent layer
@@ -87,6 +88,19 @@ Deviation: `*-fixture` worlds are now excluded from the catalog's world
 list (previously only `trampoline-fixture`) — three test worlds were
 listed as if a plugin should target them. They still count toward seam
 direction.
+
+### AD.6a — world entry points (carved while writing AD.6)
+
+Found while checking the authoring guide against the WIT: every
+contribution world declares freestanding functions
+(`export register-grammar: func();`, `register-modes`,
+`register-picker-sources`, …) — the entry points the host calls on a guest
+at load, and the first thing an author writes. The catalog only recorded a
+world's *interface* edges, so the reference omitted exactly these. The
+catalog now carries `export_functions` / `import_functions` per world;
+`plugin-api/worlds.md` renders each world with its imports, exports and
+entry points (first in the site sidebar); the index links there; the JSON
+carries them; `every_world_entry_point_is_in_the_reference` guards it.
 
 ### AD.3 — example regions (as built)
 

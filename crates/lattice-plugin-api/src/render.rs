@@ -73,6 +73,8 @@ pub fn markdown() -> String {
         out.push('\n');
         out.push_str(&seam(cat, iface, 2));
     }
+    out.push('\n');
+    out.push_str(&worlds_page(cat, 2));
     out
 }
 
@@ -100,6 +102,10 @@ pub fn pages(examples: &Examples) -> Vec<(String, String)> {
         "plugin-api.md".to_string(),
         format!("{GENERATED_HEADER}{}", index(cat)),
     )];
+    out.push((
+        "plugin-api/worlds.md".to_string(),
+        format!("{GENERATED_HEADER}{}", worlds_page(cat, 1)),
+    ));
     for iface in &cat.interfaces {
         out.push((
             format!("plugin-api/{}.md", iface.name),
@@ -162,6 +168,10 @@ fn index(cat: &PluginApiCatalog) -> String {
     );
 
     out.push_str(&format!("## Worlds ({})\n\n", cat.worlds.len()));
+    out.push_str(
+        "Each world's entry points — the `register-*` functions the host calls \
+         on load — are on the [worlds page](plugin-api/worlds.md).\n\n",
+    );
     out.push_str("| World | Exports (you implement) | Imports (you may call) |\n");
     out.push_str("|---|---|---|\n");
     for w in &cat.worlds {
@@ -176,10 +186,25 @@ fn index(cat: &PluginApiCatalog) -> String {
                     .join(", ")
             }
         };
+        let mut exports = list(&w.exports);
+        if !w.export_functions.is_empty() {
+            let fns = w
+                .export_functions
+                .iter()
+                .map(|f| format!("`{}`", f.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            exports = if w.exports.is_empty() {
+                fns
+            } else {
+                format!("{exports}; {fns}")
+            };
+        }
         out.push_str(&format!(
-            "| `{}` | {} | {} |\n",
+            "| [`{}`](plugin-api/worlds.md#world-{}) | {} | {} |\n",
             w.name,
-            list(&w.exports),
+            w.name,
+            exports,
             list(&w.imports)
         ));
     }
@@ -199,6 +224,59 @@ fn index(cat: &PluginApiCatalog) -> String {
             i.types.len(),
             summary(i.doc.as_deref()).replace('|', "\\|"),
         ));
+    }
+    out
+}
+
+/// Every world a plugin can target: what it imports and exports, and the
+/// freestanding functions it declares — most importantly the entry points the
+/// host calls on the guest at load. Those belong to no interface, so this is
+/// the only page they appear on.
+fn worlds_page(cat: &PluginApiCatalog, level: usize) -> String {
+    let h = |n: usize| "#".repeat((level + n).min(6));
+    let mut out = format!("{} Worlds\n\n", h(0));
+    out.push_str(
+        "A plugin component targets exactly one world. The world names the \
+         seams the plugin *imports* (host functions it may call) and *exports* \
+         (interfaces the host calls on it), plus freestanding functions — above \
+         all the `register-*` entry points the host calls once at load, where \
+         the plugin declares what it contributes. A plugin that needs seams from \
+         two worlds declares its own world that `include`s both.\n",
+    );
+    let links = |names: &[String]| {
+        if names.is_empty() {
+            "—".to_string()
+        } else {
+            names
+                .iter()
+                .map(|n| format!("[`{n}`]({n}.md)"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    };
+    for w in &cat.worlds {
+        out.push_str(&format!("\n{} world `{}`\n\n", h(1), w.name));
+        if let Some(doc) = &w.doc {
+            out.push_str(&demote_headings(doc, level + 2));
+            out.push_str("\n\n");
+        }
+        out.push_str(&format!(
+            "**Imports:** {}  \n**Exports:** {}\n\n",
+            links(&w.imports),
+            links(&w.exports)
+        ));
+        for (label, fns) in [
+            ("Entry points it exports", &w.export_functions),
+            ("Functions it imports", &w.import_functions),
+        ] {
+            if fns.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("**{label}**\n\n"));
+            for f in fns {
+                function(&mut out, f, &h(2));
+            }
+        }
     }
     out
 }

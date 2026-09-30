@@ -231,6 +231,42 @@ fn the_reference_covers_every_seam_with_its_docs() {
     }
 }
 
+/// AD.6a: a world's freestanding functions — the `register-*` entry points
+/// the host calls on a guest — belong to no interface, so a reference built
+/// from interfaces alone omitted exactly the functions an author must write
+/// first. Every one is documented with its signature.
+#[test]
+fn every_world_entry_point_is_in_the_reference() {
+    let md = lattice_plugin_api::render::markdown();
+    let cat = lattice_plugin_api::catalog();
+    let mut n = 0;
+    for w in &cat.worlds {
+        assert!(
+            md.contains(&format!("world `{}`", w.name)),
+            "world `{}` is missing",
+            w.name
+        );
+        for f in w.export_functions.iter().chain(&w.import_functions) {
+            n += 1;
+            assert!(
+                md.contains(&f.signature()),
+                "`{}`'s `{}` is missing from the reference",
+                w.name,
+                f.name
+            );
+        }
+    }
+    assert!(n > 20, "suspiciously few world functions: {n}");
+    let comment = cat.world("comment-plugin").expect("comment-plugin");
+    assert!(
+        comment
+            .export_functions
+            .iter()
+            .any(|f| f.name == "register-grammar"),
+        "comment-plugin exports register-grammar"
+    );
+}
+
 /// AD.1 (was the PI.7 known-gap pin, inverted as that test asked).
 ///
 /// The reference now carries every type a seam DEFINES — records, variants,

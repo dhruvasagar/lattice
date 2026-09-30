@@ -23,7 +23,12 @@
 //!                    "members": [ {"name","type","doc"} ],
 //!                    "examples": [ EXAMPLE ] } ],
 //!       "uses": [ { "name", "from", "original" } ] } ],
-//!   "worlds": [ { "name", "doc", "imports", "exports" } ] }
+//!   "worlds": [ { "name", "doc", "imports", "exports",
+//!                 "export_functions": [ FUNCTION ],
+//!                 "import_functions": [ FUNCTION ] } ] }
+//!
+//! FUNCTION = { "name", "display_name", "kind", "resource", "async",
+//!              "params", "result", "signature", "doc", "examples" }
 //!
 //! EXAMPLE = { "id", "caption", "source", "language", "code" }
 //! ```
@@ -70,31 +75,7 @@ pub fn to_json(cat: &PluginApiCatalog, examples: Option<&Examples>) -> String {
             let functions = i
                 .functions
                 .iter()
-                .map(|f| {
-                    let (kind, resource) = match &f.kind {
-                        ApiFunctionKind::Freestanding => ("freestanding", None),
-                        ApiFunctionKind::Method(r) => ("method", Some(r.as_str())),
-                        ApiFunctionKind::Static(r) => ("static", Some(r.as_str())),
-                        ApiFunctionKind::Constructor(r) => ("constructor", Some(r.as_str())),
-                    };
-                    let params = f
-                        .params
-                        .iter()
-                        .map(|p| Json::obj([("name", s(&p.name)), ("type", s(&p.ty))]))
-                        .collect();
-                    Json::obj([
-                        ("name", s(&f.name)),
-                        ("display_name", s(&f.display_name())),
-                        ("kind", s(kind)),
-                        ("resource", opt(resource)),
-                        ("async", Json::Bool(f.is_async)),
-                        ("params", Json::Arr(params)),
-                        ("result", opt(f.result.as_deref())),
-                        ("signature", s(&f.signature())),
-                        ("doc", opt(f.doc.as_deref())),
-                        ("examples", examples_for(Some(&f.display_name()))),
-                    ])
-                })
+                .map(|f| function_json(f, examples_for(Some(&f.display_name()))))
                 .collect();
             let types = i
                 .types
@@ -164,6 +145,24 @@ pub fn to_json(cat: &PluginApiCatalog, examples: Option<&Examples>) -> String {
                     "exports",
                     Json::Arr(w.exports.iter().map(|n| s(n)).collect()),
                 ),
+                (
+                    "export_functions",
+                    Json::Arr(
+                        w.export_functions
+                            .iter()
+                            .map(|f| function_json(f, Json::Arr(Vec::new())))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "import_functions",
+                    Json::Arr(
+                        w.import_functions
+                            .iter()
+                            .map(|f| function_json(f, Json::Arr(Vec::new())))
+                            .collect(),
+                    ),
+                ),
             ])
         })
         .collect();
@@ -176,6 +175,33 @@ pub fn to_json(cat: &PluginApiCatalog, examples: Option<&Examples>) -> String {
     root.write(&mut out, 0);
     out.push('\n');
     out
+}
+
+/// One function as JSON; `examples` is the already-built array.
+fn function_json(f: &crate::ApiFunction, examples: Json) -> Json {
+    let (kind, resource) = match &f.kind {
+        ApiFunctionKind::Freestanding => ("freestanding", None),
+        ApiFunctionKind::Method(r) => ("method", Some(r.as_str())),
+        ApiFunctionKind::Static(r) => ("static", Some(r.as_str())),
+        ApiFunctionKind::Constructor(r) => ("constructor", Some(r.as_str())),
+    };
+    let params = f
+        .params
+        .iter()
+        .map(|p| Json::obj([("name", s(&p.name)), ("type", s(&p.ty))]))
+        .collect();
+    Json::obj([
+        ("name", s(&f.name)),
+        ("display_name", s(&f.display_name())),
+        ("kind", s(kind)),
+        ("resource", opt(resource)),
+        ("async", Json::Bool(f.is_async)),
+        ("params", Json::Arr(params)),
+        ("result", opt(f.result.as_deref())),
+        ("signature", s(&f.signature())),
+        ("doc", opt(f.doc.as_deref())),
+        ("examples", examples),
+    ])
 }
 
 /// `none` rather than `-`: a JSON consumer should not have to know the

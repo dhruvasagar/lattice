@@ -504,10 +504,12 @@ def collect_dev_pages():
 
 
 def plugin_api_seams():
-    """Seam page stems, sorted — the sidebar order."""
+    """Generated page stems in sidebar order: `worlds` (what a plugin
+    targets, and its entry points) first, then the seams alphabetically."""
     return sorted(
-        os.path.basename(f)[:-3]
-        for f in glob.glob(os.path.join(PLUGIN_API_SEAMS, '*.md'))
+        (os.path.basename(f)[:-3]
+         for f in glob.glob(os.path.join(PLUGIN_API_SEAMS, '*.md'))),
+        key=lambda stem: (stem != 'worlds', stem),
     )
 
 

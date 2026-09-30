@@ -242,6 +242,14 @@ pub struct ApiWorld {
     pub imports: Vec<String>,
     /// Interface names the world exports (guest implements), sorted.
     pub exports: Vec<String>,
+    /// Freestanding functions the world exports — the guest's entry points
+    /// (`register-grammar`, `register-picker-sources`, …), in WIT source
+    /// order. Not part of any interface, so they appear nowhere else in the
+    /// catalog.
+    pub export_functions: Vec<ApiFunction>,
+    /// Freestanding functions the world imports from the host, in source
+    /// order.
+    pub import_functions: Vec<ApiFunction>,
 }
 
 /// World-derived direction of an interface relative to a guest plugin.

@@ -10101,7 +10101,58 @@
       ],
       "exports": [
         "grammar-callbacks"
-      ]
+      ],
+      "export_functions": [
+        {
+          "name": "register-grammar",
+          "display_name": "register-grammar",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-grammar: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-modes",
+          "display_name": "register-modes",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-modes: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-options",
+          "display_name": "register-options",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-options: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-help-topics",
+          "display_name": "register-help-topics",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-help-topics: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "comment-plugin",
@@ -10117,7 +10168,58 @@
       ],
       "exports": [
         "grammar-callbacks"
-      ]
+      ],
+      "export_functions": [
+        {
+          "name": "register-grammar",
+          "display_name": "register-grammar",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-grammar: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-modes",
+          "display_name": "register-modes",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-modes: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-options",
+          "display_name": "register-options",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-options: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-help-topics",
+          "display_name": "register-help-topics",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-help-topics: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "completion-source-plugin",
@@ -10130,7 +10232,9 @@
       ],
       "exports": [
         "completion-source"
-      ]
+      ],
+      "export_functions": [],
+      "import_functions": []
     },
     {
       "name": "config-plugin",
@@ -10140,7 +10244,22 @@
         "logging",
         "project"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "register-options",
+          "display_name": "register-options",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-options: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "context-plugin",
@@ -10154,7 +10273,9 @@
       ],
       "exports": [
         "context"
-      ]
+      ],
+      "export_functions": [],
+      "import_functions": []
     },
     {
       "name": "dashboard-plugin",
@@ -10164,7 +10285,43 @@
         "logging",
         "project"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "register-dashboard-sections",
+          "display_name": "register-dashboard-sections",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-dashboard-sections: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "render-section",
+          "display_name": "render-section",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "id",
+              "type": "string"
+            },
+            {
+              "name": "ctx",
+              "type": "ctx"
+            }
+          ],
+          "result": "fragment",
+          "signature": "render-section: func(id: string, ctx: ctx) -> fragment",
+          "doc": "Render one declared section. `id` is one the guest declared during\n`register-dashboard-sections`; a guest that does not recognise it\nshould return an empty fragment rather than trap.",
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "decorations-plugin",
@@ -10177,7 +10334,9 @@
       ],
       "exports": [
         "decorations"
-      ]
+      ],
+      "export_functions": [],
+      "import_functions": []
     },
     {
       "name": "error-parser-plugin",
@@ -10186,7 +10345,39 @@
         "error-parser",
         "logging"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "reset",
+          "display_name": "reset",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "reset: func()",
+          "doc": "Drop any pending multi-line state. Called at the start of a run.",
+          "examples": []
+        },
+        {
+          "name": "feed",
+          "display_name": "feed",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "line",
+              "type": "string"
+            }
+          ],
+          "result": "list<entry>",
+          "signature": "feed: func(line: string) -> list<entry>",
+          "doc": "Feed one line; return the entries it completed (usually none).",
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "events-plugin",
@@ -10199,7 +10390,60 @@
         "project",
         "types"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "register-events",
+          "display_name": "register-events",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-events: func()",
+          "doc": "Called once by the host to drive subscription registration; the guest\ncalls the imported `events.subscribe(filter, handler)` inside it.",
+          "examples": []
+        },
+        {
+          "name": "on-event",
+          "display_name": "on-event",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "handler",
+              "type": "u32"
+            },
+            {
+              "name": "ev",
+              "type": "event"
+            }
+          ],
+          "result": null,
+          "signature": "on-event: func(handler: u32, ev: event)",
+          "doc": "Deliver one matching event to `handler` (host→guest, async). An error /\ntrap is the graceful-degradation guard: the host logs + skips this\ndelivery, the plugin stays subscribed, other subscribers are untouched\n(§8; PH7.8c bounds it with the event budget, PH7.8d).",
+          "examples": []
+        },
+        {
+          "name": "on-wake",
+          "display_name": "on-wake",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "id",
+              "type": "wake-id"
+            }
+          ],
+          "result": null,
+          "signature": "on-wake: func(id: wake-id)",
+          "doc": "OC.2: an armed `wake-every` came due. Same task, same budget, same\ngraceful-degradation contract as `on-event` — a trap here quarantines the\nplugin exactly as one there does, and the actor keeps running for every\nother plugin. A plugin that arms no wakes exports an empty body the host\nnever calls.",
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "grammar-plugin",
@@ -10212,7 +10456,22 @@
       ],
       "exports": [
         "grammar-callbacks"
-      ]
+      ],
+      "export_functions": [
+        {
+          "name": "register-grammar",
+          "display_name": "register-grammar",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-grammar: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "help-plugin",
@@ -10222,7 +10481,22 @@
         "logging",
         "project"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "register-help-topics",
+          "display_name": "register-help-topics",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-help-topics: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "keymap-plugin",
@@ -10232,7 +10506,22 @@
         "logging",
         "project"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "register-keymap",
+          "display_name": "register-keymap",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-keymap: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "language-plugin",
@@ -10242,7 +10531,22 @@
         "logging",
         "project"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "register-languages",
+          "display_name": "register-languages",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-languages: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "media-plugin",
@@ -10255,7 +10559,9 @@
       ],
       "exports": [
         "media"
-      ]
+      ],
+      "export_functions": [],
+      "import_functions": []
     },
     {
       "name": "modes-plugin",
@@ -10265,7 +10571,22 @@
         "modes",
         "project"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "register-modes",
+          "display_name": "register-modes",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-modes: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "multibuffer-view-plugin",
@@ -10279,7 +10600,22 @@
       ],
       "exports": [
         "multibuffer-view-source"
-      ]
+      ],
+      "export_functions": [
+        {
+          "name": "register-multibuffer-views",
+          "display_name": "register-multibuffer-views",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-multibuffer-views: func()",
+          "doc": "Called once at load. The guest registers each view it owns.",
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "picker-source-plugin",
@@ -10293,7 +10629,22 @@
       ],
       "exports": [
         "picker-source"
-      ]
+      ],
+      "export_functions": [
+        {
+          "name": "register-picker-sources",
+          "display_name": "register-picker-sources",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-picker-sources: func()",
+          "doc": "OR.5b: the host calls this once at load; the guest calls the imported\n`register-picker-source` for each source it provides. The\n`register-grammar` / `register-modes` / `register-options` shape.",
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "plugin",
@@ -10306,7 +10657,34 @@
         "types",
         "ui"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "activate",
+          "display_name": "activate",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "activate: func()",
+          "doc": "Called once when the component is first instantiated. Runs config /\ncontribution registration for `init.rs`; no-op for the scaffold.",
+          "examples": []
+        },
+        {
+          "name": "deactivate",
+          "display_name": "deactivate",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "deactivate: func()",
+          "doc": "Called on teardown / reload (the Guard-`Drop` teardown seam, §8).",
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "plugin-manager-plugin",
@@ -10316,7 +10694,22 @@
         "plugin-manager",
         "project"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "register-plugins",
+          "display_name": "register-plugins",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-plugins: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "project-plugin",
@@ -10338,7 +10731,120 @@
         "grammar-callbacks",
         "picker-source",
         "transient-source"
-      ]
+      ],
+      "export_functions": [
+        {
+          "name": "register-grammar",
+          "display_name": "register-grammar",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-grammar: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-picker-sources",
+          "display_name": "register-picker-sources",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-picker-sources: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-modes",
+          "display_name": "register-modes",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-modes: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-options",
+          "display_name": "register-options",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-options: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-help-topics",
+          "display_name": "register-help-topics",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-help-topics: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-events",
+          "display_name": "register-events",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-events: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "on-event",
+          "display_name": "on-event",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "handler",
+              "type": "u32"
+            },
+            {
+              "name": "ev",
+              "type": "event"
+            }
+          ],
+          "result": null,
+          "signature": "on-event: func(handler: u32, ev: event)",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "on-wake",
+          "display_name": "on-wake",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "id",
+              "type": "wake-id"
+            }
+          ],
+          "result": null,
+          "signature": "on-wake: func(id: wake-id)",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "scanned-excerpt-source-plugin",
@@ -10351,7 +10857,105 @@
         "tree-sitter",
         "types"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "extensions",
+          "display_name": "extensions",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": "list<string>",
+          "signature": "extensions: func() -> list<string>",
+          "doc": "File extensions this source wants offered, WITHOUT the leading dot\n(`[\"org\"]`). Matched case-insensitively. Called once at load.\n\nThis export is why the host does not know what an org file is. Two\nalternatives were rejected: offering every project file to every\nsource (one boundary crossing carrying the full text of every file\nin the tree — the producer-critical-path cost §7 warns about), and\nresolving the extensions from the plugin's `language` seam, which\nwould make an agenda source *require* a language when the two are\nindependent contributions.\n\nA source returning an empty list scans nothing and is logged at\nload — a silently-inert producer is the `NotWired` failure the host\nspends effort avoiding elsewhere.",
+          "examples": []
+        },
+        {
+          "name": "view-mode",
+          "display_name": "view-mode",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": "option<string>",
+          "signature": "view-mode: func() -> option<string>",
+          "doc": "A MINOR mode this source wants activated on the agenda view, by id.\nCalled once at load, beside `extensions`.\n\nThis is how a source gets to act on its own rows. The view's generic\nbehaviour — jump-to-source, `gr` refresh — belongs to the host, which\nbuilt the view and is the only thing that can re-walk it. But\n*changing a TODO state from the agenda* is the source's semantics, and\nit needs chords in a buffer whose major is `multibuffer-mode`.\n\nAn activation policy cannot express \"the buffer this provider just\nbuilt\": `majors([\"multibuffer-mode\"])` would fire the source's chords\nin search results and diffs too. So the provider activates it, and\nthis is the source naming what to activate.\n\n`none` for a source that only produces rows. A `major` named here is\nrefused with a warning — the view already has one, and replacing it\nwould take the multibuffer's own motions away.",
+          "examples": []
+        },
+        {
+          "name": "roots",
+          "display_name": "roots",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": "list<string>",
+          "signature": "roots: func() -> list<string>",
+          "doc": "AF.1: the paths this source wants scanned. Called per scan.\n\nEach entry is a **file** or a **directory**: the host walks a directory\n(applying `extensions` as it does today) and takes a file as given\nwithout asking whether anyone claims its extension — naming a file IS\nthe claim. `~` is expanded host-side. Relative paths resolve against the\neditor's working directory.\n\n**Empty means \"no opinion\", not \"scan nothing\".** The host then uses the\nroot it would have used anyway, so a source that does not implement this\nbehaves exactly as it did before, and a user who has configured nothing\nkeeps the project-root scan.\n\n**Per scan, unlike `extensions` and `view-mode`.** Those are facts about\nthe source and are resolved once at load. This one comes from user\nconfiguration and has to follow a `:set` without a reload — caching it\nwould make the setting appear not to work until the editor restarted,\nwhich is the worst shape of \"configured and behaving as if it were not\".\n\nThe grant is unchanged: every path still passes the host's `fs` check,\nso naming a directory does not acquire the right to read it. A path\noutside the grant, or one that does not exist, is skipped with a log and\nthe rest of the scan continues — `error-parser`'s rule, because one bad\nentry in a config list is the same failure class as one bad file.\n\n## Why the source answers this and not the host\n\nThe host owns the walk, so the host owning the *list* is the obvious\ndesign. It is not the one here, because the list is the user's\nconfiguration and every source's users already have a name for it in\nwhatever ecosystem the source came from. A host-side setting would have\nto pick one of those names, or invent a neutral one nobody's fingers\nknow.\n\nSo each source configures its own file set under its own option, and the\nhost never learns any option's name — it asks and merges. Two sources\nwith completely different configuration vocabularies coexist without a\nline of host code knowing either.",
+          "examples": []
+        },
+        {
+          "name": "begin",
+          "display_name": "begin",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "args",
+              "type": "list<string>"
+            }
+          ],
+          "result": "u64",
+          "signature": "begin: func(args: list<string>) -> u64",
+          "doc": "Drop per-scan state, and declare what would invalidate this scan's\nresults. Called before the first file of a scan.\n\nEvery scan is a fresh one — `gr` re-runs from `begin`, so a guest\naccumulating across a scan (a \"seen headlines\" set, a today anchor\ncaptured once) clears here rather than leaking into the next.\n\n## The return value is a GENERATION KEY (OT.3b)\n\nAn opaque `u64` the guest computes from everything scan-wide that\nchanges what its rows would say — for org, the day the scan is anchored\nto and the configured TODO keywords. The host caches results under it\nand discards the whole cache when it changes.\n\n**Opaque on purpose.** The host must be able to persist a scan's rows\nacross restarts without re-running the guest, and it cannot key that on\nstate it can only guess at: `today` and the keyword set live inside the\nguest. Handing back an integer lets the guest declare its own\ninvalidation without the host learning what a date group or a TODO\nkeyword is — the property this whole seam is built to protect.\n\nA guest with nothing to declare returns a constant, and its results are\nthen cached until the files themselves change.\n\n## `args` — what this particular scan was asked for (OA.11a)\n\nThe `scan-args` the view was opened with, verbatim. **The host never\ninterprets these** — they are the guest's own vocabulary, and the host\ncarries them the way it carries a generation key: as something it can\nroute but not read.\n\nThis is what lets one source serve more than one scan. Org's agenda\ndispatcher opens \"Waiting and Postponed\" by name; without a channel\nhere, the guest would have to publish its selection through an option\nand read it back, which makes view state look like user configuration\nand leaves the host unable to tell that the view is parameterised at\nall.\n\nDistinct from the provider view's `argument`, which is the **root\noverride** and is host-interpreted precisely because the host does the\nwalk. The two are separate slots because they have separate owners:\nfolding them together means a command key gets taken for a directory\npath, and the scan silently covers nothing.\n\n`begin` runs before `roots`, so args stashed here are in hand for\n`roots`, every `scan` call and the generation key — which is where they\nbelong, since a scan parameterised differently must not read a cache\nfilled by the previous one.\n\nEmpty is the ordinary case and means \"the default scan\".",
+          "examples": []
+        },
+        {
+          "name": "describe",
+          "display_name": "describe",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "args",
+              "type": "list<string>"
+            }
+          ],
+          "result": "string",
+          "signature": "describe: func(args: list<string>) -> string",
+          "doc": "OA.22: what this view IS, in the guest's own words, for its headerline.\n\nThe host knows how many rows it composed and how many files it walked,\nand that is all it can say — it deliberately does not read `args` (see\n`begin`). So an agenda narrowed to one tag looks exactly like an\nunfiltered one, and \"you have no tasks\" is the worst thing this view can\nsay incorrectly. A forgotten filter is the likeliest way to make it say\nso.\n\nReturn a short phrase naming the command, the span and any active\nfilters — `\"Waiting · next 7 days · +work\"`. The host prefixes its own\ncounts, so do NOT repeat them; empty means \"nothing worth saying\" and\nthe header keeps the plain form.\n\n**Also the only place a bad view argument can be reported.** A guest\n`logging::log` call makes the component import `logging`, which org's\nmulti-seam linker does not wire on every seam — the whole component then\nfails to instantiate, a trap this plugin has paid for more than once. So\nan unrecognised argument has nowhere else to surface, and silently\ndropping it means a typo'd command shows the default agenda while\nlooking like the one that was asked for.\n\nCalled ONCE per scan, after `begin`, so it sees the args `begin` stashed.\nOff the per-file path by construction: one crossing per scan, not one\nper file.",
+          "examples": []
+        },
+        {
+          "name": "scan",
+          "display_name": "scan",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "path",
+              "type": "string"
+            },
+            {
+              "name": "text",
+              "type": "string"
+            },
+            {
+              "name": "tree",
+              "type": "option<borrow<tree-snapshot>>"
+            }
+          ],
+          "result": "result<scan-result, string>",
+          "signature": "scan: func(path: string, text: string, tree: option<borrow<tree-snapshot>>) -> result<scan-result, string>",
+          "doc": "Scan one file; return its agenda rows AND the time clocked in it.\n\n`path` is absolute. Rows may be returned in any order; the host\nstable-sorts every file's rows together on `sort-key`.\n\nAn `err` skips this file with a `debug` log and the scan continues.\nOne bad file must not fail the agenda.\n\n## Why a record rather than a bare row list (OA.14b)\n\nThe clock report is not a view of the agenda's rows. Emacs's clocktable\ntotals every clocked headline in the agenda files; agenda rows are a\nFILTERED subset, so a headline clocked yesterday with no TODO and no\ndate is not a row at all. Hanging clock data off `entry` would report\nonly the time that happened to land on a row and silently drop the\nrest — and a clock report that under-reports is worse than none, since\nnothing distinguishes a quiet week from a lossy one.\n\nIt rides this call rather than an export of its own so the walk still\nmakes ONE guest call per file. The scan is a producer's critical path\n(§7); a second crossing per file would double it to carry data most\nfiles have none of.",
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "sign-plugin",
@@ -10361,7 +10965,22 @@
         "project",
         "signs"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "register-signs",
+          "display_name": "register-signs",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-signs: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "theme-plugin",
@@ -10371,7 +10990,22 @@
         "project",
         "theme"
       ],
-      "exports": []
+      "exports": [],
+      "export_functions": [
+        {
+          "name": "register-theme-elements",
+          "display_name": "register-theme-elements",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-theme-elements: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     },
     {
       "name": "transient-source-plugin",
@@ -10383,7 +11017,9 @@
       ],
       "exports": [
         "transient-source"
-      ]
+      ],
+      "export_functions": [],
+      "import_functions": []
     },
     {
       "name": "treesitter-context-plugin",
@@ -10400,7 +11036,58 @@
       "exports": [
         "context",
         "grammar-callbacks"
-      ]
+      ],
+      "export_functions": [
+        {
+          "name": "register-options",
+          "display_name": "register-options",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-options: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-grammar",
+          "display_name": "register-grammar",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-grammar: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-modes",
+          "display_name": "register-modes",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-modes: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-help-topics",
+          "display_name": "register-help-topics",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-help-topics: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
     }
   ]
 }

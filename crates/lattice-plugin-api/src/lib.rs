@@ -47,15 +47,188 @@ pub struct ApiInterface {
     pub capability: Capability,
     /// The interface's functions, sorted by name.
     pub functions: Vec<ApiFunction>,
+    /// The types this interface DEFINES, in WIT source order (authors order a
+    /// seam's types so each is read after what it depends on).
+    pub types: Vec<ApiType>,
+    /// The types this interface pulls in from another with `use`, in source
+    /// order. Listed apart from [`types`](Self::types) so a reference links to
+    /// the definition instead of repeating it.
+    pub uses: Vec<ApiUse>,
 }
 
 /// One function within an interface.
+///
+/// Resource methods are functions too: WIT names them `[method]<resource>.<name>`
+/// (`[static]…`, `[constructor]<resource>` likewise) and [`kind`](Self::kind)
+/// says which resource they belong to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiFunction {
-    /// Kebab-case function name, e.g. `walk`.
+    /// The WIT function name, e.g. `walk` or `[method]document.line`.
     pub name: String,
     /// The function's `///` doc comment, if any.
     pub doc: Option<String>,
+    /// Freestanding, or which resource it is a method / static / constructor of.
+    pub kind: ApiFunctionKind,
+    /// Declared `async` in the WIT.
+    pub is_async: bool,
+    /// Parameters in order. A method's first parameter is `self`.
+    pub params: Vec<ApiParam>,
+    /// The result type in WIT syntax, or `None` for a function returning nothing.
+    pub result: Option<String>,
+}
+
+impl ApiFunction {
+    /// The name a reader calls it by: `walk`, `document.line`,
+    /// `document.new` for a constructor. Strips WIT's `[method]` /
+    /// `[static]` / `[constructor]` mangling.
+    pub fn display_name(&self) -> String {
+        match &self.kind {
+            ApiFunctionKind::Freestanding => self.name.clone(),
+            ApiFunctionKind::Constructor(r) => format!("{r}.new"),
+            ApiFunctionKind::Method(_) | ApiFunctionKind::Static(_) => self
+                .name
+                .split_once(']')
+                .map(|(_, rest)| rest.to_string())
+                .unwrap_or_else(|| self.name.clone()),
+        }
+    }
+
+    /// The function's signature in WIT syntax, as it would be declared inside
+    /// its interface (or its resource block): `walk: func(opts: walk-options)
+    /// -> result<list<string>, string>`. A method's implicit `self` is omitted,
+    /// as WIT source omits it.
+    pub fn signature(&self) -> String {
+        let params = |skip: usize| {
+            self.params
+                .iter()
+                .skip(skip)
+                .map(|p| format!("{}: {}", p.name, p.ty))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let result = self
+            .result
+            .as_ref()
+            .map(|r| format!(" -> {r}"))
+            .unwrap_or_default();
+        let asyncness = if self.is_async { "async " } else { "" };
+        let short = self.display_name();
+        let short = short.rsplit('.').next().unwrap_or(&self.name);
+        match &self.kind {
+            ApiFunctionKind::Freestanding => {
+                format!("{}: {asyncness}func({}){result}", self.name, params(0))
+            }
+            ApiFunctionKind::Method(_) => {
+                format!("{short}: {asyncness}func({}){result}", params(1))
+            }
+            ApiFunctionKind::Static(_) => {
+                format!("{short}: static {asyncness}func({}){result}", params(0))
+            }
+            // A constructor's declared result is the resource itself; WIT
+            // source does not spell it.
+            ApiFunctionKind::Constructor(_) => format!("constructor({})", params(0)),
+        }
+    }
+}
+
+/// Whether a function stands alone or belongs to a resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiFunctionKind {
+    /// A plain interface function.
+    Freestanding,
+    /// A method on the named resource (first parameter is `self`).
+    Method(String),
+    /// A static function on the named resource.
+    Static(String),
+    /// The named resource's constructor.
+    Constructor(String),
+}
+
+/// One function parameter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiParam {
+    /// Parameter name as declared.
+    pub name: String,
+    /// Parameter type in WIT syntax.
+    pub ty: String,
+}
+
+/// One type an interface defines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiType {
+    /// Kebab-case type name, e.g. `raw-candidate`.
+    pub name: String,
+    /// The type's `///` doc comment, if any.
+    pub doc: Option<String>,
+    /// What kind of type it is, with its fields or cases.
+    pub kind: ApiTypeKind,
+}
+
+/// The shape of a type definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiTypeKind {
+    /// A `record`: every field, in order, each with a type.
+    Record(Vec<ApiMember>),
+    /// A `variant`: every case, in order; a case may carry a payload type.
+    Variant(Vec<ApiMember>),
+    /// An `enum`: every case, in order (no payloads).
+    Enum(Vec<ApiMember>),
+    /// A `flags`: every flag, in order.
+    Flags(Vec<ApiMember>),
+    /// A `resource`: a host- or guest-owned handle. Its methods are the
+    /// interface's functions whose [`ApiFunction::kind`] names it.
+    Resource,
+    /// `type name = <expr>`: the aliased type in WIT syntax.
+    Alias(String),
+}
+
+impl ApiTypeKind {
+    /// The WIT keyword for this kind: `record`, `variant`, `enum`, `flags`,
+    /// `resource`, or `type` for an alias.
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            ApiTypeKind::Record(_) => "record",
+            ApiTypeKind::Variant(_) => "variant",
+            ApiTypeKind::Enum(_) => "enum",
+            ApiTypeKind::Flags(_) => "flags",
+            ApiTypeKind::Resource => "resource",
+            ApiTypeKind::Alias(_) => "type",
+        }
+    }
+
+    /// The fields / cases / flags, empty for a resource or alias.
+    pub fn members(&self) -> &[ApiMember] {
+        match self {
+            ApiTypeKind::Record(m)
+            | ApiTypeKind::Variant(m)
+            | ApiTypeKind::Enum(m)
+            | ApiTypeKind::Flags(m) => m,
+            ApiTypeKind::Resource | ApiTypeKind::Alias(_) => &[],
+        }
+    }
+}
+
+/// A record field, variant case, enum case or flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiMember {
+    /// Kebab-case member name.
+    pub name: String,
+    /// The member's type in WIT syntax: always present for a record field,
+    /// the payload for a variant case that has one, `None` otherwise.
+    pub ty: Option<String>,
+    /// The member's `///` doc comment, if any.
+    pub doc: Option<String>,
+}
+
+/// A type an interface imports from another with `use`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiUse {
+    /// The name it is known by in this interface (after any `as` rename).
+    pub name: String,
+    /// The interface that defines it.
+    pub from: String,
+    /// Its name in the defining interface.
+    pub original: String,
 }
 
 /// One WIT world — a bundle of imported/exported interfaces a component targets.
@@ -205,10 +378,10 @@ pub fn capability_for(name: &str) -> Option<Capability> {
 // emitted by build.rs from wit/. Private free functions in this module scope.
 include!(concat!(env!("OUT_DIR"), "/catalog.rs"));
 
-/// The plugin-API catalog, derived from `wit/` at build time and merged with
-/// the host-authored capability annotation. Computed once, then cached.
 pub mod render;
 
+/// The plugin-API catalog, derived from `wit/` at build time and merged with
+/// the host-authored capability annotation. Computed once, then cached.
 pub fn catalog() -> &'static PluginApiCatalog {
     static CATALOG: OnceLock<PluginApiCatalog> = OnceLock::new();
     CATALOG.get_or_init(|| {
@@ -232,5 +405,13 @@ impl PluginApiCatalog {
     /// The world with this exact name, if present.
     pub fn world(&self, name: &str) -> Option<&ApiWorld> {
         self.worlds.iter().find(|w| w.name == name)
+    }
+
+    /// The interface that DEFINES the type `name`, with the definition.
+    /// Interfaces that merely `use` it are not answers.
+    pub fn type_def(&self, name: &str) -> Option<(&ApiInterface, &ApiType)> {
+        self.interfaces
+            .iter()
+            .find_map(|i| i.types.iter().find(|t| t.name == name).map(|t| (i, t)))
     }
 }

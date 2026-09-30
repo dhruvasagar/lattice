@@ -1,11 +1,20 @@
-//! PI.6: rendering the plugin-API catalog for humans.
+//! PI.6 / AD.1: rendering the plugin-API catalog for humans.
 //!
 //! Moved out of the host at PI.6. It renders the CATALOG, which is this
 //! crate's, and the move is what lets the site's reference page be generated
 //! by a test here rather than only by `:export-plugin-api` in a running
 //! editor.
+//!
+//! AD.1 extends every seam from a list of function names to its full surface:
+//! signatures, resources and their methods, and every type with its fields or
+//! cases. The same [`seam`] renderer backs the single-document form
+//! ([`markdown`]) and, from AD.2, one page per seam — so the two cannot
+//! disagree about what a seam contains.
 
-use crate::{Capability, Direction};
+use crate::{
+    ApiFunction, ApiFunctionKind, ApiInterface, ApiType, ApiTypeKind, Capability, Direction,
+    PluginApiCatalog,
+};
 
 pub fn direction_prose(d: Direction) -> &'static str {
     match d {
@@ -60,28 +69,242 @@ pub fn markdown() -> String {
         cat.interfaces.len()
     ));
     for iface in &cat.interfaces {
-        out.push_str(&format!(
-            "\n## {}  ({}, capability: {})\n\n",
-            iface.name,
-            direction_prose(iface.direction),
-            capability_prose(iface.capability),
-        ));
-        if let Some(doc) = &iface.doc {
-            out.push_str(doc);
-            out.push_str("\n\n");
-        }
-        out.push_str(&format!("### Functions ({})\n\n", iface.functions.len()));
-        if iface.functions.is_empty() {
-            out.push_str("_(none — a shared type interface)_\n");
-        } else {
-            for f in &iface.functions {
-                let first = f
-                    .doc
-                    .as_deref()
-                    .and_then(|d| d.lines().next())
-                    .unwrap_or("");
-                out.push_str(&format!("- `{}` — {first}\n", f.name));
+        out.push('\n');
+        out.push_str(&seam(cat, iface, 2));
+    }
+    out
+}
+
+/// One seam's full reference, its title at heading level `level` (1 for a
+/// page of its own, 2 inside the single document).
+///
+/// Order: what it is (direction, capability, worlds), its prose, the types it
+/// borrows, its functions, its resources with their methods, then the types it
+/// defines in WIT source order. Functions come before types because a reader
+/// arrives asking "what can I call"; the types answer the follow-up question.
+pub fn seam(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize) -> String {
+    let h = |n: usize| "#".repeat((level + n).min(6));
+    let mut out = String::new();
+
+    out.push_str(&format!("{} `{}`\n\n", h(0), iface.name));
+    out.push_str(&format!(
+        "**Direction:** {} · **Capability:** {}",
+        direction_prose(iface.direction),
+        capability_prose(iface.capability),
+    ));
+    let worlds = worlds_of(cat, &iface.name);
+    if !worlds.is_empty() {
+        out.push_str(" · **Worlds:** ");
+        out.push_str(&worlds.join(", "));
+    }
+    out.push_str("\n\n");
+
+    if let Some(doc) = &iface.doc {
+        out.push_str(&demote_headings(doc, level + 1));
+        out.push_str("\n\n");
+    }
+
+    if !iface.uses.is_empty() {
+        out.push_str(&format!("{} Uses\n\n", h(1)));
+        for u in &iface.uses {
+            if u.name == u.original {
+                out.push_str(&format!("- `{}` from `{}`\n", u.name, u.from));
+            } else {
+                out.push_str(&format!(
+                    "- `{}` (`{}` from `{}`)\n",
+                    u.name, u.original, u.from
+                ));
             }
+        }
+        out.push('\n');
+    }
+
+    let freestanding: Vec<&ApiFunction> = iface
+        .functions
+        .iter()
+        .filter(|f| f.kind == ApiFunctionKind::Freestanding)
+        .collect();
+    let resources: Vec<&ApiType> = iface
+        .types
+        .iter()
+        .filter(|t| t.kind == ApiTypeKind::Resource)
+        .collect();
+
+    out.push_str(&format!("{} Functions ({})\n\n", h(1), freestanding.len()));
+    if freestanding.is_empty() {
+        if resources.is_empty() {
+            out.push_str("_(none — a shared type interface)_\n\n");
+        } else {
+            out.push_str("_(none outside its resources — see Resources below)_\n\n");
+        }
+    }
+    for f in freestanding {
+        function(&mut out, f, &h(2));
+    }
+
+    if !resources.is_empty() {
+        out.push_str(&format!("{} Resources\n\n", h(1)));
+        for r in resources {
+            out.push_str(&format!("{} resource `{}`\n\n", h(2), r.name));
+            if let Some(doc) = &r.doc {
+                out.push_str(&demote_headings(doc, level + 3));
+                out.push_str("\n\n");
+            }
+            for f in iface.functions.iter().filter(|f| belongs_to(f, &r.name)) {
+                function(&mut out, f, &h(3));
+            }
+        }
+    }
+
+    let types: Vec<&ApiType> = iface
+        .types
+        .iter()
+        .filter(|t| t.kind != ApiTypeKind::Resource)
+        .collect();
+    if !types.is_empty() {
+        out.push_str(&format!("{} Types ({})\n\n", h(1), types.len()));
+        for t in types {
+            type_def(&mut out, t, &h(2), level + 3);
+        }
+    }
+
+    out
+}
+
+/// A function: heading, WIT signature, full doc.
+fn function(out: &mut String, f: &ApiFunction, h: &str) {
+    out.push_str(&format!("{h} `{}`\n\n", f.display_name()));
+    out.push_str(&format!("```wit\n{}\n```\n\n", f.signature()));
+    if let Some(doc) = &f.doc {
+        out.push_str(&demote_headings(doc, h.len() + 1));
+        out.push_str("\n\n");
+    }
+}
+
+/// A type: heading, its WIT definition, its doc, then each member's doc.
+fn type_def(out: &mut String, t: &ApiType, h: &str, doc_level: usize) {
+    out.push_str(&format!("{h} {} `{}`\n\n", t.kind.keyword(), t.name));
+    out.push_str(&format!("```wit\n{}\n```\n\n", wit_definition(t)));
+    if let Some(doc) = &t.doc {
+        out.push_str(&demote_headings(doc, doc_level));
+        out.push_str("\n\n");
+    }
+    let members = t.kind.members();
+    if members.iter().any(|m| m.doc.is_some()) {
+        let label = match t.kind {
+            ApiTypeKind::Record(_) => "Fields",
+            ApiTypeKind::Flags(_) => "Flags",
+            _ => "Cases",
+        };
+        out.push_str(&format!("**{label}**\n\n"));
+        for m in members {
+            let ty =
+                m.ty.as_deref()
+                    .map(|t| format!(": `{t}`"))
+                    .unwrap_or_default();
+            out.push_str(&format!("- `{}`{ty}", m.name));
+            match &m.doc {
+                Some(doc) => {
+                    out.push_str(" — ");
+                    out.push_str(&indent_continuation(doc.trim_end(), "  "));
+                    out.push('\n');
+                }
+                None => out.push('\n'),
+            }
+        }
+        out.push('\n');
+    }
+}
+
+/// The type written back as a WIT declaration, members without docs — the
+/// shape at a glance, with the prose below it.
+pub fn wit_definition(t: &ApiType) -> String {
+    let kw = t.kind.keyword();
+    match &t.kind {
+        ApiTypeKind::Alias(target) => format!("type {} = {target};", t.name),
+        ApiTypeKind::Resource => format!("resource {};", t.name),
+        ApiTypeKind::Record(ms)
+        | ApiTypeKind::Variant(ms)
+        | ApiTypeKind::Enum(ms)
+        | ApiTypeKind::Flags(ms) => {
+            let is_record = matches!(t.kind, ApiTypeKind::Record(_));
+            let mut s = format!("{kw} {} {{\n", t.name);
+            for m in ms {
+                match (&m.ty, is_record) {
+                    (Some(ty), true) => s.push_str(&format!("    {}: {ty},\n", m.name)),
+                    (Some(ty), false) => s.push_str(&format!("    {}({ty}),\n", m.name)),
+                    (None, _) => s.push_str(&format!("    {},\n", m.name)),
+                }
+            }
+            s.push('}');
+            s
+        }
+    }
+}
+
+/// Is `f` a method, static or constructor of the resource `resource`?
+fn belongs_to(f: &ApiFunction, resource: &str) -> bool {
+    match &f.kind {
+        ApiFunctionKind::Freestanding => false,
+        ApiFunctionKind::Method(r)
+        | ApiFunctionKind::Static(r)
+        | ApiFunctionKind::Constructor(r) => r == resource,
+    }
+}
+
+/// The worlds that import or export `iface`, as `` `world` (exports) ``.
+fn worlds_of(cat: &PluginApiCatalog, iface: &str) -> Vec<String> {
+    cat.worlds
+        .iter()
+        .filter_map(|w| {
+            let exports = w.exports.iter().any(|e| e == iface);
+            let imports = w.imports.iter().any(|i| i == iface);
+            match (exports, imports) {
+                (true, _) => Some(format!("`{}` (exports)", w.name)),
+                (false, true) => Some(format!("`{}` (imports)", w.name)),
+                (false, false) => None,
+            }
+        })
+        .collect()
+}
+
+/// Push every ATX heading in `doc` down so its top level is `min_level`,
+/// leaving fenced code alone. A WIT doc that uses `##` for its own sections
+/// must not become a sibling of the seam it describes.
+fn demote_headings(doc: &str, min_level: usize) -> String {
+    let mut in_fence = false;
+    doc.trim_end()
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("```") {
+                in_fence = !in_fence;
+                return line.to_string();
+            }
+            if in_fence {
+                return line.to_string();
+            }
+            let hashes = line.chars().take_while(|&c| c == '#').count();
+            if hashes > 0 && line[hashes..].starts_with(' ') {
+                let level = (hashes + min_level - 1).min(6);
+                format!("{}{}", "#".repeat(level), &line[hashes..])
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Indent every line after the first by `pad`, so a multi-line doc stays
+/// inside the list item it is attached to.
+fn indent_continuation(doc: &str, pad: &str) -> String {
+    let mut lines = doc.lines();
+    let mut out = lines.next().unwrap_or("").to_string();
+    for line in lines {
+        out.push('\n');
+        if !line.is_empty() {
+            out.push_str(pad);
+            out.push_str(line);
         }
     }
     out

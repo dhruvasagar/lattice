@@ -73,13 +73,14 @@ fn the_reference_covers_every_seam_with_its_docs() {
             iface.name
         );
     }
-    // Every seam carrying functions documents them.
-    let with_fns = cat.interfaces.iter().filter(|i| !i.functions.is_empty());
-    for iface in with_fns {
+    // Every function — freestanding or resource method — is documented with
+    // its signature, under the name a reader calls it by.
+    for iface in &cat.interfaces {
         for f in &iface.functions {
+            let heading = format!("`{}`", f.display_name());
             assert!(
-                md.contains(&f.name),
-                "`{}::{}` is missing from the reference",
+                md.contains(&heading) && md.contains(&f.signature()),
+                "`{}::{}` or its signature is missing from the reference",
                 iface.name,
                 f.name
             );
@@ -87,27 +88,41 @@ fn the_reference_covers_every_seam_with_its_docs() {
     }
 }
 
-/// **KNOWN GAP, asserted so it is a fact rather than an impression.**
+/// AD.1 (was the PI.7 known-gap pin, inverted as that test asked).
 ///
-/// The catalog carries interfaces and their FUNCTIONS. It does not carry type
-/// definitions — records, variants, enums — so `types.wit`, which is the
-/// largest file in the package and holds every payload shape a guest actually
-/// constructs (`raw-candidate`, `effect`, `open-synthetic-buffer-payload`),
-/// renders as an interface with no functions and no detail.
-///
-/// That is a real hole in a reference aimed at plugin authors: knowing that
-/// `apply-action` exists does not tell you what an `effect` may be. Extending
-/// `build.rs` to parse type definitions is the fix (PI.7).
-///
-/// This test pins the CURRENT boundary. When PI.7 lands it will fail, which is
-/// the intent — the reference will then cover types and this assertion becomes
-/// the wrong way round.
+/// The reference now carries every type a seam DEFINES — records, variants,
+/// enums, flags, resources, aliases — with each member. `types.wit` is the
+/// largest file in the package and holds every payload a guest constructs;
+/// knowing `apply-action` exists is no use without knowing what an `effect`
+/// may be.
 #[test]
-fn pi7_type_definitions_are_not_in_the_reference_yet() {
+fn every_type_and_member_is_in_the_reference() {
     let md = lattice_plugin_api::render::markdown();
-    assert!(
-        !md.contains("display-spans"),
-        "PI.7 appears to have landed: record fields are in the reference now, \
-         so this test should be inverted into one that requires them"
-    );
+    let cat = lattice_plugin_api::catalog();
+    let mut members = 0;
+    for iface in &cat.interfaces {
+        for t in &iface.types {
+            let heading = format!("{} `{}`", t.kind.keyword(), t.name);
+            assert!(
+                md.contains(&heading),
+                "type `{}.{}` is missing from the reference",
+                iface.name,
+                t.name
+            );
+            for m in t.kind.members() {
+                members += 1;
+                assert!(
+                    md.contains(&format!("    {}", m.name)),
+                    "member `{}.{}.{}` is missing from the reference",
+                    iface.name,
+                    t.name,
+                    m.name
+                );
+            }
+        }
+    }
+    // The record the PI.7 pin named, by field: a regression that dropped
+    // members wholesale would otherwise pass on the heading checks alone.
+    assert!(md.contains("display-spans"), "record fields are rendered");
+    assert!(members > 200, "suspiciously few members: {members}");
 }

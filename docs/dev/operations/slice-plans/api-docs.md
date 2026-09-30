@@ -25,7 +25,7 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 | Slice | What | Status |
 |---|---|---|
 | **AD.0** | Design fragment + this plan | ✅ |
-| **AD.1** | Catalog carries types, `use`s and full signatures; single-page render shows them (closes PI.7) | 📝 |
+| **AD.1** | Catalog carries types, `use`s and full signatures; single-page render shows them (closes PI.7) | ✅ |
 | **AD.2** | Per-seam pages + index page; JSON export; site sync of the generated subsection | 📝 |
 | **AD.3** | Example regions: extraction in `build.rs`, render, validation tests, CI guest-build guard | 📝 |
 | **AD.4** | Seed examples across the guest-facing seams; shrink-only pending list | 📝 |

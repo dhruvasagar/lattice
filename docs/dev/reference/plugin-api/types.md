@@ -217,13 +217,6 @@ variant special-key {
 }
 ```
 
----- Marginalia annotations (PH7.4a, marginalia.md §8 / MARG.1) ----
-The whole closed `Annotation` enum crosses so a plugin picker source can
-define + populate marginalia columns (the user's PH7.4 requirement). The
-host lays out `AnnotationColumns` from the visible set (a render-consumed
-projection), so only the per-candidate annotations cross, never the column
-layout. `slot` / `category` are theme element KEYS resolved at paint, never
-baked colors, so a `:colorscheme` swap recolors plugin marginalia live.
 Mirrors `lattice_protocol::chord::SpecialKey`. `f` carries the function-key
 number (`1..=24`; `0` is invalid and rejected at the boundary).
 
@@ -492,8 +485,6 @@ record position {
 }
 ```
 
----- Effect payload mirrors (PH7.3b1a) ----
-The nested payload types the `effect` variant (PH7.3b1b) composes.
 Mirrors `lattice_protocol::position::Position`.
 
 ### record `range`
@@ -717,18 +708,6 @@ variant quit-scope {
 }
 ```
 
----- The `effect` variant mirror (PH7.3b1b) ----
-Mirrors the whole crossable surface of `lattice_grammar::effect::Effect`
-(§4.4: the closed "host boundary vocabulary"). Three arms are absent by
-design and cross as typed `WitBoundary` errors (never lossy):
-  - `Effect::Many(Vec<Effect>)` — WIT value types cannot be recursive, so
-    `Many` is not an arm. The boundary crosses `list<effect>` instead:
-    `to_wit` flattens `Many` (associative composition), `from_wit`
-    rebuilds `Many` when the list has >1 element.
-  - `Effect::Global { body: Box<CommandInvocation>, .. }` — needs the
-    command mirror (§4.1); typed error until then.
-  - `Effect::AppAction(AppEffect)` — needs the `AppEffect` mirror (PH7.3b2);
-    typed error until then.
 Mirrors `lattice_grammar::effect::QuitScope`.
 
 ### variant `echo-level`
@@ -793,8 +772,6 @@ enum popup-placement {
 }
 ```
 
-Payload records for the multi-field `effect` arms. Paths cross as
-`option<string>` / `string` (a non-UTF-8 path is a typed error, §4.4).
 Mirrors `lattice_core::ui::popup::PopupPlacement`.
 
 WK.5 added `minibuffer-band` (full pane width, flush to its bottom
@@ -1331,16 +1308,6 @@ variant viewport-pos {
 }
 ```
 
----- The `app-effect` variant mirror (PH7.3b2) ----
-Mirrors `lattice_grammar::app_effect::AppEffect` — the App-side typed
-effect carried by `Effect::AppAction` (chord-bound work with no grammar
-concept: `<Esc>`, `<C-w>v`, `o`, …). Pure, flat, non-recursive data. One
-arm is absent by design: `AppEffect::NarrowTrigger { range: Option<Range> }`
-carries `lattice_grammar::range::Range`, which is recursive
-(`RangeBound::Offset { base: Box<RangeBound> }`) and carries a plugin
-`RangeId` — WIT cannot express it, so `NarrowTrigger` crosses as a typed
-`WitBoundary` error until a range mirror lands (the `Global` precedent).
-`NarrowLines` (pre-resolved line span) crosses fine.
 Mirrors `lattice_grammar::app_effect::ViewportPos` (`H`/`M`/`L`).
 
 ### variant `scroll-pos`
@@ -2093,17 +2060,6 @@ variant arg-kind {
 }
 ```
 
----- The picker-source seam (PH7.4a, §4.2 / §5 `picker-source`) ----
-Mirrors the data types a plugin picker source authors against:
-`PickerSourceSpec` (+`ArgSpec`), `RoutingPayload`, `OpenTarget`, and the
-owned `PickerContext` projection the host hands `init`. This is the
-plugin-facing API (the user's "expose the api, not sources"): native
-sources stay native Rust; a plugin implements a source against these types
-and registers through the same `PickerRegistry::register_generator` seam.
-
-The active buffer's bulk rope text and syntax-highlight overlay do NOT ride
-`active-buffer-snapshot`; they cross via the `buffer` `document` resource
-handle, wired with the `init(ctx)` guest export at PH7.4c.
 Mirrors `lattice_grammar::args::ArgKind`.
 
 ### variant `arg-default`
@@ -2180,8 +2136,6 @@ record multibuffer-view-excerpt {
 
 Mirrors `lattice_picker::source::PickerSourceSpec`. `live` opts the source
 out of the picker's fuzzy refilter (the source owns filtering).
-─── MV.1: plugin-owned multibuffer views ────────────────────────
-Design: `docs/dev/architecture/plugin-multibuffer-views.md`.
 One row of a plugin-owned multibuffer view.
 
 `path` names a FILE, not a buffer id. `Excerpt` carries a `BufferId`
@@ -2446,10 +2400,6 @@ record resolve-diff-payload {
 }
 ```
 
-Payload records for the multi-field `routing-payload` arms. `lsp-location`
-and `jump-in-buffer` reuse the shared `location` / `jump-target` records;
-`invoke-command` reuses `command-ref`.
-
 ### record `lsp-instance-payload`
 
 ```wit
@@ -2554,11 +2504,6 @@ record buffer-entry {
 }
 ```
 
----- The owned `PickerContext` projection (§4.2) ----
-Host→guest only: the host projects live borrows into these owned records at
-`init` time; the guest never sends a context back. So these mirror one-way
-(a `project_picker_context` fn, the `project_buffer_snapshot` precedent),
-no `from_wit`.
 Mirrors `lattice_picker::context::BufferEntry`. `kind-label` is a display
 string — the picker seam stays oblivious to `BufferKind` (CLAUDE.md rule).
 
@@ -2671,10 +2616,6 @@ record transient-context {
 }
 ```
 
----- The transient seam (TR.2b, plugin-transients.md §5) ----
-A transient is a keyed menu: one keystroke per row, fires and closes.
-The mechanism is the picker's; these are the owned mirrors a plugin
-authors a menu against.
 Mirrors `lattice_picker::TransientContext` — where the menu was opened
 from, so a builder can vary its rows. Host→guest only (a `project_*`
 fn, the `picker-context` precedent); the guest never sends one back.
@@ -2836,31 +2777,6 @@ rather than discovered at bindgen.
 type count = u32;
 ```
 
----- The grammar-extension seam (PH7.7, §4.1) ----
-Mirrors the data types a plugin authors against when it EXTENDS the vim
-grammar via `register_{motion,operator,text_object,ex_command,action}`.
-The grammar *handling* (dispatcher, `:`-line + chord parser, operator∘
-motion composition, ranges, counts, registers) stays native, sync, and
-untouched — a plugin only CONTRIBUTES entries through these types; it can
-neither observe nor reimplement dispatch. A plugin-registered command
-lands in the same `CommandRegistry` via the same `register_*` path,
-stamped `SourceLayer::Plugin(id)`, so it is indistinguishable from a
-builtin (paramount #3).
-
-Direction: each *context* is a one-way host→guest projection of the
-dispatch environment (a `project_*` fn, the `project_picker_context`
-precedent — no `from_wit`); the *result*/*effect*/*args* come back
-guest→host. Bulk buffer text never rides a context — it crosses via the
-`buffer` `document` resource handle (§4.2). The tree-sitter env
-(`scope_resolver` / `comment_syntax`) is host-owned trait objects a v1
-grammar plugin reaches through that handle, deferred like the picker's
-syntax overlay.
-
-The `apply` / `parse_args` closures are NOT fields on the spec records:
-the behavior is a sync guest export the host calls back by callback-id
-(PH7.7b/c), so each spec mirrors its native `*Spec` struct with the
-closure field dropped. `name` / `doc` are `register_*` arguments (PH7.7b),
-not spec fields, matching the native imperative API.
 Mirrors `lattice_grammar::command::Count` — a repeat count. `Count(1)` is
 the bare invocation; `has-explicit-count` on the motion context
 disambiguates `G` from `1G`.
@@ -3175,14 +3091,6 @@ record event-applied-edit {
 }
 ```
 
---- Event / hook seam (PH7.8, plugin-host.md §5 `events`) -----------------
-
-Mirrors `lattice_runtime::EventBus` + the `lattice_protocol::Event` enum. A
-plugin subscribes (guest→host `events.subscribe`, an `event-filter`) and
-receives each matching event on its `on-event` export (host→guest, the
-owned `event` variant). Observation-only in v1 — no before-class veto (the
-native bus is observation-only, §5.10). The payloads reuse the PH7.3b
-mirrors (`range` / `selection-set`); ids cross as `u64` (`.raw()`).
 Mirrors `lattice_protocol::event::AppliedEdit`. Distinct from the PH7.3b
 `applied-edit` record: the event form carries NO `delta` (the tree-sitter
 re-parse delta is a document-actor concern, not published to observers).
@@ -3495,15 +3403,6 @@ enum gutter-diff-kind {
 }
 ```
 
---- Decoration seam (PH7.9, plugin-host.md §5 `decorations`) --------------
-
-Mirrors `Mode::gutter_decorations` + `GutterDecoration` (lattice-mode). A
-WASM decoration provider is an ASYNC PRODUCER (the completion PH7.6 fork —
-the sync `gutter_decorations` trait is read PER-FRAME by the renderer, so a
-WASM mode can't satisfy it inline): the host calls the guest's producer OFF
-the render path on a trigger, caches the returned `list<gutter-decoration>`
-per buffer, and the renderer reads the cache (never WASM on the tick,
-paramount #1). Per-line data only — no draw calls cross.
 Mirrors `lattice_mode::GutterDiffKind` — the diff-sign column.
 
 ### enum `gutter-severity-level`
@@ -3621,7 +3520,6 @@ enum media-fit {
 }
 ```
 
---- Inline media seam (IM.6, inline-media.md §7) ---------------------------
 How a media block's intrinsic size maps into its box. Mirrors
 `lattice_cells::MediaFit`.
 
@@ -3673,7 +3571,6 @@ record context-scope {
 }
 ```
 
---- Sticky-context seam (TC.2, treesitter-context.md) ----------------------
 One structural scope: the range it spans, plus the line span that NAMES
 it. Mirrors `lattice_cells::context::ContextScope` exactly (TC.1).
 
@@ -3718,35 +3615,6 @@ enum ui-zone {
 }
 ```
 
---- UI-contribution seam (plugin-host.md §5 `ui`) — TYPE-MIRROR ----------
-
-Sized for the ABI freeze (§14) when the emit producer was still deferred.
-**OC.3 / ML.6 landed that producer for the modeline half** (`ui.wit`), and
-building it against a real consumer reshaped the mirror — which is what the
-deferral note said should happen ("waits for a real plugin that needs
-more", §5.5).
-
-What changed and why: `ui-segment` bundled `zone` with `text` and `role`,
-which turned out to conflate two different lifetimes. The zone belongs to
-the *descriptor*, registered once and owned by the plugin for its whole
-life (`modeline.md` §6); the text is *content*, pushed many times per
-descriptor. A record carrying both forces a plugin to restate its zone on
-every push and gives the host no way to tell a re-registration from an
-update. So `ui.register-segment(id, zone, priority)` takes the descriptor
-half and `ui.emit-segment(id, text)` the content half, and the record
-dissolves — leaving `ui-zone` as the only piece with a native counterpart
-to mirror.
-
-`role` did not survive the same review. Both renderers match role names
-against a closed set and *disagree* on the fallback (TUI defaults to no
-style, GPUI to the path colour), so a role parameter would have shipped a
-silent cross-renderer difference. Neither native modeline producer uses
-more than one role either. It returns when a plugin registers its own
-theme element (TC.4) and can be styled coherently.
-
-Notifications remain a mirror with no producer — `effect.echo` still
-carries them. Sprites (§5.6.7) have no native struct yet, so mirroring one
-would violate exercised-trait-first.
 A modeline zone (mirrors `lattice_mode::modeline::Zone`).
 
 ### record `ui-notification`

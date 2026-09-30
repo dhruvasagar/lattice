@@ -5,13 +5,9 @@
 
 **Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `picker-source-plugin` (imports), `project-plugin` (imports)
 
-Mirrors `PickerSourceGenerator` (lattice-picker/src/source.rs:294). A WASM
-picker source *exports* this interface; the host wraps its exports as an
-`Arc<dyn PickerSourceGenerator>` (PH7.4c.2) and registers it through the
-`SubsystemBoot` install seam → `PickerRegistry::register_generator`, so a
-plugin source is indistinguishable from a first-party one at the registry.
-The ⭐ Phase-7-exit interface; validated by `plugins/fuzzy-finder` (PH7.4d).
 OR.5b — the host import a picker plugin registers its sources through.
+Each registered source is then served by the plugin's `picker-source`
+export.
 
 **Why this is an import and not an export.** Before OR.5b the seam was
 shaped "the component IS one picker source": it exported `spec()`, and the

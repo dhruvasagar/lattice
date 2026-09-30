@@ -74,12 +74,58 @@ fn direction_literal(exported: bool, imported: bool, has_functions: bool) -> &'s
     }
 }
 
+/// The package's `.wit` sources with every non-doc comment blanked out.
+///
+/// `wit-parser` collects EVERY comment run before an item as that item's docs
+/// — `//` as well as `///` (`ast.rs::parse_docs` takes each `Token::Comment`,
+/// and `resolve.rs` trims all leading slashes). The WIT authors follow the
+/// Rust convention, where `//` is a note to the next maintainer and `///` is
+/// documentation, so a parse of the raw files published section dividers
+/// (`// ---- Effect payload mirrors ----`) and implementation notes as API
+/// docs, and attached a field's trailing `// note` to the FOLLOWING field.
+///
+/// Blanking (not deleting) keeps every line number, so a parse error still
+/// points at the right line of the real file. WIT has no string literals a
+/// `//` could legitimately appear in.
+fn doc_comments_only(wit_dir: &Path) -> wit_parser::SourceMap {
+    let mut files: Vec<PathBuf> = fs::read_dir(wit_dir)
+        .unwrap_or_else(|e| panic!("lattice-plugin-api: read {}: {e}", wit_dir.display()))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "wit"))
+        .collect();
+    files.sort();
+    let mut map = wit_parser::SourceMap::new();
+    for path in files {
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("lattice-plugin-api: read {}: {e}", path.display()));
+        let kept: String = text
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with("///") {
+                    line
+                } else {
+                    // A whole-line `//` comment, or a trailing one after code.
+                    line.split_once("//").map_or(line, |(code, _)| code)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        map.push(&path, kept);
+    }
+    map
+}
+
 fn parse_catalog(wit_dir: &Path) -> String {
     let mut resolve = Resolve::default();
     // A totally unparseable canonical API is a hard build error (see module
-    // doc). `push_dir` parses the flat single-package `wit/` directory.
-    let (pkg_id, _sources) = resolve.push_dir(wit_dir).unwrap_or_else(|e| {
+    // doc). The flat single-package `wit/` directory (no `deps/`) is parsed
+    // from doc-comment-only sources — see `doc_comments_only`.
+    let group = doc_comments_only(wit_dir).parse().unwrap_or_else(|(_, e)| {
         panic!("lattice-plugin-api: failed to parse canonical wit/ package: {e:#}")
+    });
+    let pkg_id = resolve.push_group(group).unwrap_or_else(|e| {
+        panic!("lattice-plugin-api: failed to resolve canonical wit/ package: {e:#}")
     });
     let package = &resolve.packages[pkg_id];
 

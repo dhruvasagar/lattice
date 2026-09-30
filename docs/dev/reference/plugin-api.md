@@ -70,8 +70,8 @@ New to writing plugins? Start with the [plugin authoring guide](../../dev/guides
 | [`modes`](plugin-api/modes.md) | imports | - | 3 | 8 | Mirrors the `Mode` trait declaration surface + `ModeRegistry` (lattice-mode). |
 | [`multibuffer-view-registry`](plugin-api/multibuffer-view-registry.md) | imports | - | 2 | 0 | MV.1 — the seam by which a plugin **owns a multibuffer view**. |
 | [`multibuffer-view-source`](plugin-api/multibuffer-view-source.md) | exports | - | 1 | 0 |  |
-| [`picker-registry`](plugin-api/picker-registry.md) | imports | - | 1 | 0 | Mirrors `PickerSourceGenerator` (lattice-picker/src/source.rs:294). |
-| [`picker-source`](plugin-api/picker-source.md) | exports | - | 2 | 1 |  |
+| [`picker-registry`](plugin-api/picker-registry.md) | imports | - | 1 | 0 | OR.5b — the host import a picker plugin registers its sources through. |
+| [`picker-source`](plugin-api/picker-source.md) | exports | - | 2 | 1 | Mirrors `PickerSourceGenerator` (`lattice_picker::source`). |
 | [`plugin-manager`](plugin-api/plugin-manager.md) | imports | proc | 1 | 3 | PM.7: the `require` seam — how a user's `init.rs` declares the plugins it wants (plugin-manager.md §3). |
 | [`project`](plugin-api/project.md) | imports | fs | 2 | 2 | Guest→host project resolution (PR.6, design `docs/dev/architecture/project-resolution.md` §6). |
 | [`scanned-excerpt-source`](plugin-api/scanned-excerpt-source.md) | types | - | 0 | 4 | OM.A1: plugin-contributed agenda rows. |

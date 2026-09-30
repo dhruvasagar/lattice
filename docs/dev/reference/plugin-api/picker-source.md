@@ -5,6 +5,15 @@
 
 **Direction:** guest implements this interface · **Capability:** none (pure data / dispatch) · **Worlds:** `picker-source-plugin` (exports), `project-plugin` (exports)
 
+Mirrors `PickerSourceGenerator` (`lattice_picker::source`). A WASM picker
+plugin *exports* this interface to serve the sources it declared through
+`picker-registry`; the host wraps the exports as an
+`Arc<dyn PickerSourceGenerator>` (PH7.4c.2) and registers it through the
+`SubsystemBoot` install seam → `PickerRegistry::register_generator`, so a
+plugin source is indistinguishable from a first-party one at the registry.
+The ⭐ Phase-7-exit interface; exercised by the `picker-guest` fixture and
+used by `plugins/project`.
+
 ## Uses
 
 - [`raw-candidate`](types.md#record-raw-candidate) from [`types`](types.md)

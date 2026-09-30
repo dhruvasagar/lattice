@@ -294,13 +294,6 @@ impl: `boolean`→`bool`, `integer`→`i64`, `string`→`String`. The option's
 value is set / read as a `string` and parsed/formatted through that type
 (so `:set name=value` and `get-option` share one string contract).
 
-**Cases**
-
-- `boolean`
-- `integer`
-- `string` — `%`-escaped: `string` is a reserved WIT keyword. Generates the
-  `OptionType::String` variant.
-
 ### record `schema-field`
 
 ```wit
@@ -312,27 +305,6 @@ record schema-field {
 }
 ```
 
-── TC.3: options that have STRUCTURE ─────────────────────────────────
-
-WIT has no generics, so a plugin-defined record cannot be a fixed
-host-side type — the host would need a different record per plugin,
-which a shared ABI cannot have. The expressible answer is
-self-description: the guest declares a SCHEMA (ordinary WIT data), values
-cross as a generic value TREE, and the HOST validates one against the
-other. See `typed-configuration.md`.
-
-`option-type` above is not replaced — it is the three-scalar shorthand
-for the common case, and `register-option` remains the call almost every
-plugin makes. What changes is that a scalar is now understood as a
-degenerate schema rather than as the only thing an option can be.
-**WIT has no recursive types**, and that is not a detail to route
-around quietly — a schema and a value are both trees, and the obvious
-spelling (a variant whose arm holds another variant) fails to parse:
-"type `config-schema` depends on itself". So both cross as an ARENA: a
-flat list of nodes plus the index of the root, with children referenced
-by index. The guest builds the arena (the SDK derive does it
-mechanically); the host rebuilds the tree, and rejects a bad index or a
-cycle at the boundary rather than following it.
 One field of a `schema-node.record`. `schema` is an INDEX into the
 owning `config-schema.nodes`, which is how nesting survives an ABI with
 no recursion.

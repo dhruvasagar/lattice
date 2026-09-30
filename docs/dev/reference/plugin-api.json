@@ -517,7 +517,7 @@
             {
               "name": "string",
               "type": null,
-              "doc": "`%`-escaped: `string` is a reserved WIT keyword. Generates the\n`OptionType::String` variant."
+              "doc": null
             }
           ],
           "examples": []
@@ -525,7 +525,7 @@
         {
           "name": "schema-field",
           "kind": "record",
-          "doc": "── TC.3: options that have STRUCTURE ─────────────────────────────────\n\nWIT has no generics, so a plugin-defined record cannot be a fixed\nhost-side type — the host would need a different record per plugin,\nwhich a shared ABI cannot have. The expressible answer is\nself-description: the guest declares a SCHEMA (ordinary WIT data), values\ncross as a generic value TREE, and the HOST validates one against the\nother. See `typed-configuration.md`.\n\n`option-type` above is not replaced — it is the three-scalar shorthand\nfor the common case, and `register-option` remains the call almost every\nplugin makes. What changes is that a scalar is now understood as a\ndegenerate schema rather than as the only thing an option can be.\n**WIT has no recursive types**, and that is not a detail to route\naround quietly — a schema and a value are both trees, and the obvious\nspelling (a variant whose arm holds another variant) fails to parse:\n\"type `config-schema` depends on itself\". So both cross as an ARENA: a\nflat list of nodes plus the index of the root, with children referenced\nby index. The guest builds the arena (the SDK derive does it\nmechanically); the host rebuilds the tree, and rejects a bad index or a\ncycle at the boundary rather than following it.\nOne field of a `schema-node.record`. `schema` is an INDEX into the\nowning `config-schema.nodes`, which is how nesting survives an ABI with\nno recursion.\n\n`doc` is per field, not only per option, because that is what\n`:describe-option` and `:customize` render beside it — an option-level\ndoc string describing six fields is the wall of prose this replaces.",
+          "doc": "One field of a `schema-node.record`. `schema` is an INDEX into the\nowning `config-schema.nodes`, which is how nesting survives an ABI with\nno recursion.\n\n`doc` is per field, not only per option, because that is what\n`:describe-option` and `:customize` render beside it — an option-level\ndoc string describing six fields is the wall of prose this replaces.",
           "definition": "record schema-field {\n    name: string,\n    schema: u32,\n    required: bool,\n    doc: string,\n}",
           "members": [
             {
@@ -2102,7 +2102,7 @@
           ],
           "result": "result<_, string>",
           "signature": "store-put: func(key: string, value: list<u8>) -> result<_, string>",
-          "doc": "---------------------------------------------------------------------\nOR.1 — durable, plugin-scoped key/value storage.\n\nScoped to the plugin's own data dir **by manifest id**, so every seam\ninstance of one plugin sees ONE store and two plugins cannot collide.\nThat scoping is the whole point rather than an implementation note:\n`spawn_event_plugin`, `spawn_config_plugin` and\n`instantiate_grammar_plugin` build SEPARATE `wasmtime::Store`s with\nseparate guest memory, so \"keep it in guest state\" means N copies\ndrifting — and the drift is invisible, because each instance stays\ninternally consistent while answering a different question.\n\n**The host stores bytes under strings and never interprets either.**\nKeys are guest-chosen strings, NOT paths: nothing derives a path from a\nkey (the store encodes them into its own layout), so there is no\ntraversal to defend against and no path sanitiser to keep correct.\n\nThese are five functions on `host-services` rather than a `store`\ninterface of their own, and that is deliberate. A component's import set\nis fixed for the whole artefact and must resolve on EVERY linker it is\ninstantiated against — including the grammar seam's sync one. A new\ninterface is a new import each world must declare and both linkers must\nwire, and a miss there does not degrade one seam: it fails the WHOLE\ncomponent at instantiation (OC.2 did exactly this with one `logging`\ncall). `host-services` is already imported by every world that wants a\nstore and already wired on both linkers, so putting them here makes the\nhalf-wiring structurally impossible instead of merely tested for.\n\nCapability-gated on `state:write`. A plugin without the grant gets `err`\nfrom `store-put` / `store-delete`, `none` from `store-get` and an empty\nlist from `store-keys` — the honest \"no store wired\" degradation the\n`config_registry` and `event_emit` seams already use, never a panic.\n---------------------------------------------------------------------\nPersist `value` under `key`. `err` names why — no grant, no data dir,\na value larger than the whole store may hold, or a write that failed.",
+          "doc": "Persist `value` under `key`. `err` names why — no grant, no data dir,\na value larger than the whole store may hold, or a write that failed.",
           "examples": [
             {
               "id": "project:host-services.store-put",
@@ -2194,7 +2194,7 @@
           ],
           "result": "result<_, string>",
           "signature": "watch: func(path: string) -> result<_, string>",
-          "doc": "---------------------------------------------------------------------\nOR.2 — a plugin can be told a file changed.\n\nA **watcher, not a save hook**, because the corpus a plugin indexes is\nedited from outside lattice: emacs writes a note, a `git pull` lands\ntwenty, a sync daemon rewrites a directory. A save hook observes none of\nthose, and the symptom — an index missing files you know you wrote —\nreads as data loss rather than as a stale cache.\n\nDelivery is the `files-changed` arm of `event`, through the same\n`events.subscribe` a plugin already uses. It is **addressed**: the host\nroutes a batch only to the plugin that armed the watch, so a plugin\ngranted `fs:read` over one directory never learns what changed under\nanother plugin's. Because delivery rides the plugin's own event actor,\nit reaches the guest on that actor's task — no keystroke required, which\nis the failure mode (\"it works, but only after I hit something\") this\nseam is most likely to have.\n\nGated on the same `fs:read` (or `fs:write`) grant `walk` and `read-file`\ncheck — a watch reveals filesystem activity, so it is the same\nauthorization question, answered by the same line.\n---------------------------------------------------------------------\nWatch `path` (a directory, recursively) for changes. Bursts are\ncoalesced host-side behind a quiet window, so a `git pull` rewriting two\nhundred files delivers one event carrying two hundred paths rather than\ntwo hundred events.\n\nWatching the same path twice is `ok` and arms nothing new. The watch\nlives as long as this plugin instance: it is torn down when the instance\nis unloaded or quarantined, with no bookkeeping on the guest's part.\n\n`err` names which of the four refusals happened — outside the grant, no\nevent bus wired on this seam, an unwatchable path, or a watcher the\nplatform refused to create. A plugin whose watch fails should fall back\nto indexing on boot plus an explicit resync command, which is degraded\nand honest rather than appearing to work and going stale.",
+          "doc": "Watch `path` (a directory, recursively) for changes. Bursts are\ncoalesced host-side behind a quiet window, so a `git pull` rewriting two\nhundred files delivers one event carrying two hundred paths rather than\ntwo hundred events.\n\nWatching the same path twice is `ok` and arms nothing new. The watch\nlives as long as this plugin instance: it is torn down when the instance\nis unloaded or quarantined, with no bookkeeping on the guest's part.\n\n`err` names which of the four refusals happened — outside the grant, no\nevent bus wired on this seam, an unwatchable path, or a watcher the\nplatform refused to create. A plugin whose watch fails should fall back\nto indexing on boot plus an explicit resync command, which is degraded\nand honest rather than appearing to work and going stale.",
           "examples": [
             {
               "id": "events-guest:host-services.watch",
@@ -3029,7 +3029,7 @@
     },
     {
       "name": "picker-registry",
-      "doc": "Mirrors `PickerSourceGenerator` (lattice-picker/src/source.rs:294). A WASM\npicker source *exports* this interface; the host wraps its exports as an\n`Arc<dyn PickerSourceGenerator>` (PH7.4c.2) and registers it through the\n`SubsystemBoot` install seam → `PickerRegistry::register_generator`, so a\nplugin source is indistinguishable from a first-party one at the registry.\nThe ⭐ Phase-7-exit interface; validated by `plugins/fuzzy-finder` (PH7.4d).\nOR.5b — the host import a picker plugin registers its sources through.\n\n**Why this is an import and not an export.** Before OR.5b the seam was\nshaped \"the component IS one picker source\": it exported `spec()`, and the\nhost registered exactly one source per component. That made picker-source\nthe only contribution seam in the system shaped that way — `language`,\n`grammar`, `config`, `modes`, `theme`, `help` and `keymap` are all \"the\nguest calls a host import to register N things\" — and the exception was not\nfree. Org needs three pickers (refile, roam find-node, roam insert-node) and\ncould register one.\n\nSo this matches the rest: the host calls `register-picker-sources` once, the\nguest calls `register-picker-source` for each, and `init` / `accept` take the\nsource id so one actor serves them all.",
+      "doc": "OR.5b — the host import a picker plugin registers its sources through.\nEach registered source is then served by the plugin's `picker-source`\nexport.\n\n**Why this is an import and not an export.** Before OR.5b the seam was\nshaped \"the component IS one picker source\": it exported `spec()`, and the\nhost registered exactly one source per component. That made picker-source\nthe only contribution seam in the system shaped that way — `language`,\n`grammar`, `config`, `modes`, `theme`, `help` and `keymap` are all \"the\nguest calls a host import to register N things\" — and the exception was not\nfree. Org needs three pickers (refile, roam find-node, roam insert-node) and\ncould register one.\n\nSo this matches the rest: the host calls `register-picker-sources` once, the\nguest calls `register-picker-source` for each, and `init` / `accept` take the\nsource id so one actor serves them all.",
       "direction": "imports",
       "capability": "none",
       "examples": [],
@@ -3071,7 +3071,7 @@
     },
     {
       "name": "picker-source",
-      "doc": null,
+      "doc": "Mirrors `PickerSourceGenerator` (`lattice_picker::source`). A WASM picker\nplugin *exports* this interface to serve the sources it declared through\n`picker-registry`; the host wraps the exports as an\n`Arc<dyn PickerSourceGenerator>` (PH7.4c.2) and registers it through the\n`SubsystemBoot` install seam → `PickerRegistry::register_generator`, so a\nplugin source is indistinguishable from a first-party one at the registry.\nThe ⭐ Phase-7-exit interface; exercised by the `picker-guest` fixture and\nused by `plugins/project`.",
       "direction": "exports",
       "capability": "none",
       "examples": [],
@@ -4836,7 +4836,7 @@
         {
           "name": "special-key",
           "kind": "variant",
-          "doc": "---- Marginalia annotations (PH7.4a, marginalia.md §8 / MARG.1) ----\nThe whole closed `Annotation` enum crosses so a plugin picker source can\ndefine + populate marginalia columns (the user's PH7.4 requirement). The\nhost lays out `AnnotationColumns` from the visible set (a render-consumed\nprojection), so only the per-candidate annotations cross, never the column\nlayout. `slot` / `category` are theme element KEYS resolved at paint, never\nbaked colors, so a `:colorscheme` swap recolors plugin marginalia live.\nMirrors `lattice_protocol::chord::SpecialKey`. `f` carries the function-key\nnumber (`1..=24`; `0` is invalid and rejected at the boundary).",
+          "doc": "Mirrors `lattice_protocol::chord::SpecialKey`. `f` carries the function-key\nnumber (`1..=24`; `0` is invalid and rejected at the boundary).",
           "definition": "variant special-key {\n    esc,\n    enter,\n    tab,\n    backspace,\n    space,\n    up,\n    down,\n    left,\n    right,\n    home,\n    end,\n    page-up,\n    page-down,\n    insert,\n    delete,\n    f(u8),\n}",
           "members": [
             {
@@ -5297,7 +5297,7 @@
         {
           "name": "position",
           "kind": "record",
-          "doc": "---- Effect payload mirrors (PH7.3b1a) ----\nThe nested payload types the `effect` variant (PH7.3b1b) composes.\nMirrors `lattice_protocol::position::Position`.",
+          "doc": "Mirrors `lattice_protocol::position::Position`.",
           "definition": "record position {\n    line: u32,\n    byte: u32,\n}",
           "members": [
             {
@@ -5673,7 +5673,7 @@
         {
           "name": "quit-scope",
           "kind": "variant",
-          "doc": "---- The `effect` variant mirror (PH7.3b1b) ----\nMirrors the whole crossable surface of `lattice_grammar::effect::Effect`\n(§4.4: the closed \"host boundary vocabulary\"). Three arms are absent by\ndesign and cross as typed `WitBoundary` errors (never lossy):\n  - `Effect::Many(Vec<Effect>)` — WIT value types cannot be recursive, so\n    `Many` is not an arm. The boundary crosses `list<effect>` instead:\n    `to_wit` flattens `Many` (associative composition), `from_wit`\n    rebuilds `Many` when the list has >1 element.\n  - `Effect::Global { body: Box<CommandInvocation>, .. }` — needs the\n    command mirror (§4.1); typed error until then.\n  - `Effect::AppAction(AppEffect)` — needs the `AppEffect` mirror (PH7.3b2);\n    typed error until then.\nMirrors `lattice_grammar::effect::QuitScope`.",
+          "doc": "Mirrors `lattice_grammar::effect::QuitScope`.",
           "definition": "variant quit-scope {\n    pane,\n    all,\n}",
           "members": [
             {
@@ -5808,7 +5808,7 @@
         {
           "name": "popup-placement",
           "kind": "enum",
-          "doc": "Payload records for the multi-field `effect` arms. Paths cross as\n`option<string>` / `string` (a non-UTF-8 path is a typed error, §4.4).\nMirrors `lattice_core::ui::popup::PopupPlacement`.\n\nWK.5 added `minibuffer-band` (full pane width, flush to its bottom\nedge — which-key's placement). Mirrored here rather than collapsed\nto `centered` at the boundary because this enum's contract is that\nit IS the mirror: a placement reachable natively but not from a\nplugin is an arbitrary gap in the canonical API (paramount #2).",
+          "doc": "Mirrors `lattice_core::ui::popup::PopupPlacement`.\n\nWK.5 added `minibuffer-band` (full pane width, flush to its bottom\nedge — which-key's placement). Mirrored here rather than collapsed\nto `centered` at the boundary because this enum's contract is that\nit IS the mirror: a placement reachable natively but not from a\nplugin is an arbitrary gap in the canonical API (paramount #2).",
           "definition": "enum popup-placement {\n    centered,\n    cursor-anchored,\n    minibuffer-band,\n}",
           "members": [
             {
@@ -6385,7 +6385,7 @@
         {
           "name": "viewport-pos",
           "kind": "variant",
-          "doc": "---- The `app-effect` variant mirror (PH7.3b2) ----\nMirrors `lattice_grammar::app_effect::AppEffect` — the App-side typed\neffect carried by `Effect::AppAction` (chord-bound work with no grammar\nconcept: `<Esc>`, `<C-w>v`, `o`, …). Pure, flat, non-recursive data. One\narm is absent by design: `AppEffect::NarrowTrigger { range: Option<Range> }`\ncarries `lattice_grammar::range::Range`, which is recursive\n(`RangeBound::Offset { base: Box<RangeBound> }`) and carries a plugin\n`RangeId` — WIT cannot express it, so `NarrowTrigger` crosses as a typed\n`WitBoundary` error until a range mirror lands (the `Global` precedent).\n`NarrowLines` (pre-resolved line span) crosses fine.\nMirrors `lattice_grammar::app_effect::ViewportPos` (`H`/`M`/`L`).",
+          "doc": "Mirrors `lattice_grammar::app_effect::ViewportPos` (`H`/`M`/`L`).",
           "definition": "variant viewport-pos {\n    top,\n    middle,\n    bottom,\n}",
           "members": [
             {
@@ -7929,7 +7929,7 @@
         {
           "name": "arg-kind",
           "kind": "variant",
-          "doc": "---- The picker-source seam (PH7.4a, §4.2 / §5 `picker-source`) ----\nMirrors the data types a plugin picker source authors against:\n`PickerSourceSpec` (+`ArgSpec`), `RoutingPayload`, `OpenTarget`, and the\nowned `PickerContext` projection the host hands `init`. This is the\nplugin-facing API (the user's \"expose the api, not sources\"): native\nsources stay native Rust; a plugin implements a source against these types\nand registers through the same `PickerRegistry::register_generator` seam.\n\nThe active buffer's bulk rope text and syntax-highlight overlay do NOT ride\n`active-buffer-snapshot`; they cross via the `buffer` `document` resource\nhandle, wired with the `init(ctx)` guest export at PH7.4c.\nMirrors `lattice_grammar::args::ArgKind`.",
+          "doc": "Mirrors `lattice_grammar::args::ArgKind`.",
           "definition": "variant arg-kind {\n    string,\n    char,\n    bool,\n    int,\n    pattern,\n    chord,\n    body,\n    raw,\n}",
           "members": [
             {
@@ -8061,7 +8061,7 @@
         {
           "name": "multibuffer-view-excerpt",
           "kind": "record",
-          "doc": "Mirrors `lattice_picker::source::PickerSourceSpec`. `live` opts the source\nout of the picker's fuzzy refilter (the source owns filtering).\n─── MV.1: plugin-owned multibuffer views ────────────────────────\nDesign: `docs/dev/architecture/plugin-multibuffer-views.md`.\nOne row of a plugin-owned multibuffer view.\n\n`path` names a FILE, not a buffer id. `Excerpt` carries a `BufferId`\nand only the host can mint one — so the host opens (or reuses) the\ndocument and adds it as this excerpt's source. A path is the stable\nname both sides already share; `effect::write-to-file` resolves paths\nto buffers for the same reason.",
+          "doc": "Mirrors `lattice_picker::source::PickerSourceSpec`. `live` opts the source\nout of the picker's fuzzy refilter (the source owns filtering).\nOne row of a plugin-owned multibuffer view.\n\n`path` names a FILE, not a buffer id. `Excerpt` carries a `BufferId`\nand only the host can mint one — so the host opens (or reuses) the\ndocument and adds it as this excerpt's source. A path is the stable\nname both sides already share; `effect::write-to-file` resolves paths\nto buffers for the same reason.",
           "definition": "record multibuffer-view-excerpt {\n    path: string,\n    start-line: u32,\n    end-line: u32,\n    header: string,\n    match-count: option<u32>,\n}",
           "members": [
             {
@@ -8303,7 +8303,7 @@
         {
           "name": "resolve-diff-payload",
           "kind": "record",
-          "doc": "Payload records for the multi-field `routing-payload` arms. `lsp-location`\nand `jump-in-buffer` reuse the shared `location` / `jump-target` records;\n`invoke-command` reuses `command-ref`.",
+          "doc": null,
           "definition": "record resolve-diff-payload {\n    primary: u32,\n    accept: bool,\n}",
           "members": [
             {
@@ -8488,7 +8488,7 @@
         {
           "name": "buffer-entry",
           "kind": "record",
-          "doc": "---- The owned `PickerContext` projection (§4.2) ----\nHost→guest only: the host projects live borrows into these owned records at\n`init` time; the guest never sends a context back. So these mirror one-way\n(a `project_picker_context` fn, the `project_buffer_snapshot` precedent),\nno `from_wit`.\nMirrors `lattice_picker::context::BufferEntry`. `kind-label` is a display\nstring — the picker seam stays oblivious to `BufferKind` (CLAUDE.md rule).",
+          "doc": "Mirrors `lattice_picker::context::BufferEntry`. `kind-label` is a display\nstring — the picker seam stays oblivious to `BufferKind` (CLAUDE.md rule).",
           "definition": "record buffer-entry {\n    id: u32,\n    kind-label: string,\n    path: option<string>,\n    title: string,\n    dirty: bool,\n}",
           "members": [
             {
@@ -8687,7 +8687,7 @@
         {
           "name": "transient-context",
           "kind": "record",
-          "doc": "---- The transient seam (TR.2b, plugin-transients.md §5) ----\nA transient is a keyed menu: one keystroke per row, fires and closes.\nThe mechanism is the picker's; these are the owned mirrors a plugin\nauthors a menu against.\nMirrors `lattice_picker::TransientContext` — where the menu was opened\nfrom, so a builder can vary its rows. Host→guest only (a `project_*`\nfn, the `picker-context` precedent); the guest never sends one back.\n\nDeliberately NOT the cursor or the selection: a builder produces rows,\nit does not act. Each row's action receives its own `ActionContext` at\nFIRE time, when those are current.",
+          "doc": "Mirrors `lattice_picker::TransientContext` — where the menu was opened\nfrom, so a builder can vary its rows. Host→guest only (a `project_*`\nfn, the `picker-context` precedent); the guest never sends one back.\n\nDeliberately NOT the cursor or the selection: a builder produces rows,\nit does not act. Each row's action receives its own `ActionContext` at\nFIRE time, when those are current.",
           "definition": "record transient-context {\n    major-mode: option<string>,\n    minor-modes: list<string>,\n    buffer: option<u32>,\n    args: args,\n}",
           "members": [
             {
@@ -8855,7 +8855,7 @@
         {
           "name": "count",
           "kind": "alias",
-          "doc": "---- The grammar-extension seam (PH7.7, §4.1) ----\nMirrors the data types a plugin authors against when it EXTENDS the vim\ngrammar via `register_{motion,operator,text_object,ex_command,action}`.\nThe grammar *handling* (dispatcher, `:`-line + chord parser, operator∘\nmotion composition, ranges, counts, registers) stays native, sync, and\nuntouched — a plugin only CONTRIBUTES entries through these types; it can\nneither observe nor reimplement dispatch. A plugin-registered command\nlands in the same `CommandRegistry` via the same `register_*` path,\nstamped `SourceLayer::Plugin(id)`, so it is indistinguishable from a\nbuiltin (paramount #3).\n\nDirection: each *context* is a one-way host→guest projection of the\ndispatch environment (a `project_*` fn, the `project_picker_context`\nprecedent — no `from_wit`); the *result*/*effect*/*args* come back\nguest→host. Bulk buffer text never rides a context — it crosses via the\n`buffer` `document` resource handle (§4.2). The tree-sitter env\n(`scope_resolver` / `comment_syntax`) is host-owned trait objects a v1\ngrammar plugin reaches through that handle, deferred like the picker's\nsyntax overlay.\n\nThe `apply` / `parse_args` closures are NOT fields on the spec records:\nthe behavior is a sync guest export the host calls back by callback-id\n(PH7.7b/c), so each spec mirrors its native `*Spec` struct with the\nclosure field dropped. `name` / `doc` are `register_*` arguments (PH7.7b),\nnot spec fields, matching the native imperative API.\nMirrors `lattice_grammar::command::Count` — a repeat count. `Count(1)` is\nthe bare invocation; `has-explicit-count` on the motion context\ndisambiguates `G` from `1G`.",
+          "doc": "Mirrors `lattice_grammar::command::Count` — a repeat count. `Count(1)` is\nthe bare invocation; `has-explicit-count` on the motion context\ndisambiguates `G` from `1G`.",
           "definition": "type count = u32;",
           "members": [],
           "examples": []
@@ -9225,7 +9225,7 @@
         {
           "name": "event-applied-edit",
           "kind": "record",
-          "doc": "--- Event / hook seam (PH7.8, plugin-host.md §5 `events`) -----------------\n\nMirrors `lattice_runtime::EventBus` + the `lattice_protocol::Event` enum. A\nplugin subscribes (guest→host `events.subscribe`, an `event-filter`) and\nreceives each matching event on its `on-event` export (host→guest, the\nowned `event` variant). Observation-only in v1 — no before-class veto (the\nnative bus is observation-only, §5.10). The payloads reuse the PH7.3b\nmirrors (`range` / `selection-set`); ids cross as `u64` (`.raw()`).\nMirrors `lattice_protocol::event::AppliedEdit`. Distinct from the PH7.3b\n`applied-edit` record: the event form carries NO `delta` (the tree-sitter\nre-parse delta is a document-actor concern, not published to observers).",
+          "doc": "Mirrors `lattice_protocol::event::AppliedEdit`. Distinct from the PH7.3b\n`applied-edit` record: the event form carries NO `delta` (the tree-sitter\nre-parse delta is a document-actor concern, not published to observers).",
           "definition": "record event-applied-edit {\n    original-range: range,\n    inserted-range: range,\n    replaced-text: string,\n    inserted-text: string,\n}",
           "members": [
             {
@@ -9682,7 +9682,7 @@
         {
           "name": "gutter-diff-kind",
           "kind": "enum",
-          "doc": "--- Decoration seam (PH7.9, plugin-host.md §5 `decorations`) --------------\n\nMirrors `Mode::gutter_decorations` + `GutterDecoration` (lattice-mode). A\nWASM decoration provider is an ASYNC PRODUCER (the completion PH7.6 fork —\nthe sync `gutter_decorations` trait is read PER-FRAME by the renderer, so a\nWASM mode can't satisfy it inline): the host calls the guest's producer OFF\nthe render path on a trigger, caches the returned `list<gutter-decoration>`\nper buffer, and the renderer reads the cache (never WASM on the tick,\nparamount #1). Per-line data only — no draw calls cross.\nMirrors `lattice_mode::GutterDiffKind` — the diff-sign column.",
+          "doc": "Mirrors `lattice_mode::GutterDiffKind` — the diff-sign column.",
           "definition": "enum gutter-diff-kind {\n    add,\n    remove,\n    change,\n    conflict,\n}",
           "members": [
             {
@@ -9845,7 +9845,7 @@
         {
           "name": "media-fit",
           "kind": "enum",
-          "doc": "--- Inline media seam (IM.6, inline-media.md §7) ---------------------------\nHow a media block's intrinsic size maps into its box. Mirrors\n`lattice_cells::MediaFit`.",
+          "doc": "How a media block's intrinsic size maps into its box. Mirrors\n`lattice_cells::MediaFit`.",
           "definition": "enum media-fit {\n    contain,\n    width,\n}",
           "members": [
             {
@@ -9893,7 +9893,7 @@
         {
           "name": "context-scope",
           "kind": "record",
-          "doc": "--- Sticky-context seam (TC.2, treesitter-context.md) ----------------------\nOne structural scope: the range it spans, plus the line span that NAMES\nit. Mirrors `lattice_cells::context::ContextScope` exactly (TC.1).\n\n`header-start ..= header-end` is normally one line and spans several when\na signature wraps. All four are inclusive, 0-based source lines.\n\nA scope is a **pure function of the parse tree** — no viewport, no cursor,\nno options. That is what lets the guest compute the set once per parse and\nthe host resolve it per pane afterwards without another guest call, which\nis the whole reason this seam returns scopes rather than finished rows.",
+          "doc": "One structural scope: the range it spans, plus the line span that NAMES\nit. Mirrors `lattice_cells::context::ContextScope` exactly (TC.1).\n\n`header-start ..= header-end` is normally one line and spans several when\na signature wraps. All four are inclusive, 0-based source lines.\n\nA scope is a **pure function of the parse tree** — no viewport, no cursor,\nno options. That is what lets the guest compute the set once per parse and\nthe host resolve it per pane afterwards without another guest call, which\nis the whole reason this seam returns scopes rather than finished rows.",
           "definition": "record context-scope {\n    scope-start: u32,\n    scope-end: u32,\n    header-start: u32,\n    header-end: u32,\n}",
           "members": [
             {
@@ -9946,7 +9946,7 @@
         {
           "name": "ui-zone",
           "kind": "enum",
-          "doc": "--- UI-contribution seam (plugin-host.md §5 `ui`) — TYPE-MIRROR ----------\n\nSized for the ABI freeze (§14) when the emit producer was still deferred.\n**OC.3 / ML.6 landed that producer for the modeline half** (`ui.wit`), and\nbuilding it against a real consumer reshaped the mirror — which is what the\ndeferral note said should happen (\"waits for a real plugin that needs\nmore\", §5.5).\n\nWhat changed and why: `ui-segment` bundled `zone` with `text` and `role`,\nwhich turned out to conflate two different lifetimes. The zone belongs to\nthe *descriptor*, registered once and owned by the plugin for its whole\nlife (`modeline.md` §6); the text is *content*, pushed many times per\ndescriptor. A record carrying both forces a plugin to restate its zone on\nevery push and gives the host no way to tell a re-registration from an\nupdate. So `ui.register-segment(id, zone, priority)` takes the descriptor\nhalf and `ui.emit-segment(id, text)` the content half, and the record\ndissolves — leaving `ui-zone` as the only piece with a native counterpart\nto mirror.\n\n`role` did not survive the same review. Both renderers match role names\nagainst a closed set and *disagree* on the fallback (TUI defaults to no\nstyle, GPUI to the path colour), so a role parameter would have shipped a\nsilent cross-renderer difference. Neither native modeline producer uses\nmore than one role either. It returns when a plugin registers its own\ntheme element (TC.4) and can be styled coherently.\n\nNotifications remain a mirror with no producer — `effect.echo` still\ncarries them. Sprites (§5.6.7) have no native struct yet, so mirroring one\nwould violate exercised-trait-first.\nA modeline zone (mirrors `lattice_mode::modeline::Zone`).",
+          "doc": "A modeline zone (mirrors `lattice_mode::modeline::Zone`).",
           "definition": "enum ui-zone {\n    left,\n    center,\n    right,\n}",
           "members": [
             {
@@ -10297,7 +10297,7 @@
     },
     {
       "name": "plugin",
-      "doc": "The lifecycle surface every guest component implements.\n\n**First consumer is the user's `init.rs`** — compiled to WASM and loaded\nby the host with a boot-capability set (CLAUDE.md tech stack; design.md\n§5.12.2). Its `activate` runs the user's configuration: registering\nkeymaps, autocmds, hooks, and custom commands through the (stubbed here)\nhost-services / grammar / command / config / events interfaces. A plugin\nis just another component implementing this same world with a narrower\ncapability grant; `plugins/fuzzy-finder` (PH7.4) validates the picker\nseam but is *not* the first consumer.\n\nThe degenerate case — a component whose `activate` registers nothing — is\nthe empty `init.rs`, and is exactly what the PH7.0 scaffold instantiates\nto prove the host round-trip end to end.\n\nThe async ABI (design.md §5.5) and the `on-event` lifecycle export land\nwith the runtime core (PH7.1) and the event seam (PH7.8) respectively;\nPH7.0 wires the two synchronous exports needed to prove instantiation.",
+      "doc": "The lifecycle surface every guest component implements.\n\n**First consumer is the user's `init.rs`** — compiled to WASM and loaded\nby the host with a boot-capability set (CLAUDE.md tech stack; design.md\n§5.12.2). Its `activate` runs the user's configuration: registering\nkeymaps, autocmds, hooks, and custom commands through the (stubbed here)\nhost-services / grammar / command / config / events interfaces. A plugin\nis just another component implementing this same world with a narrower\ncapability grant — the bundled `plugins/` are exactly that — but none of\nthem is the first consumer.\n\nThe degenerate case — a component whose `activate` registers nothing — is\nthe empty `init.rs`, and is exactly what the PH7.0 scaffold instantiates\nto prove the host round-trip end to end.\n\nThe async ABI (design.md §5.5) and the `on-event` lifecycle export land\nwith the runtime core (PH7.1) and the event seam (PH7.8) respectively;\nPH7.0 wires the two synchronous exports needed to prove instantiation.",
       "imports": [
         "buffer",
         "host-services",

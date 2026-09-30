@@ -29,7 +29,7 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 | **AD.2** | Per-seam pages + index page; JSON export; site sync of the generated subsection | ✅ |
 | **AD.3** | Example regions: extraction, render, validation tests; `comment` compiled in CI | ✅ |
 | **AD.4** | Seed examples across the guest-facing seams; shrink-only pending list | ✅ |
-| **AD.5** | WIT prose accuracy: path-rot guard + fix stale references | 📝 |
+| **AD.5** | WIT prose accuracy: path-rot guard + fix stale references | ✅ |
 | **AD.6** | `plugin-patterns.md` guide with synced examples + reference guard; fix `plugin-authoring.md` | 📝 |
 
 ## Agent layer

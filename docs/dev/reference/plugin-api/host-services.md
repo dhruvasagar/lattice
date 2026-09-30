@@ -489,39 +489,6 @@ Ok(vec![Effect::Echo(EchoPayload {
 store-put: func(key: string, value: list<u8>) -> result<_, string>
 ```
 
----------------------------------------------------------------------
-OR.1 — durable, plugin-scoped key/value storage.
-
-Scoped to the plugin's own data dir **by manifest id**, so every seam
-instance of one plugin sees ONE store and two plugins cannot collide.
-That scoping is the whole point rather than an implementation note:
-`spawn_event_plugin`, `spawn_config_plugin` and
-`instantiate_grammar_plugin` build SEPARATE `wasmtime::Store`s with
-separate guest memory, so "keep it in guest state" means N copies
-drifting — and the drift is invisible, because each instance stays
-internally consistent while answering a different question.
-
-**The host stores bytes under strings and never interprets either.**
-Keys are guest-chosen strings, NOT paths: nothing derives a path from a
-key (the store encodes them into its own layout), so there is no
-traversal to defend against and no path sanitiser to keep correct.
-
-These are five functions on `host-services` rather than a `store`
-interface of their own, and that is deliberate. A component's import set
-is fixed for the whole artefact and must resolve on EVERY linker it is
-instantiated against — including the grammar seam's sync one. A new
-interface is a new import each world must declare and both linkers must
-wire, and a miss there does not degrade one seam: it fails the WHOLE
-component at instantiation (OC.2 did exactly this with one `logging`
-call). `host-services` is already imported by every world that wants a
-store and already wired on both linkers, so putting them here makes the
-half-wiring structurally impossible instead of merely tested for.
-
-Capability-gated on `state:write`. A plugin without the grant gets `err`
-from `store-put` / `store-delete`, `none` from `store-get` and an empty
-list from `store-keys` — the honest "no store wired" degradation the
-`config_registry` and `event_emit` seams already use, never a panic.
----------------------------------------------------------------------
 Persist `value` under `key`. `err` names why — no grant, no data dir,
 a value larger than the whole store may hold, or a write that failed.
 
@@ -622,28 +589,6 @@ let text = match host_services::walk("/") {
 watch: func(path: string) -> result<_, string>
 ```
 
----------------------------------------------------------------------
-OR.2 — a plugin can be told a file changed.
-
-A **watcher, not a save hook**, because the corpus a plugin indexes is
-edited from outside lattice: emacs writes a note, a `git pull` lands
-twenty, a sync daemon rewrites a directory. A save hook observes none of
-those, and the symptom — an index missing files you know you wrote —
-reads as data loss rather than as a stale cache.
-
-Delivery is the `files-changed` arm of `event`, through the same
-`events.subscribe` a plugin already uses. It is **addressed**: the host
-routes a batch only to the plugin that armed the watch, so a plugin
-granted `fs:read` over one directory never learns what changed under
-another plugin's. Because delivery rides the plugin's own event actor,
-it reaches the guest on that actor's task — no keystroke required, which
-is the failure mode ("it works, but only after I hit something") this
-seam is most likely to have.
-
-Gated on the same `fs:read` (or `fs:write`) grant `walk` and `read-file`
-check — a watch reveals filesystem activity, so it is the same
-authorization question, answered by the same line.
----------------------------------------------------------------------
 Watch `path` (a directory, recursively) for changes. Bursts are
 coalesced host-side behind a quiet window, so a `git pull` rewriting two
 hundred files delivers one event carrying two hundred paths rather than

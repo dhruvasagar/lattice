@@ -136,11 +136,22 @@ treats the `plugin-api/` directory as one generated subsection.
 
 Generation makes the reference faithful to the WIT; it cannot make the WIT's
 prose true. The doc comments carry slice IDs, `file.rs:294` line references
-and names of deleted plugins. A guard extracts every repository path a WIT
-doc names (`plugins/<x>`, `crates/<x>/src/...`) and fails if it does not
-exist; `file:line` references are removed rather than guarded, since no test
-can say whether line 294 is still the right line. Slice IDs stay — they are
-how a reader finds the rationale.
+and names of deleted plugins. `tests/wit_prose.rs` checks every `///` line
+for four kinds of pointer: a repository path must exist, a design-doc name
+must be a file under `docs/` or the root, a `lattice_*::…::Item` path must
+name a crate that defines `Item`, and a `file.rs:NNN` reference is refused
+outright — no test can say whether line NNN is still the right line. Slice
+IDs stay — they are how a reader finds the rationale.
+
+**Only `///` is documentation.** `wit-parser` attaches *every* comment run
+before an item to it, `//` included, so a raw parse published section
+dividers (`// ---- Effect payload mirrors ----`) as the next record's docs
+and a field's trailing `// note` as the following field's. The WIT authors
+write to the Rust convention — `//` for maintainers, `///` for readers — so
+`build.rs` parses a copy of the sources with non-doc comments blanked (line
+numbers preserved for parse errors). Where a `//` comment was in fact an
+item's only documentation, the fix is to promote it to `///` in the WIT,
+which makes the intent explicit rather than inferred.
 
 ### 2.5 Usage patterns
 
@@ -224,7 +235,8 @@ the artefacts above; none of it is written by hand.
 | example regions | `lattice-plugin-api` `tests/examples.rs` | target missing, region malformed, source guest not built by `lattice-plugin-host` |
 | guest builds | `lattice-plugin-host/build.rs` (existing) + `every_core_plugin_is_compiled_in_ci` | a guest fails to compile with the wasm target installed; a `plugins/*` crate is not in the build list |
 | example coverage | ratchet list in the example test | a guest-facing seam has no example and is not on the (shrink-only) pending list |
-| WIT prose | path-rot test | a WIT doc names a path that does not exist |
+| WIT prose | `tests/wit_prose.rs` | a WIT doc names a missing path, design doc or Rust item, or cites a source line number |
+| doc-comment semantics | `only_triple_slash_comments_are_documentation` | a `//` note leaks into the reference, or a `///` doc is lost |
 | guides | synced-block + reference tests | a quoted example or an `interface.item` reference no longer matches |
 | Rust coverage | `scripts/doc-coverage.sh` in CI | an opted-in crate gains an undocumented item or a broken intra-doc link |
 | Rust examples | doctests under `cargo test` | an example stops compiling or asserting |

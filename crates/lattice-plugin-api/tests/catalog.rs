@@ -144,6 +144,39 @@ fn catalog_carries_signatures_types_and_uses() {
     );
 }
 
+/// AD.5: only `///` is documentation. `wit-parser` alone would publish a `//`
+/// section divider as the next item's docs (`position` carried
+/// "---- Effect payload mirrors ----") and a `//`-documented case's prose
+/// would be indistinguishable from a maintainer's note. `build.rs` parses
+/// doc-comment-only sources; these pin both directions.
+#[test]
+fn only_triple_slash_comments_are_documentation() {
+    let cat = catalog();
+    let (_, position) = cat.type_def("position").expect("types.position");
+    let doc = position.doc.as_deref().unwrap_or("");
+    assert!(
+        !doc.contains("----") && !doc.contains("payload mirrors"),
+        "a `//` section divider leaked into `position`'s docs: {doc:?}"
+    );
+    // And a case documented with `///` keeps its docs.
+    let (_, kinds) = cat.type_def("event-kind").expect("types.event-kind");
+    let plugin = kinds
+        .kind
+        .members()
+        .iter()
+        .find(|m| m.name == "plugin")
+        .expect("event-kind.plugin");
+    assert!(
+        plugin
+            .doc
+            .as_deref()
+            .unwrap_or("")
+            .contains("plugin-defined event"),
+        "`///` case docs must survive: {:?}",
+        plugin.doc
+    );
+}
+
 /// Every type named in a signature, field or case resolves to a definition
 /// somewhere in the catalog. A renderer that emitted `<anonymous>` or a name
 /// with no definition would produce a reference with dead ends.

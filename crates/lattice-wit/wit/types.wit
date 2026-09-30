@@ -814,7 +814,7 @@ interface types {
         describe-option(string),
         describe-element(string),
         list-options,
-        // PI.2: plugin-API introspection help effects.
+        /// PI.2: plugin-API introspection help effects.
         describe-plugin-api(option<string>),
         list-plugin-apis,
         export-plugin-api(option<string>),
@@ -823,11 +823,11 @@ interface types {
         list-plugins,
         open-hover(string),
         dismiss-popup,
-        // Dismiss the popup only if it is the named one; a no-op otherwise.
-        // `dismiss-popup` is the user's verb ("close what I am looking at");
-        // this is the one a mode uses when it dismisses on its own schedule,
-        // where the slot may hold someone else's popup by the time the effect
-        // lands. See `Effect::DismissPopupNamed` for the bug that motivated it.
+        /// Dismiss the popup only if it is the named one; a no-op otherwise.
+        /// `dismiss-popup` is the user's verb ("close what I am looking at");
+        /// this is the one a mode uses when it dismisses on its own schedule,
+        /// where the slot may hold someone else's popup by the time the effect
+        /// lands. See `Effect::DismissPopupNamed` for the bug that motivated it.
         dismiss-popup-named(string),
         open-popup(open-popup-payload),
         open-help-topic(option<string>),
@@ -1877,25 +1877,25 @@ interface types {
         major-exiting,
         minor-activated,
         minor-deactivated,
-        // Discriminator for EVERY plugin-defined event (PH7.8b). All plugin
-        // events share this one kind; the per-event `name` is not a bus
-        // discriminator — a subscriber filters by name in its `on-event`.
+        /// Discriminator for EVERY plugin-defined event (PH7.8b). All plugin
+        /// events share this one kind; the per-event `name` is not a bus
+        /// discriminator — a subscriber filters by name in its `on-event`.
         plugin,
-        // OA.14d: a named plugin is about to run the load-time exports that
-        // read its OWN options. Delivery is awaited — the loader does not
-        // continue the load until every handler has returned — which is what
-        // lets an `init.rs` `set-option` reach a value the plugin consumes at
-        // load. `plugin-loaded` is too late for those.
+        /// OA.14d: a named plugin is about to run the load-time exports that
+        /// read its OWN options. Delivery is awaited — the loader does not
+        /// continue the load until every handler has returned — which is what
+        /// lets an `init.rs` `set-option` reach a value the plugin consumes at
+        /// load. `plugin-loaded` is too late for those.
         pre-plugin-loaded,
-        // CI.1: plugin-lifecycle signals delivered to guests. An `init.rs`
-        // subscribes to `plugin-loaded` (filtering by name in its handler) to run
-        // deferred config against a now-present plugin (`with-eval-after-load`).
+        /// CI.1: plugin-lifecycle signals delivered to guests. An `init.rs`
+        /// subscribes to `plugin-loaded` (filtering by name in its handler) to run
+        /// deferred config against a now-present plugin (`with-eval-after-load`).
         plugin-loaded,
         plugin-unloaded,
-        // OR.2: a directory this plugin asked the host to watch changed. One
-        // kind for every watch; the host addresses each batch to the plugin
-        // that armed it, so subscribing to this kind never surfaces another
-        // plugin's watch.
+        /// OR.2: a directory this plugin asked the host to watch changed. One
+        /// kind for every watch; the host addresses each batch to the plugin
+        /// that armed it, so subscribing to this kind never surfaces another
+        /// plugin's watch.
         files-changed,
     }
 

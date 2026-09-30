@@ -8,7 +8,7 @@
 //! Moved here from `lattice-host` and reclassified as a **builtin** mode: it
 //! is default-on + `Universal`, has no owning feature crate, and is
 //! renderer-agnostic — so it belongs with the foundation modes in
-//! `lattice-mode` (registered via [`register_foundation_modes`]). All the
+//! `lattice-mode` (registered via [`register_foundation_modes`](crate::register_foundation_modes)). All the
 //! keymap-trie types its layer builder needs (`KeymapTrie` / `BoundCommand` /
 //! `KeymapLayer` from `lattice-keymap`, `ChordPattern` from `lattice-protocol`,
 //! `CommandRegistry` / `CommandInvocation` from `lattice-grammar`) live below
@@ -40,6 +40,9 @@ use crate::{ActivationPolicy, LifecycleFuture, Mode, ModeContext, ModeId, ModeKi
 pub struct EmacsKeysMode;
 
 impl EmacsKeysMode {
+    /// The canonical id, `"emacs-keys-mode"` — also the key of the
+    /// `MinorMode` keymap layer the host pushes. Distinct from the
+    /// user-facing option name `emacs-keys`.
     pub fn mode_id() -> ModeId {
         // The mode id carries the conventional `-mode` suffix (like
         // `snippet-mode`, `diff-mode`, …) so it reads as `emacs-keys-mode`

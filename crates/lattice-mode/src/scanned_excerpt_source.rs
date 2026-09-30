@@ -40,9 +40,9 @@ pub struct ScannedExcerpt {
     /// The host stable-sorts every file's rows together on this, ascending.
     /// The producer owns what it means.
     pub sort_key: i64,
-    /// OA.5: how this row is coloured, as byte spans into the row's own first
+    /// How this row is coloured, as byte spans into the row's own first
     /// line — NOT into the composed view, which the producer cannot see until
-    /// every other file's rows have been interleaved by the sort.
+    /// every other file's rows have been interleaved by the sort (OA.5).
     ///
     /// Empty is the ordinary case, and means "say nothing about colour": the
     /// source file's own grammar highlighting is what shows, unchanged. A
@@ -51,7 +51,7 @@ pub struct ScannedExcerpt {
     /// org grammar's, which is why an agenda looked like org text out of
     /// order before this existed.
     pub spans: Vec<RowSpan>,
-    /// HB.5: a row to hang BELOW this one, or `None`.
+    /// A row to hang BELOW this one, or `None` (HB.5).
     ///
     /// The WIT `annotation`, native side. A row's text is a verbatim excerpt of
     /// a source line, so a producer with something of its own to show — a
@@ -75,14 +75,16 @@ pub struct ScannedExcerpt {
     pub emphasis: bool,
 }
 
-/// HB.5: one line hung below a row, and how it is coloured.
+/// One line hung below a row, and how it is coloured (HB.5).
 ///
 /// The WIT `annotation`, native side. Its [`spans`](Self::spans) index into
 /// [`text`](Self::text) — not into the row's source line, which this is not
 /// part of — and resolve through the same path [`RowSpan`] does.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RowAnnotation {
+    /// The hung line's text (one line; it is not part of any source file).
     pub text: String,
+    /// Styled runs, as byte offsets into [`text`](Self::text).
     pub spans: Vec<RowSpan>,
 }
 
@@ -97,12 +99,13 @@ pub struct RowAnnotation {
 pub struct RowSpan {
     /// Byte offset from the start of the row's line.
     pub start: u32,
+    /// Byte offset one past the run's last byte (exclusive).
     pub end: u32,
     /// Capture or theme-element name.
     pub slot: String,
 }
 
-/// OA.14b: time clocked on one headline on one day.
+/// Time clocked on one headline on one day (OA.14b).
 ///
 /// The WIT `clock-span`, native side. Reported for every clocked headline a
 /// producer saw — NOT only for the ones that became rows. A clock report totals
@@ -133,7 +136,10 @@ pub struct ClockSpan {
 /// and a second crossing to carry data most files have none of would double it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanResult {
+    /// The agenda rows this file contributes, in any order (the host sorts).
     pub entries: Vec<ScannedExcerpt>,
+    /// Every clocked (headline, day) the producer saw in the file, whether
+    /// or not it became a row.
     pub clock: Vec<ClockSpan>,
 }
 
@@ -161,7 +167,7 @@ pub type ScanFuture<'a> = Pin<Box<dyn Future<Output = Result<ScanResult, String>
 /// invites a producer to return rows from it that the scan would drop.
 pub type ScanBeginFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
-/// OA.22: the future [`ScannedExcerptSource::describe`] returns.
+/// The future [`ScannedExcerptSource::describe`] returns (OA.22).
 ///
 /// Infallible by design. A source that cannot say what it is has nothing to
 /// report rather than an error to raise, and the header falls back to the plain
@@ -198,7 +204,7 @@ pub trait ScannedExcerptSource: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// AF.1: the paths this source wants scanned — each a FILE or a DIRECTORY.
+    /// The paths this source wants scanned — each a FILE or a DIRECTORY (AF.1).
     ///
     /// Empty means "no opinion": the host uses the root it would have used, so
     /// a source that does not implement this behaves exactly as before. That is
@@ -233,7 +239,7 @@ pub trait ScannedExcerptSource: Send + Sync + std::fmt::Debug {
     /// Empty is the ordinary case: the default scan.
     fn begin(&self, args: &[String]) -> ScanBeginFuture<'_>;
 
-    /// OA.22: what this view IS, in the source's own words, for its headerline.
+    /// What this view IS, in the source's own words, for its headerline (OA.22).
     ///
     /// The host knows only how many rows it composed and how many files it
     /// walked; it deliberately does not read `args` (see [`Self::begin`]). So an
@@ -281,6 +287,7 @@ impl std::fmt::Debug for ScannedExcerptSourceRegistry {
 }
 
 impl ScannedExcerptSourceRegistry {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }
@@ -340,10 +347,12 @@ impl ScannedExcerptSourceRegistry {
             .collect()
     }
 
+    /// True when no producer is registered.
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
     }
 
+    /// Number of registered producers.
     pub fn len(&self) -> usize {
         self.sources.len()
     }

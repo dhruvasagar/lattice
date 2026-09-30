@@ -1,5 +1,5 @@
-//! TB.1 — a pipe table as `table-mode` sees it: where it starts and ends,
-//! which cell the caret is in, and how to render it back.
+//! A pipe table as `table-mode` sees it: where it starts and ends,
+//! which cell the caret is in, and how to render it back (TB.1).
 //!
 //! [`layout`](super::layout) is the unattended half of this — it reformats
 //! every table in a document at content-build time, for `lattice-help`. This
@@ -45,7 +45,9 @@ pub enum Row {
     /// per-column alignment markers. Both are kept so re-rendering reproduces
     /// the dialect it found rather than imposing one.
     Separator {
+        /// The column-joining character as written (`|` or `+`).
         join: char,
+        /// One alignment marker per column, as written.
         aligns: Vec<layout::Align>,
     },
 }
@@ -58,6 +60,7 @@ pub struct Table {
     pub first: u32,
     /// Last line of the table, inclusive.
     pub last: u32,
+    /// Every row, in buffer order — cells and separators alike.
     pub rows: Vec<Row>,
     /// Leading whitespace of the first row, reproduced on every rendered
     /// line. An indented table stays where the author put it — org tables

@@ -106,6 +106,9 @@ pub struct WhichKeyMode {
 }
 
 impl WhichKeyMode {
+    /// The canonical id, `"which-key-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("which-key-mode")
     }

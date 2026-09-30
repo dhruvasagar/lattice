@@ -5,8 +5,8 @@
 //! (`yss{char}` / `S{char}` in visual). All three are registered
 //! in the shared `CommandRegistry` at boot.
 //!
-//! Design: [`docs/dev/architecture/surround-mode.md`];
-//! slice plan: [`docs/dev/operations/slice-plans/surround-mode.md`].
+//! Design: `docs/dev/architecture/surround-mode.md`;
+//! slice plan: `docs/dev/operations/slice-plans/surround-mode.md`.
 
 use std::sync::Arc;
 
@@ -585,8 +585,11 @@ fn get_cursor_from_document(doc: &Document) -> Position {
 /// Typed handles for the surround operators.
 #[derive(Debug, Clone)]
 pub struct SurroundOperators {
+    /// `operator:surround-delete` — vim's `ds{char}`.
     pub delete: OperatorId,
+    /// `operator:surround-change` — vim's `cs{old}{new}`.
     pub change: OperatorId,
+    /// `operator:surround-add` — vim's `ys{motion}{char}` / `yss` / visual `S`.
     pub add: OperatorId,
 }
 
@@ -666,6 +669,9 @@ pub struct SurroundMode {
 }
 
 impl SurroundMode {
+    /// The canonical id, `"surround-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("surround-mode")
     }

@@ -22,13 +22,16 @@
 //! ## Ownership and the `OWNER_MODE` rule
 //!
 //! Each local declares the mode that owns it
-//! ([`BufferLocal::OWNER_MODE`]). At write time the
-//! [`crate::ModeContext`] checks that the *currently
-//! activating* mode matches the local's owner; cross-mode
-//! mutation is rejected as a typed error. This keeps each
-//! mode's runtime state encapsulated -- a `git-blame-mode`
-//! plugin can't accidentally clobber `file-tree-mode`'s
-//! entries map.
+//! ([`BufferLocal::OWNER_MODE`]). The design (M.3.2.a) has
+//! [`crate::ModeContext`] check at write time that the *currently
+//! activating* mode matches the local's owner, rejecting cross-mode
+//! mutation with
+//! [`ModeActivationError::WrongOwnerMode`](crate::ModeActivationError::WrongOwnerMode).
+//! **That checked write surface is not implemented:** `ModeContext` has
+//! no local accessors today, writes happen host-side through
+//! [`BufferLocals::insert`] (unchecked), and `OWNER_MODE` is attribution
+//! metadata for `:describe-buffer`. Treat the rule as a convention — write
+//! only the locals your mode owns.
 //!
 //! Reads are unrestricted: any mode can read any local. This
 //! lets, e.g., `lsp-completion-mode` read `file-tree-mode`'s
@@ -65,8 +68,11 @@ use std::collections::HashMap;
 /// Implementing types are typically newtypes wrapping the
 /// underlying data:
 ///
-/// ```ignore
-/// pub struct FileTreeEntries(pub Vec<FileTreeEntry>);
+/// ```
+/// use lattice_mode::{BufferLocal, BufferLocals};
+///
+/// #[derive(Clone)]
+/// pub struct FileTreeEntries(pub Vec<String>);
 ///
 /// impl BufferLocal for FileTreeEntries {
 ///     const NAME: &'static str = "file-tree.entries";
@@ -76,6 +82,14 @@ use std::collections::HashMap;
 ///         format!("{} entries", self.0.len())
 ///     }
 /// }
+///
+/// let mut locals = BufferLocals::new();
+/// locals.insert(FileTreeEntries(vec!["src/".into(), "Cargo.toml".into()]));
+/// assert_eq!(locals.get::<FileTreeEntries>().unwrap().0.len(), 2);
+///
+/// // `:describe-buffer` sees it without knowing the concrete type.
+/// let d = locals.iter_descriptors().next().unwrap();
+/// assert_eq!((d.name, d.owner_mode, d.describe.as_str()), ("file-tree.entries", "file-tree-mode", "2 entries"));
 /// ```
 ///
 /// `'static` bound: locals key on `TypeId`, which requires the
@@ -99,9 +113,10 @@ pub trait BufferLocal: Any + Clone + Send + Sync + 'static {
     /// expands a local for detail.
     const DOC: &'static str;
 
-    /// Mode id that owns this local. Enforced at write time:
-    /// `ModeContext::set_local::<T>` rejects if the current
-    /// mode's id doesn't match this.
+    /// Mode id that owns this local. Attribution metadata for
+    /// `:describe-buffer`; the write-time check the design calls for
+    /// (a `ModeContext::set_local::<T>` that rejects a non-owner) is not
+    /// implemented, so nothing enforces it today (see the module docs).
     const OWNER_MODE: &'static str;
 
     /// Single-line summary of the local's value for
@@ -169,19 +184,24 @@ impl<T: BufferLocal> LocalDyn for T {
 /// [`BufferLocals::iter_descriptors`] for `:describe-buffer`.
 #[derive(Debug, Clone)]
 pub struct LocalDescriptor {
+    /// [`BufferLocal::NAME`].
     pub name: &'static str,
+    /// [`BufferLocal::DOC`].
     pub doc: &'static str,
+    /// [`BufferLocal::OWNER_MODE`].
     pub owner_mode: &'static str,
+    /// The value's [`BufferLocal::describe`] summary, computed when the
+    /// descriptor was produced.
     pub describe: String,
 }
 
 /// Typed-map of buffer-local mode-internal state.
 ///
-/// Stored on per-buffer App state (the App's BufferEntry in
-/// `lattice-ui-tui`). Modes write entries through a borrowed
-/// [`crate::ModeContext`] during `on_activate`, remove during
-/// `on_deactivate`. Outside lifecycle hooks, code reads
-/// directly via [`Self::get`].
+/// Stored on per-buffer host state, one map per buffer. The host writes
+/// entries (seeding at buffer construction, or on a mode's behalf — e.g.
+/// [`ModeActivator::set_buffer_scope_dir`](crate::ModeActivator::set_buffer_scope_dir));
+/// anyone reads via [`Self::get`]. Removal is `pub(crate)` and not yet
+/// wired to any caller.
 #[derive(Default)]
 pub struct BufferLocals {
     map: HashMap<TypeId, Box<dyn LocalDyn>>,
@@ -206,6 +226,7 @@ impl Clone for BufferLocals {
 }
 
 impl BufferLocals {
+    /// An empty map.
     pub fn new() -> Self {
         Self::default()
     }
@@ -215,6 +236,7 @@ impl BufferLocals {
         self.map.len()
     }
 
+    /// True when no local is stored.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -227,8 +249,9 @@ impl BufferLocals {
     /// caller because parsing lives in the constructor).
     ///
     /// The owner-mode check is intentionally NOT enforced
-    /// here; that's [`crate::ModeContext::set_local`]'s job
-    /// for *active modes' runtime writes*. App-level
+    /// here; the design gives that job to a checked
+    /// `ModeContext::set_local` for *active modes' runtime writes*,
+    /// which does not exist yet. App-level
     /// construction-time seeding is a separate path: the App
     /// is presumed to insert locals owned by the buffer's
     /// eventual major mode, and the local's `OWNER_MODE`
@@ -371,10 +394,13 @@ impl std::fmt::Debug for BufferScopeSourceRegistry {
 }
 
 impl BufferScopeSourceRegistry {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Add a source. Sources are asked in registration order; nothing is
+    /// deduplicated.
     pub fn register(&mut self, source: std::sync::Arc<dyn BufferScopeSource>) {
         self.sources.push(source);
     }
@@ -389,10 +415,12 @@ impl BufferScopeSourceRegistry {
             .find_map(|s| s.scope_dir_for_name(buffer_name))
     }
 
+    /// Number of registered sources.
     pub fn len(&self) -> usize {
         self.sources.len()
     }
 
+    /// True when no source is registered.
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
     }

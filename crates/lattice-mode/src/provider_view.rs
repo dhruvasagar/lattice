@@ -1,5 +1,5 @@
-//! PV.1 (2026-08-12): the **provider-view seam** — one generic host
-//! primitive for "open the multibuffer view a provider owns".
+//! The **provider-view seam** — one generic host
+//! primitive for "open the multibuffer view a provider owns" (PV.1, 2026-08-12).
 //!
 //! Design: `docs/dev/architecture/multibuffer-views.md` §3.7a. First
 //! consumer: `lattice-magit`'s project-diff view (PD.3).
@@ -10,7 +10,7 @@
 //! [`ModeActivator`](crate::ModeActivator), which is `&mut`-backed and
 //! therefore reachable only from the host. A provider's trigger — an
 //! ex-command or a chord-fired action handler — runs against `&self`
-//! state and returns an [`Effect`]. So every provider needs *some*
+//! state and returns an [`Effect`](lattice_grammar::effect::Effect). So every provider needs *some*
 //! effect that carries "open my view" back to a place holding the
 //! activator.
 //!
@@ -60,7 +60,9 @@ pub enum ProviderViewOutcome {
     /// The view exists. The host activates `view` and echoes `message`
     /// at info level if one is supplied.
     Opened {
+        /// The view buffer to make active.
         view: BufferId,
+        /// Echoed at info level when `Some`.
         message: Option<String>,
     },
     /// Nothing was opened, for a reason the user should see (not a git
@@ -69,7 +71,10 @@ pub enum ProviderViewOutcome {
     ///
     /// Declining is a first-class outcome, not an error path: opening
     /// an empty view and leaving the user to guess why is the worse UX.
-    Declined { message: String },
+    Declined {
+        /// Why nothing opened, in the provider's words.
+        message: String,
+    },
 }
 
 /// A provider's view-opening closure.
@@ -93,8 +98,9 @@ pub type ProviderViewOpener =
 /// silently returns `None`.
 pub type ProviderViewRegistryHandle = Arc<ProviderViewRegistry>;
 
-/// OA.15a: "re-open the view I own, with these arguments" — asked for
-/// from somewhere that holds no activator and returns no [`Effect`].
+/// "re-open the view I own, with these arguments" — asked for
+/// from somewhere that holds no activator and returns no
+/// [`Effect`](lattice_grammar::effect::Effect) (OA.15a).
 ///
 /// ## Why an effect was not enough
 ///
@@ -154,12 +160,60 @@ lattice_protocol::register_event!(
 /// reloads, so [`unregister`](Self::unregister) exists for the teardown
 /// path. Without it a reload's `register` would return `false` against
 /// the plugin's own stale opener and its views would come back dead.
+///
+/// # Examples
+///
+/// A provider registers its opener at boot; the host looks it up when
+/// `AppEffect::OpenProviderView { provider: "todo-view", .. }` is applied and
+/// calls it with itself as the [`ModeActivator`]:
+///
+/// ```
+/// use std::sync::Arc;
+/// use lattice_core::{BufferFlags, BufferId, BufferKind};
+/// use lattice_grammar::Args;
+/// use lattice_mode::{
+///     ModeActivator, ModeId, ProviderViewOpener, ProviderViewOutcome, ProviderViewRegistry,
+///     ServiceRegistry,
+/// };
+///
+/// let opener: ProviderViewOpener = Arc::new(|host: &mut dyn ModeActivator, _args: &Args| {
+///     let view = host.ensure_named_document(
+///         "*todos*",
+///         ModeId::new("todo-view-mode"),
+///         BufferFlags::default(),
+///     );
+///     ProviderViewOutcome::Opened { view, message: Some("3 todos".into()) }
+/// });
+///
+/// let registry = ProviderViewRegistry::new();
+/// assert!(registry.register("todo-view", opener.clone()));
+/// assert!(!registry.register("todo-view", opener)); // first registration keeps the name
+///
+/// /// A stand-in for the host's `Editor`.
+/// struct Host;
+/// impl ModeActivator for Host {
+///     fn activate_major_for_kind(&mut self, _: BufferId, _: BufferKind) {}
+///     fn activate_minor_by_id(&mut self, _: BufferId, _: ModeId) {}
+///     fn ensure_named_document(&mut self, _: &str, _: ModeId, _: BufferFlags) -> BufferId {
+///         BufferId(42)
+///     }
+///     fn services(&self) -> Arc<ServiceRegistry> {
+///         Arc::new(ServiceRegistry::new())
+///     }
+/// }
+///
+/// let open = registry.lookup("todo-view").unwrap();
+/// let outcome = open(&mut Host, &Args::default());
+/// assert_eq!(outcome, ProviderViewOutcome::Opened { view: BufferId(42), message: Some("3 todos".into()) });
+/// ```
 #[derive(Default)]
 pub struct ProviderViewRegistry {
     openers: ArcSwap<HashMap<String, ProviderViewOpener>>,
 }
 
 impl ProviderViewRegistry {
+    /// An empty registry. The host registers one as a
+    /// [`ProviderViewRegistryHandle`] at boot.
     pub fn new() -> Self {
         Self {
             openers: ArcSwap::from_pointee(HashMap::new()),

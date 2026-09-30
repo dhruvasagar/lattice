@@ -7,6 +7,9 @@ use crate::{Mode, ModeContext, ModeKind, ModeId, OptionOverrideSet, CapabilitySe
 pub struct TerminalInsertMode;
 
 impl TerminalInsertMode {
+    /// The canonical id, `"terminal-insert-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("terminal-insert-mode")
     }

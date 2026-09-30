@@ -1,4 +1,4 @@
-//! PL8.E — the async gutter-decoration producer seam.
+//! The async gutter-decoration producer seam (PL8.E).
 //!
 //! `Mode::gutter_decorations` (see [`crate::contributions`]) is the **sync**,
 //! read-per-frame decoration trait native modes (diff, LSP severity) satisfy
@@ -81,6 +81,7 @@ impl std::fmt::Debug for GutterDecorationSourceRegistry {
 }
 
 impl GutterDecorationSourceRegistry {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }
@@ -109,10 +110,12 @@ impl GutterDecorationSourceRegistry {
         self.sources.clone()
     }
 
+    /// True when no producer is registered.
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
     }
 
+    /// Number of registered producers.
     pub fn len(&self) -> usize {
         self.sources.len()
     }
@@ -123,8 +126,8 @@ impl GutterDecorationSourceRegistry {
 /// exact alias (the `ServiceRegistry` TypeId rule).
 pub type GutterDecorationSourceRegistryHandle = Arc<ArcSwap<GutterDecorationSourceRegistry>>;
 
-/// OA.30 — the counter a guest bumps to say "my decorations changed, though the
-/// document did not".
+/// The counter a guest bumps to say "my decorations changed, though the
+/// document did not" (OA.30).
 ///
 /// ## The hole this fills
 ///

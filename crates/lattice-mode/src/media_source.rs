@@ -1,4 +1,4 @@
-//! IM.6b — the registry of inline-media producers.
+//! The registry of inline-media producers (IM.6b).
 //!
 //! The media twin of [`decoration_source`](crate::decoration_source), and the
 //! same contract: an async, off-render-path producer the host drives on a
@@ -27,6 +27,7 @@ pub struct MediaBlockRequest {
     /// What a renderer that cannot draw shows instead. `None` falls back to
     /// the file name — never nothing.
     pub alt: Option<String>,
+    /// How the image's intrinsic size maps into the block.
     pub fit: lattice_cells::MediaFit,
 }
 
@@ -74,6 +75,7 @@ impl std::fmt::Debug for MediaSourceRegistry {
 }
 
 impl MediaSourceRegistry {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }
@@ -100,10 +102,12 @@ impl MediaSourceRegistry {
         self.sources.clone()
     }
 
+    /// True when no producer is registered.
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
     }
 
+    /// Number of registered producers.
     pub fn len(&self) -> usize {
         self.sources.len()
     }

@@ -79,6 +79,34 @@ impl<T> InboundBus<T> {
 /// request's oneshot, return one effect on a valid target, none on an unknown
 /// one). It is `FnMut` so it may carry mutable state (a read-state cache, a
 /// counter) across drains, exactly like the existing `make_drain` closures.
+///
+/// Subsystems normally reach this through
+/// [`SubsystemBoot::inbound`](crate::SubsystemBoot::inbound), which supplies
+/// the editor's wake and registers the drain for them.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use lattice_grammar::effect::{EchoLevel, Effect};
+/// use lattice_mode::inbound::make_inbound;
+/// use tokio::sync::Notify;
+///
+/// let wake = Arc::new(Notify::new()); // the editor's `async_landed`
+/// let (bus, mut drain) = make_inbound::<String, _>(wake, |text| {
+///     vec![Effect::Echo { level: EchoLevel::Info, text }]
+/// });
+///
+/// // Off-thread producer: sending wakes the editor.
+/// std::thread::spawn(move || bus.send("indexed 120 files".into()).unwrap())
+///     .join()
+///     .unwrap();
+///
+/// // Editor actor, next tick: the drain maps every pending item to effects.
+/// let effects = drain();
+/// assert_eq!(effects.len(), 1);
+/// assert!(drain().is_empty()); // nothing left
+/// ```
 pub fn make_inbound<T, H>(wake: Arc<Notify>, mut handler: H) -> (InboundBus<T>, TickCallback)
 where
     T: Send + 'static,

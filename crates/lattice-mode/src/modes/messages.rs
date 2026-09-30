@@ -105,6 +105,9 @@ pub fn buffer_spans(text: &str) -> Vec<Vec<StyledSpan>> {
 pub struct MessagesMode;
 
 impl MessagesMode {
+    /// The canonical id, `"messages-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("messages-mode")
     }
@@ -118,9 +121,9 @@ impl Mode for MessagesMode {
     fn kind(&self) -> ModeKind {
         ModeKind::Major
     }
-    /// H.2: `*messages*` and any future `BufferKind::Messages`
+    /// `*messages*` and any future `BufferKind::Messages`
     /// buffer dispatches to this major via the registry's kind
-    /// index.
+    /// index (H.2).
     fn target_buffer_kind(&self) -> Option<BufferKind> {
         Some(BufferKind::Messages)
     }

@@ -62,6 +62,9 @@ pub const VIEW_REFRESH_ACTION: &str = "action:view-refresh";
 pub struct RefreshableViewMode;
 
 impl RefreshableViewMode {
+    /// The canonical id, `"refreshable-view-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("refreshable-view-mode")
     }
@@ -113,6 +116,14 @@ fn refreshable_view_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
+/// Register [`RefreshableViewMode`] in `registry`. Called by
+/// [`register_foundation_modes`](crate::register_foundation_modes); it must
+/// be registered for the implies cascade to pull it in (an unregistered
+/// shared minor is logged at `debug!` and the chord simply does not bind).
+///
+/// # Panics
+///
+/// If `refreshable-view-mode` is already registered.
 pub fn register_refreshable_view_mode(registry: &mut ModeRegistry) {
     registry
         .register(RefreshableViewMode)

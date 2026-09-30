@@ -1,5 +1,5 @@
-//! TB.1 — what the chords do to a table: move between cells, and move,
-//! insert and delete rows and columns.
+//! What the chords do to a table: move between cells, and move,
+//! insert and delete rows and columns (TB.1).
 //!
 //! Every operation here is a pure function from a [`Table`] and a caret to a
 //! new table and a new caret. Nothing touches a buffer; the mode turns the
@@ -22,6 +22,8 @@ use super::model::{Row, Table};
 pub struct Cell {
     /// Index into [`Table::rows`].
     pub row: usize,
+    /// Zero-based cell index within that row (the count of unescaped `|`
+    /// to the caret's left, minus the leading one).
     pub column: usize,
 }
 

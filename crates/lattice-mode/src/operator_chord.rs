@@ -1,4 +1,4 @@
-//! CM.2: wiring a plugin-registered operator's chord into the grammar.
+//! Wiring a plugin-registered operator's chord into the grammar (CM.2).
 //!
 //! An operator is only half a contribution. `register-operator` puts the spec
 //! and its `apply` in the command registry; what makes it *reachable* is the

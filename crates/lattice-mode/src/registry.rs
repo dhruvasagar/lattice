@@ -56,6 +56,9 @@ use crate::mode::{DynMode, Mode, ModeId, ModeKind};
 /// Why a registration failed.
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum RegistrationError {
+    /// A mode with this id is already registered. The registry never
+    /// replaces a mode in place; a reload must
+    /// [`unregister`](ModeRegistry::unregister) first.
     #[error("mode `{0}` is already registered")]
     Duplicate(ModeId),
     /// The mode id does not end in `-mode`. Every mode id must carry
@@ -76,17 +79,63 @@ pub enum RegistrationError {
 /// claims log a warning rather than failing, so foundation
 /// registration order and feature-crate registration order can
 /// interleave deterministically).
+///
+/// Registration (`&mut self`) happens at boot and on plugin load, through
+/// the copy-on-write [`ModeRegistryHandle`]; every other method is `&self`
+/// and is read from the editor actor. The activation methods do not own
+/// per-buffer state: the caller passes the buffer's [`ActiveModes`] and the
+/// editor-wide [`GuardStoreHandle`], config, event bus and services.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::BufferKind;
+/// use lattice_mode::{
+///     register_foundation_modes, LifecycleFuture, MessagesMode, Mode, ModeContext, ModeId,
+///     ModeKind, ModeRegistry, RegistrationError, TextMode,
+/// };
+///
+/// let mut registry = ModeRegistry::new();
+/// register_foundation_modes(&mut registry);
+/// assert!(registry.is_registered(TextMode::mode_id()));
+/// // Kind-bound majors are found by kind, without a host-side `match`.
+/// assert_eq!(
+///     registry.find_major_for_kind(BufferKind::Messages),
+///     Some(MessagesMode::mode_id()),
+/// );
+/// // The image major PRESENTS its files rather than loading them as text.
+/// assert_eq!(
+///     registry.presenting_major_for_path(std::path::Path::new("diagram.PNG")),
+///     Some(ModeId::new("image-mode")),
+/// );
+///
+/// struct Bare(&'static str);
+/// impl Mode for Bare {
+///     type Guard = ();
+///     fn id(&self) -> ModeId { ModeId::new(self.0) }
+///     fn kind(&self) -> ModeKind { ModeKind::Minor }
+///     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+///         Box::pin(async { Ok(()) })
+///     }
+/// }
+/// // The `-mode` suffix is enforced, and ids are unique.
+/// assert!(matches!(registry.register(Bare("zen")), Err(RegistrationError::MissingModeSuffix(_))));
+/// let id = registry.register(Bare("zen-mode")).unwrap();
+/// assert!(matches!(registry.register(Bare("zen-mode")), Err(RegistrationError::Duplicate(_))));
+/// assert!(registry.is_minor_enabled(&id)); // native registration enables it
+/// assert!(registry.unregister(id));
+/// ```
 #[derive(Clone)]
 pub struct ModeRegistry {
     modes: HashMap<ModeId, Arc<dyn DynMode>>,
     kind_index: HashMap<BufferKind, ModeId>,
-    /// OM.1: the peer of `kind_index` for the language dispatch path.
+    /// The peer of `kind_index` for the language dispatch path.
     /// Maps a canonical language name (`Lang::name()`) to the major that
     /// declared `target_language() == Some(name)`. Same rules as
     /// `kind_index`: populated at register-time, first registration wins,
     /// freed on `unregister`. Keyed by `String` rather than a `Lang`
     /// because a plugin language's identity IS its name — the host has no
-    /// enum arm for it.
+    /// enum arm for it (OM.1).
     lang_index: HashMap<String, ModeId>,
     /// Lowercase extension → the major that PRESENTS that file type without
     /// loading it as text. Built at register-time, like `lang_index`.
@@ -125,6 +174,9 @@ impl std::fmt::Debug for ModeRegistry {
 }
 
 impl ModeRegistry {
+    /// An empty registry. The host then calls
+    /// [`register_foundation_modes`](crate::register_foundation_modes) and
+    /// each feature crate's `register_<x>_modes`.
     pub fn new() -> Self {
         Self {
             modes: HashMap::new(),
@@ -317,22 +369,22 @@ impl ModeRegistry {
         self.modes.get(&id).cloned()
     }
 
-    /// H.2: look up the major mode declared as the default for a
+    /// Look up the major mode declared as the default for a
     /// given [`BufferKind`] (via `Mode::target_buffer_kind`).
     /// Returns `None` for kinds with no declared major
     /// (e.g. [`BufferKind::Document`], which dispatches through
-    /// language detection rather than a kind-bound major).
+    /// language detection rather than a kind-bound major) (H.2).
     ///
     /// Index built at register-time, so lookup is `HashMap`-cheap.
     pub fn find_major_for_kind(&self, kind: BufferKind) -> Option<ModeId> {
         self.kind_index.get(&kind).copied()
     }
 
-    /// OM.1: look up the major mode declared as the default for a
+    /// Look up the major mode declared as the default for a
     /// language, by canonical name (`Lang::name()` — `"rust"`,
     /// `"org"`). The peer of [`find_major_for_kind`](Self::find_major_for_kind)
     /// for [`BufferKind::Document`], which dispatches by language
-    /// rather than by kind.
+    /// rather than by kind (OM.1).
     ///
     /// Returns `None` for a language no registered major claims —
     /// including every built-in language today, since the built-in
@@ -409,10 +461,12 @@ impl ModeRegistry {
         self.modes.iter().map(|(id, mode)| (*id, Arc::clone(mode)))
     }
 
+    /// Number of registered modes, majors and minors, enabled or not.
     pub fn len(&self) -> usize {
         self.modes.len()
     }
 
+    /// True when no mode is registered.
     pub fn is_empty(&self) -> bool {
         self.modes.is_empty()
     }

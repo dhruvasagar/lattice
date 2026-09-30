@@ -29,9 +29,12 @@ use lattice_protocol::ids::CommandId;
 pub struct ElementId(pub Arc<str>);
 
 impl ElementId {
+    /// Wrap a namespaced id. No validation: the namespace convention
+    /// (`<owner>.<name>`) is what teardown-by-prefix relies on, so keep to it.
     pub fn new(id: impl Into<Arc<str>>) -> Self {
         Self(id.into())
     }
+    /// The id as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -42,8 +45,11 @@ impl ElementId {
 /// zone for custom / plugin content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Zone {
+    /// Left-aligned block (path, mode).
     Left,
+    /// Between the left and right blocks; the default for custom content.
     Center,
+    /// Right-aligned block (position, language, LSP status).
     Right,
 }
 
@@ -53,8 +59,12 @@ pub enum Zone {
 /// reintroducing a global chrome bar (Option A stays).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scope {
+    /// Rendered on every pane, with content keyed per buffer
+    /// ([`ModelineKey::Buffer`]). The default.
     #[default]
     PaneLocal,
+    /// Rendered on the active pane only, with one content value
+    /// ([`ModelineKey::Global`]).
     Global,
 }
 
@@ -68,7 +78,10 @@ pub enum Scope {
 /// `docs/dev/architecture/modeline.md` §4 (per-pane content resolution).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModelineKey {
+    /// The single slot of a [`Scope::Global`] element.
     Global,
+    /// The slot of a [`Scope::PaneLocal`] element for panes showing this
+    /// buffer.
     Buffer(BufferId),
 }
 
@@ -81,17 +94,19 @@ pub enum ModelineKey {
 pub struct ModelineRole(pub Arc<str>);
 
 impl ModelineRole {
+    /// Wrap a theme role key (`"modeline.mode_item"`, …).
     pub fn new(role: impl Into<Arc<str>>) -> Self {
         Self(role.into())
     }
+    /// The role key as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
-/// DX.4 (BC.6): the modeline role a *mode* tags content with when it
+/// The modeline role a *mode* tags content with when it
 /// contributes a segment to the modeline (e.g. diff-mode's `+N ~M`
-/// stats). Lives in `lattice-mode` (not host) because it is the role
+/// stats) (DX.4, BC.6). Lives in `lattice-mode` (not host) because it is the role
 /// modes reach for — `ModelineRole::new(ROLE_MODE_ITEM)` — so it belongs
 /// with the mode-contribution substrate, letting `lattice-diff` reach it
 /// without the host. The host's own element roles (`modeline.path`,
@@ -103,11 +118,14 @@ pub const ROLE_MODE_ITEM: &str = "modeline.mode_item";
 /// A styled run of text within an element's content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {
+    /// The text to paint. An empty string contributes nothing.
     pub text: String,
+    /// Theme role the text is styled with.
     pub role: ModelineRole,
 }
 
 impl Span {
+    /// A span of `text` styled as `role`.
     pub fn new(text: impl Into<String>, role: ModelineRole) -> Self {
         Self {
             text: text.into(),
@@ -121,6 +139,7 @@ impl Span {
 /// way a producer hides itself without deregistering.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ElementContent {
+    /// Styled runs, painted left to right with no separator.
     pub spans: Vec<Span>,
 }
 
@@ -154,10 +173,44 @@ impl ElementContent {
 /// update content the same way, so no producer is invoked on the render
 /// path (paramount #1, §2 / §5). See
 /// `docs/dev/architecture/modeline.md` §5 (update flow), §6 (ownership).
+///
+/// # Examples
+///
+/// A producer publishes from anywhere it holds the bus — an `on_activate`
+/// hook, a spawned task — never from the render path:
+///
+/// ```
+/// use lattice_core::BufferId;
+/// use lattice_mode::{
+///     ElementContent, ElementId, ModelineElementUpdate, ModelineKey, ModelineRole,
+///     ModelineService,
+/// };
+/// use lattice_runtime::EventBus;
+///
+/// let bus = EventBus::new();
+/// let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+/// bus.subscribe_typed::<ModelineElementUpdate>(tx); // the host forwarder
+///
+/// bus.publish_typed(ModelineElementUpdate {
+///     key: ModelineKey::Buffer(BufferId(1)),
+///     id: ElementId::new("my-plugin.status"),
+///     content: ElementContent::text("● synced", ModelineRole::new("modeline.mode_item")),
+/// });
+///
+/// // The host drains it into the content store on the actor thread.
+/// let service = ModelineService::new();
+/// service.apply(rx.try_recv().unwrap());
+/// let got = service.snapshot();
+/// let got = got.content_for(ModelineKey::Buffer(BufferId(1)), &ElementId::new("my-plugin.status"));
+/// assert_eq!(got.unwrap().plain(), "● synced");
+/// ```
 #[derive(Debug, Clone)]
 pub struct ModelineElementUpdate {
+    /// Which slot: a buffer's (pane-local element) or the global one.
     pub key: ModelineKey,
+    /// The element whose content this sets.
     pub id: ElementId,
+    /// The new content; empty clears the slot and hides the element.
     pub content: ElementContent,
 }
 
@@ -175,6 +228,7 @@ lattice_protocol::register_event!(
 /// Realized in ML.4.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoverSpec {
+    /// The tooltip body.
     pub content: ElementContent,
 }
 
@@ -186,7 +240,10 @@ pub struct HoverSpec {
 /// router. `hover` is GPUI-only.
 #[derive(Debug, Clone, Default)]
 pub struct Interaction {
+    /// Command dispatched when the element is clicked; `None` for no click
+    /// behaviour.
     pub on_click: Option<CommandId>,
+    /// Tooltip shown on hover (GPUI only); `None` for none.
     pub hover: Option<HoverSpec>,
 }
 
@@ -195,10 +252,13 @@ pub struct Interaction {
 /// host content store and updates over the event bus (ML.3).
 #[derive(Debug, Clone)]
 pub struct ModelineElement {
+    /// Namespaced identity; also the content-store key.
     pub id: ElementId,
+    /// Which block of the modeline the element sits in.
     pub zone: Zone,
     /// Order within the zone (see [`ModelineRegistry::zone_ordered`]).
     pub priority: i32,
+    /// Every pane (per-buffer content) or the active pane only.
     pub scope: Scope,
     /// Designed now; honoured by the renderer in ML.4.
     pub interaction: Option<Interaction>,
@@ -216,11 +276,13 @@ impl ModelineElement {
         }
     }
 
+    /// Builder: set the [`Scope`].
     pub fn with_scope(mut self, scope: Scope) -> Self {
         self.scope = scope;
         self
     }
 
+    /// Builder: attach click / hover behaviour.
     pub fn with_interaction(mut self, interaction: Interaction) -> Self {
         self.interaction = Some(interaction);
         self
@@ -228,7 +290,8 @@ impl ModelineElement {
 }
 
 /// Descriptor registry. Host-owned storage; modes register in
-/// `on_activate` and remove in `on_deactivate` (plugins via WIT, ML.6).
+/// `on_activate` and remove when their Guard drops (there is no
+/// `on_deactivate`); plugins via WIT, ML.6.
 /// Holds only descriptors — the churning content lives in the host
 /// content store, not here, so registration is rare and cheap.
 #[derive(Debug, Default, Clone)]
@@ -237,6 +300,7 @@ pub struct ModelineRegistry {
 }
 
 impl ModelineRegistry {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }
@@ -253,6 +317,7 @@ impl ModelineRegistry {
         self.elements.remove(id)
     }
 
+    /// The descriptor registered under `id`, if any.
     pub fn get(&self, id: &ElementId) -> Option<&ModelineElement> {
         self.elements.get(id)
     }
@@ -270,10 +335,12 @@ impl ModelineRegistry {
         self.elements.keys()
     }
 
+    /// Number of registered descriptors.
     pub fn len(&self) -> usize {
         self.elements.len()
     }
 
+    /// True when no descriptor is registered.
     pub fn is_empty(&self) -> bool {
         self.elements.is_empty()
     }
@@ -303,7 +370,10 @@ impl ModelineRegistry {
 /// (ML.0b-2).
 #[derive(Debug, Clone, Default)]
 pub struct ModelineSnapshot {
+    /// The descriptors as of the snapshot.
     pub registry: Arc<ModelineRegistry>,
+    /// Pushed content by `(slot, element)`. Built-in `core.*` elements are
+    /// computed host-side and are not stored here.
     pub content: Arc<HashMap<(ModelineKey, ElementId), ElementContent>>,
 }
 
@@ -352,7 +422,36 @@ impl ModelineSnapshot {
 /// behind an [`ArcSwap`] for wait-free reads and lock-free updates. The
 /// host holds an `Arc` and reads [`Self::snapshot`] each
 /// `build_render_state`; modes/plugins hold the same `Arc` (via
-/// `ModeContext`, ML.0b-2 / ML.3) and call register/update/remove.
+/// `ctx.service::<ModelineServiceHandle>()`, ML.0b-2 / ML.3) and
+/// register / remove descriptors. Content normally arrives as a
+/// [`ModelineElementUpdate`] on the event bus, which also wakes the render;
+/// calling [`update`](Self::update) directly changes the store without a
+/// wake.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::BufferId;
+/// use lattice_mode::{
+///     ElementContent, ElementId, ModelineElement, ModelineKey, ModelineRole, ModelineService,
+///     Zone,
+/// };
+///
+/// let service = ModelineService::new();
+/// let id = ElementId::new("my-plugin.count");
+/// service.register(ModelineElement::new(id.clone(), Zone::Right, 50));
+/// service.update(
+///     ModelineKey::Buffer(BufferId(7)),
+///     id.clone(),
+///     ElementContent::text("3 todos", ModelineRole::new("modeline.mode_item")),
+/// );
+///
+/// let snap = service.snapshot();
+/// let right = snap.zone(Zone::Right, BufferId(7));
+/// assert_eq!(right[0].1.plain(), "3 todos");
+/// // Pane-local content is per buffer: another buffer's pane shows nothing.
+/// assert!(snap.zone(Zone::Right, BufferId(8)).is_empty());
+/// ```
 /// Mirrors `ActionHandlerRegistry`'s `ArcSwap` shape — content updates
 /// may arrive from a mode's spawned task on another thread, so the
 /// store must be `Sync`.
@@ -366,6 +465,8 @@ pub struct ModelineService {
 pub type ModelineServiceHandle = Arc<ModelineService>;
 
 impl ModelineService {
+    /// An empty service (no descriptors, no content). The host builds one
+    /// and registers it as a [`ModelineServiceHandle`].
     pub fn new() -> Self {
         Self::default()
     }

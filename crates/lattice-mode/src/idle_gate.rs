@@ -1,4 +1,4 @@
-//! WK.3: idle-gate registry — the generic armed-deadline primitive.
+//! Idle-gate registry — the generic armed-deadline primitive (WK.3).
 //!
 //! A subsystem registers a handler and an *armed deadline*; when the
 //! deadline elapses the editor actor runs the handler and applies the
@@ -84,6 +84,29 @@ pub struct IdleGateRegistry {
 }
 
 impl IdleGateRegistry {
+    /// An empty registry. The host builds one and registers it as an
+    /// [`IdleGateRegistryHandle`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use std::time::Duration;
+    /// use lattice_mode::idle_gate::IdleGateRegistry;
+    /// use tokio::time::Instant;
+    ///
+    /// let gates = Arc::new(IdleGateRegistry::new());
+    /// let gate = gates.register("hint", Box::new(Vec::new));
+    /// assert_eq!(gates.earliest(), None); // registered disarmed
+    ///
+    /// let t0 = Instant::now();
+    /// gate.arm(t0 + Duration::from_millis(300));
+    /// assert!(gates.fire_elapsed(t0).is_empty()); // not yet due
+    /// gates.fire_elapsed(t0 + Duration::from_millis(300)); // fires, then disarms
+    /// assert_eq!(gates.earliest(), None);
+    ///
+    /// drop(gate); // the Guard dropping removes the gate
+    /// ```
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Inner {

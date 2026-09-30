@@ -27,6 +27,14 @@ pub struct Subscription {
 }
 
 impl Subscription {
+    /// Wrap the `id` returned by one of `bus`'s subscribe calls so that
+    /// dropping this value calls [`EventBus::unsubscribe`] on it.
+    ///
+    /// Takes an owned `Arc` because the handle outlives the activation that
+    /// created it: it is moved into the mode's [`Guard`](crate::Mode::Guard),
+    /// and the Guard is dropped whenever the mode deactivates.
+    ///
+    /// [`EventBus::unsubscribe`]: lattice_runtime::EventBus::unsubscribe
     pub fn new(
         bus: std::sync::Arc<lattice_runtime::EventBus>,
         id: lattice_runtime::SubscriptionId,
@@ -53,9 +61,13 @@ pub struct DecorationProvider {
 /// Mirrors `DiffSignKind` without importing `lattice-host`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GutterDiffKind {
+    /// Line added relative to the diff base (`+`, sign `diff.add`).
     Add,
+    /// Line(s) removed at this position (`-`, sign `diff.remove`).
     Remove,
+    /// Line modified relative to the diff base (`~`, sign `diff.change`).
     Change,
+    /// Line inside an unresolved merge conflict (`?`, sign `diff.conflict`).
     Conflict,
 }
 
@@ -64,9 +76,13 @@ pub enum GutterDiffKind {
 /// the most severe: `Hint < Info < Warning < Error`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GutterSeverityLevel {
+    /// Lowest severity; sign `diagnostic.hint`.
     Hint,
+    /// Informational; sign `diagnostic.info`.
     Info,
+    /// Warning; sign `diagnostic.warning`.
     Warning,
+    /// Error — the most severe; sign `diagnostic.error`.
     Error,
 }
 
@@ -74,8 +90,8 @@ pub enum GutterSeverityLevel {
 /// Each variant maps to one physical gutter column.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GutterDecoration {
-    /// SG.1: a sign placement — vim's `:sign place`, and since SG.4b the ONLY
-    /// kind of gutter decoration there is.
+    /// A sign placement — vim's `:sign place`, and since SG.4b the ONLY
+    /// kind of gutter decoration there is (SG.1).
     ///
     /// `Diff` and `Severity` used to sit beside this. They were deleted rather
     /// than deprecated because leaving them would have left the host with two
@@ -93,16 +109,25 @@ pub enum GutterDecoration {
     /// placing a sign it never defined is a provider bug, and refusing to paint
     /// is the answer that keeps the gutter honest rather than inventing a
     /// glyph for it.
-    Sign { line: u32, sign: SignId },
+    Sign {
+        /// Zero-based source line the sign is placed on.
+        line: u32,
+        /// The registered definition to paint; resolved through the
+        /// [`SignRegistry`].
+        sign: SignId,
+    },
 }
 
-/// CM.3c: render-time carrier for `compilation-mode`'s severity gutter
+/// Render-time carrier for `compilation-mode`'s severity gutter
 /// marks. The off-thread compilation drain builds a per-buffer severity
 /// index and ships it to the host (`AppEffect::CompilationGutterSet`),
 /// which stores it in `render_state`; the renderer reads that slot for the
 /// pane's buffer and registers this into the [`DecorationCtx`]'s
 /// `ServiceRegistry`. `CompilationMode::gutter_decorations` then pulls it
-/// and maps each `(line, level)` to [`GutterDecoration::Severity`].
+/// and maps each `(line, level)` to a [`GutterDecoration::Sign`] naming the
+/// built-in diagnostic sign for that level
+/// ([`BuiltinSignIds::for_severity`]) — the same mark an LSP diagnostic
+/// paints (CM.3c; before SG.4b this was a dedicated `Severity` variant).
 ///
 /// Deliberately lives here (in `lattice-mode`), NOT in `lattice-compilation`,
 /// so neither renderer needs a `lattice-compilation` dependency to inject it
@@ -110,19 +135,49 @@ pub enum GutterDecoration {
 /// for `LspDiagnosticsData` / `DiffDecorationData`. `entries` is shared
 /// (`Arc`) so the render-path read is an O(1) pointer clone.
 pub struct CompilationSeverityData {
+    /// `(zero-based line, severity)` for every marked line of the
+    /// `*compilation*` buffer, built off-thread by the compilation drain.
     pub entries: std::sync::Arc<Vec<(u32, GutterSeverityLevel)>>,
 }
 
 /// Read-only context passed to [`crate::Mode::gutter_decorations`].
-/// Same dep-inversion pattern as [`StatusLineCtx`]: the App populates
-/// a `ServiceRegistry` with typed render-state snapshots; modes pull
-/// their own data via [`Self::service`].
+///
+/// Dependency inversion: the renderer builds a per-pane
+/// [`ServiceRegistry`] of typed render-state snapshots (diff sign map, LSP
+/// diagnostics, [`CompilationSeverityData`], [`BuiltinSignIds`], …) and
+/// each mode pulls only the data it knows about through
+/// [`service`](Self::service). The renderer therefore never depends on the
+/// crate that owns a mode, and a mode never sees another mode's data.
+///
+/// Built once per pane per frame, on the render path: a
+/// `gutter_decorations` implementation must do nothing heavier than a map
+/// over data already computed off-thread.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::BufferId;
+/// use lattice_mode::{DecorationCtx, ServiceRegistry};
+///
+/// struct MyMarks(Vec<u32>);
+///
+/// let mut services = ServiceRegistry::new();
+/// services.register(MyMarks(vec![3, 7]));
+/// let ctx = DecorationCtx::new(BufferId(1), &services);
+///
+/// assert_eq!(ctx.service::<MyMarks>().unwrap().0, vec![3, 7]);
+/// // A snapshot nobody injected is simply absent: contribute nothing.
+/// assert!(ctx.service::<String>().is_none());
+/// ```
 pub struct DecorationCtx<'a> {
+    /// The buffer shown in the pane being decorated.
     pub buffer_id: BufferId,
     services: &'a ServiceRegistry,
 }
 
 impl<'a> DecorationCtx<'a> {
+    /// Build a context over `services` for the pane showing `buffer_id`.
+    /// Called by the renderers, not by modes.
     pub fn new(buffer_id: BufferId, services: &'a ServiceRegistry) -> Self {
         Self {
             buffer_id,
@@ -130,6 +185,11 @@ impl<'a> DecorationCtx<'a> {
         }
     }
 
+    /// Typed lookup of a render-state snapshot the renderer injected.
+    /// `None` when nothing of type `T` was registered for this frame — a
+    /// stripped render path or data not yet produced — and the mode should
+    /// then contribute nothing rather than fail. Same `TypeId` rule as
+    /// [`ServiceRegistry::get`]: look up with exactly the registered type.
     pub fn service<T: std::any::Any + Send + Sync>(&self) -> Option<std::sync::Arc<T>> {
         self.services.get::<T>()
     }
@@ -142,8 +202,8 @@ impl<'a> DecorationCtx<'a> {
 
 // ── SG.1: generic gutter signs ──────────────────────────────────────────────
 
-/// SG.1 — a sign **definition**: what it looks like, how it is styled, how it
-/// competes for its cell.
+/// A sign **definition**: what it looks like, how it is styled, how it
+/// competes for its cell (SG.1).
 ///
 /// vim's `:sign define` / `:sign place` split, and the split is load-bearing
 /// rather than historical. A definition is registered once and carries the
@@ -185,7 +245,7 @@ pub struct SignDefinition {
     /// unpredictably or silently drop one, and vim's answer — priority — is the
     /// one users already know.
     pub priority: i32,
-    /// SG.4a — which gutter column this sign paints in.
+    /// Which gutter column this sign paints in (SG.4a).
     ///
     /// Columns exist because contention is only meaningful between marks that
     /// mean comparable things. A diagnostic and a git-diff mark are both
@@ -204,15 +264,15 @@ pub struct SignDefinition {
     pub column: String,
 }
 
-/// SG.4a — the leftmost gutter column: diagnostics, compilation severity, and
-/// any sign that does not name a column of its own. Vim's `signcolumn`.
+/// The leftmost gutter column: diagnostics, compilation severity, and
+/// any sign that does not name a column of its own. Vim's `signcolumn` (SG.4a).
 pub const SIGN_COLUMN_MARK: &str = "mark";
 
-/// SG.4a — the git-diff column, between the mark column and the line numbers.
-/// Separate from [`SIGN_COLUMN_MARK`] so a diagnostic cannot hide a hunk mark.
+/// The git-diff column, between the mark column and the line numbers.
+/// Separate from [`SIGN_COLUMN_MARK`] so a diagnostic cannot hide a hunk mark (SG.4a).
 pub const SIGN_COLUMN_DIFF: &str = "diff";
 
-/// SG.4a — the built-in gutter columns, left to right.
+/// The built-in gutter columns, left to right (SG.4a).
 ///
 /// The host owns the ORDER (a gutter whose columns moved per buffer would be
 /// unreadable) but nothing about what goes in each one — that is entirely the
@@ -233,8 +293,8 @@ impl SignDefinition {
         }
     }
 
-    /// SG.2b — the single character the renderers paint into the gutter's
-    /// mark cell.
+    /// The single character the renderers paint into the gutter's
+    /// mark cell (SG.2b).
     ///
     /// The cell is one column, so this TRUNCATES rather than trusting a
     /// producer to have obeyed the one-cell rule. A definition that ignores
@@ -248,7 +308,7 @@ impl SignDefinition {
     }
 }
 
-/// SG.1 — a definition's interned handle.
+/// A definition's interned handle (SG.1).
 ///
 /// **Placements carry this, not a name**, and the reason is the render path:
 /// `GutterDecoration` is `Copy` and one placement exists per visible marked
@@ -258,7 +318,7 @@ impl SignDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SignId(pub u32);
 
-/// SG.1 — the registered sign definitions.
+/// The registered sign definitions (SG.1).
 ///
 /// Read on the render path (one lookup per placed line) and written rarely (a
 /// provider registering at load), which is the `ArcSwap` shape every other
@@ -278,6 +338,31 @@ pub struct SignRegistry {
 }
 
 impl SignRegistry {
+    /// An empty registry. The host registers the built-ins into it with
+    /// [`register_builtin_signs`] at boot.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_mode::{SignDefinition, SignRegistry, SIGN_COLUMN_MARK};
+    ///
+    /// let mut signs = SignRegistry::new();
+    /// let id = signs.define(SignDefinition {
+    ///     name: "my-plugin.breakpoint".into(),
+    ///     text: "\u{f111}".into(), // Nerd Font glyph
+    ///     fallback: "●".into(),   // BMP fallback, same cell width
+    ///     theme_element: "gutter.sign.breakpoint".into(),
+    ///     priority: 10,
+    ///     column: SIGN_COLUMN_MARK.into(),
+    /// });
+    /// assert_eq!(signs.id_of("my-plugin.breakpoint"), Some(id));
+    /// assert_eq!(signs.get(id).unwrap().glyph_char(false), '●');
+    ///
+    /// // Removal retires the id: a stale placement paints nothing.
+    /// signs.undefine_prefix("my-plugin.");
+    /// assert!(signs.get(id).is_none());
+    /// assert!(signs.is_empty());
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
@@ -355,6 +440,7 @@ impl SignRegistry {
         self.by_name.len()
     }
 
+    /// True when no definition is live (every id retired or none defined).
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
     }
@@ -383,7 +469,11 @@ pub type SignRegistryHandle = std::sync::Arc<arc_swap::ArcSwap<SignRegistry>>;
 
 /// The lowest diagnostic, level with vim's default sign priority.
 pub const DIAGNOSTIC_HINT_PRIORITY: i32 = 10;
+/// Priority of the built-in `diagnostic.info` sign: above a hint, below a
+/// warning.
 pub const DIAGNOSTIC_INFO_PRIORITY: i32 = 20;
+/// Priority of the built-in `diagnostic.warning` sign: above info, below an
+/// error.
 pub const DIAGNOSTIC_WARNING_PRIORITY: i32 = 30;
 /// The highest built-in. A sign must EXCEED this to take the cell from an
 /// error.
@@ -395,20 +485,28 @@ pub const DIAGNOSTIC_ERROR_PRIORITY: i32 = 40;
 /// column plugins do not normally use.
 pub const DIFF_SIGN_PRIORITY: i32 = 10;
 
-/// SG.4a — the interned ids of the built-in signs.
+/// The interned ids of the built-in signs (SG.4a).
 ///
 /// The `BuiltinElementIds` shape, for the same reason: a producer emitting a
 /// mark per visible line must not hash a string per line to say which mark it
 /// is. Interned once at registration, published, and read as a field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinSignIds {
+    /// `diagnostic.error` (mark column, [`DIAGNOSTIC_ERROR_PRIORITY`]).
     pub diagnostic_error: SignId,
+    /// `diagnostic.warning` (mark column, [`DIAGNOSTIC_WARNING_PRIORITY`]).
     pub diagnostic_warning: SignId,
+    /// `diagnostic.info` (mark column, [`DIAGNOSTIC_INFO_PRIORITY`]).
     pub diagnostic_info: SignId,
+    /// `diagnostic.hint` (mark column, [`DIAGNOSTIC_HINT_PRIORITY`]).
     pub diagnostic_hint: SignId,
+    /// `diff.add`, glyph `+` (diff column).
     pub diff_add: SignId,
+    /// `diff.change`, glyph `~` (diff column).
     pub diff_change: SignId,
+    /// `diff.remove`, glyph `-` (diff column).
     pub diff_remove: SignId,
+    /// `diff.conflict`, glyph `?` (diff column).
     pub diff_conflict: SignId,
 }
 
@@ -458,7 +556,7 @@ impl BuiltinSignIds {
     }
 }
 
-/// SG.4a — register the built-in signs into `registry` and return their ids.
+/// Register the built-in signs into `registry` and return their ids (SG.4a).
 ///
 /// `glyphs` supplies the four diagnostic glyphs, which are live typed options
 /// (`ui.diagnostic-*-glyph`) rather than constants — so this is called again
@@ -469,6 +567,26 @@ impl BuiltinSignIds {
 ///
 /// Diff glyphs stay `+ ~ - ?` — cross-editor convention, and no option has
 /// ever exposed them.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_mode::{
+///     register_builtin_signs, DiagnosticGlyphs, GutterSeverityLevel, SignRegistry,
+///     SIGN_COLUMN_DIFF,
+/// };
+///
+/// let mut signs = SignRegistry::new();
+/// let ids = register_builtin_signs(&mut signs, DiagnosticGlyphs::default());
+/// let error = signs.get(ids.for_severity(GutterSeverityLevel::Error)).unwrap();
+/// assert_eq!(error.glyph_char(false), '■');
+/// assert_eq!(signs.get(ids.diff_add).unwrap().column, SIGN_COLUMN_DIFF);
+///
+/// // Re-registering with a new glyph keeps every id.
+/// let glyphs = DiagnosticGlyphs { error: 'E', ..DiagnosticGlyphs::default() };
+/// assert_eq!(register_builtin_signs(&mut signs, glyphs), ids);
+/// assert_eq!(signs.get(ids.diagnostic_error).unwrap().glyph_char(false), 'E');
+/// ```
 pub fn register_builtin_signs(
     registry: &mut SignRegistry,
     glyphs: DiagnosticGlyphs,
@@ -544,9 +662,13 @@ pub fn register_builtin_signs(
 /// `lattice-mode` needs no typed-options dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiagnosticGlyphs {
+    /// `ui.diagnostic-error-glyph` (default `■`).
     pub error: char,
+    /// `ui.diagnostic-warning-glyph` (default `▲`).
     pub warning: char,
+    /// `ui.diagnostic-info-glyph` (default `●`).
     pub info: char,
+    /// `ui.diagnostic-hint-glyph` (default `·`).
     pub hint: char,
 }
 
@@ -563,7 +685,7 @@ impl Default for DiagnosticGlyphs {
     }
 }
 
-/// SG.1 — pick the winner when several signs land on one line.
+/// Pick the winner when several signs land on one line (SG.1).
 ///
 /// Higher priority wins; equal priorities break on name. The tiebreak is not
 /// arbitrary politeness — without it the painted glyph depends on iteration

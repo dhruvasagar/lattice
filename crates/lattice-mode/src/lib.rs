@@ -1,56 +1,123 @@
 //! The mode system's foundation: the `Mode` trait, the mode registry, the
-//! per-buffer set of active modes, and the typed lifecycle events (M.1).
+//! per-buffer set of active modes, and the typed lifecycle events — plus the
+//! generic host seams a mode uses to own its whole surface (action handlers,
+//! services, inbound wakes, buffer creation) and the foundation modes that
+//! have no other owning crate.
 //!
-//! The major / minor mode system is the primary customization
-//! mechanism per DESIGN.md §5.8 / docs/dev/architecture/mode-architecture.md. This
-//! crate is the foundation -- the trait surface, the activation
-//! registry, the per-buffer `ActiveModes` set, and the typed
-//! lifecycle event payloads. No actual modes are registered here;
-//! M.3 lands the major modes for current buffer kinds, M.5 lands
-//! `lsp-mode`, etc.
+//! The major / minor mode system is the primary customization mechanism
+//! (DESIGN.md §5.8, `docs/dev/architecture/mode-architecture.md`). A buffer
+//! has exactly one **major** mode (content-type identity: `rust-mode`,
+//! `help-mode`'s markdown major, `messages-mode`) and any number of **minor**
+//! modes layered over it (`line-numbers-mode`, `table-mode`,
+//! `emacs-keys-mode`). A mode contributes declaratively — option overrides,
+//! a keymap layer, completion sources, gutter signs, action handlers — and
+//! imperatively through one lifecycle hook whose returned Guard is the only
+//! cleanup path.
 //!
-//! ## What's in this slice (M.1)
+//! ## What this crate owns
 //!
-//! - [`Mode`] trait: declarative contributions (options, keymap,
-//!   subscriptions, decorations) plus capabilities, conflicts,
-//!   implies, and lifecycle hooks.
-//! - [`ModeId`]: interned-string identity. Cross-crate uniqueness
-//!   for free; `Copy + Eq + Hash` for hot-path lookups.
-//! - [`ModeRegistry`]: register modes, look them up, drive
-//!   activation / deactivation against a per-buffer
-//!   [`ActiveModes`] set.
-//! - [`ActiveModes`]: the major + ordered-minors set per buffer.
-//! - [`ModeEvent`]: typed lifecycle event payloads matching
-//!   DESIGN.md §5.10. The registry returns the events activation /
-//!   deactivation produces; the caller forwards to the actual
-//!   typed event bus (M.4 wires that). M.1 keeps the registry
-//!   bus-agnostic so it can be tested in isolation.
-//! - [`CapabilitySet`]: typed bitfield of buffer capabilities a
-//!   mode may require (`BUFFER_URI`, `LSP`, `TREE_SITTER`, ...).
-//! - [`ModeContext`]: read-only context passed to lifecycle
-//!   hooks. Per `mode-architecture.md` §5.2 modes do not mutate
-//!   the registry from `on_activate` / `on_deactivate`; the
-//!   declarative contributions are applied by the registry, and
-//!   the hook is for side effects (server connection, watcher,
-//!   ...) only.
+//! - **The contract.** [`Mode`] (and its object-safe adapter [`DynMode`]),
+//!   [`ModeId`], [`ModeKind`], [`ActivationPolicy`], [`EditableTail`],
+//!   [`CapabilitySet`], [`ModeContext`], [`LifecycleFuture`] and
+//!   [`ModeActivationError`].
+//! - **Activation.** [`ModeRegistry`] registers modes and drives activation /
+//!   deactivation against a buffer's [`ActiveModes`], stashing each
+//!   activation's Guard in a [`GuardStoreHandle`]. Observable transitions
+//!   (`MajorEntered` / `MinorActivated` / …) ride the protocol `Event` enum;
+//!   internal failures ride [`ModeEvent`].
+//! - **The host seams a mode needs to own its surface without depending on
+//!   the host.** [`ServiceRegistry`] (typed services),
+//!   [`ActionHandlerRegistry`] (chord bodies), [`ModeActivator`] and
+//!   [`BufferStore`] (buffer creation / lookup), [`SubsystemBoot`] (a
+//!   subsystem's one-line `install`), [`inbound`] and
+//!   [`TickCallbackRegistry`] (off-keystroke results that wake the editor),
+//!   [`idle_gate`] (armed deadlines), [`ProviderViewRegistry`] (open a
+//!   provider's view), [`ForegroundCancel`], and the producer registries
+//!   for plugin-backed content ([`MediaSourceRegistry`],
+//!   [`ContextSourceRegistry`], [`GutterDecorationSourceRegistry`],
+//!   [`ScannedExcerptSourceRegistry`], [`BufferScopeSourceRegistry`]).
+//! - **Shared render-facing vocabularies** a mode writes without seeing a
+//!   renderer: gutter signs ([`SignRegistry`], [`GutterDecoration`]), the
+//!   modeline element model ([`ModelineService`],
+//!   [`ModelineElementUpdate`]), async highlight / inlay hand-off
+//!   ([`PendingSyntheticHighlights`], [`PendingInlays`]), buffer-locals
+//!   ([`BufferLocals`]).
+//! - **Foundation modes** ([`modes`], registered by
+//!   [`register_foundation_modes`]): `text-mode`, `help-mode`,
+//!   `hover-mode`, `messages-mode`, `image-mode`, the completion and display
+//!   minors, `table-mode`, `surround-mode`, `which-key-mode`, and the shared
+//!   minors that own one chord for a whole class of view
+//!   ([`RefreshableViewMode`] `gr`, [`FoldableViewMode`] `<Tab>`,
+//!   [`ReplMode`], [`EmacsKeysMode`]). Feature-crate modes live with their
+//!   feature (`lattice-lsp`, `lattice-listing`, `lattice-magit`, …).
 //!
-//! ## Stub types still pending real impls
+//! ## What it must not depend on, and why
 //!
-//! `Keymap`, `Subscription`, and `DecorationProvider` remain
-//! placeholders in `contributions.rs`. Real impls land in:
+//! Nothing above it: not `lattice-host`, no renderer (`lattice-ui-tui`,
+//! `lattice-ui-gpui`), no feature crate. Every feature crate depends on this
+//! one to declare its modes, and the host depends on every feature crate, so
+//! a dependency upward is a cycle — and, more to the point, it is the
+//! structural guarantee that a mode can own its keymap, handler bodies,
+//! buffers and async wakes **without an `Editor::` method or a host `Action`
+//! variant** (the mode-ownership acid test). Where a mode needs the host, the
+//! host implements a trait defined here ([`ModeActivator`], [`BufferStore`],
+//! [`SubsystemBoot`]) or registers a service. Its own dependencies are the
+//! substrate below: protocol, core, grammar, keymap, config, completion,
+//! runtime, cells.
 //!
-//! - `Keymap` -- when the layered keymap registry from
-//!   `keymap-architecture.md` exposes a public Keymap type for
-//!   modes to contribute. Until then, the placeholder lets the
-//!   trait surface be complete.
-//! - `Subscription` -- when the typed event bus stabilises a
-//!   subscription type (DESIGN.md §5.10).
-//! - `DecorationProvider` -- M.4 / decoration registry.
+//! ## Example: a minimal minor mode
 //!
-//! As of M.2.1, `OptionOverride` / `OptionOverrideSet` /
-//! `OverridePriority` are real types in `overrides.rs`; the
-//! resolver and `ResolvedOptions` cache live in `lattice-config`
-//! (see `mode-architecture.md` §6.3 / §9.3 for why the split).
+//! ```
+//! use lattice_core::BufferKind;
+//! use lattice_mode::{
+//!     ActivationPolicy, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
+//!     OptionOverrideSet,
+//! };
+//!
+//! /// Wraps long lines in prose buffers.
+//! struct ProseMode;
+//!
+//! impl Mode for ProseMode {
+//!     type Guard = (); // nothing to clean up
+//!     fn id(&self) -> ModeId {
+//!         ModeId::new("prose-mode")
+//!     }
+//!     fn kind(&self) -> ModeKind {
+//!         ModeKind::Minor
+//!     }
+//!     fn options(&self) -> OptionOverrideSet {
+//!         lattice_config::overrides! { lattice_config::Wrap = true, }
+//!     }
+//!     fn activation_policy(&self) -> ActivationPolicy {
+//!         ActivationPolicy::Majors(vec![ModeId::new("markdown-mode")])
+//!     }
+//!     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+//!         Box::pin(async { Ok(()) })
+//!     }
+//! }
+//!
+//! let mut registry = ModeRegistry::new();
+//! let id = registry.register(ProseMode).unwrap();
+//! // The host's minor resolver asks this when a buffer enters a major.
+//! assert_eq!(registry.auto_activatable_minors("markdown-mode", BufferKind::Document), vec![id]);
+//! assert!(registry.auto_activatable_minors("rust-mode", BufferKind::Document).is_empty());
+//! ```
+//!
+//! The [`Mode`] docs carry the full lifecycle (registration → activation →
+//! deactivation) as a runnable example; [`SubsystemBoot`] shows a whole
+//! subsystem install with an off-thread producer.
+//!
+//! ## Design documents
+//!
+//! - `docs/dev/architecture/mode-architecture.md` — the mode model,
+//!   activation, Guards, option layering (§5–§9).
+//! - `docs/dev/architecture/boot-composition.md` — `SubsystemBoot`, the
+//!   inbound primitive and why the wake lives in the sender (§3).
+//! - `docs/dev/architecture/keymap-architecture.md` — keymap layers.
+//! - `docs/dev/architecture/modeline.md` — the modeline element model.
+//! - `docs/dev/architecture/cancellation.md` — [`ForegroundCancel`].
+
+#![warn(missing_docs)]
 
 // M.10.1 (2026-06-02): action-handler registry — mode-
 // contributed closures per `CommandId`. Required so modes own

@@ -53,9 +53,17 @@ macro_rules! display_minor_mode {
         contributes $option_path:path = $on_value:expr,
         $($extra_overrides:tt)*
     ) => {
+        #[doc = concat!(
+            "`", $mode_name, "` — a display minor mode that overrides `",
+            stringify!($option_path), "` to `", stringify!($on_value),
+            "` (plus any further overrides) while active. `Manual` activation; ",
+            "a user toggle for the option, kept in sync with it by the host's ",
+            "option-mirror cascade when a `mirrors` name is declared."
+        )]
         pub struct $struct_name;
 
         impl $struct_name {
+            #[doc = concat!("The canonical id, `\"", $mode_name, "\"`.")]
             pub fn mode_id() -> ModeId {
                 ModeId::new($mode_name)
             }
@@ -141,9 +149,20 @@ display_minor_mode!(
 // stopping there gated typing and left `x` / `dd` / `cw`
 // working, which is worse than not gating at all, because the
 // buffer looks protected and is not.
+/// `read-only-mode` — makes a buffer read-only in BOTH ways that matter:
+/// it contributes `ReadOnly = true` (which gates insert-mode typing) and
+/// declares an invocation runner that refuses operators (`x`, `dd`, `cw`,
+/// `p`), which never pass through the option's gate.
+///
+/// A user toggle on any buffer, and the mode a read-only major pulls in
+/// through [`Mode::implies`](crate::Mode::implies) — declaring `ReadOnly`
+/// alone leaves operators working.
 pub struct ReadOnlyMode;
 
 impl ReadOnlyMode {
+    /// The canonical id, `"read-only-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("read-only-mode")
     }

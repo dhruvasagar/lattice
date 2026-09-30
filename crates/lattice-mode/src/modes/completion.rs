@@ -48,6 +48,9 @@ use crate::{BufferLocal, CapabilitySet, LifecycleFuture, Mode, ModeContext, Mode
 pub struct CompletionMode;
 
 impl CompletionMode {
+    /// The canonical id, `"completion-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("completion-mode")
     }
@@ -92,6 +95,9 @@ impl Mode for CompletionMode {
 pub struct BufferWordsMode;
 
 impl BufferWordsMode {
+    /// The canonical id, `"buffer-words-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("buffer-words-mode")
     }
@@ -146,6 +152,9 @@ impl Mode for BufferWordsMode {
 pub struct PathCompletionMode;
 
 impl PathCompletionMode {
+    /// The canonical id, `"path-completion-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("path-completion-mode")
     }
@@ -189,6 +198,9 @@ impl Mode for PathCompletionMode {
 pub struct CompletionPopupMode;
 
 impl CompletionPopupMode {
+    /// The canonical id, `"completion-popup-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("completion-popup-mode")
     }
@@ -213,7 +225,7 @@ impl Mode for CompletionPopupMode {
     }
 }
 
-/// CSM.3 (insert-completion.md §12.4): cached active completion-
+/// Cached active completion-
 /// source set for a buffer. The host
 /// (`App::recompute_active_completion_sources_for`) recomputes
 /// this on every mode-activation / -deactivation transition by
@@ -221,7 +233,7 @@ impl Mode for CompletionPopupMode {
 /// `mode.completion_sources()` on each. The aggregator reads
 /// the cache on the popup-open / refilter path -- O(1) buffer-
 /// local lookup, never a walk over every active mode per
-/// keystroke.
+/// keystroke (CSM.3, insert-completion.md §12.4).
 ///
 /// `OWNER_MODE` is `"completion-mode"` because that's the
 /// persistent gate; the cache is meaningless when

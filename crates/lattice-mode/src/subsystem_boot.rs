@@ -3,11 +3,7 @@
 //! Boot-composition BC.3b. Every subsystem (the Claude Code IDE peer, LSP,
 //! multibuffer, terminal, …) self-installs through one crate-owned entry point
 //!
-//! ```ignore
-//! pub fn install(boot: &mut impl SubsystemBoot) { … }
-//! ```
-//!
-//! that does *all* of its wiring — modes, commands, services, the off-keystroke
+//! `pub fn install(boot: &mut impl SubsystemBoot)` that does *all* of its wiring — modes, commands, services, the off-keystroke
 //! inbound bus, event wakes — against the generic primitives this trait exposes.
 //! The host (`editor_boot`) then has a single Phase-B *install list*: one line
 //! per subsystem. Adding a subsystem touches the host in exactly that one place
@@ -30,6 +26,46 @@
 //!
 //! The generic methods make the trait non-object-safe; installs take
 //! `&mut impl SubsystemBoot` (static dispatch), so object safety is not needed.
+//!
+//! # Examples
+//!
+//! A complete install for a subsystem with one mode and one off-thread
+//! producer. The producer's results reach the screen with no keystroke
+//! because the wake lives inside [`InboundBus::send`]:
+//!
+//! ```
+//! use lattice_grammar::effect::{EchoLevel, Effect};
+//! use lattice_mode::inbound::InboundBus;
+//! use lattice_mode::{LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, SubsystemBoot};
+//!
+//! struct WeatherMode;
+//! impl Mode for WeatherMode {
+//!     type Guard = ();
+//!     fn id(&self) -> ModeId { ModeId::new("weather-mode") }
+//!     fn kind(&self) -> ModeKind { ModeKind::Minor }
+//!     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+//!         Box::pin(async { Ok(()) })
+//!     }
+//! }
+//!
+//! /// A report from the off-thread fetcher.
+//! struct Report(String);
+//!
+//! /// The one line the host's install list calls.
+//! pub fn install(boot: &mut impl SubsystemBoot) {
+//!     if let Err(e) = boot.modes_mut().register(WeatherMode) {
+//!         tracing::warn!(%e, "weather-mode not registered"); // log + skip, never panic
+//!     }
+//!     // The handler runs on the editor actor, once per drained item.
+//!     let bus: InboundBus<Report> = boot.inbound(|Report(text)| {
+//!         vec![Effect::Echo { level: EchoLevel::Info, text }]
+//!     });
+//!     boot.runtime_handle().spawn(async move {
+//!         // … fetch off-thread, then:
+//!         let _ = bus.send(Report("sunny".into())); // wakes the editor
+//!     });
+//! }
+//! ```
 
 use std::any::Any;
 use std::sync::Arc;
@@ -97,11 +133,11 @@ pub trait SubsystemBoot {
     /// editor's lifetime by the host.
     fn tick_callback(&mut self, callback: TickCallback);
 
-    /// WK.3: register an **idle gate** — a handler the editor actor runs when
+    /// Register an **idle gate** — a handler the editor actor runs when
     /// an armed deadline elapses, applying the `Effect`s it returns and
     /// repainting. The subsystem arms it from its own event handler
     /// (`handle.arm(Instant::now() + delay)`) and disarms when the reason
-    /// evaporates.
+    /// evaporates (WK.3).
     ///
     /// This is the time-domain peer of [`inbound`](Self::inbound): the wake is
     /// inside the primitive, so a gate's effects reach the screen WITHOUT a

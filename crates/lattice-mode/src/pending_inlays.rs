@@ -1,4 +1,4 @@
-//! DL.3b: mode-published inline virtual text.
+//! Mode-published inline virtual text (DL.3b).
 //!
 //! The inlay peer of [`crate::pending_synthetic_highlights`], and it
 //! exists for the same reason: buffer-locals are written host-side, so
@@ -47,14 +47,20 @@ pub struct InlayRow {
 /// recomputes a listing publishes the whole set, so a shorter listing
 /// leaves nothing of the old behind.
 pub struct PendingInlays {
+    /// Undrained rows by buffer; the host's tick drain moves each entry
+    /// into the buffer's inlay local.
     pub map: Arc<Mutex<HashMap<BufferId, Vec<InlayRow>>>>,
+    /// The editor's `async_landed` notify ([`set_waker`](Self::set_waker)
+    /// at boot). `None` means stores land but nothing wakes.
     pub waker: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
 }
 
-/// Shared-handle alias. Registered and looked up under **this** type,
-/// per the `ServiceRegistry` TypeId rule — registering an
-/// `Arc<PendingInlays>` and asking for `PendingInlays` silently returns
-/// `None`.
+/// Shared-handle alias for a producer to keep.
+///
+/// The host registers the bare [`PendingInlays`] (so
+/// `ServiceRegistry::get::<PendingInlays>()` is the lookup, and it returns
+/// this `Arc`). Per the `ServiceRegistry` `TypeId` rule, looking up
+/// `PendingInlaysHandle` against that registration returns `None`.
 pub type PendingInlaysHandle = Arc<PendingInlays>;
 
 impl Default for PendingInlays {
@@ -64,6 +70,7 @@ impl Default for PendingInlays {
 }
 
 impl PendingInlays {
+    /// Empty map, no waker installed.
     pub fn new() -> Self {
         Self {
             map: Arc::new(Mutex::new(HashMap::new())),
@@ -90,6 +97,8 @@ impl PendingInlays {
         self.fire_waker();
     }
 
+    /// Install the notify every `*_and_wake` fires. Called once by the host
+    /// with the editor's `async_landed`; replaces any previous waker.
     pub fn set_waker(&self, waker: Arc<tokio::sync::Notify>) {
         if let Ok(mut w) = self.waker.lock() {
             *w = Some(waker);

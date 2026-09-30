@@ -1,4 +1,4 @@
-//! CG.2 — the foreground-cancellation seam, as a registered service.
+//! The foreground-cancellation seam, as a registered service (CG.2).
 //!
 //! Design: `docs/dev/architecture/cancellation.md`; sequencing:
 //! `docs/dev/operations/slice-plans/cancellation.md`.
@@ -63,7 +63,7 @@ pub struct ForegroundCancel {
 pub type ForegroundCancelHandle = Arc<ForegroundCancel>;
 
 impl ForegroundCancel {
-    /// CG.4: a clone of the currently-armed token, if any.
+    /// A clone of the currently-armed token, if any (CG.4).
     ///
     /// For callers that must poll cancellation from a context the arming
     /// caller never reached — the plugin host's epoch callback, which
@@ -121,7 +121,7 @@ impl ForegroundCancel {
         token
     }
 
-    /// CG.3: join the foreground set **without** superseding anything.
+    /// Join the foreground set **without** superseding anything (CG.3).
     ///
     /// For work that already has its own cancellation discipline and
     /// only needs `<C-g>` to reach it. Every user-triggered LSP command

@@ -1,4 +1,4 @@
-//! TC.2 — the native seam for an async producer of structural context scopes.
+//! The native seam for an async producer of structural context scopes (TC.2).
 //!
 //! The tree-sitter-context analogue of [`AsyncGutterDecorationSource`]: the host
 //! drives it OFF the render path on a trigger (a completed reparse), caches the
@@ -105,6 +105,7 @@ impl std::fmt::Debug for ContextSourceRegistry {
 }
 
 impl ContextSourceRegistry {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }
@@ -133,10 +134,12 @@ impl ContextSourceRegistry {
         self.sources.clone()
     }
 
+    /// True when no producer is registered.
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
     }
 
+    /// Number of registered producers.
     pub fn len(&self) -> usize {
         self.sources.len()
     }

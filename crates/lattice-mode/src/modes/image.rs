@@ -40,6 +40,9 @@ pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "sv
 pub struct ImageMode;
 
 impl ImageMode {
+    /// The canonical id, `"image-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("image-mode")
     }

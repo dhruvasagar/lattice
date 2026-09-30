@@ -1,5 +1,5 @@
-//! M.10.1: action-handler registry — mode-contributed closures
-//! per `CommandId`.
+//! Action-handler registry — mode-contributed closures
+//! per `CommandId` (M.10.1).
 //!
 //! Per `feedback_mode_owns_its_surface` (CLAUDE.md standing
 //! rules, sharpened 2026-06-02) + `mode-architecture.md` §5.3,
@@ -57,10 +57,10 @@ pub struct ActionContext<'a> {
     pub buffer_id: BufferId,
     /// Active document cursor at the moment the chord fired.
     pub cursor: Position,
-    /// MG.18e: the **active region** — the Visual/Select-mode selection
+    /// The **active region** — the Visual/Select-mode selection
     /// extent, normalised so `start <= end`. `None` in Normal mode and
     /// on every non-chord firing path (prompt submit, transient item,
-    /// a `Confirm` yes-action).
+    /// a `Confirm` yes-action) (MG.18e).
     ///
     /// Design §5.2's "Visual mode IS the active region" applied to mode
     /// action handlers: a chord that fires with a selection up should
@@ -89,7 +89,7 @@ pub struct ActionContext<'a> {
     /// `None` for every other firing path (chord dispatch, transient
     /// item click, `Effect::Confirm`'s yes-action, ...).
     pub prompt_value: Option<&'a str>,
-    /// MG.17a: arguments the invocation carried.
+    /// Arguments the invocation carried (MG.17a).
     ///
     /// `Args::None` for a bare chord press. A transient item's flags
     /// and arguments arrive here as `Args::List`, ordered by the
@@ -99,13 +99,13 @@ pub struct ActionContext<'a> {
     /// [`Self::flag`] / [`Self::arg_str`] rather than matching the
     /// list positionally.
     pub args: Args,
-    /// LM.1: the active buffer's typed mode-owned locals, read-only, for
+    /// The active buffer's typed mode-owned locals, read-only, for
     /// the duration of the dispatch. `Some` on the host chord-dispatch
     /// path (where a mode handler may need to read its buffer's state —
     /// oil's dir/snapshot, a file tree's entries — to resolve the entry
     /// under the cursor); `None` on the auxiliary firing paths (prompt
     /// submit, transient item, a `Confirm` yes-action) and wherever a
-    /// caller builds a context without a buffer-locals store.
+    /// caller builds a context without a buffer-locals store (LM.1).
     ///
     /// Read it through [`Self::buffer_local`] rather than the field, so a
     /// handler that runs with `None` degrades to "no such local" — the
@@ -119,8 +119,8 @@ pub struct ActionContext<'a> {
 }
 
 impl<'a> ActionContext<'a> {
-    /// LM.1: read one of the active buffer's mode-owned locals, if the
-    /// context carries a buffer-locals store and the local is seeded.
+    /// Read one of the active buffer's mode-owned locals, if the
+    /// context carries a buffer-locals store and the local is seeded (LM.1).
     ///
     /// Total: `None` covers a context built without locals (an auxiliary
     /// firing path) and a buffer that never seeded `T`, which a handler
@@ -144,7 +144,7 @@ impl ActionContext<'_> {
         }
     }
 
-    /// PR.2: the project this action is acting in.
+    /// The project this action is acting in (PR.2).
     ///
     /// Design: `docs/dev/architecture/project-resolution.md` §5. This is
     /// a method rather than a field so that "which project" is a
@@ -210,9 +210,9 @@ impl ActionContext<'_> {
 /// [`ActionContext`] for zero-copy access to live state.
 pub type ActionHandler = Arc<dyn Fn(&ActionContext<'_>) -> Option<Effect> + Send + Sync + 'static>;
 
-/// SN.3c.0: a *global* (buffer-agnostic) action-handler
+/// A *global* (buffer-agnostic) action-handler
 /// contribution declared by a mode via
-/// [`Mode::action_handlers`](crate::Mode::action_handlers).
+/// [`Mode::action_handlers`](crate::Mode::action_handlers) (SN.3c.0).
 ///
 /// Use this for handlers whose body reads the active buffer /
 /// cursor / services from the [`ActionContext`] at call time and
@@ -246,10 +246,10 @@ impl std::fmt::Debug for ActionHandlerContribution {
     }
 }
 
-/// M.10.1.b (2026-06-03): typed handle for `ServiceRegistry`
+/// Typed handle for `ServiceRegistry`
 /// lookup. Boot registers a fresh `ActionHandlerRegistry` under
 /// this alias; modes pull it from `on_activate` via
-/// `ctx.service::<ActionHandlerRegistryHandle>()`.
+/// `ctx.service::<ActionHandlerRegistryHandle>()` (M.10.1.b, 2026-06-03).
 ///
 /// Per `feedback_servicesregistry_arc_typeid`: register and
 /// lookup MUST use the same `T` for the TypeId hash to match.
@@ -263,6 +263,31 @@ pub type ActionHandlerRegistryHandle = Arc<ActionHandlerRegistry>;
 /// modes register via [`register`](Self::register) during
 /// `Mode::on_activate` and unregister via the returned
 /// [`ActionHandlerRegistration`] token's `Drop` impl.
+///
+/// # Examples
+///
+/// The per-buffer path: a mode registers in `on_activate` and keeps the token
+/// in its Guard, so deactivation unregisters the body.
+///
+/// ```
+/// use std::sync::Arc;
+/// use lattice_grammar::effect::{EchoLevel, Effect};
+/// use lattice_mode::{ActionHandler, ActionHandlerRegistry};
+/// use lattice_protocol::ids::CommandId;
+///
+/// let registry = Arc::new(ActionHandlerRegistry::new());
+/// let refresh = CommandId::new(41); // resolved from "action:weather-refresh"
+///
+/// let body: ActionHandler = Arc::new(|ctx| {
+///     let text = format!("refreshing buffer {}", ctx.buffer_id);
+///     Some(Effect::Echo { level: EchoLevel::Info, text })
+/// });
+/// let token = registry.register(refresh, body); // lives in the mode's Guard
+/// assert!(registry.lookup(refresh).is_some());
+///
+/// drop(token); // the Guard dropped: the mode deactivated
+/// assert!(registry.lookup(refresh).is_none());
+/// ```
 pub struct ActionHandlerRegistry {
     handlers: ArcSwap<HashMap<CommandId, ActionHandler>>,
 }

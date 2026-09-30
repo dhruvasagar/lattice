@@ -64,9 +64,23 @@ use crate::registry::ModeRegistry;
 
 /// Register every foundation mode against `registry`. Called
 /// from the App's mode-registry boot path before any buffer is
-/// created. Idempotent: re-registration is the existing
-/// `ModeRegistry::register` invariant (panics on duplicate, but
-/// the App calls this once).
+/// created.
+///
+/// **Not idempotent:** each mode is registered with `.expect(..)`, so a
+/// second call on the same registry panics on the first
+/// [`RegistrationError::Duplicate`](crate::RegistrationError::Duplicate).
+/// The App calls it exactly once.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_mode::{register_foundation_modes, ModeRegistry, TextMode};
+///
+/// let mut registry = ModeRegistry::new();
+/// register_foundation_modes(&mut registry);
+/// assert!(registry.is_registered(TextMode::mode_id()));
+/// assert!(registry.is_registered(lattice_mode::EmacsKeysMode::mode_id()));
+/// ```
 pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(TextMode)

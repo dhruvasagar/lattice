@@ -28,9 +28,17 @@ use crate::{
     keymap_entry,
 };
 
+/// `help-mode` — the minor that makes a (markdown-major) buffer a help
+/// buffer: read-only, gutterless, no-file, `<Esc>` dismisses it, and its
+/// motions run through the read-only help invocation runner. Activated by
+/// the host on `:help` / `:describe-*` / `:apropos` / `:keymap` / … views;
+/// see the module docs.
 pub struct HelpMode;
 
 impl HelpMode {
+    /// The canonical id, `"help-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("help-mode")
     }

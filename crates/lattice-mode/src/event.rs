@@ -30,7 +30,7 @@ use crate::mode::ModeId;
 /// (MA.1) — see the module docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModeEvent {
-    /// M-async.2: `on_activate` returned `Err`. Published from
+    /// `on_activate` returned `Err`. Published from
     /// the spawned lifecycle task instead of the success lifecycle
     /// event. `active_modes` was mutated
     /// synchronously by the dispatcher's sync prefix; M-async.3
@@ -38,18 +38,26 @@ pub enum ModeEvent {
     /// event. `reason` is the boundary string of the original
     /// `ModeActivationError` (the error type itself isn't `Eq` /
     /// `Clone`-friendly across crate boundaries; the string is
-    /// what subscribers actually use).
+    /// what subscribers actually use) (M-async.2).
     ModeActivationFailed {
+        /// The buffer the activation targeted.
         buffer: BufferId,
+        /// The mode whose hook failed, or a later cascade step that never ran.
         mode: ModeId,
+        /// The error's display string; for a skipped cascade step,
+        /// `"cascade aborted by <mode>"`.
         reason: String,
     },
 
     /// Two active minor modes contributed conflicting values
-    /// for the same option (M.2 emits this; reserved here).
+    /// for the same option. Reserved: declared for M.2's resolver, but
+    /// nothing publishes it today.
     OptionConflict {
+        /// The buffer whose resolution saw the conflict.
         buffer: BufferId,
+        /// The option's canonical name.
         option: &'static str,
+        /// The minors that disagree.
         modes: SmallVec<[ModeId; 2]>,
     },
 }

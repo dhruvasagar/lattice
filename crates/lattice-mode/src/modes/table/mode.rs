@@ -1,4 +1,4 @@
-//! TB.1 — `table-mode`: the shared minor that edits pipe tables.
+//! `table-mode`: the shared minor that edits pipe tables (TB.1).
 //!
 //! Design: [`table-mode.md`](../../../../../../docs/dev/architecture/table-mode.md).
 //! Slice plan: [`table-mode.md`](../../../../../../docs/dev/operations/slice-plans/table-mode.md).
@@ -53,32 +53,54 @@ use crate::{
     keymap_entry,
 };
 
+/// Action name: Align the table at the cursor (`<leader>t|`). Consumes the chord (no-op) outside a table.
 pub const ALIGN: &str = "action:table-align";
+/// Action name: Next cell, realigning; adds a row past the last cell (`<Tab>`, Normal and Insert). Declines outside a table.
 pub const NEXT_CELL: &str = "action:table-next-cell";
+/// Action name: Previous cell, realigning (`<S-Tab>`, Normal and Insert). Declines outside a table.
 pub const PREV_CELL: &str = "action:table-prev-cell";
+/// Action name: Move the row up (`<leader>tK`).
 pub const ROW_UP: &str = "action:table-row-up";
+/// Action name: Move the row down (`<leader>tJ`).
 pub const ROW_DOWN: &str = "action:table-row-down";
+/// Action name: Move the column left (`<leader>tH`).
 pub const COLUMN_LEFT: &str = "action:table-column-left";
+/// Action name: Move the column right (`<leader>tL`).
 pub const COLUMN_RIGHT: &str = "action:table-column-right";
+/// Action name: Insert an empty row below (`<leader>tr`).
 pub const INSERT_ROW: &str = "action:table-insert-row";
+/// Action name: Insert an empty column to the right (`<leader>tc`).
 pub const INSERT_COLUMN: &str = "action:table-insert-column";
+/// Action name: Delete the row at the cursor (`<leader>tdr`).
 pub const DELETE_ROW: &str = "action:table-delete-row";
+/// Action name: Delete the column at the cursor (`<leader>tdc`).
 pub const DELETE_COLUMN: &str = "action:table-delete-column";
 // TB.3
+/// Action name: Insert a horizontal rule below the row (`<leader>t-`); TB.3.
 pub const INSERT_RULE: &str = "action:table-insert-rule";
+/// Action name: Sort the section by the cursor's column (`<leader>ts`); TB.3.
 pub const SORT: &str = "action:table-sort";
+/// Action name: Sort the section descending (`<leader>tS`); TB.3.
 pub const SORT_DESC: &str = "action:table-sort-descending";
+/// Action name: Empty the cell at the cursor (`<leader>tb`); TB.3.
 pub const BLANK_CELL: &str = "action:table-blank-cell";
+/// Action name: Copy the cell into the row below, incrementing a trailing number (`<leader>ty`); TB.3.
 pub const COPY_DOWN: &str = "action:table-copy-down";
+/// Action name: Swap rows and columns (`<leader>tT`); TB.3.
 pub const TRANSPOSE: &str = "action:table-transpose";
 // TB.4 — Insert-mode only.
+/// Action name: Same column, next row, adding a row at the end (Insert `<CR>`); TB.4. Declines outside a table.
 pub const NEXT_ROW: &str = "action:table-next-row";
+/// Action name: Realign, declining outside a table so the chord falls to the layer below (`<C-c><C-c>`, and Insert `<Esc>` with fall-through); TB.4.
 pub const REALIGN: &str = "action:table-realign";
 
 /// `table-mode` — pipe-table editing, on every major that has pipe tables.
 pub struct TableMode;
 
 impl TableMode {
+    /// The canonical id, `"table-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("table-mode")
     }
@@ -103,7 +125,7 @@ impl Mode for TableMode {
     /// and the alternative, org declaring the relationship from its side,
     /// would mean the mode's activation surface lived in two repos.
     ///
-    /// Not `Always`: a table mode on a Rust buffer would take `<Tab>` from
+    /// Not `Global`: a table mode on a Rust buffer would take `<Tab>` from
     /// completion the moment a line started with `|`, and a match arm does.
     fn activation_policy(&self) -> ActivationPolicy {
         ActivationPolicy::Majors(vec![ModeId::new("markdown-mode"), ModeId::new("org-mode")])
@@ -198,6 +220,15 @@ fn table_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
+/// Register [`TableMode`] in `registry`. Called by
+/// [`register_foundation_modes`](crate::register_foundation_modes); the
+/// chords' bodies are registered separately by [`register_table_actions`]
+/// into the command registry, which must happen before the host translates
+/// mode keymaps or the entries' command names will not resolve.
+///
+/// # Panics
+///
+/// If `table-mode` is already registered.
 pub fn register_table_mode(registry: &mut ModeRegistry) {
     registry
         .register(TableMode)

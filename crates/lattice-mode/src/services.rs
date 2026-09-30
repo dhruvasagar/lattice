@@ -24,12 +24,41 @@ use std::sync::Arc;
 /// Typed map keyed by [`TypeId`]. Stores `Arc<dyn Any + Send +
 /// Sync>` per slot; clones on lookup (cheap — services are
 /// `Arc` internally). Built at boot, read-only thereafter.
+///
+/// **Look up with exactly the type you registered.** The key is
+/// `TypeId::of::<T>()` of the value passed to [`register`](Self::register),
+/// so registering an `Arc<X>` stores it under `Arc<X>`, and a later
+/// `get::<X>()` silently returns `None`. The convention for an
+/// already-shared handle is a named alias (`type XHandle = Arc<X>`) used on
+/// both sides — see [`BufferStoreHandle`](crate::BufferStoreHandle),
+/// [`ModeRegistryHandle`](crate::ModeRegistryHandle) and the other
+/// `*Handle` aliases in this crate.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use lattice_mode::ServiceRegistry;
+///
+/// struct Clock(u64);
+/// type ClockHandle = Arc<Clock>;
+///
+/// let mut services = ServiceRegistry::new();
+/// services.register::<ClockHandle>(Arc::new(Clock(42)));
+///
+/// // Same type on both sides: found (an `Arc<ClockHandle>`, i.e. two layers).
+/// assert_eq!(services.get::<ClockHandle>().unwrap().0, 42);
+/// // The TypeId pitfall: `Clock` was never registered, only `Arc<Clock>`.
+/// assert!(services.get::<Clock>().is_none());
+/// ```
 #[derive(Default)]
 pub struct ServiceRegistry {
     services: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
 impl ServiceRegistry {
+    /// An empty registry. The host fills it at boot; tests build one
+    /// with only the services the code under test reads.
     pub fn new() -> Self {
         Self::default()
     }

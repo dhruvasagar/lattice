@@ -20,7 +20,15 @@ use lattice_core::BufferKind;
 /// (mode-architecture.md §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModeKind {
+    /// Content-type identity (`rust-mode`, `help-mode`). Exactly one per
+    /// buffer; activating another replaces it. Chosen by the host's major
+    /// resolver ([`Mode::target_buffer_kind`], [`Mode::target_language`],
+    /// [`Mode::presents_extensions`]), never by an [`ActivationPolicy`].
     Major,
+    /// Additive behaviour layered over the major (`line-numbers-mode`,
+    /// `table-mode`). Any number per buffer, kept in activation order;
+    /// auto-activated per [`Mode::activation_policy`] or pulled in by
+    /// another mode's [`Mode::implies`].
     Minor,
 }
 
@@ -38,6 +46,35 @@ pub enum ModeKind {
 /// nowhere until it opts in or the user does. Leaving the onus on the
 /// user is a legitimate choice — some modes won't ship a sensible
 /// default and shouldn't guess.
+///
+/// Only *enabled* minors are auto-activated
+/// ([`ModeRegistry::is_minor_enabled`](crate::ModeRegistry::is_minor_enabled)):
+/// native modes are enabled at registration, plugin modes are not.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::BufferKind;
+/// use lattice_mode::{ActivationPolicy, ModeId};
+///
+/// // A content minor: every real document, never a synthetic buffer.
+/// assert!(ActivationPolicy::Global.admits("rust-mode", BufferKind::Document));
+/// assert!(!ActivationPolicy::Global.admits("help-mode", BufferKind::Help));
+///
+/// // A universal leader: everywhere the user can focus.
+/// assert!(ActivationPolicy::Universal.admits("help-mode", BufferKind::Help));
+///
+/// // An allowlist is matched on the major's id, independent of kind.
+/// let tables = ActivationPolicy::Majors(vec![
+///     ModeId::new("markdown-mode"),
+///     ModeId::new("org-mode"),
+/// ]);
+/// assert!(tables.admits("org-mode", BufferKind::Document));
+/// assert!(!tables.admits("rust-mode", BufferKind::Document));
+///
+/// // The trait default auto-activates nowhere.
+/// assert!(!ActivationPolicy::default().admits("rust-mode", BufferKind::Document));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ActivationPolicy {
     /// Never auto-activate; only explicit (user / host / `:<mode>`)
@@ -88,8 +125,8 @@ impl ActivationPolicy {
     }
 }
 
-/// AU‑3: an editable region at the **tail** of an otherwise read-only,
-/// owner-written buffer — the comint pattern (the agent-conversation prompt,
+/// An editable region at the **tail** of an otherwise read-only,
+/// owner-written buffer — the comint pattern (AU‑3) (the agent-conversation prompt,
 /// future `*scratch*` / REPL input lines). A mode declares it via
 /// [`Mode::editable_tail`]; the host's read-only edit gate consults it so
 /// user keystrokes may edit only the tail while the owner's projection writes
@@ -121,6 +158,22 @@ impl ActivationPolicy {
 /// line where the editable region begins (the transcript-end line); the owning
 /// mode updates it as the transcript grows. When set it overrides
 /// `trailing_lines`.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_mode::EditableTail;
+///
+/// // A one-line `> ` prompt at the bottom of a 5-line transcript.
+/// let prompt = EditableTail { trailing_lines: 1, first_line_min_byte: 2, first_editable_line: None };
+/// assert!(prompt.permits(4, 2, 5)); // after the marker, on the prompt line
+/// assert!(!prompt.permits(4, 0, 5)); // inside the `> ` marker
+/// assert!(!prompt.permits(3, 0, 5)); // history above the prompt
+/// assert!(prompt.permits(9, 2, 10)); // still the last line after the owner appends
+///
+/// // The default tail permits nothing.
+/// assert!(!EditableTail::default().permits(0, 0, 1));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EditableTail {
     /// Number of trailing lines forming the editable region. Ignored when
@@ -221,6 +274,128 @@ pub type LifecycleFuture<'a, T = ()> =
 /// `Send + Sync + 'static` so a single trait object can be shared
 /// across threads (the registry runs on whatever task drives
 /// activation; subscribers can be on any task).
+///
+/// ## Lifecycle, in order
+///
+/// 1. **Registration** — [`ModeRegistry::register`](crate::ModeRegistry::register)
+///    (native, enabled) or `register_available` (plugin, disabled until
+///    the user enables it). The registry reads [`id`](Self::id),
+///    [`kind`](Self::kind), [`target_buffer_kind`](Self::target_buffer_kind),
+///    [`target_language`](Self::target_language) and
+///    [`presents_extensions`](Self::presents_extensions) once, to build its
+///    indexes. The host separately walks every registered mode once at boot
+///    to translate [`keymap`](Self::keymap) into a
+///    `KeymapLayer::MinorMode(id)` / `MajorMode(id)` layer and to register
+///    [`action_handlers`](Self::action_handlers).
+/// 2. **Activation** — per buffer, on the editor actor.
+///    `activate_major` / `activate_minor` validates (registered, right
+///    kind, [`required_capabilities`](Self::required_capabilities),
+///    [`conflicts_with`](Self::conflicts_with), [`implies`](Self::implies)
+///    registered), records the mode *and its implied cascade* in
+///    [`ActiveModes`](crate::ActiveModes) synchronously, then runs each
+///    step's [`on_activate`](Self::on_activate) in DFS order. The cascade
+///    future is polled once inline: a hook that never awaits completes
+///    before the activate call returns; the first `Pending` moves the rest
+///    onto the runtime. Success publishes `MajorEntered` /
+///    `MinorActivated`; failure publishes a
+///    [`ModeEvent::ModeActivationFailed`](crate::ModeEvent::ModeActivationFailed)
+///    and the host rolls the cascade back.
+/// 3. **While active** — the host reads the declarative methods
+///    ([`options`](Self::options), [`completion_sources`](Self::completion_sources),
+///    [`gutter_decorations`](Self::gutter_decorations) per frame,
+///    [`editable_tail`](Self::editable_tail) per edit, …). The keymap layer
+///    is scoped to buffers where the mode is active by a per-keystroke
+///    filter.
+/// 4. **Deactivation** — synchronous: the lifecycle event publishes, then
+///    the stashed Guard is dropped. Implied minors cascade-deactivate.
+///
+/// ## What an implementor must not do
+///
+/// - Keep per-buffer state on `self`. One instance serves every buffer;
+///   per-activation state goes in the Guard.
+/// - Block in `on_activate`: it may run inline on the editor actor. Do I/O
+///   with `.await` or hand it to a spawned task.
+/// - Make the declarative methods impure. Most are read once; returning a
+///   different answer later is not observed consistently.
+/// - Bind feature chords at `KeymapLayer::Builtin` or put handler bodies in
+///   the host. The mode owns its chords ([`keymap`](Self::keymap)) *and*
+///   the bodies ([`action_handlers`](Self::action_handlers) or handlers
+///   registered in `on_activate`).
+///
+/// # Examples
+///
+/// A minimal minor mode with an owned Guard, driven through registration,
+/// activation and deactivation exactly as the host drives it:
+///
+/// ```
+/// use std::sync::Arc;
+/// use std::sync::atomic::{AtomicUsize, Ordering};
+///
+/// use lattice_config::ConfigRegistry;
+/// use lattice_mode::{
+///     ActivationPolicy, ActiveModes, GuardStoreHandle, LifecycleFuture, Mode, ModeContext,
+///     ModeId, ModeKind, ModeRegistry, ServiceRegistry,
+/// };
+/// use lattice_protocol::BufferId;
+/// use lattice_runtime::EventBus;
+///
+/// /// Counts live activations; a real Guard would hold a `Subscription`,
+/// /// a restored option value, a supervisor handle, …
+/// struct CountGuard(Arc<AtomicUsize>);
+/// impl Drop for CountGuard {
+///     fn drop(&mut self) {
+///         self.0.fetch_sub(1, Ordering::SeqCst);
+///     }
+/// }
+///
+/// struct TrailingSpaceMode {
+///     live: Arc<AtomicUsize>,
+/// }
+///
+/// impl Mode for TrailingSpaceMode {
+///     type Guard = CountGuard;
+///     fn id(&self) -> ModeId {
+///         ModeId::new("trailing-space-mode") // must end in `-mode`
+///     }
+///     fn kind(&self) -> ModeKind {
+///         ModeKind::Minor
+///     }
+///     fn activation_policy(&self) -> ActivationPolicy {
+///         ActivationPolicy::Global // every document buffer
+///     }
+///     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, CountGuard> {
+///         let live = self.live.clone();
+///         Box::pin(async move {
+///             let _ = ctx.buffer_id(); // per-buffer state goes in the Guard
+///             live.fetch_add(1, Ordering::SeqCst);
+///             Ok(CountGuard(live))
+///         })
+///     }
+/// }
+///
+/// let live = Arc::new(AtomicUsize::new(0));
+/// let mut registry = ModeRegistry::new();
+/// let id = registry.register(TrailingSpaceMode { live: live.clone() }).unwrap();
+///
+/// // What the host holds per editor, and per buffer.
+/// let (guards, events) = (GuardStoreHandle::new(), Arc::new(EventBus::new()));
+/// let (config, services) = (Arc::new(ConfigRegistry::new()), Arc::new(ServiceRegistry::new()));
+/// let buffer = BufferId::new(1);
+/// let mut active = ActiveModes::new();
+///
+/// registry
+///     .activate_minor(&mut active, &guards, &config, &events, &services, buffer, id, Default::default())
+///     .unwrap();
+/// // The hook never awaited, so it completed inline and its Guard is stashed.
+/// assert!(active.has_minor(id));
+/// assert!(guards.contains(buffer, id));
+/// assert_eq!(live.load(Ordering::SeqCst), 1);
+///
+/// // Deactivation drops the Guard: cleanup is the Guard's `Drop`.
+/// registry.deactivate_minor(&mut active, &guards, &events, buffer, id).unwrap();
+/// assert!(!active.has_minor(id));
+/// assert_eq!(live.load(Ordering::SeqCst), 0);
+/// ```
 pub trait Mode: Send + Sync + 'static {
     /// Owned cleanup token returned by [`Self::on_activate`].
     ///
@@ -236,14 +411,27 @@ pub trait Mode: Send + Sync + 'static {
     type Guard: Send + 'static;
 
     /// Canonical identity. Same value every call.
+    ///
+    /// Must end in `-mode`: [`ModeRegistry::register`](crate::ModeRegistry::register)
+    /// refuses anything else with
+    /// [`RegistrationError::MissingModeSuffix`](crate::RegistrationError::MissingModeSuffix).
+    /// It is also the name users and plugins refer to the mode by
+    /// (`:describe-mode <id>`, a plugin's `enable-mode(<id>)`, the
+    /// `<id>.activation` config key) and the key of the mode's keymap layer, so
+    /// changing it is a breaking change. Convention: expose it as an
+    /// associated `fn mode_id() -> ModeId` so other code can name the mode
+    /// without an instance.
     fn id(&self) -> ModeId;
 
-    /// Major / minor.
+    /// Major or minor. Read at registration and on every activation
+    /// call (`activate_major` on a minor, or vice versa, is
+    /// [`ModeActivationError::WrongKind`]).
     fn kind(&self) -> ModeKind;
 
-    /// H.2 (2026-05-31): for major modes, the [`BufferKind`] this
-    /// mode is the default major for. `ModeRegistry::register`
-    /// indexes this so [`ModeRegistry::find_major_for_kind`] can
+    /// For major modes, the [`BufferKind`] this mode is the default
+    /// major for (H.2, 2026-05-31). `ModeRegistry::register`
+    /// indexes this so
+    /// [`ModeRegistry::find_major_for_kind`](crate::ModeRegistry::find_major_for_kind) can
     /// dispatch buffer-creation events to the right major without
     /// host-side `match BufferKind { ... }` blocks.
     ///
@@ -269,15 +457,15 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
-    /// OM.1: for major modes, the **language** this mode is the
+    /// For major modes, the **language** this mode is the
     /// default major for, by canonical name (`Lang::name()` —
-    /// `"rust"`, `"org"`). The peer of
+    /// `"rust"`, `"org"`) (OM.1). The peer of
     /// [`target_buffer_kind`](Self::target_buffer_kind) for the
     /// dispatch path [`BufferKind::Document`] takes: language
     /// detection rather than kind dispatch.
     ///
     /// `ModeRegistry::register` indexes this so
-    /// [`ModeRegistry::find_major_for_lang`] can resolve a
+    /// [`ModeRegistry::find_major_for_lang`](crate::ModeRegistry::find_major_for_lang) can resolve a
     /// document's major without a host-side `match Lang { ... }`,
     /// which is what makes a **plugin-contributed** language's
     /// major possible at all: `Lang::Plugin(_)` has no arm in the
@@ -307,15 +495,53 @@ pub trait Mode: Send + Sync + 'static {
     }
 
     /// Option overrides this mode contributes. Pure declarative
-    /// (same return value every call); the registry merges these
-    /// into the resolution layer stack on activation.
+    /// (same return value every call); the host merges these
+    /// into the buffer's option-resolution layer stack while the mode
+    /// is active, at the mode's layer (later-activated minors win ties),
+    /// and drops them on deactivation. Build with
+    /// `lattice_config::overrides! { lattice_config::Wrap = true, … }`.
     fn options(&self) -> OptionOverrideSet {
         OptionOverrideSet::default()
     }
 
-    /// Keymap chord -> command additions / overrides. Layered
-    /// into the existing keymap registry at this mode's priority
-    /// slot.
+    /// Keymap chord → command additions / overrides.
+    ///
+    /// Read once when the mode is registered; the host translates every
+    /// binding and entry into the layer `KeymapLayer::MinorMode(id)` (or
+    /// `MajorMode(id)`), and a per-keystroke filter makes that layer live
+    /// only in buffers where this mode is active. A mode cannot place a
+    /// binding in any other layer. Table-form entries name commands by
+    /// string and are resolved against the command registry at that point
+    /// (an unknown name is logged and skipped).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::LazyLock;
+    /// use lattice_mode::{
+    ///     keymap_entry, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId,
+    ///     ModeKind,
+    /// };
+    ///
+    /// static PREVIEW_KEYS: LazyLock<Vec<KeymapEntry>> = LazyLock::new(|| {
+    ///     vec![keymap_entry! { mode: Normal, chord: "q", doc: "Close the preview", cmd: "preview:close" }]
+    /// });
+    ///
+    /// struct PreviewMode;
+    /// impl Mode for PreviewMode {
+    ///     type Guard = ();
+    ///     fn id(&self) -> ModeId { ModeId::new("preview-mode") }
+    ///     fn kind(&self) -> ModeKind { ModeKind::Minor }
+    ///     fn keymap(&self) -> Keymap { Keymap::from_entries(PREVIEW_KEYS.as_slice()) }
+    ///     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+    ///         Box::pin(async { Ok(()) })
+    ///     }
+    /// }
+    ///
+    /// let km = PreviewMode.keymap();
+    /// assert_eq!(km.entries.len(), 1);
+    /// assert_eq!(km.entries[0].doc, "Close the preview");
+    /// ```
     fn keymap(&self) -> Keymap {
         Keymap::default()
     }
@@ -352,8 +578,8 @@ pub trait Mode: Send + Sync + 'static {
         Vec::new()
     }
 
-    /// SN.3c.0: *global* (buffer-agnostic) action handlers this
-    /// mode contributes. The host walks every registered mode's
+    /// *Global* (buffer-agnostic) action handlers this
+    /// mode contributes (SN.3c.0). The host walks every registered mode's
     /// `action_handlers()` once at boot, resolves each
     /// `action_name` → `CommandId`, registers the handler in the
     /// `ActionHandlerRegistry`, and holds the tokens for the app's
@@ -376,15 +602,27 @@ pub trait Mode: Send + Sync + 'static {
         CapabilitySet::empty()
     }
 
-    /// Conflicts. Activating this mode auto-deactivates the
-    /// listed minor modes, OR fails if a conflicting major is
-    /// active.
+    /// Modes this one cannot be active alongside.
+    ///
+    /// Checked symmetrically when a **minor** is activated (directly or
+    /// through an `implies` cascade): activation fails with
+    /// [`ModeActivationError::Conflict`] if any mode listed here is active,
+    /// or if the active major or any active minor lists this mode. Nothing
+    /// is auto-deactivated — the caller decides whether to deactivate the
+    /// other mode and retry. `activate_major` does not consult this list.
     fn conflicts_with(&self) -> &[ModeId] {
         &[]
     }
 
-    /// Implies. Activating this mode auto-activates these.
-    /// Used by `relative-line-numbers-mode` ⇒ `line-numbers-mode`.
+    /// Minor modes activating this mode also activates.
+    /// Used by `relative-line-numbers-mode` ⇒ `line-numbers-mode`, and by
+    /// read-only majors ⇒ `read-only-mode`.
+    ///
+    /// Every id must be registered, or activation fails with
+    /// [`ModeActivationError::UnregisteredDependency`]. The whole tree is
+    /// validated and recorded before any hook runs; hooks then run parent
+    /// first, depth-first. Deactivating a minor cascade-deactivates the
+    /// minors it implied (deactivating a major does not).
     fn implies(&self) -> &[ModeId] {
         &[]
     }
@@ -418,7 +656,7 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
-    /// 2026-05-26: invocation-runner discovery. Modes that own
+    /// Invocation-runner discovery (2026-05-26). Modes that own
     /// command-invocation dispatch for their buffer kind
     /// (terminal-mode, oil-mode, file-tree-mode, help-mode, …)
     /// return their canonical [`ModeId`]; the host registers a
@@ -440,9 +678,9 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
-    /// RV.1 (2026-08-10): which of *this mode's own actions* refreshes
+    /// Which of *this mode's own actions* refreshes
     /// its view, or `None` (the default) when the mode backs nothing
-    /// refreshable.
+    /// refreshable (RV.1, 2026-08-10).
     ///
     /// `gr` means "refresh this view" in every synthetic buffer. That
     /// is a property of synthetic views as a class, so the chord lives
@@ -528,8 +766,8 @@ pub trait Mode: Send + Sync + 'static {
         false
     }
 
-    /// MA.1: a *minor* mode's default auto-activation policy
-    /// (mode-architecture.md §7.4). The host's minor-activation
+    /// A *minor* mode's default auto-activation policy
+    /// (MA.1; mode-architecture.md §7.4). The host's minor-activation
     /// resolver reads this for every registered minor when a buffer
     /// enters a major mode, and activates those whose policy
     /// [`admits`](ActivationPolicy::admits) the entered major. The
@@ -541,8 +779,9 @@ pub trait Mode: Send + Sync + 'static {
         ActivationPolicy::Manual
     }
 
-    /// AU‑3: the mode's editable tail on an otherwise read-only buffer, or
-    /// `None` (the default) for a fully read-only / fully writable buffer.
+    /// The mode's editable tail on an otherwise read-only buffer, or
+    /// `None` (the default) for a fully read-only / fully writable buffer
+    /// (AU‑3).
     ///
     /// A mode backing an owner-written buffer (the agent conversation,
     /// future REPL / scratch buffers) declares a tail so the host's
@@ -566,12 +805,39 @@ pub trait Mode: Send + Sync + 'static {
     ///
     /// Marker modes whose `Guard = ()` typically write:
     ///
-    /// ```ignore
+    /// ```
+    /// # use lattice_mode::{LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
+    /// # struct MarkerMode;
+    /// # impl Mode for MarkerMode {
+    /// #     fn id(&self) -> ModeId { ModeId::new("marker-mode") }
+    /// #     fn kind(&self) -> ModeKind { ModeKind::Minor }
     /// type Guard = ();
     /// fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
     ///     Box::pin(async { Ok(()) })
     /// }
+    /// # }
     /// ```
+    ///
+    /// **Where it runs.** On the editor actor, polled once inline; if it
+    /// returns `Pending` the remainder continues as a runtime task. Awaiting
+    /// real I/O is therefore fine; blocking is not. Within one cascade,
+    /// steps run strictly in order, so an implied child's hook never
+    /// observes its parent's half-built state.
+    ///
+    /// **Late results.** If the mode is deactivated (or re-activated)
+    /// while this future is still pending, the Guard it eventually returns
+    /// is dropped immediately instead of stashed — so the Guard's `Drop`
+    /// must be correct even for an activation nobody observed.
+    ///
+    /// **What `ctx` gives you:** the buffer id, typed services
+    /// ([`ModeContext::service`]), the config registry and the event bus —
+    /// not the buffer's text. A mode that needs to create or fill a
+    /// synthetic buffer reaches the host through a service
+    /// ([`BufferStoreHandle`](crate::BufferStoreHandle),
+    /// [`ModeActivator`](crate::ModeActivator)); asynchronous results must
+    /// reach the screen through an inbound channel
+    /// ([`inbound`](crate::inbound)), which wakes the editor, not a bare
+    /// tick callback.
     ///
     /// Stateful modes return a Guard struct whose `Drop` impl
     /// performs cleanup (unsubscribe, restore prior option,
@@ -598,26 +864,47 @@ pub trait Mode: Send + Sync + 'static {
 /// directly. Exposed in `pub` form because the registry's
 /// public API (`Arc<dyn DynMode>`) leaks it.
 pub trait DynMode: Send + Sync + 'static {
+    /// Forwards to [`Mode::id`].
     fn id(&self) -> ModeId;
+    /// Forwards to [`Mode::kind`].
     fn kind(&self) -> ModeKind;
+    /// Forwards to [`Mode::target_buffer_kind`].
     fn target_buffer_kind(&self) -> Option<BufferKind>;
+    /// Forwards to [`Mode::target_language`].
     fn target_language(&self) -> Option<&str>;
+    /// Forwards to [`Mode::options`].
     fn options(&self) -> OptionOverrideSet;
+    /// Forwards to [`Mode::keymap`].
     fn keymap(&self) -> Keymap;
+    /// Forwards to [`Mode::decorations`].
     fn decorations(&self) -> Vec<DecorationProvider>;
+    /// Forwards to [`Mode::gutter_decorations`].
     fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration>;
+    /// Forwards to [`Mode::completion_sources`].
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution>;
+    /// Forwards to [`Mode::action_handlers`].
     fn action_handlers(&self) -> Vec<ActionHandlerContribution>;
+    /// Forwards to [`Mode::required_capabilities`].
     fn required_capabilities(&self) -> CapabilitySet;
+    /// Forwards to [`Mode::conflicts_with`].
     fn conflicts_with(&self) -> &[ModeId];
+    /// Forwards to [`Mode::implies`].
     fn implies(&self) -> &[ModeId];
+    /// Forwards to [`Mode::presents_extensions`].
     fn presents_extensions(&self) -> &[&'static str];
+    /// Forwards to [`Mode::mirrors_option`].
     fn mirrors_option(&self) -> Option<&'static str>;
+    /// Forwards to [`Mode::invocation_runner`].
     fn invocation_runner(&self) -> Option<ModeId>;
+    /// Forwards to [`Mode::refresh_action`].
     fn refresh_action(&self) -> Option<&'static str>;
+    /// Forwards to [`Mode::fold_toggle_action`].
     fn fold_toggle_action(&self) -> Option<&'static str>;
+    /// Forwards to [`Mode::refresh_on_open`].
     fn refresh_on_open(&self) -> bool;
+    /// Forwards to [`Mode::activation_policy`].
     fn activation_policy(&self) -> ActivationPolicy;
+    /// Forwards to [`Mode::editable_tail`].
     fn editable_tail(&self) -> Option<EditableTail>;
 
     /// Type-erased lifecycle entry. Returns a future whose

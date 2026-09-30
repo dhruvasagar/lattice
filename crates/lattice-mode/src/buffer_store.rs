@@ -171,10 +171,13 @@ pub struct BufferStoreHandle {
 }
 
 impl BufferStoreHandle {
+    /// Wrap the host's store. Called once by the host at boot (the
+    /// concrete store lives in the host); tests wrap a stub.
     pub fn new(inner: Arc<dyn BufferStore>) -> Self {
         Self { inner }
     }
 
+    /// Forwards to [`BufferStore::find_by_name`].
     pub fn find_by_name(&self, name: &str) -> Option<BufferId> {
         self.inner.find_by_name(name)
     }
@@ -184,14 +187,18 @@ impl BufferStoreHandle {
     // `ModeActivator::ensure_named_document` (the mode-owned creation
     // seam). `BufferStore` is read/find + generic document insertion only.
 
+    /// Forwards to [`BufferStore::handle_for`].
     pub fn handle_for(&self, id: BufferId) -> Option<Arc<dyn lattice_runtime::Document>> {
         self.inner.handle_for(id)
     }
 
+    /// Forwards to [`BufferStore::name_for`] (the synthetic-name slot —
+    /// `None` for ordinary file-backed buffers).
     pub fn name_for(&self, id: BufferId) -> Option<String> {
         self.inner.name_for(id)
     }
 
+    /// Forwards to [`BufferStore::path_for`].
     pub fn path_for(&self, id: BufferId) -> Option<std::path::PathBuf> {
         self.inner.path_for(id)
     }

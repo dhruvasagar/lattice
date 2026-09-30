@@ -78,6 +78,9 @@ pub const VIEW_FOLD_CYCLE_ACTION: &str = "action:view-fold-cycle";
 pub struct FoldableViewMode;
 
 impl FoldableViewMode {
+    /// The canonical id, `"foldable-view-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("foldable-view-mode")
     }
@@ -131,6 +134,14 @@ fn foldable_view_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
+/// Register [`FoldableViewMode`] in `registry`. Called by
+/// [`register_foundation_modes`](crate::register_foundation_modes); it must
+/// be registered for the implies cascade to pull it in (an unregistered
+/// shared minor is logged at `debug!` and the chord simply does not bind).
+///
+/// # Panics
+///
+/// If `foldable-view-mode` is already registered.
 pub fn register_foldable_view_mode(registry: &mut ModeRegistry) {
     registry
         .register(FoldableViewMode)

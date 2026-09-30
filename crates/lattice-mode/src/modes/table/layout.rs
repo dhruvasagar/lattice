@@ -1,4 +1,4 @@
-//! HP.1: lay out markdown pipe tables so their columns line up.
+//! Lay out markdown pipe tables so their columns line up (HP.1).
 //!
 //! Help pages are markdown, and nothing between the `.md` file and the
 //! help buffer used to touch tables — so a reader saw the raw source:
@@ -24,12 +24,12 @@
 //!    keeps "what you see" and "what the buffer holds" the same string.
 //!
 //! **Ordering constraint.** This runs BEFORE
-//! [`crate::extract_links_and_clean`], never after. Link ranges are
+//! `lattice_help::extract_links_and_clean`, never after. Link ranges are
 //! recorded against the cleaned text, so inserting padding afterwards
 //! would slide every link on a padded row and `<CR>` would follow the
 //! wrong one. Running first means extraction sees the final bytes and
 //! the ranges come out right with no offset bookkeeping — which is why
-//! [`visible_width`] strips link markup for *measurement only*: the
+//! `visible_width` strips link markup for *measurement only*: the
 //! column has to be as wide as the `label` the reader sees, not as wide
 //! as `[label](help:some-page)`.
 
@@ -53,7 +53,9 @@ pub enum Align {
     /// git diff of their notes as a change they did not make. TB.1 found
     /// this; the unattended help pass gets the same fidelity for free.
     LeftMarked,
+    /// `---:` — cells padded on the left.
     Right,
+    /// `:---:` — padding split around the cell (extra space on the right).
     Center,
 }
 

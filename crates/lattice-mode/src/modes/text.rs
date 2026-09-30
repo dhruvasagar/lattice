@@ -48,7 +48,7 @@ impl Mode for TextMode {
         CapabilitySet::empty()
     }
 
-    /// RF.4: plain text is prose, so `autowrap` covers every line.
+    /// Plain text is prose, so `autowrap` covers every line (RF.4).
     ///
     /// The one override this mode carries, and it does not contradict
     /// the module docs above ("no mode-scoped option overrides"): that

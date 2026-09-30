@@ -1,4 +1,4 @@
-//! MG.2: pending synthetic-buffer highlights mechanism.
+//! Pending synthetic-buffer highlights mechanism (MG.2).
 //!
 //! A shared service that decouples async refresh tasks (e.g. magit status
 //! buffer rebuild) from the Editor's tick drain. The async task:
@@ -25,19 +25,27 @@ use lattice_core::BufferId;
 /// lines at the same position.
 #[derive(Debug, Clone)]
 pub enum HighlightsOp {
+    /// Replace the buffer's whole highlight vector: one entry per line.
     Replace(Vec<Vec<StyledSpan>>),
+    /// Splice `spans` in at `start_line`, shifting later lines down.
     InsertAt {
+        /// Zero-based line the first new entry lands on.
         start_line: u32,
+        /// One entry per inserted line.
         spans: Vec<Vec<StyledSpan>>,
     },
+    /// Remove `count` lines of highlights at `start_line`, shifting later
+    /// lines up.
     RemoveAt {
+        /// Zero-based first removed line.
         start_line: u32,
+        /// Number of lines removed.
         count: usize,
     },
 }
 
-/// DR.3 (2026-08-12): one op's worth of published highlighting —
-/// foreground spans plus, optionally, intra-line diff refinement.
+/// One op's worth of published highlighting —
+/// foreground spans plus, optionally, intra-line diff refinement (DR.3, 2026-08-12).
 ///
 /// Refinement rides the SAME update rather than a parallel channel,
 /// and that is deliberate. The drain's own comment states the rule for
@@ -53,17 +61,52 @@ pub enum HighlightsOp {
 /// them except magit's diff views.
 #[derive(Debug, Clone)]
 pub struct HighlightsUpdate {
+    /// The foreground-span change.
     pub op: HighlightsOp,
+    /// Intra-line refinement, aligned line-for-line with `op`'s spans;
+    /// empty when the producer has none.
     pub refine: Vec<Vec<RefineSpan>>,
 }
 
 /// Shared state between async refresh tasks and the Editor's tick drain.
+///
+/// The host registers the **bare type**, so reach it as
+/// `ctx.service::<PendingSyntheticHighlights>()` — which already returns an
+/// `Arc`, i.e. a [`PendingSyntheticHighlightsHandle`] to keep. Looking it up
+/// *as* the handle type misses (the `ServiceRegistry` `TypeId` rule). Every
+/// `*_and_wake` method fires the editor's `async_landed` notify, so the
+/// spans reach the screen without a keystroke (the inbound-wake rule).
+///
+/// **One pending update per buffer.** The map holds the latest undrained
+/// update; a second store for the same buffer before the drain runs
+/// replaces the first. Two splices in quick succession therefore need a
+/// drain between them, or a `Replace` instead.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use lattice_core::BufferId;
+/// use lattice_mode::{HighlightsOp, PendingSyntheticHighlights};
+///
+/// let pending = PendingSyntheticHighlights::new();
+/// let wake = Arc::new(tokio::sync::Notify::new());
+/// *pending.waker.lock().unwrap() = Some(wake.clone()); // the host does this at boot
+///
+/// pending.remove_at_and_wake(BufferId(3), 10, 2);
+/// let update = pending.map.lock().unwrap().remove(&BufferId(3)).unwrap();
+/// assert!(matches!(update.op, HighlightsOp::RemoveAt { start_line: 10, count: 2 }));
+/// ```
 pub struct PendingSyntheticHighlights {
+    /// Undrained updates by buffer; the host's tick drain empties it.
     pub map: Arc<Mutex<HashMap<BufferId, HighlightsUpdate>>>,
+    /// The editor's `async_landed` notify, installed by the host at boot.
+    /// `None` (a test harness) means stores land but nothing wakes.
     pub waker: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
 }
 
 impl PendingSyntheticHighlights {
+    /// Empty map, no waker installed.
     pub fn new() -> Self {
         Self {
             map: Arc::new(Mutex::new(HashMap::new())),
@@ -78,8 +121,8 @@ impl PendingSyntheticHighlights {
         self.store_refined_and_wake(buffer_id, spans, Vec::new());
     }
 
-    /// DR.3: as [`Self::store_and_wake`], carrying intra-line
-    /// refinement alongside the spans so both shift together.
+    /// As [`Self::store_and_wake`], carrying intra-line
+    /// refinement alongside the spans so both shift together (DR.3).
     pub fn store_refined_and_wake(
         &self,
         buffer_id: BufferId,
@@ -116,7 +159,7 @@ impl PendingSyntheticHighlights {
         self.insert_at_refined_and_wake(buffer_id, start_line, spans, Vec::new())
     }
 
-    /// DR.3: splice spans AND refinement at the same offset.
+    /// Splice spans AND refinement at the same offset (DR.3).
     ///
     /// The `=` toggle inserts an expansion's lines mid-buffer; both
     /// lists must shift by the same amount or the refinement ends up
@@ -181,8 +224,13 @@ impl Default for PendingSyntheticHighlights {
     }
 }
 
-/// Convenience alias for registration in the service registry (Arc-sharing
-/// follows the `BufferStoreHandle` / `ActionHandlerRegistryHandle` convention).
+/// The shared handle a producer keeps (e.g. in its Guard or a spawned task).
+///
+/// Unlike `BufferStoreHandle`, this alias is **not** the registration key:
+/// the host registers `PendingSyntheticHighlights` itself, and
+/// `ServiceRegistry::get::<PendingSyntheticHighlights>()` yields this
+/// `Arc`. A `get::<PendingSyntheticHighlightsHandle>()` returns `None`
+/// against the production registration.
 pub type PendingSyntheticHighlightsHandle = Arc<PendingSyntheticHighlights>;
 
 /// Splice `spans` into `base` at `start_line`, shifting everything at

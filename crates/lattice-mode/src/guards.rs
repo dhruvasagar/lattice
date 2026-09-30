@@ -31,11 +31,12 @@ use crate::mode::ModeId;
 
 /// Type-erased per-`(buffer, mode)` Guard storage.
 ///
-/// Construct one per App (the dispatcher takes `&mut GuardStore`
-/// on every activation / deactivation call). Default is empty.
+/// One per App, and in practice always behind a [`GuardStoreHandle`]
+/// (the registry's activation / deactivation methods take the handle, so
+/// the spawned lifecycle task can insert into the same store). Default is
+/// empty.
 ///
-/// Not `Clone` -- `Box<dyn Any>` is not `Clone`. The App owns
-/// exactly one, passes it `&mut` to the dispatcher.
+/// Not `Clone` -- `Box<dyn Any>` is not `Clone`.
 ///
 /// **M-async.4 epoch counter:** each `(buffer, mode)` key
 /// carries a `u64` epoch that monotonically increments on every
@@ -160,6 +161,7 @@ impl GuardStore {
         self.map.len()
     }
 
+    /// True when no Guard is stashed.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -268,6 +270,7 @@ impl GuardStoreHandle {
         self.inner.lock().map(|s| s.len()).unwrap_or(0)
     }
 
+    /// True when no Guard is stashed (or the lock is poisoned).
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

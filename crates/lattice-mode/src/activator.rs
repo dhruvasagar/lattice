@@ -87,7 +87,7 @@ pub trait ModeActivator {
     /// activation stays put).
     fn ensure_named_document(&mut self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId;
 
-    /// MR.6: the buffer that is active right now.
+    /// The buffer that is active right now (MR.6).
     ///
     /// A provider view is opened *over* something — the file you were
     /// reading, the magit buffer you pressed a chord in — and what it
@@ -116,14 +116,14 @@ pub trait ModeActivator {
     /// activator borrow.
     fn services(&self) -> Arc<ServiceRegistry>;
 
-    /// K.4.6 (2026-06-02): register a virtual-row provider against
+    /// Register a virtual-row provider against
     /// `buffer`. Used by extension crates that contribute virtual
     /// rows for their own buffer kinds (multibuffer excerpt
     /// headers — `MultibufferHeaderProvider`; future fold-range
     /// providers, diff-hunk overlays, LSP code-lens, ...). The
     /// host-side impl forwards to
     /// `Editor::virtual_row_providers.register(buffer, provider)`;
-    /// the worker picks the provider up on its next wake.
+    /// the worker picks the provider up on its next wake (K.4.6, 2026-06-02).
     ///
     /// Returns `true` on registration, `false` if a provider with
     /// the same `ProviderId` was already registered in the same
@@ -167,10 +167,10 @@ pub trait ModeActivator {
     }
 }
 
-/// AUX‑2: service-accessible interface for registering virtual row providers
+/// Service-accessible interface for registering virtual row providers
 /// on a buffer. The host registers an `Arc<dyn VirtualRowRegistrar>` during boot
 /// so subsystems (e.g. `lattice-ai`) can register headerlines without depending
-/// on `lattice-host`'s concrete `VirtualRowProviderRegistry`.
+/// on `lattice-host`'s concrete `VirtualRowProviderRegistry` (AUX‑2).
 pub trait VirtualRowRegistrar: Send + Sync {
     /// Register `provider` against `buffer`. Returns `false` if a provider with
     /// the same `ProviderId` is already registered in the same buffer scope.

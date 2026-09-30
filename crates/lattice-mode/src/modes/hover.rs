@@ -17,9 +17,15 @@ use lattice_config::OptionOverrideSet;
 
 use crate::{CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 
+/// `hover-mode` — marker minor on the hover popup buffer (activated
+/// alongside `markdown-mode`). Wraps long lines and borrows help-mode's
+/// read-only invocation runner; see the module docs.
 pub struct HoverMode;
 
 impl HoverMode {
+    /// The canonical id, `"hover-mode"` — what [`Mode::id`](crate::Mode::id)
+    /// returns. Use it to name this mode without an instance (activation,
+    /// `implies`, keymap layers, tests).
     pub fn mode_id() -> ModeId {
         ModeId::new("hover-mode")
     }

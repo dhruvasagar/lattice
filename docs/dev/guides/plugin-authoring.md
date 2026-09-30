@@ -15,22 +15,25 @@ This is the **how-to** companion to two other docs:
 For the end-user view (the `:*-plugin-api` introspection commands and the model
 at a glance), see [`../../user/plugins.md`](../../user/plugins.md).
 
-> **Status — read this first.** Phase 7 shipped the plugin **host runtime**
-> (`lattice-plugin-host`): the WIT package, the capability/fuel/crash-isolation
-> model, and every extension seam, each exercised end-to-end by a real guest
-> fixture. **Phase 8 shipped the editor-side loader** (`lattice-plugin-loader`):
-> `lattice-host` now depends on the host transitively, and a running editor loads
-> plugins from `${XDG_DATA_HOME}/lattice/plugins/` (on-disk discovery) or on demand
-> via `:plugin-load <path>` / `:plugin-unload <name>` / `:plugin-reload <name>`,
-> manages them in the `:plugins` view, and loads your `init.rs` as a
-> boot-capability config plugin. Plugin **observability** (`:plugin-trace`, the
-> `plugin.trace-level` option, and the `wasi:logging` guest import) ships too.
+> **Status — read this first.** The plugin **host runtime**
+> (`lattice-plugin-host`) and the editor-side **loader and manager**
+> (`lattice-plugin-loader`, `lattice-plugin-manager`) both ship. A running editor
+> discovers plugins on disk, builds them from source against its own WIT, and
+> loads them; `:plugins` manages them, `:plugin-load` / `:plugin-unload` /
+> `:plugin-reload` drive them by hand, and your `init.rs` loads as a
+> boot-capability config plugin. Four plugins ship bundled —
+> [`auto-pair`](../../../plugins/auto-pair), [`comment`](../../../plugins/comment),
+> [`project`](../../../plugins/project) and
+> [`treesitter-context`](../../../plugins/treesitter-context) — and the org plugin
+> ([`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin)) is
+> the largest external one. For what is built versus planned, the
+> [implementation ledger](../operations/implementation.md) is authoritative.
 >
-> So you can now **both** drive a guest through the `lattice-plugin-host` API in a
-> test/bench (how the `fuzzy-finder` plugin and the `tests/fixtures/*-guest`
-> fixtures work) **and** drop a built `.wasm` + `manifest.toml` into the plugins
-> directory and have a running editor pick it up. The frontier is the bundled
-> first-party reference plugins + shipping the built-in modes as components (8b).
+> **Where to go next.** This guide covers the toolchain, the ABI, the manifest
+> and the runtime contract. The [patterns guide](plugin-patterns.md) walks
+> through building each kind of contribution with code quoted from those
+> plugins, and the [plugin-API reference](../reference/plugin-api.md) — generated
+> from the WIT — has every signature, type and field.
 
 ---
 
@@ -291,68 +294,75 @@ The editor runs **one ABI generation at a time**. There is no compatibility
 shim and no side-by-side generation support; if that changes, it lands as the
 §12 fragment and this section changes with it.
 
-## Lifecycle + manifest
+## Manifest, world and entry points
 
-Every plugin implements the `plugin` lifecycle world: `activate()` on load,
-`deactivate()` on unload. Seam contributions are registered from `activate()`.
+A plugin directory holds a component crate and a **`plugin.toml`** manifest.
+The manifest declares identity and asks for capabilities; nothing in it is
+executed. A malformed manifest is a typed error — the host logs it and skips
+the plugin, never panics.
 
-A plugin ships a **`manifest.toml`** declaring its identity and the capabilities
-it requests. (The host consumes an already-parsed `PluginManifest`; on-disk
-discovery of this file is the Phase-8 manager's job — today the manifest is
-built programmatically in tests, but the committed TOML format is stable.)
-
+<!-- manifest -->
 ```toml
-# manifest.toml
-id = "my-plugin"                       # required, non-empty; keys the data dir
-capabilities = [                       # OS capabilities (the plugin's WASI view)
-    "fs:read:/home/me/notes",          #   read under a path prefix
-    "net:http:api.example.com",        #   HTTP to a host (via a gated host-service)
+id = "my-plugin"                         # required; keys the plugin's data dir
+doc = "One line shown by :describe-plugin."
+provides = ["grammar", "modes", "config", "help"]   # the seams it implements
+capabilities = [                         # OS + editor powers it requests
+    "fs:read:~/notes",                   #   read under a path prefix
+    "state:write",                       #   the plugin-private key/value store
+    "grammar:chord",                     #   bind an operator's chord
 ]
-editor_capabilities = ["tree-sitter"]  # editor subsystems a declared mode needs
-doc = "One-line description shown by :describe-plugin."
+editor_capabilities = ["tree-sitter"]    # subsystems a declared mode needs
+default_modes = ["my-plugin-mode"]       # on by default, gated by my-plugin.enabled
 ```
 
-Capability forms: `fs:read:<prefix>`, `fs:write:<prefix>`, `net:http:<host>`,
-`proc:spawn` (bundled-only). Editor capabilities: `buffer-uri`, `lsp`,
-`tree-sitter`, `folds`, `writable`, `diagnostics`. A malformed capability or an
-empty `id` is a typed parse error — the host logs and skips a bad manifest, never
-panics.
+| Key | Meaning |
+|---|---|
+| `id` | Required. A single safe path component; keys the per-plugin data directory. |
+| `doc` | Shown by `:describe-plugin`. |
+| `provides` | The seams the component implements — which of the loader's per-seam paths it drives. Empty means a lifecycle-only component (the base `plugin` world, as `init.rs` is). |
+| `capabilities` | `fs:read:<prefix>`, `fs:write:<prefix>`, `net:http:<host>`, `proc:spawn` (bundled plugins only), `state:write` (the plugin store), `grammar:chord` (bind an operator's chord). Deny-by-default: the grant is the intersection of the request and the trust tier. |
+| `editor_capabilities` | `buffer-uri`, `lsp`, `tree-sitter`, `folds`, `writable`, `diagnostics` — what a mode the plugin declares requires of the buffers it activates on. |
+| `default_modes` / `default_mode` | Minor modes enabled by default. The loader registers a `<id>.enabled` option that gates them; either spelling works. |
 
-## The seams
+The manifest above is parsed by the real parser in a test
+(`lattice-plugin-host/tests/documented_manifests_parse.rs`), so every key and
+capability form on this page is one the loader accepts.
 
-`wit/` **is** the API, and the catalog `:describe-plugin-api` reads is parsed
-from it at build time — so that command can never disagree with the WIT. This
-table can, which is why it says what each seam is *for* and leaves signatures
-to the catalog.
+**The world** decides what the component imports and exports; the
+[worlds page](../reference/plugin-api/worlds.md) lists them all. A plugin
+contributing to several seams declares its own world that composes the
+per-seam ones — `comment-plugin`, `auto-pair-plugin` and `project-plugin` are
+worked examples in `crates/lattice-wit/wit/`, and an external plugin can do
+the same locally with WIT `include` (the `language-guest` fixture shows how).
 
-Status legend: **usable** = a real guest drives it end to end in a host-crate
-test; **partial** = wired with a named deferred piece; **type-mirror** = the
-WIT types exist but the interface has no functions yet.
+**Entry points** are the `register-*` functions a world exports. The host
+calls each once at load; inside them the plugin calls host imports to declare
+what it contributes. The [patterns guide](plugin-patterns.md) shows each one
+end to end.
 
-### Contribution seams — what you put in `provides`
+## Choosing a seam
 
-| Seam / world | Status | You implement / call |
+The [reference index](../reference/plugin-api.md) lists every seam
+with its direction and capability; it is generated from the WIT and cannot be
+out of date. What it cannot tell you is which seam a goal needs:
+
+| You want to… | Seam | Pattern |
 |---|---|---|
-| `grammar` (`grammar-plugin`) | **usable** | `register-motion` / `register-operator` / `register-text-object` / `register-action` / `register-ex-command`. The `apply` callback runs **synchronously on the keystroke** — see below. |
-| `picker-source` (`picker-source-plugin`) | **usable** | Export `spec` / `init` / `accept`; produce candidates, route an accept to an editor action. |
-| `completion-source` | **partial** | Export `generate` (async, off-keystroke — the LSP pattern). `Matcher` / `Ranker` / `Annotator` are type-mirrored; matching and ranking stay native. |
-| `events` (`events-plugin`) | **usable** | `subscribe` to typed events; your sink is invoked off the hot path. |
-| `config` (`config-plugin`) | **usable** | `register-option` / `get-option` against the same registry `:set` reads. Auto-namespaced by your plugin id. |
-| `modes` (`modes-plugin`) | **usable** | `register-mode` (kind, policy, capabilities, keymap, **options**). The editor auto-generates the `:<mode>` toggle, and it shows in `:list-modes` / `:describe-mode`. `options` declares what the mode's buffers need (`foldmethod=syntax`) — resolved against the same registry `:set` writes to, applied as a resolution *layer* for those buffers only. An entry naming an unknown option, or carrying a value the option rejects, is skipped with a warning and the rest of the set still applies. An option the plugin registered *itself* through the `config` seam cannot be overridden yet — it has no native type identity. |
-| `keymap` (`keymap-plugin`) | **usable** | Bind user keys above the built-in grammar — the `init.rs` keybinding path. |
-| `decorations` | **usable** | Produce gutter decorations as an off-render producer. The host refreshes them off the render path and the gutter repaints off-keystroke (PL8.E). |
-| `context` (`context-plugin`) | **usable** | The sticky-context producer — walks a handed `tree-snapshot`, host-cached per parse version. |
-| `theme` (`theme-plugin`) | **usable** | `register-element` with a default style. Your element lands in the registry builtins use, so themes override it and `:customize` edits it. Auto-namespaced. |
-| `error-parser` (`error-parser-plugin`) | **usable** | `feed` one compilation-output line at a time, `reset` between runs — teach lattice a build tool's diagnostic format. **Sync**, and on a fast producer's critical path. |
-| `help` (`help-plugin`) | **usable** | `register-topic` — ship your own `:help` pages. Bodies are `include_str!`'d into your component; names are auto-namespaced. |
-| `dashboard` (`dashboard-plugin`) | **usable** | `register-section` + `render-section` — add or replace a `:dashboard` block, rendered from the live ctx on every compose. **Sync**, on the compositor. |
-| `plugin-manager` (`plugin-manager-plugin`) | **usable** | `require` — declare the plugins you want; the host resolves, builds and loads them off-thread. A config-guest seam (`init.rs`), and a strictly larger authority than setting an option. |
+| add an operator, motion, text object, action or ex-command | `grammar` + `grammar-callbacks` | [operator](plugin-patterns.md#an-operator), [action](plugin-patterns.md#an-action-bound-to-keys), [motion / text object](plugin-patterns.md#a-motion-or-a-text-object), [ex-command](plugin-patterns.md#an-ex-command) |
+| own a mode, its keymap and its options | `modes`, `config`, `keymap` | [mode + options](plugin-patterns.md#a-mode-that-owns-your-surface-and-its-options) |
+| contribute a picker | `picker-registry` + `picker-source` | [picker](plugin-patterns.md#a-picker) |
+| react to editor events, timers, file changes | `events`, `host-services` | [events](plugin-patterns.md#reacting-to-events-and-time) |
+| read buffer text or the syntax tree | `buffer`, `tree-sitter` | [buffer + tree](plugin-patterns.md#reading-the-buffer-and-the-syntax-tree) |
+| remember state between sessions | `host-services` (store) | [state](plugin-patterns.md#remembering-state-across-restarts) |
+| ship `:help` pages, log to the trace | `help`, `logging` | [help + logging](plugin-patterns.md#shipping-help-and-logging) |
+| add a completion source | `completion-source` | reference: [`completion-source`](../reference/plugin-api/completion-source.md) |
+| add gutter signs or decorations | `signs`, `decorations` | reference: [`signs`](../reference/plugin-api/signs.md), [`decorations`](../reference/plugin-api/decorations.md) |
+| add a language (grammar + queries) | `language` | reference: [`language`](../reference/plugin-api/language.md) |
+| add a dashboard section, a transient menu, a multibuffer view | `dashboard`, `transient-source`, `multibuffer-view-source` | reference pages of those seams |
+| teach lattice a build tool's error format | `error-parser` | reference: [`error-parser`](../reference/plugin-api/error-parser.md) |
 
-### Host APIs — you import these, they are not `provides` entries
-
-| Interface | Status | What it gives you |
-|---|---|---|
-| `host-services` | **partial** | Capability-gated callbacks. `walk` (filesystem enumeration) and `read-file` are implemented; `emit-event` / `register-event` exist but no-op without a wired bus. |
+In the editor, `:describe-plugin-api <seam>` shows the same reference and
+`:export-plugin-api` dumps it as Markdown.
 
 > **Reading a file from a grammar action: use `read-file`, not `std::fs`.**
 > Grammar actions (motions, operators, text objects, `register-action` bodies,
@@ -366,14 +376,6 @@ WIT types exist but the interface has no functions yet.
 > Async seams — `picker-source`, `completion-source`, `transient-source` — run on
 > the async linker and may use `std::fs` directly. The distinction is invisible
 > until it panics, so when in doubt use `read-file`.
-| `project` | **usable** | Resolve a buffer or path to its project root. Walks the filesystem on a cache miss — which is why `error-parser-plugin` deliberately does **not** import it. |
-| `tree-sitter` | **usable** | Query the parse tree through a handed `tree-snapshot` borrow. |
-| `buffer` | **usable** | Read buffer text through a `document` borrow. |
-| `logging` | **usable** | Emit your own log narrative into the boundary trace (Layer 2) — see below. |
-| `command`, `ui` | **type-mirror** | Reserved. `ui` types (`ui-segment`, `ui-notification`, `ui-zone`) exist; the emit functions do not. |
-
-Run `:describe-plugin-api <seam>` for exact signatures, `:list-plugin-apis`
-for the whole set, and `:export-plugin-api` to dump it as Markdown or JSON.
 
 ### Sync or async, and why it matters
 
@@ -419,106 +421,42 @@ See [`../../user/plugins.md`](../../user/plugins.md#the-security-model) for the
 model at a glance and [`../architecture/plugin-host.md`](../architecture/plugin-host.md)
 for the full rationale (the audit doc covers the load-bearing invariants).
 
-## Worked example: `fuzzy-finder`
+## Start from a real plugin
 
-The reference plugin lives at [`plugins/fuzzy-finder/`](../../../plugins/fuzzy-finder)
-— a `wasm32-wasip2` guest implementing the `picker-source-plugin` world. It
-replicates the native `files` picker to prove the substrate end-to-end (parity +
-overhead), and is a **validation artifact, not a shipped plugin**: it uses a
-distinct id (`"fuzzy-finder"`, not `files`) precisely so it is an *additive
-custom source*, never a cutover — built-in sources stay native Rust.
+The bundled plugins are small, complete and built by CI against the current
+WIT — the best templates there are:
 
-Its shape is the template for any picker plugin:
-
-```rust
-wit_bindgen::generate!({ world: "picker-source-plugin", path: "../../wit" });
-
-use exports::lattice::plugin_host::picker_source::{CandidatePair, Guest};
-use lattice::plugin_host::host_services::walk;               // gated fs enumeration
-use lattice::plugin_host::types::{PickerContext, PickerSourceSpec, /* … */};
-
-struct Component;
-
-impl Guest for Component {
-    fn spec() -> PickerSourceSpec { /* id, doc, args_hint, live … */ }
-
-    fn init(ctx: PickerContext, args: Vec<String>) -> Result<Vec<CandidatePair>, String> {
-        // resolve a root (args[0] or ctx's projected workspace root),
-        // call `walk(...)` (capability-gated), map each path to a
-        // RawCandidate + a RoutingPayload::OpenFile.
-    }
-
-    fn accept(/* … */) -> Result<PickerAcceptOutcome, String> { /* route to OpenFile */ }
-}
-
-export!(Component);
-```
-
-Because the host's `walk` reuses the same `walk_files_for_picker` the native
-source uses, the candidate set matches native by construction — the parity test
-(`crates/lattice-plugin-host/tests/fuzzy_finder_parity.rs`) formalises it.
+| Plugin | Shows |
+|---|---|
+| [`comment`](../../../plugins/comment) | an operator with its own chord, a mode, an option, a help page — the smallest complete plugin |
+| [`auto-pair`](../../../plugins/auto-pair) | actions that decline to fall through, reading options per call, tree-sitter scoping |
+| [`project`](../../../plugins/project) | pickers, transient menus, ex-commands, events, the persistent store, structured options |
+| [`treesitter-context`](../../../plugins/treesitter-context) | a context producer driven by compiled tree-sitter queries |
 
 ## Building + testing a guest
 
-The host crate's [`build.rs`](../../../crates/lattice-plugin-host/build.rs) builds
-each guest to a component (stripping inherited target/RUSTFLAGS so the standalone
-guest workspace compiles cleanly for `wasm32-wasip2`) and exposes the bytes as a
-`const` (e.g. `FUZZY_FINDER_WASM`). The eight fixtures under
-`crates/lattice-plugin-host/tests/fixtures/*-guest/` follow the same pattern —
-each is a minimal guest exercising one seam.
+Out-of-tree, test against a running editor from a separate package — see
+[Integration tests that boot a real editor](#integration-tests-that-boot-a-real-editor).
 
-To drive a guest from a test, use the host API:
-
-```rust
-let host = PluginHost::new()?;                       // or with_dirs(...) for cache/data
-let component = host.compile(GUEST_WASM)?;
-let manifest  = PluginManifest::new("my-plugin", requested_caps, editor_caps);
-let plugin    = host.instantiate_plugin(&component, &manifest, TrustTier::Bundled, budget)?;
-// then the per-seam spawn, e.g.:
-let source = host.spawn_picker_source(/* … */)?;     // picker seam
-```
-
-Per-seam entry points: `spawn_picker_source`, `spawn_completion_source`,
-`spawn_event_plugin`, `spawn_decoration_source`, `spawn_config_plugin`,
-`spawn_mode_plugin`, `instantiate_grammar_plugin`. Every slice ships happy-path
-**and** failure-mode tests (trap isolation, denied capabilities, malformed
-manifest) — mirror that when adding a plugin.
-
-## Shipped in Phase 8 (and what's still ahead)
-
-The runtime is reachable from a running editor now:
-
-- **The plugin loader** — on-disk discovery + `manifest.toml` parsing +
-  `:plugin-load` / `:plugin-unload` / `:plugin-reload`, the `:plugins` manager
-  view. ✅
-- **`init.rs` as configuration** — user config compiled to WASM, loaded with a
-  boot-capability set, auto-reloaded on rebuild. ✅
-- **Observability** — the boundary trace (`:plugin-trace`), the live
-  `plugin.trace-level` option, and the `wasi:logging` guest import so a plugin
-  narrates its own work into the trace buffer. ✅ (see
-  [`../architecture/plugin-observability.md`](../architecture/plugin-observability.md))
-
-Still ahead (8b):
-
-- **Decoration rendering** — the renderer reading plugin-produced decorations
-  (the producer half works).
-- **Full modes-as-components** — bundled major/minor modes shipping as plugins.
-- **User-installed trust flow** — the consent prompt that narrows a
-  user-installed plugin's grant (bundled plugins are pre-granted today).
-- **Bundled first-party reference plugins** — git-gutter, auto-pair, etc.
-
-### The `logging` seam
-
-Any async-world guest can emit its own log lines into the boundary trace via the
-`wasi:logging`-shaped import:
+In-tree, the host crate's [`build.rs`](../../../crates/lattice-plugin-host/build.rs)
+builds every guest under `crates/lattice-plugin-host/tests/fixtures/` and
+`plugins/` to a component (stripping inherited target/RUSTFLAGS so the
+standalone guest workspace compiles cleanly for `wasm32-wasip2`) and exposes
+each artifact's path as an env var (`COMMENT_PLUGIN_WASM`, …). A guest that
+fails to compile fails the build when the wasm target is installed, as it is
+in CI. Drive one from a test through the host API:
 
 ```rust
-use lattice::plugin_host::logging::{self, Level};
-logging::log(Level::Info, "parser", "reindexed 40 files");
+let host = PluginHost::new()?;                        // or with_dirs(...) for cache/data
+let component = host.compile(&std::fs::read(env!("COMMENT_PLUGIN_WASM"))?)?;
+let manifest = PluginManifest::new("my-plugin", requested_caps, editor_caps);
+let plugin = host
+    .instantiate_plugin(&component, &manifest, TrustTier::Bundled, budget)
+    .await?;
+// then the per-seam path, e.g. host.spawn_picker_source(...).await
 ```
 
-The host tags each line with the plugin id + level and routes it into the same
-`*plugin-trace*` buffer as the boundary trace, gated by the plugin's
-`plugin.trace-level`. `context` is a free-form category; `critical` folds into the
-host's `error` level. It's an async-linker import (never the sync grammar seam),
-so it can't touch the keystroke path.
+Every seam has its own `spawn_*` (async seams) or `instantiate_grammar_plugin`
+(the sync grammar seam); the fixtures' tests are the working examples. Ship
+happy-path **and** failure-mode tests — trap isolation, denied capabilities,
+malformed input — as every seam in the tree does.

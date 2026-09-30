@@ -31,7 +31,8 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 | **AD.4** | Seed examples across the guest-facing seams; shrink-only pending list | ✅ |
 | **AD.5** | WIT prose accuracy: path-rot guard + fix stale references | ✅ |
 | **AD.6a** | World-level functions (the `register-*` entry points) in the catalog, a worlds page, the JSON | ✅ |
-| **AD.6** | `plugin-patterns.md` guide with synced examples + reference guard; fix `plugin-authoring.md` | 📝 |
+| **AD.6** | `plugin-patterns.md` guide with synced examples + reference guard; fix `plugin-authoring.md` | ✅ |
+| **AD.6b** | Site link integrity: same-directory dev-doc links resolve; out-of-tree links must exist | 📝 |
 
 ## Agent layer
 
@@ -88,6 +89,28 @@ Deviation: `*-fixture` worlds are now excluded from the catalog's world
 list (previously only `trampoline-fixture`) — three test worlds were
 listed as if a plugin should target them. They still count toward seam
 direction.
+
+### AD.6 — guides (as built)
+
+`plugin-patterns.md` is new: eleven recipes (operator, action, motion / text
+object, ex-command, mode + options, picker, events, buffer + tree, state,
+help + logging, cross-cutting rules), every code block a synced quote — 30
+examples from 9 guests plus the `comment` manifest and `Cargo.toml`.
+`tests/guides.rs` rewrites/verifies them and resolves every
+`` `seam.item` `` and `` `name` world `` mention in the plugin guides.
+
+`plugin-authoring.md` was stale from "Lifecycle + manifest" on: a worked
+example of the deleted `fuzzy-finder` in the pre-OR.5b picker shape,
+`manifest.toml` (the loader reads `plugin.toml`), four capability forms of
+six, `ui` called a type-mirror, a missing `.await` on the async
+`instantiate_plugin`, "eight fixtures", and a "still ahead" list naming
+shipped work. Rewritten: the toolchain / ABI sections (current) and the
+sync-vs-async and runtime-contract sections are kept verbatim; the
+per-seam status table — a second copy of what the generated reference
+already says — became a goal → seam → pattern map, which is judgement the
+reference cannot carry. The manifest example is parsed by the real parser
+(`lattice-plugin-host/tests/documented_manifests_parse.rs`) and its keys
+pinned to `RawManifest`'s (the parser ignores unknown keys).
 
 ### AD.6a — world entry points (carved while writing AD.6)
 

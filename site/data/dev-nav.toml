@@ -188,6 +188,7 @@ description = "The WASM host, the seams, and how a plugin contributes to the sam
 [[section.group]]
 docs = [
   "guides/plugin-authoring",
+  "guides/plugin-patterns",
   "architecture/plugin-host",
   "architecture/contributable-registries",
   "architecture/plugin-languages",
@@ -307,6 +308,7 @@ docs = [
 "architecture/diagrams" = "Architecture diagrams"
 "guides/developing-lattice" = "Contributor setup"
 "guides/plugin-authoring" = "Writing a plugin"
+"guides/plugin-patterns" = "Plugin patterns"
 "notes/mode-keymap-authoring" = "Authoring a mode's keymap"
 "notes/lsp-features" = "LSP feature reference"
 "notes/ai-assisted-development" = "AI-assisted development"

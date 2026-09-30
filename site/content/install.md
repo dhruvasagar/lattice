@@ -22,6 +22,15 @@ curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh
 
 Add `~/.local/bin` to your `PATH` if it isn't there already.
 
+The script installs the GPU-rendered build when a release publishes one for
+your platform, and the terminal-only build otherwise — the GPU build's binary
+runs in the terminal too, and opens the GPU window with `lattice --gui`. Pin a
+build with `--gui` (fail if it is not published) or `--cli`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh | sh -s -- --cli
+```
+
 ## Release archives
 
 Download from the [releases page](https://github.com/dhruvasagar/lattice/releases).

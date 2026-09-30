@@ -23,8 +23,11 @@
 curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh | sh
 ```
 
-Installs `lattice` plus its bundled core plugins into `~/.local`. Pass
-`--gui` for the GPU-rendered build, `--prefix` to install elsewhere.
+Installs `lattice` plus its bundled core plugins into `~/.local`. The
+GPU-rendered build is installed when it is published for your platform and the
+terminal-only build otherwise (its binary runs in the terminal too — launch the
+GPU window with `lattice --gui`). Force a build with `--gui` / `--cli`; install
+elsewhere with `--prefix`.
 
 Or grab an archive from [releases](https://github.com/dhruvasagar/lattice/releases).
 Full instructions, including building from source (Rust 1.94+): [install guide](https://dhruvasagar.github.io/lattice/install/).
@@ -94,7 +97,8 @@ to: [plugin authoring guide](docs/dev/guides/plugin-authoring.md).
 
 Unsigned binaries (macOS quarantines browser downloads); LSP servers must be
 installed by hand; syntax colours are not yet fully themeable; ARM Linux and
-ARM Windows GUI builds are best-effort; `--gui` is opt-in, not the default.
+ARM Windows GUI builds are best-effort, so the installer falls back to the
+terminal build there.
 The full list is [known limitations](https://dhruvasagar.github.io/lattice/docs/start/known-limitations/).
 
 ---

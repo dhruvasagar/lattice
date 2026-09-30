@@ -12,7 +12,9 @@ set -eu
 REPO="dhruvasagar/lattice"
 PREFIX="${LATTICE_PREFIX:-$HOME/.local}"
 VERSION="${LATTICE_VERSION:-}"
-FLAVOUR="lattice"
+# auto: prefer the GUI build, fall back to the terminal build (see the
+# flavour resolution below). Forced by --gui / --cli.
+MODE="${LATTICE_MODE:-auto}"
 
 die() { printf 'install.sh: %s\n' "$1" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -31,14 +33,20 @@ while [ $# -gt 0 ]; do
 				-*) die "--version needs a tag" ;;
 			esac
 			VERSION="$2"; shift 2 ;;
-		--gui) FLAVOUR="lattice-gui"; shift ;;
+		--gui) MODE="gui"; shift ;;
+		--cli) MODE="cli"; shift ;;
 		-h|--help)
 			cat <<'EOF'
-usage: install.sh [--prefix DIR] [--version TAG] [--gui]
+usage: install.sh [--prefix DIR] [--version TAG] [--gui | --cli]
 
   --prefix DIR    install root (default: ~/.local)
   --version TAG   release tag, e.g. v0.9.0 (default: latest)
-  --gui           install the GPU-rendered build instead of the terminal build
+  --gui           require the GPU-rendered build (fail if unavailable)
+  --cli           install the terminal-only build
+
+By default the GPU-rendered build is installed when available and the
+terminal-only build otherwise. The GPU build's binary also runs in the
+terminal; pass --gui at launch to open the GPU window.
 EOF
 			exit 0 ;;
 		*) die "unknown option: $1" ;;
@@ -67,8 +75,18 @@ if [ -z "$VERSION" ]; then
 fi
 
 ver="${VERSION#v}"
-archive="$FLAVOUR-$ver-$arch-$os.tar.xz"
 base="https://github.com/$REPO/releases/download/$VERSION"
+
+# Candidate flavours in preference order. `auto` (the default) tries the GUI
+# build first — its binary is a SUPERSET: it runs the terminal UI by default
+# and the GPU window with `--gui` — and falls back to the terminal-only build
+# when the GUI archive was not published for this platform (the GUI build is
+# best-effort on ARM Linux). `--gui` / `--cli` pin a single flavour.
+case "$MODE" in
+	gui) flavours="lattice-gui" ;;
+	cli) flavours="lattice" ;;
+	*)   flavours="lattice-gui lattice" ;;
+esac
 
 tmp="$(mktemp -d)"
 cleanup() {
@@ -87,11 +105,30 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-printf 'Downloading %s (%s)…\n' "$archive" "$VERSION"
-curl -fSL --progress-bar -o "$tmp/$archive" "$base/$archive" \
-	|| die "no such archive: $base/$archive
-The GUI build is best-effort on ARM Linux; try without --gui, or see
+# Try each candidate flavour in order; the first archive that downloads wins.
+# In `auto` mode a missing GUI archive is expected (not published for this
+# platform), so fall through to the terminal build rather than failing.
+FLAVOUR=""
+for cand in $flavours; do
+	archive="$cand-$ver-$arch-$os.tar.xz"
+	printf 'Downloading %s (%s)…\n' "$archive" "$VERSION"
+	if curl -fSL --progress-bar -o "$tmp/$archive" "$base/$archive"; then
+		FLAVOUR="$cand"
+		break
+	fi
+	printf 'install.sh: %s is not published for %s; trying the next build…\n' \
+		"$archive" "$arch-$os" >&2
+done
+if [ -z "$FLAVOUR" ]; then
+	if [ "$MODE" = gui ]; then
+		die "the GPU build was not published for $arch-$os at $VERSION (it is
+best-effort on ARM Linux). Retry without --gui for the terminal build, or see
 https://github.com/$REPO/releases"
+	fi
+	die "no installable archive for $arch-$os at $VERSION — see
+https://github.com/$REPO/releases"
+fi
+archive="$FLAVOUR-$ver-$arch-$os.tar.xz"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "could not fetch SHA256SUMS"
 
 printf 'Verifying checksum…\n'
@@ -128,7 +165,12 @@ cp "$root/bin/lattice" "$PREFIX/bin/lattice.new.$$"
 chmod +x "$PREFIX/bin/lattice.new.$$"
 mv "$PREFIX/bin/lattice.new.$$" "$PREFIX/bin/lattice"
 
-printf '\nInstalled lattice %s to %s/bin/lattice\n' "$ver" "$PREFIX"
+if [ "$FLAVOUR" = "lattice-gui" ]; then
+	printf '\nInstalled lattice %s (GPU build) to %s/bin/lattice\n' "$ver" "$PREFIX"
+	printf 'Runs in the terminal by default; launch the GPU window with `lattice --gui`.\n'
+else
+	printf '\nInstalled lattice %s (terminal build) to %s/bin/lattice\n' "$ver" "$PREFIX"
+fi
 case ":$PATH:" in
 	*":$PREFIX/bin:"*) ;;
 	*) printf '\n%s/bin is not on your PATH. Add it:\n    export PATH="%s/bin:$PATH"\n' "$PREFIX" "$PREFIX" ;;

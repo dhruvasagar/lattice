@@ -28,7 +28,7 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 | **AD.1** | Catalog carries types, `use`s and full signatures; single-page render shows them (closes PI.7) | ✅ |
 | **AD.2** | Per-seam pages + index page; JSON export; site sync of the generated subsection | ✅ |
 | **AD.3** | Example regions: extraction, render, validation tests; `comment` compiled in CI | ✅ |
-| **AD.4** | Seed examples across the guest-facing seams; shrink-only pending list | 📝 |
+| **AD.4** | Seed examples across the guest-facing seams; shrink-only pending list | ✅ |
 | **AD.5** | WIT prose accuracy: path-rot guard + fix stale references | 📝 |
 | **AD.6** | `plugin-patterns.md` guide with synced examples + reference guard; fix `plugin-authoring.md` | 📝 |
 
@@ -110,3 +110,21 @@ design's assumptions:
 
 Seeded with the five `comment` registrations/callback as the end-to-end
 proof; broad seeding is AD.4.
+
+### AD.4 — coverage (as built)
+
+75 examples across 23 guests: every guest-facing seam has at least one,
+and 74 of the 102 guest-facing functions have their own. The remaining 28
+are on `tests/example_coverage.rs`'s shrink-only `PENDING` list, each with
+a reason. Two kinds:
+
+- **24 functions no guest calls at all** — no fixture, no plugin. That is
+  untested API surface, not a documentation gap; an example for one means
+  writing its guest-side test first. The list is its inventory.
+- **4 called only inside another target's example** (`node.walk`,
+  `tree-cursor.current-node`, `node.named-child-count`, `tree-snapshot.root`)
+  — visible to a reader there, with no non-overlapping span to file under
+  their own name.
+
+Every added region was verified to be comment lines only (`git diff`
+filtered to non-marker lines was empty).

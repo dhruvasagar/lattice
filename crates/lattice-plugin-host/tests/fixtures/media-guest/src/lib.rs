@@ -23,6 +23,7 @@ use lattice::plugin_host::types::{DecorationContext, MediaBlock, MediaFit};
 struct Component;
 
 impl Guest for Component {
+    // @example media.media-blocks: Anchor image blocks to buffer lines; relative paths resolve beside the buffer
     fn media_blocks(ctx: DecorationContext, _text: String) -> Result<Vec<MediaBlock>, String> {
         if ctx.line_count == 0 {
             // Graceful: nothing to scan → a typed guest err, not a trap.
@@ -46,6 +47,7 @@ impl Guest for Component {
             },
         ])
     }
+    // @end-example
 }
 
 export!(Component);

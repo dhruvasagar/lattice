@@ -29,6 +29,7 @@ use lattice::plugin_host::types::{
 struct Component;
 
 impl Guest for Component {
+    // @example decorations.gutter-decorations: Return diff, severity and named-sign gutter marks, erring on an empty buffer
     fn gutter_decorations(ctx: DecorationContext) -> Result<Vec<GutterDecoration>, String> {
         if ctx.line_count == 0 {
             // Graceful: nothing to decorate → a typed guest err, not a trap.
@@ -65,6 +66,7 @@ impl Guest for Component {
             }),
         ])
     }
+    // @end-example
 }
 
 export!(Component);

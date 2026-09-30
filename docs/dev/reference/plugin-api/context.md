@@ -53,3 +53,33 @@ cached scopes rather than being cleared. A failed refresh must not blank
 the strip — a transient error would otherwise read as the feature
 breaking. Same contract as `decorations.gutter-decorations`.
 
+**Example — Produce sticky-context scopes from the tree, bounded by a size option** · [`plugins/treesitter-context/src/lib.rs`](../../../../plugins/treesitter-context/src/lib.rs)
+
+```rust
+fn context_scopes(
+    req: ContextRequest,
+    tree: Option<&TreeSnapshot>,
+) -> Result<Vec<ContextScope>, String> {
+    if req.line_count == 0 {
+        return Ok(Vec::new());
+    }
+    // Bound the work BEFORE running the query. Returning empty (not `err`)
+    // is deliberate: the host caches an empty set, which is the truth —
+    // this file has no context — rather than keeping a stale set from
+    // whatever was open before.
+    let max_lines = get_option("max-file-lines")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_MAX_FILE_LINES);
+    if max_lines > 0 && req.line_count > max_lines {
+        return Ok(Vec::new());
+    }
+    // No parse (plain text, or one still pending) is a normal state the
+    // host caches as "no scopes" — never an error, which would make it keep
+    // the previous buffer's structure.
+    let Some(tree) = tree else {
+        return Ok(Vec::new());
+    };
+    scopes_from_tree(tree)
+}
+```
+

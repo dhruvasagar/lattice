@@ -50,6 +50,29 @@ Returns `false` when the spec is rejected outright — today, an unsafe
 `name`. A rejection is a logged skip, never a trap: one bad entry in an
 `init.rs` must not take the whole config down.
 
+**Example — Declare a pinned git plugin and a prebuilt-wasm plugin from `register-plugins`** · [`crates/lattice-plugin-host/tests/fixtures/plugin-manager-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/plugin-manager-guest/src/lib.rs)
+
+```rust
+// A pinned git source.
+plugin_manager::require(&PluginSpec {
+    name: "git_demo".to_string(),
+    source: PluginSource::Git(GitSource {
+        url: "https://example.invalid/demo.git".to_string(),
+        rev: Some("abc123".to_string()),
+    }),
+    enable_mode: None,
+    pinned: true,
+});
+
+// A prebuilt download — no build, no toolchain.
+plugin_manager::require(&PluginSpec {
+    name: "prebuilt-demo".to_string(),
+    source: PluginSource::Prebuilt("https://example.invalid/d.wasm".to_string()),
+    enable_mode: None,
+    pinned: false,
+});
+```
+
 ## Types (3)
 
 ### record `git-source`

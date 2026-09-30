@@ -42,6 +42,37 @@ register-action: func(name: string, doc: string, spec: action-spec, callback: u3
 
 Contribute a chord-bound action. `callback` → `grammar-callbacks.apply-action`.
 
+**Example — Register one action per chord from a table, each with its own callback id** · [`plugins/auto-pair/src/lib.rs`](../../../../plugins/auto-pair/src/lib.rs)
+
+```rust
+let spec = || ActionSpec {
+    args_schema: Vec::new(),
+};
+for (name, doc, cb) in [
+    ("auto-pair-open-round", "insert ()", CB_OPEN_ROUND),
+    ("auto-pair-open-square", "insert []", CB_OPEN_SQUARE),
+    ("auto-pair-open-curly", "insert {}", CB_OPEN_CURLY),
+    ("auto-pair-close-round", "step over )", CB_CLOSE_ROUND),
+    ("auto-pair-close-square", "step over ]", CB_CLOSE_SQUARE),
+    ("auto-pair-close-curly", "step over }", CB_CLOSE_CURLY),
+    ("auto-pair-quote-double", "pair \"\"", CB_QUOTE_DOUBLE),
+    ("auto-pair-quote-single", "pair ''", CB_QUOTE_SINGLE),
+    ("auto-pair-quote-backtick", "pair ``", CB_QUOTE_BACKTICK),
+    (
+        "auto-pair-close-manual",
+        "close the nearest unmatched opener in scope (manual style)",
+        CB_CLOSE_MANUAL,
+    ),
+    (
+        "auto-pair-backspace",
+        "delete an empty pair, else fall through to normal backspace",
+        CB_BACKSPACE,
+    ),
+] {
+    grammar::register_action(name, doc, &spec(), cb);
+}
+```
+
 ### `register-ex-command`
 
 ```wit
@@ -52,6 +83,27 @@ Contribute an ex-command. TWO callbacks — `parse-callback` →
 `grammar-callbacks.parse-ex-args` (the `:` line's rest → typed `args`),
 `apply-callback` → `grammar-callbacks.apply-ex-command`.
 
+**Example — Register an argument-less ex-command with its parse and apply callbacks** · [`plugins/project/src/lib.rs`](../../../../plugins/project/src/lib.rs)
+
+```rust
+lattice::plugin_host::grammar::register_ex_command(
+    "project-switch",
+    "Choose a project, then act on it. The verb this whole plugin \
+     exists for: every other project-aware surface roots itself at the \
+     buffer you are standing in, which is right until you want the one \
+     you are not.",
+    &ExCommandSpec {
+        latency_class: LatencyClass::Reflex,
+        accepts_bang: false,
+        accepts_range: false,
+        args_schema: Vec::new(),
+        surface_form: SurfaceForm::Keyword,
+    },
+    CB_PARSE,
+    CB_SWITCH,
+);
+```
+
 ### `register-motion`
 
 ```wit
@@ -60,6 +112,21 @@ register-motion: func(name: string, doc: string, spec: motion-spec, callback: u3
 
 Contribute a motion. `callback` is the id the host passes back to
 `grammar-callbacks.apply-motion` on dispatch.
+
+**Example — Register a linewise, non-jump motion answered by callback 1** · [`crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs)
+
+```rust
+grammar::register_motion(
+    "down-n",
+    "jump count lines down (fixture)",
+    &MotionSpec {
+        jump: false,
+        exclusive: false,
+        args_schema: Vec::new(),
+    },
+    1,
+);
+```
 
 ### `register-operator`
 
@@ -102,4 +169,17 @@ register-text-object: func(name: string, doc: string, spec: text-object-spec, ca
 ```
 
 Contribute a text object. `callback` → `grammar-callbacks.apply-text-object`.
+
+**Example — Register a text object answered by callback 2** · [`crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs)
+
+```rust
+grammar::register_text_object(
+    "to-cursor",
+    "line start to cursor (fixture)",
+    &TextObjectSpec {
+        args_schema: Vec::new(),
+    },
+    2,
+);
+```
 

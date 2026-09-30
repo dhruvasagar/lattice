@@ -61,3 +61,31 @@ Async — a produce call suspends the guest, never the render path. An
 rather than losing them, so a transient failure mid-edit does not make
 every image in the document blink out.
 
+**Example — Anchor image blocks to buffer lines; relative paths resolve beside the buffer** · [`crates/lattice-plugin-host/tests/fixtures/media-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/media-guest/src/lib.rs)
+
+```rust
+fn media_blocks(ctx: DecorationContext, _text: String) -> Result<Vec<MediaBlock>, String> {
+    if ctx.line_count == 0 {
+        // Graceful: nothing to scan → a typed guest err, not a trap.
+        return Err("media-guest: empty buffer".to_string());
+    }
+    Ok(vec![
+        MediaBlock {
+            anchor_line: 1,
+            // Relative — the host resolves it against the buffer's own
+            // directory, which is what `[[file:diagram.png]]` means.
+            path: "img/diagram.png".to_string(),
+            alt: Some("a wiring diagram".to_string()),
+            fit: MediaFit::Contain,
+        },
+        MediaBlock {
+            anchor_line: ctx.line_count - 1,
+            path: "/tmp/absolute.png".to_string(),
+            // No alt — the host falls back to the file name.
+            alt: None,
+            fit: MediaFit::Width,
+        },
+    ])
+}
+```
+

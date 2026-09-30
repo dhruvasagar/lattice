@@ -129,6 +129,7 @@ struct Component;
 
 // ── The list, through the store ─────────────────────────────────────────────
 
+// @example host-services.store-get: Load a plugin-private value, treating an absent key as a fresh install
 /// Read the remembered list.
 ///
 /// A `none` from `store-get` covers every degraded case — no grant, no data
@@ -140,14 +141,18 @@ fn load() -> Vec<String> {
         .map(|bytes| projects::decode(&bytes))
         .unwrap_or_default()
 }
+// @end-example
 
+// @example host-services.store-put: Persist a plugin-private value and surface the error rather than swallow it
 /// Persist the list. The `Err` is returned rather than swallowed so a command
 /// can echo it — a `:project-remember` that reports success and stored nothing
 /// is precisely the silent failure this plugin must not have.
 fn save(list: &[String]) -> Result<(), String> {
     host_services::store_put(STORE_KEY, &projects::encode(list))
 }
+// @end-example
 
+// @example project.root-for-buffer: Resolve the project root for a buffer, ignoring the working-directory fallback
 /// The project a buffer belongs to, or `None` when there is not one.
 ///
 /// `kind = pwd` means the editor's working directory standing in — the seam
@@ -158,12 +163,15 @@ fn project_of_buffer(buffer: u64) -> Option<String> {
     let info = project::root_for_buffer(buffer)?;
     (info.kind != ProjectKind::Pwd).then_some(info.root)
 }
+// @end-example
 
+// @example project.root-for-path: Resolve the project containing a path the user typed
 /// The project containing a path the user typed.
 fn project_of_path(path: &str) -> Option<String> {
     let info = project::root_for_path(path)?;
     (info.kind != ProjectKind::Pwd).then_some(info.root)
 }
+// @end-example
 
 /// PP.4: the project for a path the user NAMED — and **a directory with no
 /// root marker above it is a project, because the user said so.**
@@ -435,6 +443,7 @@ fn cmd_switch_to(ctx: &ExCommandContext) -> Vec<Effect> {
     }
 }
 
+// @example config.get-option-value: Read a structured option's current value, falling back to defaults
 /// The configured rows, or the defaults.
 fn switch_commands() -> Vec<switch::SwitchCommand> {
     match lattice::plugin_host::config::get_option_value(switch::OPTION) {
@@ -444,6 +453,7 @@ fn switch_commands() -> Vec<switch::SwitchCommand> {
         None => switch::defaults(),
     }
 }
+// @end-example
 
 /// `:project-grep [root]` — live grep, rooted at a project.
 ///
@@ -574,6 +584,7 @@ impl Guest for Component {
             CB_PARSE,
             CB_FORGET,
         );
+        // @example grammar.register-ex-command: Register an argument-less ex-command with its parse and apply callbacks
         lattice::plugin_host::grammar::register_ex_command(
             "project-switch",
             "Choose a project, then act on it. The verb this whole plugin \
@@ -590,6 +601,7 @@ impl Guest for Component {
             CB_PARSE,
             CB_SWITCH,
         );
+        // @end-example
         lattice::plugin_host::grammar::register_ex_command(
             "project-find-file",
             "Open a file in a project. With no argument, this buffer's project; \
@@ -767,6 +779,7 @@ impl Guest for Component {
     /// written and stopped being true at TC.4/TC.5; `:describe-option` shows a
     /// schema here rather than a blob.
     fn register_options() {
+        // @example config.register-structured-option: Register a list-of-records option with a schema and a structured default
         let rows = switch::defaults();
         let _ = lattice::plugin_host::config::register_structured_option(
             switch::OPTION,
@@ -776,6 +789,7 @@ impl Guest for Component {
              takes a project root as its first argument — which is the whole \
              contract for adding your own.",
         );
+        // @end-example
     }
 
     /// PC.8: this plugin's own `:help project` page.
@@ -819,6 +833,7 @@ impl Guest for Component {
         lattice::plugin_host::picker_registry::register_picker_source(&picker::buffers_spec());
     }
 
+    // @example events.subscribe: Subscribe to one event kind and handle it in `on-event`
     /// Subscribe to `document-opened` — how a project comes to be remembered at
     /// all, and `project.el`'s `project-remember-project` in one line.
     ///
@@ -868,12 +883,14 @@ impl Guest for Component {
             let _ = remember_root(&root);
         }
     }
+    // @end-example
 
     /// No wakes are armed; the export exists because the world declares it.
     fn on_wake(_id: u32) {}
 }
 
 impl GrammarCallbacks for Component {
+    // @example grammar-callbacks.parse-ex-args: Turn an ex-command's raw argument text into typed `args`
     fn parse_ex_args(_c: u32, rest: String, _bang: bool) -> Result<Args, String> {
         let rest = rest.trim();
         Ok(if rest.is_empty() {
@@ -882,6 +899,7 @@ impl GrammarCallbacks for Component {
             Args::String(rest.to_string())
         })
     }
+    // @end-example
 
     fn apply_ex_command(
         c: u32,
@@ -939,6 +957,7 @@ impl GrammarCallbacks for Component {
 }
 
 impl PickerSource for Component {
+    // @example picker-source.init: Build the candidate rows for each picker source this component registered
     /// `source` is checked rather than assumed: one component may register
     /// several sources and they share one actor, so a source id this plugin
     /// never registered is untrusted input, not a case to fall through.
@@ -967,6 +986,7 @@ impl PickerSource for Component {
             .map(|(candidate, routing)| CandidatePair { candidate, routing })
             .collect())
     }
+    // @end-example
 
     fn accept(
         source: String,
@@ -982,10 +1002,13 @@ impl PickerSource for Component {
 }
 
 impl TransientSource for Component {
+    // @example transient-source.id: Name the transient menu the host registers and `open-transient` addresses
     fn id() -> String {
         SWITCH_TRANSIENT.to_string()
     }
+    // @end-example
 
+    // @example transient-source.build: Build a transient menu from config, with its subject passed in `ctx.args`
     /// One row per configured command, each carrying the chosen root.
     ///
     /// The root rides `ctx.args` (TR.3a) rather than guest memory, and that is
@@ -1033,6 +1056,7 @@ impl TransientSource for Component {
             footer: Some(root.to_string()),
         })
     }
+    // @end-example
 }
 
 export!(Component);

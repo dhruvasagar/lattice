@@ -33,6 +33,18 @@ Emit one log line. `level` gates it against the plugin's trace verbosity
 free-form category; `message` is the line. Dropped silently when the
 plugin's gate is below `level` — exactly like a boundary-trace record.
 
+**Example — Log at several levels, each with a context string the host renders as the category** · [`crates/lattice-plugin-host/tests/fixtures/logging-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/logging-guest/src/lib.rs)
+
+```rust
+// Distinct levels + contexts so the host test can assert routing, level
+// mapping, and the context→category rendering. `info`/`warn` are kept at
+// the default gate; `debug`/`trace` only when the plugin is raised.
+logging::log(Level::Info, "boot", "logging guest activated");
+logging::log(Level::Warn, "index", "reindex found 2 stale entries");
+logging::log(Level::Debug, "detail", "walked 40 files in 3ms");
+logging::log(Level::Error, "", "a context-less error line");
+```
+
 ## Types (1)
 
 ### enum `level`

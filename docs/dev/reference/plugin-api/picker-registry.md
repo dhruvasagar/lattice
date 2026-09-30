@@ -47,3 +47,42 @@ a plugin reload, not a collision. Two DIFFERENT plugins claiming one id
 is resolved the way the registry has always resolved it: last write
 wins, and the teardown token unregisters by id.
 
+**Example — Register two picker sources from one component, each with a full spec** · [`crates/lattice-plugin-host/tests/fixtures/picker-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/picker-guest/src/lib.rs)
+
+```rust
+fn register_picker_sources() {
+    register_picker_source(&PickerSourceSpec {
+        id: FIXTURE.to_string(),
+        doc: "PH7.4c.1b fixture picker source".to_string(),
+        args_schema: Vec::new(),
+        args_hint: "[fail]".to_string(),
+        live: false,
+        // OR.5: the source declares that it can create what the query
+        // names. `%s` is replaced by the query when the row renders.
+        create_label: Some("Create fixture: %s".to_string()),
+        // PP.2: `true` on purpose. The field's failure mode is a boundary
+        // arm that writes the default, which a fixture declaring `false`
+        // cannot tell apart from one that carries the value — the hole
+        // PC.11's `fill-action` shipped through.
+        rooted: true,
+        // PD.1, same reasoning as `rooted` above and the same hole it
+        // guards: a boundary arm writing `None` is indistinguishable from
+        // one that carried a `None`, so this source names a command and
+        // its sibling names none.
+        delete_command: Some("fixture-forget".to_string()),
+    });
+    register_picker_source(&PickerSourceSpec {
+        id: SECOND.to_string(),
+        doc: "OR.5b: a SECOND source from the same component".to_string(),
+        args_schema: Vec::new(),
+        args_hint: String::new(),
+        live: false,
+        create_label: None,
+        // …and `false` here, so the pair proves the value TRAVELS rather
+        // than that the host defaults everything to the same answer.
+        rooted: false,
+        delete_command: None,
+    });
+}
+```
+

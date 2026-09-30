@@ -42,9 +42,11 @@ fn line(text: String, role: Role) -> Row {
 
 impl Guest for Component {
     fn register_dashboard_sections() {
+        // @example dashboard.register-section: Register dashboard sections by id and order; an un-namespaced builtin id replaces the builtin
         let _ = register_section("recent", 15, true);
         // Not namespaced — this is meant to displace the builtin.
         let _ = register_section("getting-started", 20, true);
+        // @end-example
         // Rejected host-side; must not cost the two above.
         let _ = register_section("", 30, true);
     }

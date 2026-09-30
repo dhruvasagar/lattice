@@ -45,6 +45,20 @@ host state to avoid a trap. There is deliberately no bulk form: wakes are
 cancelled en masse on deactivate / quarantine by the host, for the same
 reason `events` has no `unsubscribe`.
 
+**Example — Count a periodic wake's fires in `on-wake` and cancel it after the last one** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let n = wake_state::FIRES.with(|f| {
+    let n = f.get() + 1;
+    f.set(n);
+    n
+});
+record(&format!("wake:{n}"));
+if n >= wake_state::CANCEL_AFTER {
+    events::cancel_wake(id);
+}
+```
+
 ### `subscribe`
 
 ```wit
@@ -55,6 +69,60 @@ Subscribe `handler` to every event matching `filter` (the declarative
 `kinds` / `path-globs` / `major-modes` subset; a custom predicate is the
 guest filtering inside `on-event`). The host delivers each match to the
 world's `on-event(handler, ev)` export.
+
+**Example — Subscribe to one event kind and handle it in `on-event`** · [`plugins/project/src/lib.rs`](../../../../plugins/project/src/lib.rs)
+
+```rust
+/// Subscribe to `document-opened` — how a project comes to be remembered at
+/// all, and `project.el`'s `project-remember-project` in one line.
+///
+/// Filtered to the one kind rather than taking everything and branching: the
+/// filter is the host's, so an unfiltered subscription would wake this
+/// plugin's task for every modal-mode change and every option write in the
+/// editor, to do nothing.
+fn register_events() {
+    lattice::plugin_host::events::subscribe(
+        &EventFilter {
+            kinds: Some(vec![EventKind::DocumentOpened]),
+            path_globs: None,
+            major_modes: None,
+            minor_modes: None,
+        },
+        ON_DOCUMENT_OPENED,
+    );
+}
+
+/// Runs on the event actor's own task, never a keystroke — which is the
+/// property that lets it do a store read+write at all.
+///
+/// Silent by construction: a handler that echoed would announce a project on
+/// every file you open. A store failure is dropped here rather than shown,
+/// because there is no user action that provoked it and nothing they could
+/// do about it mid-open; `:project-remember` is the path that reports.
+fn on_event(handler: u32, ev: Event) {
+    if handler != ON_DOCUMENT_OPENED {
+        return;
+    }
+    let Event::DocumentOpened(opened) = ev else {
+        return;
+    };
+    // A buffer with no path on disk resolves to `pwd`, which
+    // `project_of_buffer` already refuses — but checking here avoids a host
+    // call per scratch buffer, and the field is right there.
+    if opened.path.is_none() {
+        return;
+    }
+    // `opened.id` is a `DocumentId` by TYPE and a buffer id by VALUE:
+    // `publish_document_opened_for_active` builds it as
+    // `DocumentId::new(buffer_id.0 as u64)`. `root-for-buffer` wants the
+    // buffer id, so passing this straight through is correct — verified
+    // rather than assumed, because the two type names disagree and a wrong
+    // id here would resolve to `none` and silently remember nothing.
+    if let Some(root) = project_of_buffer(opened.id) {
+        let _ = remember_root(&root);
+    }
+}
+```
 
 ### `wake-every`
 
@@ -81,6 +149,15 @@ instantiated on a store with no timer (the sync grammar seam, a test
 harness). Like every other seam here that answers rather than traps, the
 degradation is honest and visible in the log, and a guest that treats a
 `0` as armed simply never hears back.
+
+**Example — Arm a periodic wake at registration and keep its id for `cancel-wake`** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+// OC.2: arm a periodic wake from registration. 50 ms is the seam's
+// floor — fast enough that a test does not sit on a real clock, and the
+// guest cancels itself after a few fires so it cannot run away.
+wake_state::TICKER.with(|t| t.set(events::wake_every(50)));
+```
 
 ## Types (1)
 

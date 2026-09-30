@@ -39,6 +39,16 @@ unparseable, the command is unregistered, or the User-layer capability was
 withheld — a plugin never silently mis-binds. The keystroke path is
 unaffected until the binding lands.
 
+**Example — Bind a Normal-mode chord to a command; an unknown command binds nothing** · [`crates/lattice-plugin-host/tests/fixtures/keymap-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/keymap-guest/src/lib.rs)
+
+```rust
+// A well-formed binding to a real command — lands in KeymapLayer::User.
+let _ok = keymap::register_binding(BindingMode::Normal, "<C-s>", "ex:write");
+// An unregistered command — the host binds nothing and returns false
+// (graceful degradation, no trap).
+let _skipped = keymap::register_binding(BindingMode::Normal, "gq", "no-such-command");
+```
+
 ## Types (1)
 
 ### enum `binding-mode`

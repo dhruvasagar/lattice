@@ -46,6 +46,21 @@ glyph, which is what "redefine" should mean.
 `err` when the spec is malformed — never a trap, and never a
 partially-registered sign.
 
+**Example — Define a named sign with a Nerd Font glyph, a same-width fallback and a priority** · [`crates/lattice-plugin-host/tests/fixtures/sign-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/sign-guest/src/lib.rs)
+
+```rust
+let _ = define_sign(
+    "breakpoint",
+    &SignSpec {
+        text: "\u{f111}".to_string(),
+        fallback: "●".to_string(),
+        theme_element: "sign-guest.breakpoint".to_string(),
+        priority: 20,
+        column: String::new(),
+    },
+);
+```
+
 ## Types (1)
 
 ### record `sign-spec`

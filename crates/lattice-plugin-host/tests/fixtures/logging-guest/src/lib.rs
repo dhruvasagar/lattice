@@ -22,6 +22,7 @@ struct Component;
 
 impl Guest for Component {
     fn activate() {
+        // @example logging.log: Log at several levels, each with a context string the host renders as the category
         // Distinct levels + contexts so the host test can assert routing, level
         // mapping, and the context→category rendering. `info`/`warn` are kept at
         // the default gate; `debug`/`trace` only when the plugin is raised.
@@ -29,6 +30,7 @@ impl Guest for Component {
         logging::log(Level::Warn, "index", "reindex found 2 stale entries");
         logging::log(Level::Debug, "detail", "walked 40 files in 3ms");
         logging::log(Level::Error, "", "a context-less error line");
+        // @end-example
         // `critical` folds into the host's `error` level; `trace` is the most
         // verbose (kept only when the plugin is raised to trace). Exercises
         // map_log_level's Critical→Error fold + Trace mapping.

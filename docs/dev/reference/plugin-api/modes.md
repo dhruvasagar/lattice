@@ -48,6 +48,25 @@ the Editor flips the enablement + re-activates open buffers (this call is
 the request, not the apply — the guest can't reach the activator). A
 no-bus / unknown-id case is a `warn` + drop (graceful), never a trap.
 
+**Example — Enable a plugin's mode and set its option once that plugin has loaded** · [`crates/lattice-plugin-host/tests/fixtures/init-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/init-guest/src/lib.rs)
+
+```rust
+if let Event::PluginLoaded(p) = ev {
+    // Deferred config: enable auto-pair-mode the moment auto-pair loads.
+    if p.name == "auto-pair" {
+        modes::enable_mode("auto-pair-mode");
+        // …and SET one of its options, which is the other half of the
+        // documented deferred shape and the half that was never driven.
+        // `enable-mode` reaches the bus; `set-option` reaches the config
+        // registry, and the events store did not carry one — so this
+        // call warned and no-oped while the test above still passed.
+        // Full name, not the short one: `set-option` prefixes with the
+        // CALLING plugin's id, so `style` would resolve as `init.style`.
+        config::set_option("auto-pair.style", "manual");
+    }
+}
+```
+
 ### `register-mode`
 
 ```wit

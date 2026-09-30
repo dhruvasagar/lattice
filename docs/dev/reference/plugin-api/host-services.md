@@ -50,6 +50,19 @@ reported before a word is typed rather than at commit. A query: it
 changes nothing, and a later write can still fail if the file changes
 in between (a failed write stops the rest of its action's effects).
 
+**Example — Check whether a write to a path would land, before committing to it** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let text = match host_services::can_write_file(&path) {
+    Ok(()) => "writable".to_string(),
+    Err(e) => format!("error: {e}"),
+};
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text,
+})])
+```
+
 ### `clamp-position`
 
 ```wit
@@ -69,6 +82,19 @@ caller may be shorter. `effect.apply-edit` refuses a position that is
 not there, and says so only in the host log, so a guest that wants the
 write to land clamps first, and a `none` tells it the buffer has closed
 and there is nothing to write into.
+
+**Example — Clamp a remembered position into a buffer's current bounds; `none` means the buffer closed** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let text = match host_services::clamp_position(buffer, Position { line, byte }) {
+    Some(p) => format!("{}:{}", p.line, p.byte),
+    None => "none".to_string(),
+};
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text,
+})])
+```
 
 ### `delete-file`
 
@@ -94,6 +120,19 @@ retraction that already happened: the caller wanted the file gone, and
 it is. `err` for a denied path, a directory, or an OS failure, each
 named.
 
+**Example — Delete a file from the sync grammar seam, surfacing the host's error text** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let text = match host_services::delete_file(&path) {
+    Ok(()) => "deleted".to_string(),
+    Err(e) => format!("error: {e}"),
+};
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text,
+})])
+```
+
 ### `emit-event`
 
 ```wit
@@ -106,6 +145,24 @@ is the event identifier (typically pre-declared via `register-event`);
 onto the bus (`event::plugin`) and NEVER interprets them. Fire-and-forget:
 the bus is observation-only (§5.10), so there is no reply. Subscribers
 (native or other plugins) filter by `name` in their handler.
+
+**Example — Emit a typed plugin event on save, its payload MessagePack-encoded by the SDK derive** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+// PH7.8b.2/3: on a save, EMIT a plugin-defined event. The SDK derive
+// MessagePack-encodes a typed struct (`SavedEcho`) into the opaque
+// payload; it crosses to the bus verbatim and a consumer sharing the type
+// decodes it (the e2e test). The host never parses the bytes.
+if handler == 1 {
+    let echo = SavedEcho {
+        path: match &ev {
+            Event::DocumentSaved(p) => p.path.clone(),
+            _ => String::new(),
+        },
+    };
+    host_services::emit_event(SavedEcho::NAME, &echo.encode());
+}
+```
 
 ### `excerpt-source`
 
@@ -131,6 +188,25 @@ anywhere.
 A plain buffer answers `none` too, not its own path. The question is
 "which file does this COMPOSED line come from", and a guest that wants
 the current file already has `document.path()`.
+
+**Example — Resolve the multibuffer row under the cursor to its source file and line** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let answer = match host_services::excerpt_source(
+    u64::from(ctx.buffer_id),
+    ctx.cursor.line,
+) {
+    Some(loc) => format!("{}@{} in {}", loc.path, loc.line, loc.buffer),
+    None => "none".to_string(),
+};
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text: format!(
+        "excerpt-source({},{})={answer}",
+        ctx.buffer_id, ctx.cursor.line
+    ),
+})])
+```
 
 ### `local-utc-offset-seconds`
 
@@ -159,6 +235,20 @@ names no path and reaches no resource, and gating it would mean a plugin
 with no filesystem grant renders timestamps in the wrong timezone.
 `0` if the platform cannot answer — UTC, which is a legible wrong answer
 rather than a fabricated one.
+
+**Example — Read the host's local UTC offset; the guest's own clock (`wasi:clocks`) is UTC-only** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let utc = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_secs() as i64)
+    .unwrap_or(0);
+let offset = host_services::local_utc_offset_seconds();
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text: format!("{offset}:{utc}"),
+})])
+```
 
 ### `new-uuid`
 
@@ -197,6 +287,17 @@ every other tool's view of that note. A guest handed an empty string on
 entropy failure would write an empty drawer and nothing would ever say
 so. One `match` at the call site buys that being impossible. `err` only
 when the OS entropy source is unavailable, which is to say almost never.
+
+**Example — Mint ids from the sync grammar seam, propagating an entropy failure as an err** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let a = host_services::new_uuid()?;
+let b = host_services::new_uuid()?;
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text: format!("{a}|{b}"),
+})])
+```
 
 ### `read-file`
 
@@ -266,6 +367,16 @@ Returns `false` (and registers nothing) if `name` would shadow a BUILT-IN
 event — a plugin must not hijack a native event's subscribers. Idempotent
 by name: a re-register refreshes the doc (a plugin reload).
 
+**Example — Declare a plugin-defined event, taking its name and doc from the SDK's `PluginEvent` derive** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+// PH7.8b.2/3: declare a plugin-defined event via the `register-event`
+// host-service, using the SDK-derived `NAME` + `DOC` (the doc-comment).
+// It self-registers into the host's runtime event registry under this
+// plugin's provenance; `on-event` handler 1 emits it on save.
+host_services::register_event(SavedEcho::NAME, SavedEcho::DOC);
+```
+
 ### `source-line`
 
 ```wit
@@ -310,6 +421,18 @@ This is what makes one-writer/many-readers work across separate `Store`s
 instance sees the writer instance's bump without sharing memory with it.
 `0` for a plugin with no store.
 
+**Example — Read a store key another seam wrote, alongside the store's generation counter** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let value = host_services::store_get("multiseam/probe")
+    .and_then(|b| String::from_utf8(b).ok())
+    .unwrap_or_else(|| "none".to_string());
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text: format!("{}:{}", host_services::store_generation(), value),
+})])
+```
+
 ### `store-get`
 
 ```wit
@@ -323,6 +446,22 @@ discarded as corrupt). A reader for whom absence is ordinary — a first
 index that has not run yet — cannot distinguish them, and does not need
 to: the answer to all four is "build it".
 
+**Example — Load a plugin-private value, treating an absent key as a fresh install** · [`plugins/project/src/lib.rs`](../../../../plugins/project/src/lib.rs)
+
+```rust
+/// Read the remembered list.
+///
+/// A `none` from `store-get` covers every degraded case — no grant, no data
+/// dir, a store discarded as corrupt — and the seam's own doc says a reader for
+/// whom absence is ordinary cannot distinguish them and does not need to. Here
+/// absence genuinely is ordinary: it is a fresh install.
+fn load() -> Vec<String> {
+    host_services::store_get(STORE_KEY)
+        .map(|bytes| projects::decode(&bytes))
+        .unwrap_or_default()
+}
+```
+
 ### `store-keys`
 
 ```wit
@@ -330,6 +469,19 @@ store-keys: func(prefix: string) -> list<string>
 ```
 
 Keys carrying `prefix`, sorted. `""` lists everything.
+
+**Example — Write a key to the plugin store, then list every key under a prefix** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let put = match host_services::store_put("multiseam/from-grammar", b"g") {
+    Ok(()) => "ok".to_string(),
+    Err(e) => format!("err({e})"),
+};
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text: format!("{put}:{}", host_services::store_keys("multiseam/").join(",")),
+})])
+```
 
 ### `store-put`
 
@@ -373,6 +525,17 @@ list from `store-keys` — the honest "no store wired" degradation the
 Persist `value` under `key`. `err` names why — no grant, no data dir,
 a value larger than the whole store may hold, or a write that failed.
 
+**Example — Persist a plugin-private value and surface the error rather than swallow it** · [`plugins/project/src/lib.rs`](../../../../plugins/project/src/lib.rs)
+
+```rust
+/// Persist the list. The `Err` is returned rather than swallowed so a command
+/// can echo it — a `:project-remember` that reports success and stored nothing
+/// is precisely the silent failure this plugin must not have.
+fn save(list: &[String]) -> Result<(), String> {
+    host_services::store_put(STORE_KEY, &projects::encode(list))
+}
+```
+
 ### `unwatch`
 
 ```wit
@@ -382,6 +545,18 @@ unwatch: func(path: string) -> result<_, string>
 Stop watching `path`. Unwatching a path that is not watched is `ok` — a
 disarm is idempotent, because the alternative is a guest that must track
 host state to avoid an error.
+
+**Example — Disarm a directory watch from inside the batch handler that decided to stop** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+if let Ok(target) = std::fs::read_to_string(WATCH_TARGET) {
+    let outcome = match host_services::unwatch(target.trim()) {
+        Ok(()) => "unwatch:ok".to_string(),
+        Err(e) => format!("unwatch:err({e})"),
+    };
+    record(&outcome);
+}
+```
 
 ### `view-args`
 
@@ -432,6 +607,15 @@ Capability-gated: `root` must lie within one of the plugin's granted
 grant reaches nothing. The check runs host-side because the host, unlike
 the guest's WASI view, has ambient authority the grant must bound.
 
+**Example — Walk a directory, handling the `err` a plugin without an `fs` grant gets** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let text = match host_services::walk("/") {
+    Ok(paths) => format!("walked:{}", paths.len()),
+    Err(_) => "refused".to_string(),
+};
+```
+
 ### `watch`
 
 ```wit
@@ -474,6 +658,17 @@ event bus wired on this seam, an unwatchable path, or a watcher the
 platform refused to create. A plugin whose watch fails should fall back
 to indexing on boot plus an explicit resync command, which is degraded
 and honest rather than appearing to work and going stale.
+
+**Example — Subscribe to `files-changed`, then watch a directory and record whether the grant allowed it** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+events::subscribe(&kind_filter(EventKind::FilesChanged), 6);
+let outcome = match host_services::watch(target) {
+    Ok(()) => "watch:ok".to_string(),
+    Err(e) => format!("watch:err({e})"),
+};
+record(&outcome);
+```
 
 ## Types (1)
 

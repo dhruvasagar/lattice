@@ -141,11 +141,13 @@ impl Guest for Component {
         // OC.2: arms the poison wake when it fires (see `on_event`). A separate
         // kind so the existing delivery assertions are untouched.
         events::subscribe(&kind_filter(EventKind::DocumentOpened), 5);
+        // @example host-services.register-event: Declare a plugin-defined event, taking its name and doc from the SDK's `PluginEvent` derive
         // PH7.8b.2/3: declare a plugin-defined event via the `register-event`
         // host-service, using the SDK-derived `NAME` + `DOC` (the doc-comment).
         // It self-registers into the host's runtime event registry under this
         // plugin's provenance; `on-event` handler 1 emits it on save.
         host_services::register_event(SavedEcho::NAME, SavedEcho::DOC);
+        // @end-example
         // PH7.8c: ring our OWN doorbell from inside `register-events`.
         //
         // The shape a guest reaches for when registration has to kick off its
@@ -162,22 +164,26 @@ impl Guest for Component {
             events::subscribe(&kind_filter(EventKind::Plugin), 7);
             host_services::emit_event("fixture/registered", b"1");
         }
+        // @example events.wake-every: Arm a periodic wake at registration and keep its id for `cancel-wake`
         // OC.2: arm a periodic wake from registration. 50 ms is the seam's
         // floor — fast enough that a test does not sit on a real clock, and the
         // guest cancels itself after a few fires so it cannot run away.
         wake_state::TICKER.with(|t| t.set(events::wake_every(50)));
+        // @end-example
         // OR.2: arm a directory watch, if the test handed us one. Handler 6
         // records each batch — the point being that it records it with NO
         // action dispatched afterwards, which is the failure mode this seam is
         // most likely to have.
         if let Ok(target) = std::fs::read_to_string(WATCH_TARGET) {
             let target = target.trim();
+            // @example host-services.watch: Subscribe to `files-changed`, then watch a directory and record whether the grant allowed it
             events::subscribe(&kind_filter(EventKind::FilesChanged), 6);
             let outcome = match host_services::watch(target) {
                 Ok(()) => "watch:ok".to_string(),
                 Err(e) => format!("watch:err({e})"),
             };
             record(&outcome);
+            // @end-example
             // …and a path the plugin was NOT granted. Recording the refusal
             // beside the success is what makes the grant check observable
             // rather than assumed: a seam that permitted everything would
@@ -240,6 +246,7 @@ impl Guest for Component {
             // `unwatch` reaches a live watcher rather than merely being
             // callable.
             if names.contains(&"stop.org") {
+                // @example host-services.unwatch: Disarm a directory watch from inside the batch handler that decided to stop
                 if let Ok(target) = std::fs::read_to_string(WATCH_TARGET) {
                     let outcome = match host_services::unwatch(target.trim()) {
                         Ok(()) => "unwatch:ok".to_string(),
@@ -247,10 +254,12 @@ impl Guest for Component {
                     };
                     record(&outcome);
                 }
+                // @end-example
             }
             return;
         }
         record(&format!("{handler}:{}", label(&ev)));
+        // @example host-services.emit-event: Emit a typed plugin event on save, its payload MessagePack-encoded by the SDK derive
         // PH7.8b.2/3: on a save, EMIT a plugin-defined event. The SDK derive
         // MessagePack-encodes a typed struct (`SavedEcho`) into the opaque
         // payload; it crosses to the bus verbatim and a consumer sharing the type
@@ -264,6 +273,7 @@ impl Guest for Component {
             };
             host_services::emit_event(SavedEcho::NAME, &echo.encode());
         }
+        // @end-example
     }
 
     /// OC.2: an armed wake came due.
@@ -278,6 +288,7 @@ impl Guest for Component {
         if id != 0 && wake_state::POISON.with(|p| p.get()) == id {
             unreachable!("fixture poison wake traps on delivery");
         }
+        // @example events.cancel-wake: Count a periodic wake's fires in `on-wake` and cancel it after the last one
         let n = wake_state::FIRES.with(|f| {
             let n = f.get() + 1;
             f.set(n);
@@ -287,6 +298,7 @@ impl Guest for Component {
         if n >= wake_state::CANCEL_AFTER {
             events::cancel_wake(id);
         }
+        // @end-example
     }
 }
 

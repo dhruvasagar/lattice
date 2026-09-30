@@ -71,6 +71,12 @@ fallback, so a role knob would ship a silent cross-renderer difference.
 A plugin that needs its own colour registers a theme element (TC.4)
 first; that is the slice which earns the role parameter.
 
+**Example — Push new text into a modeline segment the plugin registered** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+ui::emit_segment("clock", "\u{25f7} 0:14");
+```
+
 ### `register-segment`
 
 ```wit
@@ -97,4 +103,13 @@ Returns `false` when no modeline is wired on this seam (see the interface
 note) — the honest "nothing to register into" degradation, never a trap.
 Re-registering the same id is last-write-wins, so a reload re-registers
 rather than duplicating.
+
+**Example — Register a right-zone modeline segment (namespaced to `multiseam.clock`) from an async seam** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+// OC.3 / ML.6: register a modeline element and push content, from an
+// ASYNC seam's registration export. Short id — the host auto-namespaces
+// it to `multiseam.clock`, the same way it namespaces the option above.
+ui::register_segment("clock", UiZone::Right, 7);
+```
 

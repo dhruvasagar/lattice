@@ -34,6 +34,7 @@ fn no_modifiers() -> ModifierSet {
 
 impl Guest for Component {
     fn register_theme_elements() {
+        // @example theme.register-element: Register themeable elements: a palette colour, an inheriting style, a literal RGB
         let _ = register_element(
             "background",
             "The context strip backdrop.",
@@ -73,6 +74,7 @@ impl Guest for Component {
                 scale: None,
             },
         );
+        // @end-example
     }
 }
 

@@ -23,11 +23,13 @@ struct Component;
 
 impl Guest for Component {
     fn register_keymap() {
+        // @example keymap.register-binding: Bind a Normal-mode chord to a command; an unknown command binds nothing
         // A well-formed binding to a real command — lands in KeymapLayer::User.
         let _ok = keymap::register_binding(BindingMode::Normal, "<C-s>", "ex:write");
         // An unregistered command — the host binds nothing and returns false
         // (graceful degradation, no trap).
         let _skipped = keymap::register_binding(BindingMode::Normal, "gq", "no-such-command");
+        // @end-example
     }
 }
 

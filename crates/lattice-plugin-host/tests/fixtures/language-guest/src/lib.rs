@@ -64,6 +64,7 @@ const HIGHLIGHTS: &str = r#"
 
 struct Component;
 
+// @example language.language-spec: Describe a language: grammar wasm built by the plugin, its extensions and a highlights query
 fn spec(name: &str, exts: &[&str], grammar: Vec<u8>) -> LanguageSpec {
     LanguageSpec {
         name: name.to_string(),
@@ -82,12 +83,15 @@ fn spec(name: &str, exts: &[&str], grammar: Vec<u8>) -> LanguageSpec {
         conceal_rules: vec![],
     }
 }
+// @end-example
 
 impl Guest for Component {
     fn register_languages() {
+        // @example language.register-language: Register a language whose grammar wasm the plugin embeds at build time (`spec` is the `language-spec` example)
         // The real one: registered as `lg3c-md`, loaded from the grammar's
         // own `tree_sitter_markdown` export via `grammar-name`.
         let _ = register_language(&spec("lg3c-md", &["lg3cmd"], GRAMMAR.to_vec()));
+        // @end-example
 
         // Not a wasm module.
         let _ = register_language(&spec(

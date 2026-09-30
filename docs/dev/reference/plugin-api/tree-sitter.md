@@ -72,6 +72,22 @@ actions (capture's chord) and NOT in a motion or text object, which fire
 per keystroke. `read-file` set the I/O precedent here; this adds the
 parse on top of it.
 
+**Example — Parse a file that is not open in a buffer and inspect its root node** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let path = match &ctx.args {
+    Args::String(s) => s.clone(),
+    other => return Err(format!("multiseam: parse-file wants a path, got {other:?}")),
+};
+let snapshot = tree_sitter::parse_file(&path)
+    .ok_or_else(|| format!("multiseam: parse-file returned none for {path}"))?;
+let root = snapshot.root();
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text: format!("{}:{}", root.kind(), root.named_child_count()),
+})])
+```
+
 ## Resources
 
 ### resource `tree-snapshot`
@@ -93,6 +109,22 @@ snapshot's grammar. `err` (with the tree-sitter message) on a
 malformed query. The returned `query` is reusable across snapshots of
 the same language — compile once, run many.
 
+**Example — Compile a per-language query against the snapshot's grammar** · [`plugins/treesitter-context/src/lib.rs`](../../../../plugins/treesitter-context/src/lib.rs)
+
+```rust
+let Some(source) = query_for(&language) else {
+    // No query for this grammar. Not an error — the strip simply has
+    // nothing to show, and the host caches that as "no scopes".
+    return Ok(Vec::new());
+};
+// Compiled per call rather than cached: the guest has no per-language
+// cache slot that survives a call, and this runs once per REPARSE (not per
+// keystroke, scroll, or frame), so the cost sits far off every hot path.
+// A cache would be the right move only if the producer were re-driven more
+// often, and the whole scopes-not-rows split exists to ensure it is not.
+let query = tree.compile_query(source)?;
+```
+
 #### `tree-snapshot.enclosing`
 
 ```wit
@@ -104,6 +136,33 @@ auto-pair scope query; the native `scope_toward` precedent). `kinds`
 empty → the nearest named ancestor. `none` when there's no match / no
 parse.
 
+**Example — Bound a backward text scan by the enclosing block node, with a line-capped fallback when there is no tree** · [`plugins/auto-pair/src/lib.rs`](../../../../plugins/auto-pair/src/lib.rs)
+
+```rust
+/// The scope text from the enclosing lexical scope's start up to the caret (§7).
+/// Uses the tree-sitter seam's `enclosing` to bound the scan; with no parse tree
+/// (or no enclosing scope), degrades to a line-capped cursor-backward slice —
+/// never a whole-buffer materialization.
+fn scope_text_before_cursor(
+    ctx: &ActionContext,
+    doc: &Document,
+    tree: Option<&TreeSnapshot>,
+) -> String {
+    let scan_start = tree
+        .and_then(|t| t.enclosing(ctx.cursor, &scope_kinds()))
+        .map(|node| node.byte_range().start)
+        .unwrap_or_else(|| Position {
+            line: ctx.cursor.line.saturating_sub(200),
+            byte: 0,
+        });
+    doc.get_text_range(Range {
+        start: scan_start,
+        end: ctx.cursor,
+    })
+    .unwrap_or_default()
+}
+```
+
 #### `tree-snapshot.language`
 
 ```wit
@@ -111,6 +170,24 @@ language: func() -> string
 ```
 
 The grammar id (e.g. `"rust"`), so a plugin can pick the right query.
+
+**Example — Report the tree's language with the enclosing block's kind and named-child count** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let tree = tree.ok_or("multiseam: no tree snapshot")?;
+let node = tree
+    .enclosing(ctx.cursor, &["block".to_string()])
+    .ok_or("multiseam: no enclosing block")?;
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text: format!(
+        "{}:{}:{}",
+        tree.language(),
+        node.kind(),
+        node.named_child_count()
+    ),
+})])
+```
 
 #### `tree-snapshot.node-at`
 
@@ -142,6 +219,22 @@ are evaluated HOST-side (against the snapshot's source), so the guest
 never re-filters. Empty when `q` was compiled for a different grammar
 than this snapshot's (graceful — never a trap).
 
+**Example — Compile a query, run it over the whole tree, and read each capture's name and node** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let tree = tree.ok_or("multiseam: no tree snapshot")?;
+let query = tree.compile_query("(function_item name: (identifier) @fname)")?;
+let caps = tree.run_query(&query, None);
+let first = caps
+    .first()
+    .map(|c| format!("{}:{}", c.name, c.node.kind()))
+    .unwrap_or_default();
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text: format!("{}:{}", caps.len(), first),
+})])
+```
+
 #### `tree-snapshot.run-query-ranges`
 
 ```wit
@@ -167,6 +260,46 @@ second query or a containment test.
 Use `run-query` when the capture must be NAVIGATED (parent, field,
 sibling); use this when its extent is the answer.
 
+**Example — Run a whole-file query as plain ranges and pair captures by match index** · [`plugins/treesitter-context/src/lib.rs`](../../../../plugins/treesitter-context/src/lib.rs)
+
+```rust
+// `run_query_ranges`, not `run_query`: this is a WHOLE-FILE structural
+// query, and the node-returning form pays a resource handle per capture.
+// See the module doc — that difference is the file-size ceiling.
+let captures = tree.run_query_ranges(&query, None);
+let mut scopes: Vec<ContextScope> = Vec::new();
+// Captures arrive grouped by match (the host pushes each match's captures
+// together and stamps them with one index), so one linear scan pairs each
+// `@context` with its `@context.end` — no containment test, which would be
+// ambiguous for a construct nested directly inside another.
+let mut i = 0;
+while i < captures.len() {
+    let match_index = captures[i].match_index;
+    let mut extent: Option<(u32, u32)> = None;
+    let mut body_start: Option<u32> = None;
+    while i < captures.len() && captures[i].match_index == match_index {
+        let c = &captures[i];
+        match c.name.as_str() {
+            "context" => extent = Some((c.range.start.line, c.range.end.line)),
+            "context.end" => body_start = Some(c.range.start.line),
+            // A query may carry captures for its own predicates; anything
+            // unrecognised is ignored rather than treated as a scope.
+            _ => {}
+        }
+        i += 1;
+    }
+    if let Some(extent) = extent {
+        scopes.push(scope_from(extent, body_start));
+    }
+}
+// A scope spanning a single line can never be a context: its header cannot
+// scroll away while the cursor is still inside it. Dropping them here keeps
+// the host's cache (and the resolver's scan) free of entries that can never
+// resolve to anything.
+scopes.retain(|s| s.scope_end > s.scope_start);
+Ok(scopes)
+```
+
 ### resource `node`
 
 An opaque, navigable handle into the snapshot's tree (design §3.2). Owned
@@ -183,6 +316,27 @@ byte-range: func() -> range
 
 The node's `[start, end)` span as byte-columns per line (matching the
 native structural objects' `ProtoRange`, N.1.4c).
+
+**Example — Answer a text object with a tree node's `byte-range`, erring when there is no tree** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+fn apply_text_object(
+    c: u32,
+    _ctx: TextObjectContext,
+    _doc: &Document,
+    tree: Option<&TreeSnapshot>,
+) -> Result<Range, String> {
+    match c {
+        // OT.1: the structural peer — org's `ir` / `ar` resolve a subtree,
+        // which IS a tree node rather than a star count.
+        21 => {
+            let tree = tree.ok_or_else(|| "multiseam: text object got no tree".to_string())?;
+            Ok(tree.root().byte_range())
+        }
+        other => Err(format!("multiseam: unknown text-object callback {other}")),
+    }
+}
+```
 
 #### `node.child-by-field`
 
@@ -216,6 +370,33 @@ kind: func() -> string
 
 The node's grammar kind (e.g. `"function_item"`).
 
+**Example — Report the root node's kind when a scan is handed a parse tree beside the text** · [`crates/lattice-plugin-host/tests/fixtures/agenda-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/agenda-guest/src/lib.rs)
+
+```rust
+// OT.3: text is always here; the tree comes beside it when the file's
+// extension resolves to a registered language. This fixture reports the
+// ROOT KIND when it got a tree — something no text scan could produce —
+// so the host test can tell the two apart.
+if let Some(snapshot) = tree {
+    let root = snapshot.root();
+    return Ok(ScanResult {
+        entries: vec![Entry {
+            line: 0,
+            end_line: 0,
+            group: "tree".to_string(),
+            label: format!("tree:{}:{}", root.kind(), root.named_child_count()),
+            sort_key: 0,
+            spans: Vec::new(),
+            // The tree path says nothing about annotations; `none` here
+            // keeps this fixture's two branches distinguishable.
+            annotation: None,
+            emphasis: false,
+        }],
+        clock,
+    });
+}
+```
+
 #### `node.named-child`
 
 ```wit
@@ -223,6 +404,29 @@ named-child: func(index: u32) -> option<node>
 ```
 
 The `index`-th NAMED child (0-based), or `none` past the end.
+
+**Example — Derive one context scope per named child of the root, spanning that child's lines** · [`crates/lattice-plugin-host/tests/fixtures/context-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/context-guest/src/lib.rs)
+
+```rust
+// Walk the tree for real. Each named child of the root becomes a scope
+// spanning its own lines, with its first line as the header.
+let root = tree.root();
+let count = root.named_child_count();
+let mut scopes = Vec::new();
+for i in 0..count {
+    let Some(child) = root.named_child(i) else {
+        continue;
+    };
+    let r = child.byte_range();
+    scopes.push(ContextScope {
+        scope_start: r.start.line,
+        scope_end: r.end.line,
+        header_start: r.start.line,
+        header_end: r.start.line,
+    });
+}
+Ok(scopes)
+```
 
 #### `node.named-child-count`
 
@@ -299,6 +503,19 @@ goto-first-named-child: func() -> bool
 ```
 
 Move to the first NAMED child; `false` (and no move) if there is none.
+
+**Example — Walk the tree with a cursor: descend to the first named child and read its kind** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let tree = tree.ok_or("multiseam: no tree snapshot")?;
+let cursor = tree.root().walk();
+let moved = cursor.goto_first_named_child();
+let kind = cursor.current_node().kind();
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text: format!("{moved}:{kind}"),
+})])
+```
 
 #### `tree-cursor.goto-next-named-sibling`
 

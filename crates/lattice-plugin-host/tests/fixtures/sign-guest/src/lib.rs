@@ -26,6 +26,7 @@ struct Component;
 
 impl Guest for Component {
     fn register_signs() {
+        // @example signs.define-sign: Define a named sign with a Nerd Font glyph, a same-width fallback and a priority
         let _ = define_sign(
             "breakpoint",
             &SignSpec {
@@ -36,6 +37,7 @@ impl Guest for Component {
                 column: String::new(),
             },
         );
+        // @end-example
         let _ = define_sign(
             "current-line",
             &SignSpec {

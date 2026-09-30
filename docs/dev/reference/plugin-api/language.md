@@ -57,6 +57,14 @@ language costs itself and nothing else, so the plugin's other
 contributions — including its other languages — still register and the
 load still succeeds.
 
+**Example — Register a language whose grammar wasm the plugin embeds at build time (`spec` is the `language-spec` example)** · [`crates/lattice-plugin-host/tests/fixtures/language-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/language-guest/src/lib.rs)
+
+```rust
+// The real one: registered as `lg3c-md`, loaded from the grammar's
+// own `tree_sitter_markdown` export via `grammar-name`.
+let _ = register_language(&spec("lg3c-md", &["lg3cmd"], GRAMMAR.to_vec()));
+```
+
 ## Types (2)
 
 ### record `conceal-rule`
@@ -187,4 +195,27 @@ Everything the host needs to make a language real.
   and the language is otherwise entirely usable. Losing a language
   over a typo in a cosmetic regex would cost far more than it
   protects.
+
+**Example — Describe a language: grammar wasm built by the plugin, its extensions and a highlights query** · [`crates/lattice-plugin-host/tests/fixtures/language-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/language-guest/src/lib.rs)
+
+```rust
+fn spec(name: &str, exts: &[&str], grammar: Vec<u8>) -> LanguageSpec {
+    LanguageSpec {
+        name: name.to_string(),
+        // The fixture's grammar exports `tree_sitter_markdown`, but `markdown`
+        // is a BUNDLED language name and is refused. Splitting the two is
+        // exactly what `grammar-name` is for, and the same split lattice's own
+        // `sql`-on-`sequel` needs.
+        grammar_name: Some("markdown".to_string()),
+        extensions: exts.iter().map(|s| (*s).to_string()).collect(),
+        grammar,
+        highlights: Some(HIGHLIGHTS.to_string()),
+        folds: None,
+        injections: None,
+        indents: None,
+        textobjects: None,
+        conceal_rules: vec![],
+    }
+}
+```
 

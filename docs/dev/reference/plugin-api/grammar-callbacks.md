@@ -41,6 +41,42 @@ object returns the `range` it resolved; a motion its `motion-result`.
 apply-action: func(callback: u32, ctx: action-context, doc: borrow<document>, tree: option<borrow<tree-snapshot>>) -> result<list<effect>, string>
 ```
 
+**Example — Dispatch actions by callback id, reading an option and the document, declining to fall through** · [`plugins/auto-pair/src/lib.rs`](../../../../plugins/auto-pair/src/lib.rs)
+
+```rust
+fn apply_action(
+    callback: u32,
+    ctx: ActionContext,
+    doc: &Document,
+    tree: Option<&TreeSnapshot>,
+) -> Result<Vec<Effect>, String> {
+    // AP.3: in `manual` style the pair keys (1..=9) self-insert — the action
+    // DECLINES so the typed char lands via the builtin, and only the close key
+    // + backspace act. In `auto` style the close key declines instead.
+    let manual = is_manual();
+    if manual && (CB_OPEN_ROUND..=CB_QUOTE_BACKTICK).contains(&callback) {
+        return Ok(vec![Effect::Declined]);
+    }
+    Ok(match callback {
+        CB_OPEN_ROUND => insert_pair(&ctx, "(", ")"),
+        CB_OPEN_SQUARE => insert_pair(&ctx, "[", "]"),
+        CB_OPEN_CURLY => insert_pair(&ctx, "{", "}"),
+        CB_CLOSE_ROUND => close(&ctx, doc, ")"),
+        CB_CLOSE_SQUARE => close(&ctx, doc, "]"),
+        CB_CLOSE_CURLY => close(&ctx, doc, "}"),
+        CB_QUOTE_DOUBLE => quote(&ctx, doc, "\""),
+        CB_QUOTE_SINGLE => quote(&ctx, doc, "'"),
+        CB_QUOTE_BACKTICK => quote(&ctx, doc, "`"),
+        // The manual close key acts only in `manual` style; in `auto` it
+        // declines so `<C-j>` does whatever else it's bound to.
+        CB_CLOSE_MANUAL if manual => manual_close(&ctx, doc, tree),
+        CB_CLOSE_MANUAL => vec![Effect::Declined],
+        CB_BACKSPACE => backspace(&ctx, doc),
+        other => return Err(format!("auto-pair: unknown action callback {other}")),
+    })
+}
+```
+
 ### `apply-ex-command`
 
 ```wit
@@ -52,6 +88,45 @@ buffer it was invoked from — the same pair `apply-action` receives, minted
 at the same instant so their versions agree (§7). `tree` is `none` for a
 plain-text buffer, a parse still in flight, or a plugin without the
 `tree-sitter` grant.
+
+**Example — An ex-command that replaces the cursor's line, targeting the buffer the context names** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+fn apply_ex_command(
+    c: u32,
+    ctx: ExCommandContext,
+    doc: &Document,
+    tree: Option<&TreeSnapshot>,
+) -> Result<Vec<Effect>, String> {
+    if c == 31 {
+        // Everything here was unreachable before OC.10: `ctx.cursor` says
+        // which line, `ctx.buffer_id` names the target, `doc` proves the
+        // buffer is readable, and `tree` proves the parse crossed too. The
+        // echo reports the last two so a regression to the old context fails
+        // loudly rather than editing the right line for the wrong reason.
+        let had_line = doc.line(ctx.cursor.line).is_some();
+        let kind = tree.map(|t| t.root().kind()).unwrap_or_else(|| "none".into());
+        let old = doc.line(ctx.cursor.line).unwrap_or_default();
+        return Ok(vec![
+            Effect::ApplyEdit(ApplyEditPayload {
+                target: ctx.buffer_id,
+                edit: Edit {
+                    range: Range {
+                        start: Position { line: ctx.cursor.line, byte: 0 },
+                        end: Position {
+                            line: ctx.cursor.line,
+                            byte: old.len() as u32,
+                        },
+                    },
+                    kind: EditKind::Replace(format!("EX:{had_line}:{kind}")),
+                },
+                cursor: None,
+            }),
+        ]);
+    }
+    Err("multiseam: no ex-commands".into())
+}
+```
 
 ### `apply-motion`
 
@@ -83,6 +158,31 @@ and text-object contexts simply never read it. So this cost two borrowed
 fields, not new plumbing. Borrowed rather than cloned because motions fire
 on every `j`: a native motion pays nothing, and only a plugin motion that
 actually mints the resource pays the `Arc` bump.
+
+**Example — A motion answered from the parse tree: jump to where the tree's span ends** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+fn apply_motion(
+    c: u32,
+    _ctx: MotionContext,
+    _doc: &Document,
+    tree: Option<&TreeSnapshot>,
+) -> Result<MotionResult, String> {
+    match c {
+        // OT.1: target the end of the parse tree's own span. Unanswerable
+        // without the tree, so `none` surfaces as a guest err rather than a
+        // wrong-but-believable line.
+        20 => {
+            let tree = tree.ok_or_else(|| "multiseam: motion got no tree".to_string())?;
+            Ok(MotionResult {
+                target: tree.root().byte_range().end,
+                linewise: true,
+            })
+        }
+        other => Err(format!("multiseam: unknown motion callback {other}")),
+    }
+}
+```
 
 ### `apply-operator`
 
@@ -211,9 +311,44 @@ tree rather than only the `scope-resolver` the native structural objects
 use, because the resolver answers "what encloses this point" while a
 plugin object needs to query the tree itself.
 
+**Example — Resolve a text object to the range from the start of the cursor's line to the cursor** · [`crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs)
+
+```rust
+fn apply_text_object(
+    callback: u32,
+    ctx: TextObjectContext,
+    _doc: &Document,
+    _tree: Option<&TreeSnapshot>,
+) -> Result<Range, String> {
+    match callback {
+        2 => Ok(Range {
+            start: Position {
+                line: ctx.at.line,
+                byte: 0,
+            },
+            end: ctx.at,
+        }),
+        other => Err(format!("fixture: unknown text-object callback {other}")),
+    }
+}
+```
+
 ### `parse-ex-args`
 
 ```wit
 parse-ex-args: func(callback: u32, rest: string, bang: bool) -> result<args, string>
+```
+
+**Example — Turn an ex-command's raw argument text into typed `args`** · [`plugins/project/src/lib.rs`](../../../../plugins/project/src/lib.rs)
+
+```rust
+fn parse_ex_args(_c: u32, rest: String, _bang: bool) -> Result<Args, String> {
+    let rest = rest.trim();
+    Ok(if rest.is_empty() {
+        Args::None
+    } else {
+        Args::String(rest.to_string())
+    })
+}
 ```
 

@@ -73,6 +73,14 @@ is whether it shows when the user has not set `dashboard.sections`.
 
 `err` when the spec is malformed (an empty id) — never a trap.
 
+**Example — Register dashboard sections by id and order; an un-namespaced builtin id replaces the builtin** · [`crates/lattice-plugin-host/tests/fixtures/dashboard-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/dashboard-guest/src/lib.rs)
+
+```rust
+let _ = register_section("recent", 15, true);
+// Not namespaced — this is meant to displace the builtin.
+let _ = register_section("getting-started", 20, true);
+```
+
 ## Types (7)
 
 ### record `ctx`

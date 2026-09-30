@@ -31,6 +31,7 @@ impl Guest for Component {
         });
         assert!(ok, "a well-formed local spec must be accepted");
 
+        // @example plugin-manager.require: Declare a pinned git plugin and a prebuilt-wasm plugin from `register-plugins`
         // A pinned git source.
         plugin_manager::require(&PluginSpec {
             name: "git_demo".to_string(),
@@ -49,6 +50,7 @@ impl Guest for Component {
             enable_mode: None,
             pinned: false,
         });
+        // @end-example
 
         // A path-traversal name. The host must reject it and keep going —
         // one bad entry cannot take the whole config down.

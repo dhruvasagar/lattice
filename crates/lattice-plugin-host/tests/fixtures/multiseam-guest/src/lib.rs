@@ -320,11 +320,15 @@ impl Guest for Component {
             "auto",
             "spike option proving the config seam co-registers from one component",
         );
+        // @example ui.register-segment: Register a right-zone modeline segment (namespaced to `multiseam.clock`) from an async seam
         // OC.3 / ML.6: register a modeline element and push content, from an
         // ASYNC seam's registration export. Short id — the host auto-namespaces
         // it to `multiseam.clock`, the same way it namespaces the option above.
         ui::register_segment("clock", UiZone::Right, 7);
+        // @end-example
+        // @example ui.emit-segment: Push new text into a modeline segment the plugin registered
         ui::emit_segment("clock", "\u{25f7} 0:14");
+        // @end-example
         // OR.1: write from the ASYNC seam. The grammar seam's
         // `multiseam-store-read` reads it back out of a different
         // `wasmtime::Store` — one plugin, one store, N instances.
@@ -375,6 +379,7 @@ impl GrammarCallbacks for Component {
             // projection returned). `err` when there's no tree (no grant / no
             // parse) or no enclosing block (graceful degradation).
             3 => {
+                // @example tree-sitter.tree-snapshot.language: Report the tree's language with the enclosing block's kind and named-child count
                 let tree = tree.ok_or("multiseam: no tree snapshot")?;
                 let node = tree
                     .enclosing(ctx.cursor, &["block".to_string()])
@@ -388,12 +393,14 @@ impl GrammarCallbacks for Component {
                         node.named_child_count()
                     ),
                 })])
+                // @end-example
             }
             // TS.2: compile + run a query through the seam; echo
             // `<count>:<first-capture-name>:<first-node-kind>` — proof the
             // compiled query crossed, ran host-side (predicates included), and the
             // capture nodes came back.
             4 => {
+                // @example tree-sitter.tree-snapshot.run-query: Compile a query, run it over the whole tree, and read each capture's name and node
                 let tree = tree.ok_or("multiseam: no tree snapshot")?;
                 let query = tree.compile_query("(function_item name: (identifier) @fname)")?;
                 let caps = tree.run_query(&query, None);
@@ -405,10 +412,12 @@ impl GrammarCallbacks for Component {
                     level: EchoLevel::Info,
                     text: format!("{}:{}", caps.len(), first),
                 })])
+                // @end-example
             }
             // TS.2: walk with a tree-cursor; echo `<moved>:<kind-after-descent>` —
             // proof the cursor crossed and its `goto-*` mutated host-side state.
             5 => {
+                // @example tree-sitter.tree-cursor.goto-first-named-child: Walk the tree with a cursor: descend to the first named child and read its kind
                 let tree = tree.ok_or("multiseam: no tree snapshot")?;
                 let cursor = tree.root().walk();
                 let moved = cursor.goto_first_named_child();
@@ -417,6 +426,7 @@ impl GrammarCallbacks for Component {
                     level: EchoLevel::Info,
                     text: format!("{moved}:{kind}"),
                 })])
+                // @end-example
             }
             // OM.11: proof the `host-services` import is reachable here at
             // all. Ungranted, so `walk` answers `err`; echoing which way it
@@ -424,10 +434,12 @@ impl GrammarCallbacks for Component {
             // missing", which an unresolved import would have turned into a
             // load failure long before this ran.
             7 => {
+                // @example host-services.walk: Walk a directory, handling the `err` a plugin without an `fs` grant gets
                 let text = match host_services::walk("/") {
                     Ok(paths) => format!("walked:{}", paths.len()),
                     Err(_) => "refused".to_string(),
                 };
+                // @end-example
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text,
@@ -471,6 +483,7 @@ impl GrammarCallbacks for Component {
             // so a test can prove the two are different sources rather than one
             // value copied twice. `wasi:clocks` is UTC; the offset is not.
             9 => {
+                // @example host-services.local-utc-offset-seconds: Read the host's local UTC offset; the guest's own clock (`wasi:clocks`) is UTC-only
                 let utc = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs() as i64)
@@ -480,12 +493,14 @@ impl GrammarCallbacks for Component {
                     level: EchoLevel::Info,
                     text: format!("{offset}:{utc}"),
                 })])
+                // @end-example
             }
             // OR.1: what does the sync grammar seam see of what the async
             // config seam wrote? Echoes `<generation>:<value|none>`, so a test
             // can tell "the store is shared" from "the store is empty" from
             // "the call was refused".
             12 => {
+                // @example host-services.store-generation: Read a store key another seam wrote, alongside the store's generation counter
                 let value = host_services::store_get("multiseam/probe")
                     .and_then(|b| String::from_utf8(b).ok())
                     .unwrap_or_else(|| "none".to_string());
@@ -493,10 +508,12 @@ impl GrammarCallbacks for Component {
                     level: EchoLevel::Info,
                     text: format!("{}:{}", host_services::store_generation(), value),
                 })])
+                // @end-example
             }
             // OR.1: the reverse direction plus `keys`. Echoes
             // `<put-result>:<comma-joined keys under "multiseam/">`.
             13 => {
+                // @example host-services.store-keys: Write a key to the plugin store, then list every key under a prefix
                 let put = match host_services::store_put("multiseam/from-grammar", b"g") {
                     Ok(()) => "ok".to_string(),
                     Err(e) => format!("err({e})"),
@@ -505,12 +522,14 @@ impl GrammarCallbacks for Component {
                     level: EchoLevel::Info,
                     text: format!("{put}:{}", host_services::store_keys("multiseam/").join(",")),
                 })])
+                // @end-example
             }
             // HB.2b: the seam as the guest sees it, echoed rather than applied
             // as an edit so a `none` is as loud as a hit — the failure mode
             // here is the seam answering nothing, and an edit-shaped probe
             // reports that as silence.
             15 => {
+                // @example host-services.excerpt-source: Resolve the multibuffer row under the cursor to its source file and line
                 let answer = match host_services::excerpt_source(
                     u64::from(ctx.buffer_id),
                     ctx.cursor.line,
@@ -525,18 +544,21 @@ impl GrammarCallbacks for Component {
                         ctx.buffer_id, ctx.cursor.line
                     ),
                 })])
+                // @end-example
             }
             // OR.3: two ids from the sync grammar seam, echoed as `<a>|<b>`.
             // Two rather than one so a test can prove they differ — a stub
             // returning a constant would satisfy every shape assertion a single
             // id could carry.
             14 => {
+                // @example host-services.new-uuid: Mint ids from the sync grammar seam, propagating an entropy failure as an err
                 let a = host_services::new_uuid()?;
                 let b = host_services::new_uuid()?;
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text: format!("{a}|{b}"),
                 })])
+                // @end-example
             }
             52 => {
                 let spec = match &ctx.args {
@@ -549,6 +571,7 @@ impl GrammarCallbacks for Component {
                 let [buffer, line, byte] = n[..] else {
                     return Err(format!("multiseam: clamp-position wants three numbers, got {spec:?}"));
                 };
+                // @example host-services.clamp-position: Clamp a remembered position into a buffer's current bounds; `none` means the buffer closed
                 let text = match host_services::clamp_position(buffer, Position { line, byte }) {
                     Some(p) => format!("{}:{}", p.line, p.byte),
                     None => "none".to_string(),
@@ -557,6 +580,7 @@ impl GrammarCallbacks for Component {
                     level: EchoLevel::Info,
                     text,
                 })])
+                // @end-example
             }
             51 => {
                 let path = match &ctx.args {
@@ -565,6 +589,7 @@ impl GrammarCallbacks for Component {
                         return Err(format!("multiseam: can-write-file wants a path, got {other:?}"));
                     }
                 };
+                // @example host-services.can-write-file: Check whether a write to a path would land, before committing to it
                 let text = match host_services::can_write_file(&path) {
                     Ok(()) => "writable".to_string(),
                     Err(e) => format!("error: {e}"),
@@ -573,6 +598,7 @@ impl GrammarCallbacks for Component {
                     level: EchoLevel::Info,
                     text,
                 })])
+                // @end-example
             }
             50 => {
                 let path = match &ctx.args {
@@ -581,6 +607,7 @@ impl GrammarCallbacks for Component {
                         return Err(format!("multiseam: delete-file wants a path, got {other:?}"));
                     }
                 };
+                // @example host-services.delete-file: Delete a file from the sync grammar seam, surfacing the host's error text
                 let text = match host_services::delete_file(&path) {
                     Ok(()) => "deleted".to_string(),
                     Err(e) => format!("error: {e}"),
@@ -589,11 +616,13 @@ impl GrammarCallbacks for Component {
                     level: EchoLevel::Info,
                     text,
                 })])
+                // @end-example
             }
             // OT.2: parse an off-buffer file and report what came back, so the
             // test can tell "the tree crossed" from "the host said none".
             // Echoes `<root-kind>:<named-child-count>`.
             22 => {
+                // @example tree-sitter.parse-file: Parse a file that is not open in a buffer and inspect its root node
                 let path = match &ctx.args {
                     Args::String(s) => s.clone(),
                     other => return Err(format!("multiseam: parse-file wants a path, got {other:?}")),
@@ -605,6 +634,7 @@ impl GrammarCallbacks for Component {
                     level: EchoLevel::Info,
                     text: format!("{}:{}", root.kind(), root.named_child_count()),
                 })])
+                // @end-example
             }
             // OS.0: bound only in Insert mode (`multiseam-insert-mode`). A
             // fixed marker, not a computed value — the point is only "did
@@ -617,6 +647,7 @@ impl GrammarCallbacks for Component {
         }
     }
 
+    // @example grammar-callbacks.apply-motion: A motion answered from the parse tree: jump to where the tree's span ends
     fn apply_motion(
         c: u32,
         _ctx: MotionContext,
@@ -637,6 +668,7 @@ impl GrammarCallbacks for Component {
             other => Err(format!("multiseam: unknown motion callback {other}")),
         }
     }
+    // @end-example
     fn apply_operator(
         _c: u32,
         _ctx: OperatorContext,
@@ -644,6 +676,7 @@ impl GrammarCallbacks for Component {
     ) -> Result<Vec<Effect>, String> {
         Err("multiseam: no operators".into())
     }
+    // @example tree-sitter.node.byte-range: Answer a text object with a tree node's `byte-range`, erring when there is no tree
     fn apply_text_object(
         c: u32,
         _ctx: TextObjectContext,
@@ -660,9 +693,11 @@ impl GrammarCallbacks for Component {
             other => Err(format!("multiseam: unknown text-object callback {other}")),
         }
     }
+    // @end-example
     fn parse_ex_args(_c: u32, _rest: String, _bang: bool) -> Result<Args, String> {
         Err("multiseam: no ex-commands".into())
     }
+    // @example grammar-callbacks.apply-ex-command: An ex-command that replaces the cursor's line, targeting the buffer the context names
     fn apply_ex_command(
         c: u32,
         ctx: ExCommandContext,
@@ -697,6 +732,7 @@ impl GrammarCallbacks for Component {
         }
         Err("multiseam: no ex-commands".into())
     }
+    // @end-example
 }
 
 export!(Component);

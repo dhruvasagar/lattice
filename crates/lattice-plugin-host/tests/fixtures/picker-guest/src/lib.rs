@@ -39,6 +39,7 @@ struct Component;
 /// Two sources, because one is exactly the case the old seam already handled
 /// and the second is the whole point of the slice.
 impl Guest for Component {
+    // @example picker-registry.register-picker-source: Register two picker sources from one component, each with a full spec
     fn register_picker_sources() {
         register_picker_source(&PickerSourceSpec {
             id: FIXTURE.to_string(),
@@ -73,6 +74,7 @@ impl Guest for Component {
             delete_command: None,
         });
     }
+    // @end-example
 }
 
 impl PickerSourceGuest for Component {
@@ -105,6 +107,7 @@ impl PickerSourceGuest for Component {
         ])
     }
 
+    // @example picker-source.accept: Map the routing token a row carried to the outcome the host performs
     fn accept(
         source: String,
         _ctx: PickerContext,
@@ -129,6 +132,7 @@ impl PickerSourceGuest for Component {
             _ => Err("fixture: unexpected routing token".to_string()),
         }
     }
+    // @end-example
 }
 
 /// A plain candidate whose `text`/`display` echo `text`, source tagged

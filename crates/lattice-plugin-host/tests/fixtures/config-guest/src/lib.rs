@@ -144,6 +144,7 @@ impl Guest for Component {
             "Capture templates (TC.3 fixture).",
         );
 
+        // @example config.set-option-value: Set a structured (list-of-records) option by building its value arena
         // Set one through the typed seam, then read it back the same
         // way. Recording what came BACK — not what went in — is the
         // point: a seam that accepted the tree and stored a mangled one
@@ -164,6 +165,7 @@ impl Guest for Component {
                 root: 4,
             },
         );
+        // @end-example
 
         if let Some(v) = config::get_option_value("templates") {
             let _ = std::fs::OpenOptions::new()

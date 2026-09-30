@@ -123,6 +123,7 @@ impl Guest for Component {
             day: 20_000,
             minutes: 90,
         }];
+        // @example tree-sitter.node.kind: Report the root node's kind when a scan is handed a parse tree beside the text
         // OT.3: text is always here; the tree comes beside it when the file's
         // extension resolves to a registered language. This fixture reports the
         // ROOT KIND when it got a tree — something no text scan could produce —
@@ -145,6 +146,7 @@ impl Guest for Component {
                 clock,
             });
         }
+        // @end-example
         if text.contains("BROKEN") {
             return Err("agenda-guest: malformed file".to_string());
         }

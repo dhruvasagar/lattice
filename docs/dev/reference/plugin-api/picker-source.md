@@ -23,6 +23,35 @@ accept: func(source: string, ctx: picker-context, routing: routing-payload) -> r
 Translate the user's chosen `routing` token into a typed
 `PickerAcceptOutcome` the host applies. A mismatch is an `err` (echoed).
 
+**Example — Map the routing token a row carried to the outcome the host performs** · [`crates/lattice-plugin-host/tests/fixtures/picker-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/picker-guest/src/lib.rs)
+
+```rust
+fn accept(
+    source: String,
+    _ctx: PickerContext,
+    routing: RoutingPayload,
+) -> Result<PickerAcceptOutcome, String> {
+    // OR.5b: the second source's accept is distinguishable too — otherwise a
+    // test could not tell "routed to the right source" from "there is only
+    // one body".
+    if source == SECOND {
+        return Ok(PickerAcceptOutcome::OpenFile("/second/accepted".to_string()));
+    }
+    match routing {
+        RoutingPayload::OpenFile(p) => Ok(PickerAcceptOutcome::OpenFile(p)),
+        RoutingPayload::Buffer(id) => Ok(PickerAcceptOutcome::SwitchBuffer(id)),
+        // OR.5: the create row. The query crosses VERBATIM — the host must
+        // not have trimmed, lowercased or otherwise had an opinion about a
+        // namespace it does not own — so the fixture echoes it back inside
+        // a path the test can compare exactly.
+        RoutingPayload::Create(query) => {
+            Ok(PickerAcceptOutcome::OpenFile(format!("/created/{query}")))
+        }
+        _ => Err("fixture: unexpected routing token".to_string()),
+    }
+}
+```
+
 ### `init`
 
 ```wit
@@ -45,6 +74,39 @@ tracked as a focused follow-up (see the slice plan).
 `source` names WHICH of this plugin's registered sources is being built
 — one component may register several (see `picker-registry`), and they
 share one actor and one guest instance.
+
+**Example — Build the candidate rows for each picker source this component registered** · [`plugins/project/src/lib.rs`](../../../../plugins/project/src/lib.rs)
+
+```rust
+/// `source` is checked rather than assumed: one component may register
+/// several sources and they share one actor, so a source id this plugin
+/// never registered is untrusted input, not a case to fall through.
+fn init(
+    source: String,
+    ctx: PickerContext,
+    _args: Vec<String>,
+) -> Result<Vec<CandidatePair>, String> {
+    let pairs = match source.as_str() {
+        picker::PROJECTS_PICKER => picker::init(load())?,
+        // PB.1: the root rides the CONTEXT, not the args — PC.1's rule,
+        // and the same reason: `:project-buffers` opened from the
+        // switch-commands menu names a project other than the one the
+        // buffer is in, and `Effect::OpenPicker { root }` is the seam that
+        // carries it. Reading `args[0]` would work for this source and
+        // then be a second convention for the next one.
+        picker::PROJECT_BUFFERS_PICKER => picker::buffers_init(
+            &ctx.workspace_root,
+            ctx.buffers,
+            ctx.active_buffer.buffer_id,
+        ),
+        other => return Err(format!("project: no picker source `{other}`")),
+    };
+    Ok(pairs
+        .into_iter()
+        .map(|(candidate, routing)| CandidatePair { candidate, routing })
+        .collect())
+}
+```
 
 ## Types (1)
 

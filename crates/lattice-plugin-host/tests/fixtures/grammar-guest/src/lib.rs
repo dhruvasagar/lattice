@@ -38,6 +38,7 @@ impl Guest for Component {
     /// The host calls this once; the guest contributes its grammar through the
     /// imported `register-*` host functions.
     fn register_grammar() {
+        // @example grammar.register-motion: Register a linewise, non-jump motion answered by callback 1
         grammar::register_motion(
             "down-n",
             "jump count lines down (fixture)",
@@ -48,6 +49,8 @@ impl Guest for Component {
             },
             1,
         );
+        // @end-example
+        // @example grammar.register-text-object: Register a text object answered by callback 2
         grammar::register_text_object(
             "to-cursor",
             "line start to cursor (fixture)",
@@ -56,6 +59,7 @@ impl Guest for Component {
             },
             2,
         );
+        // @end-example
         // A motion whose callback id has no `apply-motion` arm → the guest
         // returns a WIT `err`, exercising the graceful no-op path (§8).
         grammar::register_motion(
@@ -193,6 +197,7 @@ impl Callbacks for Component {
         }
     }
 
+    // @example grammar-callbacks.apply-text-object: Resolve a text object to the range from the start of the cursor's line to the cursor
     fn apply_text_object(
         callback: u32,
         ctx: TextObjectContext,
@@ -210,6 +215,7 @@ impl Callbacks for Component {
             other => Err(format!("fixture: unknown text-object callback {other}")),
         }
     }
+    // @end-example
 
     fn apply_operator(
         callback: u32,
@@ -222,6 +228,7 @@ impl Callbacks for Component {
             // asserting on real buffer text fails if the handle stopped
             // crossing, which the old `no operators` stub could never show.
             10 => {
+                // @example buffer.document.line: Read the first line of an operator's range (and the buffer's path), erring if it is gone
                 let line = doc
                     .line(ctx.range.start.line)
                     .ok_or_else(|| format!("fixture: no line {}", ctx.range.start.line))?;
@@ -233,6 +240,7 @@ impl Callbacks for Component {
                     level: EchoLevel::Info,
                     text: format!("op|{path}|{line}"),
                 })])
+                // @end-example
             }
             other => Err(format!("fixture: unknown operator callback {other}")),
         }
@@ -294,6 +302,7 @@ impl Callbacks for Component {
             }
             // OM.6b: `<this file>_archive`, named from the document handle.
             8 => {
+                // @example buffer.document.path: Derive a sibling `<file>_archive` path from the buffer's own path and append to it
                 let Some(mine) = doc.path() else {
                     return Err("fixture: this buffer has no file".to_string());
                 };
@@ -305,6 +314,7 @@ impl Callbacks for Component {
                     create_parents: false,
                     save: false,
                 })])
+                // @end-example
             }
             // OC.9: the same write, asking to be PERSISTED. Callback 7's twin
             // on purpose — the two differ in exactly one field, so a test that

@@ -41,3 +41,44 @@ render path. An `err` string is logged and the provider contributes no
 decorations for this trigger (graceful, §8) — the cached snapshot keeps its
 prior value so cues never flicker mid-refresh.
 
+**Example — Return diff, severity and named-sign gutter marks, erring on an empty buffer** · [`crates/lattice-plugin-host/tests/fixtures/decorations-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/decorations-guest/src/lib.rs)
+
+```rust
+fn gutter_decorations(ctx: DecorationContext) -> Result<Vec<GutterDecoration>, String> {
+    if ctx.line_count == 0 {
+        // Graceful: nothing to decorate → a typed guest err, not a trap.
+        return Err("empty buffer: no decorations".to_string());
+    }
+    Ok(vec![
+        GutterDecoration::Diff(GutterDiff {
+            line: 0,
+            kind: GutterDiffKind::Change,
+        }),
+        GutterDecoration::Severity(GutterSeverity {
+            line: 1,
+            level: GutterSeverityLevel::Error,
+        }),
+        // Keyed off `line_count` — proves the context crossed in.
+        GutterDecoration::Diff(GutterDiff {
+            line: ctx.line_count - 1,
+            kind: GutterDiffKind::Add,
+        }),
+        // SG.3b: a sign placement, by NAME. The host interns the name to a
+        // `SignId` at the boundary — a guest has no id to carry, which is
+        // exactly what lets the native placement stay `Copy`.
+        GutterDecoration::Sign(GutterSign {
+            line: 2,
+            name: "fixture.mark".to_string(),
+        }),
+        // A name nothing defined. It must be SKIPPED while everything
+        // around it still crosses — if this failed the batch, one
+        // unregistered sign would take the plugin's diff and severity
+        // marks down with it.
+        GutterDecoration::Sign(GutterSign {
+            line: 3,
+            name: "fixture.undefined".to_string(),
+        }),
+    ])
+}
+```
+

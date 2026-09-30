@@ -104,3 +104,26 @@ An id already claimed by a NATIVE provider is refused with a warning
 naming both, and this guest's other views still register — one bad name
 must not cost a plugin its whole contribution.
 
+**Example — Register a pull view and a scan view from the same component** · [`crates/lattice-plugin-host/tests/fixtures/view-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/view-guest/src/lib.rs)
+
+```rust
+register_multibuffer_view(&MultibufferViewSpec {
+    id: PULL_VIEW.to_string(),
+    doc: "Fixture pull view (MV.1 substrate validation)".to_string(),
+    buffer_name: "*fixture-pull*".to_string(),
+    view_mode: Some("fixture-view-mode".to_string()),
+    reuse: true,
+    input: MultibufferViewInput::Pull,
+});
+// A second view, declared by the SAME component — the property the
+// registry shape exists for.
+register_multibuffer_view(&MultibufferViewSpec {
+    id: SCAN_VIEW.to_string(),
+    doc: "Fixture scan view".to_string(),
+    buffer_name: "*fixture-scan*".to_string(),
+    view_mode: None,
+    reuse: false,
+    input: MultibufferViewInput::Scan,
+});
+```
+

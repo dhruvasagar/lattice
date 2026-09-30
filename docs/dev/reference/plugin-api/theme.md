@@ -45,6 +45,50 @@ returns the existing id and leaves its default unchanged, so a reload
 is free. `err` when the spec is malformed — never a trap, and never a
 partially-registered element.
 
+**Example — Register themeable elements: a palette colour, an inheriting style, a literal RGB** · [`crates/lattice-plugin-host/tests/fixtures/theme-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/theme-guest/src/lib.rs)
+
+```rust
+let _ = register_element(
+    "background",
+    "The context strip backdrop.",
+    &StyleSpec {
+        inherit: None,
+        fg: Some(ColorRef::Palette("overlay".to_string())),
+        bg: None,
+        modifiers: no_modifiers(),
+        scale: None,
+    },
+);
+let _ = register_element(
+    "active",
+    "The innermost context row.",
+    &StyleSpec {
+        inherit: Some("treesitter-context.background".to_string()),
+        fg: None,
+        bg: None,
+        modifiers: ModifierSet {
+            bold: Some(true),
+            italic: Some(false),
+            underline: None,
+            dim: None,
+            reverse: None,
+        },
+        scale: None,
+    },
+);
+let _ = register_element(
+    "separator",
+    "The rule under the context strip.",
+    &StyleSpec {
+        inherit: None,
+        fg: Some(ColorRef::LiteralRgb(0x11_22_33)),
+        bg: Some(ColorRef::Default),
+        modifiers: no_modifiers(),
+        scale: None,
+    },
+);
+```
+
 ### `set-element-override`
 
 ```wit

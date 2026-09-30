@@ -43,6 +43,7 @@ impl Guest for Component {
             return Ok(Vec::new());
         };
 
+        // @example tree-sitter.node.named-child: Derive one context scope per named child of the root, spanning that child's lines
         // Walk the tree for real. Each named child of the root becomes a scope
         // spanning its own lines, with its first line as the header.
         let root = tree.root();
@@ -61,6 +62,7 @@ impl Guest for Component {
             });
         }
         Ok(scopes)
+        // @end-example
     }
 }
 

@@ -33,6 +33,7 @@ struct Component;
 
 impl Guest for Component {
     fn register_multibuffer_views() {
+        // @example multibuffer-view-registry.register-multibuffer-view: Register a pull view and a scan view from the same component
         register_multibuffer_view(&MultibufferViewSpec {
             id: PULL_VIEW.to_string(),
             doc: "Fixture pull view (MV.1 substrate validation)".to_string(),
@@ -51,6 +52,7 @@ impl Guest for Component {
             reuse: false,
             input: MultibufferViewInput::Scan,
         });
+        // @end-example
         // An unnamed view: the host must refuse this one and keep the two
         // above, rather than dropping the plugin's whole contribution.
         register_multibuffer_view(&MultibufferViewSpec {
@@ -65,6 +67,7 @@ impl Guest for Component {
 }
 
 impl ViewGuest for Component {
+    // @example multibuffer-view-source.build: Build a view's excerpts, or decline it with a typed error
     fn build(view: String, args: Vec<String>) -> Result<MultibufferViewResult, String> {
         if args.iter().any(|a| a == "fail") {
             return Err(format!("fixture view `{view}` declined"));
@@ -94,6 +97,7 @@ impl ViewGuest for Component {
             summary: format!("{} excerpts", 2),
         })
     }
+    // @end-example
 }
 
 export!(Component);

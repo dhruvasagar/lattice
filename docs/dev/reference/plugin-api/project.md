@@ -52,6 +52,21 @@ untrusted input from the guest rather than a real answer. A buffer that
 exists always resolves: one with no path on disk (a scratch buffer, a
 terminal) reports the working directory with `kind = pwd`.
 
+**Example — Resolve the project root for a buffer, ignoring the working-directory fallback** · [`plugins/project/src/lib.rs`](../../../../plugins/project/src/lib.rs)
+
+```rust
+/// The project a buffer belongs to, or `None` when there is not one.
+///
+/// `kind = pwd` means the editor's working directory standing in — the seam
+/// documents that a guest wanting to say "not in a project" checks for this
+/// rather than for an absent root. A list of *projects* that accumulated the cwd
+/// would put `~` in front of the user forever, so this is where that is refused.
+fn project_of_buffer(buffer: u64) -> Option<String> {
+    let info = project::root_for_buffer(buffer)?;
+    (info.kind != ProjectKind::Pwd).then_some(info.root)
+}
+```
+
 ### `root-for-path`
 
 ```wit
@@ -64,6 +79,16 @@ need not exist yet.
 `none` only when the host has no resolver wired, which a real editor
 always does; a relative path resolves against the editor's working
 directory, never the plugin's.
+
+**Example — Resolve the project containing a path the user typed** · [`plugins/project/src/lib.rs`](../../../../plugins/project/src/lib.rs)
+
+```rust
+/// The project containing a path the user typed.
+fn project_of_path(path: &str) -> Option<String> {
+    let info = project::root_for_path(path)?;
+    (info.kind != ProjectKind::Pwd).then_some(info.root)
+}
+```
 
 ## Types (2)
 

@@ -44,7 +44,15 @@
           "result": "result<string, string>",
           "signature": "get-text-range: func(r: range) -> result<string, string>",
           "doc": "The text of the `[start, end)` byte range. `err` on an out-of-range\nor `end < start` range (mirrors `Buffer::slice`). Only the requested\nrange is sliced out of the rope — the whole document never crosses\n(\"zero-copy at the slice level\", §9.6).",
-          "examples": []
+          "examples": [
+            {
+              "id": "auto-pair:buffer.document.get-text-range",
+              "caption": "Read the one byte after the caret, treating a read error as nothing there",
+              "source": "plugins/auto-pair/src/lib.rs",
+              "language": "rust",
+              "code": "/// The single byte after the caret (empty string at EOL / on a read error —\n/// which just means \"nothing to step over\", so insert).\nfn char_after(ctx: &ActionContext, doc: &Document) -> String {\n    doc.get_text_range(Range {\n        start: ctx.cursor,\n        end: one_right(ctx.cursor),\n    })\n    .unwrap_or_default()\n}"
+            }
+          ]
         },
         {
           "name": "[method]document.line",
@@ -65,7 +73,15 @@
           "result": "option<string>",
           "signature": "line: func(n: u32) -> option<string>",
           "doc": "Line `n` (0-based) as text without its trailing newline (matching\n`Buffer::line`), or `none` when `n` is past the last line.",
-          "examples": []
+          "examples": [
+            {
+              "id": "grammar-guest:buffer.document.line",
+              "caption": "Read the first line of an operator's range (and the buffer's path), erring if it is gone",
+              "source": "crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let line = doc\n    .line(ctx.range.start.line)\n    .ok_or_else(|| format!(\"fixture: no line {}\", ctx.range.start.line))?;\n// The PATH as well as the text. An operator's handle was minted\n// with `path: None` at first, so `document.path()` answered\n// `none` for every real file — invisible until a plugin asked.\nlet path = doc.path().unwrap_or_else(|| \"<none>\".to_string());\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\"op|{path}|{line}\"),\n})])"
+            }
+          ]
         },
         {
           "name": "[method]document.line-count",
@@ -99,7 +115,15 @@
           "result": "option<string>",
           "signature": "path: func() -> option<string>",
           "doc": "OM.6b: the file this document is backed by, absolute. `none` for a\nbuffer with no file on disk — a scratch buffer, a synthetic one, or\na file whose path is not UTF-8 (it cannot cross as a `string`, and\none oddly-named file must not fail the call).\n\n**Why the resource and not a context field.** \"Which file am I\nediting\" is a question every content-aware guest asks, and a guest\nasking it always holds a `document`. On a context it would have to\nbe re-added to `motion-context`, `text-object-context` and\n`ex-command-context` in turn, and every dispatch would pay the\nstring clone whether or not the guest read it.\n\nSnapshot semantics, like every other method here: this is the path\nas of the handle's mint. A `set-path` landing mid-action is\ninvisible, which is the same trade `get-text-range` already makes\nand for the same reason.",
-          "examples": []
+          "examples": [
+            {
+              "id": "grammar-guest:buffer.document.path",
+              "caption": "Derive a sibling `<file>_archive` path from the buffer's own path and append to it",
+              "source": "crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let Some(mine) = doc.path() else {\n    return Err(\"fixture: this buffer has no file\".to_string());\n};\nOk(vec![Effect::WriteToFile(WriteToFilePayload {\n    path: format!(\"{mine}_archive\"),\n    anchor: FileAnchor::End,\n    text: \"* Archived beside me\\n\".to_string(),\n    cut: None,\n    create_parents: false,\n    save: false,\n})])"
+            }
+          ]
         }
       ],
       "types": [
@@ -191,7 +215,15 @@
           "result": "result<list<raw-candidate>, string>",
           "signature": "generate: func(ctx: generate-context) -> result<list<raw-candidate>, string>",
           "doc": "Produce raw candidates for the current slot. `ctx` carries the query\nprefix + case flag (§4.2 owned projection); the host then runs the\nnative `match_and_rank` over the result. Async — a produce call suspends\nthe guest, never the keystroke path. An `err` string is logged and the\nsource contributes no rows (the LSP-failure precedent). Candidates carry\nplugin-specific data via the `candidate-data.extension` hatch.",
-          "examples": []
+          "examples": [
+            {
+              "id": "completion-guest:completion-source.generate",
+              "caption": "Return the full candidate set; the host's native matcher filters it by the query",
+              "source": "crates/lattice-plugin-host/tests/fixtures/completion-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn generate(_ctx: GenerateContext) -> Result<Vec<RawCandidate>, String> {\n    // Return the full keyword set; the native matcher filters against the\n    // query prefix (matching stays native — option A). Each candidate uses\n    // the `extension` data hatch (kind-id 1, empty payload) — the plugin\n    // candidate-data path.\n    Ok([\"alpha\", \"alphabet\", \"beta\", \"gamma\"]\n        .iter()\n        .map(|w| RawCandidate {\n            insert_text: None,\n            text: w.to_string(),\n            display: w.to_string(),\n            source: Some(\"keywords\".to_string()),\n            kind: CandidateKind::Plain,\n            data: CandidateData::Extension(CandidateExtension {\n                kind_id: 1,\n                payload: Vec::new(),\n            }),\n            annotations: Vec::new(),\n            display_spans: Vec::new(),\n        })\n        .collect())\n}"
+            }
+          ]
         },
         {
           "name": "spec",
@@ -203,7 +235,15 @@
           "result": "completion-source-spec",
           "signature": "spec: func() -> completion-source-spec",
           "doc": "The source's identity (`name` + `doc`), the `insert_generator` pair.\nCalled once at registration.",
-          "examples": []
+          "examples": [
+            {
+              "id": "completion-guest:completion-source.spec",
+              "caption": "Declare a completion source's id and doc, completing word queries only",
+              "source": "crates/lattice-plugin-host/tests/fixtures/completion-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn spec() -> CompletionSourceSpec {\n    CompletionSourceSpec {\n        id: \"keywords\".to_string(),\n        doc: \"Fixture keyword completion source (PH7.6 substrate validation).\".to_string(),\n        // Identifier completion — the default. The phrase-source path is\n        // covered by org-roam's own tests.\n        accepts_non_word_query: false,\n    }\n}"
+            }
+          ]
         }
       ],
       "types": [],
@@ -247,7 +287,15 @@
           "result": "option<string>",
           "signature": "get-option: func(name: string) -> option<string>",
           "doc": "Read an option's current value, formatted as a string (the `OptionType`\n`format` contract). `none` if no option by that name is registered.\nResolves the plugin's OWN namespace first (`style` → `<id>.style`), then\nthe raw name — so a plugin reads its own options with short names AND can\nstill read a core option (`tabstop`) that isn't in its namespace.",
-          "examples": []
+          "examples": [
+            {
+              "id": "auto-pair:config.get-option",
+              "caption": "Read the plugin's own option on every call, so `:set` takes effect without re-registering",
+              "source": "plugins/auto-pair/src/lib.rs",
+              "language": "rust",
+              "code": "/// Read the live style option (AP.3). `auto` (default) or `manual`. The plugin\n/// uses the SHORT name `style`; the host auto-namespaces it to `auto-pair.style`\n/// (the name a user sets). The grammar guest reads the SHARED editor config\n/// registry (wired at instantiate time), so `:set auto-pair.style=manual` flips\n/// behavior live — no keymap re-registration.\nfn is_manual() -> bool {\n    config::get_option(\"style\").as_deref() == Some(\"manual\")\n}"
+            }
+          ]
         },
         {
           "name": "get-option-value",
@@ -264,7 +312,15 @@
           "result": "option<config-value>",
           "signature": "get-option-value: func(name: string) -> option<config-value>",
           "doc": "Read an option's current value as a tree. `none` if no option by that\nname is registered. Resolves the caller's OWN namespace first, exactly\nlike `get-option`.\n\nWorks for scalar options too — a scalar is a degenerate schema, so a\nguest that wants typed reads everywhere can use this one call rather\nthan choosing per option.",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:config.get-option-value",
+              "caption": "Read a structured option's current value, falling back to defaults",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "/// The configured rows, or the defaults.\nfn switch_commands() -> Vec<switch::SwitchCommand> {\n    match lattice::plugin_host::config::get_option_value(switch::OPTION) {\n        Some(value) => switch::from_value(&value),\n        // Unregistered or unreadable — the same answer either way, and it is\n        // the useful one: a menu with no rows looks exactly like a broken chord.\n        None => switch::defaults(),\n    }\n}"
+            }
+          ]
         },
         {
           "name": "option-diagnostic",
@@ -347,7 +403,15 @@
           "result": "bool",
           "signature": "register-structured-option: func(name: string, schema: config-schema, default: config-value, doc: string) -> bool",
           "doc": "Declare an option whose value has structure. The schema-taking peer of\n`register-option`, with the same namespacing and the same collision\nrules.\n\n`default` is validated against `schema` before anything is registered:\na plugin whose own default does not fit its own declaration registers\nNOTHING and gets `false`, rather than an option that exists and cannot\nhold a legal value.",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:config.register-structured-option",
+              "caption": "Register a list-of-records option with a schema and a structured default",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "let rows = switch::defaults();\nlet _ = lattice::plugin_host::config::register_structured_option(\n    switch::OPTION,\n    &switch::schema(),\n    &switch::to_value(&rows),\n    \"Rows of the project-switch menu. Each names an ex-command that \\\n     takes a project root as its first argument — which is the whole \\\n     contract for adding your own.\",\n);"
+            }
+          ]
         },
         {
           "name": "set-option",
@@ -368,7 +432,15 @@
           "result": "bool",
           "signature": "set-option: func(name: string, value: string) -> bool",
           "doc": "Set (override) an EXISTING option's value (CI.7) — the init.rs config\nfront-end symmetric with `lattice.toml` and `:set`. Backed by the same\n`parse_and_set_command` path `:set name=value` uses: the value string is\ntype-coerced and validated, and a successful set publishes\n`OptionChanged` so subscribers react uniformly. Returns `false` (setting\nnothing) if the option is unregistered, the value is invalid for its type,\nor no registry is wired — never a trap. An `init.rs` `on-plugin-loaded`\nhandler uses this to configure a plugin's options the moment it loads\n(config-and-init.md §5). Like `get-option`, resolves the caller's OWN\nnamespace first (`style` → `<id>.style`), else the raw name — so a config\ncan set another plugin's option by its full `auto-pair.style` name.",
-          "examples": []
+          "examples": [
+            {
+              "id": "treesitter-context:config.set-option",
+              "caption": "Toggle this plugin's `enabled` option from an ex-command",
+              "source": "plugins/treesitter-context/src/lib.rs",
+              "language": "rust",
+              "code": "// Flip the loader-registered enablement switch. This one needs no\n// tree — it only reads and writes an option — which is exactly why\n// it survives where `:context-up` could not.\nCB_EX_CONTEXT_TOGGLE => {\n    let _ = ctx;\n    let on = get_option(\"enabled\").map(|v| v == \"true\").unwrap_or(true);\n    set_option(\"enabled\", if on { \"false\" } else { \"true\" });\n    Ok(vec![Effect::None])\n}"
+            }
+          ]
         },
         {
           "name": "set-option-in-buffer",
@@ -414,7 +486,15 @@
           "result": "bool",
           "signature": "set-option-value: func(name: string, value: config-value) -> bool",
           "doc": "Set an option from a tree. Validated against the option's declared\nschema, so a bad field is refused with a PATH\n(`templates[2].target.file: expected string, got integer`) rather than\nby whatever message the plugin would have written. `false` on an unknown\noption, a value that does not fit, or no registry — never a trap, the\n`set-option` contract.",
-          "examples": []
+          "examples": [
+            {
+              "id": "config-guest:config.set-option-value",
+              "caption": "Set a structured (list-of-records) option by building its value arena",
+              "source": "crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// Set one through the typed seam, then read it back the same\n// way. Recording what came BACK — not what went in — is the\n// point: a seam that accepted the tree and stored a mangled one\n// would pass any assertion made on the write alone.\nlet _ = config::set_option_value(\n    \"templates\",\n    &config::ConfigValue {\n        nodes: vec![\n            config::ValueNode::String(\"t\".to_string()),           // 0\n            config::ValueNode::String(\"~/org/refile.org\".to_string()), // 1\n            config::ValueNode::Record(vec![(\"file\".to_string(), 1)]),  // 2\n            config::ValueNode::Record(vec![\n                (\"key\".to_string(), 0),\n                (\"target\".to_string(), 2),\n            ]), // 3\n            config::ValueNode::List(vec![3]),                     // 4\n        ],\n        root: 4,\n    },\n);"
+            }
+          ]
         }
       ],
       "types": [
@@ -620,7 +700,15 @@
           "result": "result<list<context-scope>, string>",
           "signature": "context-scopes: func(req: context-request, tree: option<borrow<tree-snapshot>>) -> result<list<context-scope>, string>",
           "doc": "Produce the structural context scopes for a buffer.\n\n`tree` is the buffer's point-in-time parse snapshot, handed in the way\n`grammar.apply-action` hands it (TS.1) rather than acquired by the guest:\ncall-scoped access keeps the `tree-sitter` capability meaning \"the tree\nyou were given\" instead of \"any buffer's tree, any time\". It is `none`\nwhen the buffer has no parse (plain text, or a parse still pending), and\na guest with nothing to work from should return an empty list.\n\nAsync — a produce call suspends the guest and never the render path. The\nguest is expected to run a whole-buffer `run-query` here, which is why\nthis must not be synchronous.\n\nGraceful (§8): an `err` is logged and the buffer KEEPS its previously\ncached scopes rather than being cleared. A failed refresh must not blank\nthe strip — a transient error would otherwise read as the feature\nbreaking. Same contract as `decorations.gutter-decorations`.",
-          "examples": []
+          "examples": [
+            {
+              "id": "treesitter-context:context.context-scopes",
+              "caption": "Produce sticky-context scopes from the tree, bounded by a size option",
+              "source": "plugins/treesitter-context/src/lib.rs",
+              "language": "rust",
+              "code": "fn context_scopes(\n    req: ContextRequest,\n    tree: Option<&TreeSnapshot>,\n) -> Result<Vec<ContextScope>, String> {\n    if req.line_count == 0 {\n        return Ok(Vec::new());\n    }\n    // Bound the work BEFORE running the query. Returning empty (not `err`)\n    // is deliberate: the host caches an empty set, which is the truth —\n    // this file has no context — rather than keeping a stale set from\n    // whatever was open before.\n    let max_lines = get_option(\"max-file-lines\")\n        .and_then(|v| v.parse::<u32>().ok())\n        .unwrap_or(DEFAULT_MAX_FILE_LINES);\n    if max_lines > 0 && req.line_count > max_lines {\n        return Ok(Vec::new());\n    }\n    // No parse (plain text, or one still pending) is a normal state the\n    // host caches as \"no scopes\" — never an error, which would make it keep\n    // the previous buffer's structure.\n    let Some(tree) = tree else {\n        return Ok(Vec::new());\n    };\n    scopes_from_tree(tree)\n}"
+            }
+          ]
         }
       ],
       "types": [],
@@ -672,7 +760,15 @@
           "result": "result<_, string>",
           "signature": "register-section: func(id: string, order: s32, default-enabled: bool) -> result<_, string>",
           "doc": "Declare a section.\n\n`id` is **NOT** auto-namespaced, unlike `help.register-topic` and\n`theme.register-element`. That is deliberate: replacing a built-in\nsection by id is a supported thing to want, so a plugin registering\n`getting-started` is exercising the feature rather than squatting.\nUnload restores whatever it displaced — the registry shadows rather\nthan overwrites.\n\n`order` is the default sort key (lower sorts first); `default-enabled`\nis whether it shows when the user has not set `dashboard.sections`.\n\n`err` when the spec is malformed (an empty id) — never a trap.",
-          "examples": []
+          "examples": [
+            {
+              "id": "dashboard-guest:dashboard.register-section",
+              "caption": "Register dashboard sections by id and order; an un-namespaced builtin id replaces the builtin",
+              "source": "crates/lattice-plugin-host/tests/fixtures/dashboard-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let _ = register_section(\"recent\", 15, true);\n// Not namespaced — this is meant to displace the builtin.\nlet _ = register_section(\"getting-started\", 20, true);"
+            }
+          ]
         }
       ],
       "types": [
@@ -879,7 +975,15 @@
           "result": "result<list<gutter-decoration>, string>",
           "signature": "gutter-decorations: func(ctx: decoration-context) -> result<list<gutter-decoration>, string>",
           "doc": "Produce the per-line gutter decorations for a buffer. `ctx` is the owned\nprojection (buffer id / path / line count, §4.2); bulk buffer text (a diff\nproducer's input) rides `host-services` / the deferred `document` handle,\nnot the context. Async — a produce call suspends the guest, never the\nrender path. An `err` string is logged and the provider contributes no\ndecorations for this trigger (graceful, §8) — the cached snapshot keeps its\nprior value so cues never flicker mid-refresh.",
-          "examples": []
+          "examples": [
+            {
+              "id": "decorations-guest:decorations.gutter-decorations",
+              "caption": "Return diff, severity and named-sign gutter marks, erring on an empty buffer",
+              "source": "crates/lattice-plugin-host/tests/fixtures/decorations-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn gutter_decorations(ctx: DecorationContext) -> Result<Vec<GutterDecoration>, String> {\n    if ctx.line_count == 0 {\n        // Graceful: nothing to decorate → a typed guest err, not a trap.\n        return Err(\"empty buffer: no decorations\".to_string());\n    }\n    Ok(vec![\n        GutterDecoration::Diff(GutterDiff {\n            line: 0,\n            kind: GutterDiffKind::Change,\n        }),\n        GutterDecoration::Severity(GutterSeverity {\n            line: 1,\n            level: GutterSeverityLevel::Error,\n        }),\n        // Keyed off `line_count` — proves the context crossed in.\n        GutterDecoration::Diff(GutterDiff {\n            line: ctx.line_count - 1,\n            kind: GutterDiffKind::Add,\n        }),\n        // SG.3b: a sign placement, by NAME. The host interns the name to a\n        // `SignId` at the boundary — a guest has no id to carry, which is\n        // exactly what lets the native placement stay `Copy`.\n        GutterDecoration::Sign(GutterSign {\n            line: 2,\n            name: \"fixture.mark\".to_string(),\n        }),\n        // A name nothing defined. It must be SKIPPED while everything\n        // around it still crosses — if this failed the batch, one\n        // unregistered sign would take the plugin's diff and severity\n        // marks down with it.\n        GutterDecoration::Sign(GutterSign {\n            line: 3,\n            name: \"fixture.undefined\".to_string(),\n        }),\n    ])\n}"
+            }
+          ]
         }
       ],
       "types": [],
@@ -992,7 +1096,15 @@
           "result": null,
           "signature": "cancel-wake: func(id: wake-id)",
           "doc": "Disarm a wake. Unknown / already-cancelled / `0` ids are ignored — a\ncancel is idempotent, because the alternative is a guest that must track\nhost state to avoid a trap. There is deliberately no bulk form: wakes are\ncancelled en masse on deactivate / quarantine by the host, for the same\nreason `events` has no `unsubscribe`.",
-          "examples": []
+          "examples": [
+            {
+              "id": "events-guest:events.cancel-wake",
+              "caption": "Count a periodic wake's fires in `on-wake` and cancel it after the last one",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let n = wake_state::FIRES.with(|f| {\n    let n = f.get() + 1;\n    f.set(n);\n    n\n});\nrecord(&format!(\"wake:{n}\"));\nif n >= wake_state::CANCEL_AFTER {\n    events::cancel_wake(id);\n}"
+            }
+          ]
         },
         {
           "name": "subscribe",
@@ -1013,7 +1125,15 @@
           "result": null,
           "signature": "subscribe: func(filter: event-filter, handler: u32)",
           "doc": "Subscribe `handler` to every event matching `filter` (the declarative\n`kinds` / `path-globs` / `major-modes` subset; a custom predicate is the\nguest filtering inside `on-event`). The host delivers each match to the\nworld's `on-event(handler, ev)` export.",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:events.subscribe",
+              "caption": "Subscribe to one event kind and handle it in `on-event`",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "/// Subscribe to `document-opened` — how a project comes to be remembered at\n/// all, and `project.el`'s `project-remember-project` in one line.\n///\n/// Filtered to the one kind rather than taking everything and branching: the\n/// filter is the host's, so an unfiltered subscription would wake this\n/// plugin's task for every modal-mode change and every option write in the\n/// editor, to do nothing.\nfn register_events() {\n    lattice::plugin_host::events::subscribe(\n        &EventFilter {\n            kinds: Some(vec![EventKind::DocumentOpened]),\n            path_globs: None,\n            major_modes: None,\n            minor_modes: None,\n        },\n        ON_DOCUMENT_OPENED,\n    );\n}\n\n/// Runs on the event actor's own task, never a keystroke — which is the\n/// property that lets it do a store read+write at all.\n///\n/// Silent by construction: a handler that echoed would announce a project on\n/// every file you open. A store failure is dropped here rather than shown,\n/// because there is no user action that provoked it and nothing they could\n/// do about it mid-open; `:project-remember` is the path that reports.\nfn on_event(handler: u32, ev: Event) {\n    if handler != ON_DOCUMENT_OPENED {\n        return;\n    }\n    let Event::DocumentOpened(opened) = ev else {\n        return;\n    };\n    // A buffer with no path on disk resolves to `pwd`, which\n    // `project_of_buffer` already refuses — but checking here avoids a host\n    // call per scratch buffer, and the field is right there.\n    if opened.path.is_none() {\n        return;\n    }\n    // `opened.id` is a `DocumentId` by TYPE and a buffer id by VALUE:\n    // `publish_document_opened_for_active` builds it as\n    // `DocumentId::new(buffer_id.0 as u64)`. `root-for-buffer` wants the\n    // buffer id, so passing this straight through is correct — verified\n    // rather than assumed, because the two type names disagree and a wrong\n    // id here would resolve to `none` and silently remember nothing.\n    if let Some(root) = project_of_buffer(opened.id) {\n        let _ = remember_root(&root);\n    }\n}"
+            }
+          ]
         },
         {
           "name": "wake-every",
@@ -1030,7 +1150,15 @@
           "result": "wake-id",
           "signature": "wake-every: func(ms: u32) -> wake-id",
           "doc": "Ask to be woken every `ms` milliseconds, forever, until `cancel-wake`\n(OC.2). Delivery is `on-wake(id)` on the plugin's own actor task — the\nSAME channel `on-event` arrives on, so a wake is subject to the same\nbudget, the same quarantine, and the same \"never on the keystroke path\"\nguarantee (paramount #4). It is not a precise timer: a wake fires no\nsooner than the interval and may be late under load, and a late one does\nnot queue a backlog — the period restarts when the wake is delivered.\n\nIntended for the low-frequency \"recompute my own display string\" shape\n(org's clock re-renders its modeline segment once a minute, `design.md`\nAppendix B's idle hooks). It is NOT a frame or animation source: each\nfiring is a full guest call, so a small `ms` buys a guest call at that\nrate for as long as the plugin is loaded.\n\nReturns `0` when no wake mechanism is wired on this seam — a plugin\ninstantiated on a store with no timer (the sync grammar seam, a test\nharness). Like every other seam here that answers rather than traps, the\ndegradation is honest and visible in the log, and a guest that treats a\n`0` as armed simply never hears back.",
-          "examples": []
+          "examples": [
+            {
+              "id": "events-guest:events.wake-every",
+              "caption": "Arm a periodic wake at registration and keep its id for `cancel-wake`",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// OC.2: arm a periodic wake from registration. 50 ms is the seam's\n// floor — fast enough that a test does not sit on a real clock, and the\n// guest cancels itself after a few fires so it cannot run away.\nwake_state::TICKER.with(|t| t.set(events::wake_every(50)));"
+            }
+          ]
         }
       ],
       "types": [
@@ -1085,7 +1213,15 @@
           "result": null,
           "signature": "register-action: func(name: string, doc: string, spec: action-spec, callback: u32)",
           "doc": "Contribute a chord-bound action. `callback` → `grammar-callbacks.apply-action`.",
-          "examples": []
+          "examples": [
+            {
+              "id": "auto-pair:grammar.register-action",
+              "caption": "Register one action per chord from a table, each with its own callback id",
+              "source": "plugins/auto-pair/src/lib.rs",
+              "language": "rust",
+              "code": "let spec = || ActionSpec {\n    args_schema: Vec::new(),\n};\nfor (name, doc, cb) in [\n    (\"auto-pair-open-round\", \"insert ()\", CB_OPEN_ROUND),\n    (\"auto-pair-open-square\", \"insert []\", CB_OPEN_SQUARE),\n    (\"auto-pair-open-curly\", \"insert {}\", CB_OPEN_CURLY),\n    (\"auto-pair-close-round\", \"step over )\", CB_CLOSE_ROUND),\n    (\"auto-pair-close-square\", \"step over ]\", CB_CLOSE_SQUARE),\n    (\"auto-pair-close-curly\", \"step over }\", CB_CLOSE_CURLY),\n    (\"auto-pair-quote-double\", \"pair \\\"\\\"\", CB_QUOTE_DOUBLE),\n    (\"auto-pair-quote-single\", \"pair ''\", CB_QUOTE_SINGLE),\n    (\"auto-pair-quote-backtick\", \"pair ``\", CB_QUOTE_BACKTICK),\n    (\n        \"auto-pair-close-manual\",\n        \"close the nearest unmatched opener in scope (manual style)\",\n        CB_CLOSE_MANUAL,\n    ),\n    (\n        \"auto-pair-backspace\",\n        \"delete an empty pair, else fall through to normal backspace\",\n        CB_BACKSPACE,\n    ),\n] {\n    grammar::register_action(name, doc, &spec(), cb);\n}"
+            }
+          ]
         },
         {
           "name": "register-ex-command",
@@ -1118,7 +1254,15 @@
           "result": null,
           "signature": "register-ex-command: func(name: string, doc: string, spec: ex-command-spec, parse-callback: u32, apply-callback: u32)",
           "doc": "Contribute an ex-command. TWO callbacks — `parse-callback` →\n`grammar-callbacks.parse-ex-args` (the `:` line's rest → typed `args`),\n`apply-callback` → `grammar-callbacks.apply-ex-command`.",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:grammar.register-ex-command",
+              "caption": "Register an argument-less ex-command with its parse and apply callbacks",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "lattice::plugin_host::grammar::register_ex_command(\n    \"project-switch\",\n    \"Choose a project, then act on it. The verb this whole plugin \\\n     exists for: every other project-aware surface roots itself at the \\\n     buffer you are standing in, which is right until you want the one \\\n     you are not.\",\n    &ExCommandSpec {\n        latency_class: LatencyClass::Reflex,\n        accepts_bang: false,\n        accepts_range: false,\n        args_schema: Vec::new(),\n        surface_form: SurfaceForm::Keyword,\n    },\n    CB_PARSE,\n    CB_SWITCH,\n);"
+            }
+          ]
         },
         {
           "name": "register-motion",
@@ -1147,7 +1291,15 @@
           "result": null,
           "signature": "register-motion: func(name: string, doc: string, spec: motion-spec, callback: u32)",
           "doc": "Contribute a motion. `callback` is the id the host passes back to\n`grammar-callbacks.apply-motion` on dispatch.",
-          "examples": []
+          "examples": [
+            {
+              "id": "grammar-guest:grammar.register-motion",
+              "caption": "Register a linewise, non-jump motion answered by callback 1",
+              "source": "crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs",
+              "language": "rust",
+              "code": "grammar::register_motion(\n    \"down-n\",\n    \"jump count lines down (fixture)\",\n    &MotionSpec {\n        jump: false,\n        exclusive: false,\n        args_schema: Vec::new(),\n    },\n    1,\n);"
+            }
+          ]
         },
         {
           "name": "register-operator",
@@ -1213,7 +1365,15 @@
           "result": null,
           "signature": "register-text-object: func(name: string, doc: string, spec: text-object-spec, callback: u32)",
           "doc": "Contribute a text object. `callback` → `grammar-callbacks.apply-text-object`.",
-          "examples": []
+          "examples": [
+            {
+              "id": "grammar-guest:grammar.register-text-object",
+              "caption": "Register a text object answered by callback 2",
+              "source": "crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs",
+              "language": "rust",
+              "code": "grammar::register_text_object(\n    \"to-cursor\",\n    \"line start to cursor (fixture)\",\n    &TextObjectSpec {\n        args_schema: Vec::new(),\n    },\n    2,\n);"
+            }
+          ]
         }
       ],
       "types": [],
@@ -1279,7 +1439,15 @@
           "result": "result<list<effect>, string>",
           "signature": "apply-action: func(callback: u32, ctx: action-context, doc: borrow<document>, tree: option<borrow<tree-snapshot>>) -> result<list<effect>, string>",
           "doc": null,
-          "examples": []
+          "examples": [
+            {
+              "id": "auto-pair:grammar-callbacks.apply-action",
+              "caption": "Dispatch actions by callback id, reading an option and the document, declining to fall through",
+              "source": "plugins/auto-pair/src/lib.rs",
+              "language": "rust",
+              "code": "fn apply_action(\n    callback: u32,\n    ctx: ActionContext,\n    doc: &Document,\n    tree: Option<&TreeSnapshot>,\n) -> Result<Vec<Effect>, String> {\n    // AP.3: in `manual` style the pair keys (1..=9) self-insert — the action\n    // DECLINES so the typed char lands via the builtin, and only the close key\n    // + backspace act. In `auto` style the close key declines instead.\n    let manual = is_manual();\n    if manual && (CB_OPEN_ROUND..=CB_QUOTE_BACKTICK).contains(&callback) {\n        return Ok(vec![Effect::Declined]);\n    }\n    Ok(match callback {\n        CB_OPEN_ROUND => insert_pair(&ctx, \"(\", \")\"),\n        CB_OPEN_SQUARE => insert_pair(&ctx, \"[\", \"]\"),\n        CB_OPEN_CURLY => insert_pair(&ctx, \"{\", \"}\"),\n        CB_CLOSE_ROUND => close(&ctx, doc, \")\"),\n        CB_CLOSE_SQUARE => close(&ctx, doc, \"]\"),\n        CB_CLOSE_CURLY => close(&ctx, doc, \"}\"),\n        CB_QUOTE_DOUBLE => quote(&ctx, doc, \"\\\"\"),\n        CB_QUOTE_SINGLE => quote(&ctx, doc, \"'\"),\n        CB_QUOTE_BACKTICK => quote(&ctx, doc, \"`\"),\n        // The manual close key acts only in `manual` style; in `auto` it\n        // declines so `<C-j>` does whatever else it's bound to.\n        CB_CLOSE_MANUAL if manual => manual_close(&ctx, doc, tree),\n        CB_CLOSE_MANUAL => vec![Effect::Declined],\n        CB_BACKSPACE => backspace(&ctx, doc),\n        other => return Err(format!(\"auto-pair: unknown action callback {other}\")),\n    })\n}"
+            }
+          ]
         },
         {
           "name": "apply-ex-command",
@@ -1308,7 +1476,15 @@
           "result": "result<list<effect>, string>",
           "signature": "apply-ex-command: func(callback: u32, ctx: ex-command-context, doc: borrow<document>, tree: option<borrow<tree-snapshot>>) -> result<list<effect>, string>",
           "doc": "OC.10 gave this `doc` and `tree`, so a plugin ex-command can read the\nbuffer it was invoked from — the same pair `apply-action` receives, minted\nat the same instant so their versions agree (§7). `tree` is `none` for a\nplain-text buffer, a parse still in flight, or a plugin without the\n`tree-sitter` grant.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:grammar-callbacks.apply-ex-command",
+              "caption": "An ex-command that replaces the cursor's line, targeting the buffer the context names",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn apply_ex_command(\n    c: u32,\n    ctx: ExCommandContext,\n    doc: &Document,\n    tree: Option<&TreeSnapshot>,\n) -> Result<Vec<Effect>, String> {\n    if c == 31 {\n        // Everything here was unreachable before OC.10: `ctx.cursor` says\n        // which line, `ctx.buffer_id` names the target, `doc` proves the\n        // buffer is readable, and `tree` proves the parse crossed too. The\n        // echo reports the last two so a regression to the old context fails\n        // loudly rather than editing the right line for the wrong reason.\n        let had_line = doc.line(ctx.cursor.line).is_some();\n        let kind = tree.map(|t| t.root().kind()).unwrap_or_else(|| \"none\".into());\n        let old = doc.line(ctx.cursor.line).unwrap_or_default();\n        return Ok(vec![\n            Effect::ApplyEdit(ApplyEditPayload {\n                target: ctx.buffer_id,\n                edit: Edit {\n                    range: Range {\n                        start: Position { line: ctx.cursor.line, byte: 0 },\n                        end: Position {\n                            line: ctx.cursor.line,\n                            byte: old.len() as u32,\n                        },\n                    },\n                    kind: EditKind::Replace(format!(\"EX:{had_line}:{kind}\")),\n                },\n                cursor: None,\n            }),\n        ]);\n    }\n    Err(\"multiseam: no ex-commands\".into())\n}"
+            }
+          ]
         },
         {
           "name": "apply-motion",
@@ -1337,7 +1513,15 @@
           "result": "result<motion-result, string>",
           "signature": "apply-motion: func(callback: u32, ctx: motion-context, doc: borrow<document>, tree: option<borrow<tree-snapshot>>) -> result<motion-result, string>",
           "doc": "OM.4: a motion receives `borrow<document>` too. The `apply-action`\ndoc-comment below anticipated this — \"text-reading motions (structural /\nword motions) can reuse the same handle when a motion signature needs\nit\" — and org's headline motions (`]]` / `[[` / `g{`) are the first that\ndo: finding the next headline means reading lines.\n\nOT.1: a motion receives the tree too, on the same terms as an action —\nacquired the same instant as `doc`, `none` when the buffer has no parse.\n\nThis doc-comment used to say a motion gets the document but NOT the tree,\nbecause \"the native `MotionContext` carries a `ScopeResolver` rather than\na `SyntaxSnapshot`, so there is no tree handle to mint here without\nchanging the native context — and no motion has yet needed one. When one\ndoes, that is the slice that adds it.\" Org's headline motions are that\nmotion: they resolve `(section)` / `(headline)` structure, and hand-rolled\nstar-counting is what OT.x exists to end.\n\nThe native change was smaller than that paragraph predicted.\n`GrammarEnv::syntax` already carried the type-erased snapshot on every\ndispatch — `execute_action` cloned it into `ActionContext` and the motion\nand text-object contexts simply never read it. So this cost two borrowed\nfields, not new plumbing. Borrowed rather than cloned because motions fire\non every `j`: a native motion pays nothing, and only a plugin motion that\nactually mints the resource pays the `Arc` bump.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:grammar-callbacks.apply-motion",
+              "caption": "A motion answered from the parse tree: jump to where the tree's span ends",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn apply_motion(\n    c: u32,\n    _ctx: MotionContext,\n    _doc: &Document,\n    tree: Option<&TreeSnapshot>,\n) -> Result<MotionResult, String> {\n    match c {\n        // OT.1: target the end of the parse tree's own span. Unanswerable\n        // without the tree, so `none` surfaces as a guest err rather than a\n        // wrong-but-believable line.\n        20 => {\n            let tree = tree.ok_or_else(|| \"multiseam: motion got no tree\".to_string())?;\n            Ok(MotionResult {\n                target: tree.root().byte_range().end,\n                linewise: true,\n            })\n        }\n        other => Err(format!(\"multiseam: unknown motion callback {other}\")),\n    }\n}"
+            }
+          ]
         },
         {
           "name": "apply-operator",
@@ -1399,7 +1583,15 @@
           "result": "result<range, string>",
           "signature": "apply-text-object: func(callback: u32, ctx: text-object-context, doc: borrow<document>, tree: option<borrow<tree-snapshot>>) -> result<range, string>",
           "doc": "OM.4b: a text object receives `borrow<document>` too — `text-object-context`\nhas always said \"buffer text + the scope/comment env ride the `document`\nhandle\", and AP.0.1 simply wired the action path first. Org's headline\nand subtree objects are the first plugin ones, and resolving a subtree's\nbounds means reading lines.\n\nOT.1: and the tree, for the `apply-motion` reason above — org's `ir` / `ar`\nresolve a subtree, which IS the `(section)` node. A text object gets the\ntree rather than only the `scope-resolver` the native structural objects\nuse, because the resolver answers \"what encloses this point\" while a\nplugin object needs to query the tree itself.",
-          "examples": []
+          "examples": [
+            {
+              "id": "grammar-guest:grammar-callbacks.apply-text-object",
+              "caption": "Resolve a text object to the range from the start of the cursor's line to the cursor",
+              "source": "crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn apply_text_object(\n    callback: u32,\n    ctx: TextObjectContext,\n    _doc: &Document,\n    _tree: Option<&TreeSnapshot>,\n) -> Result<Range, String> {\n    match callback {\n        2 => Ok(Range {\n            start: Position {\n                line: ctx.at.line,\n                byte: 0,\n            },\n            end: ctx.at,\n        }),\n        other => Err(format!(\"fixture: unknown text-object callback {other}\")),\n    }\n}"
+            }
+          ]
         },
         {
           "name": "parse-ex-args",
@@ -1424,7 +1616,15 @@
           "result": "result<args, string>",
           "signature": "parse-ex-args: func(callback: u32, rest: string, bang: bool) -> result<args, string>",
           "doc": null,
-          "examples": []
+          "examples": [
+            {
+              "id": "project:grammar-callbacks.parse-ex-args",
+              "caption": "Turn an ex-command's raw argument text into typed `args`",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "fn parse_ex_args(_c: u32, rest: String, _bang: bool) -> Result<Args, String> {\n    let rest = rest.trim();\n    Ok(if rest.is_empty() {\n        Args::None\n    } else {\n        Args::String(rest.to_string())\n    })\n}"
+            }
+          ]
         }
       ],
       "types": [],
@@ -1556,7 +1756,15 @@
           "result": "result<_, string>",
           "signature": "can-write-file: func(path: string) -> result<_, string>",
           "doc": "CD.3b: would an `effect.write-to-file` of `path` from this plugin land?\n\nThe same grant test the boundary applies to a returned write, and the\nsame checks the host's applier makes: the path is not a directory, its\ndirectory exists, an existing file is readable UTF-8 and not read-only.\n`ok` when all hold, otherwise `err` naming the first that failed.\n\nFor checking a destination **before** asking the user for anything —\ncapture checks its target when it opens, as emacs's\n`org-capture-set-target-location` does, so a misconfigured target is\nreported before a word is typed rather than at commit. A query: it\nchanges nothing, and a later write can still fail if the file changes\nin between (a failed write stops the rest of its action's effects).",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.can-write-file",
+              "caption": "Check whether a write to a path would land, before committing to it",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let text = match host_services::can_write_file(&path) {\n    Ok(()) => \"writable\".to_string(),\n    Err(e) => format!(\"error: {e}\"),\n};\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text,\n})])"
+            }
+          ]
         },
         {
           "name": "clamp-position",
@@ -1577,7 +1785,15 @@
           "result": "option<position>",
           "signature": "clamp-position: func(buffer: u32, at: position) -> option<position>",
           "doc": "CD.6b: `at`, moved to the nearest position that exists in `buffer`\n**now**; `none` when no buffer has that id.\n\nA line past the end becomes the last line; a byte past its line's end\nbecomes that end, before the newline. Clamping only moves a position\nbackwards, so a range stays ordered. No text crosses.\n\nFor writing back into a buffer the guest last saw some time ago: a\ncapture records where it was started, and by the time it is filed the\ncaller may be shorter. `effect.apply-edit` refuses a position that is\nnot there, and says so only in the host log, so a guest that wants the\nwrite to land clamps first, and a `none` tells it the buffer has closed\nand there is nothing to write into.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.clamp-position",
+              "caption": "Clamp a remembered position into a buffer's current bounds; `none` means the buffer closed",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let text = match host_services::clamp_position(buffer, Position { line, byte }) {\n    Some(p) => format!(\"{}:{}\", p.line, p.byte),\n    None => \"none\".to_string(),\n};\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text,\n})])"
+            }
+          ]
         },
         {
           "name": "delete-file",
@@ -1594,7 +1810,15 @@
           "result": "result<_, string>",
           "signature": "delete-file: func(path: string) -> result<_, string>",
           "doc": "CD.3: delete a file — `read-file`'s peer, for the same reason.\n\nA grammar action runs on the synchronous linker, where a guest's own\n`std::fs::remove_file` goes through `wasmtime-wasi`'s sync shim and\ntakes the plugin down instead of deleting. Discarding a saved capture\ndraft is exactly such an action.\n\nGated on **`fs:write`** — a read grant is not enough — and re-checked\nhost-side, since the host runs with ambient authority. The check\ncanonicalizes the file itself when it exists, so a symlink inside the\ngrant pointing outside it is refused rather than followed. Only regular\nfiles and symlinks are deleted; a directory is an `err`.\n\n**A path with nothing there is `ok`**, as `store-delete` treats a\nretraction that already happened: the caller wanted the file gone, and\nit is. `err` for a denied path, a directory, or an OS failure, each\nnamed.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.delete-file",
+              "caption": "Delete a file from the sync grammar seam, surfacing the host's error text",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let text = match host_services::delete_file(&path) {\n    Ok(()) => \"deleted\".to_string(),\n    Err(e) => format!(\"error: {e}\"),\n};\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text,\n})])"
+            }
+          ]
         },
         {
           "name": "emit-event",
@@ -1615,7 +1839,15 @@
           "result": null,
           "signature": "emit-event: func(name: string, payload: list<u8>)",
           "doc": "Publish a plugin-defined event on the editor's event bus (PH7.8b). `name`\nis the event identifier (typically pre-declared via `register-event`);\n`payload` is opaque MessagePack the plugin owns — the host moves the bytes\nonto the bus (`event::plugin`) and NEVER interprets them. Fire-and-forget:\nthe bus is observation-only (§5.10), so there is no reply. Subscribers\n(native or other plugins) filter by `name` in their handler.",
-          "examples": []
+          "examples": [
+            {
+              "id": "events-guest:host-services.emit-event",
+              "caption": "Emit a typed plugin event on save, its payload MessagePack-encoded by the SDK derive",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// PH7.8b.2/3: on a save, EMIT a plugin-defined event. The SDK derive\n// MessagePack-encodes a typed struct (`SavedEcho`) into the opaque\n// payload; it crosses to the bus verbatim and a consumer sharing the type\n// decodes it (the e2e test). The host never parses the bytes.\nif handler == 1 {\n    let echo = SavedEcho {\n        path: match &ev {\n            Event::DocumentSaved(p) => p.path.clone(),\n            _ => String::new(),\n        },\n    };\n    host_services::emit_event(SavedEcho::NAME, &echo.encode());\n}"
+            }
+          ]
         },
         {
           "name": "excerpt-source",
@@ -1636,7 +1868,15 @@
           "result": "option<source-location>",
           "signature": "excerpt-source: func(buffer: u64, line: u32) -> option<source-location>",
           "doc": "OA.23: where a line of a MULTIBUFFER came from.\n\nA multibuffer composes excerpts of other files, so a guest acting on a\nrow sees composed coordinates and cannot say which file it is looking\nat. The agenda is the case that needs this: rewriting a headline in\nplace propagates through the excerpt, but writing a planning line BELOW\nit targets a line the view does not contain — and `document.path()`\nanswers for the view, which is a synthetic buffer with no path at all.\n\n`none` when `buffer` is not a multibuffer, when `line` falls outside\nevery excerpt (a header or a separator row is not source text), or when\nthe source buffer has no path. All three are ordinary answers rather\nthan errors: a guest asks about the cursor's line and the cursor can be\nanywhere.\n\nA plain buffer answers `none` too, not its own path. The question is\n\"which file does this COMPOSED line come from\", and a guest that wants\nthe current file already has `document.path()`.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.excerpt-source",
+              "caption": "Resolve the multibuffer row under the cursor to its source file and line",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let answer = match host_services::excerpt_source(\n    u64::from(ctx.buffer_id),\n    ctx.cursor.line,\n) {\n    Some(loc) => format!(\"{}@{} in {}\", loc.path, loc.line, loc.buffer),\n    None => \"none\".to_string(),\n};\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\n        \"excerpt-source({},{})={answer}\",\n        ctx.buffer_id, ctx.cursor.line\n    ),\n})])"
+            }
+          ]
         },
         {
           "name": "local-utc-offset-seconds",
@@ -1648,7 +1888,15 @@
           "result": "s32",
           "signature": "local-utc-offset-seconds: func() -> s32",
           "doc": "The host's offset from UTC, in seconds, **at this instant** (OC.4).\nEast of Greenwich is positive: `+05:30` is `19800`, `-08:00` is `-28800`.\n\nA guest cannot work this out. `wasi:clocks` is UTC, and the host builds\neach plugin's `WasiCtxBuilder` with no environment inheritance — so there\nis no `TZ` either, and `SystemTime::now()` in a component is UTC with no\nway to know it. Org writes `CLOCK: [2026-08-28 Fri 16:02]` in **local**\ntime by definition, so without this every clock line, every `%U` / `%T` /\n`%t` capture stamp and the agenda's \"today\" anchor is wrong by the user's\noffset — and near midnight, wrong by a day.\n\n**At this instant**, not a fixed configured number, so DST is simply\ncorrect: the offset is resolved per call against the current time. A\nrejected alternative was an `org.utc-offset` option, which makes the user\nmaintain what the OS already knows and is wrong twice a year.\n\nNot capability-gated. It is a scalar the user's own clock displays, it\nnames no path and reaches no resource, and gating it would mean a plugin\nwith no filesystem grant renders timestamps in the wrong timezone.\n`0` if the platform cannot answer — UTC, which is a legible wrong answer\nrather than a fabricated one.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.local-utc-offset-seconds",
+              "caption": "Read the host's local UTC offset; the guest's own clock (`wasi:clocks`) is UTC-only",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let utc = std::time::SystemTime::now()\n    .duration_since(std::time::UNIX_EPOCH)\n    .map(|d| d.as_secs() as i64)\n    .unwrap_or(0);\nlet offset = host_services::local_utc_offset_seconds();\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\"{offset}:{utc}\"),\n})])"
+            }
+          ]
         },
         {
           "name": "new-uuid",
@@ -1660,7 +1908,15 @@
           "result": "result<string, string>",
           "signature": "new-uuid: func() -> result<string, string>",
           "doc": "A fresh random (v4) UUID, uppercase, in the canonical\n`8-4-4-4-12` hyphenated form (OR.3).\n\n**This is host-side for `read-file`'s exact reason.** `:org-roam-id-create`\nmints an `:ID:` for the headline at point, and that is a *grammar action*:\nit runs on the grammar seam's SYNCHRONOUS linker, where — as `read-file`'s\ndoc comment records — `wasmtime-wasi`'s sync shim blocks on a runtime\ninternally and panics on a thread already inside one. A guest minting its\nown id through `wasi:random` would therefore work perfectly on the async\npicker path and take the plugin down on the grammar path: correct in every\ntest that builds its own context, broken in the editor.\n\n**Uppercase** because the reference corpus is uppercase throughout (macOS\n`uuidgen`, which `org-id` shells out to). A consumer must still compare ids\ncase-INSENSITIVELY regardless — org is not consistent about case across\nplatforms, and a link that fails to resolve over letter case looks exactly\nlike a missing note, which is the worst way for this to fail.\n\nNot capability-gated. It names no path, reaches no resource and reveals\nnothing about the host; gating it would mean a plugin with no filesystem\ngrant cannot give its own records identities.\n\n**`result`, not a degraded value**, and this is the one call here that\nearns it. Its neighbours answer `0` when unwired (`wake-every`,\n`local-utc-offset-seconds`) on the argument that a legible wrong answer\nbeats a fabricated one — but those values are READ. An id is WRITTEN,\ninto the user's own file, as an `:ID:` that outlives the session and\nevery other tool's view of that note. A guest handed an empty string on\nentropy failure would write an empty drawer and nothing would ever say\nso. One `match` at the call site buys that being impossible. `err` only\nwhen the OS entropy source is unavailable, which is to say almost never.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.new-uuid",
+              "caption": "Mint ids from the sync grammar seam, propagating an entropy failure as an err",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let a = host_services::new_uuid()?;\nlet b = host_services::new_uuid()?;\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\"{a}|{b}\"),\n})])"
+            }
+          ]
         },
         {
           "name": "read-file",
@@ -1710,7 +1966,15 @@
           "result": "bool",
           "signature": "register-event: func(name: string, doc: string) -> bool",
           "doc": "Declare a plugin-defined event (PH7.8b). Registers `name` + `doc` into\nthe host's RUNTIME event registry (`event_registry`) under this plugin's\nprovenance (`plugin:<id>`), so the event surfaces in introspection\n(`:describe-event(s)`) and `:`-completion exactly like a built-in one.\nReturns `false` (and registers nothing) if `name` would shadow a BUILT-IN\nevent — a plugin must not hijack a native event's subscribers. Idempotent\nby name: a re-register refreshes the doc (a plugin reload).",
-          "examples": []
+          "examples": [
+            {
+              "id": "events-guest:host-services.register-event",
+              "caption": "Declare a plugin-defined event, taking its name and doc from the SDK's `PluginEvent` derive",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// PH7.8b.2/3: declare a plugin-defined event via the `register-event`\n// host-service, using the SDK-derived `NAME` + `DOC` (the doc-comment).\n// It self-registers into the host's runtime event registry under this\n// plugin's provenance; `on-event` handler 1 emits it on save.\nhost_services::register_event(SavedEcho::NAME, SavedEcho::DOC);"
+            }
+          ]
         },
         {
           "name": "source-line",
@@ -1760,7 +2024,15 @@
           "result": "u64",
           "signature": "store-generation: func() -> u64",
           "doc": "Bumped on every successful mutation, never on a read. A reader compares\nit against what it last built from and rebuilds only when it moved.\n\nThis is what makes one-writer/many-readers work across separate `Store`s\n(see the block comment above): the number is host-side, so a reader\ninstance sees the writer instance's bump without sharing memory with it.\n`0` for a plugin with no store.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.store-generation",
+              "caption": "Read a store key another seam wrote, alongside the store's generation counter",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let value = host_services::store_get(\"multiseam/probe\")\n    .and_then(|b| String::from_utf8(b).ok())\n    .unwrap_or_else(|| \"none\".to_string());\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\"{}:{}\", host_services::store_generation(), value),\n})])"
+            }
+          ]
         },
         {
           "name": "store-get",
@@ -1777,7 +2049,15 @@
           "result": "option<list<u8>>",
           "signature": "store-get: func(key: string) -> option<list<u8>>",
           "doc": "The bytes stored under `key`, or `none` when nothing is stored there.\n\n`none` also covers every degraded case (no grant, no data dir, a store\ndiscarded as corrupt). A reader for whom absence is ordinary — a first\nindex that has not run yet — cannot distinguish them, and does not need\nto: the answer to all four is \"build it\".",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:host-services.store-get",
+              "caption": "Load a plugin-private value, treating an absent key as a fresh install",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "/// Read the remembered list.\n///\n/// A `none` from `store-get` covers every degraded case — no grant, no data\n/// dir, a store discarded as corrupt — and the seam's own doc says a reader for\n/// whom absence is ordinary cannot distinguish them and does not need to. Here\n/// absence genuinely is ordinary: it is a fresh install.\nfn load() -> Vec<String> {\n    host_services::store_get(STORE_KEY)\n        .map(|bytes| projects::decode(&bytes))\n        .unwrap_or_default()\n}"
+            }
+          ]
         },
         {
           "name": "store-keys",
@@ -1794,7 +2074,15 @@
           "result": "list<string>",
           "signature": "store-keys: func(prefix: string) -> list<string>",
           "doc": "Keys carrying `prefix`, sorted. `\"\"` lists everything.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.store-keys",
+              "caption": "Write a key to the plugin store, then list every key under a prefix",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let put = match host_services::store_put(\"multiseam/from-grammar\", b\"g\") {\n    Ok(()) => \"ok\".to_string(),\n    Err(e) => format!(\"err({e})\"),\n};\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\"{put}:{}\", host_services::store_keys(\"multiseam/\").join(\",\")),\n})])"
+            }
+          ]
         },
         {
           "name": "store-put",
@@ -1815,7 +2103,15 @@
           "result": "result<_, string>",
           "signature": "store-put: func(key: string, value: list<u8>) -> result<_, string>",
           "doc": "---------------------------------------------------------------------\nOR.1 — durable, plugin-scoped key/value storage.\n\nScoped to the plugin's own data dir **by manifest id**, so every seam\ninstance of one plugin sees ONE store and two plugins cannot collide.\nThat scoping is the whole point rather than an implementation note:\n`spawn_event_plugin`, `spawn_config_plugin` and\n`instantiate_grammar_plugin` build SEPARATE `wasmtime::Store`s with\nseparate guest memory, so \"keep it in guest state\" means N copies\ndrifting — and the drift is invisible, because each instance stays\ninternally consistent while answering a different question.\n\n**The host stores bytes under strings and never interprets either.**\nKeys are guest-chosen strings, NOT paths: nothing derives a path from a\nkey (the store encodes them into its own layout), so there is no\ntraversal to defend against and no path sanitiser to keep correct.\n\nThese are five functions on `host-services` rather than a `store`\ninterface of their own, and that is deliberate. A component's import set\nis fixed for the whole artefact and must resolve on EVERY linker it is\ninstantiated against — including the grammar seam's sync one. A new\ninterface is a new import each world must declare and both linkers must\nwire, and a miss there does not degrade one seam: it fails the WHOLE\ncomponent at instantiation (OC.2 did exactly this with one `logging`\ncall). `host-services` is already imported by every world that wants a\nstore and already wired on both linkers, so putting them here makes the\nhalf-wiring structurally impossible instead of merely tested for.\n\nCapability-gated on `state:write`. A plugin without the grant gets `err`\nfrom `store-put` / `store-delete`, `none` from `store-get` and an empty\nlist from `store-keys` — the honest \"no store wired\" degradation the\n`config_registry` and `event_emit` seams already use, never a panic.\n---------------------------------------------------------------------\nPersist `value` under `key`. `err` names why — no grant, no data dir,\na value larger than the whole store may hold, or a write that failed.",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:host-services.store-put",
+              "caption": "Persist a plugin-private value and surface the error rather than swallow it",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "/// Persist the list. The `Err` is returned rather than swallowed so a command\n/// can echo it — a `:project-remember` that reports success and stored nothing\n/// is precisely the silent failure this plugin must not have.\nfn save(list: &[String]) -> Result<(), String> {\n    host_services::store_put(STORE_KEY, &projects::encode(list))\n}"
+            }
+          ]
         },
         {
           "name": "unwatch",
@@ -1832,7 +2128,15 @@
           "result": "result<_, string>",
           "signature": "unwatch: func(path: string) -> result<_, string>",
           "doc": "Stop watching `path`. Unwatching a path that is not watched is `ok` — a\ndisarm is idempotent, because the alternative is a guest that must track\nhost state to avoid an error.",
-          "examples": []
+          "examples": [
+            {
+              "id": "events-guest:host-services.unwatch",
+              "caption": "Disarm a directory watch from inside the batch handler that decided to stop",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "if let Ok(target) = std::fs::read_to_string(WATCH_TARGET) {\n    let outcome = match host_services::unwatch(target.trim()) {\n        Ok(()) => \"unwatch:ok\".to_string(),\n        Err(e) => format!(\"unwatch:err({e})\"),\n    };\n    record(&outcome);\n}"
+            }
+          ]
         },
         {
           "name": "view-args",
@@ -1866,7 +2170,15 @@
           "result": "result<list<string>, string>",
           "signature": "walk: func(root: string) -> result<list<string>, string>",
           "doc": "Recursively enumerate files under `root`, returning absolute UTF-8 paths.\nHost-side policy mirrors the native file picker (`walk_files_for_picker`):\na bounded entry count, skipping `.git`/`target`/`node_modules`/`dist`/\n`.cache` and dotfiles. A non-UTF-8 path is skipped (it cannot cross as a\n`string`), never an error — one oddly-named file must not fail the walk.\n\nCapability-gated: `root` must lie within one of the plugin's granted\n`fs:read` (or `fs:write`) prefixes, else `err` — a plugin with no fs\ngrant reaches nothing. The check runs host-side because the host, unlike\nthe guest's WASI view, has ambient authority the grant must bound.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.walk",
+              "caption": "Walk a directory, handling the `err` a plugin without an `fs` grant gets",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let text = match host_services::walk(\"/\") {\n    Ok(paths) => format!(\"walked:{}\", paths.len()),\n    Err(_) => \"refused\".to_string(),\n};"
+            }
+          ]
         },
         {
           "name": "watch",
@@ -1883,7 +2195,15 @@
           "result": "result<_, string>",
           "signature": "watch: func(path: string) -> result<_, string>",
           "doc": "---------------------------------------------------------------------\nOR.2 — a plugin can be told a file changed.\n\nA **watcher, not a save hook**, because the corpus a plugin indexes is\nedited from outside lattice: emacs writes a note, a `git pull` lands\ntwenty, a sync daemon rewrites a directory. A save hook observes none of\nthose, and the symptom — an index missing files you know you wrote —\nreads as data loss rather than as a stale cache.\n\nDelivery is the `files-changed` arm of `event`, through the same\n`events.subscribe` a plugin already uses. It is **addressed**: the host\nroutes a batch only to the plugin that armed the watch, so a plugin\ngranted `fs:read` over one directory never learns what changed under\nanother plugin's. Because delivery rides the plugin's own event actor,\nit reaches the guest on that actor's task — no keystroke required, which\nis the failure mode (\"it works, but only after I hit something\") this\nseam is most likely to have.\n\nGated on the same `fs:read` (or `fs:write`) grant `walk` and `read-file`\ncheck — a watch reveals filesystem activity, so it is the same\nauthorization question, answered by the same line.\n---------------------------------------------------------------------\nWatch `path` (a directory, recursively) for changes. Bursts are\ncoalesced host-side behind a quiet window, so a `git pull` rewriting two\nhundred files delivers one event carrying two hundred paths rather than\ntwo hundred events.\n\nWatching the same path twice is `ok` and arms nothing new. The watch\nlives as long as this plugin instance: it is torn down when the instance\nis unloaded or quarantined, with no bookkeeping on the guest's part.\n\n`err` names which of the four refusals happened — outside the grant, no\nevent bus wired on this seam, an unwatchable path, or a watcher the\nplatform refused to create. A plugin whose watch fails should fall back\nto indexing on boot plus an explicit resync command, which is degraded\nand honest rather than appearing to work and going stale.",
-          "examples": []
+          "examples": [
+            {
+              "id": "events-guest:host-services.watch",
+              "caption": "Subscribe to `files-changed`, then watch a directory and record whether the grant allowed it",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "events::subscribe(&kind_filter(EventKind::FilesChanged), 6);\nlet outcome = match host_services::watch(target) {\n    Ok(()) => \"watch:ok\".to_string(),\n    Err(e) => format!(\"watch:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
         }
       ],
       "types": [
@@ -1950,7 +2270,15 @@
           "result": "bool",
           "signature": "register-binding: func(binding-mode: binding-mode, chord: string, command: string) -> bool",
           "doc": "Bind `chord` in `binding-mode` to an EXISTING command named `command`\n(resolved against the `CommandRegistry` at registration), landing in\n`KeymapLayer::User`. `chord` is a vim-notation chord sequence (`<leader>f`,\n`<C-s>`, `gd`). Returns `false` (binding nothing) if the chord is\nunparseable, the command is unregistered, or the User-layer capability was\nwithheld — a plugin never silently mis-binds. The keystroke path is\nunaffected until the binding lands.",
-          "examples": []
+          "examples": [
+            {
+              "id": "keymap-guest:keymap.register-binding",
+              "caption": "Bind a Normal-mode chord to a command; an unknown command binds nothing",
+              "source": "crates/lattice-plugin-host/tests/fixtures/keymap-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// A well-formed binding to a real command — lands in KeymapLayer::User.\nlet _ok = keymap::register_binding(BindingMode::Normal, \"<C-s>\", \"ex:write\");\n// An unregistered command — the host binds nothing and returns false\n// (graceful degradation, no trap).\nlet _skipped = keymap::register_binding(BindingMode::Normal, \"gq\", \"no-such-command\");"
+            }
+          ]
         }
       ],
       "types": [
@@ -2023,7 +2351,15 @@
           "result": "result<_, string>",
           "signature": "register-language: func(spec: language-spec) -> result<_, string>",
           "doc": "Register one language.\n\n`err` when the grammar fails to load or a query fails to compile,\ncarrying a reason that names the language and the offending query.\nNever a trap, and never a half-registered language: a rejected\nlanguage costs itself and nothing else, so the plugin's other\ncontributions — including its other languages — still register and the\nload still succeeds.",
-          "examples": []
+          "examples": [
+            {
+              "id": "language-guest:language.register-language",
+              "caption": "Register a language whose grammar wasm the plugin embeds at build time (`spec` is the `language-spec` example)",
+              "source": "crates/lattice-plugin-host/tests/fixtures/language-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// The real one: registered as `lg3c-md`, loaded from the grammar's\n// own `tree_sitter_markdown` export via `grammar-name`.\nlet _ = register_language(&spec(\"lg3c-md\", &[\"lg3cmd\"], GRAMMAR.to_vec()));"
+            }
+          ]
         }
       ],
       "types": [
@@ -2108,7 +2444,15 @@
               "doc": "H.2: what to hide when rendering this language, empty for\nmost languages.\n\n**A refused rule is dropped, not fatal** — deliberately unlike a\nmalformed query above, which rejects the whole language. The\nasymmetry is the proportionality: a broken `folds.scm` means the\nlanguage cannot fold at all, and silence there is\nindistinguishable from the feature not existing; a broken conceal\nrule means one pattern does not hide, the others are unaffected,\nand the language is otherwise entirely usable. Losing a language\nover a typo in a cosmetic regex would cost far more than it\nprotects."
             }
           ],
-          "examples": []
+          "examples": [
+            {
+              "id": "language-guest:language.language-spec",
+              "caption": "Describe a language: grammar wasm built by the plugin, its extensions and a highlights query",
+              "source": "crates/lattice-plugin-host/tests/fixtures/language-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn spec(name: &str, exts: &[&str], grammar: Vec<u8>) -> LanguageSpec {\n    LanguageSpec {\n        name: name.to_string(),\n        // The fixture's grammar exports `tree_sitter_markdown`, but `markdown`\n        // is a BUNDLED language name and is refused. Splitting the two is\n        // exactly what `grammar-name` is for, and the same split lattice's own\n        // `sql`-on-`sequel` needs.\n        grammar_name: Some(\"markdown\".to_string()),\n        extensions: exts.iter().map(|s| (*s).to_string()).collect(),\n        grammar,\n        highlights: Some(HIGHLIGHTS.to_string()),\n        folds: None,\n        injections: None,\n        indents: None,\n        textobjects: None,\n        conceal_rules: vec![],\n    }\n}"
+            }
+          ]
         }
       ],
       "uses": []
@@ -2143,7 +2487,15 @@
           "result": null,
           "signature": "log: func(level: level, context: string, message: string)",
           "doc": "Emit one log line. `level` gates it against the plugin's trace verbosity\n(the same per-plugin gate the boundary trace uses); `context` is a\nfree-form category; `message` is the line. Dropped silently when the\nplugin's gate is below `level` — exactly like a boundary-trace record.",
-          "examples": []
+          "examples": [
+            {
+              "id": "logging-guest:logging.log",
+              "caption": "Log at several levels, each with a context string the host renders as the category",
+              "source": "crates/lattice-plugin-host/tests/fixtures/logging-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// Distinct levels + contexts so the host test can assert routing, level\n// mapping, and the context→category rendering. `info`/`warn` are kept at\n// the default gate; `debug`/`trace` only when the plugin is raised.\nlogging::log(Level::Info, \"boot\", \"logging guest activated\");\nlogging::log(Level::Warn, \"index\", \"reindex found 2 stale entries\");\nlogging::log(Level::Debug, \"detail\", \"walked 40 files in 3ms\");\nlogging::log(Level::Error, \"\", \"a context-less error line\");"
+            }
+          ]
         }
       ],
       "types": [
@@ -2215,7 +2567,15 @@
           "result": "result<list<media-block>, string>",
           "signature": "media-blocks: func(ctx: decoration-context, text: string) -> result<list<media-block>, string>",
           "doc": "Produce the media blocks for a buffer.\n\n`ctx` is the owned projection (buffer id / path / line count); `text` is\nthe buffer's contents.\n\n**Text, not a `borrow<document>` handle**, and that is the opposite of\nwhat `grammar.apply-action` does — deliberately, because the access\npattern is the opposite. An action reads a handful of lines near the\ncursor, where a handle costs a few crossings and a bulk copy would waste\nthe rest. A media scan reads EVERY line, so a handle costs one crossing\nper line — ten thousand for a large org file — where one copy costs one.\n\nThe copy is affordable because this is a producer: it runs on open and\non edit, not per frame.\n\nAsync — a produce call suspends the guest, never the render path. An\n`err` is logged and the buffer keeps its PRIOR blocks for this trigger\nrather than losing them, so a transient failure mid-edit does not make\nevery image in the document blink out.",
-          "examples": []
+          "examples": [
+            {
+              "id": "media-guest:media.media-blocks",
+              "caption": "Anchor image blocks to buffer lines; relative paths resolve beside the buffer",
+              "source": "crates/lattice-plugin-host/tests/fixtures/media-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn media_blocks(ctx: DecorationContext, _text: String) -> Result<Vec<MediaBlock>, String> {\n    if ctx.line_count == 0 {\n        // Graceful: nothing to scan → a typed guest err, not a trap.\n        return Err(\"media-guest: empty buffer\".to_string());\n    }\n    Ok(vec![\n        MediaBlock {\n            anchor_line: 1,\n            // Relative — the host resolves it against the buffer's own\n            // directory, which is what `[[file:diagram.png]]` means.\n            path: \"img/diagram.png\".to_string(),\n            alt: Some(\"a wiring diagram\".to_string()),\n            fit: MediaFit::Contain,\n        },\n        MediaBlock {\n            anchor_line: ctx.line_count - 1,\n            path: \"/tmp/absolute.png\".to_string(),\n            // No alt — the host falls back to the file name.\n            alt: None,\n            fit: MediaFit::Width,\n        },\n    ])\n}"
+            }
+          ]
         }
       ],
       "types": [],
@@ -2271,7 +2631,15 @@
           "result": null,
           "signature": "enable-mode: func(id: string)",
           "doc": "Enable a registered minor mode globally (CI.4) — the user-enablement path\n(config-and-init.md §6). A plugin minor mode is registered\navailable-but-off; an `init.rs` `on-plugin-loaded` handler calls this to\nturn it on. The host publishes a `mode-enablement-requested` signal and\nthe Editor flips the enablement + re-activates open buffers (this call is\nthe request, not the apply — the guest can't reach the activator). A\nno-bus / unknown-id case is a `warn` + drop (graceful), never a trap.",
-          "examples": []
+          "examples": [
+            {
+              "id": "init-guest:modes.enable-mode",
+              "caption": "Enable a plugin's mode and set its option once that plugin has loaded",
+              "source": "crates/lattice-plugin-host/tests/fixtures/init-guest/src/lib.rs",
+              "language": "rust",
+              "code": "if let Event::PluginLoaded(p) = ev {\n    // Deferred config: enable auto-pair-mode the moment auto-pair loads.\n    if p.name == \"auto-pair\" {\n        modes::enable_mode(\"auto-pair-mode\");\n        // …and SET one of its options, which is the other half of the\n        // documented deferred shape and the half that was never driven.\n        // `enable-mode` reaches the bus; `set-option` reaches the config\n        // registry, and the events store did not carry one — so this\n        // call warned and no-oped while the test above still passed.\n        // Full name, not the short one: `set-option` prefixes with the\n        // CALLING plugin's id, so `style` would resolve as `init.style`.\n        config::set_option(\"auto-pair.style\", \"manual\");\n    }\n}"
+            }
+          ]
         },
         {
           "name": "register-mode",
@@ -2593,7 +2961,15 @@
           "result": null,
           "signature": "register-multibuffer-view: func(spec: multibuffer-view-spec)",
           "doc": "Declare one view. Called from the guest's `register-multibuffer-views`\nexport. The host registers a provider-view opener under `spec.id`, so\n`open-provider-view` and the view's `gr` both reach it.\n\nAn id already claimed by a NATIVE provider is refused with a warning\nnaming both, and this guest's other views still register — one bad name\nmust not cost a plugin its whole contribution.",
-          "examples": []
+          "examples": [
+            {
+              "id": "view-guest:multibuffer-view-registry.register-multibuffer-view",
+              "caption": "Register a pull view and a scan view from the same component",
+              "source": "crates/lattice-plugin-host/tests/fixtures/view-guest/src/lib.rs",
+              "language": "rust",
+              "code": "register_multibuffer_view(&MultibufferViewSpec {\n    id: PULL_VIEW.to_string(),\n    doc: \"Fixture pull view (MV.1 substrate validation)\".to_string(),\n    buffer_name: \"*fixture-pull*\".to_string(),\n    view_mode: Some(\"fixture-view-mode\".to_string()),\n    reuse: true,\n    input: MultibufferViewInput::Pull,\n});\n// A second view, declared by the SAME component — the property the\n// registry shape exists for.\nregister_multibuffer_view(&MultibufferViewSpec {\n    id: SCAN_VIEW.to_string(),\n    doc: \"Fixture scan view\".to_string(),\n    buffer_name: \"*fixture-scan*\".to_string(),\n    view_mode: None,\n    reuse: false,\n    input: MultibufferViewInput::Scan,\n});"
+            }
+          ]
         }
       ],
       "types": [],
@@ -2631,7 +3007,15 @@
           "result": "result<multibuffer-view-result, string>",
           "signature": "build: func(view: string, args: list<string>) -> result<multibuffer-view-result, string>",
           "doc": "Produce a `pull` view's excerpts, **in final order**.\n\n`view` names which of this guest's registered views is being built; one\nactor and one guest instance serve them all, as with `picker-source`.\n`args` are the trigger's arguments verbatim — from the ex-command, the\ntransient row, or the `gr` that refreshed the view.\n\n## Why the guest orders, when a scan source only supplies a sort key\n\nThe asymmetry is deliberate and it turns on **who can see the whole set\nat ordering time**. A scan guest is handed one file and cannot know\nwhere its rows land once every other file's rows interleave, so only the\nhost can sort and the guest supplies an `s64` key. A pull guest computes\nthe entire set in this one call, so requiring a key would make the host\nre-sort what is already ordered — and would force orderings that are not\nnumeric (by title, by file-then-line) through an integer that cannot\nexpress them.\n\nAn `err` **declines** the view with the guest's own message rather than\nopening an empty one. Declining is a first-class outcome: an empty view\nleaves the user to guess whether it is broken or genuinely empty.",
-          "examples": []
+          "examples": [
+            {
+              "id": "view-guest:multibuffer-view-source.build",
+              "caption": "Build a view's excerpts, or decline it with a typed error",
+              "source": "crates/lattice-plugin-host/tests/fixtures/view-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn build(view: String, args: Vec<String>) -> Result<MultibufferViewResult, String> {\n    if args.iter().any(|a| a == \"fail\") {\n        return Err(format!(\"fixture view `{view}` declined\"));\n    }\n    Ok(MultibufferViewResult {\n        excerpts: vec![\n            MultibufferViewExcerpt {\n                path: \"a.txt\".to_string(),\n                start_line: 0,\n                end_line: 1,\n                // Echoes the view name, so the host can assert WHICH view\n                // was asked for crossed the boundary.\n                header: format!(\"view:{view}\"),\n                match_count: Some(2),\n            },\n            MultibufferViewExcerpt {\n                path: \"b.txt\".to_string(),\n                start_line: 2,\n                end_line: 2,\n                // Echoes the args. Empty header on a real grouped view\n                // means \"same group as the row above\"; here it is just the\n                // second row's payload.\n                header: format!(\"args:{}\", args.join(\",\")),\n                match_count: None,\n            },\n        ],\n        summary: format!(\"{} excerpts\", 2),\n    })\n}"
+            }
+          ]
         }
       ],
       "types": [],
@@ -2665,7 +3049,15 @@
           "result": null,
           "signature": "register-picker-source: func(spec: picker-source-spec)",
           "doc": "Declare one picker source. Called from the guest's\n`register-picker-sources` export; the host registers each into the same\n`PickerRegistry` a first-party source lives in.\n\nA second registration under an id this plugin already used replaces it —\na plugin reload, not a collision. Two DIFFERENT plugins claiming one id\nis resolved the way the registry has always resolved it: last write\nwins, and the teardown token unregisters by id.",
-          "examples": []
+          "examples": [
+            {
+              "id": "picker-guest:picker-registry.register-picker-source",
+              "caption": "Register two picker sources from one component, each with a full spec",
+              "source": "crates/lattice-plugin-host/tests/fixtures/picker-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn register_picker_sources() {\n    register_picker_source(&PickerSourceSpec {\n        id: FIXTURE.to_string(),\n        doc: \"PH7.4c.1b fixture picker source\".to_string(),\n        args_schema: Vec::new(),\n        args_hint: \"[fail]\".to_string(),\n        live: false,\n        // OR.5: the source declares that it can create what the query\n        // names. `%s` is replaced by the query when the row renders.\n        create_label: Some(\"Create fixture: %s\".to_string()),\n        // PP.2: `true` on purpose. The field's failure mode is a boundary\n        // arm that writes the default, which a fixture declaring `false`\n        // cannot tell apart from one that carries the value — the hole\n        // PC.11's `fill-action` shipped through.\n        rooted: true,\n        // PD.1, same reasoning as `rooted` above and the same hole it\n        // guards: a boundary arm writing `None` is indistinguishable from\n        // one that carried a `None`, so this source names a command and\n        // its sibling names none.\n        delete_command: Some(\"fixture-forget\".to_string()),\n    });\n    register_picker_source(&PickerSourceSpec {\n        id: SECOND.to_string(),\n        doc: \"OR.5b: a SECOND source from the same component\".to_string(),\n        args_schema: Vec::new(),\n        args_hint: String::new(),\n        live: false,\n        create_label: None,\n        // …and `false` here, so the pair proves the value TRAVELS rather\n        // than that the host defaults everything to the same answer.\n        rooted: false,\n        delete_command: None,\n    });\n}"
+            }
+          ]
         }
       ],
       "types": [],
@@ -2707,7 +3099,15 @@
           "result": "result<picker-accept-outcome, string>",
           "signature": "accept: func(source: string, ctx: picker-context, routing: routing-payload) -> result<picker-accept-outcome, string>",
           "doc": "Translate the user's chosen `routing` token into a typed\n`PickerAcceptOutcome` the host applies. A mismatch is an `err` (echoed).",
-          "examples": []
+          "examples": [
+            {
+              "id": "picker-guest:picker-source.accept",
+              "caption": "Map the routing token a row carried to the outcome the host performs",
+              "source": "crates/lattice-plugin-host/tests/fixtures/picker-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn accept(\n    source: String,\n    _ctx: PickerContext,\n    routing: RoutingPayload,\n) -> Result<PickerAcceptOutcome, String> {\n    // OR.5b: the second source's accept is distinguishable too — otherwise a\n    // test could not tell \"routed to the right source\" from \"there is only\n    // one body\".\n    if source == SECOND {\n        return Ok(PickerAcceptOutcome::OpenFile(\"/second/accepted\".to_string()));\n    }\n    match routing {\n        RoutingPayload::OpenFile(p) => Ok(PickerAcceptOutcome::OpenFile(p)),\n        RoutingPayload::Buffer(id) => Ok(PickerAcceptOutcome::SwitchBuffer(id)),\n        // OR.5: the create row. The query crosses VERBATIM — the host must\n        // not have trimmed, lowercased or otherwise had an opinion about a\n        // namespace it does not own — so the fixture echoes it back inside\n        // a path the test can compare exactly.\n        RoutingPayload::Create(query) => {\n            Ok(PickerAcceptOutcome::OpenFile(format!(\"/created/{query}\")))\n        }\n        _ => Err(\"fixture: unexpected routing token\".to_string()),\n    }\n}"
+            }
+          ]
         },
         {
           "name": "init",
@@ -2732,7 +3132,15 @@
           "result": "result<list<candidate-pair>, string>",
           "signature": "init: func(source: string, ctx: picker-context, args: list<string>) -> result<list<candidate-pair>, string>",
           "doc": "Build the candidate set for `:picker <id> <args>`. `ctx` is the owned\n`PickerContext` projection (§4.2). Returns the `(candidate, routing)`\npairs; an `err` string is echoed and the picker stays closed. (One-shot\nlist; the incremental `Stream` shape — the deferred §15 streaming\nquestion — lands with a live source.)\n\nNB: the active buffer's bulk **text** rides a `borrow<document>` handle\n(PH7.3c `DocumentResource`) that a text-reading source (`:picker lines`)\nneeds — deferred here (the `fuzzy-finder`/`files` exit reads no buffer\ntext, only walks the fs via `host-services`). Passing a host-owned\nresource into a guest *export* has a bindgen-modeling subtlety to resolve;\ntracked as a focused follow-up (see the slice plan).\n\n`source` names WHICH of this plugin's registered sources is being built\n— one component may register several (see `picker-registry`), and they\nshare one actor and one guest instance.",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:picker-source.init",
+              "caption": "Build the candidate rows for each picker source this component registered",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "/// `source` is checked rather than assumed: one component may register\n/// several sources and they share one actor, so a source id this plugin\n/// never registered is untrusted input, not a case to fall through.\nfn init(\n    source: String,\n    ctx: PickerContext,\n    _args: Vec<String>,\n) -> Result<Vec<CandidatePair>, String> {\n    let pairs = match source.as_str() {\n        picker::PROJECTS_PICKER => picker::init(load())?,\n        // PB.1: the root rides the CONTEXT, not the args — PC.1's rule,\n        // and the same reason: `:project-buffers` opened from the\n        // switch-commands menu names a project other than the one the\n        // buffer is in, and `Effect::OpenPicker { root }` is the seam that\n        // carries it. Reading `args[0]` would work for this source and\n        // then be a second convention for the next one.\n        picker::PROJECT_BUFFERS_PICKER => picker::buffers_init(\n            &ctx.workspace_root,\n            ctx.buffers,\n            ctx.active_buffer.buffer_id,\n        ),\n        other => return Err(format!(\"project: no picker source `{other}`\")),\n    };\n    Ok(pairs\n        .into_iter()\n        .map(|(candidate, routing)| CandidatePair { candidate, routing })\n        .collect())\n}"
+            }
+          ]
         }
       ],
       "types": [
@@ -2801,7 +3209,15 @@
           "result": "bool",
           "signature": "require: func(spec: plugin-spec) -> bool",
           "doc": "Declare a plugin. Records the spec; the host resolves, builds and loads\nit after the calling export returns.\n\nReturns `false` when the spec is rejected outright — today, an unsafe\n`name`. A rejection is a logged skip, never a trap: one bad entry in an\n`init.rs` must not take the whole config down.",
-          "examples": []
+          "examples": [
+            {
+              "id": "plugin-manager-guest:plugin-manager.require",
+              "caption": "Declare a pinned git plugin and a prebuilt-wasm plugin from `register-plugins`",
+              "source": "crates/lattice-plugin-host/tests/fixtures/plugin-manager-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// A pinned git source.\nplugin_manager::require(&PluginSpec {\n    name: \"git_demo\".to_string(),\n    source: PluginSource::Git(GitSource {\n        url: \"https://example.invalid/demo.git\".to_string(),\n        rev: Some(\"abc123\".to_string()),\n    }),\n    enable_mode: None,\n    pinned: true,\n});\n\n// A prebuilt download — no build, no toolchain.\nplugin_manager::require(&PluginSpec {\n    name: \"prebuilt-demo\".to_string(),\n    source: PluginSource::Prebuilt(\"https://example.invalid/d.wasm\".to_string()),\n    enable_mode: None,\n    pinned: false,\n});"
+            }
+          ]
         }
       ],
       "types": [
@@ -2902,7 +3318,15 @@
           "result": "option<project-info>",
           "signature": "root-for-buffer: func(buffer: u64) -> option<project-info>",
           "doc": "The project containing `buffer`.\n\n`none` means **no such buffer** — an id the host does not know, which is\nuntrusted input from the guest rather than a real answer. A buffer that\nexists always resolves: one with no path on disk (a scratch buffer, a\nterminal) reports the working directory with `kind = pwd`.",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:project.root-for-buffer",
+              "caption": "Resolve the project root for a buffer, ignoring the working-directory fallback",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "/// The project a buffer belongs to, or `None` when there is not one.\n///\n/// `kind = pwd` means the editor's working directory standing in — the seam\n/// documents that a guest wanting to say \"not in a project\" checks for this\n/// rather than for an absent root. A list of *projects* that accumulated the cwd\n/// would put `~` in front of the user forever, so this is where that is refused.\nfn project_of_buffer(buffer: u64) -> Option<String> {\n    let info = project::root_for_buffer(buffer)?;\n    (info.kind != ProjectKind::Pwd).then_some(info.root)\n}"
+            }
+          ]
         },
         {
           "name": "root-for-path",
@@ -2919,7 +3343,15 @@
           "result": "option<project-info>",
           "signature": "root-for-path: func(path: string) -> option<project-info>",
           "doc": "The project containing `path`, which may name a file or a directory and\nneed not exist yet.\n\n`none` only when the host has no resolver wired, which a real editor\nalways does; a relative path resolves against the editor's working\ndirectory, never the plugin's.",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:project.root-for-path",
+              "caption": "Resolve the project containing a path the user typed",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "/// The project containing a path the user typed.\nfn project_of_path(path: &str) -> Option<String> {\n    let info = project::root_for_path(path)?;\n    (info.kind != ProjectKind::Pwd).then_some(info.root)\n}"
+            }
+          ]
         }
       ],
       "types": [
@@ -3128,7 +3560,15 @@
           "result": "result<_, string>",
           "signature": "define-sign: func(name: string, spec: sign-spec) -> result<_, string>",
           "doc": "Declare a sign.\n\n**Auto-namespaced**, like `theme.register-element` and\n`config.register-option`: `name` is prefixed with the plugin's id, so a\nplugin with id `debugger` declaring `breakpoint` contributes\n`debugger.breakpoint`. The host owns the namespace, so plugins cannot\ncollide with each other or shadow a native producer's sign.\n\nIdempotent by name (the native registry's contract): redefining KEEPS\nthe id, so a plugin reloading with a new glyph does not orphan\nplacements already in flight — they simply start painting the new\nglyph, which is what \"redefine\" should mean.\n\n`err` when the spec is malformed — never a trap, and never a\npartially-registered sign.",
-          "examples": []
+          "examples": [
+            {
+              "id": "sign-guest:signs.define-sign",
+              "caption": "Define a named sign with a Nerd Font glyph, a same-width fallback and a priority",
+              "source": "crates/lattice-plugin-host/tests/fixtures/sign-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let _ = define_sign(\n    \"breakpoint\",\n    &SignSpec {\n        text: \"\\u{f111}\".to_string(),\n        fallback: \"●\".to_string(),\n        theme_element: \"sign-guest.breakpoint\".to_string(),\n        priority: 20,\n        column: String::new(),\n    },\n);"
+            }
+          ]
         }
       ],
       "types": [
@@ -3199,7 +3639,15 @@
           "result": "result<_, string>",
           "signature": "register-element: func(name: string, doc: string, default: style-spec) -> result<_, string>",
           "doc": "Declare a theme element with its default style.\n\n**Auto-namespaced**, like `config.register-option`: `name` is prefixed\nwith the plugin's id, so a plugin with id `treesitter-context`\nregistering `background` contributes `treesitter-context.background`.\nThe host owns the namespace, so plugins cannot collide with each other\nor shadow a builtin.\n\nIdempotent by name (the native registry's contract): re-registering\nreturns the existing id and leaves its default unchanged, so a reload\nis free. `err` when the spec is malformed — never a trap, and never a\npartially-registered element.",
-          "examples": []
+          "examples": [
+            {
+              "id": "theme-guest:theme.register-element",
+              "caption": "Register themeable elements: a palette colour, an inheriting style, a literal RGB",
+              "source": "crates/lattice-plugin-host/tests/fixtures/theme-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let _ = register_element(\n    \"background\",\n    \"The context strip backdrop.\",\n    &StyleSpec {\n        inherit: None,\n        fg: Some(ColorRef::Palette(\"overlay\".to_string())),\n        bg: None,\n        modifiers: no_modifiers(),\n        scale: None,\n    },\n);\nlet _ = register_element(\n    \"active\",\n    \"The innermost context row.\",\n    &StyleSpec {\n        inherit: Some(\"treesitter-context.background\".to_string()),\n        fg: None,\n        bg: None,\n        modifiers: ModifierSet {\n            bold: Some(true),\n            italic: Some(false),\n            underline: None,\n            dim: None,\n            reverse: None,\n        },\n        scale: None,\n    },\n);\nlet _ = register_element(\n    \"separator\",\n    \"The rule under the context strip.\",\n    &StyleSpec {\n        inherit: None,\n        fg: Some(ColorRef::LiteralRgb(0x11_22_33)),\n        bg: Some(ColorRef::Default),\n        modifiers: no_modifiers(),\n        scale: None,\n    },\n);"
+            }
+          ]
         },
         {
           "name": "set-element-override",
@@ -3341,7 +3789,15 @@
           "result": "result<transient-spec, string>",
           "signature": "build: func(ctx: transient-context) -> result<transient-spec, string>",
           "doc": "Build the menu for the place it was opened from.\n\nAn `err` is echoed with the plugin named and the menu does NOT open —\nthe `picker-source::init` rule, and for the same reason: a menu that\nopens empty is worse than one that says why it did not.",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:transient-source.build",
+              "caption": "Build a transient menu from config, with its subject passed in `ctx.args`",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "/// One row per configured command, each carrying the chosen root.\n///\n/// The root rides `ctx.args` (TR.3a) rather than guest memory, and that is\n/// the whole reason TR.3a exists: guest state is never cleared by `<Esc>`,\n/// so a remembered subject would leak into the next open — the menu would\n/// act on the project you looked at last rather than the one in front of\n/// you.\nfn build(ctx: TransientContext) -> Result<TransientSpec, String> {\n    let Args::String(root) = &ctx.args else {\n        return Err(\"project: the switch menu was opened without a project\".to_string());\n    };\n    let root = root.trim();\n    if root.is_empty() {\n        return Err(\"project: the switch menu was opened without a project\".to_string());\n    }\n    let mut items: Vec<TransientItem> = switch_commands()\n        .into_iter()\n        .map(|row| TransientItem {\n            key: vec![row.key],\n            label: row.label,\n            description: String::new(),\n            kind: TransientItemKind::Action(TransientAction {\n                command: row.command,\n                args: Args::String(root.to_string()),\n            }),\n        })\n        .collect();\n    // A menu with no way out is a trap.\n    items.push(TransientItem {\n        key: vec![\"q\".to_string()],\n        label: \"quit\".to_string(),\n        description: String::new(),\n        kind: TransientItemKind::Dismiss,\n    });\n    Ok(TransientSpec {\n        // The project is NAMED in the title. The whole point of this menu\n        // is that you are acting on somewhere you are not standing, so a\n        // title that did not say which project would be the one piece of\n        // information the user most needs.\n        title: format!(\"Project: {}\", projects::basename(root)),\n        groups: vec![TransientGroup {\n            label: String::new(),\n            items,\n        }],\n        footer: Some(root.to_string()),\n    })\n}"
+            }
+          ]
         },
         {
           "name": "id",
@@ -3353,7 +3809,15 @@
           "result": "string",
           "signature": "id: func() -> string",
           "doc": "The menu's name, as `Effect::OpenTransient` names it. Called once, at\nload, to key the registry entry.\n\nGuest-controlled, so it is a *name* and nothing more: it grants no\nauthority, and a plugin that picks a name another source already holds\nsimply overwrites it (`register`'s last-writer-wins, as for pickers).",
-          "examples": []
+          "examples": [
+            {
+              "id": "project:transient-source.id",
+              "caption": "Name the transient menu the host registers and `open-transient` addresses",
+              "source": "plugins/project/src/lib.rs",
+              "language": "rust",
+              "code": "fn id() -> String {\n    SWITCH_TRANSIENT.to_string()\n}"
+            }
+          ]
         }
       ],
       "types": [],
@@ -3392,7 +3856,15 @@
           "result": "range",
           "signature": "byte-range: func() -> range",
           "doc": "The node's `[start, end)` span as byte-columns per line (matching the\nnative structural objects' `ProtoRange`, N.1.4c).",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:tree-sitter.node.byte-range",
+              "caption": "Answer a text object with a tree node's `byte-range`, erring when there is no tree",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn apply_text_object(\n    c: u32,\n    _ctx: TextObjectContext,\n    _doc: &Document,\n    tree: Option<&TreeSnapshot>,\n) -> Result<Range, String> {\n    match c {\n        // OT.1: the structural peer — org's `ir` / `ar` resolve a subtree,\n        // which IS a tree node rather than a star count.\n        21 => {\n            let tree = tree.ok_or_else(|| \"multiseam: text object got no tree\".to_string())?;\n            Ok(tree.root().byte_range())\n        }\n        other => Err(format!(\"multiseam: unknown text-object callback {other}\")),\n    }\n}"
+            }
+          ]
         },
         {
           "name": "[method]node.child-by-field",
@@ -3464,7 +3936,15 @@
           "result": "string",
           "signature": "kind: func() -> string",
           "doc": "The node's grammar kind (e.g. `\"function_item\"`).",
-          "examples": []
+          "examples": [
+            {
+              "id": "agenda-guest:tree-sitter.node.kind",
+              "caption": "Report the root node's kind when a scan is handed a parse tree beside the text",
+              "source": "crates/lattice-plugin-host/tests/fixtures/agenda-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// OT.3: text is always here; the tree comes beside it when the file's\n// extension resolves to a registered language. This fixture reports the\n// ROOT KIND when it got a tree — something no text scan could produce —\n// so the host test can tell the two apart.\nif let Some(snapshot) = tree {\n    let root = snapshot.root();\n    return Ok(ScanResult {\n        entries: vec![Entry {\n            line: 0,\n            end_line: 0,\n            group: \"tree\".to_string(),\n            label: format!(\"tree:{}:{}\", root.kind(), root.named_child_count()),\n            sort_key: 0,\n            spans: Vec::new(),\n            // The tree path says nothing about annotations; `none` here\n            // keeps this fixture's two branches distinguishable.\n            annotation: None,\n            emphasis: false,\n        }],\n        clock,\n    });\n}"
+            }
+          ]
         },
         {
           "name": "[method]node.named-child",
@@ -3485,7 +3965,15 @@
           "result": "option<node>",
           "signature": "named-child: func(index: u32) -> option<node>",
           "doc": "The `index`-th NAMED child (0-based), or `none` past the end.",
-          "examples": []
+          "examples": [
+            {
+              "id": "context-guest:tree-sitter.node.named-child",
+              "caption": "Derive one context scope per named child of the root, spanning that child's lines",
+              "source": "crates/lattice-plugin-host/tests/fixtures/context-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// Walk the tree for real. Each named child of the root becomes a scope\n// spanning its own lines, with its first line as the header.\nlet root = tree.root();\nlet count = root.named_child_count();\nlet mut scopes = Vec::new();\nfor i in 0..count {\n    let Some(child) = root.named_child(i) else {\n        continue;\n    };\n    let r = child.byte_range();\n    scopes.push(ContextScope {\n        scope_start: r.start.line,\n        scope_end: r.end.line,\n        header_start: r.start.line,\n        header_end: r.start.line,\n    });\n}\nOk(scopes)"
+            }
+          ]
         },
         {
           "name": "[method]node.named-child-count",
@@ -3621,7 +4109,15 @@
           "result": "bool",
           "signature": "goto-first-named-child: func() -> bool",
           "doc": "Move to the first NAMED child; `false` (and no move) if there is none.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:tree-sitter.tree-cursor.goto-first-named-child",
+              "caption": "Walk the tree with a cursor: descend to the first named child and read its kind",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let tree = tree.ok_or(\"multiseam: no tree snapshot\")?;\nlet cursor = tree.root().walk();\nlet moved = cursor.goto_first_named_child();\nlet kind = cursor.current_node().kind();\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\"{moved}:{kind}\"),\n})])"
+            }
+          ]
         },
         {
           "name": "[method]tree-cursor.goto-next-named-sibling",
@@ -3697,7 +4193,15 @@
           "result": "result<query, string>",
           "signature": "compile-query: func(source: string) -> result<query, string>",
           "doc": "TS.2: compile a tree-sitter query (S-expression) against THIS\nsnapshot's grammar. `err` (with the tree-sitter message) on a\nmalformed query. The returned `query` is reusable across snapshots of\nthe same language — compile once, run many.",
-          "examples": []
+          "examples": [
+            {
+              "id": "treesitter-context:tree-sitter.tree-snapshot.compile-query",
+              "caption": "Compile a per-language query against the snapshot's grammar",
+              "source": "plugins/treesitter-context/src/lib.rs",
+              "language": "rust",
+              "code": "let Some(source) = query_for(&language) else {\n    // No query for this grammar. Not an error — the strip simply has\n    // nothing to show, and the host caches that as \"no scopes\".\n    return Ok(Vec::new());\n};\n// Compiled per call rather than cached: the guest has no per-language\n// cache slot that survives a call, and this runs once per REPARSE (not per\n// keystroke, scroll, or frame), so the cost sits far off every hot path.\n// A cache would be the right move only if the producer were re-driven more\n// often, and the whole scopes-not-rows split exists to ensure it is not.\nlet query = tree.compile_query(source)?;"
+            }
+          ]
         },
         {
           "name": "[method]tree-snapshot.enclosing",
@@ -3722,7 +4226,15 @@
           "result": "option<node>",
           "signature": "enclosing: func(pos: position, kinds: list<string>) -> option<node>",
           "doc": "The nearest ancestor of `pos` whose `kind` is in `kinds` (the\nauto-pair scope query; the native `scope_toward` precedent). `kinds`\nempty → the nearest named ancestor. `none` when there's no match / no\nparse.",
-          "examples": []
+          "examples": [
+            {
+              "id": "auto-pair:tree-sitter.tree-snapshot.enclosing",
+              "caption": "Bound a backward text scan by the enclosing block node, with a line-capped fallback when there is no tree",
+              "source": "plugins/auto-pair/src/lib.rs",
+              "language": "rust",
+              "code": "/// The scope text from the enclosing lexical scope's start up to the caret (§7).\n/// Uses the tree-sitter seam's `enclosing` to bound the scan; with no parse tree\n/// (or no enclosing scope), degrades to a line-capped cursor-backward slice —\n/// never a whole-buffer materialization.\nfn scope_text_before_cursor(\n    ctx: &ActionContext,\n    doc: &Document,\n    tree: Option<&TreeSnapshot>,\n) -> String {\n    let scan_start = tree\n        .and_then(|t| t.enclosing(ctx.cursor, &scope_kinds()))\n        .map(|node| node.byte_range().start)\n        .unwrap_or_else(|| Position {\n            line: ctx.cursor.line.saturating_sub(200),\n            byte: 0,\n        });\n    doc.get_text_range(Range {\n        start: scan_start,\n        end: ctx.cursor,\n    })\n    .unwrap_or_default()\n}"
+            }
+          ]
         },
         {
           "name": "[method]tree-snapshot.language",
@@ -3739,7 +4251,15 @@
           "result": "string",
           "signature": "language: func() -> string",
           "doc": "The grammar id (e.g. `\"rust\"`), so a plugin can pick the right query.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:tree-sitter.tree-snapshot.language",
+              "caption": "Report the tree's language with the enclosing block's kind and named-child count",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let tree = tree.ok_or(\"multiseam: no tree snapshot\")?;\nlet node = tree\n    .enclosing(ctx.cursor, &[\"block\".to_string()])\n    .ok_or(\"multiseam: no enclosing block\")?;\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\n        \"{}:{}:{}\",\n        tree.language(),\n        node.kind(),\n        node.named_child_count()\n    ),\n})])"
+            }
+          ]
         },
         {
           "name": "[method]tree-snapshot.node-at",
@@ -3802,7 +4322,15 @@
           "result": "list<capture>",
           "signature": "run-query: func(q: borrow<query>, within: option<range>) -> list<capture>",
           "doc": "TS.2: run `q` over the whole tree, or `within` a point range. Returns\nthe surviving captures — the `#eq?` / `#match?` / `#any-of?` predicates\nare evaluated HOST-side (against the snapshot's source), so the guest\nnever re-filters. Empty when `q` was compiled for a different grammar\nthan this snapshot's (graceful — never a trap).",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:tree-sitter.tree-snapshot.run-query",
+              "caption": "Compile a query, run it over the whole tree, and read each capture's name and node",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let tree = tree.ok_or(\"multiseam: no tree snapshot\")?;\nlet query = tree.compile_query(\"(function_item name: (identifier) @fname)\")?;\nlet caps = tree.run_query(&query, None);\nlet first = caps\n    .first()\n    .map(|c| format!(\"{}:{}\", c.name, c.node.kind()))\n    .unwrap_or_default();\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\"{}:{}\", caps.len(), first),\n})])"
+            }
+          ]
         },
         {
           "name": "[method]tree-snapshot.run-query-ranges",
@@ -3827,7 +4355,15 @@
           "result": "list<capture-range>",
           "signature": "run-query-ranges: func(q: borrow<query>, within: option<range>) -> list<capture-range>",
           "doc": "TS.2b: the same query, returning RANGES instead of node handles.\n\n`run-query` mints one `node` resource per capture. A resource is a\ntable entry with a host-side snapshot bump and a guest-side drop, so\na whole-file structural query pays that per capture — and a\nstructural query over a large file has tens of thousands of them.\nThat cost is what forced `treesitter-context`'s `max-file-lines`\nguard, and it is pure overhead for the (common) plugin that only\never reads a capture's extent.\n\nSame predicates, same host-side filtering, same graceful-empty on a\ngrammar mismatch. `match-index` groups captures that came from ONE\npattern match, so a query can capture a construct and its body\n(`@context` + `@context.end`) and the guest can pair them without a\nsecond query or a containment test.\n\nUse `run-query` when the capture must be NAVIGATED (parent, field,\nsibling); use this when its extent is the answer.",
-          "examples": []
+          "examples": [
+            {
+              "id": "treesitter-context:tree-sitter.tree-snapshot.run-query-ranges",
+              "caption": "Run a whole-file query as plain ranges and pair captures by match index",
+              "source": "plugins/treesitter-context/src/lib.rs",
+              "language": "rust",
+              "code": "// `run_query_ranges`, not `run_query`: this is a WHOLE-FILE structural\n// query, and the node-returning form pays a resource handle per capture.\n// See the module doc — that difference is the file-size ceiling.\nlet captures = tree.run_query_ranges(&query, None);\nlet mut scopes: Vec<ContextScope> = Vec::new();\n// Captures arrive grouped by match (the host pushes each match's captures\n// together and stamps them with one index), so one linear scan pairs each\n// `@context` with its `@context.end` — no containment test, which would be\n// ambiguous for a construct nested directly inside another.\nlet mut i = 0;\nwhile i < captures.len() {\n    let match_index = captures[i].match_index;\n    let mut extent: Option<(u32, u32)> = None;\n    let mut body_start: Option<u32> = None;\n    while i < captures.len() && captures[i].match_index == match_index {\n        let c = &captures[i];\n        match c.name.as_str() {\n            \"context\" => extent = Some((c.range.start.line, c.range.end.line)),\n            \"context.end\" => body_start = Some(c.range.start.line),\n            // A query may carry captures for its own predicates; anything\n            // unrecognised is ignored rather than treated as a scope.\n            _ => {}\n        }\n        i += 1;\n    }\n    if let Some(extent) = extent {\n        scopes.push(scope_from(extent, body_start));\n    }\n}\n// A scope spanning a single line can never be a context: its header cannot\n// scroll away while the cursor is still inside it. Dropping them here keeps\n// the host's cache (and the resolver's scan) free of entries that can never\n// resolve to anything.\nscopes.retain(|s| s.scope_end > s.scope_start);\nOk(scopes)"
+            }
+          ]
         },
         {
           "name": "parse-file",
@@ -3844,7 +4380,15 @@
           "result": "option<tree-snapshot>",
           "signature": "parse-file: func(path: string) -> option<tree-snapshot>",
           "doc": "OT.2: parse a file that is **not an open buffer**, and hand back a\nsnapshot on the same terms as a buffer's.\n\nEvery other snapshot in this interface belongs to a buffer the editor\nalready parsed. A plugin acting on project files it never opened — org's\ncapture resolving a `file+headline` target, its refile picker listing\nevery headline in the project — had no way to get structure, so it\nhand-parsed text and diverged from the grammar. That divergence is the\nbug class OT.x exists to end, and this is the primitive that ends it for\noff-buffer content.\n\nNames no plugin and no language: the extension resolves through the same\nregistry a buffer's does (native languages first, then plugin-registered\nones), so a plugin gets a tree for `.org` for exactly the reason the\neditor would.\n\n**`none`, never a trap**, when any link in the chain is missing: no\n`tree-sitter` capability, the path is outside the plugin's `fs:` grant,\nthe file is unreadable or not UTF-8, the extension maps to no language,\nor the parse yields no tree. A caller that cannot tell these apart is\nmaking one decision — \"can I read structure here?\" — and the answer is\nno. `error-parser`'s rule: one bad file must not fail the walk.\n\n**The host reads and parses; only the path crosses.** The tree never\ncrosses the boundary (§7) and neither does the file's text, so this is\nstrictly cheaper than `read-file` plus a guest-side scan.\n\n**Cost, stated rather than buried.** Reachable from the SYNC grammar\nlinker, where the sibling comment says reads are \"no I/O, no parse — the\ntree is already there\". This one is both, so it belongs on explicit user\nactions (capture's chord) and NOT in a motion or text object, which fire\nper keystroke. `read-file` set the I/O precedent here; this adds the\nparse on top of it.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:tree-sitter.parse-file",
+              "caption": "Parse a file that is not open in a buffer and inspect its root node",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let path = match &ctx.args {\n    Args::String(s) => s.clone(),\n    other => return Err(format!(\"multiseam: parse-file wants a path, got {other:?}\")),\n};\nlet snapshot = tree_sitter::parse_file(&path)\n    .ok_or_else(|| format!(\"multiseam: parse-file returned none for {path}\"))?;\nlet root = snapshot.root();\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\"{}:{}\", root.kind(), root.named_child_count()),\n})])"
+            }
+          ]
         }
       ],
       "types": [
@@ -9488,7 +10032,15 @@
           "result": null,
           "signature": "emit-segment: func(id: string, text: string)",
           "doc": "Push this element's content. Empty text hides it (equivalent to\n`clear-segment`), which is how a native element signals \"nothing to say\nright now\" and costs the plugin no extra call.\n\nThe text is styled as an ordinary modeline item — the one role both the\nTUI and GPUI peers resolve identically, and the only one either native\nmodeline producer uses. A per-span themed role is deliberately absent:\nthe renderers match role names against a closed set and *disagree* on the\nfallback, so a role knob would ship a silent cross-renderer difference.\nA plugin that needs its own colour registers a theme element (TC.4)\nfirst; that is the slice which earns the role parameter.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:ui.emit-segment",
+              "caption": "Push new text into a modeline segment the plugin registered",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "ui::emit_segment(\"clock\", \"\\u{25f7} 0:14\");"
+            }
+          ]
         },
         {
           "name": "register-segment",
@@ -9513,7 +10065,15 @@
           "result": "bool",
           "signature": "register-segment: func(id: string, zone: ui-zone, priority: s32) -> bool",
           "doc": "Register a modeline element descriptor and take ownership of it\n(`modeline.md` §6). `id` is namespaced with the plugin's own name — a\n`register-segment(\"clock\")` from `org` owns `org.clock` — so one plugin\ncan never shadow another's element or a built-in `core.*` one.\n\n`priority` orders within the zone, ascending, ties broken by id. The\nnative neighbours in `Right` are `lsp` at 5, `claude-code` at 6,\n`core.position` at 10 and `core.lang` at 20; pick accordingly.\n\nThe element is **global**, not per-pane: it shows in every window\nregardless of which buffer is focused. Per-buffer plugin segments are not\nmirrored here because no plugin needs one yet — LSP and MCP status are\nper-buffer because they track buffers, and a plugin that starts to will\nbe the slice that adds the buffer parameter (§5.5, \"the API grows from\nreal plugins\").\n\nReturns `false` when no modeline is wired on this seam (see the interface\nnote) — the honest \"nothing to register into\" degradation, never a trap.\nRe-registering the same id is last-write-wins, so a reload re-registers\nrather than duplicating.",
-          "examples": []
+          "examples": [
+            {
+              "id": "multiseam-guest:ui.register-segment",
+              "caption": "Register a right-zone modeline segment (namespaced to `multiseam.clock`) from an async seam",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// OC.3 / ML.6: register a modeline element and push content, from an\n// ASYNC seam's registration export. Short id — the host auto-namespaces\n// it to `multiseam.clock`, the same way it namespaces the option above.\nui::register_segment(\"clock\", UiZone::Right, 7);"
+            }
+          ]
         }
       ],
       "types": [],

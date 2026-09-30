@@ -59,6 +59,7 @@ impl Guest for Component {
             }
             return;
         }
+        // @example modes.enable-mode: Enable a plugin's mode and set its option once that plugin has loaded
         if let Event::PluginLoaded(p) = ev {
             // Deferred config: enable auto-pair-mode the moment auto-pair loads.
             if p.name == "auto-pair" {
@@ -73,6 +74,7 @@ impl Guest for Component {
                 config::set_option("auto-pair.style", "manual");
             }
         }
+        // @end-example
     }
 
     /// OC.2: this fixture arms no wakes, but the world's exports must satisfy

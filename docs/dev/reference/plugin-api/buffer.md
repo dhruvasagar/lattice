@@ -50,6 +50,20 @@ or `end < start` range (mirrors `Buffer::slice`). Only the requested
 range is sliced out of the rope — the whole document never crosses
 ("zero-copy at the slice level", §9.6).
 
+**Example — Read the one byte after the caret, treating a read error as nothing there** · [`plugins/auto-pair/src/lib.rs`](../../../../plugins/auto-pair/src/lib.rs)
+
+```rust
+/// The single byte after the caret (empty string at EOL / on a read error —
+/// which just means "nothing to step over", so insert).
+fn char_after(ctx: &ActionContext, doc: &Document) -> String {
+    doc.get_text_range(Range {
+        start: ctx.cursor,
+        end: one_right(ctx.cursor),
+    })
+    .unwrap_or_default()
+}
+```
+
 #### `document.line`
 
 ```wit
@@ -58,6 +72,22 @@ line: func(n: u32) -> option<string>
 
 Line `n` (0-based) as text without its trailing newline (matching
 `Buffer::line`), or `none` when `n` is past the last line.
+
+**Example — Read the first line of an operator's range (and the buffer's path), erring if it is gone** · [`crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs)
+
+```rust
+let line = doc
+    .line(ctx.range.start.line)
+    .ok_or_else(|| format!("fixture: no line {}", ctx.range.start.line))?;
+// The PATH as well as the text. An operator's handle was minted
+// with `path: None` at first, so `document.path()` answered
+// `none` for every real file — invisible until a plugin asked.
+let path = doc.path().unwrap_or_else(|| "<none>".to_string());
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text: format!("op|{path}|{line}"),
+})])
+```
 
 #### `document.line-count`
 
@@ -92,6 +122,22 @@ Snapshot semantics, like every other method here: this is the path
 as of the handle's mint. A `set-path` landing mid-action is
 invisible, which is the same trade `get-text-range` already makes
 and for the same reason.
+
+**Example — Derive a sibling `<file>_archive` path from the buffer's own path and append to it** · [`crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/grammar-guest/src/lib.rs)
+
+```rust
+let Some(mine) = doc.path() else {
+    return Err("fixture: this buffer has no file".to_string());
+};
+Ok(vec![Effect::WriteToFile(WriteToFilePayload {
+    path: format!("{mine}_archive"),
+    anchor: FileAnchor::End,
+    text: "* Archived beside me\n".to_string(),
+    cut: None,
+    create_parents: false,
+    save: false,
+})])
+```
 
 ## Types (1)
 

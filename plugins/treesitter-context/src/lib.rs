@@ -115,6 +115,7 @@ fn scopes_from_tree(tree: &TreeSnapshot) -> Result<Vec<ContextScope>, String> {
     if language_disabled(&language) {
         return Ok(Vec::new());
     }
+    // @example tree-sitter.tree-snapshot.compile-query: Compile a per-language query against the snapshot's grammar
     let Some(source) = query_for(&language) else {
         // No query for this grammar. Not an error — the strip simply has
         // nothing to show, and the host caches that as "no scopes".
@@ -126,6 +127,8 @@ fn scopes_from_tree(tree: &TreeSnapshot) -> Result<Vec<ContextScope>, String> {
     // A cache would be the right move only if the producer were re-driven more
     // often, and the whole scopes-not-rows split exists to ensure it is not.
     let query = tree.compile_query(source)?;
+    // @end-example
+    // @example tree-sitter.tree-snapshot.run-query-ranges: Run a whole-file query as plain ranges and pair captures by match index
     // `run_query_ranges`, not `run_query`: this is a WHOLE-FILE structural
     // query, and the node-returning form pays a resource handle per capture.
     // See the module doc — that difference is the file-size ceiling.
@@ -161,6 +164,7 @@ fn scopes_from_tree(tree: &TreeSnapshot) -> Result<Vec<ContextScope>, String> {
     // resolve to anything.
     scopes.retain(|s| s.scope_end > s.scope_start);
     Ok(scopes)
+    // @end-example
 }
 
 /// Fallback when `max-file-lines` cannot be read (no config wired).
@@ -194,6 +198,7 @@ fn scopes_from_tree(tree: &TreeSnapshot) -> Result<Vec<ContextScope>, String> {
 const DEFAULT_MAX_FILE_LINES: u32 = 100_000;
 
 impl ContextGuest for Component {
+    // @example context.context-scopes: Produce sticky-context scopes from the tree, bounded by a size option
     fn context_scopes(
         req: ContextRequest,
         tree: Option<&TreeSnapshot>,
@@ -219,6 +224,7 @@ impl ContextGuest for Component {
         };
         scopes_from_tree(tree)
     }
+    // @end-example
 }
 
 
@@ -487,6 +493,7 @@ impl CallbacksGuest for Component {
         _tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         match callback {
+            // @example config.set-option: Toggle this plugin's `enabled` option from an ex-command
             // Flip the loader-registered enablement switch. This one needs no
             // tree — it only reads and writes an option — which is exactly why
             // it survives where `:context-up` could not.
@@ -496,6 +503,7 @@ impl CallbacksGuest for Component {
                 set_option("enabled", if on { "false" } else { "true" });
                 Ok(vec![Effect::None])
             }
+            // @end-example
             other => Err(format!("unknown ex-command callback {other}")),
         }
     }

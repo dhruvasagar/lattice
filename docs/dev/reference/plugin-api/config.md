@@ -31,6 +31,19 @@ Resolves the plugin's OWN namespace first (`style` → `<id>.style`), then
 the raw name — so a plugin reads its own options with short names AND can
 still read a core option (`tabstop`) that isn't in its namespace.
 
+**Example — Read the plugin's own option on every call, so `:set` takes effect without re-registering** · [`plugins/auto-pair/src/lib.rs`](../../../../plugins/auto-pair/src/lib.rs)
+
+```rust
+/// Read the live style option (AP.3). `auto` (default) or `manual`. The plugin
+/// uses the SHORT name `style`; the host auto-namespaces it to `auto-pair.style`
+/// (the name a user sets). The grammar guest reads the SHARED editor config
+/// registry (wired at instantiate time), so `:set auto-pair.style=manual` flips
+/// behavior live — no keymap re-registration.
+fn is_manual() -> bool {
+    config::get_option("style").as_deref() == Some("manual")
+}
+```
+
 ### `get-option-value`
 
 ```wit
@@ -44,6 +57,20 @@ like `get-option`.
 Works for scalar options too — a scalar is a degenerate schema, so a
 guest that wants typed reads everywhere can use this one call rather
 than choosing per option.
+
+**Example — Read a structured option's current value, falling back to defaults** · [`plugins/project/src/lib.rs`](../../../../plugins/project/src/lib.rs)
+
+```rust
+/// The configured rows, or the defaults.
+fn switch_commands() -> Vec<switch::SwitchCommand> {
+    match lattice::plugin_host::config::get_option_value(switch::OPTION) {
+        Some(value) => switch::from_value(&value),
+        // Unregistered or unreadable — the same answer either way, and it is
+        // the useful one: a menu with no rows looks exactly like a broken chord.
+        None => switch::defaults(),
+    }
+}
+```
 
 ### `option-diagnostic`
 
@@ -122,6 +149,20 @@ a plugin whose own default does not fit its own declaration registers
 NOTHING and gets `false`, rather than an option that exists and cannot
 hold a legal value.
 
+**Example — Register a list-of-records option with a schema and a structured default** · [`plugins/project/src/lib.rs`](../../../../plugins/project/src/lib.rs)
+
+```rust
+let rows = switch::defaults();
+let _ = lattice::plugin_host::config::register_structured_option(
+    switch::OPTION,
+    &switch::schema(),
+    &switch::to_value(&rows),
+    "Rows of the project-switch menu. Each names an ex-command that \
+     takes a project root as its first argument — which is the whole \
+     contract for adding your own.",
+);
+```
+
 ### `set-option`
 
 ```wit
@@ -139,6 +180,20 @@ handler uses this to configure a plugin's options the moment it loads
 (config-and-init.md §5). Like `get-option`, resolves the caller's OWN
 namespace first (`style` → `<id>.style`), else the raw name — so a config
 can set another plugin's option by its full `auto-pair.style` name.
+
+**Example — Toggle this plugin's `enabled` option from an ex-command** · [`plugins/treesitter-context/src/lib.rs`](../../../../plugins/treesitter-context/src/lib.rs)
+
+```rust
+// Flip the loader-registered enablement switch. This one needs no
+// tree — it only reads and writes an option — which is exactly why
+// it survives where `:context-up` could not.
+CB_EX_CONTEXT_TOGGLE => {
+    let _ = ctx;
+    let on = get_option("enabled").map(|v| v == "true").unwrap_or(true);
+    set_option("enabled", if on { "false" } else { "true" });
+    Ok(vec![Effect::None])
+}
+```
 
 ### `set-option-in-buffer`
 
@@ -196,6 +251,31 @@ schema, so a bad field is refused with a PATH
 by whatever message the plugin would have written. `false` on an unknown
 option, a value that does not fit, or no registry — never a trap, the
 `set-option` contract.
+
+**Example — Set a structured (list-of-records) option by building its value arena** · [`crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs)
+
+```rust
+// Set one through the typed seam, then read it back the same
+// way. Recording what came BACK — not what went in — is the
+// point: a seam that accepted the tree and stored a mangled one
+// would pass any assertion made on the write alone.
+let _ = config::set_option_value(
+    "templates",
+    &config::ConfigValue {
+        nodes: vec![
+            config::ValueNode::String("t".to_string()),           // 0
+            config::ValueNode::String("~/org/refile.org".to_string()), // 1
+            config::ValueNode::Record(vec![("file".to_string(), 1)]),  // 2
+            config::ValueNode::Record(vec![
+                ("key".to_string(), 0),
+                ("target".to_string(), 2),
+            ]), // 3
+            config::ValueNode::List(vec![3]),                     // 4
+        ],
+        root: 4,
+    },
+);
+```
 
 ## Types (7)
 

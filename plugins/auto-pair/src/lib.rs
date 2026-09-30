@@ -86,6 +86,7 @@ fn at(pos: Position) -> Range {
     }
 }
 
+// @example buffer.document.get-text-range: Read the one byte after the caret, treating a read error as nothing there
 /// The single byte after the caret (empty string at EOL / on a read error —
 /// which just means "nothing to step over", so insert).
 fn char_after(ctx: &ActionContext, doc: &Document) -> String {
@@ -95,6 +96,7 @@ fn char_after(ctx: &ActionContext, doc: &Document) -> String {
     })
     .unwrap_or_default()
 }
+// @end-example
 
 /// Insert `open`+`close` at the caret and park it BETWEEN them.
 fn insert_pair(ctx: &ActionContext, open: &str, close: &str) -> Vec<Effect> {
@@ -213,6 +215,7 @@ fn find_pair(text: &str) -> Option<String> {
     stack.first().map(|c| c.to_string())
 }
 
+// @example config.get-option: Read the plugin's own option on every call, so `:set` takes effect without re-registering
 /// Read the live style option (AP.3). `auto` (default) or `manual`. The plugin
 /// uses the SHORT name `style`; the host auto-namespaces it to `auto-pair.style`
 /// (the name a user sets). The grammar guest reads the SHARED editor config
@@ -221,6 +224,7 @@ fn find_pair(text: &str) -> Option<String> {
 fn is_manual() -> bool {
     config::get_option("style").as_deref() == Some("manual")
 }
+// @end-example
 
 fn one_left(pos: Position) -> Position {
     Position {
@@ -260,6 +264,7 @@ fn scope_kinds() -> Vec<String> {
     .collect()
 }
 
+// @example tree-sitter.tree-snapshot.enclosing: Bound a backward text scan by the enclosing block node, with a line-capped fallback when there is no tree
 /// The scope text from the enclosing lexical scope's start up to the caret (§7).
 /// Uses the tree-sitter seam's `enclosing` to bound the scan; with no parse tree
 /// (or no enclosing scope), degrades to a line-capped cursor-backward slice —
@@ -282,6 +287,7 @@ fn scope_text_before_cursor(
     })
     .unwrap_or_default()
 }
+// @end-example
 
 /// Manual close key: scan the enclosing scope backward and close the nearest
 /// unmatched opener, or DECLINE (fall through — §6) when nothing is open.
@@ -322,6 +328,7 @@ fn backspace(ctx: &ActionContext, doc: &Document) -> Vec<Effect> {
 
 impl Guest for Component {
     fn register_grammar() {
+        // @example grammar.register-action: Register one action per chord from a table, each with its own callback id
         let spec = || ActionSpec {
             args_schema: Vec::new(),
         };
@@ -348,6 +355,7 @@ impl Guest for Component {
         ] {
             grammar::register_action(name, doc, &spec(), cb);
         }
+        // @end-example
     }
 
     /// `auto-pair-mode` owns its insert-mode keymap — bindings land at
@@ -425,6 +433,7 @@ impl Guest for Component {
 }
 
 impl GrammarCallbacks for Component {
+    // @example grammar-callbacks.apply-action: Dispatch actions by callback id, reading an option and the document, declining to fall through
     fn apply_action(
         callback: u32,
         ctx: ActionContext,
@@ -456,6 +465,7 @@ impl GrammarCallbacks for Component {
             other => return Err(format!("auto-pair: unknown action callback {other}")),
         })
     }
+    // @end-example
 
     fn apply_motion(
         _c: u32,

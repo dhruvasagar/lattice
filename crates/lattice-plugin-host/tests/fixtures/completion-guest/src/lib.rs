@@ -21,6 +21,7 @@ use lattice::plugin_host::types::{
 struct Component;
 
 impl Guest for Component {
+    // @example completion-source.spec: Declare a completion source's id and doc, completing word queries only
     fn spec() -> CompletionSourceSpec {
         CompletionSourceSpec {
             id: "keywords".to_string(),
@@ -30,7 +31,9 @@ impl Guest for Component {
             accepts_non_word_query: false,
         }
     }
+    // @end-example
 
+    // @example completion-source.generate: Return the full candidate set; the host's native matcher filters it by the query
     fn generate(_ctx: GenerateContext) -> Result<Vec<RawCandidate>, String> {
         // Return the full keyword set; the native matcher filters against the
         // query prefix (matching stays native — option A). Each candidate uses
@@ -53,6 +56,7 @@ impl Guest for Component {
             })
             .collect())
     }
+    // @end-example
 }
 
 export!(Component);

@@ -1,7 +1,7 @@
 # API documentation: generated, example-backed, guarded
 
-**Status:** designed (AD series; see the
-[slice plan](../operations/slice-plans/api-docs.md) for sequencing). Extends
+**Status:** built (AD.0–AD.16; see the
+[slice plan](../operations/slice-plans/archive/api-docs.md) for sequencing). Extends
 the PI series in [`plugin-host.md`](plugin-host.md) (the build-time plugin-API
 catalog) and the site pipeline (`site/scripts/sync-docs.sh`).
 

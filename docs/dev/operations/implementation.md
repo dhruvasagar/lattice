@@ -7369,7 +7369,7 @@ which also records three as-built deviations from the design.
 
 ---
 
-## API documentation (AD, 2026-09-30 — 🚧 in progress)
+## API documentation (AD, 2026-09-30 — ✅ complete)
 
 Generated, example-backed API docs for both APIs, each with a guard that
 fails when it drifts: the plugin-API reference (derived from `wit/` by
@@ -7380,7 +7380,7 @@ map), and an agent layer (`llms.txt`, `llms-full.txt`, `plugin-api.json`,
 `AGENTS.md`). No new crate.
 
 Design: [`../architecture/api-docs.md`](../architecture/api-docs.md).
-Slice plan: [`slice-plans/api-docs.md`](slice-plans/api-docs.md).
+Slice plan: [`slice-plans/archive/api-docs.md`](slice-plans/archive/api-docs.md).
 
 ---
 

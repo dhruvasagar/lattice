@@ -3,7 +3,7 @@
 Sequencing for the generated, example-backed, guarded API documentation:
 the plugin-API reference, the Rust API docs, and the agent layer.
 
-- **Design:** [`api-docs.md`](../../architecture/api-docs.md) (what is
+- **Design:** [`api-docs.md`](../../../architecture/api-docs.md) (what is
   generated from what, the guards, rejected alternatives).
 - **Builds on:** the PI series (`slice-plans/archive/plugin-host.md` — the
   build-time `PluginApiCatalog`, `:describe-plugin-api`, the PI.6 site page);
@@ -46,18 +46,35 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 |---|---|---|
 | **AD.8** | Publish rustdoc at `/api/`; `scripts/doc-coverage.sh` + CI step | ✅ |
 | **AD.9** | Generated `reference/crates.md` (layers, deps, dependents, summaries) + xtask staleness test; every crate opens with a real summary | ✅ |
-| **AD.10** | `lattice-plugin-sdk` — full docs + examples, opt in | 📝 |
-| **AD.11** | `lattice-keymap` — full docs + examples, opt in | 📝 |
-| **AD.12** | `lattice-core` — full docs + examples, opt in | 📝 |
-| **AD.13** | `lattice-config` — full docs + examples, opt in | 📝 |
-| **AD.14** | `lattice-mode` — full docs + examples, opt in | 📝 |
-| **AD.15** | `lattice-protocol` — full docs + examples, opt in | 📝 |
-| **AD.16** | `lattice-grammar` — full docs + examples, opt in | 📝 |
+| **AD.10** | `lattice-plugin-sdk` — full docs + examples, opt in | ✅ |
+| **AD.11** | `lattice-keymap` — full docs + examples, opt in | ✅ |
+| **AD.12** | `lattice-core` — full docs + examples, opt in | ✅ |
+| **AD.13** | `lattice-config` — full docs + examples, opt in | ✅ |
+| **AD.14** | `lattice-mode` — full docs + examples, opt in | ✅ |
+| **AD.15** | `lattice-protocol` — full docs + examples, opt in | ✅ |
+| **AD.16** | `lattice-grammar` — full docs + examples, opt in | ✅ |
 
-Order within the Rust series is smallest-gap-first so the ratchet mechanism
-is proven on a small crate (SDK, 48 items; keymap, 26) before the large ones
-(protocol 216, mode 224, grammar 486). Further crates follow the same shape
-and get appended here as they are scheduled.
+All seven landed on 2026-09-30, one commit per crate, each opted in to
+`scripts/doc-coverage.sh` (with `lattice-plugin-api` from AD.8): ~1,200
+previously undocumented public items, 135 doctests (several converted from
+`ignore`), and every crate overview extended with what it owns, what it must
+not depend on and why, a worked example and its design docs. Written by
+parallel agents on disjoint crates (grammar split by file), each diff
+verified to touch doc comments only, coverage and doctests re-run before
+commit, and the crate map regenerated per commit from HEAD plus that crate.
+
+The pass surfaced dozens of docs that contradicted the code (corrected) and
+latent code issues (recorded in the docs and the commit messages, not
+fixed — out of scope for a docs series). The notable ones: a
+`ServiceRegistry` TypeId mismatch that leaves compilation output and the
+project diff uncoloured (`PendingSyntheticHighlights` registered bare,
+looked up as its `Arc` handle); `Event::DocumentClosed` never published
+outside tests; `DocumentOpened.id` minted from the buffer registry's counter
+rather than the document's; `Document::apply_edit_batch` not atomic;
+`try_push_layer` not scope-checking mode layers against the capability.
+
+Crates not yet opted in follow the same shape; `doc-coverage.sh` discovers
+them from the attribute, so there is no list here to extend.
 
 ---
 

@@ -32,7 +32,7 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 | **AD.5** | WIT prose accuracy: path-rot guard + fix stale references | ✅ |
 | **AD.6a** | World-level functions (the `register-*` entry points) in the catalog, a worlds page, the JSON | ✅ |
 | **AD.6** | `plugin-patterns.md` guide with synced examples + reference guard; fix `plugin-authoring.md` | ✅ |
-| **AD.6b** | Site link integrity: same-directory dev-doc links resolve; out-of-tree links must exist | 📝 |
+| **AD.6b** | Site link integrity: same-directory dev-doc links resolve; out-of-tree links must exist | ✅ |
 
 ## Agent layer
 
@@ -111,6 +111,25 @@ already says — became a goal → seam → pattern map, which is judgement the
 reference cannot carry. The manifest example is parsed by the real parser
 (`lattice-plugin-host/tests/documented_manifests_parse.rs`) and its keys
 pinned to `RawManifest`'s (the parser ignores unknown keys).
+
+### AD.6b — site link integrity (carved while checking AD.6 on the site)
+
+The patterns guide's links to its sibling rendered as
+`/dev/plugins/plugin-patterns/plugin-authoring.md` — and so did every
+same-directory link in the dev docs: the resolver matched only `../`-prefixed
+links and assumed they were relative to `docs/`. Measured in the built HTML:
+**398 page-relative `.md` hrefs before, 0 after.** It also sent
+`../operations/…` links from architecture docs to GitHub without their
+`docs/dev/` prefix, and never checked that an out-of-tree target existed
+(`plugins/fuzzy-finder`).
+
+`sync-docs.sh` now resolves every relative link against its source file:
+published pages become `@/` links (which Zola validates, anchors included),
+everything else a GitHub URL at its real path, and a missing target fails the
+sync with the full list. Code — fenced and inline — is left alone. It
+surfaced five dead links and two anchors that only GitHub's slugger
+produced (numbered headings slug differently in Zola); all fixed at the
+source.
 
 ### AD.6a — world entry points (carved while writing AD.6)
 

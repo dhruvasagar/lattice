@@ -5062,7 +5062,7 @@ architecture §10 for the rationale.
   [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md#11-mode-owned-keymap-contributions-substrate-gap)
   §11 (chain ergonomic surface in §11.2.1; table form in
   §11.2.2); convention update in
-  [`../architecture/mode-architecture.md`](../architecture/mode-architecture.md#13-mode-owned-keymaps--contribution-debt-2026-06-01)
+  [`mode-architecture.md` §1.3](../architecture/mode-architecture.md)
   §13; mode-author guide at
   [`../notes/mode-keymap-authoring.md`](../notes/mode-keymap-authoring.md);
   full sequencing + commit table at
@@ -5600,7 +5600,7 @@ sends, paramount-goal violations). Findings closed in slices
 	`try_current()` footgun.
   - Buffer-open is event-driven: `App::new` and
 	`App::do_edit` set `BufferId → Uri` eagerly and publish
-	[`Event::DocumentOpened { id, path, version, text }`](../crates/lattice-protocol/src/event.rs)
+	[`Event::DocumentOpened { id, path, version, text }`](../../../crates/lattice-protocol/src/event.rs)
 	on the bus. The new `lattice_lsp::attach_driver` module
 	subscribes on the LSP runtime, runs a serial
 	`recv → supervisor.open_buffer.await` loop, and logs

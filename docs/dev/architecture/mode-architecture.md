@@ -3747,7 +3747,7 @@ Concretely, for keymaps:
   [`lattice_mode::Keymap`] populated through the chain form
   (`Keymap::new().bind_chord(...)`) or the table form
   (`Keymap::from_entries(&[keymap_entry!{...}])`); see
-  [`keymap-architecture.md` §11.2](keymap-architecture.md#112-the-real-keymap-contribution-type)
+  [`keymap-architecture.md` §11.2](keymap-architecture.md)
   for the API surface and
   [`../notes/mode-keymap-authoring.md`](../notes/mode-keymap-authoring.md)
   for the recipe. The K.2.4 host translation pass walks the

@@ -215,37 +215,63 @@ def resolve_help_links(body, topic_section):
     return re.sub(r'\[([^\]]*)\]\((?:mode|event):[^)]+\)', r'`\1`', body)
 
 
-def make_relative_resolver(topic_section, dev_pages, page_section):
-    """Resolve `../dev/...`, `../../user/...` and friends.
+# Every dead relative link found during the sync, reported together at the
+# end (see `main`). A link out of the content tree becomes a GitHub URL that
+# Zola cannot check, so this list is the only thing that catches one pointing
+# at a file that was moved or deleted.
+BROKEN_LINKS = []
 
-    Anything that lands inside the Zola content tree becomes an `@/` internal
-    link; anything outside it (slice plans, wit/, source files) becomes an
-    absolute GitHub URL so it still goes somewhere useful.
 
-    `page_section` is load-bearing for the dev branch and its absence was a
-    build-breaking bug: a dev page is PUBLISHED at `@/dev/<section-slug>/`,
-    not at `@/dev/<source-subdir>/`, so emitting the source path produced a
-    broken relative link for every user->dev reference. Zola reports one such
-    link and stops, which is why it read as "one bad page" rather than
-    fourteen.
+def make_relative_resolver(src_file, topic_section, dev_pages, page_section):
+    """Resolve a relative link against the file it is written in.
+
+    GitHub renders a doc's relative links against the doc's own directory, so
+    that is what authors write — `plugin-host.md` beside it, `../guides/x.md`,
+    `../../../crates/lattice-mode/`. Resolving the same way, from the real
+    path:
+
+      - a user doc becomes `@/docs/<section>/<topic>.md`;
+      - a published dev doc becomes `@/dev/<section>/<stem>.md` — its
+        dev-nav SECTION, not its source subdir, since that is where it is
+        published — and the plugin-API reference its generated section;
+      - anything else that exists (source files, slice plans, `wit/`)
+        becomes a GitHub URL;
+      - anything that does not exist is recorded in BROKEN_LINKS.
+
+    This replaced a resolver that stripped every leading `../` and assumed
+    the remainder was relative to `docs/`. It never saw same-directory links
+    at all, so ~550 of them (`[x](plugin-host.md)`) were published as
+    page-relative URLs that 404 under Zola's pretty URLs; and a
+    `../operations/…` link from an architecture doc became a GitHub URL
+    missing its `docs/dev/` prefix.
     """
+    src_dir = os.path.dirname(src_file)
+    src_rel = os.path.relpath(src_file, repo_root)
+
     def _resolve(m):
         raw = m.group(1)
+        # Schemes (http:, mailto:, help:, mode:, event:), in-page anchors,
+        # already-internal @/ links and site-absolute paths are not files.
+        if re.match(r'^(?:[a-z][a-z0-9+.-]*:|#|@/|/)', raw):
+            return m.group(0)
         path, anchor = split_anchor(raw)
+        if not path:
+            return m.group(0)
+        real = os.path.normpath(os.path.join(src_dir, path))
+        rel = os.path.relpath(real, repo_root).replace(os.sep, '/')
+        if not os.path.exists(real):
+            BROKEN_LINKS.append(f'{src_rel}: ({raw}) -> {rel}')
+            return m.group(0)
 
-        # Normalise away the leading ../ hops — every doc tree we sync from is
-        # addressed by its repo-relative path below docs/.
-        stripped = re.sub(r'^(?:\.\./)+', '', path)
-
-        if stripped.startswith('user/'):
-            topic = os.path.basename(stripped)[:-3] if stripped.endswith('.md') else os.path.basename(stripped)
+        if rel.startswith('docs/user/') and rel.endswith('.md'):
+            topic = os.path.basename(rel)[:-3]
             placement = topic_section.get(topic)
             if placement:
                 return f'](@/docs/{placement[0]}/{topic}.md{anchor})'
 
-        if stripped.startswith('dev/'):
-            rel = stripped[4:]
-            key = rel[:-3] if rel.endswith('.md') else rel
+        if rel.startswith('docs/dev/'):
+            key = rel[len('docs/dev/'):]
+            key = key[:-3] if key.endswith('.md') else key
             # The generated plugin-API reference is its own section (see
             # sync_plugin_api_reference): the index is the landing page.
             if key == PLUGIN_API_INDEX:
@@ -253,26 +279,42 @@ def make_relative_resolver(topic_section, dev_pages, page_section):
             if key.startswith(PLUGIN_API_INDEX + '/'):
                 return f'](@/dev/plugin-api/{key.rsplit("/", 1)[-1]}.md{anchor})'
             if key in dev_pages:
-                # The SECTION the manifest put it in — its real URL.
                 slug = page_section[key][0]
                 stem = key.rsplit('/', 1)[-1]
                 return f'](@/dev/{slug}/{stem}.md{anchor})'
 
-        # Out of the content tree -> GitHub.
-        base = GH_TREE if (path.endswith('/') or not re.search(r'\.\w{1,10}$', path)) else GH_BLOB
-        return f']({base}/{stripped}{anchor})'
+        # Out of the content tree -> GitHub, at its real repository path.
+        base = GH_TREE if os.path.isdir(real) else GH_BLOB
+        return f']({base}/{rel}{anchor})'
 
     return _resolve
 
 
-RE_RELATIVE = re.compile(r'\]\(((?:\.\./)+[^)]+)\)')
+RE_LINK = re.compile(r'\]\(([^)\s]+)\)')
 
 
-def rewrite_links(body, topic_section, dev_pages, page_section, is_user_doc):
+def rewrite_links(body, src_file, topic_section, dev_pages, page_section, is_user_doc):
+    """Rewrite every relative link in `body` (the text of `src_file`).
+
+    Code is left alone — fenced blocks and inline spans both: a `](` in
+    code is code (`[label](url)` explaining link syntax), not a link, and
+    must neither be rewritten nor reported as dead.
+    """
     if is_user_doc:
         body = resolve_help_links(body, topic_section)
-    return RE_RELATIVE.sub(
-        make_relative_resolver(topic_section, dev_pages, page_section), body
+    resolve = make_relative_resolver(src_file, topic_section, dev_pages, page_section)
+
+    def prose(text):
+        spans = re.split(r'(`[^`\n]*`)', text)
+        return ''.join(
+            span if j % 2 else RE_LINK.sub(resolve, span)
+            for j, span in enumerate(spans)
+        )
+
+    parts = re.split(r'(^```.*?^```[^\n]*$)', body, flags=re.MULTILINE | re.DOTALL)
+    return ''.join(
+        part if i % 2 else prose(part)
+        for i, part in enumerate(parts)
     )
 
 
@@ -321,7 +363,8 @@ def sync_user_docs(topic_section, labels, dev_pages, page_section):
         body = strip_frontmatter(raw)
         # The template renders <h1>{{ page.title }}</h1>; drop the duplicate.
         body = re.sub(rf'^# {re.escape(title)}\n?', '', body, count=1, flags=re.MULTILINE)
-        body = rewrite_links(body, topic_section, dev_pages, page_section, is_user_doc=True)
+        body = rewrite_links(body, src, topic_section, dev_pages, page_section,
+                             is_user_doc=True)
 
         meta[topic] = (title, summary)
         headings[topic] = [
@@ -532,7 +575,7 @@ def sync_plugin_api_reference(slug, weight, description, topic_section,
     if not seams:
         die(f'{PLUGIN_API_SEAMS} has no seam pages')
 
-    def internal(body):
+    def internal(body, src_file):
         body = re.sub(r'\]\(plugin-api/([a-z0-9-]+)\.md(#[^)]*)?\)',
                       lambda m: f'](@/dev/{slug}/{m.group(1)}.md{m.group(2) or ""})',
                       body)
@@ -540,8 +583,8 @@ def sync_plugin_api_reference(slug, weight, description, topic_section,
                       lambda m: f'](@/dev/{slug}/{m.group(1)}.md{m.group(2) or ""})'
                       if m.group(1) in seams else m.group(0),
                       body)
-        return rewrite_links(body, topic_section, dev_pages, page_section,
-                             is_user_doc=False)
+        return rewrite_links(body, src_file, topic_section, dev_pages,
+                             page_section, is_user_doc=False)
 
     d = os.path.join(DEV_DST, slug)
     os.makedirs(d, exist_ok=True)
@@ -554,16 +597,17 @@ def sync_plugin_api_reference(slug, weight, description, topic_section,
         fh.write(
             f'+++\ntitle = "{toml_escape(title)}"\n'
             f'description = "{toml_escape(description)}"\n'
-            f'weight = {weight}\nsort_by = "weight"\n+++\n\n{internal(body)}'
+            f'weight = {weight}\nsort_by = "weight"\n+++\n\n{internal(body, index_src)}'
         )
 
     for i, seam in enumerate(seams):
-        with open(os.path.join(PLUGIN_API_SEAMS, seam + '.md'), encoding='utf-8') as fh:
+        seam_src = os.path.join(PLUGIN_API_SEAMS, seam + '.md')
+        with open(seam_src, encoding='utf-8') as fh:
             body = fh.read()
         body = re.sub(r'^# `[^`]+`\n?', '', body, count=1, flags=re.MULTILINE)
         with open(os.path.join(d, seam + '.md'), 'w', encoding='utf-8') as fh:
             fh.write(f'+++\ntitle = "{toml_escape(seam)}"\nweight = {i}\n+++\n\n'
-                     f'{internal(body)}')
+                     f'{internal(body, seam_src)}')
 
     # The machine-readable form, at a stable site-root URL.
     shutil.copyfile(PLUGIN_API_JSON, os.path.join(STATIC_DST, 'plugin-api.json'))
@@ -622,7 +666,7 @@ def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labe
             body = strip_frontmatter(raw)
             body = re.sub(rf'^# {re.escape(title)}\n?', '', body, count=1, flags=re.MULTILINE)
             body = rewrite_links(
-                body, topic_section, dev_pages, page_section, is_user_doc=False
+                body, f, topic_section, dev_pages, page_section, is_user_doc=False
             )
             # The sidebar label overrides the H1 only where the manifest says
             # so; the page's own <h1> keeps the doc's real title.
@@ -920,6 +964,10 @@ def main():
 
     print('Syncing media...')
     sync_media()
+
+    if BROKEN_LINKS:
+        die('relative links to files that do not exist (moved? deleted? wrong '
+            'number of ../?):\n    ' + '\n    '.join(BROKEN_LINKS))
 
     print('\nDone.')
 

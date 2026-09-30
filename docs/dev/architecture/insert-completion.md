@@ -2,7 +2,7 @@
 
 This document is the design spec for buffer-level Insert-mode
 completion in lattice. It is the editor surface that turns the
-existing [`lattice-completion`](../crates/lattice-completion/)
+existing [`lattice-completion`](../../../crates/lattice-completion/)
 pipeline (today: cmdline / minibuffer only) into a first-class
 input flow inside Insert mode, and it is the consumer that
 finally lands LSP `textDocument/completion` as one source
@@ -13,7 +13,7 @@ It is also the canonical place to point at when the question
 "how does completion work in lattice?" comes up. Implementer
 references live in
 [`lsp-architecture.md`](lsp-architecture.md) (LSP wire
-detail) and [`crates/lattice-completion/`](../crates/lattice-completion/)
+detail) and [`crates/lattice-completion/`](../../../crates/lattice-completion/)
 (pipeline traits + cmdline path); this document is the
 behavioural spec they hang off.
 
@@ -1735,7 +1735,7 @@ ceiling (one frame: 8.3 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
   every binding here is also a registered command).
 - [`lsp-architecture.md`](lsp-architecture.md) §10 — LSP
   request fan-out, cancellation tokens.
-- [`crates/lattice-completion/`](../crates/lattice-completion/)
+- [`crates/lattice-completion/`](../../../crates/lattice-completion/)
   — current pipeline traits; `insert.rs` is the new module
   this doc adds.
 - `lattice-snippet` (new crate, 4.2.g.4) — engine + parser.

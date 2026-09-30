@@ -1,4 +1,5 @@
-//! TC.4 — a Rust struct as a config schema and a config value.
+//! A Rust struct as a config schema and a config value, plus the arena
+//! flattening the WIT seam needs (slice TC.4).
 //!
 //! Design: `docs/dev/architecture/typed-configuration.md`.
 //!
@@ -26,6 +27,45 @@
 //! *total and mechanical* — a walk over a tree the host has already validated —
 //! where before it was a bespoke text parser per option. Without the derive that
 //! claim is aspirational and the tree is simply a worse blob.
+//!
+//! # Examples
+//!
+//! A struct describes itself, round-trips through a [`Value`], and flattens to
+//! the arena form that crosses the WIT boundary:
+//!
+//! ```
+//! use lattice_plugin_sdk::ConfigShape;
+//! use lattice_plugin_sdk::shape::{
+//!     ConfigShape as _, Schema, Value, flatten_value, unflatten_value,
+//! };
+//!
+//! /// Where a capture lands.
+//! #[derive(Debug, PartialEq, ConfigShape)]
+//! struct Target {
+//!     /// The file it is appended to.
+//!     file: String,
+//!     /// Insert under this headline instead of appending.
+//!     headline: Option<String>,
+//! }
+//!
+//! // The schema: a record, fields kebab-cased, `Option<T>` = not required.
+//! let Schema::Record(fields) = Target::schema() else { unreachable!() };
+//! assert_eq!(fields[0].name, "file");
+//! assert!(fields[0].required);
+//! assert!(!fields[1].required);
+//! assert_eq!(fields[1].doc, "Insert under this headline instead of appending.");
+//!
+//! // The value: an absent optional field is omitted, not emitted empty.
+//! let t = Target { file: "refile.org".into(), headline: None };
+//! let v = t.to_value();
+//! assert_eq!(v.field("file").and_then(Value::as_str), Some("refile.org"));
+//! assert_eq!(v.field("headline"), None);
+//! assert_eq!(Target::from_value(&v), Ok(t));
+//!
+//! // The arena: what actually crosses the boundary, and back.
+//! let (nodes, root) = flatten_value(&v);
+//! assert_eq!(unflatten_value(&nodes, root), Ok(v));
+//! ```
 
 use std::collections::BTreeMap;
 
@@ -33,8 +73,11 @@ use std::collections::BTreeMap;
 /// `option-type`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScalarKind {
+    /// `true` / `false`; carried as [`Value::Bool`].
     Bool,
+    /// A signed 64-bit integer; carried as [`Value::Int`].
     Int,
+    /// A UTF-8 string; carried as [`Value::Str`].
     Str,
 }
 
@@ -42,34 +85,62 @@ pub enum ScalarKind {
 /// `:describe-option` and `:customize` render beside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
+    /// The field's key as a config file spells it. The derive kebab-cases the
+    /// Rust identifier (`max_depth` → `max-depth`) and strips a raw-identifier
+    /// prefix (`r#match` → `match`), so this is the wire name, not the Rust one.
     pub name: String,
+    /// The shape the field's value must have.
     pub schema: Schema,
     /// Derived from the Rust type: an `Option<T>` field is optional, everything
     /// else is required. That mapping is the whole reason the derive can decide
     /// this without an attribute — the type already says it.
     pub required: bool,
+    /// The field's `///` doc-comment, lines joined and trimmed; empty when the
+    /// field has none.
     pub doc: String,
 }
 
 /// The declared shape of a value. Mirrors `lattice_config::ConfigSchema`.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_plugin_sdk::shape::{ConfigShape, ScalarKind, Schema};
+///
+/// // The constructors are shorthands for the scalar / list forms.
+/// assert_eq!(Schema::int(), Schema::Scalar(ScalarKind::Int));
+/// assert_eq!(<Vec<String> as ConfigShape>::schema(), Schema::list(Schema::string()));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Schema {
+    /// A single leaf of the given kind.
     Scalar(ScalarKind),
+    /// A closed set of strings; a value must be a [`Value::Str`] spelling one
+    /// of them. `#[derive(ConfigShape)]` on an all-unit enum produces this,
+    /// variants kebab-cased in declaration order — and it is what lets
+    /// `:customize` offer a picker instead of a text field.
     Enum(Vec<String>),
+    /// A homogeneous list whose every element has the inner shape.
     List(Box<Schema>),
+    /// A struct-like record: named fields, each with its own shape, doc and
+    /// required flag. Field order is declaration order.
     Record(Vec<Field>),
 }
 
 impl Schema {
+    /// `Schema::Scalar(ScalarKind::Str)`.
     pub fn string() -> Self {
         Schema::Scalar(ScalarKind::Str)
     }
+    /// `Schema::Scalar(ScalarKind::Int)`.
     pub fn int() -> Self {
         Schema::Scalar(ScalarKind::Int)
     }
+    /// `Schema::Scalar(ScalarKind::Bool)`.
     pub fn bool() -> Self {
         Schema::Scalar(ScalarKind::Bool)
     }
+    /// A list whose elements have shape `inner` (boxes it for you).
     pub fn list(inner: Schema) -> Self {
         Schema::List(Box::new(inner))
     }
@@ -80,20 +151,46 @@ impl Schema {
 /// `Record` is a `BTreeMap` for the same reason the host's is: a value written
 /// in TOML (unordered) and the same value built from a struct must compare
 /// equal, or "the same config" is two values.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_plugin_sdk::shape::Value;
+///
+/// let v = Value::record([
+///     ("width".to_string(), Value::Int(80)),
+///     ("wrap".to_string(), Value::Bool(true)),
+/// ]);
+/// assert_eq!(v.field("width").and_then(Value::as_int), Some(80));
+/// // Accessors are kind-checked: the wrong kind is `None`, not a coercion.
+/// assert_eq!(v.field("wrap").and_then(Value::as_int), None);
+/// assert_eq!(v.kind_label(), "record");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
+    /// A boolean leaf.
     Bool(bool),
+    /// An integer leaf.
     Int(i64),
+    /// A string leaf — also how a [`Schema::Enum`] member is carried.
     Str(String),
+    /// An ordered list of values.
     List(Vec<Value>),
+    /// Named fields, key-ordered (see the type docs for why). An optional field
+    /// that is absent has no entry at all.
     Record(BTreeMap<String, Value>),
 }
 
 impl Value {
+    /// Build a [`Value::Record`] from `(key, value)` pairs. A repeated key keeps
+    /// the last value (it is collected into a `BTreeMap`).
     pub fn record(fields: impl IntoIterator<Item = (String, Value)>) -> Self {
         Value::Record(fields.into_iter().collect())
     }
 
+    /// The human name of this value's kind — `"boolean"`, `"integer"`,
+    /// `"string"`, `"list"` or `"record"` — as used in [`ShapeError`] messages
+    /// (`expected integer, got string`).
     pub fn kind_label(&self) -> &'static str {
         match self {
             Value::Bool(_) => "boolean",
@@ -104,30 +201,37 @@ impl Value {
         }
     }
 
+    /// The boolean, if this is a [`Value::Bool`]; `None` for any other kind.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Value::Bool(b) => Some(*b),
             _ => None,
         }
     }
+    /// The integer, if this is a [`Value::Int`]; `None` for any other kind.
     pub fn as_int(&self) -> Option<i64> {
         match self {
             Value::Int(i) => Some(*i),
             _ => None,
         }
     }
+    /// The string, if this is a [`Value::Str`]; `None` for any other kind.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::Str(s) => Some(s),
             _ => None,
         }
     }
+    /// The elements, if this is a [`Value::List`]; `None` for any other kind.
     pub fn as_list(&self) -> Option<&[Value]> {
         match self {
             Value::List(items) => Some(items),
             _ => None,
         }
     }
+    /// The field named `name` (its wire, kebab-case spelling), if this is a
+    /// [`Value::Record`] that has it. `None` both for a missing field and for
+    /// a value that is not a record at all.
     pub fn field(&self, name: &str) -> Option<&Value> {
         match self {
             Value::Record(map) => map.get(name),
@@ -144,13 +248,33 @@ impl Value {
 /// interpret further (an enum spelled as a string, a path, a duration). Those
 /// are exactly the cases where a path matters, so it is carried rather than
 /// dropped.
+///
+/// `Display` renders `path: message`, or just `message` at the root.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_plugin_sdk::shape::{ConfigShape, Value};
+///
+/// let v = Value::List(vec![Value::Int(1), Value::Str("two".into())]);
+/// let err = <Vec<i64>>::from_value(&v).unwrap_err();
+/// assert_eq!(err.path, "[1]");
+/// assert_eq!(err.to_string(), "[1]: expected integer, got string");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShapeError {
+    /// Where the failure is, outermost segment first: field names joined with
+    /// `.`, list indices as `[i]` with no dot before them
+    /// (`templates[2].target.file`). Empty when the root value itself failed.
     pub path: String,
+    /// What went wrong at that location, e.g. `expected integer, got string` or
+    /// `required field is missing`.
     pub message: String,
 }
 
 impl ShapeError {
+    /// An error at the root (empty [`path`](Self::path)); callers above it
+    /// prepend their segment with [`under`](Self::under).
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             path: String::new(),
@@ -161,6 +285,19 @@ impl ShapeError {
     /// Prepend a segment as this error unwinds back up the walk. The derive
     /// calls it per field, so a leaf failure arrives at the top with the full
     /// path assembled and no field having had to know where it lives.
+    ///
+    /// A `.` separator is inserted unless the existing path begins with an
+    /// index segment (`[`), so indices attach directly to their list.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_plugin_sdk::shape::ShapeError;
+    ///
+    /// // Segments are discovered inside-out, so they are prepended.
+    /// let e = ShapeError::new("boom").under("file").under("[0]").under("targets");
+    /// assert_eq!(e.path, "targets[0].file");
+    /// ```
     pub fn under(mut self, segment: &str) -> Self {
         self.path = if self.path.is_empty() {
             segment.to_string()
@@ -192,9 +329,46 @@ impl std::error::Error for ShapeError {}
 /// `to_value` must produce something `schema` accepts, and `from_value` must
 /// invert `to_value`. A type where they disagree is a silently lossy option,
 /// which is the failure the SDK's own round-trip test exists to catch.
+///
+/// Provided impls: `bool`, `i64`, `String`, `Vec<T>` and `Option<T>` (the last
+/// meaning "not required" at field position — see its impl). The derive
+/// supports structs with named fields (→ [`Schema::Record`]) and all-unit enums
+/// (→ [`Schema::Enum`]); tuple structs, data-carrying enums and unions are
+/// compile errors. The derive is re-exported at the crate root as
+/// `lattice_plugin_sdk::ConfigShape`, beside this trait's path in `shape`.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_plugin_sdk::ConfigShape;
+/// use lattice_plugin_sdk::shape::{ConfigShape as _, Schema, Value};
+///
+/// /// How a capture is filed.
+/// #[derive(Debug, PartialEq, ConfigShape)]
+/// enum Disposition { Append, FileUnder }
+///
+/// assert_eq!(
+///     Disposition::schema(),
+///     Schema::Enum(vec!["append".into(), "file-under".into()]),
+/// );
+/// assert_eq!(
+///     Disposition::from_value(&Value::Str("file-under".into())),
+///     Ok(Disposition::FileUnder),
+/// );
+/// assert!(Disposition::from_value(&Value::Str("sideways".into())).is_err());
+/// ```
 pub trait ConfigShape: Sized {
+    /// The declared shape, as sent to the host when the option is registered.
     fn schema() -> Schema;
+    /// This value as a tree the host can validate against
+    /// [`schema`](Self::schema). Must always be accepted by it.
     fn to_value(&self) -> Value;
+    /// Read a value back; the inverse of [`to_value`](Self::to_value).
+    ///
+    /// # Errors
+    ///
+    /// A [`ShapeError`] carrying the path to the offending node when a kind is
+    /// wrong, a required field is missing, or an enum string names no variant.
     fn from_value(value: &Value) -> Result<Self, ShapeError>;
 }
 
@@ -296,28 +470,42 @@ impl<T: ConfigShape> ConfigShape for Option<T> {
 /// list [`flatten_schema`] returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchemaNode {
+    /// [`Schema::Scalar`]; a leaf.
     Scalar(ScalarKind),
+    /// [`Schema::Enum`]; a leaf carrying the allowed strings.
     Enum(Vec<String>),
+    /// [`Schema::List`]; the index of the element schema's node.
     List(u32),
+    /// [`Schema::Record`]; one [`FieldNode`] per field, in declaration order.
     Record(Vec<FieldNode>),
 }
 
 /// A [`Field`] with its schema as an index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldNode {
+    /// [`Field::name`] — the wire (kebab-case) key.
     pub name: String,
+    /// Index of the field's schema node in the same arena.
     pub schema: u32,
+    /// [`Field::required`].
     pub required: bool,
+    /// [`Field::doc`].
     pub doc: String,
 }
 
 /// One node of a flattened [`Value`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueNode {
+    /// [`Value::Bool`].
     Bool(bool),
+    /// [`Value::Int`].
     Int(i64),
+    /// [`Value::Str`].
     Str(String),
+    /// [`Value::List`]; the element nodes' indices, in order.
     List(Vec<u32>),
+    /// [`Value::Record`]; `(key, node index)` pairs in key order (the
+    /// `BTreeMap`'s iteration order when flattened).
     Record(Vec<(String, u32)>),
 }
 
@@ -327,6 +515,18 @@ pub enum ValueNode {
 /// handed out for a slot still being built. No dedup — a schema crosses once
 /// per option per load, and hashing every subtree to save a few nodes on a
 /// cold path is the wrong trade.
+///
+/// The root is therefore always the last node: `root == nodes.len() - 1`.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_plugin_sdk::shape::{Schema, SchemaNode, ScalarKind, flatten_schema};
+///
+/// let (nodes, root) = flatten_schema(&Schema::list(Schema::int()));
+/// assert_eq!(nodes, vec![SchemaNode::Scalar(ScalarKind::Int), SchemaNode::List(0)]);
+/// assert_eq!(root, 1);
+/// ```
 pub fn flatten_schema(schema: &Schema) -> (Vec<SchemaNode>, u32) {
     let mut nodes = Vec::new();
     let root = push_schema(&mut nodes, schema);
@@ -384,6 +584,27 @@ fn push_value(nodes: &mut Vec<ValueNode>, value: &Value) -> u32 {
 /// guest receives is well-formed by construction today, but a guest that
 /// assumed so and recursed would be one host bug away from an unbounded walk in
 /// wasm, where the failure is a trap the user sees as the plugin crashing.
+///
+/// # Errors
+///
+/// A [`ShapeError`] (with an empty path) when any reachable index is out of
+/// range or a node is reached again from its own descendants. A node shared by
+/// two siblings is *not* a cycle and is accepted.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_plugin_sdk::shape::{Value, ValueNode, unflatten_value};
+///
+/// let nodes = [ValueNode::Int(7), ValueNode::List(vec![0, 0])];
+/// assert_eq!(
+///     unflatten_value(&nodes, 1),
+///     Ok(Value::List(vec![Value::Int(7), Value::Int(7)])),
+/// );
+///
+/// // A self-referencing list is refused rather than walked forever.
+/// assert!(unflatten_value(&[ValueNode::List(vec![0])], 0).is_err());
+/// ```
 pub fn unflatten_value(nodes: &[ValueNode], root: u32) -> Result<Value, ShapeError> {
     fn go(nodes: &[ValueNode], i: u32, on_path: &mut Vec<u32>) -> Result<Value, ShapeError> {
         let node = nodes.get(i as usize).ok_or_else(|| {

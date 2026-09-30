@@ -1,10 +1,13 @@
-//! `lattice-plugin-sdk` — the guest-side ergonomic layer OVER the opaque plugin
-//! event wire (PH7.8b.3). Compiled INTO plugins (any component-model language via
-//! its own toolchain; Rust today), never into the host.
+//! The guest-side Rust SDK for lattice plugins: typed event payloads, typed
+//! options and typed configuration shapes layered over the plugin-host WIT
+//! wire. Compiled INTO plugins (Rust today; other component-model languages
+//! use the WIT directly), never into the host.
 //!
-//! ## What it is
+//! ## What it owns
 //!
-//! The plugin-host `emit-event` / `register-event` host-services (PH7.8b.2) carry
+//! The WIT is the plugin API; this crate adds **zero** capability that is not
+//! on the wire — only ergonomics a Rust author would otherwise hand-write. The
+//! plugin-host `emit-event` / `register-event` host-services (PH7.8b.2) carry
 //! `name: string` + `payload: list<u8>` — opaque MessagePack the host never
 //! interprets. That is deliberate (the boundary discipline the whole host rests
 //! on), but raw bytes are a poor author API. This crate adds the type-safe layer:
@@ -15,21 +18,61 @@
 //!     from the struct's `///` doc-comment (the doc-comment IS the event doc),
 //!     `NAME` from `#[event(name = "...")]` or the kebab-cased type name.
 //!   - [`try_decode`] — the subscriber-side helper: name-gate + decode in one.
+//!   - [`PluginOption`] + `#[derive(PluginOption)]` + [`parse_option`] — the
+//!     same shape for scalar options (`bool` / `i64` / `String`).
+//!   - [`shape`] — [`shape::ConfigShape`] + `#[derive(ConfigShape)]`: a Rust
+//!     struct as a structured config schema and value, and the arena
+//!     flattening ([`shape::flatten_schema`], [`shape::flatten_value`],
+//!     [`shape::unflatten_value`]) the WIT seam needs.
+//!
+//! ## What it must not depend on
+//!
+//! No `lattice-*` runtime crate and no `wit-bindgen` bindings — only `serde`,
+//! `rmp-serde` and its own derive. Two structural reasons: it is published and
+//! versioned for out-of-tree plugin authors, so it cannot drag the editor in;
+//! and it must compose with EVERY plugin world, which it can only do by naming
+//! none of their generated types. It is a separate crate because it is the one
+//! piece of lattice that compiles into guests.
 //!
 //! ## WIT-agnostic by design (approach A)
 //!
 //! This crate touches **no** plugin-host bindings — it is pure serde + a derive.
-//! The host calls stay plugin-side one-liners using the derived constants:
+//! The host calls stay plugin-side one-liners using the derived constants
+//! (`host_services` below stands in for a plugin's generated bindings):
 //!
-//! ```ignore
-//! // at register-events:
-//! host_services::register_event(MyEvent::NAME, MyEvent::DOC);
-//! // to emit:
-//! host_services::emit_event(MyEvent::NAME, &my_event.encode());
-//! // in on-event(name, payload):
-//! if let Some(ev) = lattice_plugin_sdk::try_decode::<MyEvent>(name, payload) {
-//!     let ev = ev?; // a real MyEvent
+//! ```
+//! use lattice_plugin_sdk::{DecodeError, PluginEvent};
+//! use serde::{Deserialize, Serialize};
+//! # mod host_services {
+//! #     pub fn register_event(_name: &str, _doc: &str) {}
+//! #     pub fn emit_event(_name: &str, _payload: &[u8]) {}
+//! # }
+//!
+//! /// The indexer finished scanning a file.
+//! #[derive(Debug, PartialEq, Serialize, Deserialize, PluginEvent)]
+//! #[event(name = "indexer.file-scanned")]
+//! struct FileScanned {
+//!     path: String,
+//!     symbols: u32,
 //! }
+//!
+//! // at register-events:
+//! host_services::register_event(FileScanned::NAME, FileScanned::DOC);
+//! // to emit:
+//! let ev = FileScanned { path: "src/lib.rs".into(), symbols: 42 };
+//! let payload = ev.encode();
+//! host_services::emit_event(FileScanned::NAME, &payload);
+//!
+//! // in another plugin's on-event(name, payload):
+//! # fn on_event(name: &str, payload: &[u8]) -> Result<Option<FileScanned>, DecodeError> {
+//! if let Some(ev) = lattice_plugin_sdk::try_decode::<FileScanned>(name, payload) {
+//!     let ev = ev?; // a real FileScanned
+//!     return Ok(Some(ev));
+//! }
+//! # Ok(None)
+//! # }
+//! assert_eq!(on_event("indexer.file-scanned", &payload), Ok(Some(ev)));
+//! assert_eq!(FileScanned::DOC, "The indexer finished scanning a file.");
 //! ```
 //!
 //! Because the SDK is world-agnostic it composes with EVERY plugin world (events,
@@ -42,6 +85,16 @@
 //! Because a `PluginEvent` type is just a serde struct, plugin A can publish its
 //! event types in a shared crate and plugin B can depend on it — a
 //! compile-checked, versioned event contract (the coordinating-plugins use case).
+//!
+//! ## Design
+//!
+//! - `docs/dev/architecture/plugin-host.md` — the host the wire talks to, and
+//!   the events / config seams this crate types.
+//! - `docs/dev/architecture/typed-configuration.md` — [`shape`] and the arena
+//!   encoding.
+//! - `docs/dev/guides/plugin-authoring.md` — end-to-end plugin authoring.
+
+#![warn(missing_docs)]
 
 // So the derive's generated `::lattice_plugin_sdk::..` paths resolve inside this
 // crate's own tests (the `lattice-config` / serde precedent for a crate that
@@ -50,8 +103,6 @@ extern crate self as lattice_plugin_sdk;
 
 pub use lattice_plugin_sdk_derive::{ConfigShape, PluginEvent, PluginOption};
 
-/// TC.4 — a Rust struct as a config schema and a config value, plus the arena
-/// flattening the WIT seam needs (`typed-configuration.md`).
 pub mod shape;
 
 /// A plugin-defined event: a typed view over the opaque `emit-event` /
@@ -61,6 +112,32 @@ pub mod shape;
 /// `NAME` is the wire identifier (matched by subscribers, registered via
 /// `register-event`); `DOC` is the human summary surfaced in `:describe-event`.
 /// `encode` / `decode` round-trip the payload as MessagePack.
+///
+/// The derive requires the struct to implement serde's `Serialize` and
+/// `Deserialize`; its `NAME` defaults to the kebab-cased type name
+/// (`MyCustomEvent` → `my-custom-event`, acronyms degrade per letter), so real
+/// plugins namespace it explicitly with `#[event(name = "plugin.event")]`.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_plugin_sdk::PluginEvent;
+/// use serde::{Deserialize, Serialize};
+///
+/// /// Kebab-name fallback event.
+/// #[derive(Debug, PartialEq, Serialize, Deserialize, PluginEvent)]
+/// struct MyCustomEvent {
+///     value: i64,
+/// }
+///
+/// assert_eq!(MyCustomEvent::NAME, "my-custom-event");
+/// assert_eq!(MyCustomEvent::DOC, "Kebab-name fallback event.");
+///
+/// let bytes = MyCustomEvent { value: 7 }.encode();
+/// assert_eq!(MyCustomEvent::decode(&bytes), Ok(MyCustomEvent { value: 7 }));
+/// // A payload for some other type is a typed error, never a panic.
+/// assert!(MyCustomEvent::decode(&[0xc0]).is_err());
+/// ```
 pub trait PluginEvent: Sized {
     /// The event's wire name — the identifier crossed to `emit-event` and
     /// matched by subscribers (e.g. `"git.hunks-changed"`).
@@ -70,6 +147,12 @@ pub trait PluginEvent: Sized {
     const DOC: &'static str;
 
     /// Serialize to the opaque MessagePack payload `emit-event` carries.
+    ///
+    /// # Panics
+    ///
+    /// The derived impl panics only if the type's `Serialize` impl itself
+    /// errors, which a plain derived serde struct never does; a hand-written
+    /// `Serialize` that can fail is treated as a programming bug.
     fn encode(&self) -> Vec<u8>;
 
     /// Deserialize from a payload received on `on-event`. A malformed / mistyped
@@ -80,8 +163,14 @@ pub trait PluginEvent: Sized {
 /// A failed [`PluginEvent::decode`] — the payload was not valid MessagePack for
 /// the target type (wrong event type, version skew, corruption). Carries the
 /// underlying decoder message; opaque and stable (it hides the serde impl).
+///
+/// `Display` renders `plugin event decode failed: <message>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DecodeError(pub String);
+pub struct DecodeError(
+    /// The decoder's own message. Diagnostic text for logs, not a stable
+    /// format to match on.
+    pub String,
+);
 
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -93,38 +182,78 @@ impl std::error::Error for DecodeError {}
 
 /// Subscriber-side helper: if `name` names event `E`, decode `payload` into it;
 /// otherwise `None` (the event is for a different subscriber). Folds the
-/// name-gate the guest would otherwise write by hand in `on-event` into one call:
+/// name-gate the guest would otherwise write by hand in `on-event` into one call.
 ///
-/// ```ignore
-/// match lattice_plugin_sdk::try_decode::<Indexed>(name, payload) {
-///     Some(Ok(ev)) => react(ev),
-///     Some(Err(e)) => log(e),   // our event, but a bad payload
-///     None => {}                // not our event
+/// The name match is exact (case-sensitive, no prefix matching); when it fails
+/// the payload is not looked at.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_plugin_sdk::{PluginEvent, try_decode};
+/// use serde::{Deserialize, Serialize};
+///
+/// /// A project finished indexing.
+/// #[derive(Debug, PartialEq, Serialize, Deserialize, PluginEvent)]
+/// #[event(name = "indexer.indexed")]
+/// struct Indexed { files: u32 }
+///
+/// let payload = Indexed { files: 3 }.encode();
+/// match try_decode::<Indexed>("indexer.indexed", &payload) {
+///     Some(Ok(ev)) => assert_eq!(ev.files, 3),
+///     Some(Err(e)) => panic!("our event, but a bad payload: {e}"),
+///     None => panic!("not our event"),
 /// }
+/// // Some other plugin's event: not decoded at all.
+/// assert_eq!(try_decode::<Indexed>("git.hunks-changed", &payload), None);
+/// // Our name, garbage bytes: a typed error.
+/// assert!(matches!(try_decode::<Indexed>("indexer.indexed", &[0xc1]), Some(Err(_))));
 /// ```
 pub fn try_decode<E: PluginEvent>(name: &str, payload: &[u8]) -> Option<Result<E, DecodeError>> {
     (name == E::NAME).then(|| E::decode(payload))
 }
 
-/// A plugin-defined option (PH7.10b) — a typed view over the `config`
-/// register/read wire. Implement via `#[derive(PluginOption)]` on a newtype over
-/// `bool` / `i64` / `String`:
-///
-/// ```ignore
-/// /// How many things the plugin tracks.
-/// #[derive(PluginOption)]
-/// #[option(name = "myplugin.count", default = "3")]
-/// struct Count(i64);
-/// ```
+/// A plugin-defined scalar option — a typed view over the `config`
+/// register/read wire (slice PH7.10b). Implement via `#[derive(PluginOption)]`
+/// on a newtype over `bool` / `i64` / `String`; `#[option(default = "...")]` is
+/// required, `#[option(name = "...")]` defaults to the kebab-cased type name.
+/// For structured (record / list / enum) options use [`shape::ConfigShape`]
+/// instead.
 ///
 /// It is **WIT-agnostic** (approach A): the derive only supplies these constants
 /// plus the value type. The plugin makes the `config.register-option` /
 /// `config.get-option` WIT calls itself, mapping [`OptionKind`] to the generated
-/// `option-type`:
+/// `option-type` (`config` below stands in for a plugin's generated bindings):
 ///
-/// ```ignore
+/// ```
+/// use lattice_plugin_sdk::{OptionKind, PluginOption, parse_option};
+/// # mod config {
+/// #     pub enum OptionType { Boolean, Integer, String }
+/// #     pub fn register_option(_: &str, _: OptionType, _: &str, _: &str) {}
+/// #     pub fn get_option(_: &str) -> Option<String> { Some("5".into()) }
+/// # }
+///
+/// /// How many things the plugin tracks.
+/// #[derive(PluginOption)]
+/// #[option(name = "myplugin.count", default = "3")]
+/// struct Count(i64);
+///
+/// // The one per-plugin mapping to the generated WIT enum.
+/// fn wit_ty(kind: OptionKind) -> config::OptionType {
+///     match kind {
+///         OptionKind::Boolean => config::OptionType::Boolean,
+///         OptionKind::Integer => config::OptionType::Integer,
+///         OptionKind::String => config::OptionType::String,
+///     }
+/// }
+///
 /// config::register_option(Count::NAME, wit_ty(Count::KIND), Count::DEFAULT, Count::DOC);
-/// let value = parse_option::<Count>(&config::get_option(Count::NAME).unwrap())?;
+/// let value: i64 = parse_option::<Count>(&config::get_option(Count::NAME).unwrap()).unwrap();
+///
+/// assert_eq!(value, 5);
+/// assert_eq!(Count::NAME, "myplugin.count");
+/// assert_eq!(Count::KIND, OptionKind::Integer);
+/// assert_eq!(Count::DOC, "How many things the plugin tracks.");
 /// ```
 pub trait PluginOption {
     /// The option's registry name (matched by `:set`, shown in `:describe-option`).
@@ -146,15 +275,37 @@ pub trait PluginOption {
 /// per-world WIT type — approach A).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionKind {
+    /// A `bool` option; the derive picks it for a `bool` field.
     Boolean,
+    /// A signed integer option; the derive picks it for an `i64` field.
     Integer,
+    /// A free-form string option; the derive picks it for a `String` field.
     String,
 }
 
-/// Parse a `get-option` result string into the option's typed value (PH7.10b).
-/// `get-option` returns the value formatted by the native `OptionType`; this
-/// reads it back into `O::Value` via its `FromStr`. A malformed string is a typed
-/// [`OptionParseError`], never a panic.
+/// Parse a `get-option` result string into the option's typed value (slice
+/// PH7.10b). `get-option` returns the value formatted by the native
+/// `OptionType`; this reads it back into `O::Value` via its `FromStr`.
+///
+/// # Errors
+///
+/// A malformed string is a typed [`OptionParseError`] carrying the `FromStr`
+/// error's message, never a panic.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_plugin_sdk::{PluginOption, parse_option};
+///
+/// /// Whether long lines wrap.
+/// #[derive(PluginOption)]
+/// #[option(default = "true")]
+/// struct WrapLines(bool);
+///
+/// assert_eq!(WrapLines::NAME, "wrap-lines");
+/// assert_eq!(parse_option::<WrapLines>("false"), Ok(false));
+/// assert!(parse_option::<WrapLines>("yes").is_err());
+/// ```
 pub fn parse_option<O: PluginOption>(s: &str) -> Result<O::Value, OptionParseError>
 where
     <O::Value as std::str::FromStr>::Err: std::fmt::Display,
@@ -165,8 +316,14 @@ where
 
 /// A failed [`parse_option`] — the `get-option` string didn't parse for the
 /// option's value type. Carries the underlying parser message.
+///
+/// `Display` renders `plugin option parse failed: <message>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OptionParseError(pub String);
+pub struct OptionParseError(
+    /// The value type's `FromStr` error message, e.g. `invalid digit found in
+    /// string`. Diagnostic text, not a stable format to match on.
+    pub String,
+);
 
 impl std::fmt::Display for OptionParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -14,24 +14,59 @@
 //! ```text
 //! { "package": "lattice:plugin-host@0.1.0",
 //!   "interfaces": [ { "name", "doc", "direction", "capability",
+//!       "examples": [ EXAMPLE ],
 //!       "functions": [ { "name", "display_name", "kind", "resource",
 //!                        "async", "params": [ {"name","type"} ],
-//!                        "result", "signature", "doc" } ],
+//!                        "result", "signature", "doc",
+//!                        "examples": [ EXAMPLE ] } ],
 //!       "types": [ { "name", "kind", "doc", "definition",
-//!                    "members": [ {"name","type","doc"} ] } ],
+//!                    "members": [ {"name","type","doc"} ],
+//!                    "examples": [ EXAMPLE ] } ],
 //!       "uses": [ { "name", "from", "original" } ] } ],
 //!   "worlds": [ { "name", "doc", "imports", "exports" } ] }
+//!
+//! EXAMPLE = { "id", "caption", "source", "language", "code" }
 //! ```
+//!
+//! Examples sit on the item they illustrate (a method's on the method, a
+//! resource-level one on the resource's type entry), so a consumer reading a
+//! function has its examples without a second lookup.
 
+use crate::examples::Examples;
 use crate::render::{capability_short, direction_short, wit_definition};
 use crate::{ApiFunctionKind, ApiTypeKind, PluginApiCatalog};
 
-/// The whole catalog as pretty-printed JSON, newline-terminated.
-pub fn to_json(cat: &PluginApiCatalog) -> String {
+/// The whole catalog as pretty-printed JSON, newline-terminated. `examples`
+/// is the guest scan, or `None` to emit empty `examples` arrays.
+pub fn to_json(cat: &PluginApiCatalog, examples: Option<&Examples>) -> String {
     let interfaces = cat
         .interfaces
         .iter()
         .map(|i| {
+            let examples_for = |item: Option<&str>| {
+                let target = match item {
+                    Some(item) => format!("{}.{item}", i.name),
+                    None => i.name.clone(),
+                };
+                Json::Arr(
+                    examples
+                        .map(|ex| {
+                            ex.for_target(&target)
+                                .into_iter()
+                                .map(|e| {
+                                    Json::obj([
+                                        ("id", s(&e.id)),
+                                        ("caption", s(&e.caption)),
+                                        ("source", s(&e.source)),
+                                        ("language", s("rust")),
+                                        ("code", s(&e.code)),
+                                    ])
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                )
+            };
             let functions = i
                 .functions
                 .iter()
@@ -57,6 +92,7 @@ pub fn to_json(cat: &PluginApiCatalog) -> String {
                         ("result", opt(f.result.as_deref())),
                         ("signature", s(&f.signature())),
                         ("doc", opt(f.doc.as_deref())),
+                        ("examples", examples_for(Some(&f.display_name()))),
                     ])
                 })
                 .collect();
@@ -86,6 +122,7 @@ pub fn to_json(cat: &PluginApiCatalog) -> String {
                         ("doc", opt(t.doc.as_deref())),
                         ("definition", s(&wit_definition(t))),
                         ("members", Json::Arr(members)),
+                        ("examples", examples_for(Some(&t.name))),
                     ])
                 })
                 .collect();
@@ -105,6 +142,7 @@ pub fn to_json(cat: &PluginApiCatalog) -> String {
                 ("doc", opt(i.doc.as_deref())),
                 ("direction", s(direction_short(i.direction))),
                 ("capability", s(capability_json(i.capability))),
+                ("examples", examples_for(None)),
                 ("functions", Json::Arr(functions)),
                 ("types", Json::Arr(types)),
                 ("uses", Json::Arr(uses)),

@@ -11,6 +11,7 @@
 //! ([`markdown`]) and, from AD.2, one page per seam — so the two cannot
 //! disagree about what a seam contains.
 
+use crate::examples::{ApiExample, Examples};
 use crate::{
     ApiFunction, ApiFunctionKind, ApiInterface, ApiType, ApiTypeKind, Capability, Direction,
     PluginApiCatalog,
@@ -90,7 +91,10 @@ pub const GENERATED_HEADER: &str = "\
 /// One page per seam serves both readers: a person lands on the seam they
 /// searched for, and an agent loads the one page it needs instead of the
 /// whole API.
-pub fn pages() -> Vec<(String, String)> {
+///
+/// `examples` is the scan of the guests ([`crate::examples::scan`]); each one
+/// is rendered under the function, type or seam it targets.
+pub fn pages(examples: &Examples) -> Vec<(String, String)> {
     let cat = crate::catalog();
     let mut out = vec![(
         "plugin-api.md".to_string(),
@@ -101,11 +105,14 @@ pub fn pages() -> Vec<(String, String)> {
             format!("plugin-api/{}.md", iface.name),
             format!(
                 "{GENERATED_HEADER}{}",
-                seam_with(cat, iface, 1, Links::Pages)
+                seam_with(cat, iface, 1, Links::Pages, Some(examples))
             ),
         ));
     }
-    out.push(("plugin-api.json".to_string(), crate::json::to_json(cat)));
+    out.push((
+        "plugin-api.json".to_string(),
+        crate::json::to_json(cat, Some(examples)),
+    ));
     out
 }
 
@@ -223,7 +230,7 @@ pub fn summary(doc: Option<&str>) -> String {
 /// defines in WIT source order. Functions come before types because a reader
 /// arrives asking "what can I call"; the types answer the follow-up question.
 pub fn seam(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize) -> String {
-    seam_with(cat, iface, level, Links::None)
+    seam_with(cat, iface, level, Links::None, None)
 }
 
 /// Whether type names become links. The single document is read as one
@@ -236,7 +243,24 @@ enum Links {
     Pages,
 }
 
-fn seam_with(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize, links: Links) -> String {
+fn seam_with(
+    cat: &PluginApiCatalog,
+    iface: &ApiInterface,
+    level: usize,
+    links: Links,
+    examples: Option<&Examples>,
+) -> String {
+    // Examples for `<seam>` or `<seam>.<item>`; none when rendering without
+    // a scan (the editor's in-app export — see `examples.rs` for why).
+    let examples_for = |item: Option<&str>| -> Vec<&ApiExample> {
+        let target = match item {
+            Some(item) => format!("{}.{item}", iface.name),
+            None => iface.name.clone(),
+        };
+        examples
+            .map(|ex| ex.for_target(&target))
+            .unwrap_or_default()
+    };
     let h = |n: usize| "#".repeat((level + n).min(6));
     let mut out = String::new();
 
@@ -257,6 +281,7 @@ fn seam_with(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize, links: 
         out.push_str(&demote_headings(doc, level + 1));
         out.push_str("\n\n");
     }
+    example_blocks(&mut out, &examples_for(None), links);
 
     if !iface.uses.is_empty() {
         out.push_str(&format!("{} Uses\n\n", h(1)));
@@ -300,6 +325,7 @@ fn seam_with(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize, links: 
     }
     for f in freestanding {
         function(&mut out, f, &h(2));
+        example_blocks(&mut out, &examples_for(Some(&f.display_name())), links);
     }
 
     if !resources.is_empty() {
@@ -310,8 +336,10 @@ fn seam_with(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize, links: 
                 out.push_str(&demote_headings(doc, level + 3));
                 out.push_str("\n\n");
             }
+            example_blocks(&mut out, &examples_for(Some(&r.name)), links);
             for f in iface.functions.iter().filter(|f| belongs_to(f, &r.name)) {
                 function(&mut out, f, &h(3));
+                example_blocks(&mut out, &examples_for(Some(&f.display_name())), links);
             }
         }
     }
@@ -327,6 +355,7 @@ fn seam_with(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize, links: 
             type_def(&mut out, t, &h(2), level + 3, &|ty| {
                 type_link(cat, iface, ty, links)
             });
+            example_blocks(&mut out, &examples_for(Some(&t.name)), links);
         }
     }
 
@@ -363,6 +392,23 @@ fn type_link(
         .iter()
         .find(|t| t.name == u.original)?;
     Some(format!("{}.md#{}", u.from, type_anchor(def)))
+}
+
+/// Each example: its caption, where it lives, and the code. On the per-seam
+/// pages the source path links to the file (the site turns the repo-relative
+/// link into a GitHub URL); no line number, because a line number goes stale
+/// with every edit above the region and would churn the reference.
+fn example_blocks(out: &mut String, examples: &[&ApiExample], links: Links) {
+    for e in examples {
+        let source = match links {
+            Links::Pages => format!("[`{}`](../../../../{})", e.source, e.source),
+            Links::None => format!("`{}`", e.source),
+        };
+        out.push_str(&format!(
+            "**Example — {}** · {source}\n\n```rust\n{}\n```\n\n",
+            e.caption, e.code
+        ));
+    }
 }
 
 /// A function: heading, WIT signature, full doc.

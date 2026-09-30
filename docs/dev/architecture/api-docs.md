@@ -82,11 +82,18 @@ let files = host_services::walk(&WalkOptions { .. })?;
 ```
 
 The target is `<interface>` or `<interface>.<item>` where the item is a
-function or a type. `build.rs` scans `plugins/*/src/` and
+function (a method spelled `<resource>.<method>`, as the reference names it)
+or a type. `lattice-plugin-api::examples::scan` reads `plugins/*/src/` and
 `crates/lattice-plugin-host/tests/fixtures/*/src/`, dedents each region, and
-embeds it in the catalog with its repo-relative source path. So the example
-reaches the site page, the JSON export, the agent bundle, **and**
-`:describe-plugin-api` in a running editor — one extraction, every surface.
+hands it to the renderer, which places it under the item it targets — on the
+seam page and in the JSON.
+
+**Scanned at test time, not in `build.rs`.** Embedding examples in the
+compiled catalog would make every guest source a build input of
+`lattice-plugin-api`, which `lattice-host` links — so any edit to a plugin or
+fixture would relink the whole host. The accepted cost: the editor's in-app
+`:export-plugin-api` renders without examples; the published pages, the JSON
+and the agent bundle carry them.
 
 Why those two directories and not a new `examples/` tree: both are built by
 `lattice-plugin-host`'s `build.rs` against the current `wit/`, and the
@@ -94,11 +101,15 @@ fixtures are exercised by real guest↔host tests. An example taken from them
 compiles *and* runs. A separate examples tree would compile but nothing would
 prove it does what its caption says.
 
-Guards (§5): an example naming a target that does not exist fails; an
-unterminated region fails; a region in a directory `lattice-plugin-host` does
-not build fails; and a guest that fails to build under CI now fails instead of
-skipping (today `build_guest` sets the artefact path empty and the dependent
-test quietly skips, which would let an example rot unobserved).
+That build already fails when a guest does not compile and the
+`wasm32-wasip2` target is installed (as it is in CI) — so "CI compiles it"
+reduces to "`lattice-plugin-host/build.rs` builds it". One core plugin,
+`comment`, was built only by the release workflow; it is now built there
+too, and a test keeps every `plugins/*` crate in that list.
+
+Guards (§5): an example naming a target that does not exist fails; a
+malformed region (unterminated, nested, empty, uncaptioned, duplicate) fails;
+a region in a guest `lattice-plugin-host` does not build fails.
 
 ### 2.3 Pages
 
@@ -210,8 +221,8 @@ the artefacts above; none of it is written by hand.
 | Artefact | Guard | Fails when |
 |---|---|---|
 | plugin-API pages + JSON | `lattice-plugin-api` `site_reference_is_current` | `wit/` or an example changed and the files did not |
-| example regions | `lattice-plugin-api` example tests | target missing, region unterminated, source not built by CI |
-| guest builds | `lattice-plugin-host` test, under `CI` | any guest failed to build (today: silent skip) |
+| example regions | `lattice-plugin-api` `tests/examples.rs` | target missing, region malformed, source guest not built by `lattice-plugin-host` |
+| guest builds | `lattice-plugin-host/build.rs` (existing) + `every_core_plugin_is_compiled_in_ci` | a guest fails to compile with the wasm target installed; a `plugins/*` crate is not in the build list |
 | example coverage | ratchet list in the example test | a guest-facing seam has no example and is not on the (shrink-only) pending list |
 | WIT prose | path-rot test | a WIT doc names a path that does not exist |
 | guides | synced-block + reference tests | a quoted example or an `interface.item` reference no longer matches |

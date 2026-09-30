@@ -69,6 +69,32 @@ register-operator: func(name: string, doc: string, spec: operator-spec, callback
 
 Contribute an operator. `callback` → `grammar-callbacks.apply-operator`.
 
+**Example — Register an operator with its own chord (`gc`, doubled `gcc`)** · [`plugins/comment/src/lib.rs`](../../../../plugins/comment/src/lib.rs)
+
+```rust
+grammar::register_operator(
+    "comment-toggle",
+    "toggle line comments over the operated range",
+    &OperatorSpec {
+        repeatable: true,
+        args_schema: Vec::new(),
+        // `false`, and load-bearing: a blockwise `<C-v>` selection
+        // arrives as ONE contiguous range rather than per row, like
+        // `>` / `gU` and unlike `d` / `y`. Rule 1 is a property of the
+        // range — decided per row, a mixed block inverts. See
+        // `toggle::tests::a_mixed_block_must_be_decided_as_one_range`.
+        blockwise_per_row: false,
+        post_motion_char: false,
+        // CM.2: the chord travels with the operator. `doubled` is the
+        // TRAILING key, so this is `gcc` — the spelling commentary and
+        // Neovim use — rather than `gcgc`.
+        chord: Some("gc".to_string()),
+        doubled: Some("c".to_string()),
+    },
+    CB_TOGGLE,
+);
+```
+
 ### `register-text-object`
 
 ```wit

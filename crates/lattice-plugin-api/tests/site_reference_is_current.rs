@@ -21,8 +21,18 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
 fn reference_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/dev/reference")
+    repo_root().join("docs/dev/reference")
+}
+
+/// The reference as it should be on disk: rendered with the examples the
+/// guests currently carry.
+fn rendered_pages() -> Vec<(String, String)> {
+    lattice_plugin_api::render::pages(&lattice_plugin_api::examples::scan(&repo_root()))
 }
 
 const REGENERATE: &str = "Regenerate with:\n  \
@@ -44,7 +54,7 @@ fn seam_pages_on_disk() -> BTreeSet<String> {
 
 #[test]
 fn the_site_reference_matches_the_wit_package() {
-    let pages = lattice_plugin_api::render::pages();
+    let pages = rendered_pages();
     let expected: BTreeSet<String> = pages.iter().map(|(p, _)| p.clone()).collect();
     // A seam page with no seam behind it: the interface was removed or
     // renamed. Left on disk it would keep documenting an API that is gone.
@@ -86,7 +96,7 @@ fn the_site_reference_matches_the_wit_package() {
 /// deploy time; this fails at `cargo test`, next to the change that broke it.
 #[test]
 fn every_generated_link_resolves() {
-    let pages = lattice_plugin_api::render::pages();
+    let pages = rendered_pages();
     let anchors = |content: &str| -> BTreeSet<String> {
         content
             .lines()
@@ -161,7 +171,7 @@ fn every_generated_link_resolves() {
 /// escaping itself is unit-tested in `json.rs`.
 #[test]
 fn the_json_export_carries_the_whole_catalog() {
-    let json = lattice_plugin_api::json::to_json(lattice_plugin_api::catalog());
+    let json = lattice_plugin_api::json::to_json(lattice_plugin_api::catalog(), None);
     let cat = lattice_plugin_api::catalog();
     assert!(json.starts_with("{\n  \"package\": \"lattice:plugin-host@"));
     for iface in &cat.interfaces {

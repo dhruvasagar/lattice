@@ -47,6 +47,7 @@ struct Component;
 const CB_TOGGLE: u32 = 1;
 
 impl GrammarCallbacks for Component {
+    // @example grammar-callbacks.apply-operator: A linewise operator that reads the range and returns edits for the host to apply
     fn apply_operator(
         callback: u32,
         ctx: OperatorContext,
@@ -131,6 +132,7 @@ impl GrammarCallbacks for Component {
         }
         Ok(edits)
     }
+    // @end-example
 
     fn apply_motion(
         _callback: u32,
@@ -175,6 +177,7 @@ impl GrammarCallbacks for Component {
 
 impl Guest for Component {
     fn register_grammar() {
+        // @example grammar.register-operator: Register an operator with its own chord (`gc`, doubled `gcc`)
         grammar::register_operator(
             "comment-toggle",
             "toggle line comments over the operated range",
@@ -196,9 +199,11 @@ impl Guest for Component {
             },
             CB_TOGGLE,
         );
+        // @end-example
     }
 
     fn register_modes() {
+        // @example modes.register-mode: Declare a global minor mode that owns the plugin's surface
         modes::register_mode(&ModeDeclaration {
             id: "comment-mode".to_string(),
             kind: ModeKind::Minor,
@@ -218,6 +223,7 @@ impl Guest for Component {
             // give `gc` a motion, and would kill `gcc` besides.
             keymap: Vec::new(),
         });
+        // @end-example
     }
 
     fn register_options() {
@@ -226,21 +232,25 @@ impl Guest for Component {
         // Short name — the host namespaces it by plugin id, so this
         // registers as `comment.leader-space`. The default is a STRING parsed
         // against `ty`, not a typed literal.
+        // @example config.register-option: Register a typed option (namespaced by the host as `comment.leader-space`)
         config::register_option(
             "leader-space",
             OptionType::Boolean,
             "true",
             "insert a space between the comment leader and the code (`// x`, not `//x`)",
         );
+        // @end-example
     }
 
     fn register_help_topics() {
+        // @example help.register-topic: Ship the plugin's `:help` page, embedded at build time
         let _ = help::register_topic(
             "",
             "Toggle line comments with `gc` — an operator, so it takes any motion or text object.",
             include_str!("../doc/comment.md"),
             &["comment".to_string()],
         );
+        // @end-example
     }
 }
 

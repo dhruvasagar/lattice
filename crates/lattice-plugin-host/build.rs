@@ -235,6 +235,22 @@ fn main() {
         "project",
         "PROJECT_PLUGIN_WASM",
     );
+    // AD.3: the fourth bundled plugin, `gc` comment toggling. No test loads it
+    // yet; it is built here so CI COMPILES it. Before this it was compiled
+    // only by the release workflow (`cargo xtask build-core-plugins`), so a
+    // WIT change that broke it surfaced at release time — and it is the
+    // canonical operator example the plugin-API reference quotes, which
+    // must not be able to rot unseen. `lattice-plugin-api`'s
+    // `every_core_plugin_is_compiled_in_ci` keeps every `plugins/*` crate here.
+    build_guest(
+        &manifest_dir
+            .join("..")
+            .join("..")
+            .join("plugins")
+            .join("comment"),
+        "comment",
+        "COMMENT_PLUGIN_WASM",
+    );
 }
 
 /// Build one standalone `wasm32-wasip2` guest crate at `guest_dir` to a

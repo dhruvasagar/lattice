@@ -96,6 +96,17 @@ SHORT names; the host owns the namespace so plugins can't collide (and a
 user sets it as `:set auto-pair.style=…`). `get`/`set-option` resolve the
 same way (short name → own namespace).
 
+**Example — Register a typed option (namespaced by the host as `comment.leader-space`)** · [`plugins/comment/src/lib.rs`](../../../../plugins/comment/src/lib.rs)
+
+```rust
+config::register_option(
+    "leader-space",
+    OptionType::Boolean,
+    "true",
+    "insert a space between the comment leader and the code (`// x`, not `//x`)",
+);
+```
+
 ### `register-structured-option`
 
 ```wit

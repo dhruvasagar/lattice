@@ -27,7 +27,7 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 | **AD.0** | Design fragment + this plan | ✅ |
 | **AD.1** | Catalog carries types, `use`s and full signatures; single-page render shows them (closes PI.7) | ✅ |
 | **AD.2** | Per-seam pages + index page; JSON export; site sync of the generated subsection | ✅ |
-| **AD.3** | Example regions: extraction in `build.rs`, render, validation tests, CI guest-build guard | 📝 |
+| **AD.3** | Example regions: extraction, render, validation tests; `comment` compiled in CI | ✅ |
 | **AD.4** | Seed examples across the guest-facing seams; shrink-only pending list | 📝 |
 | **AD.5** | WIT prose accuracy: path-rot guard + fix stale references | 📝 |
 | **AD.6** | `plugin-patterns.md` guide with synced examples + reference guard; fix `plugin-authoring.md` | 📝 |
@@ -88,11 +88,25 @@ list (previously only `trampoline-fixture`) — three test worlds were
 listed as if a plugin should target them. They still count toward seam
 direction.
 
-### AD.3 — example regions
+### AD.3 — example regions (as built)
 
 Marker: `// @example <interface>[.<item>]: <caption>` … `// @end-example`.
 Scanned roots: `plugins/*/src`, `crates/lattice-plugin-host/tests/fixtures/*/src`.
-Extraction problems (unterminated, nested, empty) are collected into the
-catalog as data, not panics, so the test reports every one at once.
-`lattice-plugin-host/build.rs` records failed guest builds in an env var; a
-test fails on a non-empty list when `CI` is set.
+Extraction problems (unterminated, nested, empty, uncaptioned, duplicate)
+are collected as data, not panics, so the test reports every one at once.
+
+Two deviations from the plan, both from reading the code rather than the
+design's assumptions:
+
+- **Extraction moved from `build.rs` to test time** (`examples::scan`).
+  In `build.rs` every guest source becomes a build input of a crate
+  `lattice-host` links, so any plugin edit relinks the host. Cost accepted:
+  `:export-plugin-api` in the editor has no examples.
+- **The "CI guest-build guard" was already there.** `build_guest` panics
+  when a guest fails to compile and `wasm32-wasip2` is installed (OA.22).
+  The real gap was a guest nobody built: `plugins/comment`, compiled only
+  at release. It is now in `lattice-plugin-host/build.rs`, and
+  `every_core_plugin_is_compiled_in_ci` keeps every `plugins/*` crate there.
+
+Seeded with the five `comment` registrations/callback as the end-to-end
+proof; broad seeding is AD.4.

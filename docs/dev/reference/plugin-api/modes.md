@@ -60,6 +60,30 @@ and registers it into the `ModeRegistry` after `register-modes` returns
 ModeRegistry`, not a live handle). Registration failures (bad `-mode`
 suffix, id collision, `major` kind) are logged + skipped at drain.
 
+**Example — Declare a global minor mode that owns the plugin's surface** · [`plugins/comment/src/lib.rs`](../../../../plugins/comment/src/lib.rs)
+
+```rust
+modes::register_mode(&ModeDeclaration {
+    id: "comment-mode".to_string(),
+    kind: ModeKind::Minor,
+    // `global`, not `universal`: every DOCUMENT buffer. `gc` over
+    // user-edited text is the point; `gc` in `*messages*`, the file
+    // tree or a help popup is noise.
+    activation_policy: ActivationPolicy::Global,
+    capabilities: ModeCapabilities::empty(),
+    // Not language-scoped: `gc` works in every document buffer, and
+    // which leader to use is decided per-buffer from the path.
+    target_language: None,
+    // No option overrides — the mode changes how keys behave, not how
+    // its buffers behave.
+    options: Vec::new(),
+    // No keymap here. The operator's chord is bound by the host into
+    // the operator-pending layer (CM.2) — a plain binding could not
+    // give `gc` a motion, and would kill `gcc` besides.
+    keymap: Vec::new(),
+});
+```
+
 ## Types (8)
 
 ### enum `mode-kind`

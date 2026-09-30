@@ -71,3 +71,14 @@ same way a builtin doc's frontmatter `related` list does.
 partially-registered topic. A rejected topic costs itself and nothing
 else: the plugin's other pages still register.
 
+**Example — Ship the plugin's `:help` page, embedded at build time** · [`plugins/comment/src/lib.rs`](../../../../plugins/comment/src/lib.rs)
+
+```rust
+let _ = help::register_topic(
+    "",
+    "Toggle line comments with `gc` — an operator, so it takes any motion or text object.",
+    include_str!("../doc/comment.md"),
+    &["comment".to_string()],
+);
+```
+

@@ -104,6 +104,95 @@ context and every operator call site for a capability no operator has
 asked for. Add it when one does; the asymmetry is a decision, not an
 oversight.
 
+**Example — A linewise operator that reads the range and returns edits for the host to apply** · [`plugins/comment/src/lib.rs`](../../../../plugins/comment/src/lib.rs)
+
+```rust
+fn apply_operator(
+    callback: u32,
+    ctx: OperatorContext,
+    doc: &Document,
+) -> Result<Vec<Effect>, String> {
+    if callback != CB_TOGGLE {
+        return Err(format!("comment: unknown operator callback {callback}"));
+    }
+
+    // The grammar hands over an expanded range; the operator is linewise
+    // regardless of how the motion arrived, which is what `gc$` doing the
+    // whole line means.
+    let first = ctx.range.start.line;
+    let last = ctx.range.end.line;
+
+    // Graceful and specific: the echo names the reason. A silent no-op
+    // here is the failure mode the plugin-host rules keep legislating
+    // against — the user presses `gc`, nothing happens, and nothing says
+    // why.
+    let path = doc.path();
+    let Some(leader) = path.as_deref().and_then(toggle::leader_for_path) else {
+        return Ok(vec![Effect::Echo(lattice::plugin_host::types::EchoPayload {
+            level: lattice::plugin_host::types::EchoLevel::Warn,
+            text: match path.as_deref() {
+                None => "comment: this buffer has no file, so no comment syntax".to_string(),
+                Some(p) => format!("comment: no comment syntax known for `{p}`"),
+            },
+        })]);
+    };
+
+    let mut nums = Vec::new();
+    let mut texts = Vec::new();
+    for n in first..=last {
+        if let Some(text) = doc.line(n) {
+            nums.push(n);
+            texts.push(text);
+        }
+    }
+
+    // `leader-space` is read per invocation rather than cached: a plugin
+    // that snapshots an option at load answers from the value the user had
+    // when the editor started, forever.
+    // Read per invocation, not cached: a plugin that snapshots an option
+    // at load answers from the value the user had when the editor started,
+    // forever. `auto-pair::is_manual` reads its own option the same way.
+    // Absent or unparseable ⇒ the registered default, `true`.
+    let leader_space = config::get_option("leader-space")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+
+    let mut edits = Vec::new();
+    for (i, next) in toggle::toggle(&texts, leader, leader_space)
+        .into_iter()
+        .enumerate()
+    {
+        // `None` means the line is unchanged — no edit, so a no-op `gc`
+        // stays off the undo stack.
+        let Some(next) = next else { continue };
+        edits.push(Effect::ApplyEdit(ApplyEditPayload {
+            // CM.3: the buffer the operator ran over. A guest holds a
+            // read-only handle, so it asks the host to apply rather than
+            // mutating — which is why `operator-context` had to carry an
+            // id at all.
+            target: ctx.buffer_id,
+            edit: Edit {
+                range: Range {
+                    start: Position {
+                        line: nums[i],
+                        byte: 0,
+                    },
+                    end: Position {
+                        line: nums[i],
+                        byte: texts[i].len() as u32,
+                    },
+                },
+                kind: EditKind::Replace(next),
+            },
+            // Leave the caret where the user put it; vim's `gc` does not
+            // move it.
+            cursor: None,
+        }));
+    }
+    Ok(edits)
+}
+```
+
 ### `apply-text-object`
 
 ```wit

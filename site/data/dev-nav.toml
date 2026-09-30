@@ -202,11 +202,24 @@ docs = [
   "architecture/plugin-mode-options",
   "architecture/guest-event-publishing",
   "architecture/wit-ownership",
-  "reference/plugin-api",
   "architecture/cross-file-writes",
   "audit/plugin-host-architecture",
   "audit/plugin-observability-review",
 ]
+
+# ---------------------------------------------------------------------------
+# The plugin-API reference is GENERATED from wit/ (crates/lattice-plugin-api)
+# and published by sync-docs.sh as its own section: the index is the landing
+# page, each seam a page in the sidebar. It lists no docs here on purpose —
+# the generator's tests own which pages exist. The slug is load-bearing:
+# sync-docs.sh resolves `../dev/reference/plugin-api*` links to `@/dev/plugin-api/`.
+# ---------------------------------------------------------------------------
+
+[[section]]
+slug = "plugin-api"
+title = "Plugin API reference"
+description = "Every seam of the WIT plugin API — functions, resources, types and fields — generated from wit/ so it cannot disagree with it."
+generated = "plugin-api"
 
 # ---------------------------------------------------------------------------
 # Org mode gets a section rather than a group inside "Plugins".
@@ -299,7 +312,6 @@ docs = [
 "notes/ai-assisted-development" = "AI-assisted development"
 "notes/pickers" = "Picker implementation notes"
 "operations/implementation" = "Implementation ledger"
-"reference/plugin-api" = "Plugin API reference"
 "architecture/api-docs" = "How the API docs are generated"
 "operations/benchmarks" = "Benchmark record"
 "operations/verify" = "Verification checklist"

@@ -22,6 +22,7 @@ guide and an audit when they cover the same subsystem.
 - **Language intelligence** — LSP, completion, tree-sitter, diagnostics.
 - **Git & diffs** — the diff engine and the magit port on top of it.
 - **Plugins & extensibility** — the WASM host and its seams.
+- **Plugin API reference** — every WIT seam, signature and type, generated from `wit/`.
 - **AI & agents** — the agent protocol and its UI.
 - **Operations** — the implementation ledger, benchmarks, releases.
 - **Reviews & notes** — point-in-time audits; historical context, not current design.

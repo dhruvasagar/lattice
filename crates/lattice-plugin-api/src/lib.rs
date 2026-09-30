@@ -378,6 +378,7 @@ pub fn capability_for(name: &str) -> Option<Capability> {
 // emitted by build.rs from wit/. Private free functions in this module scope.
 include!(concat!(env!("OUT_DIR"), "/catalog.rs"));
 
+pub mod json;
 pub mod render;
 
 /// The plugin-API catalog, derived from `wit/` at build time and merged with

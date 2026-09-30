@@ -26,7 +26,7 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 |---|---|---|
 | **AD.0** | Design fragment + this plan | ✅ |
 | **AD.1** | Catalog carries types, `use`s and full signatures; single-page render shows them (closes PI.7) | ✅ |
-| **AD.2** | Per-seam pages + index page; JSON export; site sync of the generated subsection | 📝 |
+| **AD.2** | Per-seam pages + index page; JSON export; site sync of the generated subsection | ✅ |
 | **AD.3** | Example regions: extraction in `build.rs`, render, validation tests, CI guest-build guard | 📝 |
 | **AD.4** | Seed examples across the guest-facing seams; shrink-only pending list | 📝 |
 | **AD.5** | WIT prose accuracy: path-rot guard + fix stale references | 📝 |
@@ -70,6 +70,23 @@ per-field / per-case docs. WIT type expressions are stored as their WIT
 spelling. The PI.7 test inverts into one requiring record fields in the
 render. `lattice-host`'s readers of the catalog compile unchanged (fields are
 additive; the host only reads).
+
+### AD.2 — pages, JSON, site section (as built)
+
+`render::pages()` returns the whole set (index, `plugin-api/<seam>.md`,
+`plugin-api.json`); the staleness test checks it as a set, so a stale,
+missing or orphaned page (a removed seam) all fail, and a second test
+resolves every generated link and anchor at `cargo test` time. On the site
+the reference is its own dev section (`dev-nav.toml` `generated =
+"plugin-api"`), not a subsection of "Plugins": a Zola subsection would have
+turned that section's page list into a card grid. `sync-docs.sh` rewrites
+the same-directory links to `@/` internal links, which makes Zola validate
+every one, anchor included (verified by injecting a broken anchor).
+
+Deviation: `*-fixture` worlds are now excluded from the catalog's world
+list (previously only `trampoline-fixture`) — three test worlds were
+listed as if a plugin should target them. They still count toward seam
+direction.
 
 ### AD.3 — example regions
 

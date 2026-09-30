@@ -240,6 +240,10 @@ fn catalog_is_sorted_and_deterministic() {
 fn worlds_exclude_the_test_fixture() {
     let cat = catalog();
     assert!(
+        cat.worlds.iter().all(|w| !w.name.ends_with("-fixture")),
+        "test-only `*-fixture` worlds must not appear in the API catalog"
+    );
+    assert!(
         cat.world("trampoline-fixture").is_none(),
         "the test-only trampoline-fixture world must not appear in the API catalog"
     );

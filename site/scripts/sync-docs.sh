@@ -45,6 +45,18 @@ DOCS_DST = os.path.join(site_dir, 'content', 'docs')
 DEV_DST = os.path.join(site_dir, 'content', 'dev')
 DEV_SUBDIRS = ['guides', 'architecture', 'operations', 'audit', 'notes', 'reference']
 
+# The plugin-API reference is GENERATED (crates/lattice-plugin-api, AD.2): an
+# index, one page per seam, and a JSON export. Its correctness is guarded by
+# that crate's tests, not by dev-nav.toml — listing 30-odd generated pages by
+# hand would be a second copy of the WIT's interface list, and the first thing
+# to drift. dev-nav.toml names the SECTION (`generated = "plugin-api"`); this
+# script publishes the index as the section's landing page and each seam as a
+# page in its sidebar.
+PLUGIN_API_INDEX = 'reference/plugin-api'
+PLUGIN_API_SEAMS = os.path.join(DEV_SRC, 'reference', 'plugin-api')
+PLUGIN_API_JSON = os.path.join(DEV_SRC, 'reference', 'plugin-api.json')
+STATIC_DST = os.path.join(site_dir, 'static')
+
 # Launch screenshots. `assets/media/screenshots/` is the source of truth (what
 # README.md links); `site/static/media/` is what the site serves and is
 # GENERATED from it by sync_media(), so the two cannot drift — the failure that
@@ -234,6 +246,12 @@ def make_relative_resolver(topic_section, dev_pages, page_section):
         if stripped.startswith('dev/'):
             rel = stripped[4:]
             key = rel[:-3] if rel.endswith('.md') else rel
+            # The generated plugin-API reference is its own section (see
+            # sync_plugin_api_reference): the index is the landing page.
+            if key == PLUGIN_API_INDEX:
+                return f'](@/dev/plugin-api/_index.md{anchor})'
+            if key.startswith(PLUGIN_API_INDEX + '/'):
+                return f'](@/dev/plugin-api/{key.rsplit("/", 1)[-1]}.md{anchor})'
             if key in dev_pages:
                 # The SECTION the manifest put it in — its real URL.
                 slug = page_section[key][0]
@@ -475,11 +493,79 @@ def validate_dev_nav(page_section, labels, dev_pages):
 
 
 def collect_dev_pages():
+    """Hand-written dev pages. The generated plugin-API index is excluded —
+    it is published by `sync_plugin_api_reference`, not through dev-nav."""
     pages = set()
     for sub in DEV_SUBDIRS:
         for f in glob.glob(os.path.join(DEV_SRC, sub, '*.md')):
             pages.add(f'{sub}/{os.path.basename(f)[:-3]}')
+    pages.discard(PLUGIN_API_INDEX)
     return pages
+
+
+def plugin_api_seams():
+    """Seam page stems, sorted — the sidebar order."""
+    return sorted(
+        os.path.basename(f)[:-3]
+        for f in glob.glob(os.path.join(PLUGIN_API_SEAMS, '*.md'))
+    )
+
+
+def sync_plugin_api_reference(slug, weight, description, topic_section,
+                              dev_pages, page_section):
+    """Publish the generated plugin-API reference as its own dev section.
+
+    The index becomes the section's landing page; each seam becomes a page, so
+    the sidebar lists every seam. Links between the generated files are
+    same-directory relative (`types.md#record-effect`, `plugin-api/buffer.md`),
+    which is right on GitHub and wrong under Zola's pretty URLs — they are
+    rewritten to `@/` internal links here, which also makes Zola VALIDATE each
+    one, anchor included, at build time.
+    """
+    index_src = os.path.join(DEV_SRC, PLUGIN_API_INDEX + '.md')
+    if not os.path.isfile(index_src):
+        die(f'{index_src} is missing — run '
+            'UPDATE_SITE_REFERENCE=1 cargo test -p lattice-plugin-api')
+    seams = plugin_api_seams()
+    if not seams:
+        die(f'{PLUGIN_API_SEAMS} has no seam pages')
+
+    def internal(body):
+        body = re.sub(r'\]\(plugin-api/([a-z0-9-]+)\.md(#[^)]*)?\)',
+                      lambda m: f'](@/dev/{slug}/{m.group(1)}.md{m.group(2) or ""})',
+                      body)
+        body = re.sub(r'\]\(([a-z0-9-]+)\.md(#[^)]*)?\)',
+                      lambda m: f'](@/dev/{slug}/{m.group(1)}.md{m.group(2) or ""})'
+                      if m.group(1) in seams else m.group(0),
+                      body)
+        return rewrite_links(body, topic_section, dev_pages, page_section,
+                             is_user_doc=False)
+
+    d = os.path.join(DEV_DST, slug)
+    os.makedirs(d, exist_ok=True)
+
+    with open(index_src, encoding='utf-8') as fh:
+        body = strip_frontmatter(fh.read())
+    title = make_title(body, 'plugin-api')
+    body = re.sub(rf'^# {re.escape(title)}\n?', '', body, count=1, flags=re.MULTILINE)
+    with open(os.path.join(d, '_index.md'), 'w', encoding='utf-8') as fh:
+        fh.write(
+            f'+++\ntitle = "{toml_escape(title)}"\n'
+            f'description = "{toml_escape(description)}"\n'
+            f'weight = {weight}\nsort_by = "weight"\n+++\n\n{internal(body)}'
+        )
+
+    for i, seam in enumerate(seams):
+        with open(os.path.join(PLUGIN_API_SEAMS, seam + '.md'), encoding='utf-8') as fh:
+            body = fh.read()
+        body = re.sub(r'^# `[^`]+`\n?', '', body, count=1, flags=re.MULTILINE)
+        with open(os.path.join(d, seam + '.md'), 'w', encoding='utf-8') as fh:
+            fh.write(f'+++\ntitle = "{toml_escape(seam)}"\nweight = {i}\n+++\n\n'
+                     f'{internal(body)}')
+
+    # The machine-readable form, at a stable site-root URL.
+    shutil.copyfile(PLUGIN_API_JSON, os.path.join(STATIC_DST, 'plugin-api.json'))
+    print(f'  dev/{slug}/ (index + {len(seams)} seam pages, plugin-api.json)')
 
 
 def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labels):
@@ -493,6 +579,13 @@ def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labe
     # Section landing pages, in manifest order — `weight` is what gives the
     # sidebar a reading order instead of an alphabet.
     for i, sec in enumerate(dev_sections, start=1):
+        generated = sec.get('generated')
+        if generated == 'plugin-api':
+            sync_plugin_api_reference(sec['slug'], i * 10, sec.get('description', ''),
+                                      topic_section, dev_pages, page_section)
+            continue
+        if generated:
+            die(f'dev-nav.toml section {sec["slug"]!r}: unknown generator {generated!r}')
         d = os.path.join(DEV_DST, sec['slug'])
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, '_index.md'), 'w', encoding='utf-8') as fh:
@@ -518,6 +611,8 @@ def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labe
         for f in sorted(glob.glob(os.path.join(src_dir, '*.md'))):
             name = os.path.basename(f)
             key = f'{sub}/{name[:-3]}'
+            if key == PLUGIN_API_INDEX:
+                continue  # published by sync_plugin_api_reference
             slug, _group = page_section[key]
             with open(f, encoding='utf-8') as fh:
                 raw = fh.read()
@@ -540,7 +635,8 @@ def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labe
             counts[slug] = counts.get(slug, 0) + 1
 
     for sec in dev_sections:
-        print(f'  dev/{sec["slug"]}/ ({counts.get(sec["slug"], 0)} pages)')
+        if not sec.get('generated'):  # generated sections report themselves
+            print(f'  dev/{sec["slug"]}/ ({counts.get(sec["slug"], 0)} pages)')
 
 
 

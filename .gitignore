@@ -50,6 +50,9 @@ site/content/dev/**/*.md
 site/content/plugins/*.md
 !site/content/plugins/_index.md
 site/static/docs-search.json
+# Copied from docs/dev/reference/plugin-api.json (the checked-in, test-guarded
+# source) by sync-docs.sh.
+site/static/plugin-api.json
 site/data/version.toml
 
 # Ad-hoc screenshots / scratch assets for bug investigation.

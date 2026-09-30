@@ -1,0 +1,113 @@
+<!-- @generated from wit/ by crates/lattice-plugin-api (render.rs).
+     Do not edit: run `UPDATE_SITE_REFERENCE=1 cargo test -p lattice-plugin-api`. -->
+
+# `signs`
+
+**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `sign-plugin` (imports)
+
+Mirrors the sign registry (`lattice_mode::SignRegistry`). A plugin declares
+the signs it places — glyph, fallback glyph, theme element, priority — and
+the host registers each into the SAME registry native producers use, owned
+by the plugin so unload reverses it.
+
+See `docs/dev/architecture/gutter-signs.md`.
+
+**Why a plugin declares signs rather than drawing glyphs.** The alternative
+— a placement that carries its own glyph and colour — puts the palette in
+the plugin (so `:colorscheme` cannot touch it) and re-crosses the same glyph
+and theme key for every marked line of every refresh, to restate something
+that was already true at load. Declaring once and placing by name is the
+only shape where the cost is paid where the information actually changes.
+
+The definition/placement split is `:sign define` / `:sign place`, and it is
+load-bearing rather than historical — see the design doc §1.
+
+## Functions (1)
+
+### `define-sign`
+
+```wit
+define-sign: func(name: string, spec: sign-spec) -> result<_, string>
+```
+
+Declare a sign.
+
+**Auto-namespaced**, like `theme.register-element` and
+`config.register-option`: `name` is prefixed with the plugin's id, so a
+plugin with id `debugger` declaring `breakpoint` contributes
+`debugger.breakpoint`. The host owns the namespace, so plugins cannot
+collide with each other or shadow a native producer's sign.
+
+Idempotent by name (the native registry's contract): redefining KEEPS
+the id, so a plugin reloading with a new glyph does not orphan
+placements already in flight — they simply start painting the new
+glyph, which is what "redefine" should mean.
+
+`err` when the spec is malformed — never a trap, and never a
+partially-registered sign.
+
+## Types (1)
+
+### record `sign-spec`
+
+```wit
+record sign-spec {
+    text: string,
+    fallback: string,
+    theme-element: string,
+    priority: s32,
+    column: string,
+}
+```
+
+What a sign looks like and how it competes for its cell. Mirrors
+`lattice_mode::SignDefinition` minus the name, which is the key.
+
+**Fields**
+
+- `text`: `string` — The glyph when `ui.nerd_fonts` is on. **One cell** — a sign paints
+  into the gutter's single shared mark cell, so a wider glyph would
+  push every line of content right. The host truncates rather than
+  widening the gutter; the tail is lost, which is much cheaper than
+  a viewport that shifts sideways.
+- `fallback`: `string` — The glyph when it is off — the SAME cell width, per the
+  icon-degradation rule, so toggling `ui.nerd_fonts` cannot shift the
+  gutter's geometry. The theme decides the COLOUR and the font
+  capability decides the GLYPH; conflating the two is how a themed
+  editor renders tofu.
+- `theme-element`: `string` — The theme element the glyph is painted in. Register it via the
+  `theme` interface and name it here, and a user or a theme retunes
+  this sign without either knowing about the other.
+
+  An element the theme does not know falls back to `gutter.sign`
+  rather than to no style at all — a sign was placed to say
+  something, and painting it invisibly is the one outcome that loses
+  the information entirely rather than showing it in the wrong tone.
+- `priority`: `s32` — Which sign wins when two land on one line OF THE SAME COLUMN.
+  Higher wins; ties break on name, so the painted glyph is stable
+  rather than incidental to hash order.
+
+  Diagnostics are signs too, and they span `10..40` — hint 10, info
+  20, warning 30, error 40 — which is how "most severe wins" is
+  expressed now that there is no separate severity mechanism. `10` is
+  vim's default sign priority and the floor: a sign shipping it ties
+  with a hint and loses to everything above.
+
+  Exceed `40` only for something that genuinely outranks a compiler
+  error — a debugger stopped on this very line. Displacing an error
+  hides a state of the user's code they did not ask for, so the bar
+  is deliberately high.
+- `column`: `string` — SG.4a: which gutter column this sign paints in.
+
+  `"mark"` is the leftmost column — vim's `signcolumn`, shared with
+  diagnostics — and is what an empty string means. `"diff"` is the
+  git-diff column. Columns exist because contention is only
+  meaningful between marks that answer the same question: a single
+  contended cell would drop the git gutter on exactly the lines a
+  diagnostic touches, which are the lines a user is most likely to
+  be looking at.
+
+  A column the host does not paint falls back to the leftmost one
+  rather than vanishing — the same principle as the `gutter.sign`
+  theme fallback.
+

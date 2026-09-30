@@ -75,6 +75,146 @@ pub fn markdown() -> String {
     out
 }
 
+/// The first line of every generated file. Says what generated it and how
+/// to regenerate it, so nobody hand-edits a file the next test run reverts.
+pub const GENERATED_HEADER: &str = "\
+<!-- @generated from wit/ by crates/lattice-plugin-api (render.rs).
+     Do not edit: run `UPDATE_SITE_REFERENCE=1 cargo test -p lattice-plugin-api`. -->
+
+";
+
+/// AD.2: the reference as a set of files, relative to `docs/dev/reference/`:
+/// the index `plugin-api.md`, one `plugin-api/<seam>.md` per interface, and
+/// the machine-readable `plugin-api.json`.
+///
+/// One page per seam serves both readers: a person lands on the seam they
+/// searched for, and an agent loads the one page it needs instead of the
+/// whole API.
+pub fn pages() -> Vec<(String, String)> {
+    let cat = crate::catalog();
+    let mut out = vec![(
+        "plugin-api.md".to_string(),
+        format!("{GENERATED_HEADER}{}", index(cat)),
+    )];
+    for iface in &cat.interfaces {
+        out.push((
+            format!("plugin-api/{}.md", iface.name),
+            format!(
+                "{GENERATED_HEADER}{}",
+                seam_with(cat, iface, 1, Links::Pages)
+            ),
+        ));
+    }
+    out.push(("plugin-api.json".to_string(), crate::json::to_json(cat)));
+    out
+}
+
+/// The index page: what the API is, how to read it, every world a plugin can
+/// target, and every seam with a one-line summary.
+fn index(cat: &PluginApiCatalog) -> String {
+    let mut out = String::new();
+    out.push_str("# Lattice Plugin API\n\n");
+    out.push_str(&format!(
+        "The plugin API is the WIT package `{}` — {} interfaces (\"seams\") and \
+         {} worlds. It is the whole contract: a plugin written in any language \
+         with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees \
+         exactly what is on these pages and nothing else. This reference is \
+         generated from the `.wit` files in `crates/lattice-wit/wit/`, so it \
+         cannot disagree with them.\n\n",
+        crate::PACKAGE,
+        cat.interfaces.len(),
+        cat.worlds.len(),
+    ));
+    out.push_str(
+        "New to writing plugins? Start with the \
+         [plugin authoring guide](../../dev/guides/plugin-authoring.md), then \
+         come back here for the detail. The same reference in machine-readable \
+         form — every seam, signature, type and member — is \
+         `docs/dev/reference/plugin-api.json` in the repository and \
+         `/plugin-api.json` on the documentation site.\n\n",
+    );
+
+    out.push_str("## How to read this reference\n\n");
+    out.push_str(
+        "- **A plugin targets one world.** The world decides which seams the \
+         plugin *exports* (implements — the host calls it) and which it \
+         *imports* (calls into the host). In Rust: \
+         `wit_bindgen::generate!({ world: \"comment-plugin\", path: \"…/wit\" })`.\n\
+         - **Direction** on each seam says which of those it is. A seam marked \
+         *shared types only* is never called; other seams `use` its types.\n\
+         - **Capability** is what the seam requires of a plugin's grant. Most \
+         are `none`: the host does the I/O and hands the guest data.\n\
+         - **Resources** (`resource document`) are handles to host-owned state. \
+         A `borrow<document>` parameter is valid for that call only.\n\
+         - **Errors** are `result<T, string>`: an `err` carries a message the \
+         host surfaces to the user, so it should say what went wrong.\n\
+         - **WIT to Rust** (wit-bindgen): kebab-case becomes `snake_case` for \
+         functions and fields and `UpperCamelCase` for types; `list<T>` is \
+         `Vec<T>`, `option<T>` is `Option<T>`, `result<T, E>` is \
+         `Result<T, E>`, `borrow<r>` is `&R`.\n\n",
+    );
+
+    out.push_str(&format!("## Worlds ({})\n\n", cat.worlds.len()));
+    out.push_str("| World | Exports (you implement) | Imports (you may call) |\n");
+    out.push_str("|---|---|---|\n");
+    for w in &cat.worlds {
+        let list = |names: &[String]| {
+            if names.is_empty() {
+                "—".to_string()
+            } else {
+                names
+                    .iter()
+                    .map(|n| format!("[`{n}`](plugin-api/{n}.md)"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        };
+        out.push_str(&format!(
+            "| `{}` | {} | {} |\n",
+            w.name,
+            list(&w.exports),
+            list(&w.imports)
+        ));
+    }
+    out.push('\n');
+
+    out.push_str(&format!("## Seams ({})\n\n", cat.interfaces.len()));
+    out.push_str("| Seam | Direction | Capability | Functions | Types | Summary |\n");
+    out.push_str("|---|---|---|---|---|---|\n");
+    for i in &cat.interfaces {
+        out.push_str(&format!(
+            "| [`{}`](plugin-api/{}.md) | {} | {} | {} | {} | {} |\n",
+            i.name,
+            i.name,
+            direction_short(i.direction),
+            capability_short(i.capability),
+            i.functions.len(),
+            i.types.len(),
+            summary(i.doc.as_deref()).replace('|', "\\|"),
+        ));
+    }
+    out
+}
+
+/// The first sentence of a doc's first paragraph, on one line.
+pub fn summary(doc: Option<&str>) -> String {
+    let Some(doc) = doc else {
+        return String::new();
+    };
+    let para = doc
+        .split("\n\n")
+        .next()
+        .unwrap_or("")
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ");
+    match para.find(". ") {
+        Some(end) => para[..=end].to_string(),
+        None => para,
+    }
+}
+
 /// One seam's full reference, its title at heading level `level` (1 for a
 /// page of its own, 2 inside the single document).
 ///
@@ -83,6 +223,20 @@ pub fn markdown() -> String {
 /// defines in WIT source order. Functions come before types because a reader
 /// arrives asking "what can I call"; the types answer the follow-up question.
 pub fn seam(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize) -> String {
+    seam_with(cat, iface, level, Links::None)
+}
+
+/// Whether type names become links. The single document is read as one
+/// stream (the editor's export buffer, the agent bundle), where a link to a
+/// sibling file goes nowhere; the per-seam pages link across files.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Links {
+    None,
+    /// Per-seam pages that sit side by side: `<seam>.md#<anchor>`.
+    Pages,
+}
+
+fn seam_with(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize, links: Links) -> String {
     let h = |n: usize| "#".repeat((level + n).min(6));
     let mut out = String::new();
 
@@ -107,13 +261,19 @@ pub fn seam(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize) -> Strin
     if !iface.uses.is_empty() {
         out.push_str(&format!("{} Uses\n\n", h(1)));
         for u in &iface.uses {
+            let target = type_link(cat, iface, &u.name, links);
+            let name = match &target {
+                Some(href) => format!("[`{}`]({href})", u.name),
+                None => format!("`{}`", u.name),
+            };
+            let from = match links {
+                Links::Pages => format!("[`{}`]({}.md)", u.from, u.from),
+                Links::None => format!("`{}`", u.from),
+            };
             if u.name == u.original {
-                out.push_str(&format!("- `{}` from `{}`\n", u.name, u.from));
+                out.push_str(&format!("- {name} from {from}\n"));
             } else {
-                out.push_str(&format!(
-                    "- `{}` (`{}` from `{}`)\n",
-                    u.name, u.original, u.from
-                ));
+                out.push_str(&format!("- {name} (`{}` from {from})\n", u.original));
             }
         }
         out.push('\n');
@@ -164,11 +324,45 @@ pub fn seam(cat: &PluginApiCatalog, iface: &ApiInterface, level: usize) -> Strin
     if !types.is_empty() {
         out.push_str(&format!("{} Types ({})\n\n", h(1), types.len()));
         for t in types {
-            type_def(&mut out, t, &h(2), level + 3);
+            type_def(&mut out, t, &h(2), level + 3, &|ty| {
+                type_link(cat, iface, ty, links)
+            });
         }
     }
 
     out
+}
+
+/// The anchor a type's heading gets: `record raw-candidate` →
+/// `record-raw-candidate`. Zola and GitHub slug the heading
+/// ``record `raw-candidate` `` to the same string, which is what lets one
+/// generated link work in both.
+pub fn type_anchor(t: &ApiType) -> String {
+    format!("{}-{}", t.kind.keyword(), t.name)
+}
+
+/// Where the type called `name` in `iface` is defined, as a link, if links are
+/// on and `name` is a single named type (a composite like `list<x>` is left as
+/// code — it cannot be one link).
+fn type_link(
+    cat: &PluginApiCatalog,
+    iface: &ApiInterface,
+    name: &str,
+    links: Links,
+) -> Option<String> {
+    if links == Links::None {
+        return None;
+    }
+    if let Some(t) = iface.types.iter().find(|t| t.name == name) {
+        return Some(format!("#{}", type_anchor(t)));
+    }
+    let u = iface.uses.iter().find(|u| u.name == name)?;
+    let def = cat
+        .interface(&u.from)?
+        .types
+        .iter()
+        .find(|t| t.name == u.original)?;
+    Some(format!("{}.md#{}", u.from, type_anchor(def)))
 }
 
 /// A function: heading, WIT signature, full doc.
@@ -182,15 +376,28 @@ fn function(out: &mut String, f: &ApiFunction, h: &str) {
 }
 
 /// A type: heading, its WIT definition, its doc, then each member's doc.
-fn type_def(out: &mut String, t: &ApiType, h: &str, doc_level: usize) {
+fn type_def(
+    out: &mut String,
+    t: &ApiType,
+    h: &str,
+    doc_level: usize,
+    link: &dyn Fn(&str) -> Option<String>,
+) {
     out.push_str(&format!("{h} {} `{}`\n\n", t.kind.keyword(), t.name));
     out.push_str(&format!("```wit\n{}\n```\n\n", wit_definition(t)));
     if let Some(doc) = &t.doc {
         out.push_str(&demote_headings(doc, doc_level));
         out.push_str("\n\n");
     }
+    // The member list repeats the definition block's names, so it earns its
+    // place only by adding something: a member's prose, or a link to a
+    // member's type (the code block above cannot link).
     let members = t.kind.members();
-    if members.iter().any(|m| m.doc.is_some()) {
+    let linked = |m: &crate::ApiMember| m.ty.as_deref().and_then(link);
+    if members
+        .iter()
+        .any(|m| m.doc.is_some() || linked(m).is_some())
+    {
         let label = match t.kind {
             ApiTypeKind::Record(_) => "Fields",
             ApiTypeKind::Flags(_) => "Flags",
@@ -198,10 +405,11 @@ fn type_def(out: &mut String, t: &ApiType, h: &str, doc_level: usize) {
         };
         out.push_str(&format!("**{label}**\n\n"));
         for m in members {
-            let ty =
-                m.ty.as_deref()
-                    .map(|t| format!(": `{t}`"))
-                    .unwrap_or_default();
+            let ty = match (m.ty.as_deref(), linked(m)) {
+                (Some(ty), Some(href)) => format!(": [`{ty}`]({href})"),
+                (Some(ty), None) => format!(": `{ty}`"),
+                (None, _) => String::new(),
+            };
             out.push_str(&format!("- `{}`{ty}", m.name));
             match &m.doc {
                 Some(doc) => {

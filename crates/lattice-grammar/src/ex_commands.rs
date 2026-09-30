@@ -17,11 +17,57 @@
 //!   the delimiter prefix and dispatches through the same
 //!   `grammar::execute()` as everything else.
 //!
-//! Aliases (`:w` for `:write`, `:q` for `:quit`, `:e` for `:edit`, ...)
-//! are NOT separate registry entries -- they would inflate the
-//! `CommandId` namespace and complicate `:describe-command`. Alias
-//! resolution is the parser front-end's job (`expand_alias` in
-//! `lattice-ui-tui::excommand`).
+//! (The list above is the original core; `populate` now also registers the
+//! buffer / pane / tab commands, the `:describe-*` and `:list-*` help
+//! family, the `:lsp-*` commands, `:format`, `:tutor`, `:cd` and more —
+//! see [`ExBuiltins`] and `:list-commands`.)
+//!
+//! Every builtin is registered as `ex:<name>`. Aliases (`:w` for
+//! `ex:write`, `:q` for `ex:quit`, `:e` for `ex:edit`, ...) are NOT
+//! separate registry entries -- they would inflate the `CommandId`
+//! namespace and complicate `:describe-command`. Alias resolution is the
+//! parser front-end's job (`expand_alias` / `ALIAS_TABLE` in
+//! `lattice-host`'s `excommand` module). New subsystem-coupled commands
+//! follow the project naming rule: one dashed, namespaced alias
+//! (`lsp-format`), no collapsed or generic forms.
+//!
+//! # Examples
+//!
+//! How the `:` front-end turns `:w out.txt` into an [`Effect`]: resolve
+//! the name, let the spec parse the rest of the line, dispatch.
+//!
+//! ```
+//! use lattice_core::{BufferId, Document};
+//! use lattice_grammar::{
+//!     CancellationToken, CommandInvocation, CommandRegistry, Effect, ex_commands, execute,
+//! };
+//! use lattice_protocol::position::Position;
+//!
+//! let mut registry = CommandRegistry::new();
+//! ex_commands::populate(&mut registry);
+//!
+//! // `w` -> `ex:write` is the host alias table's job; the registry holds
+//! // the canonical name.
+//! let id = registry.id_by_name("ex:write").unwrap();
+//! let spec = registry.ex_command_spec(id).unwrap();
+//! let args = (spec.parse_args)("out.txt", false).unwrap();
+//!
+//! let mut doc = Document::from_text("hello\n");
+//! let effect = execute(
+//!     &registry,
+//!     &mut doc,
+//!     BufferId(0),
+//!     Position::ZERO,
+//!     CommandInvocation::of(id).with_args(args),
+//!     &CancellationToken::never(),
+//! )
+//! .unwrap();
+//! // The command only describes the work; the host does the I/O.
+//! match effect {
+//!     Effect::SaveBuffer { path } => assert_eq!(path, Some("out.txt".into())),
+//!     other => panic!("unexpected {other:?}"),
+//! }
+//! ```
 
 use crate::AppEffect;
 use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
@@ -32,48 +78,83 @@ use crate::range::Range;
 use crate::registry::{CommandRegistry, ExCommandContext, ExCommandId, ExCommandSpec, SurfaceForm};
 use std::sync::Arc;
 
-/// Set of registered ex-command ids; mirrors the `Builtins` shape for
-/// motions / operators / text objects.
+/// The ids of the built-in ex-commands, as returned by [`populate`];
+/// mirrors [`Builtins`](crate::builtins::Builtins) for motions / operators /
+/// text objects.
+///
+/// Each field's doc gives the registered name (`ex:<name>`) and the usual
+/// `:` spelling. Not every builtin ex-command has a field: several
+/// (`ex:quit-all`, `ex:only`, `ex:split`, …) are reached only by name, which
+/// is how the `:` line resolves every command anyway. A field exists where
+/// some caller wants the id without a name lookup.
 #[derive(Debug, Clone, Copy)]
 pub struct ExBuiltins {
+    /// `ex:write`: `:w[rite] [path]` — write the buffer to disk, or to `path`.
     pub write: ExCommandId,
+    /// `ex:quit`: `:q[uit][!]` — close the pane, or quit on the last one; `!` discards changes.
     pub quit: ExCommandId,
+    /// `ex:write-quit`: `:wq[!]` / `:x[!]` — write, then quit.
     pub write_quit: ExCommandId,
+    /// `ex:nohlsearch`: `:noh[lsearch]` — clear the search highlight until the next search.
     pub no_hlsearch: ExCommandId,
+    /// `ex:registers`: `:reg[isters]` — show every register's contents.
     pub list_registers: ExCommandId,
+    /// `ex:marks`: `:marks` — show every set mark and its position.
     pub list_marks: ExCommandId,
+    /// `ex:delete`: `:d[elete]` — delete the current line, newline included (no range form yet).
     pub delete_line: ExCommandId,
+    /// `ex:set`: `:set <option>` — set an option; the argument string goes to the host's option parser verbatim.
     pub set_option: ExCommandId,
+    /// `ex:setlocal`: `:setl[ocal]` / `:sl` — set a buffer-local override.
     pub set_local_option: ExCommandId,
+    /// `ex:setglobal`: `:setg[lobal]` / `:sg` — set the global value, leaving local overrides.
     pub set_global_option: ExCommandId,
     /// T.9.b (2026-06-18): `:colorscheme <name>` — swap the active
     /// theme by name (`lattice-host` looks the name up in
     /// `lattice_theme::builtin_themes()` and calls `set_theme`).
     pub colorscheme: ExCommandId,
+    /// `ex:edit`: `:e[dit][!] [path]` — load a file into the current pane; `!` discards changes.
     pub edit: ExCommandId,
+    /// `ex:substitute`: `:s/pat/rep/[g]` / `:%s/…` — substitute on the current line or the whole buffer; delimiter form ([`SurfaceForm::Delimiter`]).
     pub substitute: ExCommandId,
+    /// `ex:global`: `:g/pat/cmd` and `:v/pat/cmd` — run a command on every (non-)matching line; delimiter form.
     pub global: ExCommandId,
+    /// `ex:describe-command`: `:describe-command <name>` — the help view for a registered command.
     pub describe_command: ExCommandId,
+    /// `ex:describe-buffer`: `:describe-buffer` — the help view for the active buffer's state and modes.
     pub describe_buffer: ExCommandId,
+    /// `ex:apropos`: `:apropos <text>` — search command names and docs.
     pub apropos: ExCommandId,
+    /// `ex:describe-key`: `:describe-key <chord>` — what a key chord is bound to.
     pub describe_key: ExCommandId,
+    /// `ex:keymap`: `:keymap` — every default binding, by mode.
     pub list_keymap: ExCommandId,
+    /// `ex:bnext`: `:bn[ext]` — next listed buffer.
     pub buffer_next: ExCommandId,
+    /// `ex:bprev`: `:bp[rev]` — previous listed buffer.
     pub buffer_prev: ExCommandId,
+    /// `ex:buffers`: `:ls` — list open buffers as a static view.
     pub list_buffers: ExCommandId,
+    /// `ex:bdelete`: `:bd[elete][!]` — close the active buffer; `!` discards changes.
     pub buffer_delete: ExCommandId,
+    /// `ex:filetree`: `:filetree [path]` — open a file-tree buffer (default: the working directory).
     pub file_tree: ExCommandId,
+    /// `ex:filetree-close`: `:filetree-close` — dismiss the file-tree buffer.
     pub file_tree_close: ExCommandId,
+    /// `ex:oil`: `:oil [path]` — open an oil (editable directory listing) buffer.
     pub oil: ExCommandId,
+    /// `ex:describe-option`: `:describe-option <name>` — the help view for a typed option.
     pub describe_option: ExCommandId,
     /// T.9.d: `:describe-element` / `:describe-face` — theme-element
     /// introspection (host `build_describe_element_content`).
     pub describe_element: ExCommandId,
+    /// `ex:options`: `:options` — list every registered option.
     pub list_options: ExCommandId,
     /// PI.2: plugin-API introspection (`:describe-plugin-api [<seam>]`,
     /// `:list-plugin-apis`). The catalog is derived from `wit/` at build
     /// time by `lattice-plugin-api`; the host renders it.
     pub describe_plugin_api: ExCommandId,
+    /// `ex:list-plugin-apis`: `:list-plugin-apis` — one row per plugin-API interface (see [`Self::describe_plugin_api`]).
     pub list_plugin_apis: ExCommandId,
     /// PI.2b: `:export-plugin-api [markdown|json]` -- dump the catalog to a
     /// savable buffer.
@@ -83,8 +164,11 @@ pub struct ExBuiltins {
     /// PI.4: `:describe-plugin <name>` / `:list-plugins` -- loaded-plugin
     /// introspection (Facet B).
     pub describe_plugin: ExCommandId,
+    /// `ex:list-plugins`: `:list-plugins` — every loaded plugin (see [`Self::describe_plugin`]).
     pub list_plugins: ExCommandId,
+    /// `ex:describe-events`: `:describe-events` — list every registered event.
     pub describe_events: ExCommandId,
+    /// `ex:describe-event`: `:describe-event <name>` — the help view for one event.
     pub describe_event: ExCommandId,
     // CR.6 (2026-06-24): the 11 diff/hunk ex-command ids
     // (`describe_diff`/`diff_open`/`diff_off`/`diff_this`/`diff_split`/
@@ -92,58 +176,108 @@ pub struct ExBuiltins {
     // `hunk_prev`) are gone — the diff subsystem registers its own commands
     // in `lattice_diff::install()` (the multibuffer pattern). They were
     // unused outside this crate (name-resolved at the `:` line).
+    /// `ex:list-modes`: `:list-modes` — every registered mode, grouped major / minor, with its state on the active buffer.
     pub list_modes: ExCommandId,
+    /// `ex:describe-mode`: `:describe-mode <name>` — the help view for one mode.
     pub describe_mode: ExCommandId,
+    /// `ex:describe-option-resolution`: `:describe-option-resolution <name>` — which resolver layer supplies an option's value on the active buffer.
     pub describe_option_resolution: ExCommandId,
+    /// `ex:customize`: `:customize [name]` — the customize buffer: typed option editing that writes back to user TOML.
     pub customize: ExCommandId,
+    /// `ex:tutor`: `:tutor [N]` — open the interactive tutor at lesson `N` (default 1).
     pub tutor: ExCommandId,
+    /// `ex:tutor-next`: `:tutor-next` — next tutor exercise (as `<CR>` in tutor-mode).
     pub tutor_next: ExCommandId,
+    /// `ex:tutor-prev`: `:tutor-prev` — previous tutor exercise.
     pub tutor_prev: ExCommandId,
+    /// `ex:hover`: `:hover [markdown]` — open a hover popup at the cursor.
     pub hover: ExCommandId,
+    /// `ex:hover-close`: `:hover-close` — dismiss the hover popup.
     pub hover_close: ExCommandId,
+    /// `ex:help`: `:help [topic]` — the help index, or a named topic.
     pub help: ExCommandId,
+    /// `ex:diagnostics`: `:diagnostics` — every workspace diagnostic, with source links.
     pub list_diagnostics: ExCommandId,
+    /// `ex:diag-next`: `:diag-next` — cursor to the next diagnostic in the buffer (wraps; also `]d`).
     pub next_diagnostic: ExCommandId,
+    /// `ex:diag-prev`: `:diag-prev` — cursor to the previous diagnostic (wraps; also `[d`).
     pub prev_diagnostic: ExCommandId,
+    /// `ex:lsp-log`: `:lsp-log [server]` — the LSP subsystem log, or one server's.
     pub lsp_log: ExCommandId,
+    /// `ex:messages`: `:messages` — the `*messages*` buffer (every echo and notification).
     pub messages: ExCommandId,
+    /// `ex:lsp-trace`: `:lsp-trace <server>` — toggle JSON-RPC wire tracing for a server.
     pub lsp_trace: ExCommandId,
+    /// `ex:lsp-status`: `:lsp-status` — every running LSP server.
     pub lsp_status: ExCommandId,
+    /// `ex:lsp-server-log`: `:lsp-server-log` — running servers, each linking to its log and trace.
     pub lsp_server_log: ExCommandId,
+    /// `ex:lsp-restart`: `:lsp-restart <server>` — restart a server (registered; the supervisor path is still a no-op).
     pub lsp_restart: ExCommandId,
+    /// `ex:lsp-progress-cancel`: `:lsp-progress-cancel [server]` — cancel cancellable `$/progress` work.
     pub lsp_progress_cancel: ExCommandId,
+    /// `ex:lsp-expand-region`: `:lsp-expand-region` — one step outward in the LSP `selectionRange` chain.
     pub lsp_expand_region: ExCommandId,
+    /// `ex:lsp-shrink-region`: `:lsp-shrink-region` — one step back inward.
     pub lsp_shrink_region: ExCommandId,
+    /// `ex:lsp-log-level`: `:lsp-log-level [server] <level>` — set the minimum log level.
     pub lsp_log_level: ExCommandId,
+    /// `ex:lsp-log-clear`: `:lsp-log-clear [server]` — drop the records in a log buffer.
     pub lsp_log_clear: ExCommandId,
+    /// `ex:lsp-symbols`: `:lsp-symbols` — picker over the document's symbols.
     pub lsp_symbols: ExCommandId,
+    /// `ex:lsp-workspace-symbol`: `:lsp-workspace-symbol [query]` — picker over workspace symbols.
     pub lsp_workspace_symbol: ExCommandId,
+    /// `ex:lsp-incoming-calls`: `:lsp-incoming-calls` — picker over callers of the function at the cursor.
     pub lsp_incoming_calls: ExCommandId,
+    /// `ex:lsp-outgoing-calls`: `:lsp-outgoing-calls` — picker over its callees.
     pub lsp_outgoing_calls: ExCommandId,
+    /// `ex:lsp-supertypes`: `:lsp-supertypes` — picker over the supertypes of the type at the cursor.
     pub lsp_supertypes: ExCommandId,
+    /// `ex:lsp-subtypes`: `:lsp-subtypes` — picker over its subtypes.
     pub lsp_subtypes: ExCommandId,
+    /// `ex:lsp-moniker`: `:lsp-moniker` — echo the moniker of the symbol at the cursor.
     pub lsp_moniker: ExCommandId,
+    /// `ex:lsp-code-lens`: `:lsp-code-lens` — picker over the buffer's code lenses.
     pub lsp_code_lens: ExCommandId,
+    /// `ex:lsp-color-presentation`: `:lsp-color-presentation` — picker of alternative formats for the color literal at the cursor.
     pub lsp_color_presentation: ExCommandId,
     /// IN.8b: `:format` — the LSP-independent cascade.
     pub format: ExCommandId,
+    /// `ex:lsp-format`: `:lsp-format` — `textDocument/formatting`, applied as one undo unit. LSP-only; `:format` is the cascade.
     pub lsp_format: ExCommandId,
+    /// `ex:lsp-format-range`: `:[range]lsp-format-range` — `textDocument/rangeFormatting` over a range or the selection.
     pub lsp_format_range: ExCommandId,
+    /// `ex:lsp-signature-help`: `:lsp-signature-help` — the signature-help popup at the cursor.
     pub lsp_signature_help: ExCommandId,
+    /// `ex:lsp-complete`: `:lsp-complete` — picker over LSP completion items at the cursor.
     pub lsp_complete: ExCommandId,
+    /// `ex:lsp-rename`: `:lsp-rename [new-name]` — workspace rename of the symbol at the cursor.
     pub lsp_rename: ExCommandId,
+    /// `ex:lsp-code-action`: `:lsp-code-action` — picker over code actions at the cursor or selection.
     pub lsp_code_action: ExCommandId,
     // SN.3c.1 (2026-06-14): `:snippet-expand` removed (UX-useless;
     // `<C-x><C-s>` is the live trigger, now mode-owned). The expand
     // path no longer has an ex-command surface form.
+    /// `ex:reload-snippets`: `:reload-snippets` — re-read the snippet files from disk.
     pub reload_snippets: ExCommandId,
+    /// `ex:cd`: `:cd [path]` — change the working directory (no arg: `$HOME`).
     pub cd: ExCommandId,
+    /// `ex:pwd`: `:pwd` — echo the working directory.
     pub pwd: ExCommandId,
     /// PR.2: `:project-root` — the introspection affordance for project
     /// resolution.
     pub project_root: ExCommandId,
 }
 
+/// Register every built-in ex-command into `registry` and return the ids
+/// callers need by field (see [`ExBuiltins`]).
+///
+/// Call once per registry, at boot, next to
+/// [`builtins::populate`](crate::builtins::populate). Every spec's `apply`
+/// only packages its parsed args into an [`Effect`]; the host performs the
+/// side effect. Subsystem crates (multibuffer, compilation, ai, …) register
+/// their own ex-commands at install time rather than here.
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
     let write = registry.register_ex_command(
         "ex:write",

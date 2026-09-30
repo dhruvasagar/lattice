@@ -4,6 +4,39 @@
 //! Vim ex-syntax (the `:` parser front-end), keymap chord resolution, command
 //! palette selection, and plugin-to-plugin calls all produce values of this
 //! shape. The dispatcher's `execute()` consumes them.
+//!
+//! An invocation is plain data: `Clone`, serializable, and free of
+//! borrowed state, so it can be recorded (macros record invocations, not
+//! keystrokes), replayed (`.`), sent across the core protocol, or built by
+//! a plugin. It names its command by [`CommandId`], which is only
+//! meaningful against the [`CommandRegistry`](crate::CommandRegistry) that
+//! minted it.
+//!
+//! # Examples
+//!
+//! The slots of `"a3dd` (register `a`, count 3, the delete operator over
+//! the current line), filled by hand:
+//!
+//! ```
+//! use lattice_grammar::{CommandInvocation, CommandRegistry, Count, Range, Register, builtins};
+//!
+//! let mut registry = CommandRegistry::new();
+//! let b = builtins::populate(&mut registry);
+//!
+//! let inv = CommandInvocation::of(b.delete.0)
+//!     .with_count(Count(3))
+//!     .with_register(Register::Named('a'))
+//!     .with_range(Range::CurrentLine);
+//!
+//! assert_eq!(inv.count_or_default().get(), 3);
+//! assert_eq!(inv.register_or_default(), Register::Named('a'));
+//!
+//! // Unset slots fall back to vim's defaults.
+//! let bare = CommandInvocation::of(b.delete.0);
+//! assert_eq!(bare.count, None);
+//! assert_eq!(bare.count_or_default(), Count::ONE);
+//! assert_eq!(bare.register_or_default(), Register::Unnamed);
+//! ```
 
 use serde::{Deserialize, Serialize};
 
@@ -14,13 +47,20 @@ use crate::range::Range;
 use crate::register::Register;
 use crate::target::Target;
 
+/// A vim count prefix: the `3` in `3dw` or `3j`. Each command decides what
+/// it multiplies; an absent count is [`Count::ONE`] (the `Default`), but
+/// [`CommandInvocation::count`] keeps `None` distinct so a command that
+/// cares (`G` vs `5G`) can tell "no count" from "count 1".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Count(pub u32);
 
 impl Count {
+    /// The implicit count of a bare command.
     pub const ONE: Count = Count(1);
 
+    /// The raw value. Evaluators typically use `get().max(1)` to treat a
+    /// stray `0` as 1.
     pub fn get(self) -> u32 {
         self.0
     }
@@ -32,13 +72,39 @@ impl Default for Count {
     }
 }
 
+/// One call of one command, with every grammar slot vim can fill: the
+/// unified call type every front-end produces and
+/// [`execute`](crate::execute) consumes (DESIGN.md §5.2.1).
+///
+/// A chord (`"a3dw`), a `:` line (`:%s/a/b/g`), a palette pick, a macro
+/// replay and a plugin call all become one of these. The dispatcher looks
+/// `command` up in the registry and routes by its [`CommandKind`]; each
+/// kind reads the slots it understands and ignores the rest (a motion
+/// ignores `register`, an action ignores `range` and `target`).
+///
+/// Build with [`Self::of`] plus the `with_*` builders. The value owns
+/// everything it holds and borrows nothing, so it can outlive the keystroke
+/// that produced it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommandInvocation {
+    /// The command to run. Must have been minted by the registry the
+    /// invocation is dispatched against, or dispatch fails with
+    /// [`CommandError::UnknownCommand`](crate::CommandError::UnknownCommand).
     pub command: CommandId,
+    /// The count prefix, if one was typed. `None` and `Some(Count(1))`
+    /// differ: see [`Count`].
     pub count: Option<Count>,
+    /// The `"x` register prefix, if one was typed; `None` means the
+    /// unnamed register.
     pub register: Option<Register>,
+    /// An explicit grammar range (`:%`, `:1,5`, the Visual selection).
+    /// When an operator has both, the range wins over [`Self::target`].
     pub range: Option<Range>,
+    /// What an operator acts on: a motion, text object or range. Unused by
+    /// other kinds.
     pub target: Option<Target>,
+    /// Command-specific arguments: the char of `f{char}`, the path of
+    /// `:w path`, the parsed fields of `:s/…/…/`.
     pub args: Args,
     /// Trailing `!` on the ex-syntax form (`:q!`, `:w!`, `:e!`). Carried
     /// out of the parser into the dispatcher; meaningless for non-ex
@@ -49,6 +115,8 @@ pub struct CommandInvocation {
 }
 
 impl CommandInvocation {
+    /// A bare invocation of `command`: no count, register, range or
+    /// target; [`Args::None`]; no bang.
     pub fn of(command: CommandId) -> Self {
         Self {
             command,
@@ -61,40 +129,48 @@ impl CommandInvocation {
         }
     }
 
+    /// Set the count prefix.
     pub fn with_count(mut self, count: Count) -> Self {
         self.count = Some(count);
         self
     }
 
+    /// Set the register prefix.
     pub fn with_register(mut self, register: Register) -> Self {
         self.register = Some(register);
         self
     }
 
+    /// Set an explicit range.
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = Some(range);
         self
     }
 
+    /// Set the operator target.
     pub fn with_target(mut self, target: Target) -> Self {
         self.target = Some(target);
         self
     }
 
+    /// Replace the arguments.
     pub fn with_args(mut self, args: Args) -> Self {
         self.args = args;
         self
     }
 
+    /// Set the trailing-`!` bit (ex-commands only).
     pub fn with_bang(mut self, bang: bool) -> Self {
         self.bang = bang;
         self
     }
 
+    /// The count, or [`Count::ONE`] when none was typed.
     pub fn count_or_default(&self) -> Count {
         self.count.unwrap_or_default()
     }
 
+    /// The register, or the unnamed register when none was typed.
     pub fn register_or_default(&self) -> Register {
         self.register.unwrap_or_default()
     }
@@ -104,14 +180,28 @@ impl CommandInvocation {
 /// dispatcher resolves the invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommandKind {
+    /// Acts on a span (`d`, `c`, `y`, `gU`): resolves the invocation's
+    /// target or range, then runs over it. See
+    /// [`OperatorSpec`](crate::OperatorSpec).
     Operator,
+    /// Computes a new cursor position (`w`, `j`, `G`); also usable as an
+    /// operator target. See [`MotionSpec`](crate::MotionSpec).
     Motion,
+    /// Selects a span around the cursor (`iw`, `a(`); an operator target or
+    /// a Visual selection. See [`TextObjectSpec`](crate::TextObjectSpec).
     TextObject,
+    /// Reached from the `:` line; parses its own argument string. See
+    /// [`ExCommandSpec`](crate::ExCommandSpec).
     ExCommand,
+    /// A free-form command with no grammar role — most chord bindings that
+    /// are not motions or operators (`K` for LSP hover, fold cycling). See
+    /// [`ActionSpec`](crate::ActionSpec).
     Action,
 }
 
 impl CommandKind {
+    /// Kebab-case name used in help views and completion annotations:
+    /// `"operator"`, `"motion"`, `"text-object"`, `"ex-command"`, `"action"`.
     pub fn label(self) -> &'static str {
         match self {
             CommandKind::Operator => "operator",
@@ -122,6 +212,8 @@ impl CommandKind {
         }
     }
 
+    /// Single-glyph marker for completion menus and help headings; agrees
+    /// with [`kind_icon`] on [`Self::label`].
     pub fn icon(self) -> char {
         match self {
             CommandKind::ExCommand => ':',
@@ -191,6 +283,7 @@ pub enum LatencyClass {
 }
 
 impl LatencyClass {
+    /// Lower-case name: `"reflex"`, `"display"`, `"background"`.
     pub fn label(self) -> &'static str {
         match self {
             LatencyClass::Reflex => "reflex",
@@ -214,9 +307,17 @@ impl LatencyClass {
 /// the `CommandRegistry`.
 #[derive(Debug, Clone)]
 pub struct CommandSpec {
+    /// The id the registry minted at registration; unique per process.
     pub id: CommandId,
+    /// The canonical, namespaced name (`motion:word-forward`,
+    /// `operator:delete`, `ex:write`, `action:…`). The key for
+    /// [`CommandRegistry::id_by_name`](crate::CommandRegistry::id_by_name);
+    /// user-typed aliases are resolved to it by the front-end.
     pub name: String,
+    /// Which dispatcher path handles it.
     pub kind: CommandKind,
+    /// The help text shown by `:describe-command`, `:apropos` and
+    /// completion.
     pub doc: String,
     /// Per-positional-argument metadata (DESIGN.md §B.1). Lifted from
     /// the per-kind spec (`MotionSpec.args_schema`,

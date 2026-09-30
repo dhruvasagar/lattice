@@ -1,10 +1,46 @@
 //! What a `CommandInvocation` produced once executed.
 //!
+//! [`Effect`] is the **host boundary**: every evaluator, ex-command, mode
+//! action handler and WASM plugin describes what it wants done as an
+//! `Effect` value, and the host (`lattice-host`'s `handle_effect`, then the
+//! renderer peers for the few renderer-coupled arms) applies it. Producers
+//! never hold `&mut Editor`; that is what makes built-ins, modes and plugins
+//! peers, and what lets macros, dot-repeat and the async inbound path replay
+//! the same values.
+//!
 //! `Effect::None` is for read-only or selection-only commands. `Effect::Edits`
 //! carries the `AppliedEdit`s that the dispatcher applied to the document
 //! (suitable for `Event::DocumentChanged`). `Effect::SelectionChange` carries
 //! the new selection set (suitable for `Event::SelectionsChanged`). Effects
 //! compose; a single command can yield multiple via `Effect::Many`.
+//!
+//! # Coordinates
+//!
+//! Every [`Position`](lattice_protocol::position::Position) here is 0-based
+//! `(line, byte)` -- a UTF-8 byte offset within the line, not a char or
+//! UTF-16 column -- and every protocol `Range` is half-open. The one
+//! exception is [`Utf16Pos`], which exists precisely to carry an
+//! unconverted LSP column.
+//!
+//! # Which buffer
+//!
+//! Unless a variant names a buffer (`target`, `view`, a `BufferId`, a
+//! path or a synthetic name), it acts on the **focused** buffer / active
+//! pane *at apply time*. That is right for a chord-time effect and wrong
+//! for an async one; see [`Effect::CursorMoveIn`] and
+//! [`Effect::ApplyEdit`] for the addressed forms.
+//!
+//! # Where each variant is applied
+//!
+//! Most arms run host-side in `lattice_host::dispatch::handle_effect`,
+//! synchronously and in order. A minority are *peer-applied* (the TUI's
+//! `apply_effect_app_arms` and the GPUI peer): `QuitEditor`, `OpenBuffer`,
+//! `OpenBufferAt`, `OpenInTarget`, `Global`, the picker / prompt /
+//! transient / popup / file-tree / oil openers, most `Lsp*` commands. A
+//! peer-applied effect runs *after* every host-applied effect of the same
+//! batch, and is dropped on the off-keystroke inbound path (which applies
+//! host-side only) -- which is why host-applied twins such as
+//! [`Effect::OpenBufferAtColumn`] exist.
 //!
 //! Ex-command effects (`SaveBuffer`, `QuitEditor`, `OpenBuffer`, `SetOption`,
 //! `ClearSearchHighlight`, `Echo`, `EchoRegisters`, `EchoMarks`, `Substitute`,
@@ -31,8 +67,13 @@ use crate::register::Register;
 /// `y`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum YankKind {
+    /// A span of characters; `p` inserts after the cursor, `P` at it.
     Charwise,
+    /// Whole lines (content ends with a newline); `p` opens below the
+    /// cursor line, `P` above.
     Linewise,
+    /// A Visual-block rectangle: rows joined by `'\n'`, pasted one per
+    /// line at the cursor's column.
     Blockwise,
 }
 
@@ -48,10 +89,15 @@ pub enum YankKind {
 /// to surface without inventing a parallel severity scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EchoLevel {
+    /// `tracing::Level::TRACE`; recorded, never echoed by default.
     Trace,
+    /// `tracing::Level::DEBUG`; recorded, never echoed by default.
     Debug,
+    /// Ordinary feedback ("3 substitutions").
     Info,
+    /// Something the user should notice but that did not fail.
     Warn,
+    /// A failed command (vim's `E…` messages).
     Error,
 }
 
@@ -85,7 +131,9 @@ impl From<tracing::Level> for EchoLevel {
 /// line) vs. `:%s/.../.../` (whole buffer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SubstituteScope {
+    /// `:s` -- the cursor's line only.
     CurrentLine,
+    /// `:%s` -- every line of the buffer.
     Whole,
 }
 
@@ -113,7 +161,10 @@ pub enum QuitScope {
 /// the host to resolve post-open. Plain `u32`s — no `lsp_types` leak.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Utf16Pos {
+    /// 0-based line.
     pub line: u32,
+    /// 0-based column in UTF-16 code units (LSP's default encoding), not
+    /// bytes.
     pub col: u32,
 }
 
@@ -177,6 +228,19 @@ pub enum LspRequest {
 
 /// Where in a target file an [`Effect::WriteToFile`] lands.
 ///
+/// # Examples
+///
+/// ```
+/// use lattice_grammar::effect::FileAnchor;
+///
+/// // A 3-line file: append inserts before line 3 (one past the last).
+/// assert_eq!(FileAnchor::End.resolve_line(3), 3);
+/// assert_eq!(FileAnchor::Start.resolve_line(3), 0);
+/// assert_eq!(FileAnchor::Line(1).resolve_line(3), 1);
+/// // Past the end clamps to append instead of failing.
+/// assert_eq!(FileAnchor::Line(9).resolve_line(3), 3);
+/// ```
+///
 /// A **position**, not a range, and the asymmetry with [`Effect::ApplyEdit`]
 /// is the answer rather than an inconsistency to tidy away
 /// (`cross-file-writes.md` §4).
@@ -222,8 +286,49 @@ impl FileAnchor {
     }
 }
 
+/// What a command asks the host to do. See the [module docs](self) for
+/// the coordinate convention, which buffer an un-addressed variant acts on,
+/// and which variants are host- vs. peer-applied.
+///
+/// # Contract for producers
+///
+/// - An `Effect` is a *request*; it cannot report failure back
+///   (`apply_effect_host` returns nothing to the producer). Put anything that
+///   must happen only after a write lands *after* it in an
+///   [`Effect::Many`] -- a [`Effect::WriteToFile`] that fails stops the
+///   rest of its batch.
+/// - An evaluator that fails returns `Err` instead of an effect; nothing is
+///   committed (see [`crate::CommandError`]).
+/// - Async producers address their buffer explicitly
+///   ([`Effect::CursorMoveIn`], [`Effect::ApplyEdit`]) rather than
+///   assuming the focused one.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_grammar::{Effect, EchoLevel, Register, YankKind};
+///
+/// // `yy` on "hello": yank the line, tell the user nothing.
+/// let yank = Effect::Yank {
+///     register: Register::Unnamed,
+///     content: "hello\n".into(),
+///     kind: YankKind::Linewise,
+///     explicit_yank: true,
+/// };
+///
+/// // Effects compose; the host applies `Many` children in order.
+/// let e = Effect::Many(vec![
+///     yank,
+///     Effect::Echo { level: EchoLevel::Info, text: "1 line yanked".into() },
+/// ]);
+/// assert!(!e.is_none());
+/// assert!(Effect::None.is_none());
+/// ```
 #[derive(Debug, Clone)]
 pub enum Effect {
+    /// Nothing to apply; the chord is consumed. Read-only commands and
+    /// commands whose work already happened return this. Not forwarded to
+    /// the renderer.
     None,
     /// AP.0.2: the action DECLINES this chord — it did nothing, and the
     /// dispatcher should re-resolve the chord as if this action's keymap layer
@@ -234,6 +339,16 @@ pub enum Effect {
     /// still does whatever else is bound (completion nav, a normal backspace, a
     /// user remap). Distinct from `None` (a no-op that CONSUMES the chord).
     Declined,
+    /// Edits the grammar dispatcher has **already applied** to the focused
+    /// document (the operator ran against the document actor). The host
+    /// only routes the side effects: `DocumentChanged` (LSP `didChange`,
+    /// syntax reparse, highlight shift, dot-repeat recording). It also
+    /// moves the cursor to the first edit's `original_range.start` -- a
+    /// following [`Effect::CursorMove`] / [`Effect::SelectionChange`] in
+    /// the same [`Effect::Many`] overrides that.
+    ///
+    /// Not for code outside the dispatcher: an edit that has not been
+    /// applied yet goes through [`Effect::ApplyEdit`].
     Edits(Vec<AppliedEdit>),
     /// CR.0: a generic "apply this edit to this buffer" primitive.
     ///
@@ -259,9 +374,18 @@ pub enum Effect {
     /// (`feedback_effect_vocabulary_is_host_boundary`): this lets a mode
     /// drive an arbitrary document edit without the host growing a
     /// feature-specific `Action` variant + `do_<x>` method per feature.
+    ///
+    /// **Deferred:** the host translates it into an `Action::ApplyEdit`
+    /// queued on the outcome's `next_actions`, so it lands after the
+    /// current effect batch has been applied, not in sequence with it.
     ApplyEdit {
+        /// The buffer to edit. Need not be focused.
         target: lattice_core::BufferId,
+        /// The pending edit: a half-open `(line, byte)` range in `target`'s
+        /// current (pre-edit) coordinates, plus what replaces it.
         edit: lattice_protocol::edit::Edit,
+        /// Where to leave the **active** cursor afterwards, in post-edit
+        /// coordinates; `None` leaves it alone.
         cursor: Option<lattice_protocol::position::Position>,
     },
     /// XF.1: move text into a file the editor has not necessarily opened.
@@ -360,11 +484,23 @@ pub enum Effect {
         /// this can never persist a half-applied effect.
         save: bool,
     },
+    /// Replace the focused buffer's selection set; motions return this with
+    /// a collapsed primary (`anchor == head`). The host moves the cursor to
+    /// the primary's head. In Visual / Select mode it keeps the selection
+    /// alive: a collapsed primary *extends* from the running Visual anchor
+    /// (a motion), a non-collapsed one is adopted whole (a text object
+    /// such as `viw`). Outside Visual only the cursor moves.
     SelectionChange(SelectionSet),
-    /// Move the cursor to `target` without affecting the selection.
+    /// Move the focused buffer's cursor to this `(line, byte)`.
     /// The semantically-clean cursor-only jump — use this for navigation
-    /// chords (]]/[[, ]c/[c, ]f/[f) rather than overloading SelectionChange
-    /// with a collapsed cursor. The host writes `editor.cursor = target`.
+    /// chords (`]]`/`[[`, `]c`/`[c`, `]f`/`[f`) rather than overloading SelectionChange
+    /// with a collapsed cursor. The host writes `editor.cursor`; in Visual /
+    /// Select mode it also extends the selection from the Visual anchor to
+    /// the new position, exactly as a motion would.
+    ///
+    /// Chord-time only. An async producer must use
+    /// [`Effect::CursorMoveIn`]: by the time its result lands the focused
+    /// buffer may be a different one.
     CursorMove(lattice_protocol::position::Position),
     /// MG.18d: [`Effect::CursorMove`] addressed at a **specific buffer** —
     /// the host moves the cursor only while `target` is the focused
@@ -384,13 +520,27 @@ pub enum Effect {
     /// stale jump is worse than none. Producers that want position
     /// restored on return use marks / position history, which are
     /// per-buffer by construction.
+    ///
+    /// Unlike `CursorMove` it does not touch a Visual selection.
     CursorMoveIn {
+        /// The buffer `position` was computed against.
         target: lattice_core::BufferId,
+        /// 0-based `(line, byte)` in `target`.
         position: lattice_protocol::position::Position,
     },
+    /// Write text into a register (and the host's yank ring). Every
+    /// operator that captures text emits one: yank, delete, change, `x`.
+    ///
+    /// The host always updates the unnamed register too, stores into
+    /// `register` when it names one, and ignores the whole effect for
+    /// [`Register::BlackHole`]. It moves no cursor and edits nothing.
     Yank {
+        /// Destination register; [`Register::Unnamed`] when none was
+        /// named with `"<x>`.
         register: Register,
+        /// The captured text, verbatim. Linewise content ends with `\n`.
         content: String,
+        /// Shape of the capture; decides how a later put lays it out.
         kind: YankKind,
         /// `true` when this write came from an explicit **yank** (`y`,
         /// `yy`, Visual `y`); `false` for the register writes that
@@ -409,7 +559,13 @@ pub enum Effect {
     // --- Ex-command effects (DESIGN.md §5.2.1) ---
     /// `:w [path]` -- write the current buffer (to the given path, or the
     /// document's known path).
+    ///
+    /// Host-applied (works on the off-keystroke inbound path too). In an oil
+    /// buffer it applies the listing's edits to the filesystem instead.
     SaveBuffer {
+        /// Write-as target. A user-typed path: `~` expands and a relative
+        /// path joins the editor's `:cd` directory. `None` writes the
+        /// buffer's own file (an error echo if it has none).
         path: Option<PathBuf>,
     },
     /// `:q[!]` (`scope = Pane`) / `:qa[!]` (`scope = All`) -- quit.
@@ -421,15 +577,26 @@ pub enum Effect {
     /// ignores pane/tab count and shuts the editor outright (vim's
     /// `:qa`). The dirty guard (unless forced) is identical for both
     /// and lives once in `Editor::do_quit`.
+    ///
+    /// Peer-applied.
     QuitEditor {
+        /// `!` -- skip the dirty-buffer guard.
         force: bool,
+        /// Pane (`:q`) or whole editor (`:qa`).
         scope: QuitScope,
     },
     /// `:e[!] [path]` -- swap the current document for the file at `path`.
     /// With `path = None` reload from the document's existing path.
     /// `force = true` discards unsaved changes.
+    ///
+    /// Peer-applied. A file already open in another buffer is activated,
+    /// not reloaded; naming the focused buffer's own file reloads it (and
+    /// needs `force` when dirty); a directory opens a directory view.
     OpenBuffer {
+        /// User-typed path (`~` and `:cd`-relative resolved by the host);
+        /// `None` reloads the focused document from its own path.
         path: Option<PathBuf>,
+        /// `!` -- allow a reload that discards unsaved changes.
         force: bool,
     },
     /// M.10.3 bug fix (2026-06-03): atomic "open file + position
@@ -454,8 +621,12 @@ pub enum Effect {
     /// later `do_edit` reset cursor for the freshly-loaded
     /// document.
     OpenBufferAt {
+        /// As [`Effect::OpenBuffer`]'s `path`.
         path: Option<PathBuf>,
+        /// Where the cursor lands in the opened buffer, 0-based
+        /// `(line, byte)`. Closed folds around it are opened.
         position: lattice_protocol::position::Position,
+        /// As [`Effect::OpenBuffer`]'s `force`.
         force: bool,
         /// CD.2: text for the buffer **only when the file is not on disk**.
         /// Reopening a file that exists never has its text replaced — a
@@ -482,8 +653,11 @@ pub enum Effect {
     /// Host/peer-only for now: no WIT mirror (a plugin opening in a split
     /// is a deliberate future WIT addition, see `boundary_effect`).
     OpenInTarget {
+        /// As [`Effect::OpenBuffer`]'s `path`.
         path: Option<PathBuf>,
+        /// Where the cursor lands, 0-based `(line, byte)`.
         position: lattice_protocol::position::Position,
+        /// Which pane: current, new split, new vsplit, or new tab.
         target: lattice_core::ui::pane::OpenTarget,
     },
     /// LM.2: re-list an existing oil buffer `view` to `dir` in place —
@@ -498,8 +672,12 @@ pub enum Effect {
     /// applier touches only that buffer's dir/snapshot/rope (design §3.2).
     /// Host/peer-only — no WIT mirror.
     OilNavigate {
+        /// The oil buffer to re-list.
         view: lattice_core::BufferId,
+        /// The directory it now lists.
         dir: PathBuf,
+        /// Entry name to put the cursor on after the re-list; `None` =
+        /// first row.
         focus: Option<String>,
     },
     /// LM.2: toggle the expansion of file-tree `view`'s directory entry
@@ -508,7 +686,10 @@ pub enum Effect {
     /// `do_file_tree_follow`. Names `view` so trees stay independent.
     /// Host/peer-only — no WIT mirror.
     FileTreeToggle {
+        /// The file-tree buffer.
         view: lattice_core::BufferId,
+        /// 0-based index into the tree's current entry list (the row under
+        /// the cursor). Out of range is a silent no-op.
         entry_index: u32,
     },
     /// BC.8c: open `uri` via the OS handler (`open` / `xdg-open` /
@@ -521,6 +702,8 @@ pub enum Effect {
     /// the generic inbound tick-callback (where peer-applied effects are
     /// not forwarded), so the work must run host-side.
     OpenExternalUri {
+        /// Any URI the OS handler accepts (`https:`, `file:`, `mailto:`).
+        /// A spawn failure is logged, not echoed.
         uri: String,
     },
     /// BC.8c: **host-applied** atomic open + optional UTF-16-column
@@ -538,8 +721,11 @@ pub enum Effect {
     /// against the opened line — the conversion needs the line text, which
     /// only exists post-open, which is why the column travels unconverted.
     OpenBufferAtColumn {
+        /// As [`Effect::OpenBuffer`]'s `path`.
         path: Option<PathBuf>,
+        /// Cursor target as an unconverted LSP position; `None` = open only.
         column: Option<Utf16Pos>,
+        /// As [`Effect::OpenBuffer`]'s `force`.
         force: bool,
     },
     /// I5.1 (Claude Code IDE peer): spawn a child process in a new
@@ -588,18 +774,23 @@ pub enum Effect {
     /// `:set <option>` -- the host parses the option spec; the closure
     /// just hands the raw text through.
     SetOption {
+        /// Everything after `:set ` (`name`, `noname`, `name=value`,
+        /// `name?`, ...). Parsed and validated by the host's config
+        /// registry; a parse error is echoed and nothing is written.
         spec: String,
     },
     /// `:setlocal <option>` -- like `SetOption` but writes to the
     /// buffer-local override layer for the active buffer only, without
     /// touching the global config registry.
     SetLocalOption {
+        /// Same syntax as [`Effect::SetOption`]'s `spec`.
         spec: String,
     },
     /// `:setglobal <option>` -- like `SetOption` but only writes the
     /// global config registry without updating any buffer-local override
     /// layers. Reads back the global value on `:setglobal name?`.
     SetGlobalOption {
+        /// Same syntax as [`Effect::SetOption`]'s `spec`.
         spec: String,
     },
     /// `:noh[lsearch]` -- clear the hlsearch overlay.
@@ -611,9 +802,13 @@ pub enum Effect {
     /// rebuild their caches. An unknown name echoes a host-side error.
     /// The closure only packages the name (it has no registry access).
     SetColorscheme(String),
-    /// Display a one-line message in the echo area.
+    /// Display a one-line message in the echo area. Also appended to
+    /// `*messages*` and published as a message event; `Trace` / `Debug`
+    /// are recorded but not shown.
     Echo {
+        /// Severity; decides colour and whether it is shown.
         level: EchoLevel,
+        /// The message. Keep it to one line.
         text: String,
     },
     /// L4b (lsp-architecture.md §15): show a cursor-anchored popup with
@@ -628,6 +823,8 @@ pub enum Effect {
     /// popup line by its severity via the matching `Style::Diagnostic*`
     /// highlight.
     ShowDiagnosticsPopup {
+        /// `(text, severity_rank)` per popup line; rank 0 = Error, 1 =
+        /// Warning, 2 = Information, 3 = Hint.
         lines: Vec<(String, u8)>,
     },
     /// L7 (lsp-architecture.md §16): fire a mode-owned LSP **navigation**
@@ -646,21 +843,37 @@ pub enum Effect {
     EchoRegisters,
     /// `:marks` -- the host formats and displays its own mark state.
     EchoMarks,
-    /// `:[%]s/pat/repl/[g]` -- run substitute over the given scope.
+    /// `:[%]s/pat/repl/[g]` -- run substitute over the given scope, one
+    /// edit per changed line. Echoes the count, or `E486` when nothing
+    /// matched.
     Substitute {
+        /// Which lines.
         scope: SubstituteScope,
+        /// A `fancy_regex` pattern (Rust regex syntax plus look-around and
+        /// backreferences) -- not vim's regex dialect. Empty is an error.
         pattern: String,
+        /// Replacement template; `$1` / `${name}` expand capture groups.
         replacement: String,
+        /// `g` flag -- every match on a line, not just the first.
         global: bool,
     },
     /// `:g/pat/body` (and `:v/pat/body` with `inverted = true`).
     /// `body` is a pre-parsed [`CommandInvocation`] -- the parser
-    /// front-end (`lattice-ui-tui::excommand`) compiles it once at
+    /// front-end (`lattice-host::excommand`) compiles it once at
     /// `:g` parse time so the host doesn't re-parse per matching
     /// line, and so body parse errors surface before `:g` fires.
+    ///
+    /// Peer-applied. The host collects the matching lines from a snapshot
+    /// first, then walks them **bottom-up**, placing the cursor at column 0
+    /// of each and dispatching `body` there, so edits never shift a line
+    /// still to be visited. No WIT mirror (`CommandInvocation` has none).
     Global {
+        /// Matched as a **literal substring** today, unlike
+        /// [`Effect::Substitute`]'s regex. Empty is an error.
         pattern: String,
+        /// `:v` / `:g!` -- run on the lines that do *not* match.
         inverted: bool,
+        /// The command to run on each selected line.
         body: Box<CommandInvocation>,
     },
     /// `:d` -- delete the current line including its trailing newline.
@@ -677,7 +890,10 @@ pub enum Effect {
     /// named anchor after rendering -- used by the cmdline's
     /// arg-aware `<C-h>` to land on `arg:<name>` directly.
     DescribeCommand {
+        /// Canonical name (`ex:write`, `motion:word-forward`) or an
+        /// ex-command alias.
         name: String,
+        /// Help anchor to scroll to, e.g. `arg:<name>`; `None` = top.
         anchor: Option<String>,
     },
     /// `:describe-buffer`. The host renders a snapshot of the current
@@ -688,6 +904,7 @@ pub enum Effect {
     /// every registered `CommandSpec` (name + doc) and renders the
     /// matches.
     Apropos {
+        /// Case-insensitive substring matched against names and docs.
         pattern: String,
     },
     /// `:describe-key <chord>` (DESIGN.md §5.11). The host queries
@@ -695,6 +912,8 @@ pub enum Effect {
     /// appear in multiple modes -- Normal / Visual / Help, etc.) and
     /// renders them.
     DescribeKey {
+        /// Canonical chord notation (`<C-w>v`, `gg`), as produced by the
+        /// cmdline's chord-capture slot.
         chord: String,
     },
     /// `:keymap`. The host renders the full default keymap grouped by
@@ -728,14 +947,21 @@ pub enum Effect {
     /// host call; it goes here, after the effect it depends on. A write that
     /// does not land stops the batch, so this does not run.
     InvokeCommand {
+        /// A registered command name. If it names a `CommandKind::Action`
+        /// it is dispatched with `args`; otherwise `id` plus `args` is run
+        /// as an ex line.
         id: String,
+        /// Arguments for the command (rendered onto the ex line in the
+        /// ex-line case).
         args: crate::args::Args,
     },
     /// `:ls` / `:buffers` -- render every open document buffer in a
     /// help-style view.
     ListBuffers,
-    /// `:cd [path]` -- change the editor's working directory.
-    /// No arg changes to the user's home directory.
+    /// `:cd [path]` -- change the editor's working directory (what relative
+    /// paths in `:e` / `:w` resolve against). The path is user-typed: `~`
+    /// expands, relative joins the current `:cd` directory. `None` changes
+    /// to the user's home directory.
     ChangeDir(Option<String>),
     /// `:pwd` -- print the current working directory.
     PrintWorkingDir,
@@ -760,7 +986,9 @@ pub enum Effect {
     /// with the appropriate `source` set so the trait-driven
     /// dispatch + MRU pipeline runs uniformly.
     OpenPicker {
+        /// Registered picker-source name (`files`, `recent`, `grep`, ...).
         source: String,
+        /// Raw whitespace-split arguments; the source re-parses them.
         args: Vec<String>,
         /// PC.1: root this picker resolves against, overriding the active
         /// buffer's project for this open only.
@@ -783,7 +1011,7 @@ pub enum Effect {
         /// The picker's `FillCaller` outcome already means "hand this value
         /// to whoever opened me"; what it lacked was a destination a *plugin*
         /// can own. A guest owns none of the surfaces
-        /// [`lattice_picker::FillTarget`] could name — not the document, not
+        /// `lattice_picker::FillTarget` could name — not the document, not
         /// the `:` line, not a prompt — but it does own an ex-command, so
         /// that becomes the destination. [`Effect::OpenPrompt`]'s
         /// `on_submit_action` is the same shape for the same reason, and the
@@ -809,11 +1037,13 @@ pub enum Effect {
     /// `:bd[elete][!]` -- close the active document buffer.
     /// `force = true` discards unsaved changes.
     BufferDelete {
+        /// `!` -- close even if modified.
         force: bool,
     },
     /// `:Tree [path]` -- open a file-tree buffer rooted at `path`.
     /// Absent = the document's parent directory.
     OpenFileTree {
+        /// Directory to root the tree at.
         root: Option<PathBuf>,
     },
     /// `:TreeClose` -- dismiss the file-tree buffer.
@@ -821,11 +1051,13 @@ pub enum Effect {
     /// `:Oil [path]` -- open an oil buffer for `path` (flat editable listing).
     /// Absent = current document's parent directory / cwd.
     OpenOil {
+        /// Directory to list.
         dir: Option<PathBuf>,
     },
     /// `:describe-option NAME` -- render the option's metadata in
     /// a help view.
     DescribeOption {
+        /// Option name as used with `:set`.
         name: String,
     },
     /// `:describe-element NAME` / `:describe-face NAME` (T.9.d) --
@@ -837,6 +1069,7 @@ pub enum Effect {
     /// `ThemeRegistry::describe` snapshot; an unknown name echoes an
     /// error.
     DescribeElement {
+        /// Theme element name (`modeline.mode`, `diagnostic.error`, ...).
         name: String,
     },
     /// `:options` -- list every registered option.
@@ -848,6 +1081,7 @@ pub enum Effect {
     /// `:list-plugin-apis`. The catalog is derived from `wit/` at build
     /// time (`lattice-plugin-api`); the host holds no plugin runtime.
     DescribePluginApi {
+        /// WIT interface name; `None` lists every interface.
         seam: Option<String>,
     },
     /// `:list-plugin-apis` (PI.2) -- list every plugin-API interface the
@@ -860,6 +1094,7 @@ pub enum Effect {
     /// defaults to markdown; `json` selects the machine-readable form. The
     /// host owns the dump + buffer open (the `OpenSyntheticBuffer` pattern).
     ExportPluginApi {
+        /// `"markdown"` (the default when `None`) or `"json"`.
         format: Option<String>,
     },
     /// `:list-commands` (PI.3) -- enumerate every registered command grouped
@@ -873,16 +1108,17 @@ pub enum Effect {
     /// / no-plugin-loaded echoes an error. Loaded-plugin enumeration is
     /// Phase-8-gated; the surface + registry seam exist now.
     DescribePlugin {
+        /// The plugin's manifest name.
         name: String,
     },
     /// `:list-plugins` (PI.4) -- list every loaded plugin (name + doc summary).
     /// Empty until the Phase-8 loader populates the registry.
     ListPlugins,
     /// `:hover [text]` -- open a hover popup at the cursor with
-    /// `text` as the markdown body. v1 path: lets the user
-    /// validate the popup positioning + dismissal; Phase 4 LSP
-    /// will source `text` from a real `textDocument/hover` reply.
+    /// `text` as the markdown body. A manual / testing entry point; LSP
+    /// hover (`K`) goes through [`Effect::Lsp`] instead.
     OpenHover {
+        /// Markdown body of the popup.
         markdown: String,
     },
     /// Dismiss the active popup, whatever its content. Content-agnostic
@@ -917,6 +1153,7 @@ pub enum Effect {
     /// **Rule of thumb:** a dismissal the user asked for is
     /// [`Effect::DismissPopup`]; a dismissal a mode decided on is this.
     DismissPopupNamed {
+        /// The popup buffer's synthetic name.
         name: String,
     },
     /// Show a popup overlay at `placement` with the given `focus`
@@ -929,9 +1166,14 @@ pub enum Effect {
     /// name keeps the effect vocabulary the host boundary, like
     /// `OpenSyntheticBuffer`.
     OpenPopup {
+        /// Synthetic name of the popup buffer; reused if it exists. Also
+        /// the key [`Effect::DismissPopupNamed`] matches on.
         name: String,
+        /// Major mode for the buffer, by mode-id string; must be registered.
         mode_id: String,
+        /// Where the popup floats (cursor-anchored, centred, ...).
         placement: lattice_core::ui::popup::PopupPlacement,
+        /// Whether the popup takes keyboard focus.
         focus: lattice_core::ui::popup::PopupFocus,
     },
     /// `:help [topic]` -- open a free-form help topic. With no
@@ -940,6 +1182,7 @@ pub enum Effect {
     /// help-topic registry and surfaces the body in a help
     /// buffer. Unknown topics echo an error.
     OpenHelpTopic {
+        /// Topic name; `None` opens the index.
         topic: Option<String>,
     },
 
@@ -965,6 +1208,7 @@ pub enum Effect {
     /// log buffer (`*lsp*`) when `server_id` is None, or the
     /// per-server log (`*lsp:<server>*`) when set.
     OpenLspLog {
+        /// Server id (as in `:lsp-status`); `None` = the subsystem log.
         server_id: Option<String>,
     },
     /// `:ai-log [provider]` (AI-1b) -- open the per-session AI log
@@ -977,6 +1221,7 @@ pub enum Effect {
     /// emission; the host owns only the generic
     /// `ensure_named_synthetic_document` + `AiLogMode` open.
     OpenAiLog {
+        /// Provider-prefix filter over known sessions; `None` = all.
         session: Option<String>,
     },
     /// Open (or focus) a named synthetic buffer under a given major mode --
@@ -994,7 +1239,10 @@ pub enum Effect {
     /// the way out either — it names a `target` buffer id this effect does not
     /// hand back. All three are `None` for every pre-OC.7a emitter.
     OpenSyntheticBuffer {
+        /// Buffer name (`*ai:opencode*`); an existing buffer of that name is
+        /// focused rather than recreated.
         name: String,
+        /// Major mode id; must be registered at boot.
         mode_id: String,
         /// Seed text, applied BEFORE the buffer is shown so the first frame is
         /// the finished one. Ignored when the buffer already existed — a
@@ -1020,8 +1268,11 @@ pub enum Effect {
     /// that does not exist yet. Emitted by magit's `<CR>`, which opens a
     /// staged blob at the line the cursor was reading in the diff.
     OpenSyntheticBufferAt {
+        /// As [`Effect::OpenSyntheticBuffer`]'s `name`.
         name: String,
+        /// As [`Effect::OpenSyntheticBuffer`]'s `mode_id`.
         mode_id: String,
+        /// Cursor target in the opened buffer, 0-based `(line, byte)`.
         position: lattice_protocol::position::Position,
     },
     /// `:messages` -- open the `*messages*` buffer (the emacs
@@ -1040,6 +1291,7 @@ pub enum Effect {
     /// `:lsp-trace-log <server>` so peeking mid-stream doesn't
     /// flip the toggle off.
     ToggleLspTrace {
+        /// Server id (as in `:lsp-status`).
         server_id: String,
     },
     /// `:lsp-trace-log [server]` -- open the JSON-RPC trace ring
@@ -1048,6 +1300,7 @@ pub enum Effect {
     /// running instance; arg = pre-filter; single match short-
     /// circuits the picker. Independent of the trace toggle.
     OpenLspTraceLog {
+        /// Server-id filter; `None` = pick among all running servers.
         server_id: Option<String>,
     },
     /// `:lsp-status` -- render every running server (id, root,
@@ -1072,10 +1325,11 @@ pub enum Effect {
     /// open. A real fuzzy picker arrives with the bundled
     /// fuzzy-finder plugin (Phase 8b).
     LspServerLogListing,
-    /// `:lsp-restart <server>` -- supervisor force-restart with
-    /// backoff. Wired but no-op until the supervisor's restart
-    /// path lands (4.4).
+    /// `:lsp-restart <server>` -- ask the LSP supervisor to restart the
+    /// server. Runs asynchronously on the LSP runtime; the outcome is
+    /// written to the LSP log.
     LspRestart {
+        /// Server id (as in `:lsp-status`).
         server_id: String,
     },
     /// `:lsp-progress-cancel [server]` -- send
@@ -1085,6 +1339,7 @@ pub enum Effect {
     /// buffer). Non-cancellable entries are left alone — the
     /// host's cancel is best-effort regardless. 4.4.c.
     LspProgressCancel {
+        /// Server id; `None` = every server attached to the active buffer.
         server_id: Option<String>,
     },
     /// 4.4.e: `:lsp-expand-region` -- structural smart-
@@ -1101,13 +1356,17 @@ pub enum Effect {
     /// wide default min level (when `server_id` is None) or a
     /// per-server override.
     SetLspLogLevel {
+        /// Server id; `None` = the subsystem-wide default.
         server_id: Option<String>,
+        /// `trace`, `debug`, `info`, `warn` / `warning` or `error`; anything
+        /// else is echoed as an error.
         level: String,
     },
     /// `:lsp-log-clear [server]` -- drop the ring's records.
     /// `None` clears the subsystem-wide ring; a server id
     /// clears that ring.
     LspLogClear {
+        /// Server id; `None` = the subsystem-wide ring.
         server_id: Option<String>,
     },
     /// `:lsp-symbols` -- open a picker over the active document's
@@ -1118,6 +1377,7 @@ pub enum Effect {
     /// workspace-scoped symbols matching `query` (server-side
     /// substring filter). Phase 4.2.f.
     LspWorkspaceSymbol {
+        /// Query sent to the server; empty asks for everything.
         query: String,
     },
     /// `:lsp-incoming-calls` -- 4.5.a. Prepares call-hierarchy
@@ -1158,7 +1418,7 @@ pub enum Effect {
     /// formats (named, rgb(), hex, etc.). Open a picker;
     /// accept splices the chosen alternative.
     LspColorPresentation,
-    /// `:format` -- run `textDocument/formatting` on the highest-
+    /// `:lsp-format` -- run `textDocument/formatting` on the highest-
     /// priority server with `documentFormattingProvider` and
     /// apply the returned edits as one undo unit. Phase 4.3.
     LspFormat,
@@ -1172,27 +1432,28 @@ pub enum Effect {
     /// rather than violating it: that rule exists because a generic
     /// name implies "works regardless of LSP", and this one does.
     Format,
-    /// `:format-range` -- run `textDocument/rangeFormatting`
+    /// `:lsp-format-range` -- run `textDocument/rangeFormatting`
     /// over the active Visual selection (when in Visual mode)
     /// or the supplied line range. Apply edits atomically.
     /// Phase 4.3.
     LspFormatRange,
-    /// `:signature-help` (or trigger-character driven). Send
+    /// `:lsp-signature-help` (or trigger-character driven). Send
     /// `textDocument/signatureHelp` to attached servers; first
     /// non-empty response renders into the hover popup.
     LspSignatureHelp,
-    /// `:complete` -- fire `textDocument/completion` at the
+    /// `:lsp-complete` -- fire `textDocument/completion` at the
     /// cursor and open the merged item list as a vertico
     /// picker. Phase 4.2.g.
     LspComplete,
-    /// `:rename <new-name>` -- run textDocument/prepareRename
+    /// `:lsp-rename <new-name>` -- run textDocument/prepareRename
     /// (when advertised) then textDocument/rename; apply the
     /// returned WorkspaceEdit as one undo unit across every
     /// affected buffer. Phase 4.3.
     LspRename {
+        /// The new identifier.
         new_name: String,
     },
-    /// `:code-actions` -- run textDocument/codeAction at the
+    /// `:lsp-code-action` -- run textDocument/codeAction at the
     /// cursor / selection; open the merged item list as a
     /// vertico picker. Accept routes through resolve (when
     /// needed) and applies the action's WorkspaceEdit /
@@ -1211,6 +1472,9 @@ pub enum Effect {
     /// mechanics*. No-op (quiet info echo) when no snippet matches the
     /// prefix.
     ExpandSnippet {
+        /// The trigger text to replace, half-open `(line, byte)` range on a
+        /// single line of the focused buffer; its text is the prefix looked
+        /// up (active language first, then `*`).
         replace_range: lattice_protocol::position::Range,
     },
     /// `:reload-snippets` -- re-read every snippet file from
@@ -1244,6 +1508,7 @@ pub enum Effect {
     /// watch list as the source of truth for participants —
     /// the tab is not a grouping unit. D.3.a.1 / D.4.d.3.a.
     DiffOff {
+        /// `!`; currently identical to the plain form (see above).
         force: bool,
     },
     /// `:diffthis` -- stage the active pane for a two-pane
@@ -1275,12 +1540,11 @@ pub enum Effect {
     /// errors at parse time. Cursor lands in the *first*
     /// new pane (vim parity).
     Diffsplit {
+        /// The baseline (two-way) or common-ancestor (three-way) file.
         path: std::path::PathBuf,
+        /// The "other side" for a three-way merge; `None` = two-way.
         remote: Option<std::path::PathBuf>,
     },
-    /// `]c` / `:hunk-next` -- jump cursor to the start of the
-    /// next diff hunk on the current side (`ranges[1]`).
-    /// Wraps to top. D.3.c.
     /// `:diffget [<bufnr>]` -- pull the hunk under the cursor
     /// from the named (or auto-resolved) buffer side. D.6.d.
     /// `target` is the optional buffer number passed by the
@@ -1290,16 +1554,18 @@ pub enum Effect {
     /// `Action::DiffGet`; this ex-command variant is a parallel
     /// entry point for explicit-target invocations.
     DiffGetCmd {
+        /// Buffer number to pull from; `None` = the unique peer side.
         target: Option<u32>,
     },
     /// `:diffput [<bufnr>]` -- push the hunk under the cursor
     /// into the named (or auto-resolved) buffer side. D.6.d.
     /// Mirror of [`Self::DiffGetCmd`] but for the put direction.
     DiffPutCmd {
+        /// Buffer number to push into; `None` = the unique peer side.
         target: Option<u32>,
     },
     /// `:diff-accept` -- resolve the active pane's diff
-    /// session with [`DiffOutcome::Accept`]. v1 semantics:
+    /// session with `lattice_diff::DiffOutcome::Accept`. v1 semantics:
     /// equivalent to `:diffoff` + signal Accept on the
     /// session's completion channel (if any). The buffer's
     /// current content (whatever the user applied via
@@ -1308,23 +1574,23 @@ pub enum Effect {
     /// from there. D.6.e.
     DiffAccept,
     /// `:diff-reject` -- resolve the active pane's diff
-    /// session with [`DiffOutcome::Reject`]. v1 semantics:
+    /// session with `lattice_diff::DiffOutcome::Reject`. v1 semantics:
     /// equivalent to `:diffoff!` + signal Reject. Plugins
     /// consuming the outcome should revert any
     /// pre-session state. D.6.e.
     DiffReject,
     /// `:diff-accept-all` — resolve EVERY pending review (each session with a
-    /// bound completion) with [`DiffOutcome::Accept`]. The bulk counterpart to
+    /// bound completion) with `lattice_diff::DiffOutcome::Accept`. The bulk counterpart to
     /// `:diff-accept` for when several agent reviews are open at once.
     DiffAcceptAll,
     /// `:diff-reject-all` — resolve EVERY pending review with
-    /// [`DiffOutcome::Reject`]. Bulk counterpart to `:diff-reject`.
+    /// `lattice_diff::DiffOutcome::Reject`. Bulk counterpart to `:diff-reject`.
     DiffRejectAll,
     /// D-fix.6: an IDE-peer connection's `close_tab` — tear down (as a
     /// Reject) every *programmatic* diff session that THIS connection
     /// (`origin_session`) opened, regardless of how/where it is
     /// displayed. Host-applied: it fires each matching session's bound
-    /// completion oneshot with [`DiffOutcome::Reject`] and closes its
+    /// completion oneshot with `lattice_diff::DiffOutcome::Reject` and closes its
     /// panes (the `:diff-reject` teardown, but targeted by
     /// `origin_session` rather than the active pane). If the connection
     /// opened no diff, the host falls back to closing the active buffer
@@ -1348,6 +1614,9 @@ pub enum Effect {
         /// The originating connection id; scopes the bulk teardown.
         origin_session: u64,
     },
+    /// `]c` / `:hunk-next` -- jump cursor to the start of the
+    /// next diff hunk on the current side (`ranges[1]`).
+    /// Wraps to top. D.3.c.
     NextHunk,
     /// `[c` / `:hunk-prev` -- jump cursor to the start of the
     /// previous diff hunk on the current side. Wraps to
@@ -1357,6 +1626,7 @@ pub enum Effect {
     /// single registered event (M.5.3.c). The introspection
     /// counterpart of `:describe-command` for events.
     DescribeEvent {
+        /// Event name as listed by `:describe-events`.
         name: String,
     },
 
@@ -1372,6 +1642,7 @@ pub enum Effect {
     /// `:describe-command` / `:describe-option` /
     /// `:describe-event` for modes.
     DescribeMode {
+        /// Mode id (`rust-mode`, `magit-core-mode`).
         name: String,
     },
     /// `:describe-active-modes` (`<C-h>m`) -- render the mode
@@ -1412,6 +1683,7 @@ pub enum Effect {
     /// (M.8). Helps debug surprising values when a mode's
     /// contribution shadows a `:set` write or vice versa.
     DescribeOptionResolution {
+        /// Option name as used with `:set`.
         name: String,
     },
 
@@ -1426,6 +1698,7 @@ pub enum Effect {
     /// per-row navigation + Enter-to-edit; for now edits run
     /// via the existing `:set` machinery on the cmdline.
     Customize {
+        /// Group or `*-mode` name; `None` = the picker.
         name: Option<String>,
     },
     /// `:tutor [N]` -- open the interactive tutor lesson `N`
@@ -1433,11 +1706,10 @@ pub enum Effect {
     /// content is embedded in the binary and copied to a
     /// temp file each time so the user starts fresh and can
     /// practice motions / operators on the file itself
-    /// (vim-tutor pattern). v1 ships lesson 1 only;
-    /// subsequent lessons land as separate
-    /// `docs/user/tutor/lesson-N.md` files registered through
-    /// the same handler.
+    /// (vim-tutor pattern). Lessons are the
+    /// `docs/user/tutor/lesson-N.md` files embedded by the host.
     Tutor {
+        /// 1-based lesson number; `None` = lesson 1.
         lesson: Option<u32>,
     },
     /// `:<mode-name>` -- toggle a registered mode on the active
@@ -1449,6 +1721,7 @@ pub enum Effect {
     /// crate stays renderer-agnostic and doesn't depend on
     /// `lattice-mode`.
     ToggleMode {
+        /// Mode id string, e.g. `"auto-pair-mode"`.
         mode_name: String,
     },
 
@@ -1505,8 +1778,11 @@ pub enum Effect {
     /// payload crosses. A name is also the plugin-native form: plugins
     /// register actions by name and cannot hold a host `CommandId`.
     Confirm {
+        /// The question shown as the dialog title.
         prompt: String,
+        /// Registered action name dispatched on `y`.
         yes_action: String,
+        /// Arguments passed to `yes_action` (see above).
         args: crate::Args,
     },
 
@@ -1561,7 +1837,9 @@ pub enum Effect {
     ///
     /// `Args::None` is a plain open, which is every native menu today.
     OpenTransient {
+        /// Registered transient-source name.
         source: String,
+        /// Context for the menu builder (see above).
         args: crate::args::Args,
     },
 
@@ -1580,16 +1858,29 @@ pub enum Effect {
     /// the buffer name); `None` uses a default unnamed prompt buffer.
     /// `<Esc>` cancels without firing anything.
     OpenPrompt {
+        /// Label shown for the prompt.
         prompt: String,
+        /// Initial input text; may be empty.
         initial: String,
+        /// Registered `action:*` name run on `<CR>`.
         on_submit_action: String,
+        /// Name for the prompt buffer (context for the submit handler);
+        /// `None` = default.
         buffer_name: Option<String>,
     },
 
+    /// Several effects, applied **in order** (the host flattens nested
+    /// `Many`). Host-applied children all run before any peer-applied
+    /// child. A [`Effect::WriteToFile`] that fails stops the remainder;
+    /// nothing else does. Order matters: [`Effect::RecordJump`] must precede
+    /// the open it records, and a cursor effect must follow the edit it
+    /// positions after.
     Many(Vec<Effect>),
 }
 
 impl Effect {
+    /// `true` only for [`Effect::None`]. An empty [`Effect::Many`] is not
+    /// `None`, nor is [`Effect::Declined`].
     pub fn is_none(&self) -> bool {
         matches!(self, Effect::None)
     }

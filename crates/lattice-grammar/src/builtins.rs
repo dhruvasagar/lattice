@@ -1,13 +1,25 @@
 //! Built-in motions, text objects, and operators that ship native (off the
 //! WASM boundary; per DESIGN.md §5.5.2 "built-ins stay native").
 //!
-//! Phase 1 implements the minimum necessary to demonstrate end-to-end
-//! dispatch:
-//! - `motion::word_forward` (next word start)
-//! - `operator::delete`
+//! This is the vim catalog: `w` / `b` / `e`, `f` / `t` and their repeats,
+//! `{` / `}`, `gg` / `G`, `%`, `n` / `*`, marks, `H` / `M` / `L`, `gj` /
+//! `gk`; the operators `d` / `c` / `y` / `<` / `>` / `=` / `gq` / `gU` /
+//! `gu` / `g~` / `zf` / `r`; and the `i` / `a` text objects. [`populate`]
+//! registers them all into a [`CommandRegistry`] under namespaced names
+//! (`motion:word-forward`, `operator:delete`, `text-object:inner-word`) and
+//! returns their ids as [`Builtins`].
 //!
-//! Subsequent revisions populate the full vim catalog. Each new built-in is
-//! a registration here; no new dispatcher wiring needed.
+//! Every builtin is an ordinary registry entry: the dispatcher, `:describe-*`
+//! and plugins see it exactly as they see a plugin-contributed motion.
+//! Adding one is a registration here and a keymap binding; no dispatcher
+//! wiring. Evaluators never touch host state directly: what a motion needs
+//! from the host (folds, marks, viewport, last search) arrives through the
+//! resolver traits on [`GrammarEnv`](crate::GrammarEnv), and what an operator
+//! does is returned as an [`Effect`].
+//!
+//! Tree-sitter structural objects (`af` / `ac` / …) are registered by
+//! `lattice-syntax`, not here: they need a parse this crate cannot see, and
+//! reach it only through [`ScopeResolver`](crate::ScopeResolver).
 
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
@@ -21,8 +33,47 @@ use crate::registry::{
     OperatorId, OperatorSpec, TextObjectContext, TextObjectId, TextObjectSpec,
 };
 
-/// Register all Phase 1 built-ins. Returns the ids needed by the keystroke
-/// parser / tests.
+/// Register every native built-in motion, operator and text object into
+/// `registry`, and return their ids.
+///
+/// Call once per registry, at boot. Each call mints fresh ids, so calling
+/// it twice re-registers every name onto new ids (the name index then
+/// points at the second set). Also tags `w` / `W` as word-forward motions
+/// (see [`CommandRegistry::tag_word_forward_motion`]).
+///
+/// # Examples
+///
+/// `dw` on `hello world`: the delete operator with a word-forward target.
+///
+/// ```
+/// use lattice_core::{BufferId, Document};
+/// use lattice_grammar::{
+///     Args, CancellationToken, CommandInvocation, CommandRegistry, Effect, Target, builtins,
+///     execute,
+/// };
+/// use lattice_protocol::position::Position;
+///
+/// let mut registry = CommandRegistry::new();
+/// let b = builtins::populate(&mut registry);
+/// assert_eq!(registry.id_by_name("motion:word-forward"), Some(b.word_forward.0));
+///
+/// let mut doc = Document::from_text("hello world");
+/// let dw = CommandInvocation::of(b.delete.0).with_target(Target::Motion(b.word_forward, Args::None));
+/// let effect = execute(
+///     &registry,
+///     &mut doc,
+///     BufferId(0),
+///     Position::ZERO,
+///     dw,
+///     &CancellationToken::never(),
+/// )
+/// .unwrap();
+///
+/// // The operator edited the document in place and reports the edit plus
+/// // the yank into the unnamed register.
+/// assert_eq!(doc.text().to_string(), "world");
+/// assert!(matches!(effect, Effect::Many(ref parts) if parts.len() == 2));
+/// ```
 pub fn populate(registry: &mut CommandRegistry) -> Builtins {
     let word_forward = registry.register_motion(
         "motion:word-forward",
@@ -1017,35 +1068,68 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
     }
 }
 
+/// The ids of every native built-in, as returned by [`populate`].
+///
+/// A typed shortcut for callers that hold the populated registry and need a
+/// specific builtin without a name lookup (the keystroke parser, the
+/// host's keymap wiring, tests, benches). Every field is also reachable by
+/// its registered name through [`CommandRegistry::id_by_name`]; the doc on
+/// each field gives that name and the vim key it implements. `Default`
+/// yields placeholder ids that name nothing, for code that needs a value
+/// before the registry is populated.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Builtins {
+    /// `motion:word-forward` — vim's `w`: start of the next word (3-way word/punct/blank classes). Exclusive; tagged word-forward so `dw` / `cw` stop at the line end.
     pub word_forward: MotionId,
+    /// `motion:word-backward` — vim's `b`: start of the previous word.
     pub word_backward: MotionId,
+    /// `motion:word-end` — vim's `e`: last byte of the current or next word. Inclusive.
     pub word_end: MotionId,
+    /// `motion:first-non-blank` — vim's `^`: first non-blank byte of the line. Exclusive.
     pub first_non_blank: MotionId,
+    /// `motion:find-char-forward` — vim's `f{char}`: next `args.char` on the line, landing on it. Inclusive.
     pub find_char_forward: MotionId,
+    /// `motion:find-char-backward` — vim's `F{char}`: previous `args.char` on the line, landing on it.
     pub find_char_backward: MotionId,
+    /// `motion:till-char-forward` — vim's `t{char}`: one byte before the next `args.char` on the line.
     pub till_char_forward: MotionId,
+    /// `motion:till-char-backward` — vim's `T{char}`: one byte after the previous `args.char` on the line.
     pub till_char_backward: MotionId,
+    /// `motion:big-word-forward` — vim's `W`: start of the next whitespace-delimited WORD. Tagged word-forward, like `w`.
     pub big_word_forward: MotionId,
+    /// `motion:big-word-backward` — vim's `B`: start of the previous WORD.
     pub big_word_backward: MotionId,
+    /// `motion:big-word-end` — vim's `E`: last byte of the current or next WORD.
     pub big_word_end: MotionId,
+    /// `motion:paragraph-forward` — vim's `}`: the next blank line (paragraph boundary). A jump.
     pub paragraph_forward: MotionId,
+    /// `motion:paragraph-backward` — vim's `{`: the previous paragraph boundary. A jump.
     pub paragraph_backward: MotionId,
+    /// `motion:sentence-forward` — vim's `)`: start of the next sentence. A jump.
     pub sentence_forward: MotionId,
+    /// `motion:sentence-backward` — vim's `(`: start of the previous sentence. A jump.
     pub sentence_backward: MotionId,
+    /// `motion:char-left` — vim's `h`: one character left, within the line (steps whole UTF-8 scalars).
     pub char_left: MotionId,
+    /// `motion:char-right` — vim's `l`: one character right, within the line.
     pub char_right: MotionId,
+    /// `motion:line-up` — vim's `k`: one line up, aiming at the goal column (keeps `curswant`).
     pub line_up: MotionId,
+    /// `motion:line-down` — vim's `j`: one line down, aiming at the goal column (keeps `curswant`).
     pub line_down: MotionId,
+    /// `motion:line-start` — vim's `0`: first byte of the line. Exclusive.
     pub line_start: MotionId,
+    /// `motion:line-end` — vim's `$`: end of the line; pins the goal column to end-of-line.
     pub line_end: MotionId,
+    /// `motion:goto-first-line` — vim's `gg` (`{count}gg` goes to that line). Linewise jump.
     pub goto_first_line: MotionId,
+    /// `motion:goto-last-line` — vim's `G` (`{count}G` goes to that line). Linewise jump.
     pub goto_last_line: MotionId,
     /// VM.3c: vim's `;` and `,` — repeat the last `f` / `F` / `t` / `T` in
     /// the same or the opposite direction. Motions for the same reason `%` is:
     /// vim composes them (`d;`) and extends a selection with them.
     pub find_repeat: MotionId,
+    /// `motion:find-repeat-reverse` — vim's `,`: the last find, reversed (see [`FindKind::reversed`](crate::FindKind::reversed)).
     pub find_repeat_reverse: MotionId,
     /// VM.3b: vim's `%`. A MOTION, not an action — vim composes it
     /// (`d%` deletes a bracketed span, `v%` selects one), and it took being
@@ -1053,32 +1137,48 @@ pub struct Builtins {
     pub match_pair: MotionId,
     /// VM.3i: vim's `zj` / `zk`, as the motions they are in vim.
     pub goto_next_fold: MotionId,
+    /// `motion:goto-prev-fold` — vim's `zk`: end of the previous fold.
     pub goto_prev_fold: MotionId,
     /// VM.3d-2: vim's `n` / `N` / `*` / `#`, as the motions they are in vim.
     pub search_next: MotionId,
+    /// `motion:search-prev` — vim's `N`: repeat the last search in the opposite direction.
     pub search_prev: MotionId,
+    /// `motion:search-word-forward` — vim's `*`: search forward for the whole word under the cursor.
     pub search_word_forward: MotionId,
+    /// `motion:search-word-backward` — vim's `#`: search backward for the whole word under the cursor.
     pub search_word_backward: MotionId,
     /// VM.3d-3: vim's `g*` / `g#` — the word under the cursor, matched
     /// anywhere rather than only as a whole word.
     pub search_word_forward_partial: MotionId,
+    /// `motion:search-word-backward-partial` — vim's `g#`: `#` without the whole-word boundaries.
     pub search_word_backward_partial: MotionId,
     /// VM.3e: vim's `'x` / `` `x ``, as the motions they are in vim.
     pub mark_line: MotionId,
     /// VM.3g-2: vim's `gj` / `gk` / `g0` / `g$`, as the motions they are.
     pub display_line_down: MotionId,
+    /// `motion:display-line-up` — vim's `gk`: one display row up, keeping the screen column.
     pub display_line_up: MotionId,
+    /// `motion:display-line-start` — vim's `g0`: first column of the display row.
     pub display_line_start: MotionId,
+    /// `motion:display-line-end` — vim's `g$`: last column of the display row.
     pub display_line_end: MotionId,
+    /// `motion:mark-exact` — vim's `` `x ``: the exact position of mark `args.char`.
     pub mark_exact: MotionId,
     /// VM.3f: vim's `H` / `M` / `L`, as the motions they are in vim.
     pub viewport_top: MotionId,
+    /// `motion:viewport-middle` — vim's `M`: the middle of the lines shown.
     pub viewport_middle: MotionId,
+    /// `motion:viewport-bottom` — vim's `L`: the `count`-th line from the bottom of the window.
     pub viewport_bottom: MotionId,
+    /// `operator:delete` — vim's `d`: delete the range and yank it (unnamed register, or `"x`).
     pub delete: OperatorId,
+    /// `operator:change` — vim's `c`: delete the range and enter Insert mode.
     pub change: OperatorId,
+    /// `operator:yank` — vim's `y`: copy the range into the register without editing.
     pub yank: OperatorId,
+    /// `operator:indent-left` — vim's `<`: remove one indent unit (`shiftwidth` / `expandtab`, resolved by the host into [`OperatorContext::indent`](crate::OperatorContext::indent)) from each non-blank line.
     pub indent_left: OperatorId,
+    /// `operator:indent-right` — vim's `>`: add one indent unit to each non-blank line.
     pub indent_right: OperatorId,
     /// IN.7: vim's `=` — reindent, leading whitespace only.
     pub reindent: OperatorId,
@@ -1091,36 +1191,67 @@ pub struct Builtins {
     pub reformat: OperatorId,
     /// VM.3h: vim's `zf`, as the operator it is in vim.
     pub create_fold: OperatorId,
+    /// `operator:upper` — vim's `gU`: uppercase ASCII letters in the range.
     pub upper: OperatorId,
+    /// `operator:lower` — vim's `gu`: lowercase ASCII letters in the range.
     pub lower: OperatorId,
+    /// `operator:toggle-case` — vim's `g~`: toggle the case of ASCII letters in the range.
     pub toggle_case: OperatorId,
+    /// `operator:search` — `g/` (a Lattice extension, not vim): project-search for the spanned text; emits the same `SearchTrigger` as `:search`.
     pub search: OperatorId,
+    /// `operator:replace-char` — vim's `r{char}` / Visual `r`: overwrite each non-newline character in the range with `args.char`.
     pub replace_char: OperatorId,
+    /// `text-object:inner-paragraph` — vim's `ip`: the run of non-blank lines around the cursor.
     pub inner_paragraph: TextObjectId,
+    /// `text-object:around-paragraph` — vim's `ap`: `ip` plus trailing blank lines.
     pub around_paragraph: TextObjectId,
+    /// `text-object:inner-sentence` — vim's `is`: the sentence around the cursor.
     pub inner_sentence: TextObjectId,
+    /// `text-object:around-sentence` — vim's `as`: `is` plus trailing whitespace.
     pub around_sentence: TextObjectId,
+    /// `text-object:inner-word` — vim's `iw`: the word around the cursor.
     pub inner_word: TextObjectId,
+    /// `text-object:around-word` — vim's `aw`: `iw` plus trailing whitespace.
     pub around_word: TextObjectId,
+    /// `text-object:inner-quote-double` — vim's `i"`: inside the surrounding double quotes.
     pub inner_quote_double: TextObjectId,
+    /// `text-object:around-quote-double` — vim's `a"`: `i"` including the quotes.
     pub around_quote_double: TextObjectId,
+    /// `text-object:inner-quote-single` — vim's `i'`: inside the surrounding single quotes.
     pub inner_quote_single: TextObjectId,
+    /// `text-object:around-quote-single` — vim's `a'`: `i'` including the quotes.
     pub around_quote_single: TextObjectId,
+    /// `text-object:inner-quote-backtick` — vim's ``i` ``: inside the surrounding backticks.
     pub inner_quote_backtick: TextObjectId,
+    /// `text-object:around-quote-backtick` — vim's ``a` ``: ``i` `` including the backticks.
     pub around_quote_backtick: TextObjectId,
+    /// `text-object:inner-paren` — vim's `i(`: inside the innermost enclosing `()`.
     pub inner_paren: TextObjectId,
+    /// `text-object:around-paren` — vim's `a(`: `i(` including the parentheses.
     pub around_paren: TextObjectId,
+    /// `text-object:inner-bracket` — vim's `i[`: inside the innermost enclosing `[]`.
     pub inner_bracket: TextObjectId,
+    /// `text-object:around-bracket` — vim's `a[`: `i[` including the brackets.
     pub around_bracket: TextObjectId,
+    /// `text-object:inner-brace` — vim's `i{`: inside the innermost enclosing `{}`.
     pub inner_brace: TextObjectId,
+    /// `text-object:around-brace` — vim's `a{`: `i{` including the braces.
     pub around_brace: TextObjectId,
+    /// `text-object:inner-tag` — vim's `it`: inside the innermost enclosing XML/HTML tag pair.
     pub inner_tag: TextObjectId,
+    /// `text-object:around-tag` — vim's `at`: `it` including the tags.
     pub around_tag: TextObjectId,
+    /// `text-object:inner-big-word` — vim's `iW`: the WORD around the cursor.
     pub inner_big_word: TextObjectId,
+    /// `text-object:around-big-word` — vim's `aW`: `iW` plus trailing whitespace.
     pub around_big_word: TextObjectId,
+    /// `text-object:inner-angle` — vim's `i<`: inside the innermost enclosing `<>`.
     pub inner_angle: TextObjectId,
+    /// `text-object:around-angle` — vim's `a<`: `i<` including the angle brackets.
     pub around_angle: TextObjectId,
+    /// `text-object:inner-comment` — `iC` (Lattice): the comment text, first line's leader stripped. Needs [`CommentSyntax`](crate::CommentSyntax) from the host.
     pub inner_comment: TextObjectId,
+    /// `text-object:around-comment` — `aC` (Lattice): the contiguous run of comment lines, markers included.
     pub around_comment: TextObjectId,
 }
 

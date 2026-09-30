@@ -9,17 +9,95 @@
 //! - Built-in motions / operators / text objects live here in native Rust
 //!   (off the WASM hot path).
 //!
-//! Phase 1 scope (this revision):
-//! - Modal state enum.
-//! - Typed primitives: Operator / Motion / TextObject / Register / Count /
-//!   Target / Range / Args / Effect.
-//! - `CommandRegistry` + `execute()`.
-//! - First built-in motion (`word_forward`) and operator (`delete`).
+//! # What this crate owns
 //!
-//! Out of scope for this revision (later in Phase 1):
-//! - The full vim catalog (most operators, motions, text objects).
-//! - The keystroke-to-CommandInvocation parser (state machine).
-//! - Macros, marks, dot-repeat, registers (the storage; the type exists).
+//! - **The command registry.** [`CommandRegistry`] holds every motion,
+//!   operator, text object, ex-command and action under a namespaced name
+//!   (`motion:word-forward`, `operator:delete`, `ex:write`), each with a
+//!   typed spec ([`MotionSpec`], [`OperatorSpec`], [`TextObjectSpec`],
+//!   [`ExCommandSpec`], [`ActionSpec`]) and introspectable metadata
+//!   ([`CommandSpec`]). Plugins register into the same registry through
+//!   `register_plugin_*`; [`CommandRegistryHandle`] is how it is shared.
+//! - **The call type and the dispatcher.** [`CommandInvocation`] is the one
+//!   shape every front-end produces (chord, `:` line, palette, macro, plugin);
+//!   [`execute`] / [`execute_with_env`] resolve it against a
+//!   `lattice_core::Document` and return an [`Effect`]. Dispatch is
+//!   synchronous and runs on the document's actor.
+//! - **The grammar's typed values.** [`Count`], [`Register`], [`Range`],
+//!   [`Target`], [`Args`], [`ModalState`], and the [`Effect`] /
+//!   [`AppEffect`] vocabulary commands return to the host.
+//! - **The native vim catalog.** [`builtins::populate`] and
+//!   [`ex_commands::populate`] register the built-in motions, operators, text
+//!   objects and ex-commands; [`reflow`] is the `gq` engine.
+//! - **Introspection.** [`Introspectable`] and [`render_introspection`] give
+//!   every `:describe-*` view one shape.
+//!
+//! # What it must not depend on
+//!
+//! Only `lattice-protocol` and `lattice-core` from the workspace. No
+//! tree-sitter, no `lattice-mode` / `lattice-runtime` / host / UI crate, no
+//! plugin runtime. The grammar runs on every keystroke and is linked by all
+//! of those layers, so it must sit beneath them; anything it needs from
+//! above arrives as data or as a small trait the host implements
+//! ([`ScopeResolver`], [`IndentResolver`], [`FoldResolver`],
+//! [`MarkResolver`], [`ViewportResolver`], [`DisplayResolver`]) bundled in
+//! a per-dispatch [`GrammarEnv`]. That boundary is why this is a crate: it
+//! is what keeps built-in and plugin commands, and every buffer kind, on
+//! one dispatch path without dragging the syntax stack or the host into it.
+//!
+//! # Example
+//!
+//! Register a motion, then dispatch `2` of it through the one dispatcher:
+//!
+//! ```
+//! use std::sync::Arc;
+//! use lattice_core::{BufferId, Document};
+//! use lattice_grammar::registry::MotionResult;
+//! use lattice_grammar::{
+//!     CancellationToken, CommandInvocation, CommandRegistry, Count, CurswantEffect, Effect,
+//!     MotionSpec, execute,
+//! };
+//! use lattice_protocol::position::Position;
+//!
+//! let mut registry = CommandRegistry::new();
+//! let down = registry.register_motion(
+//!     "motion:my-line-down",
+//!     "Move `count` lines down, to column 0.",
+//!     MotionSpec {
+//!         jump: false,
+//!         exclusive: false,
+//!         curswant: CurswantEffect::default(),
+//!         args_schema: vec![],
+//!         apply: Arc::new(|ctx| {
+//!             let target = Position::new(ctx.from.line + ctx.count.get(), 0);
+//!             Ok(MotionResult { target, ..Default::default() })
+//!         }),
+//!     },
+//! );
+//!
+//! let mut doc = Document::from_text("a\nb\nc\n");
+//! let effect = execute(
+//!     &registry,
+//!     &mut doc,
+//!     BufferId(0),
+//!     Position::ZERO,
+//!     CommandInvocation::of(down.0).with_count(Count(2)),
+//!     &CancellationToken::never(),
+//! )
+//! .unwrap();
+//! assert!(matches!(effect, Effect::CursorMove(p) if p == Position::new(2, 0)));
+//! ```
+//!
+//! # Design documents
+//!
+//! - `docs/dev/architecture/design.md` §5.2 (modal engine; §5.2.1 unified
+//!   dispatch, §5.2.5 latency classes), §5.11 (introspection)
+//! - `docs/dev/architecture/typed-motion-dispatch.md`
+//! - `docs/dev/architecture/treesitter-motions.md`
+//! - `docs/dev/architecture/select-mode.md`
+//! - `docs/dev/architecture/text-reflow.md`
+//! - `docs/dev/architecture/auto-indent.md`
+#![warn(missing_docs)]
 
 pub mod app_effect;
 pub mod args;
@@ -79,8 +157,8 @@ pub use crate::target::Target;
 /// Re-export the protocol's CommandId so callers don't need a second import.
 pub use lattice_protocol::ids::CommandId;
 
-/// M.10.3 (2026-06-03): typed handle for `ServiceRegistry`
-/// registration + lookup. Mode crates pull it via
+/// The shared, hot-swappable command registry: the typed handle for
+/// `ServiceRegistry` registration + lookup (M.10.3, 2026-06-03). Mode crates pull it via
 /// `ctx.service::<CommandRegistryHandle>()` to look up
 /// CommandIds by action name (`id_by_name("action:...")`) at
 /// `on_activate` time. Same shape as

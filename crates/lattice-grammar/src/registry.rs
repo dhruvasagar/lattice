@@ -64,19 +64,24 @@ pub struct RangeId(pub CommandId);
 /// the grammar layer free of lattice-mode / ServiceRegistry
 /// coupling — the handler decides what to look up.
 pub struct MotionContext<'a> {
+    /// The buffer text the motion reads. Motions never edit.
     pub buffer: &'a Buffer,
     /// Registry-level identity of the active buffer this motion
     /// is firing against. Distinct from `lattice_protocol::ids::
     /// DocumentId` (per-actor stable id); `BufferId` is the
     /// registry key that mode-state lookups use.
     pub buffer_id: BufferId,
+    /// Where the motion starts: the cursor, or the Visual head.
     pub from: Position,
+    /// The count, `1` when none was typed; see [`Self::has_explicit_count`].
     pub count: Count,
     /// True when the invocation carried an explicit count (e.g.
     /// `5G`). False for bare invocations (`G` alone). Motions
     /// whose semantic changes with an explicit count (goto-last-
     /// line: last vs. specific line) use this to disambiguate.
     pub has_explicit_count: bool,
+    /// The motion's own arguments, e.g. [`Args::Char`] for `f{char}` or a
+    /// mark name for `'x`.
     pub args: Args,
     /// Cooperative cancellation handle (DESIGN.md §5.2.5). Hot
     /// loops should poll `cancel.check()?` on each iteration; on a
@@ -144,6 +149,7 @@ pub struct MotionContext<'a> {
 /// What a motion's evaluator returned.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MotionResult {
+    /// Where the cursor lands.
     pub target: Position,
     /// `true` if the motion is linewise (ranges expand to whole lines on
     /// resolution).
@@ -242,12 +248,71 @@ pub enum CurswantEffect {
     PinToEnd,
 }
 
+/// A registered motion: its evaluator plus the vim properties the
+/// dispatcher and host need without running it.
+///
+/// Registered through [`CommandRegistry::register_motion`] (or
+/// [`CommandRegistry::register_plugin_motion`]). The dispatcher runs
+/// `apply` for a bare motion (the cursor moves to the result) and for an
+/// operator target (the span is cursor..result, shaped by `exclusive` and
+/// the result's `linewise`).
+///
+/// # Examples
+///
+/// A motion that jumps to the end of the buffer (a simplified `G`):
+///
+/// ```
+/// use std::sync::Arc;
+/// use lattice_core::{BufferId, Document};
+/// use lattice_grammar::{
+///     CancellationToken, CommandInvocation, CommandRegistry, CurswantEffect, Effect, MotionSpec,
+///     execute,
+/// };
+/// use lattice_grammar::registry::MotionResult;
+/// use lattice_protocol::position::Position;
+///
+/// let mut registry = CommandRegistry::new();
+/// let id = registry.register_motion(
+///     "motion:buffer-end",
+///     "Move to the start of the last line.",
+///     MotionSpec {
+///         jump: true,
+///         exclusive: false,
+///         curswant: CurswantEffect::default(),
+///         args_schema: vec![],
+///         apply: Arc::new(|ctx| {
+///             let last = ctx.buffer.content_line_count().saturating_sub(1);
+///             Ok(MotionResult { target: Position::new(last, 0), ..Default::default() })
+///         }),
+///     },
+/// );
+/// assert!(registry.motion_is_jump(id.0));
+///
+/// let mut doc = Document::from_text("one\ntwo\nthree");
+/// let effect = execute(
+///     &registry,
+///     &mut doc,
+///     BufferId(0),
+///     Position::ZERO,
+///     CommandInvocation::of(id.0),
+///     &CancellationToken::never(),
+/// )
+/// .unwrap();
+/// assert!(matches!(effect, Effect::CursorMove(p) if p == Position::new(2, 0)));
+/// ```
 #[derive(Clone)]
 pub struct MotionSpec {
+    /// A vim *jump*: the host records the origin in position history (so
+    /// `<C-o>` returns) and opens folds at the destination. Read through
+    /// [`CommandRegistry::motion_is_jump`].
     pub jump: bool,
+    /// Whether the motion's end position is excluded from an operator's span
+    /// (`w`, `b`, `0` are exclusive; `e`, `f`, `$` are inclusive). A
+    /// [`MotionResult::exclusive`] overrides it per invocation.
     pub exclusive: bool,
     /// VM.3g-1: this motion's effect on the goal column. See [`CurswantEffect`].
     pub curswant: CurswantEffect,
+    /// The evaluator. Pure: reads the [`MotionContext`], returns where to go.
     pub apply: MotionFn,
     /// Per-positional-argument metadata (DESIGN.md §B.1). Empty for
     /// motions without args (the common case).
@@ -265,6 +330,10 @@ impl std::fmt::Debug for MotionSpec {
 
 /// Context passed to an operator's evaluator.
 pub struct OperatorContext<'a> {
+    /// The document to edit. Native operators apply their edits here
+    /// directly (as one undo unit) and report them in the returned
+    /// [`Effect`](crate::Effect); plugin operators hold a read-only view and
+    /// return an `ApplyEdit` effect instead.
     pub document: &'a mut Document,
     /// CM.3: the buffer the operator is running over — the `target` a plugin
     /// operator names in an `apply-edit` effect.
@@ -277,6 +346,8 @@ pub struct OperatorContext<'a> {
     /// host to apply. Without this field a plugin operator can read its range
     /// and never change it, which makes the contribution pointless.
     pub buffer_id: BufferId,
+    /// The span to operate on, already resolved from the target or range and
+    /// expanded to whole lines when [`Self::linewise`].
     pub range: ProtoRange,
     /// VM.3m: the start of the operated text BEFORE linewise expansion —
     /// `min(cursor, motion target)` for a motion, the object's or selection's
@@ -290,8 +361,13 @@ pub struct OperatorContext<'a> {
     /// selection). Yank uses this to tag the unnamed register so paste
     /// can do the right thing.
     pub linewise: bool,
+    /// The register the operator reads or writes (unnamed when none typed).
     pub register: Register,
+    /// The count, `1` when none was typed. Usually already folded into the
+    /// span by target resolution (`3dw`), so most operators ignore it.
     pub count: Count,
+    /// The operator's own arguments, e.g. the captured char for `r{char}` or
+    /// surround's `ys{motion}{char}`.
     pub args: Args,
     /// Cooperative cancellation handle (DESIGN.md §5.2.5). Operators
     /// that scan large ranges (`d_whole`, `gU` over a big visual
@@ -336,7 +412,9 @@ pub struct OperatorContext<'a> {
 /// to one call site and forgotten at the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeFormatIntents {
+    /// `=` (`format.indent`) resolves to the native tree-sitter indenter.
     pub indent: bool,
+    /// `gq` / `gw` (`format.reflow`) resolve to the native reflow engine.
     pub reflow: bool,
 }
 
@@ -359,9 +437,20 @@ impl Default for NativeFormatIntents {
 type OperatorFn =
     Arc<dyn Fn(&mut OperatorContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
 
+/// A registered operator: its evaluator plus how the dispatcher should
+/// feed it spans.
+///
+/// Registered through [`CommandRegistry::register_operator`] (or
+/// [`CommandRegistry::register_plugin_operator`]). The dispatcher resolves
+/// the invocation's range or target to a span, builds an
+/// [`OperatorContext`], and returns whatever `apply` returns unchanged.
 #[derive(Clone)]
 pub struct OperatorSpec {
+    /// Declared dot-repeatability. Currently informational: nothing reads it
+    /// yet (`.` repeat is decided host-side).
     pub repeatable: bool,
+    /// The evaluator. Runs once per span (once per row for a blockwise
+    /// selection when [`Self::blockwise_per_row`]).
     pub apply: OperatorFn,
     /// Per-positional-argument metadata (DESIGN.md §B.1). Empty for
     /// operators without args (the common case).
@@ -392,16 +481,6 @@ impl std::fmt::Debug for OperatorSpec {
     }
 }
 
-/// N.1.4a (2026-06-10): resolves a tree-sitter scope at the cursor for
-/// the structural text objects (`af` / `ac` / …). Defined here so
-/// `lattice-grammar` stays free of any tree-sitter dependency — the
-/// host implements it (backed by the buffer's `SyntaxSnapshot`) and
-/// threads it into [`TextObjectContext`]. `scope_at` returns the
-/// innermost matching node's byte-precise span as a half-open
-/// `[start, end)` [`ProtoRange`] (N.1.4c: byte columns, not just rows,
-/// so intra-line objects like `aa`/`ia` are charwise-accurate), or
-/// `None` when there's no parse / no match. End is exclusive, matching
-/// tree-sitter node ranges and the operator slice convention.
 /// IN.7: how deep should this line sit?
 ///
 /// The `=` operator needs a per-line indent level, which only the
@@ -441,6 +520,7 @@ pub trait FoldResolver {
 /// host owns the marks (`m` writes them); the grammar only asks where one is.
 /// `None` means the mark isn't set, which fails the motion with E20.
 pub trait MarkResolver {
+    /// Where mark `name` is set, or `None` when it is not.
     fn mark(&self, name: char) -> Option<Position>;
 }
 
@@ -511,7 +591,20 @@ pub trait DisplayResolver {
     fn segments(&self, line: u32) -> u32;
 }
 
+/// Resolves a tree-sitter scope near the cursor, for the structural text
+/// objects (`af` / `ac` / `aa` / …) and structural motions (`]f` / `[c` / …).
+///
+/// Defined here so `lattice-grammar` stays free of any tree-sitter
+/// dependency: the host implements it (backed by the buffer's
+/// `SyntaxSnapshot`) and threads it in through [`GrammarEnv::scope_resolver`]
+/// to [`TextObjectContext`] and [`MotionContext`]. Introduced in N.1.4a.
 pub trait ScopeResolver {
+    /// The innermost node at `(line, col_byte)` whose capture name ends with
+    /// `suffix` (e.g. `"function.outer"`), as a byte-precise half-open
+    /// `[start, end)` [`ProtoRange`] — byte columns, not just rows, so
+    /// intra-line objects like `aa` / `ia` are charwise-accurate. End is
+    /// exclusive, matching tree-sitter node ranges and the operator slice
+    /// convention. `None` when there is no parse or no match.
     fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
 
     /// The `count`-th node whose capture name ends with `suffix`, in `dir`,
@@ -535,14 +628,18 @@ pub trait ScopeResolver {
 /// `Backward` toward BOF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavDir {
+    /// Toward the end of the buffer.
     Forward,
+    /// Toward the start of the buffer.
     Backward,
 }
 
 /// Which boundary of the target node the motion lands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavBoundary {
+    /// Land on the node's first byte.
     Start,
+    /// Land on the node's last byte.
     End,
 }
 
@@ -561,13 +658,6 @@ pub struct CommentSyntax {
     pub block: Option<(String, String)>,
 }
 
-/// The per-dispatch environment: everything the host knows that a
-/// command's `apply` may need but the grammar layer cannot derive for
-/// itself. Bundled into ONE value so the dispatch seam carries a single
-/// env rather than a widening parameter list (the long-term-fit choice
-/// over parallel params). `Copy`; `default()` is the no-input case, and
-/// commands that read nothing from the env (`iw`, `ap`, `i{`) are
-/// unaffected by what it carries.
 /// `f` / `F` / `t` / `T` — which direction, and whether the target character
 /// is included.
 ///
@@ -608,7 +698,9 @@ impl FindKind {
 /// to repeat it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LastFind {
+    /// Which of the four find motions it was.
     pub kind: FindKind,
+    /// The character searched for.
     pub target: char,
 }
 
@@ -618,7 +710,10 @@ pub struct LastFind {
 /// motion now, and the state it repeats has to reach the grammar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastSearch {
+    /// The pattern as the user typed it (regex syntax, compiled with
+    /// `fancy-regex`).
     pub pattern: String,
+    /// The direction the search ran: `n` repeats it, `N` reverses it.
     pub direction: crate::modal::SearchDirection,
 }
 
@@ -632,6 +727,13 @@ pub enum MotionNotice {
     SearchHitTop,
 }
 
+/// The per-dispatch environment: everything the host knows that a
+/// command's `apply` may need but the grammar layer cannot derive for
+/// itself. Bundled into ONE value so the dispatch seam carries a single
+/// env rather than a widening parameter list (the long-term-fit choice
+/// over parallel params). `Copy`; `default()` is the no-input case, and
+/// commands that read nothing from the env (`iw`, `ap`, `i{`) are
+/// unaffected by what it carries.
 ///
 /// It has widened twice, and the name followed on the second:
 ///
@@ -647,7 +749,11 @@ pub enum MotionNotice {
 ///   actively misleading rather than merely stale.
 #[derive(Clone, Copy, Default)]
 pub struct GrammarEnv<'a> {
+    /// Tree-sitter scope lookup for structural text objects and motions.
+    /// `None` on buffers with no parse.
     pub scope_resolver: Option<&'a dyn ScopeResolver>,
+    /// The buffer language's comment leader, for `aC` / `iC` and reflow.
+    /// `None` when the language declares none.
     pub comment_syntax: Option<&'a CommentSyntax>,
     /// TS.1: the per-dispatch tree-sitter snapshot, type-erased and borrowed so
     /// it stays `Copy`. `execute_action` clones it into `ActionContext::syntax`;
@@ -762,9 +868,13 @@ pub struct GrammarEnv<'a> {
 
 /// Context passed to a text-object's evaluator.
 pub struct TextObjectContext<'a> {
+    /// The buffer text the object reads.
     pub buffer: &'a Buffer,
+    /// The cursor the object is evaluated around.
     pub at: Position,
+    /// The count, `1` when none was typed (`2aw`, `2i(`).
     pub count: Count,
+    /// The object's own arguments.
     pub args: Args,
     /// Cooperative cancellation handle (DESIGN.md §5.2.5). Most
     /// text objects are O(line); polling rarely matters. Tag /
@@ -798,8 +908,15 @@ pub struct TextObjectContext<'a> {
 
 type TextObjectFn = Arc<dyn Fn(&TextObjectContext) -> GrammarResult<ProtoRange> + Send + Sync>;
 
+/// A registered text object: an evaluator that returns the span around a
+/// position.
+///
+/// Registered through [`CommandRegistry::register_text_object`] (or
+/// [`CommandRegistry::register_plugin_text_object`]). Used as an operator
+/// target (`diw`) and to set a Visual selection (`viw`).
 #[derive(Clone)]
 pub struct TextObjectSpec {
+    /// The evaluator: returns the selected span as a half-open range.
     pub apply: TextObjectFn,
     /// Per-positional-argument metadata (DESIGN.md §B.1). Empty for
     /// text objects without args (the common case).
@@ -822,10 +939,16 @@ impl std::fmt::Debug for TextObjectSpec {
 /// boundaries without lifetime gymnastics. The actor flips a clone
 /// when cancellation arrives.
 pub struct ExCommandContext {
+    /// Whether the command was typed with a trailing `!` (`:q!`).
     pub bang: bool,
+    /// Arguments produced by the spec's [`ExCommandSpec::parse_args`].
     pub args: Args,
+    /// The line range typed before the command (`:%s`, `:1,5…`), unresolved;
+    /// `None` when there was none. The command resolves it itself.
     pub range: Option<crate::range::Range>,
+    /// The register named in the invocation, unnamed by default.
     pub register: Register,
+    /// The count, `1` when none was given.
     pub count: Count,
     /// The buffer the `:` line was submitted from (MR.2) — the same
     /// fact [`ActionContext::buffer_id`] carries, filled from the same
@@ -869,6 +992,8 @@ pub struct ExCommandContext {
     /// [`ActionContext::syntax`] is. Cloned at the same instant as `buffer`, so
     /// tree and text agree on version (§7).
     pub syntax: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// Cooperative cancellation handle (DESIGN.md §5.2.5); owned so a
+    /// closure can keep it.
     pub cancel: crate::CancellationToken,
 }
 
@@ -905,10 +1030,74 @@ pub enum SurfaceForm {
     /// canonical syntax shown in that error (`:s/pat/repl/`,
     /// `:g/pat/body`).
     Delimiter {
+        /// The canonical syntax shown in the redirect error and in help,
+        /// e.g. `:s/pat/repl/`.
         hint: std::borrow::Cow<'static, str>,
     },
 }
 
+/// A registered ex-command: how the `:` line parses it and what it
+/// returns.
+///
+/// Registered through [`CommandRegistry::register_ex_command`] (or
+/// [`CommandRegistry::register_plugin_ex_command`]). The `:` front-end (in
+/// `lattice-host`) resolves the typed word to a registry name, rejects a
+/// `!` the spec does not accept, calls [`Self::parse_args`] on the rest of
+/// the line, and dispatches the resulting invocation. `apply` receives an
+/// [`ExCommandContext`] and returns an [`Effect`](crate::Effect) — it never
+/// performs I/O itself.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use lattice_core::{BufferId, Document};
+/// use lattice_grammar::{
+///     Args, CancellationToken, CommandInvocation, CommandRegistry, EchoLevel, Effect,
+///     ExCommandSpec, LatencyClass, SurfaceForm, execute,
+/// };
+/// use lattice_protocol::position::Position;
+///
+/// let mut registry = CommandRegistry::new();
+/// let id = registry.register_ex_command(
+///     "ex:greet",
+///     "Echo a greeting (`:greet [name]`).",
+///     ExCommandSpec {
+///         latency_class: LatencyClass::Reflex,
+///         accepts_bang: false,
+///         accepts_range: false,
+///         parse_args: Arc::new(|rest, _bang| {
+///             Ok(match rest.trim() {
+///                 "" => Args::None,
+///                 name => Args::String(name.to_string()),
+///             })
+///         }),
+///         apply: Arc::new(|ctx| {
+///             let who = match &ctx.args {
+///                 Args::String(s) => s.as_str(),
+///                 _ => "world",
+///             };
+///             Ok(Effect::Echo { level: EchoLevel::Info, text: format!("hello, {who}") })
+///         }),
+///         args_schema: vec![],
+///         surface_form: SurfaceForm::Keyword,
+///     },
+/// );
+///
+/// let spec = registry.ex_command_spec(id.0).unwrap();
+/// let args = (spec.parse_args)(" lattice", false).unwrap();
+/// let mut doc = Document::from_text("");
+/// let effect = execute(
+///     &registry,
+///     &mut doc,
+///     BufferId(0),
+///     Position::ZERO,
+///     CommandInvocation::of(id.0).with_args(args),
+///     &CancellationToken::never(),
+/// )
+/// .unwrap();
+/// assert!(matches!(effect, Effect::Echo { text, .. } if text == "hello, lattice"));
+/// ```
 #[derive(Clone)]
 pub struct ExCommandSpec {
     /// Latency class declaration (DESIGN.md §5.2.5). Most ex-commands
@@ -926,7 +1115,10 @@ pub struct ExCommandSpec {
     /// `'a,'bcmd`, ...). v1 only honours `Whole` and `CurrentLine`; this
     /// flag is the migration knob for richer range parsing.
     pub accepts_range: bool,
+    /// Parses everything after the command word (and `!`) into [`Args`].
+    /// Receives the bang bit so `!` can change the grammar.
     pub parse_args: ExParseFn,
+    /// The evaluator: packages the invocation into an [`Effect`](crate::Effect).
     pub apply: ExApplyFn,
     /// Per-positional-argument metadata (DESIGN.md §B.1). Drives palette
     /// forms, missing-arg prompts, completion, validation, and
@@ -993,8 +1185,11 @@ pub fn mode_toggle_ex_command_spec(mode_name: &str) -> ExCommandSpec {
 /// the user typed before the chord (vim's `3"+yy`-style); most
 /// actions ignore them.
 pub struct ActionContext {
+    /// The action's arguments; usually [`Args::None`].
     pub args: Args,
+    /// The `"x` prefix typed before the chord, unnamed by default.
     pub register: Register,
+    /// The count typed before the chord, `1` by default.
     pub count: Count,
     /// Where the caret sits when the action fires (AP.0.1) — the
     /// action's equivalent of `MotionContext::from`. Native actions
@@ -1060,8 +1255,16 @@ pub struct ActionContext {
 /// emits an edit / mode transition / yank.
 type ActionFn = Arc<dyn Fn(&ActionContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
 
+/// A registered free-form action: a command with no grammar role, usually
+/// bound to a chord.
+///
+/// Registered through [`CommandRegistry::register_action`] (or
+/// [`CommandRegistry::register_plugin_action`]). Most return
+/// `Effect::AppAction(..)` for the host to apply; mode-owned actions are
+/// registered by their mode's crate, not the host.
 #[derive(Clone)]
 pub struct ActionSpec {
+    /// The evaluator: returns the [`Effect`](crate::Effect) the host applies.
     pub apply: ActionFn,
     /// Per-positional-argument metadata (DESIGN.md §B.1). Empty
     /// for actions without args (the common case for chord
@@ -1079,9 +1282,13 @@ impl std::fmt::Debug for ActionSpec {
 /// What a registered command holds in the registry, beyond its metadata.
 #[derive(Clone)]
 pub enum CommandRegistration {
+    /// A motion; see [`MotionSpec`].
     Motion(MotionSpec),
+    /// An operator; see [`OperatorSpec`].
     Operator(OperatorSpec),
+    /// A text object; see [`TextObjectSpec`].
     TextObject(TextObjectSpec),
+    /// An ex-command; see [`ExCommandSpec`].
     ExCommand(ExCommandSpec),
     /// Free-form App-side action. The dispatcher's
     /// `CommandKind::Action` branch invokes the spec's `apply`
@@ -1095,6 +1302,7 @@ pub enum CommandRegistration {
 }
 
 impl CommandRegistration {
+    /// The [`CommandKind`] this registration dispatches as.
     pub fn kind(&self) -> CommandKind {
         match self {
             CommandRegistration::Motion(_) => CommandKind::Motion,
@@ -1106,6 +1314,51 @@ impl CommandRegistration {
     }
 }
 
+/// The one registry of every command: motions, operators, text objects,
+/// ex-commands and actions, built-in and plugin alike (DESIGN.md §5.2.1).
+///
+/// **Registration.** Each kind has a `register_<kind>` method taking a
+/// canonical name, a doc string and a spec. It mints a fresh
+/// [`CommandId`] from a process-wide counter, records the caller's file and
+/// line as provenance (`#[track_caller]`; callers cannot forge it), and
+/// returns a typed id ([`MotionId`], [`OperatorId`], …). Plugins go
+/// through `register_plugin_<kind>`, which stamps
+/// [`SourceLayer::Plugin`] instead, and are
+/// removed wholesale by [`Self::unregister_plugin`].
+///
+/// **Names.** Names are namespaced by kind: `motion:word-forward`,
+/// `operator:delete`, `text-object:inner-word`, `ex:write`, `action:…`.
+/// Names are not checked for uniqueness: registering a name again mints a
+/// new id and repoints the name at it, while the old id stays
+/// dispatchable. Aliases (`:w`) are not registry entries; the `:`
+/// front-end maps them to canonical names.
+///
+/// **Lookup and dispatch.** [`Self::id_by_name`] and [`Self::lookup`]
+/// resolve names and ids to [`CommandSpec`] metadata;
+/// [`execute`](crate::execute) takes the registry and an invocation and
+/// routes by kind. At runtime the registry is shared as a
+/// [`CommandRegistryHandle`](crate::CommandRegistryHandle): readers load a
+/// snapshot wait-free, writers clone, mutate and store it.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_grammar::{CommandKind, CommandRegistry, builtins, ex_commands};
+///
+/// let mut registry = CommandRegistry::new();
+/// assert!(registry.is_empty());
+/// let b = builtins::populate(&mut registry);
+/// ex_commands::populate(&mut registry);
+///
+/// let id = registry.id_by_name("operator:delete").unwrap();
+/// assert_eq!(id, b.delete.0);
+/// let spec = registry.lookup(id).unwrap();
+/// assert_eq!(spec.kind, CommandKind::Operator);
+/// assert_eq!(registry.lookup_by_name("ex:write").unwrap().kind, CommandKind::ExCommand);
+///
+/// // Aliases are the front-end's business, not the registry's.
+/// assert!(registry.id_by_name("w").is_none());
+/// ```
 #[derive(Debug, Default, Clone)]
 pub struct CommandRegistry {
     by_id: HashMap<CommandId, CommandEntry>,
@@ -1145,6 +1398,10 @@ impl std::fmt::Debug for CommandEntry {
 }
 
 impl CommandRegistry {
+    /// An empty registry. Populate it with
+    /// [`builtins::populate`](crate::builtins::populate) and
+    /// [`ex_commands::populate`](crate::ex_commands::populate), then the
+    /// host's and subsystems' own registrations.
     pub fn new() -> Self {
         Self::default()
     }
@@ -1203,6 +1460,8 @@ impl CommandRegistry {
         MotionId(id)
     }
 
+    /// Register an operator; provenance and id minting as for
+    /// [`Self::register_motion`].
     #[track_caller]
     pub fn register_operator(&mut self, name: &str, doc: &str, spec: OperatorSpec) -> OperatorId {
         let source = capture_builtin_source();
@@ -1233,6 +1492,8 @@ impl CommandRegistry {
         OperatorId(id)
     }
 
+    /// Register a text object; provenance and id minting as for
+    /// [`Self::register_motion`].
     #[track_caller]
     pub fn register_text_object(
         &mut self,
@@ -1268,6 +1529,9 @@ impl CommandRegistry {
         TextObjectId(id)
     }
 
+    /// Register an ex-command; provenance and id minting as for
+    /// [`Self::register_motion`]. The command's latency class comes from
+    /// [`ExCommandSpec::latency_class`] (other kinds are always `Reflex`).
     #[track_caller]
     pub fn register_ex_command(
         &mut self,
@@ -1437,14 +1701,21 @@ impl CommandRegistry {
         doomed.len()
     }
 
+    /// Metadata for a registered id, or `None` if the id is unknown here
+    /// (never registered, or removed by [`Self::unregister_plugin`]).
     pub fn lookup(&self, id: CommandId) -> Option<&CommandSpec> {
         self.by_id.get(&id).map(|e| &e.spec)
     }
 
+    /// Metadata by canonical name (`"motion:word-forward"`). Exact match;
+    /// no alias or prefix resolution.
     pub fn lookup_by_name(&self, name: &str) -> Option<&CommandSpec> {
         self.by_name.get(name).and_then(|id| self.lookup(*id))
     }
 
+    /// The id currently bound to a canonical name. How modes and the host
+    /// find a command they did not register themselves (e.g.
+    /// `id_by_name("action:…")` at mode activation).
     pub fn id_by_name(&self, name: &str) -> Option<CommandId> {
         self.by_name.get(name).copied()
     }
@@ -1497,14 +1768,17 @@ impl CommandRegistry {
         }
     }
 
+    /// Number of registered commands.
     pub fn len(&self) -> usize {
         self.by_id.len()
     }
 
+    /// Whether nothing is registered.
     pub fn is_empty(&self) -> bool {
         self.by_id.is_empty()
     }
 
+    /// Every registered canonical name, in no particular order.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.by_name.keys().map(String::as_str)
     }

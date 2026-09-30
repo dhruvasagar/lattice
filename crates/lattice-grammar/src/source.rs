@@ -15,9 +15,34 @@
 
 use std::path::PathBuf;
 
+/// Where a registered command, binding or option came from: *who* put it
+/// there ([`SourceLayer`]) and *where to look* ([`SourceKind`]).
+///
+/// # Examples
+///
+/// ```
+/// use lattice_grammar::{SourceLayer, SourceLocation};
+///
+/// let src = SourceLocation::builtin_file("crates/lattice-grammar/src/builtins.rs", 42);
+/// assert_eq!(src.layer, SourceLayer::Builtin);
+/// assert_eq!(
+///     src.as_link(),
+///     "[crates/lattice-grammar/src/builtins.rs:42](file:crates/lattice-grammar/src/builtins.rs:42)",
+/// );
+///
+/// // A plugin source renders its manifest name when the caller can resolve it.
+/// let p = SourceLocation::plugin(3);
+/// assert_eq!(p.as_link(), "[<plugin:3>](synthetic:plugin:3)");
+/// assert_eq!(
+///     p.as_link_with(&|id| (id == 3).then(|| "comment".to_string())),
+///     "[plugin:comment](synthetic:plugin:comment)",
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceLocation {
+    /// Who contributed the item; rendered as [`SourceLayer::label`].
     pub layer: SourceLayer,
+    /// Where the link follower should go.
     pub kind: SourceKind,
 }
 
@@ -41,6 +66,9 @@ pub enum SourceLayer {
 }
 
 impl SourceLayer {
+    /// The one-or-two-word label shown beside the source link in help
+    /// output (`"built-in"`, `"user config"`, `"plugin"`, ...). A plugin's
+    /// id is not included; see [`SourceLocation::as_link_with`] for naming.
     pub fn label(self) -> &'static str {
         match self {
             SourceLayer::Builtin => "built-in",
@@ -60,13 +88,29 @@ impl SourceLayer {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SourceKind {
     /// Concrete file location, optionally with a line.
-    File { path: PathBuf, line: Option<u32> },
+    File {
+        /// Path as recorded -- for builtins, the compile-time path from
+        /// `Location::caller()` (workspace-relative); for config, the
+        /// config file's path.
+        path: PathBuf,
+        /// 1-based line (as `Location::caller()` reports it); `None` when
+        /// only the file is known.
+        line: Option<u32>,
+    },
     /// `:` invocation. Link follower opens the command-history
     /// buffer at `history_index`.
-    CommandLine { history_index: usize },
+    CommandLine {
+        /// Index into the command-line history.
+        history_index: usize,
+    },
     /// Replayed from a recorded macro. Link follower opens the
     /// `*macro:<reg>*` buffer at `step`.
-    MacroReplay { register: char, step: u32 },
+    MacroReplay {
+        /// The register the macro was recorded into.
+        register: char,
+        /// Position of the replayed invocation within the macro.
+        step: u32,
+    },
     /// `.` re-dispatch. Boxes the originating source so chains of
     /// dot-repeats trace back to where the change actually came
     /// from. The link follower follows the inner source.
@@ -100,18 +144,9 @@ impl SourceLocation {
         }
     }
 
-    /// Provenance for a WASM-plugin contribution (Phase 7). The layer is
-    /// [`SourceLayer::Plugin`] carrying the **host-issued** `plugin_id` (§6 —
-    /// the guest never supplies it, so a plugin cannot forge a builtin/user
-    /// provenance); the kind is a synthetic `<plugin:N>` tag (a plugin has no
-    /// file/line the link follower could open — the plugin-manager view is the
-    /// eventual target). This is the *only* forgery-safe way a cross-crate
-    /// trusted subsystem stamps `Plugin` provenance: the public
-    /// `CommandRegistry::register_plugin_*` methods take a `u32`, never a
-    /// `SourceLocation`, and route through here.
-    /// The same, with the plugin's manifest name — which is what a reader
-    /// wants. `plugin:comment` answers "where did `gc` come from"; `plugin:1`
-    /// makes them go and look the number up.
+    /// [`Self::plugin`], with the plugin's manifest name -- which is what a
+    /// reader wants. `plugin:comment` answers "where did `gc` come from";
+    /// `plugin:1` makes them go and look the number up.
     ///
     /// Separate from [`Self::plugin`] because the name is not always in hand:
     /// `register_plugin_*` runs in the drain with only an id, while a caller
@@ -123,6 +158,19 @@ impl SourceLocation {
         }
     }
 
+    /// Provenance for a WASM-plugin contribution (Phase 7). The layer is
+    /// [`SourceLayer::Plugin`] carrying the **host-issued** `plugin_id` (§6 —
+    /// the guest never supplies it, so a plugin cannot forge a builtin/user
+    /// provenance); the kind is a synthetic `plugin:N` tag (a plugin has no
+    /// file/line the link follower could open — the plugin-manager view is the
+    /// eventual target). This is the *only* forgery-safe way a cross-crate
+    /// trusted subsystem stamps `Plugin` provenance: the public
+    /// `CommandRegistry::register_plugin_*` methods take a `u32`, never a
+    /// `SourceLocation`, and route through here.
+    ///
+    /// Display sites that can resolve the id to a manifest name do so through
+    /// [`Self::as_link_with`]; prefer [`Self::plugin_named`] when the name is
+    /// already known.
     pub fn plugin(plugin_id: u32) -> Self {
         Self {
             layer: SourceLayer::Plugin(plugin_id),

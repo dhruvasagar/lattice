@@ -4,7 +4,7 @@
 //! §5.11, §B.1) describing the kinds, names, prompts and defaults for its
 //! arguments. The dispatcher carries the concrete values through `Args`.
 //!
-//! Three Args shapes coexist:
+//! Four Args shapes coexist:
 //!
 //! - `Args::None` -- universal "no args" form (most motions / operators).
 //! - `Args::Char(char)` / `Args::String(String)` -- single-arg shortcuts
@@ -16,8 +16,9 @@
 //!   parser front-end produce for ex-commands with structured args
 //!   (`:s/pat/repl/flags`, `:g/pat/body`).
 //! - `Args::Bytes(Vec<u8>)` -- escape hatch for plugin-supplied richer
-//!   args, encoded msgpack-style on the wire. When WASM lands, WIT-typed
-//!   args replace this byte form.
+//!   args: opaque bytes (msgpack by convention) that cross the WIT boundary
+//!   unchanged. Built-in commands never read it; host paths that need
+//!   positional values drop it.
 //!
 //! `ArgValue` is a small typed enum -- not a dynamic value bag -- so callers
 //! get static type checks at the boundary.
@@ -28,12 +29,42 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::CommandInvocation;
 
+/// The concrete argument values carried by a [`CommandInvocation`]. See the
+/// [module docs](self) for when each shape is used.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_grammar::{ArgKind, ArgValue, Args};
+///
+/// // `fx` -- a motion that takes one char.
+/// let f = Args::Char('x');
+/// assert!(!f.is_none());
+/// assert!(f.as_list().is_none());
+///
+/// // A structured ex-command: positional values in `args_schema` order.
+/// let s = Args::List(vec![
+///     ArgValue::Pattern("foo".into()),
+///     ArgValue::String("bar".into()),
+///     ArgValue::Bool(true),
+/// ]);
+/// let list = s.as_list().unwrap();
+/// assert_eq!(list[0].kind(), ArgKind::Pattern);
+/// assert_eq!(list[0].as_str(), Some("foo"));
+/// assert_eq!(list[2].as_bool(), Some(true));
+///
+/// assert!(Args::default().is_none());
+/// ```
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Args {
+    /// No arguments -- most motions and operators.
     #[default]
     None,
+    /// A single char: `f<c>`, `t<c>`, `r<c>`, `m<c>`, `'<c>`.
     Char(char),
+    /// A single free-form string (`:set <opt>`, `:e <path>`).
     String(String),
+    /// Opaque plugin-defined payload; see the [module docs](self).
     Bytes(Vec<u8>),
     /// Multi-arg form. Values appear in the order declared by the
     /// command's `args_schema`.
@@ -41,6 +72,8 @@ pub enum Args {
 }
 
 impl Args {
+    /// `true` for [`Args::None`] only (an empty [`Args::List`] is not
+    /// `None`).
     pub fn is_none(&self) -> bool {
         matches!(self, Args::None)
     }
@@ -58,9 +91,13 @@ impl Args {
 /// One argument's typed value. The variants mirror [`ArgKind`] one-for-one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ArgValue {
+    /// Free-form text.
     String(String),
+    /// A single character.
     Char(char),
+    /// A flag (e.g. a transient switch).
     Bool(bool),
+    /// A signed integer.
     Int(i64),
     /// A pattern -- regex when v1 grows regex; literal substring today.
     Pattern(String),
@@ -83,6 +120,8 @@ pub enum ArgValue {
 }
 
 impl ArgValue {
+    /// The [`ArgKind`] tag for this value ([`ArgValue::Invocation`] maps to
+    /// [`ArgKind::Body`]; every other variant to its namesake).
     pub fn kind(&self) -> ArgKind {
         match self {
             ArgValue::String(_) => ArgKind::String,
@@ -96,6 +135,8 @@ impl ArgValue {
         }
     }
 
+    /// Borrow the text of any string-shaped value (`String`, `Pattern`,
+    /// `Chord`, `Raw`); `None` for `Char`, `Bool`, `Int`, `Invocation`.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             ArgValue::String(s) | ArgValue::Pattern(s) | ArgValue::Chord(s) | ArgValue::Raw(s) => {
@@ -105,6 +146,8 @@ impl ArgValue {
         }
     }
 
+    /// The flag of an [`ArgValue::Bool`]; `None` for every other variant
+    /// (no truthiness coercion).
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             ArgValue::Bool(b) => Some(*b),
@@ -126,10 +169,15 @@ impl ArgValue {
 /// what an `args_schema` entry declares for each positional argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArgKind {
+    /// Free-form text ([`ArgValue::String`]).
     String,
+    /// A single character ([`ArgValue::Char`]).
     Char,
+    /// A flag ([`ArgValue::Bool`]).
     Bool,
+    /// A signed integer ([`ArgValue::Int`]).
     Int,
+    /// A search pattern ([`ArgValue::Pattern`]).
     Pattern,
     /// A keyboard chord. UI surfaces switch the cmdline into
     /// chord-capture mode while the cursor sits in this slot --
@@ -145,6 +193,13 @@ pub enum ArgKind {
 /// What the runtime should fall back to when an arg is unsupplied at
 /// invocation time (DESIGN.md §B.1). For interactive entry, the fallback
 /// chain is: caller-supplied value -> `default` -> prompt the user.
+///
+/// What the host acts on today: `Required` on an ex-command's *first* arg
+/// arms the cmdline missing-arg prompt when the command is run bare, and
+/// `Literal` fills unset slots when a transient projects its state into
+/// [`Args`]. The `Use*` variants are declared and rendered by
+/// `:describe-command`, but nothing resolves them yet -- a command that
+/// declares one must still cope with the arg being absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ArgDefault {
     /// No fallback -- the runtime prompts (or errors, in non-interactive
@@ -185,6 +240,8 @@ pub struct ArgSpec {
     /// literal; a plugin-contributed schema (crossing WIT) passes `Cow::Owned`
     /// that frees on `unregister_plugin`, replacing the old `Box::leak` intern.
     pub name: Cow<'static, str>,
+    /// The value type this slot expects; drives the parser, the prompt's
+    /// capture mode ([`ArgKind::Chord`]) and `:describe-command`.
     pub kind: ArgKind,
     /// One-line documentation. Surfaced in palette tooltips and
     /// `:describe-command`.
@@ -192,6 +249,8 @@ pub struct ArgSpec {
     /// Prompt shown when the runtime needs to ask for this arg
     /// interactively. Empty string means "use `name` as the prompt".
     pub prompt: Cow<'static, str>,
+    /// Fallback when the caller does not supply this arg; see
+    /// [`ArgDefault`] for which variants the host currently acts on.
     pub default: ArgDefault,
     /// Name of the registered completion source (`gen:commands`,
     /// `gen:files`, etc. -- see `lattice-completion`) that fires
@@ -217,7 +276,23 @@ pub struct ArgSpec {
 }
 
 impl ArgSpec {
-    /// Sugar for declaring a required arg with no fancy default.
+    /// Sugar for declaring a required arg with no fancy default: empty
+    /// prompt (falls back to `name`), no completion, no picker.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_grammar::{ArgDefault, ArgKind, ArgSpec};
+    ///
+    /// let spec = ArgSpec::required("path", ArgKind::String, "File to open.")
+    ///     .with_completion("gen:files");
+    /// assert_eq!(spec.default, ArgDefault::Required);
+    /// assert_eq!(spec.completion.as_deref(), Some("gen:files"));
+    /// assert!(spec.picker.is_none());
+    ///
+    /// let opt = ArgSpec::optional("count", ArgKind::Int, "Repeat count.");
+    /// assert_eq!(opt.default, ArgDefault::None);
+    /// ```
     pub fn required(
         name: impl Into<Cow<'static, str>>,
         kind: ArgKind,
@@ -234,7 +309,8 @@ impl ArgSpec {
         }
     }
 
-    /// Sugar for declaring an optional arg.
+    /// Sugar for declaring an optional arg ([`ArgDefault::None`]); otherwise
+    /// as [`Self::required`].
     pub fn optional(
         name: impl Into<Cow<'static, str>>,
         kind: ArgKind,

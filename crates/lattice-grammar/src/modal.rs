@@ -1,17 +1,61 @@
 //! Modal state -- a buffer-level state machine in front of the buffer
 //! (DESIGN.md §5.2). Orthogonal to major / minor modes.
 //!
-//! Phase 1 only models the state *type*. The transitions (Normal → Insert on
-//! `i`, Operator-Pending entered after an operator, etc.) are driven by the
-//! keystroke parser which is itself a later Phase 1 deliverable.
+//! This crate owns the state *type* only. Transitions are not methods here:
+//! a command asks for one by returning [`Effect::EnterMode`](crate::Effect::EnterMode)
+//! (or [`AppEffect::EnterMode`](crate::AppEffect::EnterMode)), and the host
+//! applies it to the focused buffer's modal field. That keeps the state
+//! machine's *policy* (which chord enters which state) in the keymap and the
+//! command bodies, and its *storage* in the host, while every layer agrees on
+//! one vocabulary.
+//!
+//! The usual vim transitions, for orientation:
+//!
+//! | From | Key | To |
+//! |---|---|---|
+//! | Normal | `i` `a` `o` … | [`ModalState::Insert`] |
+//! | Normal | `v` / `V` / `<C-v>` | [`ModalState::Visual`] (charwise / linewise / blockwise) |
+//! | Normal | `gh` / `gH` / `g<C-h>` | [`ModalState::Select`] |
+//! | Normal | an operator (`d`, `c`, `y` …) | [`ModalState::OperatorPending`] |
+//! | Normal | `:` | [`ModalState::Command`] |
+//! | Normal | `/` / `?` | [`ModalState::Search`] |
+//! | Normal | `R` | [`ModalState::Replace`] |
+//! | any | `<Esc>` | [`ModalState::Normal`] |
+//!
+//! # Examples
+//!
+//! ```
+//! use lattice_grammar::{ModalState, VisualKind};
+//!
+//! let state = ModalState::default();
+//! assert_eq!(state, ModalState::Normal);
+//!
+//! // `V` in Normal: the host applies `EnterMode(Visual(Linewise))`.
+//! let state = ModalState::Visual(VisualKind::Linewise);
+//! assert!(state.is_visual());
+//! assert!(!state.is_select()); // same geometry, different dispatch
+//! assert!(!state.is_operator_pending());
+//! ```
 
 use serde::{Deserialize, Serialize};
 
+/// The vim modal state of a buffer — which grammar a keystroke is read in.
+///
+/// Buffer-level and orthogonal to major / minor modes (a `rust` buffer is
+/// in exactly one of these at a time; the axes never collapse). Keymap
+/// lookups are filtered by it, and [`Range::Selection`](crate::Range::Selection)
+/// defaults from it while Visual is active. Serializable so it can cross
+/// the core protocol and be recorded in snapshots.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ModalState {
+    /// Vim Normal mode: keys are operators, motions and commands. The
+    /// initial state of every buffer and the target of `<Esc>`.
     #[default]
     Normal,
+    /// Vim Insert mode: printable keys insert text at the cursor.
     Insert,
+    /// Vim Visual mode with the given selection shape; the selection is the
+    /// active region and the default range for operators and ex-commands.
     Visual(VisualKind),
     /// Vim Select mode (SN.3d). Same selection *geometry* as
     /// [`Self::Visual`] (the `VisualKind` is reused verbatim), but
@@ -19,9 +63,17 @@ pub enum ModalState {
     /// selection and drops into Insert. See
     /// `docs/dev/architecture/select-mode.md`.
     Select(VisualKind),
+    /// An operator has been typed and a motion or text object is awaited
+    /// (`d` in `dw`). Repeating the operator key operates linewise on the
+    /// current line (`dd`, `cc`, `yy`).
     OperatorPending,
+    /// The `:` command line (the `*command-line*` minibuffer) is focused.
     Command,
+    /// The `/` or `?` search line (the `*search-line*` minibuffer) is
+    /// focused, searching in the given direction.
     Search(SearchDirection),
+    /// Vim Replace mode (`R`): printable keys overtype existing characters
+    /// instead of inserting.
     Replace,
     /// A generic one-line minibuffer text prompt is focused (see
     /// `Effect::OpenPrompt`) — distinct from `Command`/`Search`
@@ -31,16 +83,24 @@ pub enum ModalState {
     Prompt,
 }
 
+/// The shape of a Visual / Select selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum VisualKind {
+    /// Character-wise (`v`): from anchor to cursor, inclusive.
     Charwise,
+    /// Line-wise (`V`): whole lines from the anchor's line to the cursor's.
     Linewise,
+    /// Block-wise (`<C-v>`): the rectangle spanned by anchor and cursor.
     Blockwise,
 }
 
+/// Which way a search runs: `/` searches forward, `?` backward. `n`
+/// repeats in the same direction, `N` in the opposite one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SearchDirection {
+    /// Towards the end of the buffer (`/`).
     Forward,
+    /// Towards the start of the buffer (`?`).
     Backward,
 }
 

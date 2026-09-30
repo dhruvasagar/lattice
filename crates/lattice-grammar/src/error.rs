@@ -1,19 +1,47 @@
+//! [`CommandError`]: why a grammar invocation produced no effect.
+//!
+//! Every evaluator (motion, operator, text object, ex-command, action) and
+//! the dispatcher itself return [`GrammarResult`]. The contract shared by
+//! all variants: **an `Err` commits nothing.** The dispatcher returns before
+//! any [`crate::Effect`] reaches the host, so the document, cursor, undo
+//! stack and registers are exactly as they were when the keystroke arrived.
+//! Variants differ only in what the host does *besides* dropping the
+//! invocation -- most are logged, [`CommandError::User`] is echoed to the
+//! user, [`CommandError::MotionFailed`] is vim's silent beep.
+
 use thiserror::Error;
 
 use lattice_core::CoreError;
 use lattice_protocol::ProtocolError;
 
+/// Why a grammar invocation failed. See the [module docs](self) for the
+/// no-effect-on-error contract every variant shares.
 #[derive(Debug, Error)]
 pub enum CommandError {
+    /// The invocation named a [`crate::CommandId`] (or a motion / operator /
+    /// text-object id) that is not in the [`crate::CommandRegistry`] -- e.g.
+    /// a plugin contribution that has since been unloaded, or a stale id
+    /// carried in a recorded macro.
     #[error("unknown command id")]
     UnknownCommand,
 
+    /// The id resolved, but to a registration of a different kind than the
+    /// call site needs (an operator id passed where a motion was expected).
+    /// A programming error in the caller, not a user error.
     #[error("command kind mismatch: expected {expected}, got {actual}")]
     KindMismatch {
+        /// The kind the call site required, as its registry label
+        /// (`"motion"`, `"operator"`, `"text-object"`, `"ex-command"`,
+        /// `"action"`).
         expected: &'static str,
+        /// The kind the id actually names, same label vocabulary.
         actual: &'static str,
     },
 
+    /// An operator invocation carried neither a [`crate::Target`] nor a
+    /// [`crate::Range`], so there is nothing to operate on. The keystroke
+    /// parser never builds such an invocation; this guards programmatic
+    /// callers (plugins, replayed macros).
     #[error("missing target for operator")]
     MissingTarget,
 
@@ -31,6 +59,10 @@ pub enum CommandError {
     #[error("{0}")]
     User(String),
 
+    /// The evaluator received [`crate::Args`] of the wrong shape, or args
+    /// that do not fit the document (the common case is a position computed
+    /// past the end of the buffer). The static string names what was wrong;
+    /// it is for logs, not the user.
     #[error("invalid args for command: {0}")]
     InvalidArgs(&'static str),
 
@@ -57,11 +89,17 @@ pub enum CommandError {
     #[error("operation cancelled")]
     Cancelled,
 
+    /// A buffer-model failure from [`lattice_core`] (I/O, nothing to
+    /// undo/redo, a core-level cancellation) surfaced through `?`.
     #[error(transparent)]
     Core(#[from] CoreError),
 
+    /// A protocol-layer failure from [`lattice_protocol`] (unknown
+    /// document, out-of-bounds position, stale version) surfaced through
+    /// `?`.
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
 }
 
+/// `Result` alias used by every evaluator and by the dispatcher.
 pub type GrammarResult<T> = Result<T, CommandError>;

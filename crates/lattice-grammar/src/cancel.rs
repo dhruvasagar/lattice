@@ -45,16 +45,35 @@ use crate::error::{CommandError, GrammarResult};
 pub use lattice_protocol::CancellationToken;
 
 /// Grammar extension: convert a flipped token into a
-/// [`CommandError::Cancelled`] result. The `?` operator threads it
-/// through naturally:
+/// [`CommandError::Cancelled`] result, so an evaluator's inner loop
+/// threads cancellation through with `?`.
 ///
-/// ```ignore
-/// for chunk in chunks {
-///     ctx.cancel.check()?;
-///     // ... work ...
+/// # Examples
+///
+/// ```
+/// use lattice_grammar::{CancellationToken, CheckCancelled, CommandError, GrammarResult};
+///
+/// fn scan(lines: &[&str], cancel: &CancellationToken) -> GrammarResult<usize> {
+///     let mut n = 0;
+///     for line in lines {
+///         cancel.check()?; // poll once per iteration
+///         n += line.len();
+///     }
+///     Ok(n)
 /// }
+///
+/// let token = CancellationToken::new();
+/// assert_eq!(scan(&["ab", "c"], &token).unwrap(), 3);
+///
+/// // The UI flips the token (user Esc); the evaluator bails out and the
+/// // dispatcher commits no effect.
+/// token.cancel();
+/// assert!(matches!(scan(&["ab"], &token), Err(CommandError::Cancelled)));
 /// ```
 pub trait CheckCancelled {
+    /// `Ok(())` while the token is live; [`CommandError::Cancelled`] once
+    /// it has been cancelled. Cheap (one atomic load) -- call it every
+    /// inner-loop iteration.
     fn check(&self) -> GrammarResult<()>;
 }
 

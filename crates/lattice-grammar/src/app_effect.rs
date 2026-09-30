@@ -26,10 +26,13 @@
 //!   ("everything returns Effect") honest without fusing two
 //!   conceptually different surfaces into one giant enum.
 //!
-//! 8.i.0 ships the carrier with `Quit` only -- the smallest
-//! variant that proves the dispatcher path. Slices 8.i.1-3 grow
-//! `AppEffect` as the per-mode bindings migrate; slice 8.i.4
-//! retires the `bind_legacy` bridge entirely.
+//! Applied host-side by `Editor::apply_app_effect` (reached from the
+//! [`crate::Effect::AppAction`] arm of `handle_effect`), so every variant
+//! acts on the focused buffer / active pane at apply time unless it names a
+//! buffer. Several variants are now *fallback shells*: the chord is owned by
+//! a mode whose `ActionHandlerRegistry` closure intercepts it before the
+//! arm runs, and the arm is a no-op kept so the registered action id
+//! resolves. Those variants say so.
 
 use serde::{Deserialize, Serialize};
 
@@ -82,11 +85,20 @@ pub enum ScrollPos {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HScroll {
     /// `zl` / `zh`: scroll `count` columns right / left.
-    Columns { right: bool },
+    Columns {
+        /// `true` = `zl` (view moves right), `false` = `zh`.
+        right: bool,
+    },
     /// `zL` / `zH`: scroll half the body width right / left.
-    HalfScreen { right: bool },
+    HalfScreen {
+        /// `true` = `zL`, `false` = `zH`.
+        right: bool,
+    },
     /// `zs` (cursor to left edge) / `ze` (cursor to right edge).
-    CursorToEdge { end: bool },
+    CursorToEdge {
+        /// `true` = `ze` (cursor column at the right edge), `false` = `zs`.
+        end: bool,
+    },
 }
 
 /// CM.2 (2026-07-22): which error entry a [`AppEffect::ErrorNav`]
@@ -193,9 +205,12 @@ pub enum AppEffect {
     /// default configuration never produces one and the common path is
     /// unchanged.
     FormatRange {
+        /// Which kind of formatting the operator asked for (`=` indent,
+        /// `gq` reflow, `g=` reformat); selects the provider chain.
         intent: lattice_core::FormatIntent,
         /// Inclusive 0-based line span.
         start_line: u32,
+        /// Last line of the span (inclusive, 0-based).
         end_line: u32,
     },
     /// Vim's `%`. Jumps to the bracket / brace / paren matching
@@ -323,6 +338,7 @@ pub enum AppEffect {
     /// together by `scroll` lines (half the window by default). SCROLL
     /// commands, not motions: vim composes no operator with them.
     HalfPageDown,
+    /// Vim's `<C-u>`; the upward twin of [`Self::HalfPageDown`].
     HalfPageUp,
     /// Vim's `<C-b>`. Page-up: scroll the viewport up one page.
     /// Promoted from `Action::PageUp` in slice 8.i.1.d.
@@ -463,7 +479,9 @@ pub enum AppEffect {
     /// over the pre-resolved inclusive 0-based lines. Carries the span, so it
     /// crosses WIT like `NarrowLines`.
     CreateFold {
+        /// First line of the fold (0-based, inclusive).
         start_line: u32,
+        /// Last line of the fold (0-based, inclusive).
         end_line: u32,
     },
     /// Insert mode's `<BS>`. Delete the byte before the cursor.
@@ -546,6 +564,8 @@ pub enum AppEffect {
     /// distinct `CommandId` per binding (`J` -> with-space=true,
     /// `gJ` -> with-space=false).
     JoinLines {
+        /// `true` for `J` (joined with a space), `false` for `gJ` (no
+        /// space inserted).
         with_space: bool,
     },
     /// Vim's `;` (forward) / `,` (reverse). Repeat the most
@@ -554,6 +574,8 @@ pub enum AppEffect {
     /// the opposite direction (`reverse: true`). Promoted from
     /// `Action::FindRepeat` in slice 8.i.2.d.
     FindRepeat {
+        /// `false` for `;` (same direction as the original find), `true`
+        /// for `,` (opposite direction).
         reverse: bool,
     },
     /// Insert / Replace mode's `<CR>`. Inserts a literal newline
@@ -805,6 +827,8 @@ pub enum AppEffect {
     /// from the dispatch path. No-op when the active buffer
     /// isn't a multibuffer.
     MultibufferExpand {
+        /// Context lines to add (positive) or remove (negative) around the
+        /// excerpt under the cursor.
         delta: i32,
     },
     /// N.1.1 (2026-06-10): `:narrow [{range}]` ex-command. The host
@@ -812,10 +836,12 @@ pub enum AppEffect {
     /// span, fetches the active buffer's `Arc<dyn Document>`, and
     /// calls `lattice_multibuffer::providers::narrow::create_narrow_view`
     /// — opening a one-excerpt multibuffer focused on that region.
-    /// `range == None` (bare `:narrow`) narrows the current line in
-    /// N.1.1 (N.1.2 widens this to the current paragraph / Visual
-    /// selection).
+    /// `range == None` (bare `:narrow`) narrows the current paragraph
+    /// (blank-line delimited, vim's `ip`).
     NarrowTrigger {
+        /// The unresolved `:` range, resolved by the host against cursor,
+        /// last Visual selection and marks (see [`crate::Range`] for which
+        /// forms resolve); `None` = current paragraph.
         range: Option<crate::range::Range>,
     },
     /// N.1.1 (2026-06-10): `:widen` ex-command. The host arm closes
@@ -830,7 +856,9 @@ pub enum AppEffect {
     /// an unresolved `Range`); the host arm narrows the active buffer
     /// to that span via the same `create_narrow_view` sink.
     NarrowLines {
+        /// First line of the region (0-based, inclusive).
         start_line: u32,
+        /// Last line of the region (0-based, inclusive).
         end_line: u32,
     },
     /// M.6 (2026-06-01): `:search <query>` ex-command. M.10.6
@@ -841,12 +869,10 @@ pub enum AppEffect {
     /// trampolines through `Action::SearchTrigger` /
     /// `Editor::do_search` (both deleted).
     SearchTrigger {
+        /// The search query, passed to the project-search provider as
+        /// typed.
         query: String,
     },
-    /// M.6.1 (2026-06-01): `<CR>` chord in project-search-mode.
-    /// Resolves the excerpt under cursor → source path → opens
-    /// the file at the matched row. M.10.3 (2026-06-03) made
-    /// this mode-owned: the search mode's `on_activate`
     /// M.6.1 (2026-06-01): `gr` chord in project-search-mode.
     /// Re-runs the scan with the view's current query. M.10.5
     /// (2026-06-03) made this mode-owned: the search mode's
@@ -867,6 +893,7 @@ pub enum AppEffect {
     /// `Some(cmd)` for `:compile`; `None` for `:recompile` / bare
     /// `:make` (reuse the last command).
     CompileRun {
+        /// Shell command line to run; `None` re-runs the last one.
         cmdline: Option<String>,
     },
     /// CM.3b (2026-07-22): `<CR>` on a location line in the
@@ -880,18 +907,22 @@ pub enum AppEffect {
     /// buffer text in the mode's closure, but the error list index is
     /// core/host state — so the host owns the apply.
     CompileJumpToLocation {
+        /// File to open (activated if already open).
         path: std::path::PathBuf,
+        /// 0-based line; clamped to the file's last line.
         line: u32,
+        /// 0-based **byte** column; clamped to the line's length.
         col: u32,
     },
     /// CM.2 (2026-07-22): `:cnext`/`:cprev`/`:cc [N]`/`:cfirst`/
     /// `:clast` and the Builtin `]q`/`[q` chords. The host arm calls
     /// `Editor::do_error_nav`, which walks the core error list
     /// (recording each hop in position history via
-    /// `jump_to_file_line_col`). On an empty list `Next`/`Prev` fall
-    /// back to today's active-buffer diagnostic hopping; `Jump`/
-    /// `First`/`Last` echo "no error list".
+    /// `jump_to_file_line_col`). On an empty list every target echoes
+    /// "no error list" and moves nothing -- there is no fallback to
+    /// diagnostic hopping (`]d` / `[d` own that).
     ErrorNav {
+        /// Which entry to jump to.
         target: ErrorTarget,
     },
     /// CM.3a (2026-07-22): parsed error entries from the compilation
@@ -913,6 +944,8 @@ pub enum AppEffect {
         /// it). Declared by the producer — not inferrable from the
         /// entries.
         write: lattice_protocol::error_list::ErrorWrite,
+        /// The source's complete entry list (replace, not append). Empty
+        /// clears this source's slice.
         entries: Vec<lattice_protocol::error_list::ErrorEntry>,
     },
     /// CM.3c (2026-07-22): the per-buffer severity gutter index for the
@@ -936,7 +969,10 @@ pub enum AppEffect {
     /// avoiding a lossy `GutterSeverityLevel`↔`ErrorSeverity` round-trip
     /// and keeping `lattice-grammar` free of a `lattice-mode` dependency.
     CompilationGutterSet {
+        /// `BufferId.0` of the compilation buffer.
         buffer: u32,
+        /// `(0-based line, severity)` for every marked line; the full
+        /// index, replacing the previous one.
         entries: Vec<(u32, lattice_protocol::error_list::ErrorSeverity)>,
     },
     /// CM.3c (2026-07-22): per-buffer compilation location-line
@@ -949,6 +985,7 @@ pub enum AppEffect {
     /// `buffer`. An empty vec (sent on `Reset` / a new run)
     /// clears the buffer's location-line set.
     CompilationLocationLines {
+        /// `BufferId.0` of the compilation buffer.
         buffer: u32,
         /// (line, path_byte_start, path_byte_end) for each location line.
         /// byte_start/end are the byte offsets of the file-path portion
@@ -959,8 +996,12 @@ pub enum AppEffect {
     /// — published by the mode during activation so the renderer
     /// reads `compilation.location` bg/fg from the theme rather than
     /// hardcoding RGB values.
+    ///
+    /// Stored editor-wide (not per buffer); the latest send wins.
     CompilationThemeColors {
+        /// Background of a location line, packed `0xRRGGBB`.
         bg: u32,
+        /// Foreground of a location line's path, packed `0xRRGGBB`.
         fg: u32,
     },
     /// CM.3d (2026-07-22): kill the running compilation child
@@ -1022,7 +1063,11 @@ pub enum AppEffect {
     /// docs for why a range resolved against cursor / Visual / marks is
     /// not a provider parameter.
     OpenProviderView {
+        /// Name the provider registered its opener under in the
+        /// `ProviderViewRegistry`. An unknown name echoes a warning naming
+        /// it.
         provider: String,
+        /// The trigger's parameters, passed to the opener verbatim.
         args: crate::args::Args,
     },
 }

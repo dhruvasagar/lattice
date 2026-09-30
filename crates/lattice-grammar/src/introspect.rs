@@ -14,6 +14,46 @@
 //!   events (§5.10) / modes (Phase 8) land, each adds an
 //!   `impl Introspectable` and the introspection surface picks it
 //!   up automatically.
+//!
+//! # Examples
+//!
+//! ```
+//! use lattice_grammar::{
+//!     HelpSection, Introspectable, SourceEntry, SourceLabel, SourceLocation,
+//!     render_introspection,
+//! };
+//!
+//! struct Tabstop(SourceLocation);
+//!
+//! impl Introspectable for Tabstop {
+//!     fn kind_label(&self) -> &'static str {
+//!         "option"
+//!     }
+//!     fn identifier(&self) -> String {
+//!         "editor.tabstop".into()
+//!     }
+//!     fn doc(&self) -> &str {
+//!         "Display width of a tab character."
+//!     }
+//!     fn sources(&self) -> Vec<SourceEntry<'_>> {
+//!         vec![SourceEntry { label: SourceLabel::DefinedAt, source: &self.0 }]
+//!     }
+//!     fn extra_sections(&self) -> Vec<HelpSection> {
+//!         vec![HelpSection {
+//!             heading: "Value:".into(),
+//!             lines: vec!["       8".into()],
+//!             anchor: Some("value".into()),
+//!         }]
+//!     }
+//! }
+//!
+//! let out = render_introspection(&Tabstop(SourceLocation::builtin_file("config.rs", 12)));
+//! assert_eq!(out.lines[0], "editor.tabstop =");   // identifier + kind icon
+//! assert_eq!(out.lines[2], "Display width of a tab character.");
+//! assert_eq!(out.anchors[0].name, "value");
+//! assert_eq!(out.lines[out.anchors[0].line as usize], "Value:");
+//! assert!(out.lines.last().unwrap().starts_with("Defined at: [config.rs:12]"));
+//! ```
 
 use crate::command::kind_icon;
 use crate::source::SourceLocation;
@@ -47,7 +87,9 @@ pub trait Introspectable {
 
 /// One labeled provenance link in a help body.
 pub struct SourceEntry<'a> {
+    /// How the location relates to the item (defined, bound, last set, …).
     pub label: SourceLabel,
+    /// Where it happened; rendered as a followable link.
     pub source: &'a SourceLocation,
 }
 
@@ -55,15 +97,23 @@ pub struct SourceEntry<'a> {
 /// to a concrete prose phrase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceLabel {
+    /// Where the item was registered (a command, option, event, mode).
     DefinedAt,
+    /// Where a key binding was declared.
     BoundAt,
+    /// Where an event subscription was made.
     SubscribedAt,
+    /// Where an option's current value was last written.
     LastSetAt,
+    /// Where a layered value (e.g. a buffer-local option) overrode the
+    /// one beneath it.
     OverriddenAt,
+    /// Where a mode was activated on the buffer.
     ActivatedAt,
 }
 
 impl SourceLabel {
+    /// The phrase rendered before the link: `"Defined at"`, `"Bound at"`, …
     pub fn as_prose(self) -> &'static str {
         match self {
             SourceLabel::DefinedAt => "Defined at",
@@ -87,8 +137,13 @@ impl SourceLabel {
 /// name is recorded against the section's heading line in the
 /// rendered output so a follower can scroll directly to it.
 pub struct HelpSection {
+    /// The section's heading line, rendered verbatim (e.g. `"Arguments:"`).
     pub heading: String,
+    /// Body lines under the heading, rendered verbatim — impls indent them
+    /// themselves.
     pub lines: Vec<String>,
+    /// Anchor name recorded against the heading line, or `None` for a
+    /// section nothing links to.
     pub anchor: Option<String>,
 }
 
@@ -97,7 +152,9 @@ pub struct HelpSection {
 /// scrolls the help buffer to (or near) this row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderedAnchor {
+    /// The anchor name from [`HelpSection::anchor`].
     pub name: String,
+    /// 0-based index into [`RenderedIntrospection::lines`] of the heading.
     pub line: u32,
 }
 
@@ -107,7 +164,9 @@ pub struct RenderedAnchor {
 /// HelpBuffer's anchor index.
 #[derive(Debug, Clone)]
 pub struct RenderedIntrospection {
+    /// The help body, one entry per line, no trailing newlines.
     pub lines: Vec<String>,
+    /// Every anchored section's heading position, in render order.
     pub anchors: Vec<RenderedAnchor>,
 }
 
@@ -115,7 +174,7 @@ pub struct RenderedIntrospection {
 /// The generic shape every `:describe-*` produces:
 ///
 /// ```text
-/// {identifier}  ({kind})
+/// {identifier} {kind icon}               ← icon from `kind_icon(kind_label)`
 ///
 /// {doc}
 ///
@@ -124,6 +183,9 @@ pub struct RenderedIntrospection {
 ///
 /// {label}: {source.as_link()}  ({source.layer.label()})
 /// ```
+///
+/// An empty doc renders as `(no documentation)`; the sources block is
+/// omitted when [`Introspectable::sources`] is empty.
 ///
 /// Anchor positions point at each section's heading line. Hosts that
 /// don't need anchors can read `result.lines` and ignore

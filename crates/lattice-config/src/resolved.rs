@@ -41,6 +41,10 @@ pub struct ResolvedOptions {
 }
 
 impl ResolvedOptions {
+    /// An empty cache. Every [`Self::get`] returns `None` until it is
+    /// seeded (typically by
+    /// [`crate::ConfigRegistry::bootstrap_resolved_with_current_values`])
+    /// and overlaid by a [`crate::Resolver`].
     pub fn new() -> Self {
         Self::default()
     }
@@ -64,8 +68,12 @@ impl ResolvedOptions {
 
     /// Test helper: insert a resolved value directly. Used by
     /// tests across crates that exercise the read path without
-    /// running the resolver. Production code uses
-    /// [`Self::insert_erased_with_origin`] from the resolver.
+    /// running the resolver. Production code fills the cache through
+    /// the [`crate::Resolver`] and
+    /// [`crate::ConfigRegistry::bootstrap_resolved_with_current_values`],
+    /// which also record an [`OptionOrigin`]; this does not, so the
+    /// entry's origin stays whatever it was (default:
+    /// [`OptionOrigin::Default`]).
     pub fn insert<T: OptionDecl>(&mut self, value: T::Value)
     where
         T::Value: Send + Sync + 'static,
@@ -114,6 +122,7 @@ impl ResolvedOptions {
         self.by_type.len()
     }
 
+    /// `true` when no option has been resolved into the cache.
     pub fn is_empty(&self) -> bool {
         self.by_type.is_empty()
     }

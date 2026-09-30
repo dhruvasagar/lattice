@@ -32,6 +32,9 @@ pub enum Decorations {
 }
 
 impl Decorations {
+    /// The on-disk / `:set` spelling: `full`, `none` or `transparent`.
+    /// The inverse of [`Self::parse_label`] and what
+    /// [`OptionType::format`] emits.
     pub fn label(&self) -> &'static str {
         match self {
             Decorations::Full => "full",
@@ -40,6 +43,8 @@ impl Decorations {
         }
     }
 
+    /// One-line description of this value, shown beside it in the
+    /// `:set ui.window.decorations=<Tab>` completion marginalia.
     pub fn doc(&self) -> &'static str {
         match self {
             Decorations::Full => "System titlebar and window controls (default)",
@@ -60,6 +65,8 @@ impl Decorations {
         matches!(self, Decorations::None_)
     }
 
+    /// Every value, in completion order. Drives
+    /// [`OptionType::enumerate`], so the value set is closed.
     pub fn all() -> [Decorations; 3] {
         [
             Decorations::Full,
@@ -68,6 +75,21 @@ impl Decorations {
         ]
     }
 
+    /// Parse a [`Self::label`] back into a value. Exact match — no
+    /// trimming, no case folding; anything else is an `Err` naming the
+    /// option and the accepted forms.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_config::Decorations;
+    ///
+    /// assert_eq!(Decorations::parse_label("none"), Ok(Decorations::None_));
+    /// assert_eq!(Decorations::None_.label(), "none");
+    /// // `transparent` looks frameless but is not "borderless": it stays resizable.
+    /// assert!(!Decorations::Transparent.is_borderless());
+    /// assert!(Decorations::parse_label("None").is_err());
+    /// ```
     pub fn parse_label(s: &str) -> Result<Self, String> {
         match s {
             "full" => Ok(Decorations::Full),

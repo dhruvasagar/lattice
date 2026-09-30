@@ -15,7 +15,11 @@ pub enum OptionOrigin {
     /// Set via `:setlocal` for this buffer.
     BufferLocal,
     /// Contributed by a mode (major or minor).
-    ModeContribution { mode_id: String },
+    ModeContribution {
+        /// The contributing mode's id (`rust-mode`), echoed as
+        /// `(mode: rust-mode)`.
+        mode_id: String,
+    },
 }
 
 impl std::fmt::Display for OptionOrigin {

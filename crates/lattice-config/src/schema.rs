@@ -30,8 +30,11 @@ use std::collections::BTreeMap;
 /// Adding it later is additive; guessing now is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScalarKind {
+    /// `true` / `false`; matched by [`ConfigValue::Bool`].
     Bool,
+    /// A signed 64-bit integer; matched by [`ConfigValue::Int`].
     Int,
+    /// A UTF-8 string; matched by [`ConfigValue::Str`].
     Str,
 }
 
@@ -56,11 +59,14 @@ impl ScalarKind {
 /// replace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaField {
+    /// The field's key in the record (and in TOML). Matched exactly.
     pub name: String,
+    /// The shape the field's value must have.
     pub schema: ConfigSchema,
     /// A missing required field is a validation error naming its path; a
     /// missing optional one is simply absent from the value.
     pub required: bool,
+    /// Per-field help rendered beside the field.
     pub doc: String,
 }
 
@@ -92,29 +98,54 @@ impl SchemaField {
 /// worse than describing them as strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigSchema {
+    /// A single boolean, integer or string.
     Scalar(ScalarKind),
     /// A closed set of string forms. Carries the forms in declaration order —
     /// completion and `:customize` both show them in the order the type meant.
     Enum(Vec<String>),
+    /// A homogeneous list; every element has the inner shape.
     List(Box<ConfigSchema>),
+    /// A fixed set of named fields. Unknown fields are a validation
+    /// error, not ignored.
     Record(Vec<SchemaField>),
 }
 
 impl ConfigSchema {
     /// Shorthand constructors, because the common shapes are written often
     /// enough that `ConfigSchema::Scalar(ScalarKind::Str)` becomes noise.
+    /// This one is `Scalar(Str)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_config::{ConfigSchema, SchemaField};
+    ///
+    /// let template = ConfigSchema::record([
+    ///     SchemaField::new("key", ConfigSchema::string(), "Selection key"),
+    ///     SchemaField::new("empty", ConfigSchema::bool(), "Start empty").optional(),
+    /// ]);
+    /// let schema = ConfigSchema::list(template);
+    /// assert!(schema.is_composite());
+    /// assert_eq!(schema.label(), "list<record>");
+    /// assert_eq!(ConfigSchema::int().label(), "integer");
+    /// ```
     pub fn string() -> Self {
         ConfigSchema::Scalar(ScalarKind::Str)
     }
+    /// `Scalar(Int)`.
     pub fn int() -> Self {
         ConfigSchema::Scalar(ScalarKind::Int)
     }
+    /// `Scalar(Bool)`.
     pub fn bool() -> Self {
         ConfigSchema::Scalar(ScalarKind::Bool)
     }
+    /// A list whose every element has shape `inner`.
     pub fn list(inner: ConfigSchema) -> Self {
         ConfigSchema::List(Box::new(inner))
     }
+    /// A record with `fields`, in declaration order (the order
+    /// `:customize` renders them; validation does not depend on it).
     pub fn record(fields: impl IntoIterator<Item = SchemaField>) -> Self {
         ConfigSchema::Record(fields.into_iter().collect())
     }
@@ -149,10 +180,16 @@ impl ConfigSchema {
 /// conversion is where the ordering stops mattering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigValue {
+    /// A boolean leaf.
     Bool(bool),
+    /// An integer leaf.
     Int(i64),
+    /// A string leaf — also the representation of an
+    /// [`ConfigSchema::Enum`] form.
     Str(String),
+    /// A list of values (homogeneous only if its schema says so).
     List(Vec<ConfigValue>),
+    /// Named fields, compared order-independently.
     Record(BTreeMap<String, ConfigValue>),
 }
 
@@ -176,32 +213,36 @@ impl ConfigValue {
     /// Read a scalar back out. `None` on a kind mismatch rather than a panic —
     /// callers are usually walking a tree they have already validated, and the
     /// ones that have not should not be able to crash the editor over a config
-    /// file.
+    /// file. This one reads a [`ConfigValue::Str`].
     pub fn as_str(&self) -> Option<&str> {
         match self {
             ConfigValue::Str(s) => Some(s),
             _ => None,
         }
     }
+    /// The boolean in a [`ConfigValue::Bool`]; `None` for any other kind.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             ConfigValue::Bool(b) => Some(*b),
             _ => None,
         }
     }
+    /// The integer in a [`ConfigValue::Int`]; `None` for any other kind.
     pub fn as_int(&self) -> Option<i64> {
         match self {
             ConfigValue::Int(i) => Some(*i),
             _ => None,
         }
     }
+    /// The elements of a [`ConfigValue::List`]; `None` for any other kind.
     pub fn as_list(&self) -> Option<&[ConfigValue]> {
         match self {
             ConfigValue::List(items) => Some(items),
             _ => None,
         }
     }
-    /// A record's field by name.
+    /// A record's field by name. `None` if the field is absent or
+    /// `self` is not a [`ConfigValue::Record`].
     pub fn field(&self, name: &str) -> Option<&ConfigValue> {
         match self {
             ConfigValue::Record(map) => map.get(name),
@@ -220,6 +261,9 @@ impl ConfigValue {
 pub struct SchemaError {
     /// Dotted / indexed path from the option's root. Empty at the root itself.
     pub path: String,
+    /// What was wrong at `path` (`expected string, got integer`,
+    /// `required field is missing`, ...). [`Display`](std::fmt::Display)
+    /// renders `path: message`, or just `message` at the root.
     pub message: String,
 }
 
@@ -241,6 +285,35 @@ impl std::error::Error for SchemaError {}
 /// everything under it meaningless, so a list of twelve consequential errors
 /// would bury the one that matters; the loader's contract is to warn and keep
 /// going per *key*, and one clear message per key is what serves it.
+///
+/// Rules: scalars must match their kind exactly (no coercion); an
+/// [`ConfigSchema::Enum`] needs a [`ConfigValue::Str`] among its forms; a
+/// record rejects missing required fields AND unknown fields. Paths use
+/// `.field` for record fields and `[i]` for list indices.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_config::schema::validate;
+/// use lattice_config::{ConfigSchema, ConfigValue, SchemaField};
+///
+/// let schema = ConfigSchema::list(ConfigSchema::record([
+///     SchemaField::new("key", ConfigSchema::string(), ""),
+///     SchemaField::new("file", ConfigSchema::string(), ""),
+/// ]));
+/// let good = ConfigValue::record([
+///     ("key".to_string(), ConfigValue::Str("t".into())),
+///     ("file".to_string(), ConfigValue::Str("todo.org".into())),
+/// ]);
+/// let bad = ConfigValue::record([
+///     ("key".to_string(), ConfigValue::Str("n".into())),
+///     ("file".to_string(), ConfigValue::Int(3)),
+/// ]);
+/// let value = ConfigValue::List(vec![good, bad]);
+///
+/// let err = validate(&schema, &value).unwrap_err();
+/// assert_eq!(err.to_string(), "[1].file: expected string, got integer");
+/// ```
 pub fn validate(schema: &ConfigSchema, value: &ConfigValue) -> Result<(), SchemaError> {
     validate_at("", schema, value)
 }

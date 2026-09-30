@@ -22,9 +22,18 @@ use crate::option_type::OptionType;
 /// the concrete `Option<T>` when a typed handle reads. Required
 /// rather than auto-derived so the bound stays explicit.
 pub trait ErasedOption: Send + Sync {
+    /// Canonical name (`tabstop`, `ui.diagnostics.inline`). The name
+    /// [`crate::ConfigRegistry`] keys failures and events under, even
+    /// when the user typed an alias.
     fn name(&self) -> &str;
+    /// Alternative names that resolve to this option (`ts` for
+    /// `tabstop`). Empty for most options.
     fn aliases(&self) -> &'static [&'static str];
+    /// Human-readable description, shown by `:describe-option` and
+    /// `:customize`.
     fn doc(&self) -> &str;
+    /// The value type's [`OptionType::type_label`] (`boolean`,
+    /// `integer`, `string`, `signcolumn`, ...).
     fn type_label(&self) -> &'static str;
 
     /// Parse `value` against the option's [`OptionType`], run the

@@ -129,8 +129,13 @@ struct Inner {
 /// these the same way).
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// No option (or alias) is registered under this name. Also
+    /// returned by [`ConfigRegistry::parse_for_buffer_local`] for an
+    /// option registered without a `TypeId` (it cannot be layered).
     #[error("E518: Unknown option: {0}")]
     UnknownOption(String),
+    /// [`ConfigRegistry::try_register`] found this name or alias
+    /// already taken. Nothing was registered.
     #[error("E448: option `{0}` already registered")]
     DuplicateName(String),
     /// `:set noFOO` against a non-bool option. Wording matches the
@@ -150,9 +155,15 @@ pub enum ConfigError {
     /// to echo instead of calling into the write path.
     #[error("E474: query form not allowed in :setlocal; use :set {0}? to echo")]
     QueryNotAllowed(String),
+    /// A typed access named a value type the registered option does
+    /// not have. Currently constructed nowhere in the workspace — the
+    /// typed paths report a mismatch as `None` ([`ConfigRegistry::try_get`])
+    /// or a `String` error ([`ConfigRegistry::set`]) instead.
     #[error("E474: type mismatch: handle expected `{expected}`, registry has `{actual}`")]
     TypeMismatch {
+        /// The accessor's [`OptionType::type_label`].
         expected: &'static str,
+        /// The registered option's type label.
         actual: &'static str,
     },
 }
@@ -171,6 +182,48 @@ fn panic_on_duplicate(e: &ConfigError) -> ! {
 }
 
 impl ConfigRegistry {
+    /// An empty registry with no event publisher. Options arrive via
+    /// [`Self::init_from_linkme`] (every `options!` declaration linked
+    /// into the binary) and [`Self::register`] (runtime / plugin
+    /// options).
+    ///
+    /// # Examples
+    ///
+    /// Declared options, read and written by type:
+    ///
+    /// ```
+    /// use lattice_config::{ConfigRegistry, Tabstop};
+    ///
+    /// let reg = ConfigRegistry::new();
+    /// assert!(reg.get_typed::<Tabstop>().is_none()); // nothing registered yet
+    /// reg.init_from_linkme();
+    ///
+    /// assert_eq!(*reg.get_typed::<Tabstop>().unwrap(), 4); // the declared default
+    /// reg.set_typed::<Tabstop>(2).unwrap();
+    /// assert_eq!(*reg.get_typed::<Tabstop>().unwrap(), 2);
+    /// // The option's validator (1..=32) rejects the write; the old value stays.
+    /// assert!(reg.set_typed::<Tabstop>(0).is_err());
+    /// assert_eq!(*reg.get_typed::<Tabstop>().unwrap(), 2);
+    /// ```
+    ///
+    /// A runtime-registered option, read through its handle:
+    ///
+    /// ```
+    /// use lattice_config::ConfigRegistry;
+    /// use lattice_config::option::Option;
+    ///
+    /// let reg = ConfigRegistry::new();
+    /// let depth = reg.register(
+    ///     Option::<i64>::builder("myplugin.depth", 3, "Search depth.")
+    ///         .aliases(&["mpd"])
+    ///         .validate(|d| if *d > 0 { Ok(()) } else { Err(format!("depth must be > 0, got {d}")) })
+    ///         .build(),
+    /// );
+    /// assert_eq!(*reg.get(depth), 3);
+    /// assert_eq!(reg.parse_and_set_command("mpd=5").unwrap(), "myplugin.depth=5");
+    /// assert_eq!(reg.with(depth, |d| *d), 5);
+    /// assert!(reg.set(depth, -1).is_err());
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
@@ -542,6 +595,8 @@ impl ConfigRegistry {
         inner.by_id.iter().filter(|o| o.is_some()).count()
     }
 
+    /// `true` when no live option is registered (tombstoned slots do
+    /// not count).
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -571,16 +626,6 @@ impl ConfigRegistry {
         true
     }
 
-    /// Drive the cmdline `:set` syntax against the registry. Parses
-    /// the input through [`parse_set`], then dispatches to the
-    /// matching option's parse / set / negate / format path.
-    /// Returns the echo line on success — the caller surfaces it
-    /// via the cmdline echo. Forms:
-    /// - `:set foo` -- echoes `foo=current` for non-bool, sets
-    ///   true for bool (vim convention).
-    /// - `:set nofoo` -- sets bool to false.
-    /// - `:set foo=value` -- parses + sets.
-    /// - `:set foo?` -- always echoes the current value.
     /// OC.11c: record that an assignment to `name` failed.
     ///
     /// `name` is canonicalised here so an alias (`:set ts=999`) records under
@@ -640,6 +685,54 @@ impl ConfigRegistry {
         inner.diagnostics.get(&canonical).cloned()
     }
 
+    /// Drive the cmdline `:set` syntax against the registry. Parses
+    /// the input through [`parse_set`], then dispatches to the
+    /// matching option's parse / set / negate / format path.
+    /// Returns the echo line on success (`canonical-name=value`) — the
+    /// caller surfaces it via the cmdline echo. Forms:
+    /// - `:set foo` -- echoes `foo=current` for non-bool, sets
+    ///   true for bool (vim convention).
+    /// - `:set nofoo` -- sets bool to false; [`ConfigError::NotBoolean`]
+    ///   for any other type.
+    /// - `:set foo=value` -- parses + validates + sets.
+    /// - `:set foo?` -- always echoes the current value.
+    /// - `:set foo&` -- resets to the registered default.
+    ///
+    /// Every successful write publishes [`Event::OptionChanged`]; a
+    /// query does not. The outcome also maintains the failed-assignment
+    /// record ([`Self::failed_assignment`]): a failure on a known option
+    /// is recorded (with no source file), a success clears it, and an
+    /// unknown name records nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_config::{ConfigError, ConfigRegistry};
+    ///
+    /// let reg = ConfigRegistry::new();
+    /// reg.init_from_linkme();
+    ///
+    /// assert_eq!(reg.parse_and_set_command("ts=8").unwrap(), "tabstop=8");
+    /// assert_eq!(reg.parse_and_set_command("wrap").unwrap(), "wrap=true");
+    /// assert_eq!(reg.parse_and_set_command("nowrap").unwrap(), "wrap=false");
+    /// assert_eq!(reg.parse_and_set_command("tabstop&").unwrap(), "tabstop=4");
+    ///
+    /// assert!(matches!(
+    ///     reg.parse_and_set_command("notabstop"),
+    ///     Err(ConfigError::NotBoolean(_))
+    /// ));
+    /// assert!(matches!(
+    ///     reg.parse_and_set_command("nosuch=1"),
+    ///     Err(ConfigError::UnknownOption(_))
+    /// ));
+    ///
+    /// // A rejected write is remembered against the canonical name...
+    /// assert!(reg.parse_and_set_command("ts=0").is_err());
+    /// assert!(reg.failed_assignment("tabstop").is_some());
+    /// // ...until a later write succeeds.
+    /// reg.parse_and_set_command("tabstop=2").unwrap();
+    /// assert!(reg.failed_assignment("tabstop").is_none());
+    /// ```
     pub fn parse_and_set_command(&self, input: &str) -> Result<String, ConfigError> {
         let parsed = parse_set(input).map_err(ConfigError::Parse)?;
         // OC.11c: the outcome of THIS assignment replaces whatever was
@@ -737,7 +830,7 @@ impl ConfigRegistry {
     /// Parse an option spec string for use as a buffer-local override,
     /// without writing to the global registry. Returns the triple
     /// `(TypeId, erased_value, canonical_name)` needed to construct an
-    /// [`lattice_mode::OptionOverride`] for the buffer-local layer.
+    /// [`crate::OptionOverride`] for the buffer-local layer.
     ///
     /// - `NameOnly(name)` — for bool options, returns erased `true`.
     ///   For non-bool, returns `Err` (callers echo the value instead).
@@ -750,6 +843,26 @@ impl ConfigRegistry {
     /// - `Reset(name)` — returns [`ConfigError::QueryNotAllowed`]; the
     ///   caller's `:setlocal name&` clear-override path handles it before
     ///   reaching here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::any::TypeId;
+    /// use lattice_config::{ConfigRegistry, OptionOverride, Tabstop};
+    ///
+    /// let reg = ConfigRegistry::new();
+    /// reg.init_from_linkme();
+    ///
+    /// let (type_id, value, name) = reg.parse_for_buffer_local("ts=2").unwrap();
+    /// assert_eq!(type_id, TypeId::of::<Tabstop>());
+    /// assert_eq!(name, "tabstop");
+    /// assert_eq!(value.downcast_ref::<i64>(), Some(&2));
+    /// // The global value is untouched.
+    /// assert_eq!(*reg.get_typed::<Tabstop>().unwrap(), 4);
+    ///
+    /// let ov = OptionOverride { option_type_id: type_id, value, priority: Default::default() };
+    /// assert_eq!(ov.downcast_value::<i64>(), Some(&2));
+    /// ```
     pub fn parse_for_buffer_local(
         &self,
         input: &str,

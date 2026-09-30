@@ -7,14 +7,16 @@
 //! and picks the first non-empty value per option for scalars;
 //! collection-shaped options concatenate.
 //!
-//! ## Why this lives in `lattice-mode`, not `lattice-config`
+//! ## Why this lives in `lattice-config`
 //!
-//! `Mode::options()` returns an [`OptionOverrideSet`]. If the
-//! type lived in `lattice-config`, then `lattice-mode → lattice-
-//! config → lattice-core → lattice-mode` would form a dependency
-//! cycle. So the layer-input types live here (low layer) and the
-//! resolver + cached output live in `lattice-config` (which
-//! depends on `lattice-mode` for these inputs).
+//! `Mode::options()` (in `lattice-mode`) returns an
+//! [`OptionOverrideSet`]. These types once lived in `lattice-mode`
+//! to break a `lattice-mode → lattice-config → lattice-core →
+//! lattice-mode` cycle; the M.4 dependency inversion removed
+//! `Document::modes` from `lattice-core`, retiring the cycle, so the
+//! layer inputs now sit beside the [`crate::Resolver`] and
+//! [`crate::ResolvedOptions`] they feed. `lattice-mode` re-exports
+//! them.
 //!
 //! ## Type-safe construction via `lattice-config`'s `overrides!`
 //!
@@ -24,13 +26,22 @@
 //! to `OptionDecl` and emits compile-time-typed wrappers around
 //! [`OptionOverride::new`]:
 //!
-//! ```ignore
-//! fn options(&self) -> OptionOverrideSet {
+//! ```
+//! use lattice_config::{OptionOverrideSet, OverridePriority, Tabstop, Wrap};
+//!
+//! fn options() -> OptionOverrideSet {
 //!     lattice_config::overrides! {
 //!         Tabstop = 4,
-//!         Wrap = true,
+//!         #[priority(High)]
+//!         Wrap = false,
 //!     }
 //! }
+//!
+//! let set = options();
+//! assert_eq!(set.len(), 2);
+//! let wrap = set.iter().nth(1).unwrap();
+//! assert_eq!(wrap.downcast_value::<bool>(), Some(&false));
+//! assert_eq!(wrap.priority, OverridePriority::High);
 //! ```
 //!
 //! The macro asserts at compile time that each value matches its
@@ -46,9 +57,11 @@ use smallvec::SmallVec;
 /// Tie-break priority for two layer entries that target the
 /// same option.
 ///
-/// Most modes use `Normal`; the registry picks last-activated
-/// among `Normal`s and emits a `ModeEvent::OptionConflict`
-/// event for visibility. `High` / `Low` are explicit overrides
+/// Most modes use `Normal`; among `Normal`s the
+/// [`crate::Resolver`] prefers the higher layer (the mode registry
+/// orders minor-mode layers by activation, so last-activated wins)
+/// and `lattice-mode` emits a `ModeEvent::OptionConflict` event for
+/// visibility. `High` / `Low` are explicit overrides
 /// for modes that genuinely need to win or lose regardless of
 /// activation order (`read-only-mode` ⇒ `High` for
 /// `writable=false`).
@@ -56,9 +69,16 @@ use smallvec::SmallVec;
 /// See `mode-architecture.md` §6.2 for the conflict policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum OverridePriority {
+    /// Loses to any `Normal` or `High` entry for the same option,
+    /// whatever its layer — a fallback a mode offers only if nobody
+    /// else has an opinion.
     Low,
+    /// The default: resolved by layer order, then position in layer.
     #[default]
     Normal,
+    /// Beats every `Normal` / `Low` entry regardless of layer — except
+    /// a user's buffer-local (`:setlocal`) value, which outranks any
+    /// mode contribution at any priority.
     High,
 }
 
@@ -159,10 +179,13 @@ impl std::fmt::Debug for OptionOverrideSet {
 }
 
 impl OptionOverrideSet {
+    /// An empty set — what a mode that overrides nothing returns.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// An empty set with room for `cap` overrides before spilling
+    /// past the inline capacity (4).
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             overrides: SmallVec::with_capacity(cap),
@@ -175,14 +198,20 @@ impl OptionOverrideSet {
         self.overrides.push(ov);
     }
 
+    /// Number of overrides in the set, duplicates included (two
+    /// entries for one option count twice).
     pub fn len(&self) -> usize {
         self.overrides.len()
     }
 
+    /// `true` when the set contributes nothing.
     pub fn is_empty(&self) -> bool {
         self.overrides.is_empty()
     }
 
+    /// The overrides in push order — the order the resolver visits
+    /// them in, so a later entry for the same option wins within the
+    /// set (priority permitting).
     pub fn iter(&self) -> impl Iterator<Item = &OptionOverride> {
         self.overrides.iter()
     }

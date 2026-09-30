@@ -453,14 +453,14 @@ crate::options! {
     #[name("read-only")]
     pub ReadOnly: bool = false;
 
-    /// Whether the buffer corresponds to an on-disk file the
-    /// editor can save and that should be tracked for unsaved
-    /// changes. `true` (the default) means `:q` warns on dirty,
-    /// `:w` writes to disk, and the modeline shows `[+]` for
-    /// modified state. `false` (vim's `&buftype = nofile`) means
-    /// the buffer is a transcript / log / overlay whose content
-    /// is owned by a subsystem; the dirty guard skips it and
-    /// `:w` is a no-op. `customizable = false` — modes contribute
+    /// Whether the buffer is NOT backed by an on-disk file the
+    /// editor can save and should track for unsaved changes.
+    /// `false` (the default) means `:q` warns on dirty, `:w`
+    /// writes to disk, and the modeline shows `[+]` for modified
+    /// state. `true` (vim's `&buftype = nofile`) means the buffer
+    /// is a transcript / log / overlay whose content is owned by a
+    /// subsystem; the dirty guard skips it and `:w` is a no-op.
+    /// `customizable = false` — modes contribute
     /// the override (`messages-mode`, `lsp-log-mode`, `help-mode`,
     /// `terminal-mode` set `NoFile = true`); users don't `:set`
     /// it directly.

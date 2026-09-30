@@ -63,12 +63,31 @@ pub trait OptionGroup: 'static {
 /// startup loader walks the slice to validate uniqueness and
 /// build the `&str → TypeId` lookup table.
 pub struct OptionGroupMetadata {
+    /// The group's [`OptionGroup::NAME`] — the `:customize <name>` key.
     pub name: &'static str,
+    /// The group's [`OptionGroup::DOC`].
     pub doc: &'static str,
+    /// `TypeId::of::<G>` for the group type, held as a function
+    /// pointer so the whole struct stays `const`-constructible; call it
+    /// to get the `TypeId`.
     pub type_id: fn() -> TypeId,
 }
 
 impl OptionGroupMetadata {
+    /// Capture `G`'s name, doc and type id. `const` so the
+    /// [`crate::groups!`] expansion can build the [`GROUP_DECLS`] entry
+    /// in a `static`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_config::{Editor, OptionGroup, OptionGroupMetadata};
+    ///
+    /// const META: OptionGroupMetadata = OptionGroupMetadata::for_group::<Editor>();
+    /// assert_eq!(META.name, "editor");
+    /// assert_eq!((META.type_id)(), std::any::TypeId::of::<Editor>());
+    /// assert_eq!(META.doc, Editor::DOC);
+    /// ```
     pub const fn for_group<G: OptionGroup>() -> Self {
         Self {
             name: G::NAME,
@@ -93,6 +112,16 @@ pub static GROUP_DECLS: [&'static OptionGroupMetadata];
 /// Implementation walks bytes from the end -- ASCII-safe
 /// because mode/group names are constrained to lowercase
 /// letters, digits, and hyphens.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_config::ends_with_mode_suffix;
+///
+/// assert!(ends_with_mode_suffix("rust-mode"));
+/// assert!(!ends_with_mode_suffix("editor"));
+/// assert!(!ends_with_mode_suffix("mode")); // no leading hyphen
+/// ```
 pub const fn ends_with_mode_suffix(s: &str) -> bool {
     let bytes = s.as_bytes();
     let suffix = b"-mode";

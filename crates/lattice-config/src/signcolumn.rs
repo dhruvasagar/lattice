@@ -35,6 +35,8 @@ pub enum SignColumn {
 }
 
 impl SignColumn {
+    /// The on-disk / `:set` spelling: `yes` or `no`. The inverse of
+    /// [`Self::parse_label`].
     pub fn label(&self) -> &'static str {
         match self {
             SignColumn::Yes => "yes",
@@ -42,6 +44,8 @@ impl SignColumn {
         }
     }
 
+    /// One-line description of this value for the `:set` value
+    /// completion marginalia.
     pub fn doc(&self) -> &'static str {
         match self {
             SignColumn::Yes => {
@@ -58,10 +62,24 @@ impl SignColumn {
         matches!(self, SignColumn::Yes)
     }
 
+    /// Every value, in completion order (the closed value set).
     pub fn all() -> [SignColumn; 2] {
         [SignColumn::Yes, SignColumn::No]
     }
 
+    /// Parse a [`Self::label`] back into a value. Exact match — vim's
+    /// `auto` / `number` forms are rejected, not approximated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_config::SignColumn;
+    ///
+    /// assert!(SignColumn::default().reserved());
+    /// assert_eq!(SignColumn::parse_label("no"), Ok(SignColumn::No));
+    /// assert!(!SignColumn::No.reserved());
+    /// assert!(SignColumn::parse_label("auto").is_err());
+    /// ```
     pub fn parse_label(s: &str) -> Result<Self, String> {
         match s {
             "yes" => Ok(SignColumn::Yes),

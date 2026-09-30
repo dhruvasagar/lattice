@@ -19,7 +19,7 @@
 //!
 //! Strings appear only at boundaries (cmdline `:set`, TOML, plugin
 //! manifests, `:describe-option`). Internal access on the hot path
-//! is type-driven (`config.get::<Tabstop>()`).
+//! is type-driven (`config.get_typed::<Tabstop>()`).
 //!
 //! See `docs/dev/architecture/mode-architecture.md` §6.4 for the design rationale
 //! (types-as-keys eliminating the cross-crate string-collision
@@ -116,13 +116,25 @@ pub trait HasGroup {
 /// site so the registry boot path can register every option
 /// without pulling each `<T>` into a generic over the slice.
 ///
-/// `register` returns `()` and is responsible for inserting the
-/// option into the [`crate::ConfigRegistry`]. The current
-/// implementation is a stub -- M.2.0b wires the typed insert.
+/// `register_fn` returns `()` and inserts the option into the
+/// [`crate::ConfigRegistry`] it is handed (via
+/// [`crate::ConfigRegistry::register_with_typeid`]);
+/// [`crate::ConfigRegistry::init_from_linkme`] calls it once per
+/// element of [`OPTION_DECLS`].
+///
+/// Also the data the browse surfaces read without a registry:
+/// `:customize` groups by [`Self::group_name`] and hides entries
+/// whose [`Self::customizable`] is `false`.
 pub struct OptionDeclMetadata {
+    /// The option's [`OptionDecl::NAME`] — its `:set` / TOML key.
     pub name: &'static str,
+    /// The option's [`OptionDecl::DOC`].
     pub doc: &'static str,
+    /// The option's [`OptionDecl::CUSTOMIZABLE`]; `false` hides it
+    /// from `:customize`.
     pub customizable: bool,
+    /// The owning group's display name ([`HasGroup::GROUP_NAME`]),
+    /// which `:customize <group>` matches against.
     pub group_name: &'static str,
     /// `&'static str` produced by the value type's
     /// [`OptionType::type_label`] -- captured as a function

@@ -27,6 +27,8 @@ pub enum DiagnosticsInline {
 }
 
 impl DiagnosticsInline {
+    /// The on-disk / `:set` spelling: `off`, `cursor-line` or `all`.
+    /// The inverse of [`Self::parse_label`].
     pub fn label(&self) -> &'static str {
         match self {
             DiagnosticsInline::Off => "off",
@@ -35,6 +37,8 @@ impl DiagnosticsInline {
         }
     }
 
+    /// One-line description of this value for the `:set` value
+    /// completion marginalia.
     pub fn doc(&self) -> &'static str {
         match self {
             DiagnosticsInline::Off => "No inline summary (gutter + underline only)",
@@ -43,6 +47,7 @@ impl DiagnosticsInline {
         }
     }
 
+    /// Every value, in completion order (the closed value set).
     pub fn all() -> [DiagnosticsInline; 3] {
         [
             DiagnosticsInline::Off,
@@ -51,6 +56,21 @@ impl DiagnosticsInline {
         ]
     }
 
+    /// Parse a [`Self::label`] back into a value. Exact match; any
+    /// other input is an `Err` naming the accepted forms.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_config::DiagnosticsInline;
+    ///
+    /// assert_eq!(DiagnosticsInline::default(), DiagnosticsInline::CursorLine);
+    /// assert_eq!(
+    ///     DiagnosticsInline::parse_label("cursor-line"),
+    ///     Ok(DiagnosticsInline::CursorLine)
+    /// );
+    /// assert!(DiagnosticsInline::parse_label("cursorline").is_err());
+    /// ```
     pub fn parse_label(s: &str) -> Result<Self, String> {
         match s {
             "off" => Ok(DiagnosticsInline::Off),
@@ -101,8 +121,11 @@ impl OptionType for DiagnosticsInline {
 /// (i.e. its rank ≤ this rank).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DiagnosticsSeverity {
+    /// Errors only (rank 0).
     Error,
+    /// Warnings and errors (rank 1).
     Warning,
+    /// Info, warnings and errors (rank 2).
     Info,
     /// The default: include everything down to hints.
     #[default]
@@ -122,6 +145,8 @@ impl DiagnosticsSeverity {
         }
     }
 
+    /// The on-disk / `:set` spelling: `error`, `warning`, `info` or
+    /// `hint`. The inverse of [`Self::parse_label`].
     pub fn label(&self) -> &'static str {
         match self {
             DiagnosticsSeverity::Error => "error",
@@ -131,6 +156,8 @@ impl DiagnosticsSeverity {
         }
     }
 
+    /// One-line description of this threshold for the `:set` value
+    /// completion marginalia.
     pub fn doc(&self) -> &'static str {
         match self {
             DiagnosticsSeverity::Error => "Errors only",
@@ -140,6 +167,7 @@ impl DiagnosticsSeverity {
         }
     }
 
+    /// Every value, most severe first (the closed value set).
     pub fn all() -> [DiagnosticsSeverity; 4] {
         [
             DiagnosticsSeverity::Error,
@@ -149,6 +177,19 @@ impl DiagnosticsSeverity {
         ]
     }
 
+    /// Parse a [`Self::label`] back into a value. Exact match; any
+    /// other input is an `Err` naming the accepted forms.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_config::DiagnosticsSeverity;
+    ///
+    /// let min = DiagnosticsSeverity::parse_label("warning").unwrap();
+    /// // A diagnostic is shown when its rank is <= the threshold's rank.
+    /// assert!(DiagnosticsSeverity::Error.rank() <= min.rank());
+    /// assert!(DiagnosticsSeverity::Hint.rank() > min.rank());
+    /// ```
     pub fn parse_label(s: &str) -> Result<Self, String> {
         match s {
             "error" => Ok(DiagnosticsSeverity::Error),

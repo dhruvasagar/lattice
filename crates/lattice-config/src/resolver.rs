@@ -49,6 +49,7 @@ use crate::resolved::ResolvedOptions;
 pub struct Resolver;
 
 impl Resolver {
+    /// The resolver. Zero-sized; equivalent to `Resolver::default()`.
     pub fn new() -> Self {
         Self
     }
@@ -67,13 +68,46 @@ impl Resolver {
     /// `OverridePriority::High` wins regardless of layer
     /// position; `Low` only wins when no `Normal`/`High` covers
     /// the option. The one thing `High` does NOT beat is a user's
-    /// own per-buffer value — see [`Self::candidate_better`]. Within a single layer, two overrides at the
-    /// same priority resolve to last-pushed (per
+    /// own per-buffer value — but that needs origins, so it applies
+    /// only through [`Self::resolve_into_with_origins`] with a layer
+    /// tagged [`OptionOrigin::BufferLocal`]. Within a single layer, two
+    /// overrides at the same priority resolve to last-pushed (per
     /// `mode-architecture.md` §6.2 conflict policy; M.2.1 hooks
     /// this to a `ModeEvent::OptionConflict` emission).
     ///
-    /// Origin is not tracked; use [`Self::resolve_into_with_origins`]
-    /// when `:set name?` / `:setlocal name?` echo is needed.
+    /// Origin is not tracked (every winner is recorded as
+    /// [`OptionOrigin::GlobalConfig`]); use
+    /// [`Self::resolve_into_with_origins`] when `:set name?` /
+    /// `:setlocal name?` echo is needed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::any::TypeId;
+    /// use lattice_config::{
+    ///     OptionOverride, OptionOverrideSet, OverridePriority, ResolvedOptions, Resolver,
+    ///     Tabstop, Wrap,
+    /// };
+    ///
+    /// // Seed with the "global" values, as the registry bootstrap would.
+    /// let mut out = ResolvedOptions::new();
+    /// out.insert::<Tabstop>(8);
+    /// out.insert::<Wrap>(true);
+    ///
+    /// // Highest-priority layer first: a minor mode, then a major mode.
+    /// let minor: OptionOverrideSet =
+    ///     [OptionOverride::new(TypeId::of::<Tabstop>(), 2_i64)].into_iter().collect();
+    /// let major: OptionOverrideSet = [
+    ///     OptionOverride::new(TypeId::of::<Tabstop>(), 4_i64),
+    ///     OptionOverride::with_priority(TypeId::of::<Wrap>(), false, OverridePriority::High),
+    /// ]
+    /// .into_iter()
+    /// .collect();
+    ///
+    /// Resolver::new().resolve_into([&minor, &major], &mut out);
+    /// assert_eq!(*out.get::<Tabstop>().unwrap(), 2); // higher layer wins among Normals
+    /// assert_eq!(*out.get::<Wrap>().unwrap(), false); // High wins from a lower layer
+    /// ```
     pub fn resolve_into<'a, L>(&self, layers: L, out: &mut ResolvedOptions)
     where
         L: IntoIterator<Item = &'a OptionOverrideSet>,
@@ -95,6 +129,40 @@ impl Resolver {
     /// responsible for assigning the correct [`OptionOrigin`] to each
     /// layer (e.g. `BufferLocal` for the buffer-local override set,
     /// `ModeContribution { mode_id }` for each mode's set).
+    ///
+    /// # Examples
+    ///
+    /// A `:setlocal` value beats a mode's `High` contribution:
+    ///
+    /// ```
+    /// use std::any::TypeId;
+    /// use lattice_config::{
+    ///     OptionOrigin, OptionOverride, OptionOverrideSet, OverridePriority, ResolvedOptions,
+    ///     Resolver, Tabstop,
+    /// };
+    ///
+    /// let local: OptionOverrideSet =
+    ///     [OptionOverride::new(TypeId::of::<Tabstop>(), 3_i64)].into_iter().collect();
+    /// let mode: OptionOverrideSet = [OptionOverride::with_priority(
+    ///     TypeId::of::<Tabstop>(),
+    ///     8_i64,
+    ///     OverridePriority::High,
+    /// )]
+    /// .into_iter()
+    /// .collect();
+    ///
+    /// let mut out = ResolvedOptions::new();
+    /// Resolver::new().resolve_into_with_origins(
+    ///     [
+    ///         (&local, OptionOrigin::BufferLocal),
+    ///         (&mode, OptionOrigin::ModeContribution { mode_id: "rust-mode".into() }),
+    ///     ],
+    ///     &mut out,
+    /// );
+    /// assert_eq!(*out.get::<Tabstop>().unwrap(), 3);
+    /// assert_eq!(out.get_origin::<Tabstop>(), OptionOrigin::BufferLocal);
+    /// assert_eq!(out.get_origin::<Tabstop>().to_string(), "buffer-local");
+    /// ```
     pub fn resolve_into_with_origins<'a>(
         &self,
         layers: impl IntoIterator<Item = (&'a OptionOverrideSet, OptionOrigin)>,

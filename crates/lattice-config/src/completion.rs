@@ -29,11 +29,34 @@ use lattice_completion::traits::{CandidateGenerator, GenerateContext};
 
 use crate::ConfigRegistry;
 
+/// Completion source for `:set` — option names, and `name=value` pairs
+/// for options whose type enumerates its values.
+///
+/// Stateless beyond the shared registry handle: every
+/// [`CandidateGenerator::generate`] call re-walks the registry, so
+/// options registered later (a plugin's, a renderer's) appear without
+/// rebuilding the generator. Candidates are unfiltered; the
+/// `lattice-completion` matcher narrows them against the prefix.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use lattice_config::{ConfigRegistry, OptionsGenerator};
+///
+/// let registry = Arc::new(ConfigRegistry::new());
+/// registry.init_from_linkme();
+/// let generator = OptionsGenerator::new(Arc::clone(&registry));
+/// assert!(Arc::ptr_eq(&generator.registry, &registry));
+/// ```
 pub struct OptionsGenerator {
+    /// The registry walked on each `generate` call. Shared, not
+    /// snapshotted: registrations after construction are visible.
     pub registry: Arc<ConfigRegistry>,
 }
 
 impl OptionsGenerator {
+    /// A generator over `registry`.
     pub fn new(registry: Arc<ConfigRegistry>) -> Self {
         Self { registry }
     }

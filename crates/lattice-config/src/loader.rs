@@ -52,6 +52,8 @@ use crate::schema::{dot_path, toml_to_config_value};
 /// to dispatch sub-tables to their owners.
 #[derive(Debug, Default)]
 pub struct LoadOutcome {
+    /// Every diagnostic produced, in load order (files in precedence
+    /// order, keys in walk order). Empty on a clean load.
     pub messages: Vec<LoadMessage>,
     /// Tables whose path matched a structural prefix. Keyed by the
     /// full dotted path (e.g. `"completion.per-language.markdown"`);
@@ -109,8 +111,13 @@ pub(crate) fn deep_merge_table(base: &mut toml::Table, incoming: toml::Table) {
 /// IO-agnostic.
 #[derive(Debug, Clone)]
 pub struct LoadMessage {
+    /// Whether the whole file was lost ([`LoadMessageLevel::Error`]) or
+    /// one key was rejected ([`LoadMessageLevel::Warning`]).
     pub level: LoadMessageLevel,
+    /// The file the diagnostic came from.
     pub source: PathBuf,
+    /// Human-readable reason, without the path prefix — the caller
+    /// formats `source` and `body` together.
     pub body: String,
     /// OC.11c: the dotted option name this diagnostic is ABOUT, when it is
     /// about one.
@@ -130,6 +137,7 @@ pub struct LoadMessage {
     pub option: std::option::Option<String>,
 }
 
+/// Severity of a [`LoadMessage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadMessageLevel {
     /// Couldn't read or parse the file; nothing was applied.
@@ -144,6 +152,19 @@ pub enum LoadMessageLevel {
 /// a non-table. Used by `workspace/configuration` to look up
 /// server-namespaced keys (e.g. `"rust-analyzer.cargo.features"`
 /// walks `tree["rust-analyzer"]["cargo"]["features"]`).
+///
+/// # Examples
+///
+/// ```
+/// use lattice_config::lookup_dotted_path;
+///
+/// let tree: toml::Table = "[rust-analyzer.cargo]\nfeatures = \"all\"".parse().unwrap();
+/// let v = lookup_dotted_path(&tree, "rust-analyzer.cargo.features");
+/// assert_eq!(v.and_then(|v| v.as_str()), Some("all"));
+/// // Stepping through a non-table, or a missing segment, is `None`.
+/// assert!(lookup_dotted_path(&tree, "rust-analyzer.cargo.features.x").is_none());
+/// assert!(lookup_dotted_path(&tree, "rust-analyzer.check").is_none());
+/// ```
 pub fn lookup_dotted_path<'a>(tree: &'a toml::Table, path: &str) -> Option<&'a toml::Value> {
     let mut node: &toml::Table = tree;
     let segments: Vec<&str> = path.split('.').collect();

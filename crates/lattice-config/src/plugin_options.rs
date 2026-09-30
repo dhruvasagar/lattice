@@ -24,16 +24,23 @@ use crate::option_type::{EnumeratedValue, OptionType};
 pub enum PluginTraceLevel {
     /// Silence every plugin's trace entirely.
     Off,
+    /// Traps only.
     Error,
+    /// Guest errors and traps.
     Warn,
     /// The default: crash/lifecycle signal only, no per-call traces.
     #[default]
     Info,
+    /// Every host↔guest call, timed.
     Debug,
+    /// Every call with argument / result detail.
     Trace,
 }
 
 impl PluginTraceLevel {
+    /// The on-disk / `:set` spelling (`off` … `trace`). Deliberately
+    /// identical to `lattice_plugin_host::TraceLevel`'s labels: the
+    /// loader bridges the two types through this string.
     pub fn label(&self) -> &'static str {
         match self {
             PluginTraceLevel::Off => "off",
@@ -45,6 +52,8 @@ impl PluginTraceLevel {
         }
     }
 
+    /// One-line description of this level for the `:set` value
+    /// completion marginalia.
     pub fn doc(&self) -> &'static str {
         match self {
             PluginTraceLevel::Off => "Silence all plugin traces",
@@ -56,6 +65,7 @@ impl PluginTraceLevel {
         }
     }
 
+    /// Every level, least → most verbose (the closed value set).
     pub fn all() -> [PluginTraceLevel; 6] {
         [
             PluginTraceLevel::Off,
@@ -67,6 +77,18 @@ impl PluginTraceLevel {
         ]
     }
 
+    /// Parse a [`Self::label`] back into a level. Exact match; any
+    /// other input is an `Err` naming the accepted forms.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_config::PluginTraceLevel;
+    ///
+    /// assert_eq!(PluginTraceLevel::parse_label("debug"), Ok(PluginTraceLevel::Debug));
+    /// assert_eq!(PluginTraceLevel::default().label(), "info");
+    /// assert!(PluginTraceLevel::parse_label("verbose").is_err());
+    /// ```
     pub fn parse_label(s: &str) -> Result<Self, String> {
         match s {
             "off" => Ok(PluginTraceLevel::Off),

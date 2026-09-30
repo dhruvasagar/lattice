@@ -13,6 +13,13 @@
 //! Multiple-option forms (`:set ic hls scs`) are deferred; one
 //! `parse_set` call handles one option per dispatch today.
 
+/// One `:set` argument, classified by syntax alone.
+///
+/// Produced by [`parse_set`]; no option lookup has happened yet, so the
+/// name may not exist and (for [`ParsedSet::Negate`]) may not be
+/// boolean. [`crate::ConfigRegistry::parse_and_set_command`] and
+/// [`crate::ConfigRegistry::parse_for_buffer_local`] give each form
+/// its meaning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedSet {
     /// `:set name` -- query (non-bool) / boolean-on (bool).
@@ -20,7 +27,13 @@ pub enum ParsedSet {
     /// `:set name?` -- always print current value.
     Query(String),
     /// `:set name=value` -- set typed value.
-    Assign { name: String, value: String },
+    Assign {
+        /// Text left of the first `=`, trimmed.
+        name: String,
+        /// Text right of the first `=`, trimmed; may itself contain
+        /// `=` and may be empty.
+        value: String,
+    },
     /// `:set noname` -- clear boolean.
     Negate(String),
     /// `:set name&` / `:setlocal name&` -- reset to registered default
@@ -28,6 +41,32 @@ pub enum ParsedSet {
     Reset(String),
 }
 
+/// Classify one `:set` argument (without the `:set ` prefix).
+///
+/// Checked in this order, first match wins: contains `=` →
+/// [`ParsedSet::Assign`]; ends in `?` → [`ParsedSet::Query`]; ends in
+/// `&` → [`ParsedSet::Reset`]; starts with `no` →
+/// [`ParsedSet::Negate`]; otherwise [`ParsedSet::NameOnly`]. `Err` for
+/// empty input or an empty name before `=` / `?`.
+///
+/// The `no` test is purely lexical: any name beginning with `no`
+/// parses as a negation of the remainder, so an option whose own name
+/// starts with `no` cannot be reached by the bare `name` form.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_config::{ParsedSet, parse_set};
+///
+/// assert_eq!(
+///     parse_set("tabstop = 4"),
+///     Ok(ParsedSet::Assign { name: "tabstop".into(), value: "4".into() })
+/// );
+/// assert_eq!(parse_set("number?"), Ok(ParsedSet::Query("number".into())));
+/// assert_eq!(parse_set("nowrap"), Ok(ParsedSet::Negate("wrap".into())));
+/// assert_eq!(parse_set("&"), Ok(ParsedSet::Reset(String::new())));
+/// assert!(parse_set("=4").is_err());
+/// ```
 pub fn parse_set(input: &str) -> Result<ParsedSet, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {

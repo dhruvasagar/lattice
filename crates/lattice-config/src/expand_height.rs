@@ -51,6 +51,10 @@ impl ExpandHeight {
         }
     }
 
+    /// The on-disk / `:set` spelling: `half`, `full`, or the row count
+    /// as a bare integer. The inverse of [`Self::parse_label`]. Owned
+    /// (unlike the other value types' `label`) because `Fixed(n)` is
+    /// formatted.
     pub fn label(&self) -> String {
         match self {
             ExpandHeight::Half => "half".to_string(),
@@ -59,6 +63,9 @@ impl ExpandHeight {
         }
     }
 
+    /// One-line description of this value for the `:set` value
+    /// completion marginalia. `Fixed` shares one description whatever
+    /// its row count.
     pub fn doc(&self) -> &'static str {
         match self {
             ExpandHeight::Half => "Half the frame height (default)",
@@ -67,6 +74,23 @@ impl ExpandHeight {
         }
     }
 
+    /// Parse `half`, `full`, or a `u16` row count (surrounding
+    /// whitespace ignored). `0` parses as `Fixed(0)`; [`Self::rows`]
+    /// clamps it up to one row.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_config::ExpandHeight;
+    ///
+    /// assert_eq!(ExpandHeight::parse_label(" 12 "), Ok(ExpandHeight::Fixed(12)));
+    /// // A 40-row frame: `half` is 20 rows, `full` keeps two rows back.
+    /// assert_eq!(ExpandHeight::Half.rows(40), 20);
+    /// assert_eq!(ExpandHeight::Full.rows(40), 38);
+    /// // Fixed heights clamp to what the frame can show.
+    /// assert_eq!(ExpandHeight::Fixed(100).rows(40), 38);
+    /// assert!(ExpandHeight::parse_label("tall").is_err());
+    /// ```
     pub fn parse_label(s: &str) -> Result<Self, String> {
         match s.trim() {
             "half" => Ok(ExpandHeight::Half),

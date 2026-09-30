@@ -89,14 +89,27 @@ impl<T: OptionType> Option<T> {
         }
     }
 
-    /// Builder entry point. Pattern:
-    /// ```ignore
-    /// Option::<i64>::builder("tabstop", 8, "Tab visual width.")
-    ///     .aliases(&["ts"])
-    ///     .validate(|i| (1..=32).contains(i)
-    ///         .then_some(())
-    ///         .ok_or_else(|| format!("out of range: {i}")))
-    ///     .build()
+    /// Builder entry point.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_config::ErasedOption;
+    /// use lattice_config::option::Option;
+    ///
+    /// let opt = Option::<i64>::builder("width", 8, "Tab visual width.")
+    ///     .aliases(&["wd"])
+    ///     .validate(|i| {
+    ///         (1..=32).contains(i).then_some(()).ok_or_else(|| format!("out of range: {i}"))
+    ///     })
+    ///     .build();
+    ///
+    /// assert_eq!(*opt.get(), 8);
+    /// assert_eq!(opt.set(99), Err("out of range: 99".to_string()));
+    /// opt.set(2).unwrap();
+    /// // The erased view formats; the default is captured at build time.
+    /// assert_eq!(opt.get_formatted(), "2");
+    /// assert_eq!(opt.default_formatted(), "8");
     /// ```
     pub fn builder(
         name: impl Into<Cow<'static, str>>,
@@ -183,16 +196,25 @@ pub struct OptionBuilder<T: OptionType> {
 }
 
 impl<T: OptionType> OptionBuilder<T> {
+    /// Extra names that resolve to this option (`ts` for `tabstop`).
+    /// Replaces any aliases set earlier. Each must be unique across the
+    /// registry, or registration fails with
+    /// [`crate::ConfigError::DuplicateName`].
     pub fn aliases(mut self, aliases: &'static [&'static str]) -> Self {
         self.aliases = aliases;
         self
     }
 
+    /// Install the post-parse validator run on every write (see
+    /// [`ValidateFn`]). Replaces any earlier one. The default passed to
+    /// [`Option::builder`] is NOT validated.
     pub fn validate(mut self, f: ValidateFn<T>) -> Self {
         self.validate = Some(f);
         self
     }
 
+    /// Finish: the [`Option<T>`] holding the default as its current
+    /// value, ready for [`crate::ConfigRegistry::register`].
     pub fn build(self) -> Option<T> {
         let default_formatted = self.default.format();
         Option {

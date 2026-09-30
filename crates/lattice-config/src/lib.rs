@@ -1,12 +1,80 @@
-//! Typed configuration registry (DESIGN.md §5.12).
+//! The typed options system: every editor, mode, renderer and plugin
+//! setting is a registered, typed value in one [`ConfigRegistry`], read
+//! on the hot path by type and written at the boundaries (`:set`,
+//! `lattice.toml`, `:setlocal`, plugins) by name (DESIGN.md §5.12).
 //!
 //! Renderer-agnostic option machinery: the [`OptionType`] trait,
-//! the typed [`Option<T>`] spec, the type-erased [`ErasedOption`]
+//! the typed [`option::Option<T>`] spec, the type-erased [`ErasedOption`]
 //! trait the registry stores, and [`ConfigRegistry`] itself.
+//!
+//! ## What it owns
+//!
+//! - **Declaration.** The [`options!`] / [`groups!`] macros (from
+//!   `lattice-config-macros`) turn a declaration into an [`OptionDecl`]
+//!   marker type plus an [`OptionDeclMetadata`] entry in the
+//!   [`OPTION_DECLS`] link-time slice; [`ConfigRegistry::init_from_linkme`]
+//!   registers every one linked into the binary. The built-in set lives
+//!   in [`core_options`] and is re-exported here (`Tabstop`, `Wrap`, ...);
+//!   groups ([`OptionGroup`]) organise them for `:customize`.
+//! - **Values.** [`OptionType`] (parse / format / enumerate / schema) with
+//!   impls for `bool`, `i64`, `String`, the lattice-core domain enums, and
+//!   the display-policy value types defined here ([`SignColumn`],
+//!   [`ModelineZone`], [`DiagnosticsInline`], [`Decorations`], ...).
+//!   [`ConfigSchema`] / [`ConfigValue`] describe composite (list / record)
+//!   values as data — see [`schema`].
+//! - **Access.** Type-keyed reads/writes ([`ConfigRegistry::get_typed`] /
+//!   [`ConfigRegistry::set_typed`]), handle reads for runtime-registered
+//!   options ([`option::OptionHandle`]), and the by-name `:set` path
+//!   ([`parse_set`] → [`ConfigRegistry::parse_and_set_command`]).
+//! - **Layering.** Per-buffer resolution: modes and `:setlocal` contribute
+//!   [`OptionOverrideSet`]s, the [`Resolver`] merges them by layer and
+//!   [`OverridePriority`] into a [`ResolvedOptions`] cache, each winner
+//!   tagged with its [`OptionOrigin`].
+//! - **Files.** The TOML [`loader`] (`lattice.toml`, `.lattice/config.toml`)
+//!   and the config-home paths ([`config_home`], [`cache_home`]).
+//! - **Completion.** [`OptionsGenerator`], the `:set <Tab>` candidate source.
+//!
+//! ## What it must not depend on
+//!
+//! Its dependencies are the foundation only (`lattice-protocol`,
+//! `lattice-core`, `lattice-completion`). Almost every crate reads options,
+//! so anything this crate imported would sit beneath the whole editor:
+//! no host / `App`, no renderer, no mode registry, no event bus
+//! (`lattice-runtime` — events leave through an injected
+//! [`EventPublisher`] closure instead), no plugin host (so
+//! [`PluginTraceLevel`] duplicates the host's trace-level labels rather
+//! than importing the type). The layer-input override types moved *into*
+//! this crate for the same reason (see [`mod@overrides`]).
+//!
+//! ## Example
+//!
+//! ```
+//! use lattice_config::{ConfigRegistry, Tabstop};
+//!
+//! let config = ConfigRegistry::new();
+//! config.init_from_linkme(); // register every `options!` declaration
+//!
+//! // Hot path: read by type.
+//! assert_eq!(*config.get_typed::<Tabstop>().unwrap(), 4);
+//!
+//! // Boundary: write by name, exactly as `:set ts=2` does.
+//! assert_eq!(config.parse_and_set_command("ts=2").unwrap(), "tabstop=2");
+//! assert_eq!(*config.get_typed::<Tabstop>().unwrap(), 2);
+//!
+//! // Validation runs on every write; a rejected write changes nothing.
+//! assert!(config.parse_and_set_command("tabstop=99").is_err());
+//! assert_eq!(*config.get_typed::<Tabstop>().unwrap(), 2);
+//! ```
+//!
+//! Design: `docs/dev/architecture/typed-configuration.md` (schemas, composite
+//! values), `docs/dev/architecture/config-and-init.md` (when configuration
+//! arrives), `docs/dev/architecture/buffer-local-options.md` (`:setlocal`,
+//! origins), `docs/dev/architecture/mode-architecture.md` §6 (declarations,
+//! layering, groups).
 //!
 //! ## Design (γ — value-on-spec storage)
 //!
-//! Each [`crate::option::Option<T>`] owns its current value behind an
+//! Each [`option::Option<T>`] owns its current value behind an
 //! [`arc_swap::ArcSwap<T>`]. Reads through a typed
 //! [`crate::option::OptionHandle<T>`] are wait-free pointer loads. Writes go
 //! through the registry (typed via `set` / by-name via
@@ -18,11 +86,13 @@
 //!
 //! ## Crate boundary
 //!
-//! The trait + the four primitive impls (`bool`, `i64`, `String`,
-//! plus this crate's `Color` when the foreign-type problem is
-//! sorted) live here. Domain enums (`FoldMethod`, ...) implement
-//! [`OptionType`] from their owning crate, importing the trait
-//! from `lattice-config`.
+//! The trait + the three primitive impls (`bool`, `i64`, `String`)
+//! live here. So do the impls for the `lattice-core` domain enums
+//! (`FoldMethod`, `IndentMethod`, ...): the orphan rule allows a local
+//! trait on a foreign type, and `lattice-core` cannot depend on this
+//! crate. A crate *above* this one that defines its own value type
+//! implements [`OptionType`] itself, importing the trait from
+//! `lattice-config`.
 //!
 //! ## What's NOT here
 //!
@@ -32,10 +102,12 @@
 //!   (`relativenumber` ⇒ `number`, `foldmethod` ⇒ recompute folds,
 //!   `ui.*` ⇒ refresh derived theme styles) in their own
 //!   post-set hook, polling the parsed `:set` form.
-//! - **Renderer-specific options.** Options like `ui.separator` /
-//!   `ui.statusline_active_fg` register from each renderer crate
-//!   through the same `ConfigRegistry::register::<T>(...)` API.
-//!   See `lattice-ui-tui::tui_options` for the TUI's example.
+//! - **Other crates' options.** Options owned elsewhere are declared
+//!   with the same [`options!`] macro in the owning crate and join the
+//!   registry through [`OPTION_DECLS`] at boot — e.g. the `ui.separator`
+//!   / `ui.statusline_*_fg` family in `lattice_host::ui::theme_options`.
+//!   Runtime-only options (plugins) use [`ConfigRegistry::register`].
+//!
 //! ## Event-bus integration (DESIGN.md §5.10 + §5.12)
 //!
 //! The registry optionally publishes [`lattice_protocol::Event::OptionChanged`]
@@ -55,6 +127,8 @@
 //!
 //! Events do NOT fire on `:set foo?` (Query) or on validation /
 //! parse failures.
+
+#![warn(missing_docs)]
 
 // Allow this crate to refer to itself by name. The
 // `lattice-config-macros` proc macros emit code that

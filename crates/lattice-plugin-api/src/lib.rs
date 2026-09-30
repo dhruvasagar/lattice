@@ -1,4 +1,5 @@
-//! Plugin-API introspection catalog (PI.1).
+//! The plugin-API catalog: the `wit/` package parsed at build time into typed
+//! data, and the reference, JSON and agent bundle rendered from it (PI.1).
 //!
 //! The `wit/` package at the workspace root IS the canonical plugin API
 //! (plugin-host.md §5). This crate exposes a [`PluginApiCatalog`] *derived from

@@ -51,7 +51,9 @@ fi
 </style></head><body>
 <h1>Lattice — Rust API</h1>
 <p>rustdoc for every crate in the workspace, built from <code>main</code>.
-The plugin API — the WIT package plugins build against — has its own
+What each crate is, and how they depend on one another, is on the
+<a href="../dev/foundations/crates/">crate map</a>. The plugin API — the WIT
+package plugins build against — has its own
 <a href="../dev/plugin-api/">reference</a>.</p>
 <ul>
 HTML

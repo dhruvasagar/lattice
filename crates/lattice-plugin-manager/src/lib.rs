@@ -1,4 +1,5 @@
-//! PL8.H.2 — the buffer-backed `:plugins` manager view.
+//! The buffer-backed `:plugins` manager view: `plugins-mode` and the
+//! `:plugins` ex-command (PL8.H.2).
 //!
 //! A pure PROVIDER crate (the `oil` / `lattice-dashboard` shape): it owns
 //! `plugins-mode` (major, read-only) and the `:plugins` ex-command, and reads the

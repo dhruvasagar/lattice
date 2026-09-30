@@ -1,5 +1,5 @@
-//! NOTIF.1a — notifications: telling the user about work that has no
-//! buffer.
+//! Notifications: telling the user about work that has no buffer
+//! (NOTIF.1a).
 //!
 //! Design:
 //! [`../../../docs/dev/architecture/notifications.md`], which defers the

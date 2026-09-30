@@ -1,4 +1,5 @@
-//! Mode foundation: `Mode` trait, registry, lifecycle (M.1).
+//! The mode system's foundation: the `Mode` trait, the mode registry, the
+//! per-buffer set of active modes, and the typed lifecycle events (M.1).
 //!
 //! The major / minor mode system is the primary customization
 //! mechanism per DESIGN.md §5.8 / docs/dev/architecture/mode-architecture.md. This

@@ -49,6 +49,7 @@ title = "Foundations"
 description = "The substrate everything else composes from: modes, keymaps, buffers, the actor seam, configuration."
 [[section.group]]
 docs = [
+  "reference/crates",
   "architecture/mode-architecture",
   "architecture/keymap-architecture",
   "architecture/kind-agnostic-buffers",
@@ -315,6 +316,7 @@ docs = [
 "notes/pickers" = "Picker implementation notes"
 "operations/implementation" = "Implementation ledger"
 "architecture/api-docs" = "How the API docs are generated"
+"reference/crates" = "Crate map"
 "operations/benchmarks" = "Benchmark record"
 "operations/verify" = "Verification checklist"
 "operations/releasing" = "Cutting a release"

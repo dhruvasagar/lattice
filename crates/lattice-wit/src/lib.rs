@@ -1,4 +1,6 @@
-//! WT.1 — lattice's `wit/` API package, as a crate.
+//! The canonical plugin API — lattice's `wit/` package — as a crate, so a
+//! plugin can depend on a named ABI generation instead of a copied directory
+//! (WT.1).
 //!
 //! Design: `docs/dev/architecture/wit-ownership.md`.
 //!

@@ -1,4 +1,5 @@
-//! `lattice-compilation` — native compilation mode (CM.1).
+//! Native compilation mode: runs a build / test / lint command off-thread and
+//! streams its output into a read-only `*compilation*` buffer (CM.1).
 //!
 //! Runs a build/test/lint command off-thread (pipe-captured) and
 //! streams its stdout+stderr into a read-only synthetic

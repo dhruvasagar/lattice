@@ -1,7 +1,8 @@
-//! # `lattice-multibuffer`
+//! Multibuffers: one buffer composed of excerpts from other buffers and
+//! files, and every concern that comes with them.
 //!
-//! M.2.b.1 (2026-05-31): dedicated crate for every multibuffer
-//! concern. Lives outside `lattice-runtime` so that:
+//! A dedicated crate since M.2.b.1 (2026-05-31). Lives outside
+//! `lattice-runtime` so that:
 //!
 //! - The runtime crate stays focused on the actor + handle +
 //!   Document-trait substrate; multibuffer is one specific kind

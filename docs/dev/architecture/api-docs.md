@@ -203,11 +203,20 @@ this design exists to prevent.
 
 ### 3.3 Crate overviews and the crate map
 
-Every crate root carries an overview in a fixed shape: what it owns, what it
-must not depend on and why (the structural boundary — heuristic #6's reason it
-is a crate), its main types, one worked example, and its design fragment. From
-those roots a generated `docs/dev/reference/crates.md` maps the workspace:
-layer, dependencies, summary. A test in `xtask` fails when the map is stale.
+A generated `docs/dev/reference/crates.md` maps the workspace: every crate
+with the first paragraph of its own `//!` overview, its `lattice-*`
+dependencies and dependents, and its layer — the longest dependency chain
+beneath it, so a crate always sits above what it builds on. Only runtime
+dependencies count; dev- and build-dependencies are not the architecture.
+`xtask/tests/crate_map.rs` regenerates / checks it, and requires every crate
+root to open with a paragraph saying what the crate is — in words, not a
+slice ID: the first words are what an index shows, and `PL8.H.2 —` says
+nothing to a reader who was not there.
+
+The fuller overview shape — what the crate owns, what it must not depend on
+and why (heuristic #6's structural reason it is a crate), its main types, a
+worked example, its design fragment — lands crate by crate with the
+coverage opt-in (§3.1), not as a workspace-wide rewrite.
 
 ### 3.4 Publishing
 

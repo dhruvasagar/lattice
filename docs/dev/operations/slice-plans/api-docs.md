@@ -45,7 +45,7 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 | Slice | What | Status |
 |---|---|---|
 | **AD.8** | Publish rustdoc at `/api/`; `scripts/doc-coverage.sh` + CI step | ✅ |
-| **AD.9** | Crate-overview shape on every crate root; generated `reference/crates.md` + xtask staleness test | 📝 |
+| **AD.9** | Generated `reference/crates.md` (layers, deps, dependents, summaries) + xtask staleness test; every crate opens with a real summary | ✅ |
 | **AD.10** | `lattice-plugin-sdk` — full docs + examples, opt in | 📝 |
 | **AD.11** | `lattice-keymap` — full docs + examples, opt in | 📝 |
 | **AD.12** | `lattice-core` — full docs + examples, opt in | 📝 |
@@ -111,6 +111,22 @@ already says — became a goal → seam → pattern map, which is judgement the
 reference cannot carry. The manifest example is parsed by the real parser
 (`lattice-plugin-host/tests/documented_manifests_parse.rs`) and its keys
 pinned to `RawManifest`'s (the parser ignores unknown keys).
+
+### AD.9 — crate map (as built)
+
+`xtask/tests/crate_map.rs` generates `docs/dev/reference/crates.md`: 41
+crates in 14 dependency layers, each with its overview's first paragraph,
+its `lattice-*` dependencies and dependents, and a rustdoc link. Published
+first in the Foundations section; linked from `/api/` and `AGENTS.md`.
+
+Scope changed from the plan: "a fixed overview shape on every crate root"
+would have been a 41-crate rewrite with no guard that could check the
+shape's content. Instead the guard checks what the map depends on — every
+root opens with a paragraph saying what the crate is, not a slice ID — and
+the fuller shape moves into the per-crate slices (AD.10+). Ten openings
+failed that rule (`Phase 5.7: GPUI peer renderer scaffold` — stale as well
+as opaque, `PO.4 —`, `PL8.H.2 —`, `NOTIF.1a —`, `IM.4 —`, `WT.1 —`, …) and
+were rewritten from what each overview already said, IDs kept at the end.
 
 ### AD.8 — rustdoc + the coverage ratchet (as built)
 

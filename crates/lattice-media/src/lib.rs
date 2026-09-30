@@ -1,4 +1,5 @@
-//! IM.4 — resolving an inline media block's pixels, off the UI thread.
+//! Inline media: resolving an image block's pixels off the UI thread, so the
+//! renderer only ever paints decoded pixels or a placeholder (IM.4).
 //!
 //! Design: `docs/dev/architecture/inline-media.md` §5.
 //!

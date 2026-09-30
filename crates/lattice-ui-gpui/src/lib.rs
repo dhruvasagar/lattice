@@ -1,4 +1,7 @@
-//! Phase 5.7: GPUI peer renderer scaffold for lattice.
+//! The GPUI renderer: lattice's windowed, GPU-accelerated front end, a peer
+//! of the terminal renderer (`lattice-ui-tui`) over the same `lattice-host`
+//! editor substrate (Phase 5.7). The real window needs the `window` feature,
+//! which `lattice-cli` turns on under its `gui` feature.
 //!
 //! Design anchor: `docs/dev/architecture/design.md` §5.6 (rendering
 //! layered architecture) + `docs/dev/architecture/phase-5-extraction.md`

@@ -1,4 +1,5 @@
-//! PO.4 — the buffer-backed plugin boundary-trace views.
+//! The buffer-backed plugin boundary-trace views: `plugin-trace-mode` and the
+//! `:plugin-trace` ex-command (PO.4).
 //!
 //! A pure PROVIDER crate (the `lattice-plugin-manager` shape): it owns
 //! `plugin-trace-mode` (major, read-only) + the `:plugin-trace` ex-command, and

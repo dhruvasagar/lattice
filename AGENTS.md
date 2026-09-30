@@ -29,7 +29,11 @@ under `docs/`.
   [patterns guide](docs/dev/guides/plugin-patterns.md). The four bundled
   plugins in [`plugins/`](plugins/) are complete, CI-built templates.
 - **Rust API** (the crates): each crate's root module (`src/lib.rs`) carries
-  its overview; `cargo doc -p <crate> --no-deps --open` renders it.
+  its overview; `cargo doc -p <crate> --no-deps --open` renders it, and the
+  whole workspace is published at <https://dhruvasagar.github.io/lattice/api/>.
+  A crate with `#![warn(missing_docs)]` in its `lib.rs` has opted in to the
+  documentation ratchet: `scripts/doc-coverage.sh` (run in CI) fails on an
+  undocumented public item or a broken intra-doc link in it.
 
 ## Building and verifying
 

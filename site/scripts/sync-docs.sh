@@ -594,6 +594,12 @@ def write_agent_files(sections, meta, labels, dev_sections, page_section,
                 out.append(f'- [{dev_labels.get(key, title)}]({base}{mirror_md(rel)})')
         out.append('')
 
+    # llmstxt.org's `Optional` section: skippable context. rustdoc is HTML
+    # built for people browsing a crate, so it goes here rather than first.
+    out += ['## Optional', '',
+            f'- [Rust API (rustdoc)]({base}/api/): every workspace crate, built '
+            'from `main`; for editor contributors, not plugin authors', '']
+
     with open(os.path.join(site_dir, 'static', 'llms.txt'), 'w', encoding='utf-8') as fh:
         fh.write('\n'.join(out).rstrip() + '\n')
 

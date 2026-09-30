@@ -17,6 +17,8 @@ use crate::{
     PluginApiCatalog,
 };
 
+/// A seam's [`Direction`] as a phrase for prose: "guest implements this
+/// interface". Used by the reference pages and `:describe-plugin-api`.
 pub fn direction_prose(d: Direction) -> &'static str {
     match d {
         Direction::GuestExport => "guest implements this interface",
@@ -26,6 +28,8 @@ pub fn direction_prose(d: Direction) -> &'static str {
     }
 }
 
+/// A seam's [`Direction`] as one word for a table cell: `exports`, `imports`,
+/// `both`, `types`.
 pub fn direction_short(d: Direction) -> &'static str {
     match d {
         Direction::GuestExport => "exports",
@@ -35,6 +39,7 @@ pub fn direction_short(d: Direction) -> &'static str {
     }
 }
 
+/// A seam's [`Capability`] as a phrase for prose: `filesystem`, `network`, …
 pub fn capability_prose(c: Capability) -> &'static str {
     match c {
         Capability::Fs => "filesystem",
@@ -44,6 +49,8 @@ pub fn capability_prose(c: Capability) -> &'static str {
     }
 }
 
+/// A seam's [`Capability`] as one token for a table cell: `fs`, `net`,
+/// `proc`, or `-` for none.
 pub fn capability_short(c: Capability) -> &'static str {
     match c {
         Capability::Fs => "fs",

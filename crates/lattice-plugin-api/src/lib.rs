@@ -22,6 +22,8 @@
 //!     parsed interface MUST have an entry (enforced by a test), so a new WIT
 //!     interface forces a deliberate capability decision before it ships.
 
+#![warn(missing_docs)]
+
 use std::sync::OnceLock;
 
 /// The whole plugin-API surface, derived from `wit/`.

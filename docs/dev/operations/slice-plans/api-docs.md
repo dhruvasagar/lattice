@@ -44,7 +44,7 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 
 | Slice | What | Status |
 |---|---|---|
-| **AD.8** | Publish rustdoc at `/api/`; `scripts/doc-coverage.sh` + CI step | 📝 |
+| **AD.8** | Publish rustdoc at `/api/`; `scripts/doc-coverage.sh` + CI step | ✅ |
 | **AD.9** | Crate-overview shape on every crate root; generated `reference/crates.md` + xtask staleness test | 📝 |
 | **AD.10** | `lattice-plugin-sdk` — full docs + examples, opt in | 📝 |
 | **AD.11** | `lattice-keymap` — full docs + examples, opt in | 📝 |
@@ -111,6 +111,23 @@ already says — became a goal → seam → pattern map, which is judgement the
 reference cannot carry. The manifest example is parsed by the real parser
 (`lattice-plugin-host/tests/documented_manifests_parse.rs`) and its keys
 pinned to `RawManifest`'s (the parser ignores unknown keys).
+
+### AD.8 — rustdoc + the coverage ratchet (as built)
+
+`deploy-docs.yml` builds `cargo doc --no-deps --workspace` on pushes (not
+PRs — `ci.yml`'s `doc` job already builds it per PR) and
+`site/scripts/publish-rustdoc.sh` copies it to `/api/` with a crate index
+(stable rustdoc has no workspace landing page).
+
+`scripts/doc-coverage.sh`, run by `ci.yml`'s `doc` job, discovers opted-in
+crates from their `#![warn(missing_docs)]` attribute. **The first version
+reported "clean" over a crate with four gaps:** a crate's own lint
+attribute outranks a command-line `-D missing_docs`. It now passes
+`--force-warn` (which no attribute can lower), reads rustdoc's JSON
+diagnostics, and fails on `missing_docs` / broken or private intra-doc
+links in the opted-in crates; cached builds replay the diagnostics, so a
+warm run is as strict as a cold one (verified). `lattice-plugin-api` is
+the first crate opted in, its four undocumented render helpers documented.
 
 ### AD.7 — agent layer (as built)
 

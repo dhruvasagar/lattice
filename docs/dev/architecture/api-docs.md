@@ -179,7 +179,10 @@ renaming a WIT function breaks the guide's test, not its reader.
 A crate opts in with `#![warn(missing_docs)]` at its root once every public
 item is documented. `scripts/doc-coverage.sh` finds opted-in crates by that
 attribute (there is no second list to drift) and fails CI on any
-`missing documentation` or unresolved intra-doc-link warning in them.
+`missing documentation` or unresolved intra-doc-link warning in them. It
+reads rustdoc's JSON diagnostics under `--force-warn` rather than passing
+`-D missing_docs`: the crate's own `#![warn]` outranks a command-line `-D`,
+so the naive form reports clean over a crate full of gaps.
 `precommit.sh` already treats a rustc warning in a touched crate as a failure,
 so the local loop catches it first.
 

@@ -173,6 +173,14 @@ jobs:
         # couldn't catch before, doc-list-item indentation, ...)
         # that shouldn't fail a build on a toolchain bump.
         run: cargo doc --no-deps --workspace --locked
+      - name: doc coverage (opted-in crates)
+        # The one place rustdoc findings DO fail the build: crates that opted
+        # in with `#![warn(missing_docs)]` must have no undocumented public
+        # item and no broken intra-doc link. Scoped to those crates on
+        # purpose, so a toolchain bump's new lints elsewhere cannot fail CI —
+        # the concern the step above is written around. See
+        # scripts/doc-coverage.sh and docs/dev/architecture/api-docs.md §3.1.
+        run: scripts/doc-coverage.sh
 
   bench-compile:
     name: bench-compile (${{ matrix.os }})

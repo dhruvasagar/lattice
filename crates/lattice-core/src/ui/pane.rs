@@ -29,8 +29,8 @@ use lattice_protocol::position::Position;
 use crate::{BufferId, BufferKind};
 
 crate::labeled_enum! {
-    /// ZP.4: `:set pane.zoom-indicator=...` — where the zoom marker
-    /// shows while a pane is zoomed (`<C-w>z`).
+    /// `:set pane.zoom-indicator=...` — where the zoom marker shows while
+    /// a pane is zoomed (`<C-w>z`). Introduced in ZP.4.
     ///
     /// One option rather than a boolean per surface: zoom-indication
     /// is one user concept, and splitting it across the `modeline`
@@ -67,13 +67,15 @@ impl ZoomIndicator {
     }
 }
 
-/// ZP.4: the zoom marker itself. A plain `Z`, after tmux's
+/// The zoom marker itself. A plain `Z`, after tmux's
 /// window-status flag.
 ///
 /// Deliberately not a Nerd Font glyph: the icon-degradation rule
 /// requires both palettes to occupy the same cell width, and one
 /// ASCII character satisfies that in every terminal font without a
 /// second palette to keep in sync.
+///
+/// Slice: ZP.4.
 pub const ZOOM_MARKER: &str = "Z";
 
 /// Process-monotonic pane id. Distinct from [`BufferId`]: a pane
@@ -83,13 +85,15 @@ pub const ZOOM_MARKER: &str = "Z";
 pub struct PaneId(pub u32);
 
 impl PaneId {
+    /// Mint a fresh id from a process-wide counter starting at 1, so
+    /// `PaneId::default()` (0) never names a real pane. Thread-safe.
     pub fn next() -> Self {
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(1);
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// PU.1b-3: reserved synthetic id for the floating-popup
+    /// Reserved synthetic id for the floating-popup
     /// "pane". The floating help popup is an overlay, not a pane-tree
     /// leaf, so the cells worker has no leaf to key its `DisplayMatrix`
     /// on. `build_cells_panes` registers the popup buffer under this
@@ -97,18 +101,22 @@ impl PaneId {
     /// `compose_pane_lines` reading a real matrix (Fork 1, popup
     /// unification). `next()` allocates from 1 upward and never reaches
     /// `u32::MAX`, so the sentinel can never collide with a real leaf.
+    ///
+    /// Slice: PU.1b-3.
     pub const POPUP: Self = Self(u32::MAX);
 
-    /// PU.5: reserved synthetic id for the Insert-mode completion-docs
+    /// Reserved synthetic id for the Insert-mode completion-docs
     /// side popup — a SECOND simultaneous overlay (it coexists with the
     /// candidate list and, if open, the floating [`Self::POPUP`]). Like
     /// `POPUP` it is not a pane-tree leaf, so `build_cells_panes`
     /// registers its ephemeral backing buffer under this sentinel so the
     /// docs content routes through the same `compose_pane_lines` seam.
     /// `u32::MAX - 1` — still far above any `next()`-allocated leaf.
+    ///
+    /// Slice: PU.5.
     pub const COMPLETION_DOCS: Self = Self(u32::MAX - 1);
 
-    /// WK.12: reserved synthetic id for the minibuffer BAND — the advisory
+    /// Reserved synthetic id for the minibuffer BAND — the advisory
     /// surface below all panes (which-key's grid). A THIRD simultaneous
     /// overlay: it coexists with [`Self::POPUP`] by design, which is the whole
     /// point of the band. A popup and a band are different mechanisms — the
@@ -116,11 +124,14 @@ impl PaneId {
     /// band is advisory and timer-driven — so sharing one slot meant the band
     /// evicted whatever the user had open. `u32::MAX - 2`, still far above any
     /// `next()`-allocated leaf.
+    ///
+    /// Slice: WK.12.
     pub const MINIBUFFER_BAND: Self = Self(u32::MAX - 2);
 }
 
-/// D.4.a (2026-05-29): process-monotonic id for a scroll-binding
-/// [`crate::ui::pane::PaneGroup`]-equivalent registry entry. The
+/// Process-monotonic id for a scroll-binding pane group (slice D.4.a,
+/// 2026-05-29) — a set of panes whose scrolling is linked, such as the two
+/// sides of a diff. The
 /// `PaneGroup` struct itself lives in `lattice-host` (the trait
 /// underneath it needs host-side state); the id is hoisted into
 /// `lattice-core` so `lattice-core`-level code can hold and pass
@@ -131,6 +142,8 @@ impl PaneId {
 pub struct PaneGroupId(pub u32);
 
 impl PaneGroupId {
+    /// Mint a fresh id from a process-wide counter starting at 1, so
+    /// `PaneGroupId::default()` (0) never names a real group.
     pub fn next() -> Self {
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(1);
@@ -138,7 +151,7 @@ impl PaneGroupId {
     }
 }
 
-/// D.4.a: pluggable row-mapping function for a pane group.
+/// Pluggable row-mapping function for a pane group (slice D.4.a).
 ///
 /// Indices are positions in the host `PaneGroup::members` vector
 /// (stable across pane re-ordering). Mappers consult their own state to
@@ -153,6 +166,10 @@ impl PaneGroupId {
 /// re-exports this trait so existing `crate::pane_group::RowMapper` call
 /// sites are unchanged.
 pub trait RowMapper: Send + Sync {
+    /// Translate `row` (a 0-based line) in the group member at
+    /// `from_member_idx` to the corresponding line in the member at
+    /// `to_member_idx` — e.g. the matching line on the other side of a
+    /// diff. Must be total: return a best-effort row rather than panic.
     fn map_row(&self, from_member_idx: usize, to_member_idx: usize, row: u32) -> u32;
 }
 
@@ -162,8 +179,14 @@ pub trait RowMapper: Send + Sync {
 /// stays unchanged.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PaneState {
+    /// This pane's stable identity. Survives splits, closes of other
+    /// panes and zoom; leaf *indices* do not.
     pub id: PaneId,
+    /// Kind of the buffer shown, cached alongside `buffer_id` so layout
+    /// code can read it without a registry lookup.
     pub buffer: BufferKind,
+    /// The buffer this pane displays (on a published preview projection,
+    /// the *previewed* buffer — see `committed_buffer_id`).
     pub buffer_id: BufferId,
     /// Cursor inside the buffer. Loaded into `App::cursor` when the
     /// pane becomes active; stashed back here when the pane goes
@@ -195,7 +218,7 @@ pub struct PaneState {
     /// the same per-frame layout pass that populates
     /// `viewport_height`.
     pub viewport_width: u32,
-    /// PI.1 (preview isolation): when this leaf is a **published render
+    /// When this leaf is a **published render
     /// projection** of a pane that is currently *previewing* another
     /// buffer, the `buffer_id` / `buffer` / `cursor` / `scroll` fields
     /// above hold the DISPLAYED (previewed) buffer + its preview
@@ -209,8 +232,10 @@ pub struct PaneState {
     /// baked into the leaves only when the render state is published
     /// (`build_render_state`). Ephemeral: never persisted, never
     /// snapshotted. See `docs/dev/architecture/preview-isolation.md` §5.
+    ///
+    /// Slice: PI.1 (preview isolation).
     pub committed_buffer_id: Option<BufferId>,
-    /// VM.3j-3: this WINDOW's `scroll` — how far `<C-d>` / `<C-u>` move, set
+    /// This WINDOW's `scroll` — how far `<C-d>` / `<C-u>` move, set
     /// by a count to either key. `None` means "this window has none", and the
     /// distance falls back to the `scroll` option, then to half the window.
     ///
@@ -222,21 +247,27 @@ pub struct PaneState {
     ///
     /// Cleared when the window is resized, as vim resets it to half the new
     /// height.
+    ///
+    /// Slice: VM.3j-3.
     pub scroll_lines: Option<u32>,
 }
 
 impl PaneState {
-    /// PI.1: is this published leaf a preview projection (displaying a
+    /// Is this published leaf a preview projection (displaying a
     /// buffer other than the one it is committed to)?
+    ///
+    /// Slice: PI.1.
     pub fn is_previewing(&self) -> bool {
         self.committed_buffer_id.is_some()
     }
 
-    /// PI.1: the buffer a real switch / accept commits and that `:ls`,
+    /// The buffer a real switch / accept commits and that `:ls`,
     /// the modeline, and the per-pane status line report. Equals
     /// [`Self::buffer_id`] except on a published preview projection,
     /// where `buffer_id` is the *displayed* buffer and this is the
     /// committed one.
+    ///
+    /// Slice: PI.1.
     pub fn committed_id(&self) -> BufferId {
         self.committed_buffer_id.unwrap_or(self.buffer_id)
     }
@@ -244,8 +275,9 @@ impl PaneState {
 
 /// Internal node of the pane tree. Leaves reference a `PaneState`
 /// by index in [`PaneTree::leaves`]; splits hold two children with
-/// an explicit orientation. The split ratio is split-time evenly
-/// (50/50); resizing is post-1.0.
+/// an explicit orientation and a ratio. New splits start at
+/// [`DEFAULT_SPLIT_RATIO`]; [`PaneTree::resize_active_split`] and
+/// [`PaneTree::equalize_ratios`] adjust them.
 #[derive(Debug, Clone)]
 pub enum PaneNode {
     /// A concrete pane. The `usize` indexes into
@@ -258,8 +290,11 @@ pub enum PaneNode {
     /// resets every ratio to 0.5; `<C-w>+` / `<C-w>-` nudge
     /// the nearest HorizontalSplit ancestor's ratio.
     HorizontalSplit {
+        /// The upper child.
         top: Box<PaneNode>,
+        /// The lower child.
         bottom: Box<PaneNode>,
+        /// `top`'s share of the height, in `0.0..=1.0`.
         ratio: f32,
     },
     /// Two panes side by side left + right (a vertical cut).
@@ -267,8 +302,11 @@ pub enum PaneNode {
     /// `<C-w>>` / `<C-w><` nudge the nearest VerticalSplit
     /// ancestor's ratio.
     VerticalSplit {
+        /// The left child.
         left: Box<PaneNode>,
+        /// The right child.
         right: Box<PaneNode>,
+        /// `left`'s share of the width, in `0.0..=1.0`.
         ratio: f32,
     },
 }
@@ -279,6 +317,7 @@ pub const DEFAULT_SPLIT_RATIO: f32 = 0.5;
 /// collapse to zero. Matches vim's `window_min_height`
 /// philosophy.
 pub const MIN_SPLIT_RATIO: f32 = 0.05;
+/// Upper clamp bound for a split ratio; see [`MIN_SPLIT_RATIO`].
 pub const MAX_SPLIT_RATIO: f32 = 0.95;
 
 /// Manual `Default` (tuple variants can't use `#[default]`).
@@ -420,9 +459,13 @@ pub enum OpenTarget {
 /// for ergonomic access from `AppEffect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PaneDirection {
+    /// `<C-w>h` — the neighbour to the left.
     Left,
+    /// `<C-w>j` — the neighbour below.
     Down,
+    /// `<C-w>k` — the neighbour above.
     Up,
+    /// `<C-w>l` — the neighbour to the right.
     Right,
 }
 
@@ -431,6 +474,38 @@ pub enum PaneDirection {
 /// arbitrary recursive splits; the sole constraint is that the
 /// active pane must always exist (closing the last pane is a
 /// no-op so the App is never "paneless").
+///
+/// Leaves are addressed two ways: by **index** into [`Self::leaves`]
+/// (what [`PaneNode::Leaf`] and most methods use — not stable across
+/// [`Self::close_active`]) and by [`PaneId`] (stable; resolve with
+/// [`Self::index_of`]).
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::ui::pane::{PaneRect, PaneState, PaneTree, SplitOrientation};
+///
+/// let mut tree = PaneTree::single(PaneState::default());
+/// let right = tree.split_active(SplitOrientation::Vertical); // `<C-w>v`
+/// assert_eq!(tree.len(), 2);
+/// assert_eq!(tree.active_index(), 0); // focus stays on the original
+///
+/// // An even vertical split of an 80x24 area.
+/// let area = PaneRect { x: 0, y: 0, width: 80, height: 24 };
+/// let rects = tree.compute_rects(area);
+/// assert_eq!(rects[0], (0, PaneRect { x: 0, y: 0, width: 40, height: 24 }));
+/// assert_eq!(rects[1], (right, PaneRect { x: 40, y: 0, width: 40, height: 24 }));
+///
+/// // Zoom (`<C-w>z`) hands the active pane the whole area, non-destructively.
+/// assert!(tree.toggle_zoom());
+/// assert_eq!(tree.compute_rects(area), [(0, area)]);
+/// assert!(tree.toggle_zoom());
+/// assert_eq!(tree.compute_rects(area).len(), 2);
+///
+/// // Closing the last pane is refused.
+/// assert!(tree.close_active());
+/// assert!(!tree.close_active());
+/// ```
 #[derive(Debug, Clone)]
 pub struct PaneTree {
     /// All leaves currently in the tree, indexed by position. Note:
@@ -487,34 +562,42 @@ impl PaneTree {
         }
     }
 
-    /// ZP.1: the zoomed pane's id, or `None` when the full split
+    /// The zoomed pane's id, or `None` when the full split
     /// layout is showing.
+    ///
+    /// Slice: ZP.1.
     pub fn zoomed(&self) -> Option<PaneId> {
         self.zoomed
     }
 
-    /// ZP.1: whether a pane is currently zoomed. Read by the
+    /// Whether a pane is currently zoomed. Read by the
     /// modeline's `core.zoom` element and the tabline marker.
+    ///
+    /// Slice: ZP.1.
     pub fn is_zoomed(&self) -> bool {
         self.zoomed.is_some()
     }
 
-    /// ZP.1: the zoomed pane's *leaf index*, resolved through
+    /// The zoomed pane's *leaf index*, resolved through
     /// [`Self::index_of`]. `None` when nothing is zoomed, and also
     /// when the recorded id no longer names a live leaf — a state
     /// the enforcement below is meant to prevent, but resolving
     /// rather than trusting means a stale id degrades to "not
     /// zoomed" instead of to a panic on the render path.
+    ///
+    /// Slice: ZP.1.
     pub fn zoomed_index(&self) -> Option<usize> {
         self.zoomed.and_then(|id| self.index_of(id))
     }
 
-    /// ZP.1: toggle zoom on the active pane (`<C-w>z`). Returns
+    /// Toggle zoom on the active pane (`<C-w>z`). Returns
     /// `true` if the zoom state changed.
     ///
     /// A single-leaf tree is a no-op: there is nothing to hide, and
     /// marking it zoomed would light the indicator for a state the
     /// user cannot see.
+    ///
+    /// Slice: ZP.1.
     pub fn toggle_zoom(&mut self) -> bool {
         if self.zoomed.is_some() {
             self.zoomed = None;
@@ -527,41 +610,56 @@ impl PaneTree {
         true
     }
 
-    /// ZP.1: drop zoom unconditionally. Returns `true` if it was
+    /// Drop zoom unconditionally. Returns `true` if it was
     /// set. Called by every mutation that would otherwise break the
     /// zoomed-is-active invariant.
+    ///
+    /// Slice: ZP.1.
     pub fn clear_zoom(&mut self) -> bool {
         self.zoomed.take().is_some()
     }
 
+    /// The layout root, ignoring zoom. Renderers that recurse over the
+    /// tree should use [`Self::render_root`] instead.
     pub fn root(&self) -> &PaneNode {
         &self.root
     }
 
+    /// Every pane, in leaf-index order (the indices [`PaneNode::Leaf`]
+    /// holds). Never empty.
     pub fn leaves(&self) -> &[PaneState] {
         &self.leaves
     }
 
+    /// Mutable access to every pane's state (cursor, scroll, viewport
+    /// size…). The slice cannot grow or shrink, so the tree shape stays
+    /// consistent.
     pub fn leaves_mut(&mut self) -> &mut [PaneState] {
         &mut self.leaves
     }
 
+    /// Number of panes. Always at least 1.
     pub fn len(&self) -> usize {
         self.leaves.len()
     }
 
+    /// Always `false` — a tree is never paneless. Present for the
+    /// `len`/`is_empty` convention.
     pub fn is_empty(&self) -> bool {
         self.leaves.is_empty()
     }
 
+    /// Leaf index of the focused pane.
     pub fn active_index(&self) -> usize {
         self.active
     }
 
+    /// The focused pane's state.
     pub fn active(&self) -> &PaneState {
         &self.leaves[self.active]
     }
 
+    /// The focused pane's state, mutably.
     pub fn active_mut(&mut self) -> &mut PaneState {
         &mut self.leaves[self.active]
     }
@@ -676,11 +774,13 @@ impl PaneTree {
         true
     }
 
-    /// Issue #28 (2026-05-22): walk the tree and reset every
+    /// Walk the tree and reset every
     /// split's ratio to [`DEFAULT_SPLIT_RATIO`] (0.5). Vim's
     /// `<C-w>=`. Returns `true` if any ratio actually changed,
     /// so the renderer can skip the publish when there's
     /// nothing to do.
+    ///
+    /// Slice: Issue #28 (2026-05-22).
     pub fn equalize_ratios(&mut self) -> bool {
         // ZP.1: ratios describe a layout that is not on screen while
         // zoomed. Silently rewriting it would surprise the user on
@@ -693,7 +793,7 @@ impl PaneTree {
         equalize_recursive(&mut self.root)
     }
 
-    /// Issue #28: adjust the ratio of the nearest split-of-the-
+    /// Adjust the ratio of the nearest split-of-the-
     /// requested-orientation containing the active pane. Vim's
     /// `<C-w>+` / `<C-w>-` (HorizontalSplit) / `<C-w>>` /
     /// `<C-w><` (VerticalSplit). `delta` is added to the
@@ -705,6 +805,8 @@ impl PaneTree {
     /// `top` (or `left`) child, growing means increasing the
     /// ratio (top/left gets bigger). If active is in `bottom`
     /// (or `right`), growing means DECREASING the ratio.
+    ///
+    /// Slice: Issue #28.
     pub fn resize_active_split(&mut self, orientation: SplitOrientation, delta: f32) -> bool {
         // ZP.1: same reasoning as `equalize_ratios` — no silent
         // reshaping of a layout the user cannot see.
@@ -847,8 +949,10 @@ impl PaneTree {
 
     /// Compute the rectangle each leaf occupies inside `area`. The
     /// renderer + navigation use this to lay out / find spatial
-    /// neighbours. Splits are evenly divided -- arbitrary ratios
-    /// are post-1.0.
+    /// neighbours. Each split divides its area by its `ratio`
+    /// (rounded to whole cells). Under zoom, only the zoomed pane is
+    /// returned, with the whole `area`. Entries are `(leaf index, rect)`
+    /// in depth-first, top-to-bottom / left-to-right order.
     pub fn compute_rects(&self, area: PaneRect) -> Vec<(usize, PaneRect)> {
         // ZP.1: zoom is one branch at the head of the single
         // canonical layout function, so every consumer inherits it
@@ -865,7 +969,7 @@ impl PaneTree {
         self.compute_rects_layout(area)
     }
 
-    /// ZP.3: the node a renderer should paint — the zoomed leaf when
+    /// The node a renderer should paint — the zoomed leaf when
     /// zoomed, otherwise the real root.
     ///
     /// For renderers that recurse over [`PaneNode`] themselves rather
@@ -877,6 +981,8 @@ impl PaneTree {
     ///
     /// Allocation-free in both arms: borrowed for the real root, and
     /// the owned arm is a bare `Leaf(usize)` with no boxed children.
+    ///
+    /// Slice: ZP.3.
     pub fn render_root(&self) -> std::borrow::Cow<'_, PaneNode> {
         match self.zoomed_index() {
             Some(idx) => std::borrow::Cow::Owned(PaneNode::Leaf(idx)),
@@ -884,7 +990,7 @@ impl PaneTree {
         }
     }
 
-    /// ZP.1: the always-unzoomed peer of [`Self::compute_rects`] —
+    /// The always-unzoomed peer of [`Self::compute_rects`] —
     /// the full split layout, whatever the zoom state.
     ///
     /// One caller: [`Self::navigate`]. Cardinal navigation has to
@@ -893,6 +999,8 @@ impl PaneTree {
     /// zoom-aware view instead would hand it a one-entry list, no
     /// neighbour would be found in any direction, and `<C-w>j` while
     /// zoomed would silently do nothing.
+    ///
+    /// Slice: ZP.1.
     pub fn compute_rects_layout(&self, area: PaneRect) -> Vec<(usize, PaneRect)> {
         let mut out = Vec::with_capacity(self.leaves.len());
         compute_rects_recursive(&self.root, area, &mut out);
@@ -1058,9 +1166,13 @@ fn rewrite_indices_after_remove(node: &mut PaneNode, removed_idx: usize) {
 /// the layout routines without an extra conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneRect {
+    /// Left edge, in cells from the screen's left.
     pub x: u16,
+    /// Top edge, in cells from the screen's top.
     pub y: u16,
+    /// Width in cells.
     pub width: u16,
+    /// Height in cells.
     pub height: u16,
 }
 

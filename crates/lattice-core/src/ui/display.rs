@@ -55,10 +55,15 @@ pub enum BufferDisplay {
 }
 
 impl BufferDisplay {
+    /// Focused popup centred in the frame.
     pub const POPUP_CENTERED: Self = Self::Popup(PopupPlacement::Centered);
+    /// Focused popup anchored at the cursor.
     pub const POPUP_CURSOR: Self = Self::Popup(PopupPlacement::CursorAnchored);
+    /// Unfocused hover-style popup anchored at the cursor.
     pub const FLOATING_CURSOR: Self = Self::FloatingPopup(PopupPlacement::CursorAnchored);
+    /// New pane below the active one (vim `:split`).
     pub const SPLIT_HORIZONTAL: Self = Self::Split(SplitOrientation::Horizontal);
+    /// New pane beside the active one (vim `:vsplit`).
     pub const SPLIT_VERTICAL: Self = Self::Split(SplitOrientation::Vertical);
 }
 
@@ -156,6 +161,7 @@ crate::labeled_enum! {
         /// Accepts `popup` as an alias of `popup-centered`.
         PopupCentered = "popup-centered" | "popup"
             => "Centred focused popup (focus moves into the popup)",
+        /// Focused popup anchored at the cursor.
         PopupCursor = "popup-cursor"
             => "Cursor-anchored focused popup",
         /// Doc keeps focus, popup auto-dismisses on cursor
@@ -163,10 +169,14 @@ crate::labeled_enum! {
         /// short alias.
         FloatingCursor = "floating-cursor" | "floating"
             => "Cursor-anchored floating popup (auto-dismisses on cursor motion)",
+        /// Swap the buffer into the active pane. Alias `pane`.
         ActivePane = "active-pane" | "pane"
             => "Replace the active pane's buffer",
+        /// Horizontal split (new pane below). Aliases `split`,
+        /// `split-horizontal`.
         SplitHorizontal = "split-h" | "split" | "split-horizontal"
             => "Horizontal split alongside the active pane",
+        /// Vertical split (new pane beside). Alias `split-vertical`.
         SplitVertical = "split-v" | "split-vertical"
             => "Vertical split alongside the active pane",
     }
@@ -177,6 +187,27 @@ impl BufferDisplayPreference {
     /// `category`. `Default` falls through to
     /// [`default_display`]; any explicit variant returns its
     /// fixed shape.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_core::ui::display::{
+    ///     BufferDisplay, BufferDisplayCategory, BufferDisplayPreference,
+    /// };
+    ///
+    /// // No override: hover keeps its built-in floating popup.
+    /// assert_eq!(
+    ///     BufferDisplayPreference::Default.resolve(BufferDisplayCategory::Hover),
+    ///     BufferDisplay::FLOATING_CURSOR,
+    /// );
+    /// // `:set lsp.log.display=split` — the alias parses, then resolves.
+    /// let pref = BufferDisplayPreference::parse_label("split")
+    ///     .unwrap_or_default();
+    /// assert_eq!(
+    ///     pref.resolve(BufferDisplayCategory::LspLog),
+    ///     BufferDisplay::SPLIT_HORIZONTAL,
+    /// );
+    /// ```
     pub fn resolve(self, category: BufferDisplayCategory) -> BufferDisplay {
         match self {
             Self::Default => default_display(category),

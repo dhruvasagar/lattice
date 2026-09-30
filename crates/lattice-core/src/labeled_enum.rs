@@ -18,7 +18,7 @@
 //!
 //! ## Syntax
 //!
-//! ```ignore
+//! ```
 //! use lattice_core::labeled_enum;
 //!
 //! labeled_enum! {
@@ -34,6 +34,11 @@
 //!         Markdown = "markdown" => "Fold by markdown headings",
 //!     }
 //! }
+//!
+//! assert_eq!(FoldMethod::default(), FoldMethod::Manual);
+//! assert_eq!(FoldMethod::Indent.label(), "indent");
+//! assert_eq!(FoldMethod::parse_label("markdown"), Ok(FoldMethod::Markdown));
+//! assert_eq!(FoldMethod::all().len(), 3);
 //! ```
 //!
 //! ### Aliases
@@ -41,15 +46,34 @@
 //! A variant can accept multiple parse forms; the first is the
 //! canonical label, the rest are aliases:
 //!
-//! ```ignore
+//! ```
+//! # use lattice_core::labeled_enum;
 //! labeled_enum! {
-//!     pub enum BufferDisplayPreference {
+//!     /// Where a produced buffer is displayed.
+//!     pub enum Placement {
+//!         /// Built-in default.
 //!         #[default]
 //!         Default = "default" => "Use the category's built-in default",
+//!         /// Centred popup.
 //!         PopupCentered = "popup-centered" | "popup" => "Centred focused popup",
-//!         FloatingCursor = "floating-cursor" | "floating" => "...",
+//!         /// Hover-style popup.
+//!         FloatingCursor = "floating-cursor" | "floating" => "Floating popup",
 //!     }
 //! }
+//!
+//! // The alias parses to the same variant …
+//! assert_eq!(Placement::parse_label("popup"), Ok(Placement::PopupCentered));
+//! // … but only canonical labels are enumerated and echoed.
+//! assert_eq!(Placement::PopupCentered.label(), "popup-centered");
+//! assert_eq!(
+//!     Placement::all().iter().map(|p| p.label()).collect::<Vec<_>>(),
+//!     ["default", "popup-centered", "floating-cursor"],
+//! );
+//! // Unknown input lists the canonical forms.
+//! assert_eq!(
+//!     Placement::parse_label("pop"),
+//!     Err("expected `default`, `popup-centered`, or `floating-cursor`, got `pop`".to_string()),
+//! );
 //! ```
 //!
 //! Aliases parse to the same variant but DON'T appear in `all()` /
@@ -62,14 +86,56 @@
 //! extra derives by stacking `#[derive(...)]` attributes BEFORE
 //! `pub enum`:
 //!
-//! ```ignore
-//! labeled_enum! {
-//!     #[derive(Hash)]
-//!     pub enum LogLevel { ... }
-//! }
 //! ```
+//! # use lattice_core::labeled_enum;
+//! labeled_enum! {
+//!     /// Log verbosity.
+//!     #[derive(Hash)]
+//!     pub enum LogLevel {
+//!         /// Errors only.
+//!         #[default]
+//!         Error = "error" => "Errors only",
+//!         /// Everything.
+//!         Debug = "debug" => "Everything",
+//!     }
+//! }
+//!
+//! let set: std::collections::HashSet<LogLevel> = LogLevel::all().iter().copied().collect();
+//! assert!(set.contains(&LogLevel::Debug));
+//! ```
+//!
+//! Every variant, and the enum itself, should carry a `///` doc: the
+//! macro forwards attributes, so an undocumented variant trips
+//! `missing_docs` in a crate that has opted into it.
 
-/// See module docs.
+/// Declare an option enum whose variants carry a canonical label, optional
+/// parse aliases and a one-line completion doc.
+///
+/// Expands to the enum (deriving `Debug, Clone, Copy, PartialEq, Eq,
+/// Default`) plus inherent `label()`, `doc()`, `all()` and
+/// `parse_label()`. Exactly one variant must be `#[default]`. See the
+/// [module docs](mod@crate::labeled_enum) for syntax, aliases and extra derives.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::labeled_enum;
+///
+/// labeled_enum! {
+///     /// `:set bell=...`.
+///     pub enum Bell {
+///         /// Silent.
+///         #[default]
+///         Off = "off" | "false" => "No bell",
+///         /// Flash the screen.
+///         Visual = "visual" => "Flash instead of beeping",
+///     }
+/// }
+///
+/// assert_eq!(Bell::parse_label("false"), Ok(Bell::Off));
+/// assert_eq!(Bell::Visual.doc(), "Flash instead of beeping");
+/// assert!(Bell::parse_label("loud").is_err());
+/// ```
 #[macro_export]
 macro_rules! labeled_enum {
     (

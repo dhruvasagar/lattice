@@ -63,6 +63,8 @@ impl TabId {
 /// full pane tree here.
 #[derive(Debug, Clone, Default)]
 pub struct TabSlot {
+    /// This tab's stable id, minted by [`TabId::next`] in [`Self::new`].
+    /// `TabSlot::default()` leaves it at `TabId(0)`, the "no tab" value.
     pub id: TabId,
     /// Stashed pane tree. Read AS-IS for inactive tabs. For
     /// the active tab this is a default placeholder; the live

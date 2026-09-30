@@ -1,7 +1,89 @@
-//! Core editor state: buffers, documents, undo, and the dispatcher.
+//! The editor's text model: rope-backed buffers, documents with undo and
+//! dirty tracking, regex search, and the small renderer-neutral vocabularies
+//! (buffer ids and kinds, pane geometry, folds, indent units, project roots)
+//! that every other lattice crate shares.
 //!
 //! This crate owns the actor-protected document model. It is content-type
 //! agnostic; tree-sitter, LSP, plugin, and rendering concerns live elsewhere.
+//! The dispatcher that serialises edits is not here either — it lives in
+//! `lattice-host`; this crate only guarantees each operation is consistent.
+//!
+//! # What it owns
+//!
+//! - **Text and editing.** [`Buffer`] wraps a `ropey::Rope` and applies
+//!   [`protocol::Edit`]s, returning an [`buffer::AppliedEdit`] (inverse +
+//!   tree-sitter delta). [`Document`] adds identity, path, versions,
+//!   selections, the [`UndoStack`] (with insert-session coalescing via
+//!   [`Document::begin_undo_group`]) and dirty tracking. Errors are
+//!   [`CoreError`].
+//! - **Search.** [`search::find`] / [`search::find_all`] stream a compiled
+//!   `fancy_regex::Regex` over the rope without materialising it.
+//! - **Shared vocabularies.** [`BufferId`] / [`BufferKind`] /
+//!   [`BufferFlags`]; the pane tree and its geometry
+//!   ([`ui::pane::PaneTree`]); [`Fold`] / [`FoldMethod`];
+//!   [`IndentUnit`] / [`IndentMethod`]; [`ProviderChain`] for formatting;
+//!   [`AutoWrap`]; the [`labeled_enum!`] macro every enum-typed option is
+//!   declared with.
+//! - **Service seams** for crates that sit below the host:
+//!   [`Clipboard`], [`ProjectResolver`], [`FoldOverlayService`],
+//!   [`ExcerptSourceResolver`], [`ViewArgsResolver`] — traits here,
+//!   implementations wired in at boot.
+//!
+//! # Coordinates
+//!
+//! Every position is a [`protocol::Position`]: a **0-based line** and a
+//! **0-based UTF-8 byte offset within that line** — not a char index and
+//! not a display column. Ranges are half-open `[start, end)`.
+//!
+//! # What it must not depend on
+//!
+//! Nothing above [`lattice_protocol`]: no syntax, grammar, config, mode,
+//! LSP, plugin or renderer crate, and no async runtime. Roughly thirty
+//! crates depend on this one, so any dependency added here is a dependency
+//! of the whole workspace — and one that reaches upward is a cycle. That
+//! is the structural reason it is its own crate: it is the floor. Types
+//! that several upper crates must share without depending on each other
+//! (fold sources, pane-group row mappers, project resolution) are hoisted
+//! *down* to here as data or traits, and implemented above.
+//!
+//! # Example
+//!
+//! ```
+//! use lattice_core::Document;
+//! use lattice_core::protocol::edit::Edit;
+//! use lattice_core::protocol::position::{Position, Range};
+//!
+//! # fn main() -> lattice_core::CoreResult<()> {
+//! let mut doc = Document::from_text("fn main() {}\n");
+//!
+//! // Rename `main` (line 0, bytes 3..7).
+//! let range = Range::new(Position::new(0, 3), Position::new(0, 7));
+//! let applied = doc.apply_edit(Edit::replace(range, "start"))?;
+//! assert_eq!(doc.text(), "fn start() {}\n");
+//! assert_eq!(applied.replaced_text, "main");
+//! assert_eq!(doc.text_version(), 1);
+//!
+//! doc.undo()?;
+//! assert_eq!(doc.text(), "fn main() {}\n");
+//! assert!(!doc.dirty());
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Design documents
+//!
+//! - `docs/dev/architecture/design.md` §5.1 (buffer / document model) and
+//!   §5.9 (everything is a buffer; panes)
+//! - `docs/dev/architecture/owner-write-caret.md` (selection transform
+//!   across edits)
+//! - `docs/dev/architecture/project-resolution.md`,
+//!   `docs/dev/architecture/fold-architecture.md`,
+//!   `docs/dev/architecture/clipboard.md`,
+//!   `docs/dev/architecture/text-reflow.md`,
+//!   `docs/dev/architecture/pane-zoom.md`,
+//!   `docs/dev/architecture/pane-groups.md`
+
+#![warn(missing_docs)]
 
 // `labeled_enum!` lives at the top so its `#[macro_export]` is
 // visible to the modules below that consume it (`folding`,

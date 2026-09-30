@@ -63,7 +63,7 @@ pub enum BufferKind {
     ///
     /// [`Document`]: crate::Document
     Messages,
-    /// M.2.b.1 (2026-05-31): composed view over N source buffers,
+    /// Composed view over N source buffers,
     /// owned by `lattice_multibuffer::MultibufferDocumentHandle`.
     /// Read-only in M.1; edit propagation lands in M.3.
     /// `MultibufferMode` (the major mode registered against this
@@ -71,6 +71,8 @@ pub enum BufferKind {
     /// context Guard, plus the `]e` / `[e` / `]E` / `[E` motion
     /// keymap. See `docs/dev/architecture/multibuffer-views.md`
     /// §3.6.
+    ///
+    /// Slice: M.2.b.1 (2026-05-31).
     Multibuffer,
     /// `*dashboard*` launch page (DB.2, `docs/dev/architecture/dashboard.md`).
     /// Rope-backed like [`Document`]; its major mode (`dashboard-mode`)
@@ -155,7 +157,7 @@ pub struct BufferFlags {
     /// pane close, so this is informational; future cleanup
     /// passes will read it.
     pub hidden: bool,
-    /// PU.5: transient popup-backing buffer. Stronger than
+    /// Transient popup-backing buffer. Stronger than
     /// `listed: false` — an ephemeral buffer is invisible to `:ls`
     /// ENTIRELY (not just shown with a `u` marker like an unlisted
     /// buffer), never appears in `:bn` / `:bp`, and is garbage-
@@ -163,6 +165,8 @@ pub struct BufferFlags {
     /// popups that join the registry to render through the compose
     /// seam (completion docs today; hover/signature already ride the
     /// floating-popup slot). Default `false` (a normal buffer).
+    ///
+    /// Slice: PU.5.
     pub ephemeral: bool,
 }
 

@@ -83,6 +83,9 @@ impl Default for IndentUnit {
 }
 
 impl IndentUnit {
+    /// Build a unit from raw option values: `shiftwidth`, `expandtab`,
+    /// `tabstop`. Zero widths are stored as given and floored to 1 by
+    /// [`Self::step`] / [`Self::tab_width`].
     pub fn new(width: u8, expand_tabs: bool, tabstop: u8) -> Self {
         Self {
             width,

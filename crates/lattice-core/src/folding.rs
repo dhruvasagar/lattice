@@ -43,12 +43,14 @@ crate::labeled_enum! {
         /// sitter provider has nothing to offer.
         Syntax = "syntax"
             => "Folds from the tree-sitter syntax tree",
-        /// 4.4.f: feeds from `textDocument/foldingRange`. Async:
+        /// Feeds from `textDocument/foldingRange`. Async:
         /// the per-tick pump fires the request when the buffer's
         /// document version changes; the response lands in a
         /// per-buffer cache and triggers a recompute. Cascades to
         /// `Syntax` when no attached server advertises the
         /// capability.
+        ///
+        /// Slice: 4.4.f.
         Lsp = "lsp"
             => "Folds from LSP `textDocument/foldingRange`",
     }
@@ -69,43 +71,64 @@ crate::labeled_enum! {
 /// re-export in `lattice-ui-tui::app`.
 #[derive(Debug, Clone, Copy)]
 pub struct Fold {
+    /// First line of the fold, 0-based. Stays visible when the fold is
+    /// closed (it carries the summary).
     pub start_line: u32,
+    /// Last line of the fold, 0-based and **inclusive**. Providers only emit
+    /// folds with `end_line > start_line`.
     pub end_line: u32,
+    /// Whether the fold is collapsed, hiding `start_line + 1 ..= end_line`.
     pub closed: bool,
+    /// Stable identity used to carry `closed` across recomputes; `None` for
+    /// manual folds, whose identity is the line range. See the type docs.
     pub identity: Option<u64>,
 }
 
-/// D.3.f.0: distinguishes mutually-exclusive primary fold sources
+/// Distinguishes mutually-exclusive primary fold sources
 /// (one runs at a time, picked by `:set foldmethod=`) from
 /// additive overlay sources (always compose). See
 /// `docs/dev/architecture/fold-architecture.md` §2.
+///
+/// Slice: D.3.f.0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
+    /// Selected by [`FoldMethod`]; exactly one primary provider feeds a
+    /// buffer at a time.
     Primary,
+    /// Always composed on top of the primary folds (e.g. multibuffer
+    /// excerpt folds), regardless of `foldmethod`.
     Overlay,
 }
 
-/// D.3.f.0: stable identifier for a registered fold provider.
+/// Stable identifier for a registered fold provider.
 /// Two distinct providers must produce distinct ids; a single
 /// provider produces the same id across recomputes. Used by the
 /// registry for lookup and by diagnostics that need to attribute
 /// a fold back to its source.
+///
+/// Slice: D.3.f.0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProviderId(pub u64);
 
-/// M.7: data-only fold source for subsystems that live below
+/// Data-only fold source for subsystems that live below
 /// `lattice-host` (e.g. `ExcerptFoldProvider` in
 /// `lattice-multibuffer`). Implementors cannot depend on
 /// `FoldContext` or `FoldProvider` (both defined in `lattice-host`).
 /// `FoldSourceAdapter` in `lattice-host::fold_provider` wraps any
 /// `FoldSource` as a `FoldProvider` by delegating `compute()` to
 /// `compute_folds` and ignoring `FoldContext`.
+///
+/// Slice: M.7.
 pub trait FoldSource: Send + Sync {
+    /// This source's stable id: the same on every call, and distinct from
+    /// every other registered source's (see [`ProviderId`]).
     fn id(&self) -> ProviderId;
+    /// Produce the current fold ranges. Called by the host on recompute, so
+    /// it should be cheap (read already-computed state; no I/O).
     fn compute_folds(&self) -> Vec<Fold>;
 }
 
-/// M.7: service for registering / deregistering overlay fold sources.
+/// Service for registering / deregistering overlay fold sources.
 /// Implemented by `FoldOverlayServiceImpl` in `lattice-host` (which
 /// wraps `Arc<Mutex<FoldRegistry>>`). Registered in the
 /// `ServiceRegistry` at boot so `MultibufferMode::on_activate` can
@@ -115,12 +138,18 @@ pub trait FoldSource: Send + Sync {
 /// `lattice-host` only calls `compute_folds` when
 /// `FoldContext::buffer_id` matches, so providers from multiple
 /// simultaneous multibuffers don't bleed into each other's views.
+///
+/// Slice: M.7.
 pub trait FoldOverlayService: Send + Sync {
+    /// Register `source` as an overlay provider scoped to `buffer_id` and
+    /// return the id to pass to [`Self::remove_source`] later.
     fn add_source(
         &self,
         source: std::sync::Arc<dyn FoldSource>,
         buffer_id: crate::BufferId,
     ) -> ProviderId;
+    /// Deregister a source added by [`Self::add_source`]. Removing an
+    /// unknown id is a no-op.
     fn remove_source(&self, id: ProviderId);
 }
 

@@ -25,7 +25,7 @@ pub enum PopupPlacement {
     /// Centre over the buffer area.
     #[default]
     Centered,
-    /// WK.5: full width of the active pane, anchored to its bottom
+    /// Full width of the active pane, anchored to its bottom
     /// edge. Which-key's placement.
     ///
     /// Bottom-anchored full-width is what emacs `which-key` and
@@ -36,6 +36,8 @@ pub enum PopupPlacement {
     ///
     /// Height is content + border, hard-capped at half the pane so the
     /// hint can never swallow the buffer it is describing.
+    ///
+    /// Slice: WK.5.
     MinibufferBand,
 }
 

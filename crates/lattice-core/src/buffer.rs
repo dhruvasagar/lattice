@@ -18,6 +18,45 @@ use lattice_protocol::position::{Position, Range};
 
 use crate::error::CoreResult;
 
+/// A rope-backed text buffer: the raw text storage under every
+/// [`Document`](crate::Document).
+///
+/// Addressing is by [`Position`] — a **0-based line** plus a **0-based
+/// UTF-8 byte offset within that line** (not a char or column index).
+/// Every mutation goes through [`Buffer::apply_edit`], which returns an
+/// [`AppliedEdit`] carrying both the inverse (for undo) and the
+/// tree-sitter-shaped [`EditDelta`] (for incremental reparse).
+///
+/// `Buffer` knows nothing about versions, undo, dirtiness or cursors — that
+/// bookkeeping is [`Document`](crate::Document)'s. Reach for `Buffer`
+/// directly only when you need text without the document around it.
+///
+/// Cloning is cheap: `ropey::Rope` shares its chunks by `Arc`.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::Buffer;
+/// use lattice_core::protocol::edit::Edit;
+/// use lattice_core::protocol::position::{Position, Range};
+///
+/// # fn main() -> lattice_core::CoreResult<()> {
+/// let mut buf = Buffer::from_text("hello\nworld\n");
+///
+/// // Replace "world" (line 1, bytes 0..5) with "there".
+/// let range = Range::new(Position::new(1, 0), Position::new(1, 5));
+/// let applied = buf.apply_edit(&Edit::replace(range, "there"))?;
+///
+/// assert_eq!(buf.as_string(), "hello\nthere\n");
+/// assert_eq!(applied.replaced_text, "world"); // what undo re-inserts
+/// assert_eq!(buf.line(1).as_deref(), Some("there"));
+///
+/// // Two lines as a user counts them; ropey counts the empty tail too.
+/// assert_eq!(buf.content_line_count(), 2);
+/// assert_eq!(buf.rope_line_count(), 3);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Buffer {
     rope: Rope,
@@ -38,24 +77,58 @@ pub struct Buffer {
 /// extra rope reads. See [`EditDelta`] for field semantics.
 #[derive(Debug, Clone)]
 pub struct AppliedEdit {
+    /// The range the edit targeted, in pre-edit coordinates (exactly the
+    /// [`Edit::range`] that was applied).
     pub original_range: Range,
+    /// Where the inserted text now sits, in post-edit coordinates: starts at
+    /// `original_range.start` and ends after the last inserted byte. Empty
+    /// for a pure delete.
     pub inserted_range: Range,
+    /// The text the edit removed from `original_range` (empty for a pure
+    /// insert). Replacing `inserted_range` with this text undoes the edit.
     pub replaced_text: String,
+    /// The text the edit placed at `inserted_range` (empty for a pure
+    /// delete).
     pub inserted_text: String,
+    /// Byte offsets and positions of the edit in tree-sitter's
+    /// `InputEdit` shape. Byte offsets are absolute (from the start of the
+    /// buffer) and saturate at `u32::MAX`.
     pub delta: EditDelta,
 }
 
 impl Buffer {
+    /// An empty buffer: zero bytes, one (empty) line.
     pub fn empty() -> Self {
         Self { rope: Rope::new() }
     }
 
+    /// A buffer holding a copy of `text`. No line-ending normalisation is
+    /// done: `\r\n` stays two bytes.
     pub fn from_text(text: &str) -> Self {
         Self {
             rope: Rope::from_str(text),
         }
     }
 
+    /// ropey's raw line count: the number of line *starts*, so a buffer
+    /// ending in `\n` reports one extra (empty) line and an empty buffer
+    /// reports 1. Saturates at `u32::MAX`.
+    ///
+    /// This is the right bound for [`Position::line`] validity — the empty
+    /// line after a trailing newline is addressable (it is where an append
+    /// at end-of-file lands). For "how many lines does this file have", use
+    /// [`Self::content_line_count`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_core::Buffer;
+    ///
+    /// assert_eq!(Buffer::empty().rope_line_count(), 1);
+    /// assert_eq!(Buffer::from_text("a\nb").rope_line_count(), 2);
+    /// assert_eq!(Buffer::from_text("a\nb\n").rope_line_count(), 3);
+    /// assert_eq!(Buffer::from_text("a\nb\n").content_line_count(), 2);
+    /// ```
     pub fn rope_line_count(&self) -> u32 {
         // ropey's `len_lines` counts the trailing implicit empty line for any
         // rope ending in a newline. For an empty rope it returns 1. We surface
@@ -86,10 +159,14 @@ impl Buffer {
         }
     }
 
+    /// Total length of the buffer in bytes, newlines included.
     pub fn byte_len(&self) -> u64 {
         self.rope.len_bytes() as u64
     }
 
+    /// The whole buffer as one `String`. `O(n)` allocation — never call
+    /// this on a per-frame or per-keystroke path; use [`Self::line`],
+    /// [`Self::slice`] or [`Self::to_rope`] instead.
     pub fn as_string(&self) -> String {
         self.rope.to_string()
     }
@@ -104,7 +181,7 @@ impl Buffer {
         &self.rope
     }
 
-    /// D.3.a (2026-05-29): clone the underlying rope. `Rope::clone`
+    /// Clone the underlying rope. `Rope::clone`
     /// is `Arc`-share of the underlying chunks (no deep copy), so
     /// the cost is one refcount bump per chunk. Used by the
     /// diff subsystem's `BufferTextProvider` impl to hand a
@@ -113,6 +190,8 @@ impl Buffer {
     /// only `Rope` (not the internal `Rope` field), so the
     /// abstraction barrier the `pub(crate) rope()` method
     /// protects stays in place.
+    ///
+    /// Slice: D.3.a (2026-05-29).
     pub fn to_rope(&self) -> Rope {
         self.rope.clone()
     }
@@ -142,7 +221,7 @@ impl Buffer {
         })
     }
 
-    /// Allocation-free [`LineShape`]s from `start` to the end of the
+    /// Allocation-free [`LineShape`](crate::indent_blocks::LineShape)s from `start` to the end of the
     /// rope — the indent-guide builder's read path.
     ///
     /// Two properties, and the guide layer needs both:
@@ -196,6 +275,34 @@ impl Buffer {
         u32::try_from(len).unwrap_or(u32::MAX)
     }
 
+    /// Copy the text in the half-open `range` (`[start, end)`).
+    ///
+    /// Both endpoints are validated like [`Self::position_to_byte`] and then
+    /// rounded *down* to a UTF-8 char boundary, so a mid-codepoint offset
+    /// never panics. A range may span lines; the newlines between are
+    /// included.
+    ///
+    /// # Errors
+    ///
+    /// [`ProtocolError::PositionOutOfBounds`] if either endpoint is out of
+    /// bounds, [`ProtocolError::InvalidRange`] if `end` precedes `start`
+    /// (both wrapped in [`CoreError::Protocol`](crate::CoreError::Protocol)).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_core::Buffer;
+    /// use lattice_core::protocol::position::{Position, Range};
+    ///
+    /// let buf = Buffer::from_text("héllo\nworld");
+    /// // "é" is two bytes, so "llo" starts at byte 3.
+    /// let r = Range::new(Position::new(0, 3), Position::new(1, 2));
+    /// assert_eq!(buf.slice(r).ok().as_deref(), Some("llo\nwo"));
+    ///
+    /// // Line 5 does not exist.
+    /// let bad = Range::new(Position::new(0, 0), Position::new(5, 0));
+    /// assert!(buf.slice(bad).is_err());
+    /// ```
     pub fn slice(&self, range: Range) -> CoreResult<String> {
         let start = snap_to_char_boundary(&self.rope, self.position_to_byte(range.start)?);
         let end = snap_to_char_boundary(&self.rope, self.position_to_byte(range.end)?);
@@ -208,6 +315,15 @@ impl Buffer {
     /// Apply an edit and return what was applied. The returned
     /// `AppliedEdit::replaced_text` is exactly what the caller needs to push
     /// onto the undo stack as the inverse.
+    ///
+    /// The range endpoints are validated and snapped down to UTF-8 char
+    /// boundaries exactly as in [`Self::slice`]. On error the buffer is left
+    /// untouched. Note that [`AppliedEdit::original_range`] and the delta's
+    /// positions echo the edit's range *as given*, before snapping.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::slice`]: an out-of-bounds endpoint or `end < start`.
     pub fn apply_edit(&mut self, edit: &Edit) -> CoreResult<AppliedEdit> {
         let start_byte =
             snap_to_char_boundary(&self.rope, self.position_to_byte(edit.range.start)?);
@@ -264,6 +380,33 @@ impl Buffer {
         })
     }
 
+    /// Convert a [`Position`] to an absolute byte offset from the start of
+    /// the buffer.
+    ///
+    /// `pos.line` must be `< rope_line_count()`. `pos.byte` may be anywhere
+    /// up to and **including** the line's full length *with* its trailing
+    /// `\n` — so the offset just past the newline is accepted and equals the
+    /// next line's start. The offset is not snapped to a char boundary.
+    ///
+    /// # Errors
+    ///
+    /// [`ProtocolError::PositionOutOfBounds`] if the line does not exist or
+    /// the byte offset is past the end of the line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_core::Buffer;
+    /// use lattice_core::protocol::position::Position;
+    ///
+    /// let buf = Buffer::from_text("ab\ncd");
+    /// assert_eq!(buf.position_to_byte(Position::new(1, 1)).ok(), Some(4));
+    /// assert!(buf.position_to_byte(Position::new(1, 3)).is_err());
+    /// assert_eq!(
+    ///     buf.byte_to_position(4).ok(),
+    ///     Some(Position::new(1, 1)),
+    /// );
+    /// ```
     pub fn position_to_byte(&self, pos: Position) -> CoreResult<usize> {
         let line_count = self.rope_line_count();
         if pos.line >= line_count {
@@ -290,6 +433,14 @@ impl Buffer {
         Ok(line_start + pos.byte as usize)
     }
 
+    /// Convert an absolute byte offset into a [`Position`] (line + byte
+    /// within that line). The inverse of [`Self::position_to_byte`].
+    ///
+    /// # Panics
+    ///
+    /// Despite the `Result` return type this never returns `Err`: a `byte`
+    /// greater than [`Self::byte_len`] panics inside ropey. Callers pass
+    /// offsets derived from the buffer itself.
     pub fn byte_to_position(&self, byte: usize) -> CoreResult<Position> {
         let line = self.rope.byte_to_line(byte);
         let line_start = self.rope.line_to_byte(line);
@@ -327,6 +478,27 @@ fn snap_to_char_boundary(rope: &Rope, byte: usize) -> usize {
 /// | at or after `original_range.end` | shifted by `inserted_range.end - original_range.end` |
 /// | strictly inside `original_range` | clamped to `inserted_range.end` |
 /// | at `original_range.start` (non-empty range) | stays at `inserted_range.start` |
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::Buffer;
+/// use lattice_core::buffer::transform_position;
+/// use lattice_core::protocol::edit::Edit;
+/// use lattice_core::protocol::position::Position;
+///
+/// # fn main() -> lattice_core::CoreResult<()> {
+/// let mut buf = Buffer::from_text("abc def");
+/// // Insert "XY" at byte 1 of line 0.
+/// let applied = buf.apply_edit(&Edit::insert(Position::new(0, 1), "XY"))?;
+///
+/// // A caret after the insert point shifts right by the inserted length…
+/// assert_eq!(transform_position(Position::new(0, 4), &applied), Position::new(0, 6));
+/// // …one before it does not move.
+/// assert_eq!(transform_position(Position::new(0, 0), &applied), Position::new(0, 0));
+/// # Ok(())
+/// # }
+/// ```
 pub fn transform_position(pos: Position, edit: &AppliedEdit) -> Position {
     let original = edit.original_range;
     let inserted = edit.inserted_range;

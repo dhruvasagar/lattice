@@ -6,13 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 
 [lib]
-# Build-time: this crate has no doc examples, and `cargo test -p <crate>`
-# still compiles + links a doctest binary for it regardless. Measured at
-# ~100s of "merged doctests compilation" on a comparable crate, paid on
-# every test invocation. Turn it back on the moment a `///  ```rust`
-# example lands here — the point is to stop paying for nothing, not to
-# discourage examples.
-doctest = false
+# Doctests are ON: the crate's key entry points (Buffer, Document,
+# UndoStack, search, PaneTree, labeled_enum!, …) carry runnable
+# `# Examples`, and an unverified example is what
+# docs/dev/architecture/api-docs.md §3.2 exists to prevent. The cost —
+# a doctest binary compiled and linked on every `cargo test -p
+# lattice-core` — is accepted for that reason.
+doctest = true
 
 [dependencies]
 # `~` expansion needs a home directory that answers on Windows too

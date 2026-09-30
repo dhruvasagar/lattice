@@ -156,6 +156,8 @@ impl fmt::Display for FormatProvider {
 pub struct ProviderChain(pub Vec<FormatProvider>);
 
 impl ProviderChain {
+    /// A chain trying `providers` in order. An empty vector is a valid
+    /// "this intent does nothing" chain (see [`Self::parse`]).
     pub fn new(providers: Vec<FormatProvider>) -> Self {
         ProviderChain(providers)
     }
@@ -165,14 +167,18 @@ impl ProviderChain {
         ProviderChain(vec![provider])
     }
 
+    /// The providers in resolution order — first available wins.
     pub fn iter(&self) -> std::slice::Iter<'_, FormatProvider> {
         self.0.iter()
     }
 
+    /// Whether the chain names no provider at all (the user switched the
+    /// intent off).
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// Number of providers in the chain.
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -193,6 +199,31 @@ impl ProviderChain {
     /// would leave no way to express that short of a sentinel value.
     /// An empty chain reports "nothing configured" at resolution rather
     /// than falling back to a default the user just removed.
+    ///
+    /// # Errors
+    ///
+    /// A human-readable message for an empty entry (`lsp,,native`) or any
+    /// rung [`FormatProvider::parse`] rejects.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_core::{FormatProvider, ProviderChain};
+    ///
+    /// let chain = ProviderChain::parse("lsp, external:prettier --stdin-filepath %")
+    ///     .unwrap_or_default();
+    /// assert_eq!(
+    ///     chain.iter().cloned().collect::<Vec<_>>(),
+    ///     [
+    ///         FormatProvider::Lsp,
+    ///         FormatProvider::External("prettier --stdin-filepath %".into()),
+    ///     ],
+    /// );
+    /// assert_eq!(chain.label(), "lsp,external:prettier --stdin-filepath %");
+    ///
+    /// assert!(ProviderChain::parse("").is_ok_and(|c| c.is_empty()));
+    /// assert!(ProviderChain::parse("nativ").is_err()); // typo, not a program
+    /// ```
     pub fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim();
         if s.is_empty() {

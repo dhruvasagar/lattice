@@ -21,6 +21,68 @@ use crate::buffer::{AppliedEdit, Buffer, transform_position};
 use crate::error::{CoreError, CoreResult};
 use crate::undo::{UndoEntry, UndoStack};
 
+/// An editable document: a [`Buffer`] plus the bookkeeping every edit needs
+/// — a process-unique [`DocumentId`], an optional file path, version
+/// counters, the [`SelectionSet`], the [`UndoStack`] and dirty tracking.
+///
+/// All text mutation goes through [`Document::apply_edit`] /
+/// [`Document::apply_edit_batch`] (or [`Document::undo`] /
+/// [`Document::redo`]); each one records its inverse for undo, carries the
+/// selections across the change, and bumps both [`Document::version`] and
+/// [`Document::text_version`]. Positions are the protocol's
+/// `(line, byte-within-line)` pairs, both 0-based — see [`Buffer`].
+///
+/// A `Document` has no interior mutability and no locking; the editor keeps
+/// it behind a single writer (the core actor). It knows nothing about
+/// syntax, modes, LSP or rendering.
+///
+/// # Examples
+///
+/// Edit, undo, redo and dirty tracking:
+///
+/// ```
+/// use lattice_core::Document;
+/// use lattice_core::protocol::edit::Edit;
+/// use lattice_core::protocol::position::Position;
+///
+/// # fn main() -> lattice_core::CoreResult<()> {
+/// let mut doc = Document::from_text("hello");
+/// assert!(!doc.dirty());
+///
+/// doc.apply_edit(Edit::insert(Position::new(0, 5), " world"))?;
+/// assert_eq!(doc.text(), "hello world");
+/// assert!(doc.dirty());
+///
+/// doc.undo()?;
+/// assert_eq!(doc.text(), "hello");
+/// assert!(!doc.dirty()); // back at the loaded state
+///
+/// doc.redo()?;
+/// assert_eq!(doc.text(), "hello world");
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Coalescing a whole insert session into one undo step:
+///
+/// ```
+/// use lattice_core::Document;
+/// use lattice_core::protocol::edit::Edit;
+/// use lattice_core::protocol::position::Position;
+///
+/// # fn main() -> lattice_core::CoreResult<()> {
+/// let mut doc = Document::empty();
+/// doc.begin_undo_group(); // `i`
+/// doc.apply_edit(Edit::insert(Position::new(0, 0), "a"))?;
+/// doc.apply_edit(Edit::insert(Position::new(0, 1), "b"))?;
+/// doc.apply_edit(Edit::insert(Position::new(0, 2), "c"))?;
+/// doc.end_undo_group(); // `<Esc>`
+///
+/// doc.undo()?; // one `u` removes the whole session
+/// assert_eq!(doc.text(), "");
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct Document {
     id: DocumentId,
@@ -67,6 +129,27 @@ pub struct Document {
     // without forming a cycle. See `docs/dev/architecture/mode-architecture.md`.
 }
 
+/// Builder for a [`Document`] with a path and/or initial content.
+///
+/// Content precedence: a buffer from [`Self::with_buffer`] wins over text
+/// from [`Self::with_text`]; with neither, the document is empty. Nothing
+/// here touches the filesystem — [`Document::open`] reads, the builder only
+/// assembles. Every built document gets a fresh [`DocumentId`], starts at
+/// version 0, and is clean.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::DocumentBuilder;
+///
+/// let doc = DocumentBuilder::default()
+///     .with_path("/tmp/notes.txt")
+///     .with_text("draft\n")
+///     .build();
+/// assert_eq!(doc.text(), "draft\n");
+/// assert_eq!(doc.path().and_then(|p| p.to_str()), Some("/tmp/notes.txt"));
+/// assert!(!doc.dirty());
+/// ```
 #[derive(Debug, Default)]
 pub struct DocumentBuilder {
     path: Option<Arc<PathBuf>>,
@@ -80,17 +163,20 @@ pub struct DocumentBuilder {
 }
 
 impl DocumentBuilder {
+    /// Set the file path the document will report and [`Document::save`]
+    /// will write to. Not checked for existence.
     pub fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.path = Some(Arc::new(path.into()));
         self
     }
 
+    /// Set the initial text. Ignored if [`Self::with_buffer`] is also set.
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
         self.initial_text = Some(text.into());
         self
     }
 
-    /// K.4.11.perf-fix (2026-06-02): build the Document around a
+    /// Build the Document around a
     /// pre-existing Buffer instead of going through a String.
     /// Used by callers that already hold a Buffer (typically from
     /// `DocumentSnapshot.buffer.clone()` — `Buffer::clone` is
@@ -101,11 +187,16 @@ impl DocumentBuilder {
     /// the round-trip, allocating O(composed_size) bytes on the
     /// App thread per motion. After this fix the per-keystroke
     /// cost is one Arc bump.
+    ///
+    /// Slice: K.4.11.perf-fix (2026-06-02).
     pub fn with_buffer(mut self, buffer: Buffer) -> Self {
         self.prebuilt_buffer = Some(buffer);
         self
     }
 
+    /// Build the document: fresh [`DocumentId`], version 0, a single cursor
+    /// at the origin, an empty undo stack, and clean (the initial content
+    /// counts as the saved state).
     pub fn build(self) -> Document {
         let buffer = match (self.prebuilt_buffer, self.initial_text) {
             // K.4.11.perf-fix: prebuilt buffer wins. Callers go
@@ -140,24 +231,38 @@ fn next_document_id() -> DocumentId {
 }
 
 impl Document {
+    /// An empty, pathless, clean document.
     pub fn empty() -> Self {
         DocumentBuilder::default().build()
     }
 
+    /// A pathless document holding `text`. It starts clean: `text` is
+    /// treated as the saved state.
     pub fn from_text(text: impl Into<String>) -> Self {
         DocumentBuilder::default().with_text(text).build()
     }
 
-    /// K.4.11.perf-fix (2026-06-02): construct a Document around
+    /// Construct a Document around
     /// a pre-built Buffer. Sister of [`Self::from_text`] for
     /// callers that already hold a Rope-backed Buffer and want
     /// to avoid the `as_string() → from_text(&str)` round-trip.
     /// See [`DocumentBuilder::with_buffer`] for the rationale +
     /// the K.4.11 consumer.
+    ///
+    /// Slice: K.4.11.perf-fix (2026-06-02).
     pub fn from_buffer(buffer: Buffer) -> Self {
         DocumentBuilder::default().with_buffer(buffer).build()
     }
 
+    /// Read `path` from disk into a new clean document whose path is set.
+    ///
+    /// Blocking I/O — never call it on the UI thread.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Io`] if the file cannot be read, including when it is
+    /// not valid UTF-8. A missing file is an error here; use
+    /// [`Self::open_or_new`] for vim's `:e newfile` behaviour.
     pub fn open(path: impl AsRef<Path>) -> CoreResult<Self> {
         let path = path.as_ref().to_path_buf();
         let text = std::fs::read_to_string(&path)?;
@@ -192,10 +297,14 @@ impl Document {
         }
     }
 
+    /// The process-unique id assigned at construction. Never reused within
+    /// a process; not stable across restarts.
     pub fn id(&self) -> DocumentId {
         self.id
     }
 
+    /// The file this document is backed by, or `None` for a scratch /
+    /// synthetic document that has never been saved.
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref().map(PathBuf::as_path)
     }
@@ -219,14 +328,27 @@ impl Document {
         self.path.clone()
     }
 
+    /// Monotonic change counter: bumps on every edit, batch, undo, redo
+    /// **and** [`Self::set_selections`]. Use it to detect "anything changed";
+    /// use [`Self::text_version`] when only text matters.
     pub fn version(&self) -> u64 {
         self.version
     }
 
+    /// Monotonic counter that bumps only when the *text* changes (edits,
+    /// batches, undo, redo) — not on selection changes or saves. The syntax
+    /// cache keys reparses on it.
     pub fn text_version(&self) -> u64 {
         self.text_version
     }
 
+    /// Whether the text differs from the last saved (or initially loaded)
+    /// state, as judged by undo depth.
+    ///
+    /// Undoing back to the saved state makes the document clean again.
+    /// Once an edit discards the redo entries that led back to the saved
+    /// state, no clean state is reachable and the document stays dirty
+    /// until the next [`Self::save`] / [`Self::save_as`].
     pub fn dirty(&self) -> bool {
         match self.clean_position {
             Some(k) => k != self.undo.undo_depth(),
@@ -236,19 +358,28 @@ impl Document {
         }
     }
 
+    /// The underlying text. Read-only: mutation must go through the
+    /// document so undo, versions and selections stay consistent.
     pub fn buffer(&self) -> &Buffer {
         &self.buffer
     }
 
+    /// The current selections (a single cursor at the origin for a fresh
+    /// document). Edits transform them automatically.
     pub fn selections(&self) -> &SelectionSet {
         &self.selections
     }
 
+    /// Replace the selections. Bumps [`Self::version`] but not
+    /// [`Self::text_version`]. Positions are not validated against the
+    /// buffer.
     pub fn set_selections(&mut self, selections: SelectionSet) {
         self.selections = selections;
         self.version += 1;
     }
 
+    /// The whole text as a `String` — an `O(n)` allocation; see
+    /// [`Buffer::as_string`] for the cheaper alternatives.
     pub fn text(&self) -> String {
         self.buffer.as_string()
     }
@@ -257,6 +388,14 @@ impl Document {
     /// Returns a structural description of what changed (suitable for
     /// `Event::DocumentChanged`). Transforms selections across the edit
     /// so the caret survives owner writes (§4 of owner-write-caret.md).
+    ///
+    /// Inside an open [`Self::begin_undo_group`] the inverse folds into the
+    /// group's entry instead of pushing a new one. Pushing a new entry
+    /// clears the redo stack.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Buffer::apply_edit`]; the document is unchanged on error.
     pub fn apply_edit(&mut self, edit: Edit) -> CoreResult<AppliedEdit> {
         let applied = self.buffer.apply_edit(&edit)?;
         self.transform_selections(&applied);
@@ -270,6 +409,39 @@ impl Document {
     /// Apply a batch of edits as a single undoable unit. Edits are applied in
     /// order; undo reverts them all. Transforms selections across each edit
     /// so the caret survives owner writes (§4 of owner-write-caret.md).
+    ///
+    /// Each edit's range is in the coordinates produced by the edits before
+    /// it, not the pre-batch text. Versions bump once for the whole batch.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Buffer::apply_edit`]. **Not atomic:** edits before the
+    /// failing one stay applied, and — because the undo entry is recorded
+    /// only after the loop — they are not on the undo stack and versions do
+    /// not bump. Callers must hand in a batch that is valid in sequence.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_core::Document;
+    /// use lattice_core::protocol::edit::Edit;
+    /// use lattice_core::protocol::position::{Position, Range};
+    ///
+    /// # fn main() -> lattice_core::CoreResult<()> {
+    /// let mut doc = Document::from_text("one two");
+    /// doc.apply_edit_batch(vec![
+    ///     // Delete "one " …
+    ///     Edit::delete(Range::new(Position::new(0, 0), Position::new(0, 4))),
+    ///     // … so "two" now starts at byte 0.
+    ///     Edit::insert(Position::new(0, 3), "!"),
+    /// ])?;
+    /// assert_eq!(doc.text(), "two!");
+    ///
+    /// doc.undo()?; // the batch is one undo unit
+    /// assert_eq!(doc.text(), "one two");
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn apply_edit_batch(&mut self, edits: Vec<Edit>) -> CoreResult<Vec<AppliedEdit>> {
         let mut applied_set = Vec::with_capacity(edits.len());
         let mut inverses = Vec::with_capacity(edits.len());
@@ -353,6 +525,13 @@ impl Document {
         }
     }
 
+    /// Revert the most recent undo entry and move it onto the redo stack.
+    /// Returns the edits as applied to the buffer, in application order, so
+    /// callers can emit change events. Bumps both versions.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::NothingToUndo`] if the undo stack is empty.
     pub fn undo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
         let entry = self.undo.pop_for_undo().ok_or(CoreError::NothingToUndo)?;
         let mut applied = Vec::with_capacity(entry.inverse_edits.len());
@@ -373,6 +552,13 @@ impl Document {
         Ok(applied)
     }
 
+    /// Re-apply the most recently undone entry and move it back onto the
+    /// undo stack. The mirror of [`Self::undo`].
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::NothingToRedo`] if nothing has been undone since the
+    /// last new edit.
     pub fn redo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
         let entry = self.undo.pop_for_redo().ok_or(CoreError::NothingToRedo)?;
         let mut applied = Vec::with_capacity(entry.inverse_edits.len());
@@ -394,6 +580,14 @@ impl Document {
     }
 
     /// Persist to the document's path. Errors if no path is set.
+    ///
+    /// Writes the text verbatim (blocking I/O) and marks the current undo
+    /// depth as clean. Returns the path written.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::NoPath`] for a pathless document; [`CoreError::Io`] if
+    /// the write fails (the document stays dirty).
     pub fn save(&mut self) -> CoreResult<&Path> {
         let path = self.path.clone().ok_or(CoreError::NoPath)?;
         std::fs::write(path.as_path(), self.buffer.as_string())?;
@@ -406,6 +600,13 @@ impl Document {
             .expect("path set above"))
     }
 
+    /// Write the text to `path`, then adopt `path` as the document's path
+    /// and mark it clean. On a write error neither the path nor the clean
+    /// state changes.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Io`] if the write fails.
     pub fn save_as(&mut self, path: impl Into<PathBuf>) -> CoreResult<()> {
         let path = path.into();
         std::fs::write(&path, self.buffer.as_string())?;

@@ -1,4 +1,4 @@
-//! PR.1: which project a path belongs to.
+//! Which project a path belongs to (slice PR.1).
 //!
 //! Design: [`project-resolution.md`](../../../docs/dev/architecture/project-resolution.md).
 //!
@@ -81,7 +81,11 @@ pub enum ProjectKind {
 /// The project a path belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
+    /// The project's root directory: the directory holding the marker for
+    /// [`ProjectKind::Marker`], or the working directory for
+    /// [`ProjectKind::Pwd`].
     pub root: PathBuf,
+    /// How `root` was decided.
     pub kind: ProjectKind,
 }
 
@@ -158,6 +162,27 @@ pub fn root_from_cwd() -> Option<PathBuf> {
 }
 
 /// The built-in [`ProjectResolver`]: walk up for a marker, else pwd.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::{MarkerResolver, ProjectKind, ProjectResolver};
+///
+/// # fn main() -> std::io::Result<()> {
+/// let root = std::env::temp_dir().join(format!("lattice-doc-project-{}", std::process::id()));
+/// std::fs::create_dir_all(root.join("src"))?;
+/// std::fs::write(root.join("Cargo.toml"), "")?;
+///
+/// let resolver = MarkerResolver::with_default_markers(std::env::temp_dir());
+/// // A file that does not exist yet still resolves, via its parent.
+/// let project = resolver.for_path(&root.join("src/main.rs"));
+/// assert_eq!(project.root, root);
+/// assert_eq!(project.kind, ProjectKind::Marker("Cargo.toml".into()));
+/// assert!(project.is_rooted());
+/// # std::fs::remove_dir_all(&root)?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct MarkerResolver {
     /// Guarded because `project.root-markers` re-points it; see
     /// [`ProjectResolver::set_markers`].
@@ -721,19 +746,6 @@ mod tests {
     }
 }
 
-/// OA.23 — where a line of a composed buffer came from.
-///
-/// A multibuffer shows excerpts of other files, so a consumer holding composed
-/// coordinates cannot say which file it is looking at. The agenda is the case
-/// that needs this: rewriting a headline in place propagates through the
-/// excerpt, but writing a planning line BELOW it targets a line the view does
-/// not contain — and the view is a synthetic buffer with no path of its own.
-///
-/// An abstract handle for the same reason [`ProjectResolver`] is one: the
-/// plugin host must be able to answer the question without depending on
-/// `lattice-multibuffer`, which sits above it. Whoever owns multibuffers
-/// implements this and wires it in at boot; a host with none wired answers
-/// `None`, which is the honest degradation rather than a panic.
 /// Where a composed line came from: the source document, its file, and the
 /// 0-based line within it.
 ///
@@ -747,10 +759,28 @@ mod tests {
 pub struct ExcerptSource {
     /// The source document's id. Addressable by `Effect::ApplyEdit`.
     pub source: crate::buffers::BufferId,
+    /// The source document's file path — the identity to *show*, never to
+    /// address the document by (see above).
     pub path: std::path::PathBuf,
+    /// The line within the source document, 0-based.
     pub line: u32,
 }
 
+/// Answers where a line of a composed (multibuffer) buffer came from.
+///
+/// Introduced in OA.23.
+///
+/// A multibuffer shows excerpts of other files, so a consumer holding composed
+/// coordinates cannot say which file it is looking at. The agenda is the case
+/// that needs this: rewriting a headline in place propagates through the
+/// excerpt, but writing a planning line BELOW it targets a line the view does
+/// not contain — and the view is a synthetic buffer with no path of its own.
+///
+/// An abstract handle for the same reason [`ProjectResolver`] is one: the
+/// plugin host must be able to answer the question without depending on
+/// `lattice-multibuffer`, which sits above it. Whoever owns multibuffers
+/// implements this and wires it in at boot; a host with none wired answers
+/// `None`, which is the honest degradation rather than a panic.
 pub trait ExcerptSourceResolver: Send + Sync + std::fmt::Debug {
     /// Where composed `line` of `buffer` came from.
     ///
@@ -760,7 +790,8 @@ pub trait ExcerptSourceResolver: Send + Sync + std::fmt::Debug {
     /// about the cursor's line, and a cursor can be anywhere.
     fn excerpt_source(&self, buffer: crate::buffers::BufferId, line: u32) -> Option<ExcerptSource>;
 
-    /// OA.23b: one line of a source document, without its trailing newline.
+    /// One line of a source document, without its trailing newline (slice
+    /// OA.23b).
     ///
     /// The read that pairs with acting on [`ExcerptSource::source`]. A caller
     /// deciding what to write at the line below a headline has to see what is
@@ -776,7 +807,7 @@ pub trait ExcerptSourceResolver: Send + Sync + std::fmt::Debug {
 /// Shared handle to an [`ExcerptSourceResolver`].
 pub type ExcerptSourceResolverHandle = Arc<dyn ExcerptSourceResolver>;
 
-/// OA.27 — what arguments a provider view is currently showing.
+/// What arguments a provider view is currently showing (slice OA.27).
 ///
 /// A scan view is opened with arguments the host routes verbatim to the
 /// provider and then KEEPS, so they are the whole of what the view displays:

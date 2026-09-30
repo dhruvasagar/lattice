@@ -30,11 +30,17 @@ pub enum IconColor {
     Rgb(u32),
     /// "default foreground" -- the renderer uses its current style.
     Reset,
+    /// Named yellow; each renderer maps it to its own palette.
     Yellow,
+    /// Named dark grey; each renderer maps it to its own palette.
     DarkGray,
+    /// The renderer's named blue.
     Blue,
+    /// The renderer's named cyan.
     Cyan,
+    /// The renderer's named green.
     Green,
+    /// The renderer's named white.
     White,
 }
 

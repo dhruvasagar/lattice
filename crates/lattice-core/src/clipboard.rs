@@ -44,12 +44,26 @@ pub type ClipboardHandle = Arc<dyn Clipboard>;
 /// In-memory [`Clipboard`] for tests / headless CI and the default boot
 /// binding before a real backend is installed (CB.2 / CB.4). Thread-safe;
 /// round-trips text without touching any OS resource.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::{Clipboard, ClipboardHandle, FakeClipboard};
+/// use std::sync::Arc;
+///
+/// let clip: ClipboardHandle = Arc::new(FakeClipboard::new());
+/// assert_eq!(clip.read(), None); // starts empty
+/// clip.write("yanked".to_string());
+/// assert_eq!(clip.read().as_deref(), Some("yanked"));
+/// ```
 #[derive(Debug, Default)]
 pub struct FakeClipboard {
     inner: std::sync::Mutex<Option<String>>,
 }
 
 impl FakeClipboard {
+    /// An empty clipboard: [`Clipboard::read`] returns `None` until the
+    /// first write.
     pub fn new() -> Self {
         Self::default()
     }

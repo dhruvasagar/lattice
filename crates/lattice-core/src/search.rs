@@ -64,14 +64,23 @@ use lattice_protocol::position::{Position, Range};
 use crate::buffer::Buffer;
 use crate::error::{CoreError, CoreResult};
 
+/// Which way [`find`] scans from its `from` position. Re-exported at the
+/// crate root as `SearchDir`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
+    /// Towards the end of the buffer (`/`, `n` after `/`): the first match
+    /// starting at or after `from`, wrapping to the start.
     Forward,
+    /// Towards the start of the buffer (`?`, `n` after `?`): the last match
+    /// starting at or before `from`, wrapping to the end.
     Backward,
 }
 
+/// One match returned by [`find`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchHit {
+    /// The matched text as a half-open `[start, end)` range of
+    /// `(line, byte)` positions. Empty for a zero-width match (`^`, `\b`).
     pub range: Range,
     /// True if the search wrapped around the buffer end (Forward) or
     /// start (Backward) before finding `range`.
@@ -106,6 +115,33 @@ const SCAN_WINDOW_BYTES: usize = 128 * 1024;
 /// `cancel` is polled between matches and at chunk boundaries
 /// inside the inner walks. A flipped token short-circuits with
 /// [`CoreError::Cancelled`]; partial results are discarded.
+///
+/// Matches never overlap: scanning resumes at the end of each match (one
+/// UTF-8 scalar further for a zero-width match).
+///
+/// # Examples
+///
+/// ```
+/// use fancy_regex::Regex;
+/// use lattice_core::Buffer;
+/// use lattice_core::protocol::CancellationToken;
+/// use lattice_core::protocol::position::{Position, Range};
+/// use lattice_core::search::find_all;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let buf = Buffer::from_text("foo bar\nbaz foo\n");
+/// let re = Regex::new("fo+")?;
+/// let hits = find_all(&buf, &re, &CancellationToken::never())?;
+/// assert_eq!(
+///     hits,
+///     [
+///         Range::new(Position::new(0, 0), Position::new(0, 3)),
+///         Range::new(Position::new(1, 4), Position::new(1, 7)),
+///     ],
+/// );
+/// # Ok(())
+/// # }
+/// ```
 pub fn find_all(
     buffer: &Buffer,
     regex: &Regex,
@@ -147,6 +183,45 @@ pub fn find_all(
     Ok(hits)
 }
 
+/// Find the next match of `regex` from `from` in `direction`, wrapping
+/// around the buffer once. Re-exported at the crate root as `search_find`.
+///
+/// Inclusive of `from` in both directions (see the module docs): a match
+/// starting exactly at `from` is returned, so a caller implementing vim's
+/// `n` advances `from` by one UTF-8 scalar first. `None` when the buffer is
+/// empty or has no match at all. [`SearchHit::wrapped`] reports whether
+/// the hit was found only after wrapping.
+///
+/// # Errors
+///
+/// [`CoreError::Cancelled`] if `cancel` flips mid-scan;
+/// [`CoreError::Protocol`] if `from` is out of bounds (see
+/// [`Buffer::position_to_byte`]).
+///
+/// # Examples
+///
+/// ```
+/// use fancy_regex::Regex;
+/// use lattice_core::protocol::CancellationToken;
+/// use lattice_core::protocol::position::Position;
+/// use lattice_core::search::{Direction, find};
+/// use lattice_core::Buffer;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let buf = Buffer::from_text("one two one");
+/// let re = Regex::new("one")?;
+/// let never = CancellationToken::never();
+///
+/// // From byte 1, the next "one" is at byte 8 — no wrap needed.
+/// let hit = find(&buf, &re, Position::new(0, 1), Direction::Forward, &never)?;
+/// assert_eq!(hit.map(|h| (h.range.start, h.wrapped)), Some((Position::new(0, 8), false)));
+///
+/// // From byte 9 there is nothing ahead, so the search wraps to byte 0.
+/// let hit = find(&buf, &re, Position::new(0, 9), Direction::Forward, &never)?;
+/// assert_eq!(hit.map(|h| (h.range.start, h.wrapped)), Some((Position::new(0, 0), true)));
+/// # Ok(())
+/// # }
+/// ```
 pub fn find(
     buffer: &Buffer,
     regex: &Regex,

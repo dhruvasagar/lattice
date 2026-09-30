@@ -13,11 +13,42 @@ use lattice_protocol::edit::Edit;
 /// a batch of edits applied atomically be undone atomically.
 #[derive(Debug, Clone)]
 pub struct UndoEntry {
+    /// The edits that invert the operation, in the order they must be
+    /// applied — the reverse of the order the original edits were applied.
+    /// Each edit's range is in the coordinates left by the edit before it.
     pub inverse_edits: Vec<Edit>,
     /// Description for status messages / dot-repeat. Empty for unnamed batches.
     pub label: String,
 }
 
+/// A linear undo / redo stack of [`UndoEntry`]s.
+///
+/// This is a passive container: it never touches a buffer. The owner (in
+/// practice [`Document`](crate::Document)) applies the popped entry's
+/// edits and records the resulting inverse on the other side — see
+/// [`Self::pop_for_undo`] / [`Self::record_redo`]. Pushing a new entry
+/// discards redo history (no undo tree yet).
+///
+/// # Examples
+///
+/// ```
+/// use lattice_core::{UndoEntry, UndoStack};
+///
+/// let entry = |label: &str| UndoEntry { inverse_edits: vec![], label: label.into() };
+/// let mut stack = UndoStack::new();
+/// stack.push(entry("a"));
+/// stack.push(entry("b"));
+///
+/// // Undo "b": pop it, apply its edits (elided), record the redo side.
+/// let undone = stack.pop_for_undo().map(|e| e.label);
+/// assert_eq!(undone.as_deref(), Some("b"));
+/// stack.record_redo(entry("b"));
+/// assert_eq!((stack.undo_depth(), stack.redo_depth()), (1, 1));
+///
+/// // A fresh edit drops the redo history.
+/// stack.push(entry("c"));
+/// assert_eq!((stack.undo_depth(), stack.redo_depth()), (2, 0));
+/// ```
 #[derive(Debug, Default, Clone)]
 pub struct UndoStack {
     undo: Vec<UndoEntry>,
@@ -25,6 +56,7 @@ pub struct UndoStack {
 }
 
 impl UndoStack {
+    /// An empty stack.
     pub fn new() -> Self {
         Self::default()
     }
@@ -39,7 +71,7 @@ impl UndoStack {
     /// pushing a new one -- the primitive behind undo-group coalescing
     /// (a vim insert session collapses to a single undo unit). The
     /// caller passes the just-applied operation's inverse edits in the
-    /// same stored order [`push`] would use (reverse-application order);
+    /// same stored order [`push`](Self::push) would use (reverse-application order);
     /// they are prepended so the combined entry still replays
     /// newest -> oldest during undo (`inv(eN) .. inv(e1)`).
     ///
@@ -62,10 +94,11 @@ impl UndoStack {
         }
     }
 
-    /// Take the most recent undo entry and move it onto the redo stack as
-    /// `redo_entry`. The caller is expected to apply `entry.inverse_edits` to
-    /// the buffer and pass the resulting "inverse-of-the-inverse" back via
-    /// `record_redo`.
+    /// Pop the most recent undo entry, or `None` if there is none.
+    ///
+    /// This does **not** touch the redo stack: the caller applies
+    /// `entry.inverse_edits` to the buffer and passes the resulting
+    /// "inverse-of-the-inverse" back via [`Self::record_redo`].
     pub fn pop_for_undo(&mut self) -> Option<UndoEntry> {
         self.undo.pop()
     }
@@ -76,19 +109,28 @@ impl UndoStack {
         self.redo.push(redo_entry);
     }
 
-    /// Take the most recent redo entry and move it back onto the undo side.
+    /// Pop the most recent redo entry, or `None` if there is none. Like
+    /// [`Self::pop_for_undo`], the caller applies it and records the result
+    /// via [`Self::record_undo`].
     pub fn pop_for_redo(&mut self) -> Option<UndoEntry> {
         self.redo.pop()
     }
 
+    /// Reciprocal of [`Self::pop_for_redo`]: push the edit set that undoes a
+    /// just-redone operation. Unlike [`Self::push`] it leaves the redo stack
+    /// intact, so further redos remain available.
     pub fn record_undo(&mut self, undo_entry: UndoEntry) {
         self.undo.push(undo_entry);
     }
 
+    /// Number of entries available to undo. [`Document`](crate::Document)
+    /// compares it against the depth recorded at save time to decide
+    /// dirtiness.
     pub fn undo_depth(&self) -> usize {
         self.undo.len()
     }
 
+    /// Number of entries available to redo.
     pub fn redo_depth(&self) -> usize {
         self.redo.len()
     }

@@ -21,6 +21,7 @@ on:
       # change that moves or deletes a linked source file must build the site
       # too, or the dead link is only found by the next docs change.
       - 'AGENTS.md'
+      - 'README.md'
       - 'crates/**'
       - 'plugins/**'
       - '.github/workflows/deploy-docs.yml'
@@ -34,6 +35,7 @@ on:
       # change that moves or deletes a linked source file must build the site
       # too, or the dead link is only found by the next docs change.
       - 'AGENTS.md'
+      - 'README.md'
       - 'crates/**'
       - 'plugins/**'
       - '.github/workflows/deploy-docs.yml'

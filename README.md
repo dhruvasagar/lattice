@@ -91,7 +91,10 @@ lattice-plugin-sdk = "0.1"   # optional: typed config shapes
 Plugins ship as **source** and are compiled on the machine that runs them, so
 an editor upgrade rebuilds them rather than breaking them. The exception, and
 the one thing to read before shipping a plugin, is what that pin commits you
-to: [plugin authoring guide](docs/dev/guides/plugin-authoring.md).
+to: [plugin authoring guide](docs/dev/guides/plugin-authoring.md). Then the
+[patterns guide](docs/dev/guides/plugin-patterns.md) for recipes, and the
+[plugin-API reference](docs/dev/reference/plugin-api.md) for every signature
+and type.
 
 ## Rough edges at 0.9
 
@@ -163,17 +166,45 @@ detailed in [`docs/dev/architecture/design.md`](docs/dev/architecture/design.md)
 
 ## Documentation
 
-| Doc                                       | Purpose                                                  |
-|-------------------------------------------|----------------------------------------------------------|
-| [`docs/dev/guides/developing-lattice.md`](docs/dev/guides/developing-lattice.md) | **Start here to contribute** — dev loop, architecture mental model, mode-ownership, worked "add your first X" walkthroughs. |
-| [`docs/dev/architecture/design.md`](docs/dev/architecture/design.md)        | The design spec (v0.6, authoritative for what to build). |
-| [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md) | Per-feature status ledger; the authoritative current-state record. |
-| [`docs/dev/operations/benchmarks.md`](docs/dev/operations/benchmarks.md)| Latest measured numbers vs. §8.2 commitments.            |
-| [`docs/user/`](docs/user/)                | User-facing reference (the `:help`-style topic docs).    |
-| [`CLAUDE.md`](CLAUDE.md)                  | Conventions for AI-assisted contributions.               |
+Everything below is published at **<https://dhruvasagar.github.io/lattice/>**
+and lives in this repository under `docs/`. The site is rebuilt from `main`,
+and its build fails on a dead link.
+
+**Using the editor** — the [user documentation](https://dhruvasagar.github.io/lattice/docs/)
+([`docs/user/`](docs/user/)): getting started, the tutor, every mode and
+command. The same pages are the editor's own `:help`.
+
+**Writing a plugin**
+
+| | |
+|---|---|
+| [Plugin authoring guide](docs/dev/guides/plugin-authoring.md) | Toolchain, ABI and versions, the `plugin.toml` manifest, sync vs async seams, the runtime contract. Read first. |
+| [Plugin patterns](docs/dev/guides/plugin-patterns.md) | Recipes: an operator, an action, a motion, an ex-command, a mode with options, a picker, events, reading the buffer and syntax tree, persistent state. Code quoted from plugins CI builds. |
+| [Plugin-API reference](docs/dev/reference/plugin-api.md) ([site](https://dhruvasagar.github.io/lattice/dev/plugin-api/)) | Generated from the WIT: every world and its entry points, every seam, function signature, type and field, with examples. As JSON: [`plugin-api.json`](docs/dev/reference/plugin-api.json). |
+| [Bundled plugins](plugins/) | `comment`, `auto-pair`, `project`, `treesitter-context` — small, complete templates. |
+
+**Contributing to the editor**
+
+| | |
+|---|---|
+| [Developing lattice](docs/dev/guides/developing-lattice.md) | **Start here** — dev loop, architecture mental model, mode ownership, "add your first X" walkthroughs. |
+| [Developer documentation](https://dhruvasagar.github.io/lattice/dev/) | Every design fragment, guide and audit, organised by subsystem ([`docs/dev/`](docs/dev/)). |
+| [Design spec](docs/dev/architecture/design.md) | Authoritative for what should exist. |
+| [Implementation ledger](docs/dev/operations/implementation.md) | Authoritative for what does exist. |
+| [Crate map](docs/dev/reference/crates.md) | All workspace crates, layered by dependency, with what each owns. |
+| [Rust API](https://dhruvasagar.github.io/lattice/api/) | rustdoc for every crate (locally: `cargo doc -p <crate> --no-deps --open`). |
+| [Benchmarks](docs/dev/operations/benchmarks.md) | Latest measured numbers vs. the §8.2 commitments. |
+| [How the API docs are generated](docs/dev/architecture/api-docs.md) | What is derived from what, and the tests that keep it current. |
 
 When something disagrees, `design.md` and `implementation.md` are the
 authoritative sources for what should exist and what currently does.
+
+**For AI agents** — [`AGENTS.md`](AGENTS.md) (orientation for agents working
+in this repo) and [`CLAUDE.md`](CLAUDE.md) (the project's working rules). On the
+site, [`llms.txt`](https://dhruvasagar.github.io/lattice/llms.txt) indexes
+every doc as plain Markdown, and
+[`llms-full.txt`](https://dhruvasagar.github.io/lattice/llms-full.txt) is
+everything needed to write a plugin in one file.
 
 ---
 

@@ -624,14 +624,16 @@ def write_agent_files(sections, meta, labels, dev_sections, page_section,
     print(f'  static/llms.txt, static/llms-full.txt, static/md/ ({mirrored} pages)')
 
 
-def check_agents_md(topic_section, dev_pages, page_section):
-    """AGENTS.md is not published, but its links are pointers an agent
-    follows first — so they go through the same resolver, and a dead one
-    fails the sync like any other."""
-    if os.path.isfile(AGENTS_MD):
-        with open(AGENTS_MD, encoding='utf-8') as fh:
-            rewrite_links(fh.read(), AGENTS_MD, topic_section, dev_pages,
-                          page_section, is_user_doc=False)
+def check_repo_entry_points(topic_section, dev_pages, page_section):
+    """README.md and AGENTS.md are not published, but they are the first
+    thing a person or an agent opens, and their links are where they go
+    next — so they go through the same resolver, and a dead one fails the
+    sync like any page's."""
+    for path in (os.path.join(repo_root, 'README.md'), AGENTS_MD):
+        if os.path.isfile(path):
+            with open(path, encoding='utf-8') as fh:
+                rewrite_links(fh.read(), path, topic_section, dev_pages,
+                              page_section, is_user_doc=False)
 
 
 def load_dev_nav():
@@ -1127,7 +1129,7 @@ def main():
 
     print('Writing the agent layer...')
     write_agent_files(sections, meta, labels, dev_sections, page_section, dev_labels)
-    check_agents_md(topic_section, dev_pages, page_section)
+    check_repo_entry_points(topic_section, dev_pages, page_section)
 
     if BROKEN_LINKS:
         die('relative links to files that do not exist (moved? deleted? wrong '

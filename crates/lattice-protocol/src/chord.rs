@@ -1,6 +1,39 @@
 //! Renderer-neutral chord representation -- the typed canonical
 //! form the keymap trie indexes by.
 //!
+//! One [`KeyChord`] is one keypress: a [`KeyKind`] (a character or a named
+//! [`SpecialKey`]) plus [`KeyMods`]. A binding path is a sequence of them,
+//! written in vim notation and parsed by [`parse_chord_sequence`]; `Display`
+//! prints a chord back in the same notation, so parse → display → parse is
+//! the identity for every chord the parser can produce (except `<F13>`..
+//! `<F24>`; see [`special_label`]).
+//!
+//! # Examples
+//!
+//! ```
+//! use lattice_protocol::{KeyChord, KeyKind, KeyMods, SpecialKey, parse_chord_sequence};
+//!
+//! let seq = parse_chord_sequence("<C-w>j<Esc>").unwrap();
+//! assert_eq!(
+//!     seq,
+//!     vec![
+//!         KeyChord::ctrl('w'),
+//!         KeyChord::char('j'),
+//!         KeyChord::special(SpecialKey::Esc),
+//!     ]
+//! );
+//!
+//! // Round-trip through the canonical spelling.
+//! let text: String = seq.iter().map(ToString::to_string).collect();
+//! assert_eq!(text, "<C-w>j<Esc>");
+//! assert_eq!(parse_chord_sequence(&text).unwrap(), seq);
+//!
+//! // Shift on a letter folds into its case; on a named key it is kept.
+//! assert_eq!(parse_chord_sequence("<S-a>").unwrap(), vec![KeyChord::char('A')]);
+//! let shift_tab = KeyChord::new(KeyKind::Special(SpecialKey::Tab), KeyMods::SHIFT);
+//! assert_eq!(shift_tab.to_string(), "<S-Tab>");
+//! ```
+//!
 //! K.2.1 (2026-06-01): moved from `lattice-host::chord` into
 //! `lattice-protocol`, alongside the other renderer-neutral wire
 //! types (`Position`, `Edit`, `Selection`, …). The substrate
@@ -29,12 +62,17 @@
 //!   prefix: `"<S-Tab>"`, `"<S-F1>"`.
 //! - Ctrl: `"<C-x>"` -- always lowercase letter, even if the
 //!   keyboard reports it uppercase.
-//! - Alt / Meta: `"<M-x>"`.
-//! - Combined modifiers in canonical order `C, S, M`: `"<C-S-x>"`,
-//!   `"<C-M-x>"`.
+//! - Alt / Meta: `"<M-x>"` (`"<A-x>"` is accepted on input).
+//! - Super / Cmd: `"<D-x>"`.
+//! - Combined modifiers in canonical order `C, S, M, D`: `"<C-S-x>"`,
+//!   `"<C-M-x>"`. Input accepts them in any order; each at most once.
 //! - Named special keys: `<Esc>`, `<Tab>`, `<CR>`, `<BS>`, `<Up>`,
 //!   `<Down>`, `<Left>`, `<Right>`, `<Home>`, `<End>`, `<PageUp>`,
 //!   `<PageDown>`, `<Insert>`, `<Delete>`, `<F1>`-`<F12>`, `<Space>`.
+//!   Input also accepts the aliases `<Escape>`, `<Enter>`, `<Return>`,
+//!   `<Backspace>`, `<Ins>`, `<Del>` and `<F13>`-`<F24>`.
+//! - An unmodified `<Space>` is the space *character* (`Char(' ')`), and
+//!   prints as `<Space>`; a modified one (`<C-Space>`) is the special key.
 //! - Literal `<` types as `<lt>` (vim convention) so the parser
 //!   reading these strings can disambiguate.
 
@@ -47,9 +85,33 @@ use std::str::FromStr;
 /// gymnastics; `Hash` + `Eq` so it works as a `HashMap` key in
 /// the keymap trie. Memory: 8 bytes (1-byte mod bitfield + 1-byte
 /// discriminant + a 4-byte char or 1-byte SpecialKey, padded).
+///
+/// Parse one chord with `str::parse` (`FromStr`), a sequence with
+/// [`parse_chord_sequence`]; `Display` writes the canonical notation.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::{ChordParseError, KeyChord, KeyKind, KeyMods, SpecialKey};
+///
+/// let chord: KeyChord = "<C-S-Tab>".parse().unwrap();
+/// assert_eq!(chord.key, KeyKind::Special(SpecialKey::Tab));
+/// assert_eq!(chord.mods, KeyMods::CTRL | KeyMods::SHIFT);
+/// assert_eq!(chord.to_string(), "<C-S-Tab>");
+///
+/// // `<` and a bare space are escaped when printed.
+/// assert_eq!(KeyChord::char('<').to_string(), "<lt>");
+/// assert_eq!(KeyChord::char(' ').to_string(), "<Space>");
+///
+/// // `FromStr` wants exactly one chord.
+/// assert!(matches!("ab".parse::<KeyChord>(), Err(ChordParseError::BodyTooLong { .. })));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyChord {
+    /// Which key was pressed.
     pub key: KeyKind,
+    /// Modifiers held with it. For a letter, Shift is encoded in the case of
+    /// [`KeyKind::Char`] instead, so this carries no SHIFT bit.
     pub mods: KeyMods,
 }
 
@@ -70,7 +132,10 @@ pub struct KeyChord {
 /// every reasonable terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyKind {
+    /// A character key: the character it produces (already shifted, so `A`
+    /// or `$`, never `a`+Shift or `4`+Shift).
     Char(char),
+    /// A named, non-character key.
     Special(SpecialKey),
 }
 
@@ -81,20 +146,36 @@ pub enum KeyKind {
 /// ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpecialKey {
+    /// Escape — `<Esc>`.
     Esc,
+    /// Return / Enter — `<CR>`.
     Enter,
+    /// Tab — `<Tab>`; Shift-Tab is this plus [`KeyMods::SHIFT`].
     Tab,
+    /// Backspace — `<BS>`.
     Backspace,
+    /// Space *with a modifier* (`<C-Space>`). A bare space is
+    /// `KeyKind::Char(' ')`; see the module notes.
     Space,
+    /// Arrow up — `<Up>`.
     Up,
+    /// Arrow down — `<Down>`.
     Down,
+    /// Arrow left — `<Left>`.
     Left,
+    /// Arrow right — `<Right>`.
     Right,
+    /// Home — `<Home>`.
     Home,
+    /// End — `<End>`.
     End,
+    /// Page Up — `<PageUp>`.
     PageUp,
+    /// Page Down — `<PageDown>`.
     PageDown,
+    /// Insert — `<Insert>`.
     Insert,
+    /// Forward delete — `<Delete>`.
     Delete,
     /// Function keys F1..=F24. `F(0)` is reserved (invalid).
     F(u8),
@@ -102,37 +183,62 @@ pub enum SpecialKey {
 
 /// Modifier bitfield. `Copy + Eq + Hash` so the whole `KeyChord`
 /// fits in a CPU register.
+///
+/// The raw `u8` is public for adapters; prefer the named constants, which
+/// combine with `|` (or [`Self::with`]).
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::KeyMods;
+///
+/// let mods = KeyMods::CTRL | KeyMods::ALT;
+/// assert!(mods.ctrl() && mods.alt() && !mods.shift());
+/// assert_eq!(mods.without(KeyMods::ALT), KeyMods::CTRL);
+/// assert!(KeyMods::NONE.is_empty());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct KeyMods(pub u8);
 
 impl KeyMods {
+    /// No modifiers.
     pub const NONE: Self = Self(0);
+    /// Control — `C-` in notation.
     pub const CTRL: Self = Self(1 << 0);
+    /// Shift — `S-` in notation (only carried for non-letter keys).
     pub const SHIFT: Self = Self(1 << 1);
+    /// Alt / Meta — `M-` in notation.
     pub const ALT: Self = Self(1 << 2);
+    /// Super / Cmd / Windows — `D-` in notation.
     pub const SUPER: Self = Self(1 << 3);
 
+    /// Whether Control is held.
     #[inline]
     pub const fn ctrl(self) -> bool {
         self.0 & Self::CTRL.0 != 0
     }
+    /// Whether Shift is held.
     #[inline]
     pub const fn shift(self) -> bool {
         self.0 & Self::SHIFT.0 != 0
     }
+    /// Whether Alt / Meta is held.
     #[inline]
     pub const fn alt(self) -> bool {
         self.0 & Self::ALT.0 != 0
     }
+    /// Whether Super is held. (Trailing underscore: `super` is a keyword.)
     #[inline]
     pub const fn super_(self) -> bool {
         self.0 & Self::SUPER.0 != 0
     }
+    /// Whether no modifier is held.
     #[inline]
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 
+    /// Add `other`'s modifiers (a `const` spelling of `self | other`).
     #[inline]
     pub const fn with(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -158,27 +264,73 @@ impl std::ops::BitOr for KeyMods {
 
 /// Parse-side error variants. Detail-level so `:bind`-style error
 /// messages can surface what was wrong.
+///
+/// Every `at` is the byte offset, in the string handed to the parser, of the
+/// token that failed — the `<` of an angle token, or the character itself.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::{ChordParseError, parse_chord_sequence};
+///
+/// assert_eq!(parse_chord_sequence(""), Err(ChordParseError::Empty));
+/// assert_eq!(
+///     parse_chord_sequence("g<C-w"),
+///     Err(ChordParseError::UnterminatedAngle { at: 1 })
+/// );
+/// assert!(matches!(
+///     parse_chord_sequence("<Foo>"),
+///     Err(ChordParseError::UnknownName { .. })
+/// ));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChordParseError {
     /// String was empty.
     Empty,
     /// `<...>` token had no closing `>`.
-    UnterminatedAngle { at: usize },
+    UnterminatedAngle {
+        /// Byte offset of the unclosed `<`.
+        at: usize,
+    },
     /// `<...>` token body was empty (`<>`).
-    EmptyAngle { at: usize },
+    EmptyAngle {
+        /// Byte offset of the `<`.
+        at: usize,
+    },
     /// `<...>` body referenced an unknown name (`<Foo>`, `<F99>`,
     /// `<C-S-X>` where the body chunk after modifiers is
     /// unrecognised).
-    UnknownName { name: String, at: usize },
+    UnknownName {
+        /// The unrecognised name, modifiers stripped (`Foo`).
+        name: String,
+        /// Byte offset of the token's `<`.
+        at: usize,
+    },
     /// Modifier prefix (`C-`, `S-`, `M-`) without a body (`<C->`).
-    DanglingModifier { at: usize },
+    DanglingModifier {
+        /// Byte offset of the token's `<`.
+        at: usize,
+    },
     /// The same modifier appeared twice in one token (`<C-C-x>`).
-    DuplicateModifier { at: usize },
-    /// `<...>` body chunk after modifiers was longer than one
-    /// chord (e.g. `<C-foo>`).
-    BodyTooLong { name: String, at: usize },
+    DuplicateModifier {
+        /// Byte offset of the token's `<`.
+        at: usize,
+    },
+    /// Input that should be exactly one chord was longer. Raised only by
+    /// `KeyChord::from_str`, for trailing input after the first chord
+    /// (`"ab"`, `"<Esc>x"`); a multi-character body such as `<C-foo>`
+    /// reports [`Self::UnknownName`] instead.
+    BodyTooLong {
+        /// The whole input string.
+        name: String,
+        /// Byte offset of the first chord (always 0).
+        at: usize,
+    },
     /// Sequence parser saw a stray `>` (no matching `<`).
-    StrayClose { at: usize },
+    StrayClose {
+        /// Byte offset of the `>`.
+        at: usize,
+    },
 }
 
 impl fmt::Display for ChordParseError {
@@ -271,7 +423,10 @@ impl KeyChord {
 /// it owns the lookup hot path, not the wire shape.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChordPattern {
+    /// Matches exactly this chord.
     Literal(KeyChord),
+    /// Matches any single unmodified character chord, capturing the char
+    /// (the `{char}` of `m{char}`, `"{char}`, `f{char}`).
     CharLiteral,
 }
 
@@ -343,6 +498,18 @@ impl fmt::Display for KeyChord {
 /// `parse_special`. Renderer-neutral text; both the TUI's
 /// `format_chord` and any future GPUI describe-key renderer use
 /// this label.
+///
+/// The one exception to the round-trip: `F13`..=`F24` (and the invalid
+/// `F(0)`) all render as `"F?"`, although the parser accepts `<F13>`..`<F24>`.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::{SpecialKey, special_label};
+///
+/// assert_eq!(special_label(SpecialKey::Enter), "CR");
+/// assert_eq!(special_label(SpecialKey::F(5)), "F5");
+/// ```
 pub fn special_label(k: SpecialKey) -> &'static str {
     match k {
         SpecialKey::Esc => "Esc",
@@ -555,6 +722,30 @@ fn parse_angle_body(body: &str, at: usize) -> Result<KeyChord, ChordParseError> 
 ///   catalog's `&'static str` chord into the trie's typed key.
 /// - `:bind` user / plugin invocations that take a
 ///   chord-string at runtime.
+///
+/// `<leader>` is *not* understood here: it is substituted before parsing, at
+/// bind time, by the keymap layer.
+///
+/// # Errors
+///
+/// A [`ChordParseError`] naming the first bad token; the empty string is
+/// [`ChordParseError::Empty`].
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::{KeyChord, parse_chord_sequence};
+///
+/// assert_eq!(
+///     parse_chord_sequence("gg").unwrap(),
+///     vec![KeyChord::char('g'), KeyChord::char('g')]
+/// );
+/// // Ctrl letters normalise to lowercase; `<lt>` is a literal `<`.
+/// assert_eq!(parse_chord_sequence("<C-W>").unwrap(), vec![KeyChord::ctrl('w')]);
+/// assert_eq!(parse_chord_sequence("<lt>").unwrap(), vec![KeyChord::char('<')]);
+/// // An unmodified <Space> is the space character.
+/// assert_eq!(parse_chord_sequence("<Space>f").unwrap()[0], KeyChord::char(' '));
+/// ```
 pub fn parse_chord_sequence(s: &str) -> Result<Vec<KeyChord>, ChordParseError> {
     if s.is_empty() {
         return Err(ChordParseError::Empty);
@@ -615,6 +806,16 @@ fn utf8_char_len(b: u8) -> usize {
 /// - A single character.
 ///
 /// Returns 0 if `text` is empty.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::last_chord_token_byte_len;
+///
+/// assert_eq!(last_chord_token_byte_len("gg<C-w>"), 5); // "<C-w>"
+/// assert_eq!(last_chord_token_byte_len("<C-w>é"), 2); // one 2-byte char
+/// assert_eq!(last_chord_token_byte_len(""), 0);
+/// ```
 pub fn last_chord_token_byte_len(text: &str) -> usize {
     let bytes = text.as_bytes();
     let n = bytes.len();

@@ -13,21 +13,58 @@ use serde::{Deserialize, Serialize};
 
 use crate::position::Position;
 
+/// One cursor or visual extent in a buffer.
+///
+/// `anchor` and `head` are *not* ordered: moving backwards in Visual mode puts
+/// `head` before `anchor`, and consumers normalise (`min`/`max`) when they need
+/// a span. With [`visual`](Self::visual) set, the extent follows vim's
+/// inclusive convention — Charwise covers the character *at* `head` too (a
+/// renderer converts to a half-open [`Range`](crate::Range) by extending
+/// `end` one character), Linewise covers whole lines regardless of the byte
+/// columns, and Blockwise covers the rectangle the two corners span.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::{Position, Selection, VisualMode};
+///
+/// let caret = Selection::cursor(Position::new(4, 2));
+/// assert!(caret.is_cursor());
+///
+/// // A backwards charwise selection: head precedes anchor.
+/// let backwards = Selection {
+///     anchor: Position::new(0, 8),
+///     head: Position::new(0, 3),
+///     visual: Some(VisualMode::Charwise),
+/// };
+/// assert!(!backwards.is_cursor());
+/// assert!(backwards.head < backwards.anchor);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Selection {
+    /// The fixed end — where Visual mode was entered. Equals `head` for a
+    /// plain cursor.
     pub anchor: Position,
+    /// The moving end: the cursor the user sees and motions move.
     pub head: Position,
+    /// The visual-mode shape of the extent, or `None` outside Visual mode.
     pub visual: Option<VisualMode>,
 }
 
+/// How a visual selection's two ends are interpreted — vim's `v`, `V` and
+/// `<C-v>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VisualMode {
+    /// `v`: every character from one end to the other, both ends included.
     Charwise,
+    /// `V`: every line from one end's line to the other's; columns ignored.
     Linewise,
+    /// `<C-v>`: the rectangle whose opposite corners are the two ends.
     Blockwise,
 }
 
 impl Selection {
+    /// A plain cursor at `at`: `anchor == head`, no visual extent.
     pub const fn cursor(at: Position) -> Self {
         Self {
             anchor: at,
@@ -36,6 +73,9 @@ impl Selection {
         }
     }
 
+    /// `true` for a plain cursor: collapsed *and* not in Visual mode. A
+    /// one-character visual selection (`anchor == head`, `visual` set) is not
+    /// a cursor — it selects that character.
     pub fn is_cursor(&self) -> bool {
         self.anchor == self.head && self.visual.is_none()
     }
@@ -43,6 +83,29 @@ impl Selection {
 
 /// A selection set. Always non-empty. Index `primary` points at the primary
 /// selection; in v1 the set has exactly one entry and `primary == 0`.
+///
+/// The fields are private so the invariant cannot be broken: every
+/// constructor yields at least one selection and an in-range primary, so
+/// [`Self::primary`] never panics.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::{Position, Selection, SelectionSet};
+///
+/// let mut set = SelectionSet::default(); // one cursor at the origin
+/// assert_eq!(set.all().len(), 1);
+/// assert_eq!(set.primary().head, Position::ZERO);
+///
+/// set.replace_primary(Selection::cursor(Position::new(3, 0)));
+/// assert_eq!(set.primary().head.line, 3);
+///
+/// // Rebuilding from parts repairs what would break the invariant.
+/// let repaired = SelectionSet::from_parts(vec![], 5);
+/// assert_eq!(repaired, SelectionSet::cursor_at_origin());
+/// let clamped = SelectionSet::from_parts(vec![Selection::cursor(Position::ZERO)], 5);
+/// assert_eq!(clamped.primary_index(), 0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectionSet {
     selections: Vec<Selection>,
@@ -50,6 +113,7 @@ pub struct SelectionSet {
 }
 
 impl SelectionSet {
+    /// A set holding just `selection`, which is primary.
     pub fn single(selection: Selection) -> Self {
         Self {
             selections: vec![selection],
@@ -57,6 +121,7 @@ impl SelectionSet {
         }
     }
 
+    /// One plain cursor at [`Position::ZERO`] — also the [`Default`].
     pub fn cursor_at_origin() -> Self {
         Self::single(Selection::cursor(Position::ZERO))
     }
@@ -77,24 +142,29 @@ impl SelectionSet {
         }
     }
 
+    /// The primary selection — the one single-cursor code acts on.
     pub fn primary(&self) -> &Selection {
         // SAFETY-equivalent: every constructor and mutator preserves the
         // non-empty invariant, so primary is always a valid index.
         &self.selections[self.primary]
     }
 
+    /// Mutable access to the primary selection.
     pub fn primary_mut(&mut self) -> &mut Selection {
         &mut self.selections[self.primary]
     }
 
+    /// Every selection, in stored order (never empty).
     pub fn all(&self) -> &[Selection] {
         &self.selections
     }
 
+    /// Index of the primary within [`Self::all`].
     pub fn primary_index(&self) -> usize {
         self.primary
     }
 
+    /// Overwrite the primary selection in place; the others are untouched.
     pub fn replace_primary(&mut self, selection: Selection) {
         self.selections[self.primary] = selection;
     }

@@ -7,21 +7,43 @@ use thiserror::Error;
 use crate::ids::DocumentId;
 use crate::position::Position;
 
+/// A request that is structurally well-formed but does not fit the document
+/// it addresses. Crate errors wrap it (`lattice_core`'s `CoreError::Protocol`)
+/// rather than redefine these cases.
 #[derive(Debug, Error)]
 pub enum ProtocolError {
+    /// No document with this id exists (it was never opened, or was closed).
     #[error("unknown document {0}")]
     UnknownDocument(DocumentId),
 
+    /// A [`Position`] names a line past the end of the document, or a byte
+    /// past the end of its line. `lattice_core::Buffer` raises it on edit
+    /// and position conversion.
     #[error("position {position:?} is out of bounds (document has {line_count} lines)")]
-    PositionOutOfBounds { position: Position, line_count: u32 },
+    PositionOutOfBounds {
+        /// The offending position.
+        position: Position,
+        /// How many lines the document actually has.
+        line_count: u32,
+    },
 
+    /// A write was computed against an older document version than the
+    /// current one (optimistic concurrency).
     #[error("stale version: client supplied {client}, document is at {actual}")]
-    StaleVersion { client: u64, actual: u64 },
+    StaleVersion {
+        /// The version the caller based its request on.
+        client: u64,
+        /// The document's current version.
+        actual: u64,
+    },
 
+    /// A [`Range`](crate::Range) is malformed — typically `end` before
+    /// `start`. The payload is a fixed, human-readable reason.
     #[error("invalid range: {0}")]
     InvalidRange(&'static str),
 }
 
+/// `Result` specialised to [`ProtocolError`].
 pub type Result<T> = std::result::Result<T, ProtocolError>;
 
 #[cfg(test)]

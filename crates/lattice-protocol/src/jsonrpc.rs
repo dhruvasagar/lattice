@@ -2,6 +2,47 @@
 //! exchange. Transport-agnostic: these types serialize through
 //! `serde_json::to_string`, the codec writes the bytes.
 //!
+//! Also the wire shape of the Claude Code IDE peer (`lattice-claude-code`)
+//! and the MCP server in `lattice-ai`; none of them owns the types, so none
+//! of them depends on another to share them. Framing (LSP's `Content-Length`
+//! headers, a WebSocket frame) is each peer's codec's business.
+//!
+//! # Examples
+//!
+//! ```
+//! use lattice_protocol::{Message, Request, RequestId, Response, ResponseError};
+//! use serde_json::json;
+//!
+//! // Outgoing: build, then serialize for the codec.
+//! let req = Request::new(RequestId::from_u64(1), "initialize", Some(json!({})));
+//! let bytes = Message::Request(req).to_json().unwrap();
+//! assert!(bytes.starts_with(br#"{"jsonrpc":"2.0","id":1,"method":"initialize""#));
+//!
+//! // Incoming: decode by shape — `id` + `result` is a response.
+//! let wire = br#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#;
+//! let Message::Response(resp) = Message::from_json(wire).unwrap() else {
+//!     panic!("expected a response");
+//! };
+//! assert_eq!(resp.id, RequestId::Number(1));
+//! assert!(resp.error.is_none());
+//!
+//! // `method` without `id` is a notification.
+//! let note = br#"{"jsonrpc":"2.0","method":"$/progress","params":{}}"#;
+//! assert!(matches!(Message::from_json(note), Ok(Message::Notification(_))));
+//!
+//! // Answering a server-initiated request we cannot serve.
+//! let reply = Response::err(
+//!     RequestId::String("cfg-1".into()),
+//!     ResponseError {
+//!         code: lattice_protocol::jsonrpc::error_codes::METHOD_NOT_FOUND,
+//!         message: "unsupported".into(),
+//!         data: None,
+//!     },
+//! );
+//! let json = String::from_utf8(Message::Response(reply).to_json().unwrap()).unwrap();
+//! assert!(json.contains(r#""id":"cfg-1""#) && !json.contains("result"));
+//! ```
+//!
 //! ## Why we keep `params` / `result` as `serde_json::Value`
 //!
 //! `lsp-types` has typed structs for every method. We could
@@ -35,7 +76,9 @@ pub const JSONRPC_VERSION: &str = "2.0";
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RequestId {
+    /// A numeric id — what lattice itself always sends.
     Number(i64),
+    /// A string id, as some servers use for their own requests.
     String(String),
     /// Some LSP servers send `null` for cancellation acks. The
     /// JSON-RPC spec discourages it but doesn't forbid it.
@@ -45,6 +88,9 @@ pub enum RequestId {
 impl RequestId {
     /// Construct a `Number` id; the common case for our actor's
     /// outgoing requests.
+    ///
+    /// Values above `i64::MAX` wrap (an `as` cast); a monotonic counter
+    /// never gets there.
     pub fn from_u64(n: u64) -> Self {
         // i64 fits any sane request count; the actor counter is
         // monotonic from 0 and we'll never overflow in practice.
@@ -59,8 +105,12 @@ impl RequestId {
 /// `null` to keep the wire layout uniform.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
+    /// Protocol version; [`JSONRPC_VERSION`] on everything we build. Not
+    /// validated on decode.
     pub jsonrpc: String,
+    /// Correlates the eventual [`Response`].
     pub id: RequestId,
+    /// Method name, e.g. `textDocument/hover`.
     pub method: String,
     /// Method-specific parameters. The actor downcasts this with
     /// `serde_json::from_value::<lsp_types::FooParams>(...)`.
@@ -86,13 +136,17 @@ impl Request {
 /// `textDocument/publishDiagnostics`, `$/progress`, and the like.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
+    /// Protocol version; [`JSONRPC_VERSION`] on everything we build.
     pub jsonrpc: String,
+    /// Method name, e.g. `textDocument/didChange`.
     pub method: String,
+    /// Method-specific parameters; omitted from the wire when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 }
 
 impl Notification {
+    /// Build an outgoing notification.
     pub fn new(method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -103,15 +157,25 @@ impl Notification {
 }
 
 /// One JSON-RPC response. Either `result` or `error` is set;
-/// never both. JSON-RPC also allows both to be absent in
-/// pathological server output -- we treat that as an empty
-/// success result.
+/// never both.
+///
+/// Decoding does not enforce the "never both" half: a message carrying both
+/// decodes with both set, and consumers check `error` first. A message with
+/// an `id` but *neither* key is not a response at all —
+/// [`Message::from_json`] rejects it as [`MessageDecodeError::Malformed`].
+///
+/// A successful result of JSON `null` (e.g. `shutdown`'s) deserializes to
+/// `result: None`, indistinguishable from an absent key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
+    /// Protocol version; [`JSONRPC_VERSION`] on everything we build.
     pub jsonrpc: String,
+    /// The id of the [`Request`] this answers, echoed unchanged.
     pub id: RequestId,
+    /// The success payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// The failure payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ResponseError>,
 }
@@ -139,13 +203,17 @@ impl Response {
 }
 
 /// JSON-RPC error envelope. `code` is one of the standard
-/// integers from the JSON-RPC spec or LSP's extension range
-/// (`-32099 ..= -32000` reserved for LSP); `message` is
+/// integers from the JSON-RPC spec ([`error_codes`]), a JSON-RPC
+/// implementation-defined server error (`-32099 ..= -32000`), or one of
+/// LSP's own codes (`-32899 ..= -32800`); `message` is
 /// human-readable; `data` is whatever the server attaches.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResponseError {
+    /// Numeric error code; see [`error_codes`].
     pub code: i64,
+    /// Human-readable description.
     pub message: String,
+    /// Optional structured detail, as the sender chose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
 }
@@ -165,14 +233,18 @@ pub mod error_codes {
     /// Internal JSON-RPC error.
     pub const INTERNAL_ERROR: i64 = -32603;
 
-    // LSP-defined extensions (in the reserved -32099..=-32000 range).
-    /// Server has not been initialised yet.
+    // LSP-defined codes. `SERVER_NOT_INITIALIZED` sits in JSON-RPC's
+    // implementation-defined -32099..=-32000 range; the rest in LSP's own
+    // reserved -32899..=-32800 range.
+    /// A request arrived before the `initialize` handshake completed.
     pub const SERVER_NOT_INITIALIZED: i64 = -32002;
-    /// Server is shutting down -- no further requests.
+    /// The request was well-formed and understood, but failed (LSP 3.17).
     pub const REQUEST_FAILED: i64 = -32803;
-    /// Server sent a cancellation; we acknowledge.
+    /// The request was cancelled (`$/cancelRequest`) and the server stopped
+    /// work on it.
     pub const REQUEST_CANCELLED: i64 = -32800;
-    /// Stale request -- a newer request supersedes it.
+    /// The document changed while the request was in flight, so the result
+    /// would be stale; the client should re-request if still relevant.
     pub const CONTENT_MODIFIED: i64 = -32801;
 }
 
@@ -189,8 +261,11 @@ pub mod error_codes {
 /// blob and gives precise error messages.
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// Has `id` and `method`: expects a [`Response`].
     Request(Request),
+    /// Has `id` and `result` / `error`, no `method`.
     Response(Response),
+    /// Has `method`, no `id`: fire-and-forget.
     Notification(Notification),
 }
 

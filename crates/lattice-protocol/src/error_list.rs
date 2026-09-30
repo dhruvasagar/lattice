@@ -1,3 +1,7 @@
+//! Error-list entries: the value type every error-list producer
+//! (compilation, LSP diagnostics, references, pickers) writes, tagged with
+//! which producer wrote it.
+//!
 //! CM.3a (2026-07-22): the error **entry** value type, lowered
 //! from `lattice-host` to the protocol floor so the below-host
 //! compilation parser (`lattice-compilation`) and the effect payload
@@ -26,9 +30,14 @@ use serde::{Deserialize, Serialize};
 /// crate. Producers map their own severity onto this small set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorSeverity {
+    /// A hard error (rustc `error`, LSP `Error`).
     Error,
+    /// A warning.
     Warning,
+    /// Informational (LSP `Information`; also any compiler severity word the
+    /// compilation parser does not recognise, e.g. `help`).
     Info,
+    /// A note or hint (compiler `note`, LSP `Hint`).
     Note,
 }
 
@@ -114,13 +123,38 @@ pub enum ErrorWrite {
 /// One navigable location on the error list. `line` / `col` are
 /// 0-based (the convention `Editor::jump_to_file_line_col` expects),
 /// matching LSP diagnostics.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity, ErrorSource};
+///
+/// // rustc's `src/main.rs:12:5` is 1-based; the entry stores it 0-based.
+/// let entry = ErrorEntry {
+///     path: "src/main.rs".into(),
+///     line: 11,
+///     col: 4,
+///     severity: ErrorSeverity::Error,
+///     message: "mismatched types".into(),
+/// };
+/// assert_eq!(entry.line + 1, 12);
+///
+/// // Slices from different producers concatenate in a fixed order.
+/// assert_eq!(ErrorSource::PRESENTATION_ORDER[0], ErrorSource::Compilation);
+/// assert_eq!(ErrorSource::Lsp.label(), "lsp");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorEntry {
+    /// The file the entry points into, as the producer reported it (compiler
+    /// output is typically relative to the working directory; LSP paths are
+    /// absolute).
     pub path: PathBuf,
     /// 0-based line.
     pub line: u32,
     /// 0-based byte column.
     pub col: u32,
+    /// How serious the entry is.
     pub severity: ErrorSeverity,
+    /// The producer's message text.
     pub message: String,
 }

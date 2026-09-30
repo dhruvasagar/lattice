@@ -4,6 +4,9 @@
 // scope-limited opt-in for the macro expansion site.
 #![allow(unsafe_code)]
 
+//! The open, typed half of the event system: feature crates and plugins
+//! declare their own event types here, and introspection lists them.
+//!
 //! Typed-event surface (mode-architecture §5.10 follow-up).
 //!
 //! The legacy [`crate::Event`] enum is the closed catalogue of
@@ -24,8 +27,12 @@
 //!   source crate). Aggregated process-wide via
 //!   [`EVENT_DESCRIPTORS`] (a `linkme` distributed slice; same
 //!   mechanism `lattice-config` uses for typed options).
-//! - `register_event!` macro -- single declaration site that
-//!   pushes the descriptor and wires `Event::TYPE_ID`.
+//! - [`register_event!`](crate::register_event) macro -- single declaration
+//!   site that pushes the descriptor and implements [`Event`].
+//! - A runtime registry for plugin-defined events, which cannot be in a
+//!   link-time slice: [`register_runtime_event`] / [`unregister_runtime_event`],
+//!   with [`all_events`] / [`event_info_by_name`] as the merged
+//!   built-in ∪ runtime view ([`EventInfo`]).
 //!
 //! The runtime's `lattice_runtime::EventBus` (M.5.3.a follow-
 //! up) accepts both shapes: legacy enum publishes via
@@ -55,8 +62,25 @@ pub trait Event: std::any::Any + Debug + Send + Sync + 'static {
 /// name (what `:describe-events` prints). Hash / Eq use the
 /// `TypeId` only -- two registrations with the same struct but
 /// different names would collide on the bus side, which is the
-/// behaviour we want (the macro panics at registration on a
-/// duplicate).
+/// behaviour we want. Nothing detects such a duplicate: registering the same
+/// type twice with `register_event!` fails to compile (conflicting `Event`
+/// impls), but two *types* sharing a name both land in
+/// [`EVENT_DESCRIPTORS`], and the by-name lookups return whichever the linker
+/// placed first.
+///
+/// # Examples
+///
+/// ```
+/// use std::any::TypeId;
+/// use lattice_protocol::event_registry::EventTypeId;
+///
+/// struct Indexed;
+/// let a = EventTypeId::of::<Indexed>("my-plugin.indexed");
+/// let b = EventTypeId::new(TypeId::of::<Indexed>(), "another-name");
+/// assert_eq!(a, b); // identity is the Rust type, not the name
+/// assert_eq!(a.name(), "my-plugin.indexed");
+/// assert_eq!(a.rust_type_id(), TypeId::of::<Indexed>());
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct EventTypeId {
     type_id: TypeId,
@@ -64,10 +88,12 @@ pub struct EventTypeId {
 }
 
 impl EventTypeId {
+    /// Pair an already-computed `TypeId` with its display name.
     pub const fn new(type_id: TypeId, name: &'static str) -> Self {
         Self { type_id, name }
     }
 
+    /// The id of event type `T`, displayed as `name`.
     pub fn of<T: 'static>(name: &'static str) -> Self {
         Self {
             type_id: TypeId::of::<T>(),
@@ -75,10 +101,12 @@ impl EventTypeId {
         }
     }
 
+    /// The Rust `TypeId` — the bus's downcast and equality key.
     pub fn rust_type_id(&self) -> TypeId {
         self.type_id
     }
 
+    /// The user-facing event name (`"lsp.buffer-attached"`).
     pub fn name(&self) -> &'static str {
         self.name
     }
@@ -108,8 +136,11 @@ impl std::hash::Hash for EventTypeId {
 /// dot-separated, namespaced by feature.
 #[derive(Debug, Clone, Copy)]
 pub struct EventDescriptor {
+    /// User-facing identifier (`"lsp.buffer-attached"`).
     pub name: &'static str,
+    /// One-line summary `:describe-events` prints.
     pub doc: &'static str,
+    /// The crate that declared the event (`"lattice-lsp"`).
     pub source_crate: &'static str,
     /// Returns the `TypeId` of the concrete event type. Stored
     /// as a fn pointer (rather than the `TypeId` directly)
@@ -181,7 +212,32 @@ fn runtime_events() -> &'static std::sync::RwLock<std::collections::BTreeMap<Str
 /// Register a runtime (plugin-defined) event. Idempotent by name (a re-register
 /// overwrites — a plugin reload refreshes its doc). Returns `false` and records
 /// nothing if the name collides with a BUILT-IN event: a plugin must not shadow
-/// a native event (its subscribers would be ambiguous).
+/// a native event (its subscribers would be ambiguous). Also returns `false`
+/// if the registry lock is poisoned.
+///
+/// The registry is process-wide, so it is shared by every editor instance
+/// (and every test) in the process.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::event_registry::{
+///     all_events, event_info_by_name, register_runtime_event, unregister_runtime_event,
+/// };
+///
+/// assert!(register_runtime_event(
+///     "demo-plugin.file-indexed",
+///     "A file finished indexing.",
+///     "plugin:demo-plugin",
+/// ));
+/// let info = event_info_by_name("demo-plugin.file-indexed").unwrap();
+/// assert!(!info.builtin);
+/// assert_eq!(info.source, "plugin:demo-plugin");
+/// assert!(all_events().iter().any(|e| e.name == "demo-plugin.file-indexed"));
+///
+/// unregister_runtime_event("demo-plugin.file-indexed"); // plugin unload
+/// assert!(event_info_by_name("demo-plugin.file-indexed").is_none());
+/// ```
 pub fn register_runtime_event(
     name: impl Into<String>,
     doc: impl Into<String>,
@@ -261,15 +317,28 @@ pub fn event_info_by_name(name: &str) -> Option<EventInfo> {
 ///   for `:describe-events --by-crate` and plugin host
 ///   tooling.
 ///
-/// Example:
-/// ```ignore
-/// pub struct LspBufferAttached { pub id: BufferId, pub path: Option<PathBuf> }
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::event_registry::{Event, descriptor_by_name};
+/// use lattice_protocol::register_event;
+///
+/// #[derive(Debug)]
+/// pub struct IndexFinished {
+///     pub files: usize,
+/// }
 /// register_event!(
-///     LspBufferAttached,
-///     "lsp.buffer-attached",
-///     "Fired after lsp-mode activates on a buffer.",
-///     "lattice-lsp",
+///     IndexFinished,
+///     "demo.index-finished",
+///     "Fired when the demo indexer finishes a pass.",
+///     "demo-crate",
 /// );
+///
+/// let event = IndexFinished { files: 3 };
+/// assert_eq!(event.event_type_id().name(), "demo.index-finished");
+/// let desc = descriptor_by_name("demo.index-finished").unwrap();
+/// assert_eq!(desc.source_crate, "demo-crate");
+/// assert_eq!((desc.type_id)(), std::any::TypeId::of::<IndexFinished>());
 /// ```
 ///
 /// The macro can't be invoked from within a `cfg(test)` module

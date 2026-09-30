@@ -31,6 +31,32 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Cooperative cancellation handle. Cheap to clone (one Arc bump);
 /// safe to share across threads / tasks.
+///
+/// Every clone shares one flag: cancelling any clone is observed by all of
+/// them, and a cancelled token never resets. Cancellation is a request, not
+/// preemption — the work only stops where it polls [`Self::is_cancelled`].
+///
+/// # Examples
+///
+/// ```
+/// use lattice_protocol::CancellationToken;
+///
+/// let token = CancellationToken::new();
+/// let worker_copy = token.clone(); // handed to the evaluator
+///
+/// let mut steps = 0;
+/// for i in 0..1_000 {
+///     if worker_copy.is_cancelled() {
+///         break; // bail with the domain's "cancelled" error
+///     }
+///     steps += 1;
+///     if i == 9 {
+///         token.cancel(); // e.g. the user pressed Esc
+///     }
+/// }
+/// assert_eq!(steps, 10);
+/// assert!(worker_copy.is_cancelled());
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct CancellationToken {
     flag: Arc<AtomicBool>,

@@ -5,6 +5,37 @@
 //! desugar to the same `EventBus::subscribe` call (filter +
 //! sink). The `Event` enum is the catalog; `EventKind` is the
 //! discriminator used by filter dispatch.
+//!
+//! This is the *closed* catalogue: editor-core transitions the host owns.
+//! Feature crates declare their own events as types through
+//! [`crate::event_registry`] instead of growing this enum, and plugins
+//! publish theirs through the one open arm, [`Event::Plugin`].
+//!
+//! The bus itself (`lattice_runtime::EventBus`) is not here — this crate has
+//! no runtime. Publishing is fire-and-forget unless a variant says otherwise.
+//! Most variants are also delivered to WASM plugins (mirrored in WIT by
+//! `lattice-plugin-host`); the ones marked *host-internal* below are refused
+//! at that boundary.
+//!
+//! Versions: `version` fields carry `lattice_core::Document`'s counters.
+//! [`Event::DocumentOpened`] carries the *text* version (bumps on text
+//! changes only); [`Event::DocumentChanged`] and [`Event::SelectionsChanged`]
+//! carry the whole-document version, which also bumps on selection changes.
+//!
+//! # Examples
+//!
+//! ```
+//! use lattice_protocol::{DocumentId, Event, EventKind};
+//! use std::path::PathBuf;
+//!
+//! let saved = Event::DocumentSaved {
+//!     id: DocumentId::new(3),
+//!     path: PathBuf::from("src/lib.rs"),
+//! };
+//! // Filters bucket on the payload-free discriminator.
+//! assert_eq!(saved.kind(), EventKind::DocumentSaved);
+//! assert_eq!(Event::BeforeQuit.kind(), EventKind::BeforeQuit);
+//! ```
 
 use std::path::PathBuf;
 
@@ -14,13 +45,19 @@ use crate::ids::{BufferId, DocumentId};
 use crate::position::Range;
 use crate::selection::SelectionSet;
 
+/// One editor-core state transition, as published on the event bus.
+///
+/// See the [module docs](crate::event) for how this relates to typed events and the
+/// plugin boundary; each variant says when it fires, who publishes it, and
+/// what its fields carry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
     /// Fired when a document buffer opens. Subscribers (the
     /// LSP attach driver, future plugin hooks, project-watcher,
     /// completion warmer) react asynchronously; the publisher
-    /// (`App::new` for the initial document, `App::do_edit` for
-    /// subsequent `:e <path>` opens) returns immediately. The
+    /// (`Editor::publish_document_opened_for_active`, run at boot for
+    /// the initial document and after each `:e <path>` open) returns
+    /// immediately. The
     /// event-driven design keeps the UI thread off the LSP
     /// `initialize` round-trip -- aligned with paramount goal
     /// #4 (asynchronicity).
@@ -30,48 +67,99 @@ pub enum Event {
     /// initial content so subscribers don't have to reach back
     /// through a document handle on the publish path -- LSP
     /// hands it straight to `didOpen`.
+    ///
+    /// Caveat: the current publisher builds `id` from the raw value of the
+    /// buffer-registry id (`DocumentId::new(buffer_id.0)`), whereas every
+    /// other document event carries the document's own [`DocumentId`]. The
+    /// two number spaces are not guaranteed to agree.
     DocumentOpened {
+        /// The opened document (see the caveat above).
         id: DocumentId,
+        /// Its file path; `None` for a scratch buffer.
         path: Option<PathBuf>,
+        /// The document's *text* version at open — the version LSP's
+        /// `didOpen` starts from.
         version: u64,
+        /// The full initial content.
         text: String,
     },
+    /// A document was closed. Subscribers drop per-document state keyed by
+    /// `id` (the LSP references provider, multibuffer excerpts, diff and VCS
+    /// caches all do).
+    ///
+    /// Note: the variant is subscribed to and mirrored in WIT, but no
+    /// production code path publishes it yet.
     DocumentClosed {
+        /// The closed document.
         id: DocumentId,
     },
     /// Fired before [`Self::DocumentSaved`]. Observation-only in
     /// v1; future revisions may carry a payload that handlers can
     /// mutate (formatters rewriting buffer content) or veto
     /// (return Err to abort the save).
+    ///
+    /// Published by the host's save paths (`:w` and background saves)
+    /// immediately before the write.
     BeforeSave {
+        /// The document about to be written.
         id: DocumentId,
+        /// Where it is about to be written.
         path: PathBuf,
     },
+    /// A document was written to disk successfully (after
+    /// [`Self::BeforeSave`]; a failed write publishes nothing further).
+    /// Published by the host's save paths, including background saves of
+    /// buffers the user is not looking at.
     DocumentSaved {
+        /// The saved document.
         id: DocumentId,
+        /// The path actually written.
         path: PathBuf,
     },
+    /// A document's text changed. Published by the host after each applied
+    /// edit (and by `lattice-multibuffer` when an edit through a multibuffer
+    /// lands in its source document). LSP's `didChange`, the multibuffer's
+    /// excerpt refresh and the diff subsystem feed on it.
     DocumentChanged {
+        /// The changed document.
         id: DocumentId,
         /// The buffer's filesystem path, if it has one. Carried so
         /// subscribers can resolve URIs without holding their own
         /// DocumentId -> path map. `None` for scratch / unsaved
         /// buffers.
         path: Option<PathBuf>,
+        /// The document's whole version after the change (see the module
+        /// docs on versions).
         version: u64,
+        /// The edits, in the order they were applied; each one's ranges are
+        /// in the coordinates of the buffer as the previous one left it.
+        /// Today's publishers send one edit per event.
         edits: Vec<AppliedEdit>,
     },
+    /// The selection set of a document changed — visual extension, a
+    /// selection-changing effect, `gv`. Published by
+    /// `Editor::publish_selections_changed`. Carries the complete new set,
+    /// not a delta.
     SelectionsChanged {
+        /// The document whose selections changed.
         id: DocumentId,
+        /// The document's whole version after the change.
         version: u64,
+        /// The full new selection set.
         selections: SelectionSet,
     },
     /// Fired when the modal state transitions
     /// (Normal -> Insert, Insert -> Normal, ...). Carries the
     /// previous and next state as opaque labels; the App owns the
     /// `ModalState` type so the protocol layer keeps it as String.
+    ///
+    /// Published by the host's modal-state setter, only on a real
+    /// transition. The labels are the `Debug` rendering of the host's
+    /// `ModalState` (`"Normal"`, `"Insert"`, ...).
     ModalModeChanged {
+        /// The state being left.
         from: String,
+        /// The state being entered.
         to: String,
     },
     /// Fired before the editor exits. Observation-only in v1; the
@@ -89,9 +177,16 @@ pub enum Event {
     /// `old` is `None` for the very first publish after registration
     /// (when the option is initialised to its default and no prior
     /// value exists); subsequent edits always carry both sides.
+    ///
+    /// Published by `lattice_config::ConfigRegistry` through its injected
+    /// publisher, after the write and outside the registry lock (so a
+    /// handler may read other options).
     OptionChanged {
+        /// The option's canonical name (`tabstop`, not `ts`).
         name: String,
+        /// The previous value, formatted; `None` on the first publish.
         old: Option<String>,
+        /// The new value, formatted as `:set` would print it.
         new: String,
     },
     /// A major mode became the active major on `buffer` (published
@@ -107,7 +202,9 @@ pub enum Event {
     /// dispatcher's cascade task (MA.1); supersedes the prior typed
     /// `ModeEvent::MajorEntered` so the EF.1 filter machinery applies.
     MajorEntered {
+        /// The buffer the major mode is now active on.
         buffer: BufferId,
+        /// The major mode's canonical name.
         major: String,
     },
     /// The active major mode on `buffer` is about to be deactivated
@@ -116,7 +213,9 @@ pub enum Event {
     /// [`Self::MajorEntered`] for minor-mode teardown. `major` is the
     /// canonical name of the major being torn down.
     MajorExiting {
+        /// The buffer the major mode is leaving.
         buffer: BufferId,
+        /// The major mode's canonical name.
         major: String,
     },
     /// A minor mode was activated on `buffer` (published *after* its
@@ -128,13 +227,17 @@ pub enum Event {
     /// `ModeActivationFailed` / `OptionConflict` cascade signals stay
     /// on the typed `lattice_mode::ModeEvent` bus.
     MinorActivated {
+        /// The buffer the minor mode is now active on.
         buffer: BufferId,
+        /// The minor mode's canonical name.
         minor: String,
     },
     /// A minor mode was deactivated on `buffer` (published *before*
     /// its Guard drops). `minor` is the minor mode's canonical name.
     MinorDeactivated {
+        /// The buffer the minor mode is leaving.
         buffer: BufferId,
+        /// The minor mode's canonical name.
         minor: String,
     },
     /// A plugin-DEFINED event (PH7.8b). Unlike every arm above -- each a
@@ -149,7 +252,9 @@ pub enum Event {
     /// inside their handler (the bus discriminates only to `Plugin`, not
     /// per-name), so a new plugin event needs no enum/WIT change.
     Plugin {
+        /// The plugin-declared event name (`my-plugin.file-indexed`).
         name: String,
+        /// Opaque MessagePack bytes, owned and interpreted only by plugins.
         payload: Vec<u8>,
     },
     /// A plugin instance crashed (a lifecycle / callback export trapped: fuel
@@ -176,9 +281,15 @@ pub enum Event {
     /// is a stable machine label (`"fuel"` / `"epoch"` / `"trap"`) -- a `String`
     /// (not the host's `TrapKind`) so the protocol layer stays free of the
     /// plugin-host type, mirroring [`Self::ModalModeChanged`].
+    ///
+    /// Host-internal: refused at the plugin boundary, never delivered to a
+    /// guest.
     PluginCrashed {
+        /// The host-issued numeric id of the quarantined plugin instance.
         plugin: u32,
+        /// The export that trapped (`"on-event"`, `"spec"`, ...).
         func: String,
+        /// Why: `"fuel"`, `"epoch"` or `"trap"`.
         kind: String,
     },
     /// A named plugin is ABOUT to run the load-time exports that read its own
@@ -202,6 +313,8 @@ pub enum Event {
     /// handler racing the very export it exists to precede. It is the one event
     /// with that property; everything else on the bus is fire-and-forget.
     PrePluginLoaded {
+        /// The loading plugin's manifest id. (No numeric id: guests receive
+        /// the name only.)
         name: String,
     },
     /// A plugin finished loading (CI.1): every seam drained, its modes /
@@ -212,14 +325,18 @@ pub enum Event {
     /// config-and-init.md). `name` is the manifest id; `id` the host-issued
     /// numeric plugin id.
     PluginLoaded {
+        /// The plugin's manifest id.
         name: String,
+        /// The host-issued numeric plugin id.
         id: u32,
     },
     /// A plugin was unloaded (CI.1): teardown reversed its contributions
     /// (`:plugin-unload` / crash-teardown). Delivered to guests so a handler can
     /// tear down its own dependent setup. Fields mirror [`Self::PluginLoaded`].
     PluginUnloaded {
+        /// The plugin's manifest id.
         name: String,
+        /// The host-issued numeric plugin id it had while loaded.
         id: u32,
     },
     /// A request to enable/disable a minor mode globally (CI.4) — the
@@ -230,7 +347,9 @@ pub enum Event {
     /// re-activates open buffers. Host-internal — NOT delivered back to guests
     /// (like [`Self::PluginCrashed`]). `mode` is the mode id.
     ModeEnablementRequested {
+        /// The minor mode's id.
         mode: String,
+        /// `true` to enable globally, `false` to disable.
         enabled: bool,
     },
     /// A request to set an option for ONE buffer — the guest-to-Editor bridge
@@ -248,6 +367,7 @@ pub enum Event {
     /// other plugin's option writes is a surveillance seam nobody asked for,
     /// and `option-changed` already reports the outcome.
     BufferOptionOverrideRequested {
+        /// The buffer the override applies to.
         buffer: BufferId,
         /// `name=value` in `:set` syntax, parsed by the same
         /// `parse_for_buffer_local` the `:setlocal` path uses — so a guest
@@ -268,6 +388,10 @@ pub enum Event {
     /// Replaces threading a `NotificationStoreHandle` into every
     /// spawner, which was opt-in and therefore already forgotten in
     /// five of magit's ten (`spawn_git`, the generic one, among them).
+    ///
+    /// Published today by magit's git spawners; `lattice-notify` is the
+    /// subscriber that turns it into a notification. Not yet mirrored in WIT,
+    /// so it is not delivered to guests.
     BackgroundTaskFinished {
         /// Subsystem that ran it — `"magit"`, `"lsp"`, a plugin id.
         /// Lets a subscriber filter without parsing `label`.
@@ -285,6 +409,7 @@ pub enum Event {
         /// is appended by whoever reports it, so the label must read
         /// correctly before "failed" as well as before a summary.
         label: String,
+        /// How it ended.
         outcome: TaskOutcome,
     },
     /// OR.2: files under a directory a plugin asked the host to watch
@@ -305,6 +430,8 @@ pub enum Event {
     /// deliveries: the host coalesces a burst behind a quiet window before
     /// publishing. A consumer re-reads what changed, so ordering within the
     /// batch carries no meaning and the paths are deduplicated and sorted.
+    ///
+    /// Published by `lattice-plugin-host`'s watch host.
     FilesChanged {
         /// The host-issued numeric plugin id that armed the watch.
         plugin: u32,
@@ -325,14 +452,23 @@ pub enum Event {
 pub enum TaskOutcome {
     /// Finished cleanly. `summary` is a short human line — the full
     /// output belongs in a log, not a notification.
-    Succeeded { summary: String },
+    Succeeded {
+        /// A short human-readable result line.
+        summary: String,
+    },
     /// NC.2: ended cleanly but **not done** — a rebase paused on an
     /// `edit`, a merge left uncommitted, a conflict waiting for the
     /// user. Reporting these as success says "finished" about work the
     /// user still has to finish. `message` says what is waiting.
-    Stopped { message: String },
+    Stopped {
+        /// What is waiting on the user.
+        message: String,
+    },
     /// Failed. `message` is the reason, already truncated for display.
-    Failed { message: String },
+    Failed {
+        /// Why it failed, display-ready.
+        message: String,
+    },
 }
 
 // M.5.3.b: `LspLogPushed`, `LspBufferAttached`, and
@@ -345,8 +481,8 @@ pub enum TaskOutcome {
 
 impl Event {
     /// Project the event to its [`EventKind`] discriminator. Used
-    /// by [`crate::cancel`]-style filter dispatch in the runtime
-    /// layer's event bus to avoid string-matching variant names.
+    /// by the runtime event bus's filter dispatch to bucket
+    /// subscriptions without string-matching variant names.
     pub fn kind(&self) -> EventKind {
         match self {
             Event::DocumentOpened { .. } => EventKind::DocumentOpened,
@@ -380,18 +516,31 @@ impl Event {
 /// subscriptions per kind so publish does no global iteration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
+    /// Discriminator for [`Event::DocumentOpened`].
     DocumentOpened,
+    /// Discriminator for [`Event::DocumentClosed`].
     DocumentClosed,
+    /// Discriminator for [`Event::BeforeSave`].
     BeforeSave,
+    /// Discriminator for [`Event::DocumentSaved`].
     DocumentSaved,
+    /// Discriminator for [`Event::DocumentChanged`].
     DocumentChanged,
+    /// Discriminator for [`Event::SelectionsChanged`].
     SelectionsChanged,
+    /// Discriminator for [`Event::ModalModeChanged`].
     ModalModeChanged,
+    /// Discriminator for [`Event::BeforeQuit`].
     BeforeQuit,
+    /// Discriminator for [`Event::OptionChanged`].
     OptionChanged,
+    /// Discriminator for [`Event::MajorEntered`].
     MajorEntered,
+    /// Discriminator for [`Event::MajorExiting`].
     MajorExiting,
+    /// Discriminator for [`Event::MinorActivated`].
     MinorActivated,
+    /// Discriminator for [`Event::MinorDeactivated`].
     MinorDeactivated,
     /// Discriminator for every plugin-defined event ([`Event::Plugin`]). All
     /// plugin events share this one kind; the per-event `name` is NOT a bus
@@ -428,6 +577,10 @@ pub enum EventKind {
 /// An edit as actually applied to the buffer (the original `Edit` plus the
 /// resulting range, useful for clients that want to know what changed).
 ///
+/// The bus-level copy of `lattice_core::AppliedEdit`, without its
+/// tree-sitter [`EditDelta`](crate::EditDelta). Positions are
+/// (line, UTF-8 byte), as everywhere in this crate.
+///
 /// `inserted_text` carries the text that was placed into `inserted_range`.
 /// Together with `original_range` this is exactly what an LSP
 /// `textDocument/didChange` payload needs, which lets the
@@ -435,8 +588,13 @@ pub enum EventKind {
 /// from this event without re-reading the buffer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppliedEdit {
+    /// The range the edit targeted, in pre-edit coordinates.
     pub original_range: Range,
+    /// Where the inserted text now sits, in post-edit coordinates: starts at
+    /// `original_range.start`; empty for a pure delete.
     pub inserted_range: Range,
+    /// The text removed from `original_range` (empty for a pure insert).
     pub replaced_text: String,
+    /// The text placed at `inserted_range` (empty for a pure delete).
     pub inserted_text: String,
 }

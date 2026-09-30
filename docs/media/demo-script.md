@@ -278,13 +278,13 @@ loaded, because those are the two things that make a report actionable.
 
 ## Clips to cut
 
-| Clip | Section | Length | Pairs with the still | Goes to |
-|---|---|---|---|---|
-| A | magit staging | ~12s | `magit-{tui,gpui}.png` | README lead, gallery shot 1 |
-| B | `:terminal` → `<Esc>` → `:ls` | ~15s | `buffer-splits-{tui,gpui}.png` | gallery shot 2 |
-| C | `:reload-config` → `:hello` | ~10s | `config-init-rs-{tui,gpui}.png` | gallery shot 3, and the strongest clip |
-| D | agent diff review | ~12s | `org-and-agents-{tui,gpui}.png` | gallery shot 4 |
-| E | TUI + GPU side by side | ~8s | `two-renderers.png` | gallery shot 5 |
+| Clip | Section                       | Length | Pairs with the still            | Goes to                                |
+|------|-------------------------------|--------|---------------------------------|----------------------------------------|
+| A    | magit staging                 | ~12s   | `magit-{tui,gpui}.png`          | README lead, gallery shot 1            |
+| B    | `:terminal` → `<Esc>` → `:ls` | ~15s   | `buffer-splits-{tui,gpui}.png`  | gallery shot 2                         |
+| C    | `:reload-config` → `:hello`   | ~10s   | `config-init-rs-{tui,gpui}.png` | gallery shot 3, and the strongest clip |
+| D    | agent diff review             | ~12s   | `org-and-agents-{tui,gpui}.png` | gallery shot 4                         |
+| E    | TUI + GPU side by side        | ~8s    | `two-renderers.png`             | gallery shot 5                         |
 
 Each clip has a still of the same moment — same geometry, same theme — so
 frame them alike. The stills are specified in

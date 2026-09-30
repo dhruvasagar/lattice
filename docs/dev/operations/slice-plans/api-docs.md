@@ -38,7 +38,7 @@ Status icons: 📝 planned · 🚧 in progress · ✅ landed · ⛔ deferred · 
 
 | Slice | What | Status |
 |---|---|---|
-| **AD.7** | `llms.txt`, `llms-full.txt`, `plugin-api.json` on the site; `AGENTS.md` | 📝 |
+| **AD.7** | `llms.txt`, `llms-full.txt`, `plugin-api.json` on the site; `AGENTS.md` | ✅ |
 
 ## Rust API
 
@@ -111,6 +111,19 @@ already says — became a goal → seam → pattern map, which is judgement the
 reference cannot carry. The manifest example is parsed by the real parser
 (`lattice-plugin-host/tests/documented_manifests_parse.rs`) and its keys
 pinned to `RawManifest`'s (the parser ignores unknown keys).
+
+### AD.7 — agent layer (as built)
+
+`sync-docs.sh` writes `/llms.txt` (469 lines: every plugin-API page with
+its summary, both plugin guides, every user doc with its summary, every
+dev doc by section), `/llms-full.txt` (~430 KB: authoring guide, patterns
+guide, the full reference — the one file an agent needs to write a
+plugin), and mirrors every published Markdown source to `/md/<repo
+path>` so every llms.txt link is plain Markdown. `AGENTS.md` at the root
+points at `CLAUDE.md` for rules and at the docs for facts; its links are
+checked by the same resolver (verified by injecting a dead one).
+`deploy-docs.yml` now also triggers on `crates/**`, `plugins/**` and
+`AGENTS.md`, because the link check covers links into code.
 
 ### AD.6b — site link integrity (carved while checking AD.6 on the site)
 

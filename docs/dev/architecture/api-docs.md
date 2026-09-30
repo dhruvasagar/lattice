@@ -220,7 +220,11 @@ the artefacts above; none of it is written by hand.
 
 - **`/llms.txt`** (the llmstxt.org convention) — what lattice is, and a link
   with a one-line summary for every user doc, dev doc and plugin-API page,
-  generated from `nav.toml` / `dev-nav.toml` by `sync-docs.sh`.
+  generated from `nav.toml` / `dev-nav.toml` by `sync-docs.sh`. Every link
+  is to the page's **Markdown source**, mirrored at `/md/<repo path>` from the
+  deployed commit: an agent reads plain Markdown, not rendered HTML, and the
+  mirror keeps the repository layout so relative links inside a page still
+  resolve.
 - **`/llms-full.txt`** — the single-file bundle for writing plugins: the full
   plugin-API reference, the patterns guide and the authoring guide.
 - **`/plugin-api.json`** (and `docs/dev/reference/plugin-api.json`) — the
@@ -229,7 +233,8 @@ the artefacts above; none of it is written by hand.
 - **`AGENTS.md`** at the repo root — a short, tool-neutral orientation for
   agents working *in* the repository: where the authoritative docs are, how to
   build and test a crate, and the gates a change must pass. It points into the
-  docs rather than restating them.
+  docs rather than restating them, and its links go through the site sync's
+  resolver, so a dead one fails the docs build like any page's.
 
 ## 5. Guards, in one place
 
@@ -246,6 +251,7 @@ the artefacts above; none of it is written by hand.
 | Rust examples | doctests under `cargo test` | an example stops compiling or asserting |
 | crate map | `xtask` test | a crate root's overview changed and the map did not |
 | site nav | `sync-docs.sh` (existing) | a dev doc is not in `dev-nav.toml` |
+| relative links (docs + `AGENTS.md`) | `sync-docs.sh` resolver (AD.6b) | a link's target file does not exist; Zola then validates every internal link and anchor |
 
 ## 6. Paramount-goal alignment
 

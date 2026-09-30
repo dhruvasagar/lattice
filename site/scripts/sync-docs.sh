@@ -474,6 +474,160 @@ def write_search_index(sections, meta, labels, headings):
     print(f'  static/docs-search.json ({len(entries)} entries)')
 
 
+# ---------------------------------------------------------------------------
+# The agent layer (AD.7): /llms.txt, /llms-full.txt and /md/.
+#
+# An agent reads differently from a person: one fetchable index, plain
+# Markdown rather than HTML, and a single file holding everything it needs for
+# a task. All three are generated here from the same manifests and files the
+# site is built from, so none of them can list a page the site does not have.
+# ---------------------------------------------------------------------------
+
+AGENTS_MD = os.path.join(repo_root, 'AGENTS.md')
+MD_DST = os.path.join(site_dir, 'static', 'md')
+
+# llms-full.txt: everything needed to WRITE A PLUGIN, in reading order.
+LLMS_FULL_HEAD = [
+    'docs/dev/guides/plugin-authoring.md',
+    'docs/dev/guides/plugin-patterns.md',
+    'docs/dev/reference/plugin-api.md',
+    'docs/dev/reference/plugin-api/worlds.md',
+]
+
+
+def site_base_url():
+    with open(os.path.join(site_dir, 'config.toml'), 'rb') as fh:
+        return tomllib.load(fh)['base_url'].rstrip('/')
+
+
+def doc_summary(doc):
+    """First sentence of a doc's first paragraph — the plugin-API index's
+    rule (`render::summary`), so llms.txt and the index agree."""
+    if not doc:
+        return ''
+    para = ' '.join(l.strip() for l in doc.split('\n\n', 1)[0].splitlines())
+    end = para.find('. ')
+    return para[:end + 1] if end >= 0 else para
+
+
+def mirror_md(repo_rel):
+    """Copy a published Markdown source to /md/<repo path>; return its URL
+    path. The mirror keeps the repository layout, so a relative link inside a
+    mirrored page still points at its sibling."""
+    dst = os.path.join(MD_DST, repo_rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(os.path.join(repo_root, repo_rel), dst)
+    return f'/md/{repo_rel}'
+
+
+def write_agent_files(sections, meta, labels, dev_sections, page_section,
+                      dev_labels):
+    base = site_base_url()
+    shutil.rmtree(MD_DST, ignore_errors=True)
+    with open(os.path.join(site_dir, 'config.toml'), 'rb') as fh:
+        cfg = tomllib.load(fh)
+    tagline = cfg.get('extra', {}).get('tagline', '')
+
+    out = [
+        '# Lattice',
+        '',
+        f'> {cfg.get("description", "")}. {tagline}',
+        '',
+        'Every link below is the page\'s Markdown source, mirrored from the '
+        'repository at the deployed commit; the same pages render as HTML under '
+        f'{base}/docs/ and {base}/dev/.',
+        '',
+        f'- **Writing a plugin?** Fetch [llms-full.txt]({base}/llms-full.txt): '
+        'the authoring guide, the patterns guide and the whole plugin-API '
+        'reference in one file. The same API as structured data is '
+        f'[plugin-api.json]({base}/plugin-api.json).',
+        '- **Working on the editor itself?** Read '
+        '[AGENTS.md](https://github.com/dhruvasagar/lattice/blob/main/AGENTS.md) '
+        'in the repository first.',
+        '',
+    ]
+
+    # The plugin API: the index, the worlds, then every seam with its summary.
+    with open(PLUGIN_API_JSON, encoding='utf-8') as fh:
+        api = json.load(fh)
+    out += ['## Plugin API', '']
+    out.append(f'- [Plugin API reference]({base}{mirror_md("docs/dev/reference/plugin-api.md")}): '
+               f'what the WIT package `{api["package"]}` is, how to read it, every world and seam')
+    out.append(f'- [Worlds]({base}{mirror_md("docs/dev/reference/plugin-api/worlds.md")}): '
+               'what each world imports and exports, and its `register-*` entry points')
+    for iface in api['interfaces']:
+        rel = f'docs/dev/reference/plugin-api/{iface["name"]}.md'
+        summary = doc_summary(iface.get('doc'))
+        out.append(f'- [{iface["name"]}]({base}{mirror_md(rel)})'
+                   + (f': {summary}' if summary else ''))
+    out.append('')
+
+    out += ['## Plugin guides', '']
+    for stem, what in [('plugin-authoring', 'toolchain, ABI and versions, the manifest, sync vs async seams, the runtime contract'),
+                       ('plugin-patterns', 'recipes for each kind of contribution, with code quoted from plugins CI builds')]:
+        out.append(f'- [{stem}]({base}{mirror_md(f"docs/dev/guides/{stem}.md")}): {what}')
+    out.append('')
+
+    for sec in sections:
+        out += [f'## User documentation: {sec["title"]}', '']
+        if sec.get('description'):
+            out += [sec['description'], '']
+        for group in sec.get('group', []):
+            for topic in group['docs']:
+                title, summary = meta[topic]
+                url = base + mirror_md(f'docs/user/{topic}.md')
+                out.append(f'- [{labels.get(topic, title)}]({url})'
+                           + (f': {summary}' if summary else ''))
+        out.append('')
+
+    for sec in dev_sections:
+        if sec.get('generated'):
+            continue  # the plugin API, listed above
+        out += [f'## Developer documentation: {sec["title"]}', '']
+        if sec.get('description'):
+            out += [sec['description'], '']
+        for group in sec.get('group', []):
+            for key in group['docs']:
+                rel = f'docs/dev/{key}.md'
+                with open(os.path.join(repo_root, rel), encoding='utf-8') as fh:
+                    title = make_title(fh.read(), key.rsplit('/', 1)[-1])
+                out.append(f'- [{dev_labels.get(key, title)}]({base}{mirror_md(rel)})')
+        out.append('')
+
+    with open(os.path.join(site_dir, 'static', 'llms.txt'), 'w', encoding='utf-8') as fh:
+        fh.write('\n'.join(out).rstrip() + '\n')
+
+    # llms-full.txt: one file, in reading order, each part marked with its
+    # source so a reader can cite it.
+    seams = sorted(f'docs/dev/reference/plugin-api/{i["name"]}.md' for i in api['interfaces'])
+    parts = [
+        '# Lattice — writing plugins\n\n'
+        f'> Everything needed to write a Lattice plugin, in one file: the authoring '
+        f'guide, the patterns guide, and the complete plugin-API reference (every '
+        f'world, seam, function, type and field), generated from the WIT package '
+        f'`{api["package"]}`. Code blocks are quoted from plugins CI compiles. '
+        f'Structured form: {base}/plugin-api.json. Index of all docs: {base}/llms.txt.\n'
+    ]
+    for rel in LLMS_FULL_HEAD + seams:
+        with open(os.path.join(repo_root, rel), encoding='utf-8') as fh:
+            parts.append(f'<!-- source: {rel} -->\n\n' + fh.read().strip() + '\n')
+    with open(os.path.join(site_dir, 'static', 'llms-full.txt'), 'w', encoding='utf-8') as fh:
+        fh.write('\n---\n\n'.join(parts))
+
+    mirrored = sum(len(files) for _, _, files in os.walk(MD_DST))
+    print(f'  static/llms.txt, static/llms-full.txt, static/md/ ({mirrored} pages)')
+
+
+def check_agents_md(topic_section, dev_pages, page_section):
+    """AGENTS.md is not published, but its links are pointers an agent
+    follows first — so they go through the same resolver, and a dead one
+    fails the sync like any other."""
+    if os.path.isfile(AGENTS_MD):
+        with open(AGENTS_MD, encoding='utf-8') as fh:
+            rewrite_links(fh.read(), AGENTS_MD, topic_section, dev_pages,
+                          page_section, is_user_doc=False)
+
+
 def load_dev_nav():
     """Return (sections, page_section, labels) for the developer docs.
 
@@ -964,6 +1118,10 @@ def main():
 
     print('Syncing media...')
     sync_media()
+
+    print('Writing the agent layer...')
+    write_agent_files(sections, meta, labels, dev_sections, page_section, dev_labels)
+    check_agents_md(topic_section, dev_pages, page_section)
 
     if BROKEN_LINKS:
         die('relative links to files that do not exist (moved? deleted? wrong '

@@ -16,12 +16,26 @@ on:
       - 'site/**'
       - 'docs/user/**'
       - 'docs/dev/**'
+      # The sync checks every relative link in the docs (and AGENTS.md)
+      # resolves to a file that exists — including links INTO the code. So a
+      # change that moves or deletes a linked source file must build the site
+      # too, or the dead link is only found by the next docs change.
+      - 'AGENTS.md'
+      - 'crates/**'
+      - 'plugins/**'
       - '.github/workflows/deploy-docs.yml'
   pull_request:
     paths:
       - 'site/**'
       - 'docs/user/**'
       - 'docs/dev/**'
+      # The sync checks every relative link in the docs (and AGENTS.md)
+      # resolves to a file that exists — including links INTO the code. So a
+      # change that moves or deletes a linked source file must build the site
+      # too, or the dead link is only found by the next docs change.
+      - 'AGENTS.md'
+      - 'crates/**'
+      - 'plugins/**'
       - '.github/workflows/deploy-docs.yml'
   workflow_dispatch:
 

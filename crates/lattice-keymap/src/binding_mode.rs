@@ -13,7 +13,9 @@
 /// pending substate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BindingMode {
+    /// Vim Normal mode — the default command state.
     Normal,
+    /// Insert mode: unbound printable chords insert themselves as text.
     Insert,
     /// Charwise / Linewise / Blockwise visual share the same chord
     /// table; differences are in the operator dispatch (Range::Selection
@@ -25,6 +27,7 @@ pub enum BindingMode {
     /// Motions/extensions are duplicated from the Visual table and kept
     /// honest by a parity test. See `docs/dev/architecture/select-mode.md`.
     Select,
+    /// Vim Replace mode (`R`): typed chars overwrite rather than insert.
     Replace,
     /// `:` minibuffer.
     Command,
@@ -96,6 +99,16 @@ pub enum BindingMode {
 
 impl BindingMode {
     /// Human-readable label used in `:describe-key` output and diagnostics.
+    /// Also the `Display` form.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_keymap::BindingMode;
+    ///
+    /// assert_eq!(BindingMode::OperatorPending.label(), "Operator-Pending");
+    /// assert_eq!(BindingMode::AfterG.to_string(), "After-g");
+    /// ```
     pub fn label(self) -> &'static str {
         match self {
             BindingMode::Normal => "Normal",
@@ -125,8 +138,22 @@ impl BindingMode {
         }
     }
 
-    /// All variants in declaration order. Used by
-    /// `KeymapHandle::resolve_trace_all_modes` to iterate every mode.
+    /// The binding modes `:describe-key` iterates, in declaration order.
+    /// Used by [`KeymapHandle::resolve_trace_all_modes`](crate::KeymapHandle::resolve_trace_all_modes)
+    /// to walk every mode.
+    ///
+    /// Note: the list currently omits [`Self::Prompt`] (23 of the 24
+    /// variants), so a chord bound only in the Prompt table is not
+    /// reported by the all-modes trace.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_keymap::BindingMode;
+    ///
+    /// assert_eq!(BindingMode::all()[0], BindingMode::Normal);
+    /// assert!(BindingMode::all().contains(&BindingMode::Snippet));
+    /// ```
     pub fn all() -> &'static [BindingMode] {
         use BindingMode::*;
         &[

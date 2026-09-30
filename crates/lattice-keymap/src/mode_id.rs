@@ -20,6 +20,20 @@ use internment::Intern;
 /// Naming convention: mode names always end in `-mode`. Group
 /// names (M.2) never end in `-mode`. The disambiguation rule
 /// in mode-architecture.md §6.7.1 depends on this convention.
+///
+/// `Ord` compares the names (alphabetical), not intern addresses, so
+/// orderings built from it are stable across runs.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_keymap::ModeId;
+///
+/// let a = ModeId::new("diff-mode");
+/// assert_eq!(a, ModeId::new("diff-mode"));
+/// assert_eq!(a.as_str(), "diff-mode");
+/// assert!(a < ModeId::new("magit-mode"));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModeId(Intern<String>);
 

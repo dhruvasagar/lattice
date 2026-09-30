@@ -75,6 +75,15 @@ impl KeymapResolution {
     /// The winning hit: the last active hit in priority order
     /// (highest-priority active layer). `None` when no active layer
     /// has a binding for the queried chord.
+    ///
+    /// Caveat: this ranks by the static [`KeymapLayer`] order, where
+    /// mode layers sit below `User` / `Buffer` and same-kind mode layers
+    /// sort by name. Dispatch
+    /// ([`KeymapHandle::lookup_with_context`](crate::KeymapHandle::lookup_with_context))
+    /// instead overlays active mode layers *above* `User` / `Buffer`, in
+    /// activation order. When an active mode layer and a `User` / `Buffer`
+    /// layer both bind the chord, or two active modes do, this can name a
+    /// different hit than the one that fires.
     pub fn winner(&self) -> Option<&LayerHit> {
         self.hits.iter().rev().find(|h| h.active)
     }

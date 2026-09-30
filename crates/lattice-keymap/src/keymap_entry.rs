@@ -12,7 +12,7 @@
 //! ## Construction
 //!
 //! [`KeymapEntry`] keeps its `source` field private; the
-//! [`keymap_entry!`] macro is the only intended construction path,
+//! [`keymap_entry!`](crate::keymap_entry!) macro is the only intended construction path,
 //! and the macro calls the `#[doc(hidden)]` [`KeymapEntry::__new`]
 //! constructor to populate it. External crates that try to build a
 //! literal directly fail at the privacy boundary — preserving the
@@ -33,7 +33,7 @@ use crate::BindingMode;
 /// order in `:describe-key` so reading one field at a time still tells
 /// a coherent story.
 ///
-/// The `source` field is private; the [`keymap_entry!`] macro is the
+/// The `source` field is private; the [`keymap_entry!`](crate::keymap_entry!) macro is the
 /// only intended construction path. The macro calls the
 /// `#[doc(hidden)]` [`KeymapEntry::__new`] constructor to populate
 /// it. External crates trying to build a literal directly hit the
@@ -42,6 +42,10 @@ use crate::BindingMode;
 /// own `file!()` + `line!()`, not supplied ad-hoc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeymapEntry {
+    /// The chord sequence in keymap notation (`"j"`, `"gg"`, `"<C-w>j"`,
+    /// `"<Esc>"` — see the module docs). Stored unparsed; parsing happens in
+    /// the host translation pass, and [`lookup`] compares this string
+    /// verbatim, so `"<C-w>"` and `"<c-w>"` are different rows here.
     pub chord: &'static str,
     /// The binding-modes this row is live in. A single-mode row
     /// (`mode: Normal`) carries a one-element slice; a multi-mode row
@@ -50,6 +54,8 @@ pub struct KeymapEntry {
     /// out into one `KeymapBinding` per mode, so the per-mode trie and
     /// `:describe-key` see each mode independently. Always non-empty.
     pub modes: &'static [BindingMode],
+    /// One-line human description, shown by `:describe-key`, `:keymap` and
+    /// which-key. Every entry has one (the macro requires it).
     pub doc: &'static str,
     /// Canonical name in the `CommandRegistry`. `None` for synthetic
     /// actions (`PushDigit`, `SetPending`, `StartMacroRecord`, ...) that
@@ -65,10 +71,10 @@ pub struct KeymapEntry {
     /// [`BoundCommand`](crate::BoundCommand) the registry stores.
     pub fall_through: bool,
     /// Where this binding was registered. For static entries built by
-    /// the [`keymap_entry!`] macro this is the row's own `file:line`;
+    /// the [`keymap_entry!`](crate::keymap_entry!) macro this is the row's own `file:line`;
     /// for runtime user binds this is the config-loader / dispatcher
     /// source. Private — read via [`Self::source`]; construct via the
-    /// [`keymap_entry!`] macro.
+    /// [`keymap_entry!`](crate::keymap_entry!) macro.
     source: lattice_grammar::SourceLocation,
 }
 
@@ -80,7 +86,7 @@ impl KeymapEntry {
     }
 
     /// Macro-internal constructor. `#[doc(hidden)]` and prefixed
-    /// `__` to signal "do not call directly"; the [`keymap_entry!`]
+    /// `__` to signal "do not call directly"; the [`keymap_entry!`](crate::keymap_entry!)
     /// macro is the only intended caller. Public visibility is
     /// required so the macro expands cleanly in external crates
     /// (mode crates that contribute their own keymaps). Forgery
@@ -123,7 +129,7 @@ impl KeymapEntry {
     }
 }
 
-/// Helper used by the [`keymap_entry!`] macro to construct a
+/// Helper used by the [`keymap_entry!`](crate::keymap_entry!) macro to construct a
 /// `Builtin` source from `file!()` + `line!()`. `pub` + hidden so the
 /// macro can expand in external mode crates; direct callers defeat
 /// the file/line capture the macro provides.
@@ -195,6 +201,25 @@ impl lattice_grammar::Introspectable for KeymapEntry {
 /// The path qualifier `$crate::keymap_entry::KeymapEntry::__new` resolves
 /// inside `lattice-keymap`; callers use `lattice_keymap::keymap_entry! { … }`,
 /// `lattice_mode::keymap_entry! { … }`, or `lattice_host::keymap_entry!`.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_keymap::{BindingMode, keymap_entry};
+///
+/// let e = keymap_entry! { mode: Normal, chord: "j", doc: "Move down", cmd: "motion:line-down" };
+/// assert_eq!(e.command, Some("motion:line-down"));
+/// assert_eq!(e.modes, [BindingMode::Normal].as_slice());
+/// assert!(!e.fall_through);
+///
+/// // Multi-mode, no command (a synthetic action), augment-and-continue.
+/// let e = keymap_entry! {
+///     mode: [Insert, Snippet], chord: "<Esc>", doc: "Leave", cmd: None, fall_through: true
+/// };
+/// assert_eq!(e.command, None);
+/// assert_eq!(e.modes_label(), "Insert, Active-snippet (minor mode)");
+/// assert!(e.fall_through);
+/// ```
 #[macro_export]
 macro_rules! keymap_entry {
     // ----- Entry arms: match the `mode:` slot FRESH (single ident or a
@@ -538,8 +563,26 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
     ]
 }
 
-/// Look up every binding for a chord across modes. The chord is
-/// matched case-sensitively. Used by `:describe-key`.
+/// Every row of the built-in [`default_keymap`] whose [`KeymapEntry::chord`]
+/// string equals `chord` exactly — across all modes, in table order. The
+/// match is on the notation string, case-sensitively, with no chord parsing
+/// or normalisation. Used by `:describe-key`.
+///
+/// This consults only the static built-in catalog, never the live
+/// [`KeymapRegistry`](crate::KeymapRegistry): mode, user and plugin bindings
+/// are not visible here (use
+/// [`KeymapHandle::resolve_trace`](crate::KeymapHandle::resolve_trace) for
+/// the live answer).
+///
+/// # Examples
+///
+/// ```
+/// use lattice_keymap::{BindingMode, lookup};
+///
+/// let hits = lookup("gg");
+/// assert!(hits.iter().any(|e| e.modes.contains(&BindingMode::Normal)));
+/// assert!(lookup("not-a-chord").is_empty());
+/// ```
 pub fn lookup(chord: &str) -> Vec<&'static KeymapEntry> {
     default_keymap()
         .iter()
@@ -547,7 +590,8 @@ pub fn lookup(chord: &str) -> Vec<&'static KeymapEntry> {
         .collect()
 }
 
-/// Every entry in mode-grouped order. Used by `:keymap`.
+/// Every entry of the built-in catalog in mode-grouped declaration order —
+/// identical to [`default_keymap`]. Used by `:keymap`.
 pub fn entries() -> &'static [KeymapEntry] {
     default_keymap()
 }

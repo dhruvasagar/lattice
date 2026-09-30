@@ -45,6 +45,7 @@ pub struct Entry {
     pub chord: KeyChord,
     /// Never blank — the label chain is total by construction (§4.1).
     pub label: String,
+    /// Whether the key fires a binding or opens a deeper prefix.
     pub kind: EntryKind,
     /// Which layer the binding came from. Carried for provenance in
     /// tests and future per-layer styling; not rendered in v1.
@@ -79,8 +80,9 @@ pub enum Sort {
 }
 
 impl Sort {
-    /// Parse the `which-key.sort` option value. Unknown values fall back
-    /// to `Key` — log-and-skip, never panic (§8).
+    /// Parse the `which-key.sort` option value (`"key"` / `"label"`,
+    /// exact). An unknown value returns `None`; the caller logs it and
+    /// falls back to [`Sort::Key`] — log-and-skip, never panic (§8).
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "key" => Some(Sort::Key),
@@ -141,6 +143,42 @@ impl WhichKeyModel {
 /// `registry` supplies rungs 2 and 3 of the label chain; pass the live
 /// `CommandRegistry`. `mode` is only carried through for the static
 /// catalog lookup and the model's own field.
+///
+/// Labels resolve, first hit wins: the built-in catalog's doc for the
+/// full chord path in `mode`, then the registry's doc for the bound
+/// command, then its name, then `<unbound>`. An unbound child is a group
+/// labelled `+N`.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use lattice_grammar::{CommandId, CommandInvocation, CommandRegistry, SourceLocation};
+/// use lattice_keymap::{
+///     BindingMode, BoundCommand, ChordPattern, EntryKind, KeymapLayer, KeymapTrie, Sort, build_model,
+/// };
+/// use lattice_protocol::KeyChord;
+///
+/// let bound = Arc::new(BoundCommand::from_invocation(
+///     CommandInvocation::of(CommandId::new(1)), SourceLocation::synthetic("doc"), KeymapLayer::Builtin,
+/// ));
+/// let lit = |c| ChordPattern::Literal(KeyChord::char(c));
+/// let mut trie = KeymapTrie::new();
+/// trie.insert(&[lit('g'), lit('g')], bound.clone());
+/// trie.insert(&[lit('g'), lit('c'), lit('c')], bound);
+///
+/// let prefix = [KeyChord::char('g')];
+/// let node = trie.node_view(&prefix).unwrap();
+/// let model = build_model(node, &prefix, BindingMode::Normal, &CommandRegistry::new(), Sort::Key);
+///
+/// assert_eq!(model.header(), "g");
+/// let rows: Vec<_> = model.rows().map(|(e, _)| (e.chord, e.label.as_str(), e.kind)).collect();
+/// assert_eq!(rows, vec![
+///     (KeyChord::char('c'), "+1", EntryKind::Prefix(1)),
+///     // `gg` is in the built-in catalog, so its curated doc wins.
+///     (KeyChord::char('g'), "Jump to first line", EntryKind::Terminal),
+/// ]);
+/// ```
 pub fn build_model(
     node: NodeView,
     prefix: &[KeyChord],
@@ -325,8 +363,11 @@ pub enum GridSpanKind {
 /// A styled byte range within one rendered line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GridSpan {
+    /// Byte offset of the span's first byte in its line.
     pub start: usize,
+    /// Byte offset one past the span's last byte (exclusive).
     pub end: usize,
+    /// What the span covers.
     pub kind: GridSpanKind,
 }
 
@@ -341,6 +382,8 @@ pub struct GridSpan {
 /// applied before the ambiguity can arise.
 #[derive(Debug, Clone, Default)]
 pub struct RenderedGrid {
+    /// The popup's text, one entry per line: header, grid rows, then any
+    /// footer lines. Written into the popup buffer verbatim.
     pub lines: Vec<String>,
     /// One entry per line in `lines`, same order. Empty vectors for
     /// lines with nothing to emphasise.
@@ -348,6 +391,8 @@ pub struct RenderedGrid {
 }
 
 impl RenderedGrid {
+    /// No lines — the model was empty or the pane too narrow, and the
+    /// caller suppresses the popup.
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }

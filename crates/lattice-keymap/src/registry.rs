@@ -13,7 +13,8 @@
 //!    additions / overrides.
 //! 3. **MinorMode** -- pushed/popped layers
 //!    (active-snippet, completion-popup, picker, chord-capture).
-//!    Each push gets a unique tag so multiple minors stack.
+//!    One layer per [`ModeId`]: re-pushing the same mode replaces
+//!    that layer's bindings rather than stacking a sibling.
 //! 4. **User** -- compiled `init.rs` bindings.
 //! 5. **Buffer** -- per-buffer ad-hoc bindings (`:nmap <buffer>`).
 //!
@@ -36,6 +37,49 @@
 //! mode push/pop on UI events; user `:bind` / `:unmap`); the
 //! brief lock has no correctness exposure to the keystroke
 //! path because reads never touch it.
+//!
+//! ## Gating: always-on vs. mode layers
+//!
+//! `Builtin`, `User` and `Buffer` are always on. `MajorMode(id)` and
+//! `MinorMode(id)` layers fire only when the caller names `id` in the
+//! `active_modes` slice passed to [`KeymapHandle::lookup_with_context`]
+//! (active major first, then minors in activation order). A gated layer
+//! overlays the always-on merge, so an active mode's chord wins even over
+//! a `User` rebind of the same chord.
+//!
+//! # Examples
+//!
+//! ```
+//! use lattice_grammar::{CommandId, CommandInvocation, SourceLocation};
+//! use lattice_keymap::{BindingMode, KeymapHandle, KeymapLayer, LookupResult, ModeId};
+//! use lattice_keymap::{KeymapCapability, KeymapError};
+//! use lattice_protocol::KeyChord;
+//!
+//! let keymap = KeymapHandle::new();
+//! let cap = KeymapCapability::Full;
+//! let src = || SourceLocation::synthetic("doc");
+//! let (builtin_w, diff_w) = (CommandId::new(1), CommandId::new(2));
+//!
+//! keymap.try_bind_chord_string(cap, KeymapLayer::Builtin, BindingMode::Normal, "w",
+//!     CommandInvocation::of(builtin_w), src()).unwrap();
+//! let diff = ModeId::new("diff-mode");
+//! keymap.try_bind_chord_string(cap, KeymapLayer::MinorMode(diff), BindingMode::Normal, "w",
+//!     CommandInvocation::of(diff_w), src()).unwrap();
+//!
+//! let fired = |active: &[ModeId]| match keymap.lookup_with_context(
+//!     BindingMode::Normal, &[KeyChord::char('w')], active,
+//! ) {
+//!     LookupResult::Bound { command, .. } => Some(command.command.command),
+//!     _ => None,
+//! };
+//! assert_eq!(fired(&[]), Some(builtin_w)); // diff-mode not active here
+//! assert_eq!(fired(&[diff]), Some(diff_w)); // active mode shadows the builtin
+//!
+//! // Capabilities scope writes: user config cannot touch the builtin layer.
+//! let denied = keymap.try_bind_chord_string(KeymapCapability::User, KeymapLayer::Builtin,
+//!     BindingMode::Normal, "x", CommandInvocation::of(builtin_w), src());
+//! assert!(matches!(denied, Err(KeymapError::CapabilityDenied { .. })));
+//! ```
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -92,7 +136,11 @@ pub enum KeymapCapability {
     /// directly. Matches emacs's `(:map foo-mode-map ...)`
     /// shape: the binding is scoped to the mode, lives + dies
     /// with the mode's activation lifecycle.
-    OwnedLayer { mode_id: ModeId },
+    OwnedLayer {
+        /// The one mode whose layer (`MinorMode(mode_id)` or
+        /// `MajorMode(mode_id)`) this capability may write.
+        mode_id: ModeId,
+    },
 }
 
 /// Errors returned by the capability-gated bind APIs.
@@ -104,7 +152,10 @@ pub enum KeymapError {
     /// `:bind` / `:unmap` errors and so plugin manifests that
     /// claim the wrong scope fail loudly at first registration.
     CapabilityDenied {
+        /// The capability the caller presented.
         capability: KeymapCapability,
+        /// The layer it tried to write (for `try_push_layer`, the layer
+        /// the push would have created).
         layer: KeymapLayer,
     },
     /// The supplied chord string couldn't be parsed.
@@ -144,6 +195,20 @@ pub const DEFAULT_LEADER: &str = "<Space>";
 /// the expanded string goes through `parse_chord_sequence` like any other, so a
 /// malformed `keymap.leader` surfaces as an ordinary `InvalidChord` on each
 /// binding that used it — skipped and logged, never a panic.
+///
+/// Only the exact spellings `<leader>` and `<Leader>` are recognised (not
+/// `<LEADER>`). Most callers want [`KeymapHandle::expand_leader`], which
+/// supplies the registry's configured leader.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_keymap::{DEFAULT_LEADER, expand_leader};
+///
+/// assert_eq!(expand_leader("<leader>ff", DEFAULT_LEADER), "<Space>ff");
+/// assert_eq!(expand_leader("g<Leader>x", ","), "g,x");
+/// assert_eq!(expand_leader("gd", ","), "gd");
+/// ```
 pub fn expand_leader(chord_str: &str, leader: &str) -> String {
     if !chord_str.contains("<leader>") && !chord_str.contains("<Leader>") {
         // The overwhelmingly common case: no allocation, no scan cost beyond
@@ -177,13 +242,21 @@ fn capability_allows(capability: KeymapCapability, layer: KeymapLayer) -> bool {
     }
 }
 
-/// Stable id for a runtime-pushed layer (minor-mode overlays,
-/// per-buffer bindings). Issued by [`KeymapHandle::push_layer`];
-/// the caller passes it to `pop_layer` to remove the layer.
+/// Stable id for a registered layer. Issued by
+/// [`KeymapHandle::push_layer`] (minor-mode overlays, per-buffer
+/// bindings); the caller passes it to [`KeymapHandle::pop_layer`] to
+/// remove the layer. Layers created implicitly by a `bind` also get one
+/// internally, but it is never handed out — remove those with
+/// [`KeymapHandle::remove_layer`].
+///
+/// Ids are allocated from a per-registry counter starting at 1 and are
+/// never reused within that registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LayerId(u32);
 
 impl LayerId {
+    /// The underlying counter value — for logging and diagnostics only; it
+    /// carries no priority or ordering meaning between layers.
     pub fn raw(self) -> u32 {
         self.0
     }
@@ -397,6 +470,10 @@ pub struct KeymapRegistry {
 }
 
 impl KeymapRegistry {
+    /// An empty registry (no layers, leader [`DEFAULT_LEADER`], no command
+    /// registry — so no motion mirroring until
+    /// [`KeymapHandle::set_command_registry`]). Callers normally use
+    /// [`KeymapHandle::new`], which wraps exactly this.
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(RegistryInner::new()),
@@ -632,6 +709,20 @@ fn mode_order(mode: BindingMode) -> usize {
 /// Ctrl, Alt or Super otherwise make it a chord, not typing. Shift doesn't
 /// count: Select strips it before the lookup, and a shifted letter arrives as
 /// its uppercase `Char` anyway.
+///
+/// # Examples
+///
+/// ```
+/// use lattice_keymap::overtypes_in_select;
+/// use lattice_protocol::KeyChord;
+/// use lattice_protocol::chord::SpecialKey;
+///
+/// assert!(overtypes_in_select(&KeyChord::char('x')));
+/// assert!(overtypes_in_select(&KeyChord::special(SpecialKey::Enter)));
+/// assert!(overtypes_in_select(&KeyChord::ctrl('j'))); // <NL>
+/// assert!(!overtypes_in_select(&KeyChord::ctrl('d')));
+/// assert!(!overtypes_in_select(&KeyChord::special(SpecialKey::Down)));
+/// ```
 pub fn overtypes_in_select(chord: &KeyChord) -> bool {
     use lattice_protocol::chord::{KeyKind, SpecialKey};
     let (ctrl, alt, super_) = (chord.mods.ctrl(), chord.mods.alt(), chord.mods.super_());
@@ -836,28 +927,30 @@ impl std::fmt::Debug for KeymapHandle {
 }
 
 impl KeymapHandle {
+    /// A handle on a fresh, empty [`KeymapRegistry`]. Clone the handle to
+    /// share the registry; a second `new()` is an unrelated registry.
     pub fn new() -> Self {
         Self {
             registry: KeymapRegistry::new(),
         }
     }
 
-    /// Expose the reverse-cache ArcSwap for callers in `lattice-host`
-    /// that construct `KeymapReverseLookupHandle`. `lattice-keymap`
-    /// cannot depend on `lattice-completion` (circular dep risk), so
-    /// the `KeymapReverseLookupHandle` type lives in `lattice-host`
-    /// and obtains the cache via this accessor.
-    /// Reverse-lookup entries for `id`, freshening the derived state
-    /// first.
+    /// Reverse-lookup entries for `id`: the chord sequence that fires it,
+    /// each chord paired with the layer providing the binding. Empty when
+    /// nothing binds `id`. Freshens the derived state first.
+    ///
+    /// Coverage is deliberately narrow (it feeds the `:` completion
+    /// margin): **Normal mode only**, **literal-only paths** (a binding
+    /// through a `{char}` wildcard is skipped), and **first binding wins**
+    /// when several chords bind the same command. Both the always-on
+    /// layers and every gated mode layer are indexed.
     ///
     /// (C′) Prefer this over [`Self::reverse_cache_arc`]: a raw handle
-    /// on the `ArcSwap` bypasses [`ensure_derived_fresh`] and can read
-    /// a cache that a pending `bind` has invalidated. Cold path (the
-    /// command palette and the completion margin's keybinding column),
-    /// so paying a rebuild here is free where paying it per write was
-    /// not.
-    ///
-    /// [`ensure_derived_fresh`]: KeymapRegistry::ensure_derived_fresh
+    /// on the `ArcSwap` bypasses the registry's lazy derived-state
+    /// refresh and can read a cache that a pending `bind` has invalidated.
+    /// Cold path (the command palette and the completion margin's
+    /// keybinding column), so paying a rebuild here is free where paying
+    /// it per write was not.
     pub fn reverse_entries(&self, id: CommandId) -> Vec<(KeyChord, KeymapLayer)> {
         self.registry.ensure_derived_fresh();
         self.registry
@@ -868,6 +961,14 @@ impl KeymapHandle {
             .unwrap_or_default()
     }
 
+    /// The raw reverse-cache cell behind [`Self::reverse_entries`].
+    ///
+    /// Exists for `lattice-host`, which builds a `KeymapReverseLookupHandle`
+    /// from it: `lattice-keymap` cannot depend on `lattice-completion`
+    /// (circular dependency), so that type lives downstream and takes the
+    /// cache through this accessor. Reads through it skip the lazy
+    /// derived-state refresh, so they can lag a `bind` until the next
+    /// lookup-style call freshens it.
     pub fn reverse_cache_arc(
         &self,
     ) -> Arc<ArcSwap<HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>>>> {
@@ -878,9 +979,9 @@ impl KeymapHandle {
     /// Wait-free.
     ///
     /// K.1.c (2026-05-30): preserves pre-K.1.c semantics by
-    /// treating **all registered minor modes as active** (in
-    /// `ModeId`-alphabetical order, matching K.1.b's sorted-
-    /// layers-vec merge order). Legacy callers (the
+    /// treating **every registered mode layer — major and minor — as
+    /// active** (overlaid in `ModeId`-alphabetical order, matching K.1.b's
+    /// sorted-layers-vec merge order). Legacy callers (the
     /// translate dispatcher's completion-popup / snippet
     /// keystroke path) continue to work unchanged — their
     /// mode lifecycle already gates at push/pop, so
@@ -905,13 +1006,14 @@ impl KeymapHandle {
     ///
     /// Composes a fresh per-keystroke merged trie:
     /// 1. Start with the cached always-on merge
-    ///    (`Builtin + MajorMode + User + Buffer`).
-    /// 2. For each `mode_id` in `active_modes` (first to
-    ///    last activation order) overlay that mode's
-    ///    minor-mode layer on top — **last-activated wins**
-    ///    among minor modes.
+    ///    (`Builtin + User + Buffer`).
+    /// 2. For each `mode_id` in `active_modes` (in slice order —
+    ///    callers pass the active major first, then minors in
+    ///    activation order) overlay that mode's `MajorMode` /
+    ///    `MinorMode` layer on top — **later entries win**, so a
+    ///    minor beats the major and the last-activated minor wins.
     /// 3. Note: the always-on cache already has `User /
-    ///    Buffer` overlaid above `Builtin / MajorMode`. The
+    ///    Buffer` overlaid above `Builtin`. The
     ///    minor-mode overlay applied in step 2 therefore
     ///    sits *above* User/Buffer at lookup time — which
     ///    differs from the pre-K.1.c "MinorMode < User <
@@ -929,7 +1031,31 @@ impl KeymapHandle {
     /// Wait-free reads: two `ArcSwap::load` calls
     /// (`merged`, `gated_mode_tries`) + per-`active_modes`
     /// merge work. Typical `active_modes.len()` is 0-3 so
-    /// the overhead is small.
+    /// the overhead is small; with an empty slice no composite is
+    /// built at all. A `ModeId` with no registered layer is skipped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_grammar::{CommandId, CommandInvocation, SourceLocation};
+    /// use lattice_keymap::{BindingMode, ChordPattern, KeymapHandle, KeymapLayer, LookupResult, ModeId};
+    /// use lattice_protocol::KeyChord;
+    ///
+    /// let keymap = KeymapHandle::new();
+    /// let path = [ChordPattern::Literal(KeyChord::char('g')), ChordPattern::Literal(KeyChord::char('d'))];
+    /// keymap.bind(KeymapLayer::MajorMode(ModeId::new("rust-mode")), BindingMode::Normal, &path,
+    ///     CommandInvocation::of(CommandId::new(9)), SourceLocation::synthetic("doc"));
+    ///
+    /// let rust = [ModeId::new("rust-mode")];
+    /// let g = KeyChord::char('g');
+    /// assert!(matches!(keymap.lookup_with_context(BindingMode::Normal, &[g], &rust), LookupResult::Partial));
+    /// assert!(matches!(
+    ///     keymap.lookup_with_context(BindingMode::Normal, &[g, KeyChord::char('d')], &rust),
+    ///     LookupResult::Bound { .. },
+    /// ));
+    /// // Not this buffer's major: the layer is invisible.
+    /// assert!(matches!(keymap.lookup_with_context(BindingMode::Normal, &[g], &[]), LookupResult::Unbound));
+    /// ```
     pub fn lookup_with_context(
         &self,
         mode: BindingMode,
@@ -1102,11 +1228,17 @@ impl KeymapHandle {
     }
 
     /// Lower-level binder: register a pre-built
-    /// `Arc<BoundCommand>` directly. Used by the per-mode
-    /// migration helpers (`keymap_replace::register_replace_bindings` +
-    /// sibling slices) to register `BoundCommand`s carrying
-    /// `legacy_action`. Production code should prefer [`Self::bind`]
-    /// once the legacy bridge retires (slice 8.i).
+    /// `Arc<BoundCommand>` directly, e.g. one built with
+    /// [`BoundCommand::with_fall_through`] or shared across several
+    /// paths. Used by the per-mode registration helpers
+    /// (`lattice_ui_tui::keymap_replace::register_replace_bindings` and
+    /// siblings). [`Self::bind`] is this plus `BoundCommand::from_invocation`.
+    ///
+    /// Same semantics as [`Self::bind`]: last write wins at the exact
+    /// `(layer, mode, path)`; with a command registry set, a Normal-mode
+    /// motion is mirrored into Visual (and Select when its first chord
+    /// cannot be typed). The binding's own `layer` field is not
+    /// consulted — `layer` decides where it goes.
     pub fn bind_bound(
         &self,
         layer: KeymapLayer,
@@ -1215,8 +1347,13 @@ impl KeymapHandle {
     /// the layer's identity is the `mode_id` — pushing for the
     /// same mode_id is **idempotent on the layer**: the
     /// existing layer's bindings are replaced, no sibling layer
-    /// is minted. `Buffer` continues to mint a fresh opaque
-    /// `LayerId` per push.
+    /// is minted. The same holds for `MajorMode(mode_id)` and for
+    /// `Buffer`: the registry finds an existing layer by its
+    /// [`KeymapLayer`] key, so a second `Buffer` push replaces the
+    /// first's bindings and returns the same `LayerId`.
+    ///
+    /// A replacing push also replaces the layer's label, and discards any
+    /// bindings previously added to that layer with [`Self::bind`].
     ///
     /// `bindings` is the layer's full per-mode binding set --
     /// computed by the caller (e.g. completion-popup wires its
@@ -1327,7 +1464,7 @@ impl KeymapHandle {
     /// Remove an entire layer by its [`KeymapLayer`] identity, dropping every
     /// binding it holds across all binding-modes, then rebuild the merged /
     /// gated / reverse caches. The teardown seam for a plugin mode's keymap
-    /// (PH7.12b): [`bind_mode_keymap`](crate) binds a plugin mode's chords into
+    /// (PH7.12b): `lattice-plugin-host`'s `bind_mode_keymap` binds a plugin mode's chords into
     /// `KeymapLayer::MinorMode(mode_id)` via [`Self::try_bind_chord_string`] —
     /// an *implicitly-created* layer, so the host never holds a [`LayerId`] to
     /// [`pop_layer`](Self::pop_layer) with. This removes it by the layer key
@@ -1601,6 +1738,15 @@ impl KeymapHandle {
     /// this entry point checks the capability before committing
     /// the write so plugins / `init.rs` can't escape their
     /// declared scope.
+    ///
+    /// Scope: `Full` → any layer; `User` → `User` only; `MinorMode` →
+    /// any `MinorMode(_)` or `Buffer`; `OwnedLayer { mode_id }` → that
+    /// mode's own `MinorMode(mode_id)` or `MajorMode(mode_id)`.
+    ///
+    /// # Errors
+    ///
+    /// [`KeymapError::CapabilityDenied`] when the capability does not
+    /// cover `layer`; nothing is written.
     pub fn try_bind(
         &self,
         capability: KeymapCapability,
@@ -1627,7 +1773,35 @@ impl KeymapHandle {
     /// [`lattice_protocol::chord::parse_chord_sequence`]; wildcards
     /// (`<CharLiteral>`) aren't expressible from chord strings
     /// today and require [`Self::try_bind`] with a hand-built
-    /// `&[ChordPattern]`.
+    /// `&[ChordPattern]`. `<leader>` / `<Leader>` is expanded first
+    /// against [`Self::leader`].
+    ///
+    /// # Errors
+    ///
+    /// [`KeymapError::InvalidChord`] when the (leader-expanded) string does
+    /// not parse; otherwise as [`Self::try_bind`]. The chord is parsed
+    /// before the capability is checked.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lattice_grammar::{CommandId, CommandInvocation, SourceLocation};
+    /// use lattice_keymap::{BindingMode, KeymapCapability, KeymapError, KeymapHandle, KeymapLayer, LookupResult};
+    /// use lattice_protocol::KeyChord;
+    ///
+    /// let keymap = KeymapHandle::new();
+    /// keymap.set_leader(",");
+    /// let cmd = CommandInvocation::of(CommandId::new(3));
+    /// keymap.try_bind_chord_string(KeymapCapability::User, KeymapLayer::User, BindingMode::Normal,
+    ///     "<leader>w", cmd.clone(), SourceLocation::synthetic("init.rs")).unwrap();
+    ///
+    /// let hit = keymap.lookup(BindingMode::Normal, &[KeyChord::char(','), KeyChord::char('w')]);
+    /// assert!(matches!(hit, LookupResult::Bound { command, .. } if command.command == cmd));
+    ///
+    /// let bad = keymap.try_bind_chord_string(KeymapCapability::User, KeymapLayer::User,
+    ///     BindingMode::Normal, "<Nope>", cmd, SourceLocation::synthetic("init.rs"));
+    /// assert!(matches!(bad, Err(KeymapError::InvalidChord(_))));
+    /// ```
     pub fn try_bind_chord_string(
         &self,
         capability: KeymapCapability,
@@ -1742,12 +1916,17 @@ impl KeymapHandle {
         Ok(self.unbind(layer, mode, path))
     }
 
-    /// Capability-gated [`Self::push_layer`]. Always permitted
-    /// for `Full`, `MinorMode`, and `OwnedLayer` capabilities
-    /// (push creates a new `MinorMode` layer regardless of the
-    /// capability's specific scope). The `User` capability
-    /// can't push runtime layers -- user config writes live in
-    /// the static `User` layer registered at boot.
+    /// Capability-gated [`Self::push_layer`]. Permitted for every
+    /// capability except `User`, whatever `kind` names: `MinorMode` and
+    /// `OwnedLayer { mode_id }` are NOT checked against the pushed
+    /// layer's kind or mode id here, unlike [`Self::try_bind`]. The `User`
+    /// capability can't push runtime layers -- user config writes live
+    /// in the static `User` layer registered at boot.
+    ///
+    /// # Errors
+    ///
+    /// [`KeymapError::CapabilityDenied`] for `User`, naming the layer the
+    /// push would have created.
     pub fn try_push_layer(
         &self,
         capability: KeymapCapability,
@@ -1830,11 +2009,16 @@ impl Default for KeymapHandle {
 /// Pushing for the same `mode_id` is idempotent on the layer
 /// (replaces bindings; no sibling layer minted). `Buffer`
 /// stays opaque (a future K.1.x slice will type it on
-/// [`lattice_core::BufferId`] for symmetry).
+/// `lattice_core::BufferId` for symmetry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushLayerKind {
+    /// Install / replace the [`KeymapLayer::MajorMode`] layer for this mode.
     MajorMode(ModeId),
+    /// Install / replace the [`KeymapLayer::MinorMode`] layer for this mode.
     MinorMode(ModeId),
+    /// Install / replace the single [`KeymapLayer::Buffer`] layer. There is
+    /// one `Buffer` layer per registry, not one per buffer: a second push
+    /// replaces the first's bindings and returns the same [`LayerId`].
     Buffer,
 }
 

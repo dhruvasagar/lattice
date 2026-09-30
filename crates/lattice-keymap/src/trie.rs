@@ -71,6 +71,13 @@ use lattice_protocol::{KeyChord, KeyKind, KeyMods};
 /// trie itself doesn't enforce this, the registry does at merge
 /// time.
 ///
+/// The derived `Ord` is declaration order (`Builtin < MajorMode(_) <
+/// MinorMode(_) < User < Buffer`, same-kind mode layers by mode name),
+/// and is the order the registry stores and reports layers in. At
+/// lookup time, though, an *active* `MajorMode` / `MinorMode` layer is
+/// overlaid above `User` and `Buffer` — see
+/// [`KeymapHandle::lookup_with_context`](crate::KeymapHandle::lookup_with_context).
+///
 /// K.1.b (2026-05-30): `MinorMode` now carries a typed
 /// [`ModeId`] instead of an opaque `u32`. The layer's
 /// identity = the mode's identity; one layer per mode (not
@@ -110,8 +117,13 @@ pub enum KeymapLayer {
 /// - `layer` -- priority tier for tie-break / shadowing.
 #[derive(Debug, Clone)]
 pub struct BoundCommand {
+    /// The typed invocation the dispatcher runs when the chord resolves.
     pub command: CommandInvocation,
+    /// Where the binding was registered, for `:describe-key` provenance.
     pub source: SourceLocation,
+    /// The layer the binding was created for. Set at construction by the
+    /// caller; [`KeymapHandle::bind`](crate::KeymapHandle::bind) sets it to
+    /// the layer it binds into.
     pub layer: KeymapLayer,
     /// SN.3c.2b: `:map`-style augment-and-continue. When `true`, the
     /// dispatcher runs this binding's action AND THEN re-resolves the
@@ -160,7 +172,9 @@ pub enum LookupResult {
     /// wildcards along the path -- empty for binding paths
     /// without wildcards (the common case).
     Bound {
+        /// The binding at the terminal node.
         command: Arc<BoundCommand>,
+        /// Chars matched by `{char}` wildcards, in path order.
         captured: Vec<char>,
     },
     /// Walk consumed every input chord but landed at an
@@ -238,6 +252,45 @@ impl Clone for TrieNode {
 
 /// One layer's worth of bindings, indexed for
 /// `O(prefix_length)` lookup.
+///
+/// A plain value type: no locking, no layering. The
+/// [`KeymapRegistry`](crate::KeymapRegistry) keeps one per
+/// `(layer, BindingMode)` and merges them with [`Self::merge_over`];
+/// callers build one directly to hand a whole layer to
+/// [`KeymapHandle::push_layer`](crate::KeymapHandle::push_layer).
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use lattice_grammar::{CommandId, CommandInvocation, SourceLocation};
+/// use lattice_keymap::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult};
+/// use lattice_protocol::KeyChord;
+///
+/// let bound = |id| Arc::new(BoundCommand::from_invocation(
+///     CommandInvocation::of(CommandId::new(id)),
+///     SourceLocation::synthetic("doc"),
+///     KeymapLayer::Builtin,
+/// ));
+/// let lit = |c| ChordPattern::Literal(KeyChord::char(c));
+///
+/// let mut trie = KeymapTrie::new();
+/// trie.insert(&[lit('g'), lit('g')], bound(1));             // gg
+/// trie.insert(&[lit('f'), ChordPattern::CharLiteral], bound(2)); // f{char}
+///
+/// let k = KeyChord::char;
+/// assert!(matches!(trie.lookup(&[k('g')]), LookupResult::Partial));
+/// assert!(matches!(trie.lookup(&[k('g'), k('g')]), LookupResult::Bound { .. }));
+/// assert!(matches!(trie.lookup(&[k('q')]), LookupResult::Unbound));
+/// // The wildcard captures the typed char...
+/// match trie.lookup(&[k('f'), k('x')]) {
+///     LookupResult::Bound { captured, .. } => assert_eq!(captured, vec!['x']),
+///     other => panic!("{other:?}"),
+/// }
+/// // ...but never a modified chord.
+/// assert!(matches!(trie.lookup(&[k('f'), KeyChord::ctrl('x')]), LookupResult::Unbound));
+/// assert_eq!(trie.binding_count(), 2);
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct KeymapTrie {
     root: TrieNode,
@@ -447,6 +500,31 @@ impl KeymapTrie {
     /// Overlay `other` on top of `self`. `other`'s bindings win
     /// on conflict; the merge is structural so paths in `other`
     /// that don't conflict simply add to `self`'s tree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use lattice_grammar::{CommandId, CommandInvocation, SourceLocation};
+    /// use lattice_keymap::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie};
+    /// use lattice_protocol::KeyChord;
+    ///
+    /// let bound = |id, layer| Arc::new(BoundCommand::from_invocation(
+    ///     CommandInvocation::of(CommandId::new(id)), SourceLocation::synthetic("doc"), layer,
+    /// ));
+    /// let x = [ChordPattern::Literal(KeyChord::char('x'))];
+    /// let y = [ChordPattern::Literal(KeyChord::char('y'))];
+    ///
+    /// let mut base = KeymapTrie::new();
+    /// base.insert(&x, bound(1, KeymapLayer::Builtin));
+    /// base.insert(&y, bound(2, KeymapLayer::Builtin));
+    /// let mut user = KeymapTrie::new();
+    /// user.insert(&x, bound(3, KeymapLayer::User));
+    ///
+    /// base.merge_over(&user);
+    /// assert_eq!(base.get(&x).unwrap().layer, KeymapLayer::User); // overridden
+    /// assert_eq!(base.get(&y).unwrap().layer, KeymapLayer::Builtin); // kept
+    /// ```
     ///
     /// The registry's layer-stack collapse calls this in
     /// priority order (lowest first) so the highest-priority

@@ -39,7 +39,7 @@ Why a crate exists at all is a design rule, not an accident of history: a new cr
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
 | [`lattice-completion`](https://dhruvasagar.github.io/lattice/api/lattice_completion/) | Pluggable completion pipeline (DESIGN.md §5.11.3). | `lattice-cells`, `lattice-core`, `lattice-grammar`, `lattice-protocol` | `lattice-config`, `lattice-help`, `lattice-host`, `lattice-lsp`, `lattice-magit`, `lattice-mode`, `lattice-picker`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-snippet`, `lattice-syntax`, `lattice-ui-gpui`, `lattice-ui-tui` |
-| [`lattice-keymap`](https://dhruvasagar.github.io/lattice/api/lattice_keymap/) | `lattice-keymap` — the single home for all keymap types, trie resolution, and the runtime registry. | `lattice-grammar`, `lattice-protocol` | `lattice-diff`, `lattice-host`, `lattice-magit`, `lattice-mode`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-runtime` |
+| [`lattice-keymap`](https://dhruvasagar.github.io/lattice/api/lattice_keymap/) | The editor's keymap engine: the chord trie, the layered runtime registry every keystroke resolves against, the built-in vim keymap catalog, and the introspection models (`:describe-key`, which-key) derived from them. | `lattice-grammar`, `lattice-protocol` | `lattice-diff`, `lattice-host`, `lattice-magit`, `lattice-mode`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-runtime` |
 
 ## Layer 4
 

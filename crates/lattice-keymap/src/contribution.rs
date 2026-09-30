@@ -15,7 +15,7 @@ use crate::KeymapEntry;
 
 /// One mode-contributed keymap binding.
 ///
-/// Declarative: the host calls [`crate::Mode::keymap`] once at
+/// Declarative: the host calls `lattice_mode::Mode::keymap` once at
 /// registration time and translates each binding into a
 /// `BoundCommand` inserted at `KeymapLayer::MinorMode(mode.id())`.
 /// Re-translation only happens on dynamic
@@ -101,7 +101,7 @@ impl KeymapBinding {
 /// A mode's full keymap contribution.
 ///
 /// `Keymap::default()` is the empty contribution -- modes that
-/// don't ship bindings rely on the [`crate::Mode::keymap`] trait
+/// don't ship bindings rely on the `lattice_mode::Mode::keymap` trait
 /// default.
 ///
 /// Two declaration paths share the same contribution shape:
@@ -115,8 +115,8 @@ impl KeymapBinding {
 /// 2. **Table form** — `Keymap::from_entries(&MY_TABLE)` /
 ///    `.extend_with_entries(&...)`. Static-catalog-style;
 ///    ergonomic for 5-20+ bindings; references a
-///    `&'static [KeymapEntry]` built with the [`keymap_entry!`]
-///    macro. Each entry carries a docstring; the host
+///    `&'static [KeymapEntry]` built with the
+///    [`keymap_entry!`](crate::keymap_entry!) macro. Each entry carries a docstring; the host
 ///    translation pass (K.2.4.A.0.3) resolves the entry's
 ///    canonical command-name string against the
 ///    `CommandRegistry` at registration time, building one
@@ -127,11 +127,26 @@ impl KeymapBinding {
 ///
 /// The two paths compose:
 ///
-/// ```ignore
-/// fn keymap(&self) -> Keymap {
-///     Keymap::from_entries(&MULTIBUFFER_KEYMAP)
-///         .bind_chord(BindingMode::Normal, "<C-r>", self.cmd.refresh)
-/// }
+/// ```
+/// use lattice_grammar::{CommandId, CommandInvocation};
+/// use lattice_keymap::{BindingMode, Keymap, KeymapEntry, keymap_entry};
+/// use std::sync::LazyLock;
+///
+/// // A static table (`KeymapEntry` embeds a `SourceLocation`, so the
+/// // slice is built lazily rather than as a `const`).
+/// static MY_KEYMAP: LazyLock<Vec<KeymapEntry>> = LazyLock::new(|| vec![
+///     keymap_entry! { mode: Normal, chord: "]e", doc: "Next excerpt", cmd: "my:excerpt-next" },
+///     keymap_entry! { mode: [Normal, Visual], chord: "q", doc: "Close", cmd: "my:close" },
+/// ]);
+///
+/// let refresh = CommandInvocation::of(CommandId::new(7));
+/// let km = Keymap::from_entries(MY_KEYMAP.as_slice())
+///     .bind_chord(BindingMode::Normal, "<C-r>", refresh.clone());
+///
+/// assert_eq!(km.entries.len(), 2); // resolved against the CommandRegistry later
+/// assert_eq!(km.bindings.len(), 1); // already typed
+/// assert_eq!(km.bindings[0].command, refresh);
+/// assert_eq!(km.bindings[0].doc, None); // the chain form carries no doc
 /// ```
 ///
 /// Layer placement is implicit at translation time: every
@@ -204,12 +219,29 @@ impl Keymap {
     ///
     /// The recommended idiom for mode-contributed keymaps:
     ///
-    /// ```ignore
-    /// fn keymap(&self) -> Keymap {
-    ///     Keymap::new()
-    ///         .bind_chord(BindingMode::Normal, "]e", self.commands.excerpt_next)
-    ///         .bind_chord(BindingMode::Normal, "[e", self.commands.excerpt_prev)
-    /// }
+    /// ```
+    /// use lattice_grammar::{CommandId, CommandInvocation};
+    /// use lattice_keymap::{BindingMode, ChordPattern, Keymap};
+    /// use lattice_protocol::KeyChord;
+    ///
+    /// let next = CommandInvocation::of(CommandId::new(1));
+    /// let prev = CommandInvocation::of(CommandId::new(2));
+    /// let km = Keymap::new()
+    ///     .bind_chord(BindingMode::Normal, "]e", next)
+    ///     .bind_chord(BindingMode::Normal, "<C-w>j", prev);
+    ///
+    /// assert_eq!(
+    ///     km.bindings[1].chords,
+    ///     vec![
+    ///         ChordPattern::Literal(KeyChord::ctrl('w')),
+    ///         ChordPattern::Literal(KeyChord::char('j')),
+    ///     ],
+    /// );
+    /// // Provenance is this call site, via `#[track_caller]`.
+    /// assert!(matches!(
+    ///     &km.bindings[0].source.kind,
+    ///     lattice_grammar::SourceKind::File { path, .. } if path == std::path::Path::new(file!()),
+    /// ));
     /// ```
     ///
     /// `#[track_caller]` propagates the binding row's own
@@ -227,7 +259,9 @@ impl Keymap {
     /// needs `ChordPattern::CharLiteral` calls [`Keymap::bind`]
     /// directly with an explicit `chords` vector.
     ///
-    /// **Panics on parse error.** Mode bindings are declared
+    /// # Panics
+    ///
+    /// On a chord-string parse error. Mode bindings are declared
     /// at compile-time-static call sites with constant chord
     /// strings; a malformed string is a bug in the mode impl,
     /// not a runtime condition. The panic message names the

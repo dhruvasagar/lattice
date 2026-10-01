@@ -14,6 +14,13 @@ guide and those disagree, **they win** and this guide is the bug.
 > (what Lattice is, the quick start, the editor sanity tour), then come back
 > here to start contributing.
 
+> **API reference while you work.** The [crate map](../reference/crates.md)
+> lays out every workspace crate by dependency, with what each one owns, and
+> links each to its rustdoc. The full [Rust API](https://dhruvasagar.github.io/lattice/api/)
+> is published from `main`; locally, `cargo doc -p <crate> --no-deps --open`.
+> Writing a plugin instead? Start from the
+> [plugin authoring guide](plugin-authoring.md).
+
 ---
 
 ## 1. Prerequisites and the dev loop
@@ -510,7 +517,10 @@ Beyond that:
 | [`operations/benchmarks.md`](../operations/benchmarks.md) | Latest measured latency/throughput numbers. | The perf bar the CI ratchet enforces. |
 | [`../../../CLAUDE.md`](../../../CLAUDE.md) | Standing rules + conventions (distilled real corrections). | The *how we work* rules — mode-ownership, logging, naming, UX-over-goals. |
 | [`architecture/comparison-zed.md`](../architecture/comparison-zed.md) | The architectural deep-dive vs. the closest peer. | Why the actor/mode/everything-is-a-buffer bets are what they are. |
+| [`reference/crates.md`](../reference/crates.md) | The crate map: every workspace crate, layered by dependency, with its own summary. Generated. | Which crate owns what, and what may depend on what. |
+| [Rust API](https://dhruvasagar.github.io/lattice/api/) | rustdoc for every crate, from `main` (locally: `cargo doc -p <crate> --no-deps --open`). Core crates document every public item, with runnable examples. | The exact signature and contract of a type or function. |
 | [`./plugin-authoring.md`](./plugin-authoring.md) | Writing WASM plugins against the WIT API. | The extension (plugin) path, as opposed to core contribution. |
+| [`./plugin-patterns.md`](./plugin-patterns.md) + [`reference/plugin-api.md`](../reference/plugin-api.md) | Plugin recipes, and the generated plugin-API reference. | What a plugin can call and implement. |
 
 **Two rules for reading:**
 

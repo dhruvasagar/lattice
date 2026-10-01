@@ -11,6 +11,11 @@ Documentation for contributing to lattice and understanding its internals.
 contributor setup, the design spec, the architecture diagrams, the input
 pipeline, and how the editor boots. Everything else assumes those.
 
+**Reference.** The [crate map](@/dev/foundations/crates.md) lays out every
+workspace crate by dependency, with what each owns; the
+[Rust API](../api/) is the rustdoc for all of them, built from `main`. The
+[Plugin API reference](@/dev/plugin-api/_index.md) is the WIT contract plugins build against.
+
 The remaining sections are organised by the question you are asking, not by
 where the file lives in the repo — so a section may mix a design fragment, a
 guide and an audit when they cover the same subsystem.

@@ -11805,6 +11805,11 @@ mod tests {
         app.editor.current_match = Some(ProtoRange::new(pos(2, 4), pos(2, 7)));
         app.editor.all_matches = vec![ProtoRange::new(pos(2, 4), pos(2, 7))];
         app.editor.publish_render_state();
+        // Build the styled cells NOW. The worker does this off-thread, so
+        // without it the compose below races the build and, losing, sees
+        // text with no syntax colour — which this test then reports as the
+        // inactive pane having dropped its decorations.
+        lattice_host::cells_worker::recompute(&app.editor.render_state);
 
         let view = FrameView::for_buffer(&app, app.ad().document_buffer_id);
         let ctx = PaneComposeCtx {

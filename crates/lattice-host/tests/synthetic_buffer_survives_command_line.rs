@@ -267,8 +267,12 @@ async fn every_read_only_synthetic_buffer_refuses_operators() {
         }
         editor.run_tick_pending();
         let before = editor.document.snapshot().text().to_string();
+        // `contains`, not `starts_with`, and `contains(&before)` below rather
+        // than equality: `*messages*` is a live log, so a real line (the
+        // `switched to buffer` this very test causes) can land ahead of the
+        // seed or after the snapshot. That is the owner writing, not `x`.
         assert!(
-            before.starts_with("SEEDED CONTENT"),
+            before.contains("SEEDED CONTENT"),
             "{name}: precondition, the owner's write landed: {before:?}"
         );
         assert!(
@@ -282,10 +286,11 @@ async fn every_read_only_synthetic_buffer_refuses_operators() {
         for c in lattice_host::chord::parse_chord_sequence("x").expect("parses") {
             let _ = editor.dispatch_chord(c, &mut partial);
         }
-        assert_eq!(
-            editor.document.snapshot().text().to_string(),
-            before,
-            "{name}: `x` must not edit a read-only synthetic buffer"
+        let after = editor.document.snapshot().text().to_string();
+        assert!(
+            after.contains(&before),
+            "{name}: `x` must not edit a read-only synthetic buffer: \
+             {before:?} became {after:?}"
         );
     }
 }

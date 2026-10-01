@@ -2236,7 +2236,7 @@ mod descend_through_the_tui {
     }
 
     #[test]
-    fn ctrl_l_descends_and_ctrl_h_comes_back() {
+    fn ctrl_l_descends_and_ctrl_w_comes_back() {
         let dir = tree();
         let root = dir.path().canonicalize().unwrap();
         let mut app = app_with("scratch\n", 20);
@@ -2280,12 +2280,13 @@ mod descend_through_the_tui {
 
         press(
             &mut app,
-            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
         );
         assert_eq!(
             query(&app),
             format!("{}/", root.to_string_lossy()),
-            "and `<C-h>` comes back out"
+            "and `<C-w>` comes back out (PH.1 moved ascend off `<C-h>`, \
+             which is the picker's help)"
         );
     }
 

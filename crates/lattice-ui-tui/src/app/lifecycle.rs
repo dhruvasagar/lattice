@@ -1183,21 +1183,38 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn tree_follow_on_file_opens_document_buffer() {
+    /// LM.4: `<CR>` on a tree row is owned by `file-tree-mode` (chord →
+    /// mode keymap → `Effect::OpenBufferAt`), not `Action::FollowLink`, so
+    /// the test presses the key rather than dispatching the action.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tree_follow_on_file_opens_document_buffer() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let dir = std::env::temp_dir().join(format!("lattice-tree-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(dir.join("alpha.txt"), "hello").ok();
         let mut a = app_with("xx", 10);
-        a.editor
-            .set_command_line_text(&format!("Filetree {}", dir.display()));
-        a.editor.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        // Move cursor to the alpha.txt entry (row 1).
-        let line_down = a.editor.builtins.line_down;
-        a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
+        a.do_open_file_tree(Some(dir.clone()));
+        assert!(
+            settle_mode(&mut a, "file-tree-mode").await,
+            "file-tree-mode must activate on the tree buffer",
+        );
+        let id = a.editor.active_pane_buffer_id();
+        let line = a
+            .editor
+            .file_tree_entries_for(id)
+            .and_then(|es| {
+                es.iter().position(|e| {
+                    e.path
+                        .file_name()
+                        .map(|n| n == "alpha.txt")
+                        .unwrap_or(false)
+                })
+            })
+            .expect("alpha.txt row present");
+        a.editor.cursor.line = line as u32;
         // Follow.
-        a.apply(Action::FollowLink);
+        press(&mut a, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         // Active pane now shows the file's Document buffer; the
         // tree stays in the registry (reachable via :bn / :b).
         assert_eq!(a.editor.active_buffer, BufferKind::Document);

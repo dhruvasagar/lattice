@@ -133,7 +133,11 @@ jobs:
 
       - name: Send Status to Discord
         uses: appleboy/discord-action@v1.2.0
-        if: always() # Sends notification regardless of success or failure
+        # Regardless of success or failure — but on Linux only. This is a
+        # container action, which GitHub runs on Linux runners alone: on
+        # macOS and Windows the step itself errored ("Container action is
+        # only supported on Linux") and failed a job whose tests had passed.
+        if: always() && runner.os == 'Linux'
         with:
             webhook_url: ${{ secrets.DISCORD_WEBHOOK }}
             message: |

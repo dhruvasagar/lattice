@@ -862,6 +862,16 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let canonical = std::fs::canonicalize(&dir).unwrap();
+        // What `pwd` is matched on: the directory's unique leaf, not the whole
+        // path. The shell and `canonicalize` spell a path differently on
+        // Windows (`/c/Users/…` against `\\?\C:\Users\…`), and the leaf is
+        // the part both agree on — and the part the second run's directory,
+        // its parent, does not contain.
+        let leaf = canonical
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap()
+            .to_string();
 
         let bus = Arc::new(EventBus::new());
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CompilationOutputPushed>();
@@ -900,7 +910,7 @@ mod tests {
         .unwrap();
         let (first_text, mut rx) = first;
         assert!(
-            first_text.contains(&canonical.display().to_string()),
+            first_text.contains(&leaf),
             "the first run should be in {canonical:?}, got {first_text:?}"
         );
 
@@ -911,7 +921,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            second.contains(&canonical.display().to_string()),
+            second.contains(&leaf),
             "recompile must reuse the first run's directory, got {second:?}"
         );
 

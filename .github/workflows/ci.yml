@@ -99,13 +99,18 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-          # PH7.5: the plugin host builds its wasm32-wasip2 fixture guests +
-          # the `fuzzy-finder` validation plugin (via build.rs) for the
-          # picker/adapter tests, the parity test, and the perf RATCHETS
-          # (tests/perf_ratchet.rs — the CI gate on the §7 plugin budgets).
-          # Without the target those all SKIP gracefully; installing it here
-          # makes the gate actually run in CI.
-          targets: wasm32-wasip2
+          # PH7.5: the plugin host builds its wasm32-wasip2 fixture guests and
+          # the bundled plugins (via build.rs) for the guest<->host tests and
+          # the perf RATCHETS (tests/perf_ratchet.rs — the CI gate on the §7
+          # plugin budgets). With the target installed, a guest that fails to
+          # compile FAILS the build; without it every guest SKIPS. The
+          # plugin-API reference's examples are quoted from these guests, so
+          # this is also what makes "examples compile in CI" true.
+          #
+          # The input is `target` (singular; comma-separated for several).
+          # It was spelt `targets` until AD, which the action ignores with an
+          # "Unexpected input" warning — so no guest was ever built in CI.
+          target: wasm32-wasip2
           # Disable the action's default `RUSTFLAGS=-D warnings`
           # injection -- see the top-of-file note.
           rustflags: ""

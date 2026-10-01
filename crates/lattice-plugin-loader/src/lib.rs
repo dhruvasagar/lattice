@@ -1656,9 +1656,10 @@ impl PluginLoader {
     /// after the loader is constructed; a no-op (logged) if no command registry
     /// was wired.
     ///
-    /// The apply closures capture `Arc<Self>`, so the command registry holds the
-    /// loader and the loader holds the registry — a benign cycle (both are
-    /// app-lifetime boot services that never drop).
+    /// The apply closures capture a `Weak<Self>`. The command registry holds
+    /// them and the loader holds the registry, so a strong capture was a cycle
+    /// that kept the loader — and its plugin host's engine and threads — alive
+    /// after the editor that booted it had been dropped.
     pub fn register_ex_commands(self: &Arc<Self>) {
         let Some(registry) = self.env.command_registry.clone() else {
             tracing::warn!(

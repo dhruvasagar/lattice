@@ -2,7 +2,7 @@
 //! surface, **owned by the loader** (option A, confirmed with Dhruva).
 //!
 //! The loader self-registers these into the runtime-mutable `CommandRegistry` at
-//! [`install`](crate::install) time; each `apply` closure captures the
+//! [`install`](crate::install) time; each `apply` closure captures a weak
 //! [`PluginLoader`] handle and does the work in the loader crate — **zero host
 //! code** (no host `Effect` variant, no `Editor::` method, no `expand_alias`
 //! entry: plain command names resolve directly via `id_by_name`, exactly like
@@ -16,7 +16,7 @@
 //! failure surfaces via `tracing::info!` / `warn!` (→ `*messages*`), the
 //! one-shot user-actionable event class.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use lattice_grammar::{
     ArgDefault, ArgKind, ArgSpec, Args, CommandRegistry, EchoLevel, Effect, ExCommandContext,
@@ -34,14 +34,14 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
          must hold a `plugin.toml` manifest and exactly one `.wasm` component; \
          its declared seams are drained into the editor's native registries. \
          Loads asynchronously — completion is reported in `*messages*`.",
-        load_spec(Arc::clone(loader)),
+        load_spec(Arc::downgrade(loader)),
     );
     registry.register_ex_command(
         "plugin-unload",
         "Unload a loaded plugin (`:plugin-unload <id|name>`), reversing every \
          registry contribution it made (grammar / picker / modes / options / \
          event subscriptions) and stopping its actor tasks.",
-        unload_spec(Arc::clone(loader)),
+        unload_spec(Arc::downgrade(loader)),
     );
     registry.register_ex_command(
         "plugin-reload",
@@ -49,7 +49,7 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
          re-instantiate from its on-disk source with a fresh, untripped \
          quarantine. Reloads asynchronously — completion is reported in \
          `*messages*`.",
-        reload_spec(Arc::clone(loader)),
+        reload_spec(Arc::downgrade(loader)),
     );
     registry.register_ex_command(
         "plugin-update",
@@ -59,7 +59,7 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
          a rebuild; a prebuilt one is re-downloaded. A plugin pinned to a \
          revision declines and says so — the pin is the answer already. Updates \
          asynchronously — completion is reported in `*messages*`.",
-        update_spec(Arc::clone(loader)),
+        update_spec(Arc::downgrade(loader)),
     );
     registry.register_ex_command(
         "plugin-rebuild-all",
@@ -68,7 +68,7 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
          source (bundled, prebuilt) are skipped, not failed. Runs one at a \
          time — `cargo` already uses the whole machine — and one plugin's \
          failure never stops the rest. Reported in `*messages*`.",
-        bulk_spec(Arc::clone(loader), BulkOp::Rebuild),
+        bulk_spec(Arc::downgrade(loader), BulkOp::Rebuild),
     );
     registry.register_ex_command(
         "plugin-reload-all",
@@ -76,7 +76,7 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
          already on disk — no build, no network. Use after editing something \
          every plugin reads. One plugin's failure never stops the rest; \
          reported in `*messages*`.",
-        bulk_spec(Arc::clone(loader), BulkOp::Reload),
+        bulk_spec(Arc::downgrade(loader), BulkOp::Reload),
     );
     registry.register_ex_command(
         "plugin-update-all",
@@ -86,7 +86,7 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
          bare `:plugin-update`, which means one named plugin: a command that \
          rebuilds your whole editor should not be reachable by forgetting an \
          argument. Reported in `*messages*`.",
-        bulk_spec(Arc::clone(loader), BulkOp::Update),
+        bulk_spec(Arc::downgrade(loader), BulkOp::Update),
     );
     registry.register_ex_command(
         "plugin-clean",
@@ -95,7 +95,7 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
          FAILED to load is never listed — it is still one you asked for — and \
          neither is a directory without a `.source` marker, because provenance \
          is what makes the removal recoverable.",
-        clean_spec(Arc::clone(loader)),
+        clean_spec(Arc::downgrade(loader)),
     );
     registry.register_ex_command(
         "reload-config",
@@ -106,7 +106,7 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
          restarting. Runs asynchronously; the detailed result — rebuilt / already \
          current / a build failure with the compiler error — is reported in \
          `*messages*`. On a build failure the previous config keeps running.",
-        reload_config_spec(Arc::clone(loader)),
+        reload_config_spec(Arc::downgrade(loader)),
     );
 }
 
@@ -137,6 +137,19 @@ fn echo(level: EchoLevel, text: impl Into<String>) -> Effect {
     }
 }
 
+/// What a command says when its loader is gone.
+///
+/// The specs hold the loader WEAKLY. The command registry holds these
+/// closures and the loader holds the command registry, so a strong capture is
+/// a cycle: the loader — and with it the plugin host, its wasmtime engine and
+/// the two threads that engine owns — could never be dropped, even after the
+/// editor that booted it was. One editor per process never notices; a process
+/// that boots many (the test suite) strands a host each and runs out of
+/// threads. Reaching this branch means a command outlived its editor.
+fn loader_gone() -> Effect {
+    echo(EchoLevel::Warn, "the plugin loader is no longer running")
+}
+
 /// One `ArgSpec` for the single positional string arg (drives the missing-arg
 /// prompt, the palette form, and `<Tab>` in the `:` line).
 ///
@@ -163,7 +176,7 @@ fn string_arg(
     }]
 }
 
-fn load_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
+fn load_spec(loader: Weak<PluginLoader>) -> ExCommandSpec {
     ExCommandSpec {
         // Reflex: the `apply` returns immediately (it spawns the async load); it
         // does no blocking work on the dispatch path.
@@ -172,6 +185,9 @@ fn load_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
         accepts_range: false,
         parse_args: Arc::new(parse_target),
         apply: Arc::new(move |ctx: &ExCommandContext| {
+            let Some(loader) = loader.upgrade() else {
+                return Ok(loader_gone());
+            };
             let Some(path) = arg_string(ctx) else {
                 return Ok(echo(EchoLevel::Warn, "usage: :plugin-load <path>"));
             };
@@ -198,13 +214,16 @@ fn load_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
     }
 }
 
-fn unload_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
+fn unload_spec(loader: Weak<PluginLoader>) -> ExCommandSpec {
     ExCommandSpec {
         latency_class: LatencyClass::Reflex,
         accepts_bang: false,
         accepts_range: false,
         parse_args: Arc::new(parse_target),
         apply: Arc::new(move |ctx: &ExCommandContext| {
+            let Some(loader) = loader.upgrade() else {
+                return Ok(loader_gone());
+            };
             let Some(target) = arg_string(ctx) else {
                 return Ok(echo(EchoLevel::Warn, "usage: :plugin-unload <id|name>"));
             };
@@ -233,13 +252,16 @@ fn unload_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
     }
 }
 
-fn update_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
+fn update_spec(loader: Weak<PluginLoader>) -> ExCommandSpec {
     ExCommandSpec {
         latency_class: LatencyClass::Reflex,
         accepts_bang: false,
         accepts_range: false,
         parse_args: Arc::new(parse_target),
         apply: Arc::new(move |ctx: &ExCommandContext| {
+            let Some(loader) = loader.upgrade() else {
+                return Ok(loader_gone());
+            };
             let Some(target) = arg_string(ctx) else {
                 return Ok(echo(EchoLevel::Warn, "usage: :plugin-update <id|name>"));
             };
@@ -274,13 +296,16 @@ fn progressive(op: BulkOp) -> &'static str {
 /// builders: the three differ only in the loader method awaited and the word
 /// the echo uses, and three copies of the spawn-and-echo scaffolding is three
 /// places for them to drift apart.
-fn bulk_spec(loader: Arc<PluginLoader>, op: BulkOp) -> ExCommandSpec {
+fn bulk_spec(loader: Weak<PluginLoader>, op: BulkOp) -> ExCommandSpec {
     ExCommandSpec {
         latency_class: LatencyClass::Reflex,
         accepts_bang: false,
         accepts_range: false,
         parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
         apply: Arc::new(move |_ctx: &ExCommandContext| {
+            let Some(loader) = loader.upgrade() else {
+                return Ok(loader_gone());
+            };
             loader.spawn_bulk(op);
             Ok(echo(
                 EchoLevel::Info,
@@ -292,7 +317,7 @@ fn bulk_spec(loader: Arc<PluginLoader>, op: BulkOp) -> ExCommandSpec {
     }
 }
 
-fn clean_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
+fn clean_spec(loader: Weak<PluginLoader>) -> ExCommandSpec {
     ExCommandSpec {
         latency_class: LatencyClass::Reflex,
         // The bang is the confirmation. `:plugin-clean` shows you what would
@@ -302,6 +327,9 @@ fn clean_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
         accepts_range: false,
         parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
         apply: Arc::new(move |ctx: &ExCommandContext| {
+            let Some(loader) = loader.upgrade() else {
+                return Ok(loader_gone());
+            };
             let removable = loader.removable_plugin_dirs();
             if removable.is_empty() {
                 return Ok(echo(EchoLevel::Info, "nothing to clean"));
@@ -331,13 +359,16 @@ fn clean_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
     }
 }
 
-fn reload_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
+fn reload_spec(loader: Weak<PluginLoader>) -> ExCommandSpec {
     ExCommandSpec {
         latency_class: LatencyClass::Reflex,
         accepts_bang: false,
         accepts_range: false,
         parse_args: Arc::new(parse_target),
         apply: Arc::new(move |ctx: &ExCommandContext| {
+            let Some(loader) = loader.upgrade() else {
+                return Ok(loader_gone());
+            };
             let Some(target) = arg_string(ctx) else {
                 return Ok(echo(EchoLevel::Warn, "usage: :plugin-reload <id|name>"));
             };
@@ -354,7 +385,7 @@ fn reload_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
     }
 }
 
-fn reload_config_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
+fn reload_config_spec(loader: Weak<PluginLoader>) -> ExCommandSpec {
     ExCommandSpec {
         latency_class: LatencyClass::Reflex,
         accepts_bang: false,
@@ -362,6 +393,9 @@ fn reload_config_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
         // `:reload-config` takes no argument — ignore any trailing text.
         parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
         apply: Arc::new(move |_ctx: &ExCommandContext| {
+            let Some(loader) = loader.upgrade() else {
+                return Ok(loader_gone());
+            };
             // Recompiles init.rs THEN reloads (unlike `:plugin-reload`, which
             // re-instantiates the on-disk artifact). The success/failure detail
             // — including the compiler error — lands in `*messages*`.

@@ -39,7 +39,39 @@ fn language_guest_wasm() -> Option<Vec<u8>> {
         env!("CARGO_MANIFEST_DIR"),
         "/../lattice-plugin-host/tests/fixtures/language-guest/target/wasm32-wasip2/release/language_guest.wasm"
     );
+    if !fixture_grammar_was_built() {
+        return None;
+    }
     std::fs::read(path).ok()
+}
+
+/// Did the fixture's build script manage to compile its grammar?
+///
+/// The guest builds wherever `wasm32-wasip2` is installed, but its GRAMMAR
+/// needs a `clang` that can target wasm, and where that is missing (Apple's
+/// clang, on the macOS runners) the fixture embeds empty bytes on purpose, so
+/// that a missing toolchain is a skipped test rather than a failed build. The
+/// host then rejects the empty grammar and registers no language — which read
+/// here as three failures, not three skips. The newest build's `grammar.wasm`
+/// says which case this is.
+fn fixture_grammar_was_built() -> bool {
+    let build = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../lattice-plugin-host/tests/fixtures/language-guest/target/wasm32-wasip2/release/build"
+    );
+    let Ok(entries) = std::fs::read_dir(build) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("language-guest-")
+        })
+        .filter_map(|e| std::fs::metadata(e.path().join("out/grammar.wasm")).ok())
+        .max_by_key(|m| m.modified().ok())
+        .is_some_and(|m| m.len() > 0)
 }
 
 fn write_plugin_dir(root: &std::path::Path, id: &str, provides: &[&str], wasm: &[u8]) {

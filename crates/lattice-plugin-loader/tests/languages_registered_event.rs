@@ -33,7 +33,34 @@ fn language_guest_wasm() -> Option<Vec<u8>> {
         env!("CARGO_MANIFEST_DIR"),
         "/../lattice-plugin-host/tests/fixtures/language-guest/target/wasm32-wasip2/release/language_guest.wasm"
     );
+    if !fixture_grammar_was_built() {
+        return None;
+    }
     std::fs::read(path).ok()
+}
+
+/// Did the fixture's build script manage to compile its grammar? Where no
+/// `clang` can target wasm (the macOS runners) it embeds empty bytes on
+/// purpose and the host registers no language, so the test is skipped rather
+/// than failed. See the same helper in `language_drain.rs`.
+fn fixture_grammar_was_built() -> bool {
+    let build = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../lattice-plugin-host/tests/fixtures/language-guest/target/wasm32-wasip2/release/build"
+    );
+    let Ok(entries) = std::fs::read_dir(build) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("language-guest-")
+        })
+        .filter_map(|e| std::fs::metadata(e.path().join("out/grammar.wasm")).ok())
+        .max_by_key(|m| m.modified().ok())
+        .is_some_and(|m| m.len() > 0)
 }
 
 fn help_guest_wasm() -> Option<Vec<u8>> {

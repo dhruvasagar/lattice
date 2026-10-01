@@ -190,9 +190,10 @@ from the teardown publishing render state.
 `emacs-keys-mode` so it does not depend on `:set emacs-keys` — a user
 who turns the tribute off must not lose the only way to stop a scan.
 
-Mode set: `Normal`, `Insert`, `Replace` — and therefore
-`ModalState::Command` / `Search(_)` / `Prompt`, which dispatch through
-`keymap_insert::dispatch_insert` and so look up `BindingMode::Insert`.
+Mode set: `Normal`, `Insert`, `Replace`, and the three readline
+surfaces `Command` / `Search` / `Prompt`. The minibuffers each need
+their own entry: they resolve keys in their own contexts rather than
+borrowing Insert's table (`keymap-architecture.md` §5.7).
 
 **Not `Visual` or `Select`.** SN.3d owns `<C-g>` there as the
 Visual↔Select toggle: vim-canonical, and the only path between the two

@@ -22,10 +22,12 @@
 //!
 //! ## Modes covered
 //!
-//! `Normal`, `Insert`, `Replace` — and therefore `ModalState::Command` /
-//! `Search(_)` / `Prompt` too, since those dispatch through
-//! `keymap_insert::dispatch_insert`, which looks up
-//! `BindingMode::Insert`.
+//! `Normal`, `Insert`, `Replace`, and the three readline surfaces —
+//! `Command`, `Search`, `Prompt`. The minibuffers resolve keys in their
+//! own contexts, not Insert's (`keymap-architecture.md` §5.7), so each
+//! needs its own entry: while they borrowed the Insert table this set
+//! named only the first three, and `<C-g>` went dead on a stuck `:`
+//! line the day they stopped borrowing it.
 //!
 //! **Not `Visual` or `Select`.** SN.3d owns `<C-g>` there as the
 //! Visual↔Select toggle — vim-canonical, and the only path between the
@@ -57,11 +59,14 @@ use crate::keymap_trie::{ChordPattern, KeymapLayer};
 
 /// Every mode `<C-g>` resolves to `action:cancel` in. See the module
 /// docs for why `Visual` / `Select` are absent and why `Command` /
-/// `Search` / `Prompt` need no entry of their own.
+/// `Search` / `Prompt` each need an entry of their own.
 pub const CANCEL_MODES: &[BindingMode] = &[
     BindingMode::Normal,
     BindingMode::Insert,
     BindingMode::Replace,
+    BindingMode::Command,
+    BindingMode::Search,
+    BindingMode::Prompt,
 ];
 
 /// Register `<C-g>` → `action:cancel` under `KeymapLayer::Builtin` for

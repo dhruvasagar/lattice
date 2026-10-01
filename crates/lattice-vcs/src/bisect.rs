@@ -67,10 +67,14 @@ pub fn parse_bisect_step(out: &str) -> BisectStep {
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect();
-    if let Some(found) = lines
-        .iter()
-        .find_map(|l| l.strip_suffix(" is the first bad commit"))
-    {
+    // Two spellings. Newer git quotes the term — `is the first 'bad' commit`
+    // — because the term is configurable (`git bisect terms`); older git
+    // printed it bare. Recognising only the bare one left a finished bisect
+    // reported as `Other` on a current git.
+    if let Some(found) = lines.iter().find_map(|l| {
+        l.strip_suffix(" is the first bad commit")
+            .or_else(|| l.strip_suffix(" is the first 'bad' commit"))
+    }) {
         // `git show`-style block follows: the subject is the first
         // indented line after the headers, which trimming flattened —
         // so it is the first line after `Date:`.
@@ -295,6 +299,19 @@ mod tests {
     fn the_last_step_names_the_culprit_and_its_subject() {
         assert_eq!(
             parse_bisect_step(REAL_FOUND),
+            BisectStep::Found {
+                commit: "4408d81987933a1275554215cacb0eb9b26df0ce".into(),
+                subject: "c5".into(),
+            }
+        );
+    }
+
+    /// Newer git quotes the term. Same block otherwise, so the same answer.
+    #[test]
+    fn the_quoted_spelling_of_the_last_step_is_recognised_too() {
+        let quoted = REAL_FOUND.replace("is the first bad commit", "is the first 'bad' commit");
+        assert_eq!(
+            parse_bisect_step(&quoted),
             BisectStep::Found {
                 commit: "4408d81987933a1275554215cacb0eb9b26df0ce".into(),
                 subject: "c5".into(),

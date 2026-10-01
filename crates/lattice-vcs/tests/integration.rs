@@ -17,8 +17,11 @@ use lattice_vcs::{
 /// return the path to the workdir.
 fn init_temp_repo() -> (tempfile::TempDir, Repository) {
     let dir = tempfile::tempdir().expect("create temp dir");
+    // `-b main`, because the tests below name the branch: without it the
+    // name is whatever `init.defaultBranch` says on this machine, and it is
+    // `master` wherever nobody set it.
     let status = Command::new("git")
-        .args(["init"])
+        .args(["init", "-b", "main"])
         .current_dir(dir.path())
         .status()
         .expect("git init");

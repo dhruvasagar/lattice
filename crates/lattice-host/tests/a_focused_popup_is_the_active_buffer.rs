@@ -239,8 +239,10 @@ fn writing_a_focused_popup_saves_the_popups_content() {
     );
 }
 
-/// `:w` with no path on a popup says what any unnamed buffer says. Not a
-/// popup rule — the generic one, reached because a popup has no path.
+/// `:w` with no path on a popup says what any READ-ONLY buffer says (vim's
+/// E45), and points at `:w <path>`. Not a popup rule — the generic one,
+/// reached because a popup is read-only; that gate runs ahead of the
+/// no-file-name one, so it is the answer a popup gets.
 #[test]
 fn writing_a_popup_with_no_path_asks_for_one() {
     let (mut editor, _file) = editor_with_focused_popup();
@@ -248,8 +250,8 @@ fn writing_a_popup_with_no_path_asks_for_one() {
     let msg = editor.last_message.as_ref().map(|m| m.text.clone());
     assert_eq!(
         msg.as_deref(),
-        Some("no file name (use :w <path>)"),
-        "the same answer `:w` gives on any buffer with no path"
+        Some("buffer is read-only (use :w <path> to write a copy)"),
+        "the same answer `:w` gives on any read-only buffer"
     );
 }
 

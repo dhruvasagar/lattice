@@ -236,7 +236,10 @@ mod tests {
 
     #[test]
     fn invalid_utf8_output_is_refused_rather_than_spliced() {
-        let (_d, spec) = fake("garbage", "printf '\\xff\\xfe'");
+        // Octal, not `\\xff`: the fake runs under `/bin/sh`, and dash (Ubuntu's)
+        // has no hex escapes in `printf` — it emits the text `\xff\xfe`, which
+        // is valid UTF-8, so the formatter "succeeded" and the test failed on CI.
+        let (_d, spec) = fake("garbage", "printf '\\377\\376'");
         assert!(matches!(
             run(&spec, "x", None).unwrap_err(),
             FormatError::NotUtf8 { .. }

@@ -51882,12 +51882,16 @@ mod tests {
         assert_eq!(editor.active_buffer, BufferKind::Help);
     }
 
-    /// PIC.2 (bug 2): the org-cycle fold ops are now document mutations,
-    /// so the read-only-help guard consumes them like `zo`/`zc`/`za`.
+    /// PIC.2 (bug 2): the org-cycle fold ops are fold-state actions, so the
+    /// focused-popup guard consumes them like `zo`/`zc`/`za` — and they are
+    /// NOT document mutations, or `<Tab>` stops folding in every read-only
+    /// buffer (magit-status is almost nothing but folds).
     #[test]
-    fn fold_cycles_are_document_mutations() {
-        assert!(action_is_document_mutation(&Action::CycleFoldAtCursor));
-        assert!(action_is_document_mutation(&Action::CycleFoldsGlobal));
+    fn fold_cycles_mutate_fold_state_not_the_document() {
+        for action in [Action::CycleFoldAtCursor, Action::CycleFoldsGlobal] {
+            assert!(action_mutates_fold_state(&action));
+            assert!(!action_is_document_mutation(&action));
+        }
     }
 
     /// PIC.2 (bug 3): the escape predicate covers tab + pane-tree nav and
@@ -51949,22 +51953,22 @@ mod tests {
     }
 
     /// PIC.2 (bug 2): `z<Tab>` in a focused popup is consumed by the
-    /// read-only guard (echoes read-only) instead of leaking to the
-    /// background document's fold model.
+    /// fold-state guard instead of leaking to the background document's
+    /// fold model. Consumed silently: a fold is not a write, so there is no
+    /// read-only echo — and none of the handler's own ("no folds to cycle"),
+    /// which would mean it ran against the buffer behind the popup.
     #[test]
-    fn popup_focused_consumes_fold_cycle_as_read_only() {
+    fn popup_focused_consumes_fold_cycle() {
         let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
         open_focused_popup(&mut editor);
 
         let out = editor.dispatch(Action::CycleFoldsGlobal);
 
-        assert!(out.consumed, "fold-cycle consumed in a read-only popup");
-        let msg = editor.last_message.as_ref().expect("read-only echo");
+        assert!(out.consumed, "fold-cycle consumed at a focused popup");
         assert!(
-            msg.text.contains("read-only"),
-            "fold-cycle in a read-only popup echoes read-only (not the \
-             handler's 'no folds to cycle'), got: {}",
-            msg.text
+            editor.last_message.is_none(),
+            "the fold handler must not run behind a focused popup, got: {:?}",
+            editor.last_message.as_ref().map(|m| &m.text)
         );
     }
 

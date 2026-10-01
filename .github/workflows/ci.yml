@@ -304,7 +304,13 @@ jobs:
         # failed there, after a full bench-profile compile. NOT
         # `--benches`: that means "every target with `bench = true`",
         # which is the default for a lib, so it changes nothing.
-        run: cargo bench --workspace --bench '*' --locked -- --quick
+        #
+        # `--exclude lattice-ui-gpui`: naming targets makes cargo REFUSE
+        # a bench whose `required-features` are off where a bare
+        # `cargo bench` skips it, and `editor_element_frame` needs
+        # `window` — real gpui and its display libraries, which this job
+        # does not install. It was never run here; now it says so.
+        run: cargo bench --workspace --exclude lattice-ui-gpui --bench '*' --locked -- --quick
       - name: Upload criterion results
         uses: actions/upload-artifact@v4
         with:

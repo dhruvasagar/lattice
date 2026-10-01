@@ -293,7 +293,30 @@ fn expand_tilde(p: &str) -> PathBuf {
     if p.is_empty() {
         return PathBuf::from(".");
     }
-    PathBuf::from(lattice_core::home::expand_tilde(p))
+    PathBuf::from(for_the_filesystem(
+        lattice_core::home::expand_tilde(p),
+        cfg!(windows),
+    ))
+}
+
+/// Spell `path` the way the OS will accept it.
+///
+/// A prefix is split on `/` everywhere in this module, so a listing's
+/// directory always arrives ending in one. On Windows that is fine for an
+/// ordinary path — `C:\Users\me/` opens — but not for a VERBATIM one,
+/// `\\?\C:\Users\me/`, which is what `canonicalize` returns: a verbatim path
+/// is handed to the filesystem untouched, `/` is not a separator in it, and
+/// the directory does not exist. A picker rooted at a canonical path listed
+/// nothing at all.
+///
+/// So a verbatim path has its `/` turned into `\`. Only that form, and only on
+/// Windows: elsewhere a backslash is a legal character in a file name.
+fn for_the_filesystem(path: String, windows: bool) -> String {
+    if windows && path.starts_with(r"\\?\") {
+        path.replace('/', "\\")
+    } else {
+        path
+    }
 }
 
 #[cfg(test)]
@@ -314,6 +337,28 @@ mod tests {
             registry,
             case_sensitive: false,
         }
+    }
+
+    // ---- for_the_filesystem ----
+
+    /// The Windows half, pinned on every platform because the function is
+    /// pure: a verbatim path gets real separators, and nothing else is
+    /// touched — not an ordinary Windows path, and never a path off Windows,
+    /// where `\` may be part of a name.
+    #[test]
+    fn a_verbatim_windows_path_gets_real_separators_and_nothing_else_does() {
+        assert_eq!(
+            for_the_filesystem(r"\\?\C:\Users\me/src/".to_string(), true),
+            r"\\?\C:\Users\me\src\"
+        );
+        assert_eq!(
+            for_the_filesystem(r"C:\Users\me/src/".to_string(), true),
+            r"C:\Users\me/src/"
+        );
+        assert_eq!(
+            for_the_filesystem(r"\\?\odd/name/".to_string(), false),
+            r"\\?\odd/name/"
+        );
     }
 
     // ---- CommandsGenerator ----

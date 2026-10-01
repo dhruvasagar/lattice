@@ -28,8 +28,6 @@
 //! - `set_viewport_height`, `pending_redraw` handling,
 //!   per-loop-iteration state hooks.
 
-#[cfg(test)]
-use lattice_protocol::position::Position;
 use lattice_runtime::RuntimeError;
 // 5.8.AA.k: `do_edit` body moved host-side; the `Lang` / `Syntax`
 // imports here are referenced only by `#[cfg(test)]` fixtures

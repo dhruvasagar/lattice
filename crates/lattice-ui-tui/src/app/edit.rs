@@ -40,14 +40,9 @@
 use lattice_core::buffer::AppliedEdit;
 use lattice_grammar::CommandInvocation;
 use lattice_protocol::edit::Edit;
-#[cfg(test)]
-use lattice_protocol::position::Position;
 use lattice_runtime::RuntimeError;
 
 use super::App;
-
-#[cfg(test)]
-use lattice_grammar::YankKind;
 
 impl App {
     // ---- Blocking bridges to the document actor ----

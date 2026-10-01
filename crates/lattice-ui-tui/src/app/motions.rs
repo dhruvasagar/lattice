@@ -247,7 +247,6 @@ impl App {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use super::*;
     use crate::app::TagStackEntry;
     use crate::app::test_helpers::{app_with, invoke_motion};
     use crate::app::*;

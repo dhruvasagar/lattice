@@ -41,9 +41,6 @@
 
 use lattice_protocol::position::Position;
 
-#[cfg(test)]
-use lattice_grammar::ModalState;
-
 // 5.8.S-AA: several outcome types moved their drain bodies host-
 // side; the leftover `use` here keeps test-scope references
 // (`super::*Outcome`, `super::LspNavKind`) resolving. `#[allow]`

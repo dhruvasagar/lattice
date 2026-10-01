@@ -37,8 +37,6 @@ use super::App;
 use super::SnippetCandidateMeta;
 #[cfg(test)]
 use lattice_host::dispatch::EffectiveCompletionConfig;
-#[cfg(test)]
-use lattice_protocol::position::Position;
 
 impl App {
     // SN.3c.1 (2026-06-14): the `do_snippet_expand_at_cursor` App
@@ -291,7 +289,6 @@ impl App {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use super::*;
     use crate::app::completion_kind_glyph;
     use crate::app::test_helpers::{
         app_in_command_mode, app_with, app_with_path, fresh_path_workspace, install_snippet,

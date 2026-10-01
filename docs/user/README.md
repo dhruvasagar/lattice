@@ -58,6 +58,7 @@ same surface).
 | Multibuffer views          | [`multibuffer-mode`](help:multibuffer-mode) | ✅      |
 |   — `gr` refresh          | [`refreshable-view-mode`](help:refreshable-view-mode) | ✅      |
 |   — `<Tab>` fold a block   | [`foldable-view-mode`](help:foldable-view-mode) | ✅      |
+| Image buffers              | [`image-mode`](help:image-mode) | ✅      |
 | Projects and roots         | [`project`](help:project)                | ✅      |
 | Project search             | [`project-search-mode`](help:project-search-mode) | ✅      |
 | Scan views                 | [`scan-view-mode`](help:scan-view-mode) | ✅      |

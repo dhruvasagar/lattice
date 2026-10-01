@@ -85,6 +85,7 @@ docs = [
   "oil-mode",
   "project-search-mode",
   "multibuffer-mode",
+  "image-mode",
   "narrow-mode",
   "scan-view-mode",
   "scan-view-clockreport-mode",

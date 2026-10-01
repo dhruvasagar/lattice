@@ -56944,6 +56944,9 @@ mod tests {
     /// depend on rustfmt or prettier existing, and a fake is the only
     /// way to produce the failure modes (non-zero exit, hang) on
     /// demand rather than hoping for them.
+    // Unix only, with every test that calls it: the fake is a `#!/bin/sh`
+    // script, which Windows cannot execute.
+    #[cfg(unix)]
     fn fake_formatter(dir: &std::path::Path, name: &str, body: &str) -> String {
         let path = dir.join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write fake formatter");
@@ -56992,6 +56995,7 @@ mod tests {
         assert_eq!(&*got, "/tmp/some dir/fmt --stdin");
     }
 
+    #[cfg(unix)]
     #[test]
     fn format_applies_a_minimal_edit_set() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -57007,6 +57011,7 @@ mod tests {
         assert_eq!(line_at(&editor, 1), "    x();", "outcome message: {msg}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn format_result_is_visible_without_another_keystroke() {
         // The standing rule's assertion: an async result must reach
@@ -57025,6 +57030,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn formatting_an_already_formatted_buffer_applies_nothing() {
         // The idempotence guard at the host level: a whole-buffer
@@ -57038,6 +57044,7 @@ mod tests {
         assert_eq!(editor.active_text().as_string(), before);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failing_formatter_applies_nothing_and_reports() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -57104,6 +57111,7 @@ mod tests {
         (editor, file)
     }
 
+    #[cfg(unix)]
     #[test]
     fn format_on_save_writes_formatted_content() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -57117,6 +57125,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failing_formatter_still_writes_the_file() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -57138,6 +57147,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_hanging_formatter_still_writes_the_file() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -57168,6 +57178,7 @@ mod tests {
         assert!(std::fs::read_to_string(&file).is_ok());
     }
 
+    #[cfg(unix)]
     #[test]
     fn formatonsave_off_spawns_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");

@@ -675,12 +675,19 @@ mod tests {
     #[test]
     fn config_home_prefers_absolute_xdg_override() {
         // An absolute $XDG_CONFIG_HOME wins over the platform fallback,
-        // on every platform.
+        // on every platform. "Absolute" is the platform's own notion:
+        // `/custom/xdg` has no drive on Windows, so it is relative there and
+        // the override is — correctly — ignored.
+        let custom = if cfg!(windows) {
+            r"C:\custom\xdg"
+        } else {
+            "/custom/xdg"
+        };
         let got = resolve_config_home(
-            Some(PathBuf::from("/custom/xdg")),
+            Some(PathBuf::from(custom)),
             Some(PathBuf::from("/home/u/.config")),
         );
-        assert_eq!(got, Some(PathBuf::from("/custom/xdg")));
+        assert_eq!(got, Some(PathBuf::from(custom)));
     }
 
     #[test]

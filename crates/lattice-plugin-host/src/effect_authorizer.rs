@@ -179,27 +179,37 @@ pub(crate) fn resolve_for_compare(path: &Path) -> PathBuf {
     if let Ok(real) = std::fs::canonicalize(path) {
         return real;
     }
-    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
-    let mut cursor = path;
-    while let (Some(parent), Some(name)) = (cursor.parent(), cursor.file_name()) {
-        tail.push(name);
-        if let Ok(real_parent) = std::fs::canonicalize(parent) {
-            let mut resolved = real_parent;
-            for segment in tail.iter().rev() {
-                // `.` contributes nothing and `..` pops — normalising here
-                // rather than joining blindly is what keeps an unresolved tail
-                // from escaping the ancestor it was resolved against.
-                if *segment == std::ffi::OsStr::new("..") {
-                    resolved.pop();
-                } else if *segment != std::ffi::OsStr::new(".") {
-                    resolved.push(segment);
+    // `.` contributes nothing and `..` pops — normalising rather than joining
+    // blindly is what keeps an unresolved tail from escaping the ancestor it
+    // was resolved against.
+    let apply = |mut base: PathBuf, tail: &Path| {
+        for segment in tail.components() {
+            match segment {
+                std::path::Component::ParentDir => {
+                    base.pop();
                 }
+                std::path::Component::CurDir => {}
+                other => base.push(other),
             }
-            return resolved;
         }
-        cursor = parent;
+        base
+    };
+    // Walk by `ancestors`, not by `parent` + `file_name`: `file_name` is
+    // `None` for a path ending in `..`, so that walk STOPPED at the first
+    // `..` it met and handed back the raw path — and the raw
+    // `<grant>/new/../../x` still starts with `<grant>` component for
+    // component, so the write was permitted outside the grant.
+    for ancestor in path.ancestors().skip(1) {
+        if let Ok(real) = std::fs::canonicalize(ancestor)
+            && let Ok(tail) = path.strip_prefix(ancestor)
+        {
+            return apply(real, tail);
+        }
     }
-    path.to_path_buf()
+    // Nothing resolved at all (a relative path whose every ancestor is
+    // missing). Still never the raw path: its `..` segments are applied, so
+    // what is compared is where the write would land.
+    apply(PathBuf::new(), path)
 }
 
 #[cfg(test)]

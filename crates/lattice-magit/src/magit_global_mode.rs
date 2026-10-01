@@ -6280,6 +6280,13 @@ mod run_remote_op_reports {
         let dir = tempfile::tempdir().expect("temp dir");
         let d = dir.path();
         git(d, &["init", "-q", "-b", "main"]);
+        // In the repo's own config, not only the helper's environment: the
+        // merge under test is run by `run_remote_op`, which does not carry
+        // the `GIT_*` variables, and a machine with no global identity (a CI
+        // runner) answers "Please tell me who you are" instead of CONFLICT.
+        git(d, &["config", "user.name", "t"]);
+        git(d, &["config", "user.email", "t@t"]);
+        git(d, &["config", "commit.gpgsign", "false"]);
         std::fs::write(d.join("a.txt"), "base\n").expect("write");
         git(d, &["add", "a.txt"]);
         git(d, &["commit", "-q", "-m", "base"]);

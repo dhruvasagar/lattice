@@ -292,7 +292,13 @@ jobs:
         # criterion. Trades p99 fidelity for CI runtime; full runs
         # happen locally with `cargo bench` when a regression is
         # suspected.
-        run: cargo bench --workspace --locked -- --quick
+        #
+        # `--benches`: only the `[[bench]]` targets, which are all
+        # criterion (`harness = false`). Without it `cargo bench` also
+        # runs every crate's lib target under the libtest harness, and
+        # that harness rejects `--quick` ("Unrecognized option") — the
+        # job failed there, after a full bench-profile compile.
+        run: cargo bench --workspace --benches --locked -- --quick
       - name: Upload criterion results
         uses: actions/upload-artifact@v4
         with:

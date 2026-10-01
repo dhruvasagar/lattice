@@ -195,6 +195,14 @@ mod tests {
                  on every magit major, so without it we cannot tell \
                  absence from lateness"
             );
+            // The sentinel proves ABSENCE only. Where the minor is expected,
+            // wait for the minor itself: the cascade activates its modes one
+            // after another, so `magit-core-mode` being up does not mean
+            // `magit-hunk-mode` has landed yet — and reading it straight away
+            // failed the positive cases under full-suite load.
+            if wants_hunks {
+                let _ = settle_mode(&mut app, "magit-hunk-mode").await;
+            }
             let active = app
                 .editor
                 .active_modes

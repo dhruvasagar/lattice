@@ -74,12 +74,15 @@ mod tests {
     /// call on `spawn_blocking`), so a chord that reads the branch
     /// under the cursor legitimately finds nothing this early.
     ///
-    /// The assertion is on `pending_picker_init`, not on `picker`: an
-    /// async picker source is seated only once its candidates land, so
-    /// `picker` is still `None` in this turn. `pending_picker_init` is
-    /// what the effect sets synchronously — asserting on it keeps the
-    /// test measuring "did the handler run", not "how fast does git
-    /// answer".
+    /// The assertion reads `pending_picker_init` first and falls back to
+    /// the seated `picker`. The effect sets `pending_picker_init`
+    /// synchronously, and the async source is seated once its candidates
+    /// land — usually a later turn, but `press` drains at its tail, so
+    /// when git answers inside the keypress the pending slot is already
+    /// consumed and the picker is the evidence. Asserting on the pending
+    /// slot alone measured "how fast does git answer" after all, and
+    /// failed about one run in six. Either state proves the handler ran;
+    /// neither exists if the keypress was swallowed.
     #[tokio::test(flavor = "multi_thread")]
     async fn branch_chord_fires_in_the_same_turn_the_buffer_opens() {
         let mut app = app_with("", 20);
@@ -98,7 +101,8 @@ mod tests {
             .editor
             .pending_picker_init
             .as_ref()
-            .map(|p| p.source_id.clone());
+            .map(|p| p.source_id.clone())
+            .or_else(|| app.editor.picker.as_ref().and_then(|p| p.source_id.clone()));
         assert_eq!(
             pending.as_deref(),
             Some("magit-branch-pick-base"),
@@ -1115,6 +1119,22 @@ mod compose_buffers {
         )
     }
 
+    /// Wait for the mode's seed — message area, marker, staged diff — to be
+    /// in the buffer.
+    ///
+    /// `settle_mode` is not enough before typing: the mode is active while
+    /// its `on_activate` is still running `git diff --cached` off-thread, and
+    /// the seed REPLACES the buffer's text when it lands. Typing in that
+    /// window loses the keys, so both tests below flaked in the full run
+    /// (`precondition: the message is in the compose buffer` / `the commit
+    /// never landed`) and passed alone, where git answers first.
+    async fn settle_seeded(app: &mut crate::app::App, name: &str) -> bool {
+        settle(app, |a| {
+            commit_text(a, name).is_some_and(|t| t.contains("Staged diff"))
+        })
+        .await
+    }
+
     /// Finishing a commit ends its compose buffer.
     ///
     /// The report: `C-c C-c` in the commit buffer left it in the registry, so
@@ -1136,6 +1156,10 @@ mod compose_buffers {
         assert!(
             settle_mode(&mut app, "magit-commit-mode").await,
             "precondition: commit mode active"
+        );
+        assert!(
+            settle_seeded(&mut app, NAME).await,
+            "precondition: the compose buffer is seeded"
         );
 
         press(
@@ -1228,6 +1252,10 @@ mod compose_buffers {
         assert!(
             name.contains("killbuf-repo"),
             "refusing to commit: `{name}` is not scoped to the throwaway repo"
+        );
+        assert!(
+            settle_seeded(&mut app, &name).await,
+            "precondition: the compose buffer is seeded"
         );
 
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);

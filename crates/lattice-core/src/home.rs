@@ -82,6 +82,19 @@ pub fn expand_tilde_path(raw: &Path) -> PathBuf {
 /// non-UTF-8 path, or an unresolvable home is returned verbatim, so the
 /// failure is a path that reads slightly long rather than one that reads wrong.
 pub fn contract_tilde(raw: &Path) -> String {
+    // Windows only: `canonicalize` returns the verbatim form,
+    // `\\?\C:\Users\me\src`, and `home_dir` the ordinary one, so the two never
+    // share a prefix and a canonical path under home was shown in full —
+    // `\\?\` and all. Drop the marker first; this is display, and nobody reads
+    // it.
+    let shown;
+    let raw = match raw.to_str().and_then(without_verbatim_prefix) {
+        Some(plain) if cfg!(windows) => {
+            shown = PathBuf::from(plain);
+            shown.as_path()
+        }
+        _ => raw,
+    };
     let Some(home) = dirs::home_dir() else {
         return raw.display().to_string();
     };
@@ -96,9 +109,31 @@ pub fn contract_tilde(raw: &Path) -> String {
     }
 }
 
+/// `\\?\C:\x` → `C:\x`. `None` when there is no verbatim marker, and for the
+/// UNC form (`\\?\UNC\server\share`), whose plain spelling is `\\server\share`
+/// rather than what follows the marker.
+///
+/// Pure and unconditional so it is tested on every platform; only
+/// [`contract_tilde`] decides it applies, and only on Windows.
+fn without_verbatim_prefix(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix(r"\\?\")?;
+    (!rest.starts_with(r"UNC\")).then_some(rest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_verbatim_marker_is_dropped_but_a_unc_path_is_left_alone() {
+        assert_eq!(
+            without_verbatim_prefix(r"\\?\C:\Users\me\src"),
+            Some(r"C:\Users\me\src")
+        );
+        assert_eq!(without_verbatim_prefix(r"C:\Users\me"), None);
+        assert_eq!(without_verbatim_prefix("/home/me"), None);
+        assert_eq!(without_verbatim_prefix(r"\\?\UNC\server\share"), None);
+    }
 
     #[test]
     fn a_path_without_a_tilde_is_untouched() {

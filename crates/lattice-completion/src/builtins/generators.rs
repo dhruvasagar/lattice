@@ -478,21 +478,24 @@ mod tests {
         for n in ["alpha", "beta", "zeta"] {
             std::fs::write(sub.join(n), "").unwrap();
         }
-        let prev_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&tmp).unwrap();
+        // An absolute prefix, NOT `set_current_dir` + a relative one. The
+        // working directory is process-global and tests run in parallel, so
+        // changing it — even briefly — made the tests above, which list the
+        // current directory, see this temp dir instead of the crate's.
+        let prefix = format!("{}/sub/al", tmp.display());
+        let expected = format!("{}/sub/alpha", tmp.display());
 
         let registry = CommandRegistry::new();
         let document = Document::empty();
         let buffer = document.buffer().clone();
         let g = FilesGenerator;
-        let candidates = g.generate(&ctx_for("sub/al", &buffer, &registry));
+        let candidates = g.generate(&ctx_for(&prefix, &buffer, &registry));
 
-        std::env::set_current_dir(&prev_cwd).unwrap();
         let _ = std::fs::remove_dir_all(&tmp);
 
         assert!(
-            candidates.iter().any(|c| c.text == "sub/alpha"),
-            "expected `sub/alpha` candidate, got {} candidates: {:?}",
+            candidates.iter().any(|c| c.text == expected),
+            "expected `{expected}` candidate, got {} candidates: {:?}",
             candidates.len(),
             candidates.iter().map(|c| &c.text).collect::<Vec<_>>(),
         );

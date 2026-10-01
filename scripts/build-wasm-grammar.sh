@@ -62,9 +62,35 @@ NAME="$1"
 SRC="$2"
 OUT="${3:-target/wasm-grammars}"
 
-CLANG="${CLANG:-$(command -v clang)}"
+# Can this clang emit wasm at all? Apple's cannot — it is built without the
+# WebAssembly backend and answers "No available targets are compatible with
+# triple wasm32-unknown-unknown".
+targets_wasm() {
+	echo 'int x;' | "$1" --target=wasm32-unknown-unknown -x c -c - -o /dev/null 2>/dev/null
+}
+
+# `$CLANG` is an explicit choice and is used as given. Otherwise: the clang on
+# PATH if it can target wasm, else a Homebrew LLVM, which is keg-only and so
+# never on PATH — the usual state of a macOS machine, where PATH's clang is
+# Apple's.
+if [[ -z "${CLANG:-}" ]]; then
+	CLANG="$(command -v clang || true)"
+	if [[ -z "$CLANG" ]] || ! targets_wasm "$CLANG"; then
+		for candidate in /opt/homebrew/opt/llvm*/bin/clang /usr/local/opt/llvm*/bin/clang; do
+			if [[ -x "$candidate" ]] && targets_wasm "$candidate"; then
+				CLANG="$candidate"
+				break
+			fi
+		done
+	fi
+fi
 if [[ -z "$CLANG" ]]; then
 	echo "build-wasm-grammar: no clang on PATH" >&2
+	exit 1
+fi
+if ! targets_wasm "$CLANG"; then
+	echo "build-wasm-grammar: $CLANG cannot target wasm32 (Apple's clang has no" >&2
+	echo "  WebAssembly backend). Install LLVM — \`brew install llvm\` — or set CLANG." >&2
 	exit 1
 fi
 

@@ -2740,8 +2740,14 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // prompt buffer (the agent's) is read-only ABOVE its tail and typed into
     // below it, so refusing Insert outright there would break the thing the
     // tail exists for. Same predicate `read_only_edit_rejected` uses.
-    let wholly_read_only = *editor
-        .resolved_option::<lattice_config::ReadOnly>(editor.document_buffer_id)
+    //
+    // `resolved_option_opt`, not `resolved_option`: this gate runs on every
+    // action, including against an `Editor` whose config never registered
+    // the option (`Editor::default()`), and the panicking read took the
+    // editor actor's thread down with it. Unregistered means not read-only.
+    let wholly_read_only = editor
+        .resolved_option_opt::<lattice_config::ReadOnly>(editor.document_buffer_id)
+        .is_some_and(|ro| *ro)
         && editor.active_editable_tail().is_none();
     // PIC.2: a fold chord at a FOCUSED popup would edit the folds of the
     // buffer behind it, because the fold slot is keyed to

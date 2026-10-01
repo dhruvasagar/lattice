@@ -158,7 +158,10 @@ fn export_plugin_api_defaults_to_markdown() {
     ed.do_export_plugin_api(None);
     let body = ed.active_text().as_string();
     assert!(body.contains("# Lattice Plugin API"), "md header:\n{body}");
-    assert!(body.contains("## host-services"), "md seam section");
+    assert!(
+        body.contains("## `host-services`"),
+        "md seam section:\n{body}"
+    );
 }
 
 #[test]

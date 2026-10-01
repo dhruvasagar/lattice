@@ -167,15 +167,19 @@ mod tests {
     /// CI must not depend on `rustfmt` or `prettier` being installed,
     /// and a fake lets the failure modes (non-zero exit, hang, garbage
     /// output) be produced on demand instead of hoped for.
+    ///
+    /// Unix only, and so is every test that uses it: the fake is a `#!/bin/sh`
+    /// script, which Windows cannot execute ("not a valid Win32 application").
+    /// What these tests pin — exit status, timeout, stderr, UTF-8 — is the
+    /// runner's handling of a child process, which is the same code on every
+    /// platform; the not-found path below needs no fake and runs everywhere.
+    #[cfg(unix)]
     fn fake(name: &str, body: &str) -> (tempfile::TempDir, FormatterSpec) {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         let program: &'static str = Box::leak(path.to_string_lossy().into_owned().into_boxed_str());
         (
             dir,
@@ -187,6 +191,7 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_successful_run_returns_stdout() {
         let (_d, spec) = fake("ok", "sed 's/a/b/g'");
@@ -208,6 +213,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_non_zero_exit_carries_stderr_to_the_user() {
         let (_d, spec) = fake("bad", "echo 'syntax error on line 3' >&2; exit 1");
@@ -222,6 +228,7 @@ mod tests {
         assert!(err.message().contains("syntax error on line 3"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_hanging_formatter_is_killed_at_the_timeout() {
         let (_d, spec) = fake("hang", "sleep 30");
@@ -234,6 +241,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn invalid_utf8_output_is_refused_rather_than_spliced() {
         // Octal, not `\\xff`: the fake runs under `/bin/sh`, and dash (Ubuntu's)
@@ -246,6 +254,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_filename_flag_is_passed_when_the_spec_asks_for_it() {
         let (_d, mut spec) = fake("echoargs", "cat >/dev/null; echo \"$1\"");

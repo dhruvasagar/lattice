@@ -5179,8 +5179,7 @@ mod tests {
         let path = dir.join("buffer.rs");
         std::fs::write(&path, "fn main() {}\n").unwrap();
         let mut a = app_with_path("fn main() {}\n", 5, path.clone());
-        let uri: lattice_lsp::lsp_types::Uri =
-            format!("file://{}", path.display()).parse().unwrap();
+        let uri: lattice_lsp::lsp_types::Uri = lattice_lsp::actor::uri_from_path(&path);
         // Edit replaces `main` (line 0, char 3..7) with `xyz`.
         let edit = lattice_lsp::lsp_types::TextEdit {
             range: lattice_lsp::lsp_types::Range {

@@ -274,7 +274,7 @@ three
     .unwrap();
 
     let loc = |line: u32| Location {
-        uri: format!("file://{}", file.display()).parse::<Uri>().unwrap(),
+        uri: lattice_lsp::actor::uri_from_path(&file),
         range: Range {
             start: Position { line, character: 2 },
             end: Position { line, character: 3 },
@@ -335,7 +335,7 @@ b
     e.open_lsp_locations_picker(
         "refs",
         &[Location {
-            uri: format!("file://{}", file.display()).parse::<Uri>().unwrap(),
+            uri: lattice_lsp::actor::uri_from_path(&file),
             range: Range {
                 start: Position {
                     line: 0,
@@ -373,7 +373,7 @@ fn bulk_accept_opens_problems_by_default() {
     let file = dir.join("z.rs");
     std::fs::write(&file, "one\ntwo\n").unwrap();
     let loc = Location {
-        uri: format!("file://{}", file.display()).parse::<Uri>().unwrap(),
+        uri: lattice_lsp::actor::uri_from_path(&file),
         range: Range {
             start: Position {
                 line: 0,
@@ -415,7 +415,7 @@ fn bulk_accept_off_populates_without_opening() {
     let file = dir.join("z.rs");
     std::fs::write(&file, "one\ntwo\n").unwrap();
     let loc = Location {
-        uri: format!("file://{}", file.display()).parse::<Uri>().unwrap(),
+        uri: lattice_lsp::actor::uri_from_path(&file),
         range: Range {
             start: Position {
                 line: 0,

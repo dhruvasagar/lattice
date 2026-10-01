@@ -506,7 +506,11 @@ mod tests {
             p
         }
         fn uri(&self, name: &str) -> String {
-            format!("file://{}", self.dir.join(name).display())
+            // Through the real converter: gluing `file://` onto a path is
+            // only a URI where paths start with `/`.
+            crate::actor::uri_from_path(&self.dir.join(name))
+                .as_str()
+                .to_string()
         }
     }
 

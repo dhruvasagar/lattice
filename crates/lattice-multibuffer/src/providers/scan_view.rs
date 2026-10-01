@@ -971,9 +971,19 @@ fn collect_candidates(roots: &[PathBuf], extensions: &[String], max_files: usize
 /// `max_depth(1)` rather than `read_dir` so `ignore`'s hidden-file and
 /// `.gitignore` filtering still applies — `.git` and ignored files stay out,
 /// which is the one thing the recursive walk was doing right.
+///
+/// Sorted by file name, because the order is observable twice over: it decides
+/// WHICH files a `max_files` cap keeps, and it decides whether a source's bad
+/// files arrive consecutively and spend its failure budget. Directory order is
+/// whatever the filesystem returns, so unsorted, the same directory gave a
+/// different agenda on a different machine.
 fn walk_candidates(root: &Path, extensions: &[String], max_files: usize) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for entry in ignore::WalkBuilder::new(root).max_depth(Some(1)).build() {
+    for entry in ignore::WalkBuilder::new(root)
+        .max_depth(Some(1))
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .build()
+    {
         if out.len() >= max_files {
             break;
         }
@@ -2939,12 +2949,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scattered_bad_files_do_not_drop_a_healthy_source() {
         let dir = tempdir();
-        // Alternating, so no three failures ever land in a row.
+        // Alternating, so no three failures ever land in a row. The index
+        // LEADS the name: the walk is in file-name order, and `bad0…bad6`
+        // sort ahead of every `good`, which is four failures in a row.
         for i in 0..8 {
             if i % 2 == 0 {
-                write(&dir, &format!("bad{i}.org"), "BROKEN\n");
+                write(&dir, &format!("{i}-bad.org"), "BROKEN\n");
             } else {
-                write(&dir, &format!("good{i}.org"), "* TODO 1\n");
+                write(&dir, &format!("{i}-good.org"), "* TODO 1\n");
             }
         }
 

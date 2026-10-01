@@ -297,12 +297,14 @@ jobs:
         # happen locally with `cargo bench` when a regression is
         # suspected.
         #
-        # `--benches`: only the `[[bench]]` targets, which are all
-        # criterion (`harness = false`). Without it `cargo bench` also
-        # runs every crate's lib target under the libtest harness, and
-        # that harness rejects `--quick` ("Unrecognized option") — the
-        # job failed there, after a full bench-profile compile.
-        run: cargo bench --workspace --benches --locked -- --quick
+        # `--bench '*'`: only the `[[bench]]` targets, which are all
+        # criterion (`harness = false`). A bare `cargo bench` also runs
+        # every crate's lib target under the libtest harness, and that
+        # harness rejects `--quick` ("Unrecognized option") — the job
+        # failed there, after a full bench-profile compile. NOT
+        # `--benches`: that means "every target with `bench = true`",
+        # which is the default for a lib, so it changes nothing.
+        run: cargo bench --workspace --bench '*' --locked -- --quick
       - name: Upload criterion results
         uses: actions/upload-artifact@v4
         with:

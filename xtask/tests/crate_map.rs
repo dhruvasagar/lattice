@@ -28,8 +28,31 @@ const RUSTDOC: &str = "https://dhruvasagar.github.io/lattice/api";
 
 struct Crate {
     name: String,
+    /// The directory rustdoc publishes this crate under.
+    rustdoc_dir: String,
     summary: String,
     deps: BTreeSet<String>,
+}
+
+/// Where rustdoc puts a crate's pages: under its TARGET name, not its package
+/// name. For a library that is the package name with `_` for `-`; a
+/// binary-only crate is documented under its `[[bin]]` name instead —
+/// `lattice-cli` builds the `lattice` binary, so its page is `lattice/`, and
+/// linking `lattice_cli/` shipped a 404 that failed the docs deploy.
+fn rustdoc_dir(root: &Path, name: &str, manifest: &str) -> String {
+    if root.join("src/lib.rs").is_file() {
+        return name.replace('-', "_");
+    }
+    manifest
+        .split("[[bin]]")
+        .nth(1)
+        .and_then(|bin| {
+            bin.lines()
+                .take_while(|l| !l.trim_start().starts_with('['))
+                .find_map(|l| l.trim().strip_prefix("name")?.split('"').nth(1))
+        })
+        .unwrap_or(name)
+        .replace('-', "_")
 }
 
 /// The first paragraph of the crate root's `//!` docs, on one line.
@@ -137,12 +160,14 @@ fn crates() -> Vec<Crate> {
         .filter(|p| p.join("Cargo.toml").is_file())
         .map(|p| {
             let manifest = std::fs::read_to_string(p.join("Cargo.toml")).unwrap_or_default();
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
             Crate {
-                name: p
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?")
-                    .to_string(),
+                rustdoc_dir: rustdoc_dir(&p, &name, &manifest),
+                name,
                 summary: summary(&p),
                 deps: workspace_deps(&manifest),
             }
@@ -244,7 +269,7 @@ fn render(crates: &[Crate]) -> String {
             out.push_str(&format!(
                 "| [`{}`]({RUSTDOC}/{}/) | {} | {} | {} |\n",
                 c.name,
-                c.name.replace('-', "_"),
+                c.rustdoc_dir,
                 c.summary.replace('|', "\\|"),
                 list(c.deps.iter().map(String::as_str).collect()),
                 list(used_by.get(c.name.as_str()).cloned().unwrap_or_default()),

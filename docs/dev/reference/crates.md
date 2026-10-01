@@ -116,4 +116,4 @@ Why a crate exists at all is a design rule, not an accident of history: a new cr
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
-| [`lattice-cli`](https://dhruvasagar.github.io/lattice/api/lattice_cli/) | `lattice` -- the editor binary. | `lattice-config`, `lattice-core`, `lattice-plugin-loader`, `lattice-runtime`, `lattice-ui-gpui`, `lattice-ui-tui`, `lattice-wit` | — |
+| [`lattice-cli`](https://dhruvasagar.github.io/lattice/api/lattice/) | `lattice` -- the editor binary. | `lattice-config`, `lattice-core`, `lattice-plugin-loader`, `lattice-runtime`, `lattice-ui-gpui`, `lattice-ui-tui`, `lattice-wit` | — |

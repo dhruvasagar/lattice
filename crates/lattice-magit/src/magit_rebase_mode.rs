@@ -704,6 +704,22 @@ fn run_rebase(workdir: &Path, upstream: &str, todo: &str) -> Result<(), String> 
     run_rebase_with_message(workdir, upstream, todo, None)
 }
 
+/// `path` as a single word for the `sh -c` git runs `GIT_EDITOR` /
+/// `GIT_SEQUENCE_EDITOR` through. Quoting keeps a temp dir with spaces
+/// whole; forward slashes keep a Windows path intact, because
+/// Git-for-Windows' sh reads `\` as an escape and turns `C:\Users\…`
+/// into `C:Users…` — every interactive rebase then failed with
+/// "cp: cannot stat". `C:/Users/…` is a path both sh and Windows accept.
+fn sh_quoted_path(path: &Path) -> String {
+    let s = path.display().to_string();
+    let s = if cfg!(windows) {
+        s.replace('\\', "/")
+    } else {
+        s
+    };
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 /// MG.43c: `run_rebase`, plus the message a `reword` step will take.
 ///
 /// **This is what makes rebase `w` possible.** `GIT_EDITOR=true`
@@ -737,7 +753,7 @@ fn run_rebase_with_message(
         upstream.replace(['/', ' '], "_")
     ));
     std::fs::write(&tmp, todo).map_err(|e| e.to_string())?;
-    let editor_cmd = format!("cp {}", tmp.display());
+    let editor_cmd = format!("cp {}", sh_quoted_path(&tmp));
     // Kept alive for the whole call: dropping it would remove the file
     // before git's reword step reads it.
     let msg_tmp = match message {
@@ -753,7 +769,7 @@ fn run_rebase_with_message(
         None => None,
     };
     let git_editor = match &msg_tmp {
-        Some(path) => format!("cp {}", path.display()),
+        Some(path) => format!("cp {}", sh_quoted_path(path)),
         None => "true".to_string(),
     };
     let result = std::process::Command::new("git")
@@ -776,6 +792,20 @@ fn run_rebase_with_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The editor path reaches git as one `sh` word, whatever it holds.
+    /// An unquoted path is split on a space and, on Windows, stripped of
+    /// its backslashes — interactive rebase then cannot find its todo.
+    #[test]
+    #[cfg(unix)]
+    fn an_editor_path_survives_the_shell_whole() {
+        let path = Path::new("/tmp/a dir/it's here");
+        let out = std::process::Command::new("sh")
+            .args(["-c", &format!("printf %s {}", sh_quoted_path(path))])
+            .output()
+            .expect("sh");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "/tmp/a dir/it's here");
+    }
 
     /// MG.12: `C-c C-k` on a todo buffer that was never executed is
     /// just "close this buffer" — there is nothing to throw away, so

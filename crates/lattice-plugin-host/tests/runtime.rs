@@ -1,10 +1,9 @@
-//! PH7.1a runtime-core coverage: the async ABI runs plugin CPU work on the
-//! caller's multi-thread pool (two plugins → two cores), a runaway plugin
-//! traps *cleanly* on its fuel budget without touching a concurrent
-//! well-behaved plugin, and plugin work lands off the actor thread.
+//! PH7.1a runtime-core coverage: a runaway plugin traps *cleanly* on its
+//! fuel budget without touching a concurrent well-behaved plugin, and plugin
+//! work lands off the actor thread. Two-plugins-on-two-cores lives in
+//! `runtime_parallel.rs`, alone, because it measures wall-clock time.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use lattice_plugin_host::{PluginBudget, PluginHost, PluginHostError, TrapKind};
 
@@ -13,70 +12,7 @@ fn bytes(wat: &str) -> Vec<u8> {
 }
 
 const NOOP_WAT: &str = include_str!("fixtures/noop.wat");
-const BUSY_WAT: &str = include_str!("fixtures/busy.wat");
 const SPIN_WAT: &str = include_str!("fixtures/spin.wat");
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_busy_plugins_run_in_parallel() {
-    // Needs >=2 cores; GitHub-hosted runners have 2-4.
-    let host = Arc::new(PluginHost::new().expect("host builds"));
-    let component = host
-        .compile(&bytes(BUSY_WAT))
-        .expect("busy component compiles");
-    // Budget generous enough for the 1e8-iteration loop (well above its fuel
-    // draw) and a 60s epoch ceiling it never approaches.
-    let budget = PluginBudget {
-        fuel: 5_000_000_000,
-        epoch_deadline: 60_000,
-    };
-
-    // Baseline: one plugin's activate.
-    let single = {
-        let t = Instant::now();
-        let mut p = host
-            .instantiate_with_budget(&component, budget)
-            .await
-            .expect("instantiates");
-        p.activate().await.expect("busy activate completes");
-        t.elapsed()
-    };
-
-    // Two plugins spawned onto the pool run their CPU loops on two workers.
-    let parallel = {
-        let t = Instant::now();
-        let a = {
-            let (host, component) = (host.clone(), component.clone());
-            tokio::spawn(async move {
-                let mut p = host
-                    .instantiate_with_budget(&component, budget)
-                    .await
-                    .expect("instantiates");
-                p.activate().await.expect("busy activate completes");
-            })
-        };
-        let b = {
-            let (host, component) = (host.clone(), component.clone());
-            tokio::spawn(async move {
-                let mut p = host
-                    .instantiate_with_budget(&component, budget)
-                    .await
-                    .expect("instantiates");
-                p.activate().await.expect("busy activate completes");
-            })
-        };
-        a.await.expect("task a joins");
-        b.await.expect("task b joins");
-        t.elapsed()
-    };
-
-    // If the two ran serially, `parallel` would be ~2x `single`. Real overlap
-    // keeps it well under. Loose threshold to absorb scheduling noise.
-    assert!(
-        parallel < single.mul_f64(1.8),
-        "two busy plugins did not overlap: parallel={parallel:?} single={single:?} \
-         (this assertion needs >=2 cores)",
-    );
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fuel_exhaustion_traps_cleanly_and_is_isolated() {

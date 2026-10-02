@@ -27,8 +27,8 @@
 # 4. **Docs.** `cargo doc --no-deps`. Builds the rustdoc output to
 #    catch obvious breakage; rustdoc warnings stay warnings so a
 #    toolchain bump that adds new lints doesn't fail the build.
-# 5. **Benchmark surface.** `cargo bench --no-run` per crate that
-#    has benches. Fast (compile-only) -- catches bench rot when
+# 5. **Benchmark surface.** `cargo check --benches` per crate that
+#    has benches. Fast (type-check only) -- catches bench rot when
 #    refactors break the criterion harness without anyone running
 #    `cargo bench` locally.
 # 6. **Bench baseline (main only).** Records criterion numbers as
@@ -212,11 +212,19 @@ jobs:
       - name: Install mold linker (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
-      - name: cargo bench --workspace --no-run
-        # Compile every bench target to catch bench-code rot. Does
+      - name: cargo check --workspace --benches
+        # Type-check every bench target to catch bench-code rot. Does
         # not execute the benches -- that's the bench-baseline job
         # below, gated on push-to-main only.
-        run: cargo bench --workspace --no-run --locked
+        #
+        # `check`, not `bench --no-run`: benches build under the release
+        # profile (opt-level 3, thin LTO, one codegen unit), so a
+        # compile-only gate spent 3.5-4h per run on the Windows runner
+        # producing optimised binaries nobody ran -- the slowest job in
+        # CI by hours. `check` stops before codegen. What it gives up is
+        # a link-only failure in a bench target, which bench-baseline
+        # still catches on every push to main.
+        run: cargo check --workspace --benches --locked
 
   keystroke-ratchet:
     # Paramount goal #1's ratchet clause: "CI records the measured

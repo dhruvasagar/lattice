@@ -655,8 +655,12 @@ mod tests {
         // Body shows the label form (path:line) without the
         // surrounding `[...]` markdown markers (they were
         // extracted into the help-link table).
+        // `file!()` uses the platform separator, so build the path the same way.
+        let src: std::path::PathBuf = ["crates", "lattice-host", "src", "keymap_normal.rs"]
+            .iter()
+            .collect();
         assert!(
-            body.contains("source: crates/lattice-host/src/keymap_normal.rs:"),
+            body.contains(&format!("source: {}:", src.display())),
             "resolved section should render source as as_link() label: {body}"
         );
         // And NOT the debug shape `SourceLocation { ... }`

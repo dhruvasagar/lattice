@@ -327,10 +327,14 @@ async fn accepting_a_row_routes_to_the_switch_menu_with_the_root() {
     match outcome {
         PickerAcceptOutcome::InvokeCommand { id, args } => {
             assert_eq!(id, "project-switch-to");
-            let args = format!("{args:?}");
+            // Matched on the value, not its `Debug`, which doubles every `\` of
+            // a Windows path.
+            let lattice_grammar::args::Args::String(arg) = &args else {
+                panic!("expected a string argument, got {args:?}");
+            };
             assert!(
-                args.contains(alpha.to_str().unwrap()),
-                "the root travels as the argument: {args}"
+                arg.contains(alpha.to_str().unwrap()),
+                "the root travels as the argument: {arg}"
             );
         }
         other => panic!("expected invoke-command, got {other:?}"),

@@ -100,7 +100,10 @@ fn resolve_block(
     // fails the way all of these fail: silently, with the picture simply not
     // appearing.
     let raw = lattice_core::home::expand_tilde_path(Path::new(&b.path));
-    let resolved = if raw.is_absolute() {
+    // `has_root`, not `is_absolute`: on Windows `/pics/x.png` has no drive so
+    // is not "absolute", but it names the current drive's root — it is not a
+    // reference relative to the buffer, and must not be dropped as one.
+    let resolved = if raw.has_root() {
         raw
     } else {
         match base {

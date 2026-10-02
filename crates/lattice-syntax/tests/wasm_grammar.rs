@@ -117,7 +117,15 @@ fn corpus() -> String {
     s
 }
 
+// WINDOWS_SKIP: the build recipe is a bash script that symlinks
+// `rust-lld` to `wasm-ld` so LLD picks its wasm driver from argv[0], and
+// probes `rust-lld` with no `.exe` — neither holds on a Windows runner.
+// The artefact is platform-independent, so unix CI covers the recipe.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "build-wasm-grammar.sh is a unix recipe; see WINDOWS_SKIP"
+)]
 fn wasm_grammar_parses_identically_to_native() {
     let Some(wasm) = build_wasm_grammar() else {
         eprintln!(
@@ -192,6 +200,10 @@ fn wasm_grammar_parses_identically_to_native() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "build-wasm-grammar.sh is a unix recipe; see WINDOWS_SKIP"
+)]
 fn wasm_grammar_module_has_no_unresolvable_imports() {
     let Some(wasm) = build_wasm_grammar() else {
         eprintln!("wasm_grammar_module_has_no_unresolvable_imports: SKIPPED");

@@ -1906,8 +1906,11 @@ mod tests {
         // is skipped. Critical for the oil dedupe path
         // (`oil_with_dir`) where two callers compare against the
         // same stored absolute key.
-        let got = normalize_user_path(std::path::Path::new("/tmp/abs/path.rs"));
-        assert_eq!(got, std::path::PathBuf::from("/tmp/abs/path.rs"));
+        // `temp_dir()`, not `/tmp/...`: drive-less is not absolute on Windows.
+        let abs = std::env::temp_dir().join("abs").join("path.rs");
+        assert!(abs.is_absolute());
+        let got = normalize_user_path(&abs);
+        assert_eq!(got, abs);
     }
 
     #[test]

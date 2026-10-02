@@ -3059,9 +3059,9 @@ mod tests {
         assert!(!crate::app::cursor_inside_range(Position::new(2, 6), &r));
     }
 
+    // The converter, not `file://` glued on: a Windows path is not a URI path.
     fn fake_uri(path: &str) -> lattice_lsp::lsp_types::Uri {
-        use std::str::FromStr;
-        lattice_lsp::lsp_types::Uri::from_str(&format!("file://{path}")).unwrap()
+        lattice_lsp::actor::uri_from_path(std::path::Path::new(path))
     }
 
     fn loc(path: &str, line: u32, col: u32) -> lattice_lsp::lsp_types::Location {

@@ -795,16 +795,12 @@ impl DirPickSource {
                     return None;
                 }
                 path.parent().map(|p| {
-                    // Every other branch here splits on `/`, so a Windows
-                    // `C:\Users` must come back as `C:/Users/` — a mixed
-                    // `C:\Users/` is a prefix the next ascend cannot walk.
                     let s = p.to_string_lossy();
-                    let s = if cfg!(windows) {
-                        s.replace('\\', "/")
-                    } else {
+                    if s.ends_with('/') {
                         s.into_owned()
-                    };
-                    if s.ends_with('/') { s } else { format!("{s}/") }
+                    } else {
+                        format!("{s}/")
+                    }
                 })
             }
         }
@@ -3491,7 +3487,7 @@ mod dir_pick_tests {
             return;
         }
         let up = DirPickSource::parent_of("~/").expect("home has a parent");
-        // `is_absolute`, not `starts_with('/')`: on Windows it is `C:/Users/`.
+        // `is_absolute`, not `starts_with('/')`: on Windows it is `C:\Users/`.
         assert!(
             std::path::Path::new(&up).is_absolute() && up.ends_with('/'),
             "absolute, and a listing prefix: {up}"

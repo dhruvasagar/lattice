@@ -984,9 +984,12 @@ mod tests {
         let start = std::time::Instant::now();
         let _ = find_surround_pair(&buf, cursor_pos, '"');
         let elapsed = start.elapsed();
-        // 10k chars should be well under 1ms (linear scan).
+        // A linear scan of 10k chars is well under 1ms; a quadratic one is
+        // tens of ms or more. The bound sits at 5ms because this is a debug
+        // build under the parallel runner, and a shared Windows CI runner
+        // measured 1.46ms — a 1ms bound failed on noise, not on the scan.
         assert!(
-            elapsed.as_micros() < 1000,
+            elapsed.as_micros() < 5000,
             "find_surround_pair on 10k chars took {:?}",
             elapsed
         );

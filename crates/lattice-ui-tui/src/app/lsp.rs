@@ -3295,7 +3295,13 @@ mod tests {
         let lattice_picker::RoutingPayload::LspLocation { path, line, .. } = routing else {
             panic!("expected LspLocation routing, got {routing:?}");
         };
-        assert_eq!(*path, std::path::PathBuf::from("/tmp/notarealfile.rs"));
+        // Through the same URI round trip the location took: on Windows the
+        // drive-less `/tmp/...` gains the current drive.
+        let expected = lattice_lsp::actor::uri_to_path(&lattice_lsp::actor::uri_from_path(
+            std::path::Path::new("/tmp/notarealfile.rs"),
+        ))
+        .expect("file uri");
+        assert_eq!(*path, expected);
         assert_eq!(*line, 3);
         // Column round-trips through utf-16→utf-8 conversion that
         // reads from the file's actual line text. For a missing

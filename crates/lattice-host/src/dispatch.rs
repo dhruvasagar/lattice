@@ -56955,7 +56955,11 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         }
-        path.to_string_lossy().into_owned()
+        // `/bin/sh <script>`, not the script itself: exec'ing a file another
+        // thread's `fork` still holds open for writing fails with ETXTBSY,
+        // which the parallel runner hits now and then. See `fake` in
+        // lattice-format's runner tests.
+        format!("/bin/sh {}", path.to_string_lossy())
     }
 
     /// Run `:format` and block until the spawned formatter's result

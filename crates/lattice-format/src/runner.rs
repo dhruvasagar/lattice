@@ -180,12 +180,20 @@ mod tests {
         let path = dir.path().join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        let program: &'static str = Box::leak(path.to_string_lossy().into_owned().into_boxed_str());
+        // Run as `/bin/sh <script>`, not by exec'ing the script. A file that
+        // was just written cannot be exec'd while ANY process still holds it
+        // open for writing (ETXTBSY), and a concurrent test's `fork` inherits
+        // this one's write descriptor for the instant before it closes — so
+        // under the parallel test runner the fake occasionally failed to
+        // start, and the hang test saw an `Io` error where it wanted a
+        // timeout. A shell only READS the script, which is never refused.
+        let script: &'static str = Box::leak(path.to_string_lossy().into_owned().into_boxed_str());
+        let args: &'static [&'static str] = Box::leak(vec![script].into_boxed_slice());
         (
             dir,
             FormatterSpec {
-                program,
-                args: &[],
+                program: "/bin/sh",
+                args,
                 filename_flag: None,
             },
         )

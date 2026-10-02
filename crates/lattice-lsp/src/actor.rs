@@ -648,7 +648,29 @@ pub fn uri_to_path(uri: &Uri) -> Option<std::path::PathBuf> {
             out.push(c);
         }
     }
-    Some(std::path::PathBuf::from(out))
+    Some(std::path::PathBuf::from(without_drive_slash(
+        out,
+        cfg!(windows),
+    )))
+}
+
+/// `/C:/Users/me` → `C:/Users/me`.
+///
+/// [`uri_from_path`] writes a Windows path as `file:///C:/Users/me` — three
+/// slashes, the third opening the path — so stripping `file://` leaves a
+/// leading `/` in front of the drive letter, and `/C:/Users/me` is not a path
+/// Windows can open. Every location a server sent back (a definition, a
+/// reference, a diagnostic's file) resolved to a file that did not exist.
+///
+/// Windows only: elsewhere `/C:/x` is a legitimate, if unlikely, absolute
+/// path. Pure, so the Windows half is tested on every platform.
+fn without_drive_slash(path: String, windows: bool) -> String {
+    let b = path.as_bytes();
+    if windows && b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        path[1..].to_string()
+    } else {
+        path
+    }
 }
 
 pub fn uri_from_path(p: &std::path::Path) -> Uri {
@@ -2408,5 +2430,30 @@ mod log_trace_tests {
         let params = json!({ "other": 1 });
         let (msg, _) = parse_log_trace(Some(&params));
         assert!(!msg.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod uri_path_tests {
+    use super::without_drive_slash;
+
+    /// The Windows half of [`super::uri_to_path`], pinned on every platform.
+    #[test]
+    fn a_drive_letter_loses_its_leading_slash_on_windows_only() {
+        assert_eq!(
+            without_drive_slash("/C:/Users/me/a.rs".to_string(), true),
+            "C:/Users/me/a.rs"
+        );
+        // Not a drive: an ordinary absolute path, and a UNC-ish one.
+        assert_eq!(
+            without_drive_slash("/home/me/a.rs".to_string(), true),
+            "/home/me/a.rs"
+        );
+        assert_eq!(without_drive_slash("/1:/x".to_string(), true), "/1:/x");
+        // Off Windows the same text is a real path and is left alone.
+        assert_eq!(
+            without_drive_slash("/C:/Users/me/a.rs".to_string(), false),
+            "/C:/Users/me/a.rs"
+        );
     }
 }

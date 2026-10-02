@@ -795,12 +795,16 @@ impl DirPickSource {
                     return None;
                 }
                 path.parent().map(|p| {
+                    // Every other branch here splits on `/`, so a Windows
+                    // `C:\Users` must come back as `C:/Users/` — a mixed
+                    // `C:\Users/` is a prefix the next ascend cannot walk.
                     let s = p.to_string_lossy();
-                    if s.ends_with('/') {
-                        s.into_owned()
+                    let s = if cfg!(windows) {
+                        s.replace('\\', "/")
                     } else {
-                        format!("{s}/")
-                    }
+                        s.into_owned()
+                    };
+                    if s.ends_with('/') { s } else { format!("{s}/") }
                 })
             }
         }
@@ -2470,8 +2474,11 @@ fn resolve_grep_backend(choice: &str) -> SourceResult<String> {
         std::env::var_os("PATH")
             .map(|p| {
                 std::env::split_paths(&p).any(|dir| {
-                    let bin = dir.join(name);
-                    bin.is_file()
+                    // On Windows the binary is `rg.exe`; `Command::new("rg")`
+                    // finds it, so the lookup must too, or no backend is
+                    // ever found and the grep picker never opens.
+                    dir.join(name).is_file()
+                        || (cfg!(windows) && dir.join(format!("{name}.exe")).is_file())
                 })
             })
             .unwrap_or(false)
@@ -3484,8 +3491,9 @@ mod dir_pick_tests {
             return;
         }
         let up = DirPickSource::parent_of("~/").expect("home has a parent");
+        // `is_absolute`, not `starts_with('/')`: on Windows it is `C:/Users/`.
         assert!(
-            up.starts_with('/') && up.ends_with('/'),
+            std::path::Path::new(&up).is_absolute() && up.ends_with('/'),
             "absolute, and a listing prefix: {up}"
         );
         assert_eq!(

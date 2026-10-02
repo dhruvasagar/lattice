@@ -259,7 +259,7 @@ fn bulk_accept_with_no_locations_echoes_and_keeps_the_picker() {
 #[test]
 fn bulk_accept_sends_locations_to_the_error_list() {
     use lattice_host::error_list::ErrorSource;
-    use lattice_lsp::lsp_types::{Location, Position, Range, Uri};
+    use lattice_lsp::lsp_types::{Location, Position, Range};
 
     let dir = std::env::temp_dir().join(format!("lattice-lr5-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -308,7 +308,7 @@ three
 #[test]
 fn a_picker_send_leaves_a_compile_run_intact() {
     use lattice_host::error_list::{ErrorEntry, ErrorSeverity, ErrorSource};
-    use lattice_lsp::lsp_types::{Location, Position, Range, Uri};
+    use lattice_lsp::lsp_types::{Location, Position, Range};
 
     let dir = std::env::temp_dir().join(format!("lattice-lr5b-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -366,7 +366,7 @@ b
 /// takes focus, so the active buffer changes.
 #[test]
 fn bulk_accept_opens_problems_by_default() {
-    use lattice_lsp::lsp_types::{Location, Position, Range, Uri};
+    use lattice_lsp::lsp_types::{Location, Position, Range};
 
     let dir = std::env::temp_dir().join(format!("lattice-pe3a-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -408,7 +408,7 @@ fn bulk_accept_opens_problems_by_default() {
 #[test]
 fn bulk_accept_off_populates_without_opening() {
     use lattice_host::error_list::ErrorSource;
-    use lattice_lsp::lsp_types::{Location, Position, Range, Uri};
+    use lattice_lsp::lsp_types::{Location, Position, Range};
 
     let dir = std::env::temp_dir().join(format!("lattice-pe3b-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

@@ -124,7 +124,10 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
       - name: cargo test --workspace
-        run: cargo test --workspace --locked
+        # `--no-fail-fast`: without it cargo stops at the first failing
+        # test binary, so a failure in an early crate hides every later
+        # crate's result and each CI round surfaces only one problem.
+        run: cargo test --workspace --locked --no-fail-fast
       - name: cargo clippy --workspace --tests
         # No `-D warnings` here -- the workspace `[workspace.lints]`
         # block is the authoritative gate. See the comment block
@@ -318,7 +321,9 @@ jobs:
         # `cargo bench` skips it, and `editor_element_frame` needs
         # `window` — real gpui and its display libraries, which this job
         # does not install. It was never run here; now it says so.
-        run: cargo bench --workspace --exclude lattice-ui-gpui --bench '*' --locked -- --quick
+        #
+        # `--no-fail-fast`: one panicking bench must not hide the rest.
+        run: cargo bench --workspace --exclude lattice-ui-gpui --bench '*' --locked --no-fail-fast -- --quick
       - name: Upload criterion results
         uses: actions/upload-artifact@v4
         with:

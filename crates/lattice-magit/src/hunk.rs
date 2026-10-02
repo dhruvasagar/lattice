@@ -1348,6 +1348,10 @@ mod git_round_trip {
         git_ok(p, &["init"]);
         git_ok(p, &["config", "user.email", "t@lattice.dev"]);
         git_ok(p, &["config", "user.name", "lattice-test"]);
+        // The byte-exact assertion below must not depend on the machine's
+        // git config: with `autocrlf=true` (the Windows runner default)
+        // `reset --hard` writes the file back out with CRLF.
+        git_ok(p, &["config", "core.autocrlf", "false"]);
         let base: String = (1..=20).map(|i| format!("line {i}\n")).collect();
         std::fs::write(p.join("a.txt"), &base).unwrap();
         git_ok(p, &["add", "a.txt"]);

@@ -16,14 +16,13 @@
 mod common;
 
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use common::MockServer;
 use lsp_types::{
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, PositionEncodingKind,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
 };
 
 use lattice_lsp::fan_in;
@@ -79,9 +78,10 @@ async fn end_to_end_publish_emits_did_change_with_correct_payload() {
 
     // Open a document directly on the actor (the supervisor's
     // open path does this in production; fan-in only handles
-    // the edit path).
+    // the edit path). The URI comes from the converter fan-in uses, so the
+    // two agree on Windows, where `/tmp/x.rs` gains a drive.
     let path = PathBuf::from("/tmp/x.rs");
-    let uri = Uri::from_str("file:///tmp/x.rs").unwrap();
+    let uri = lattice_lsp::actor::uri_from_path(std::path::Path::new("/tmp/x.rs"));
     server
         .handle
         .open_doc(uri.clone(), "rust", "fn main() {}")
@@ -134,7 +134,7 @@ async fn open_doc_precedes_first_edit_on_the_wire() {
     let _sub = fan_in::spawn(server.handle.clone(), bus.clone());
 
     let path = PathBuf::from("/tmp/x.rs");
-    let uri = Uri::from_str("file:///tmp/x.rs").unwrap();
+    let uri = lattice_lsp::actor::uri_from_path(std::path::Path::new("/tmp/x.rs"));
 
     // Order: OpenDoc, then publish an edit. Both go through
     // the same actor cmd_tx (via different paths), so FIFO
@@ -192,7 +192,7 @@ async fn edit_for_unknown_uri_is_warn_and_skip_not_panic() {
     );
 
     // Actor still healthy: open after the no-op edit.
-    let uri = Uri::from_str("file:///tmp/x.rs").unwrap();
+    let uri = lattice_lsp::actor::uri_from_path(std::path::Path::new("/tmp/x.rs"));
     server.handle.open_doc(uri, "rust", "ok").unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -238,7 +238,7 @@ async fn many_publishes_during_debounce_coalesce_into_one_did_change() {
     let bus = Arc::new(EventBus::new());
     let _sub = fan_in::spawn(server.handle.clone(), bus.clone());
 
-    let uri = Uri::from_str("file:///tmp/x.rs").unwrap();
+    let uri = lattice_lsp::actor::uri_from_path(std::path::Path::new("/tmp/x.rs"));
     let path = PathBuf::from("/tmp/x.rs");
     server.handle.open_doc(uri, "rust", "").unwrap();
 
@@ -294,7 +294,7 @@ async fn shutdown_unsubscribes_fan_in() {
     assert!(bus.unsubscribe(sub));
 
     let path = PathBuf::from("/tmp/x.rs");
-    let uri = Uri::from_str("file:///tmp/x.rs").unwrap();
+    let uri = lattice_lsp::actor::uri_from_path(std::path::Path::new("/tmp/x.rs"));
     server.handle.open_doc(uri, "rust", "").unwrap();
     bus.publish_typed(doc_changed_event(path, vec![applied_insert(0, "x")]));
     tokio::time::sleep(Duration::from_millis(120)).await;

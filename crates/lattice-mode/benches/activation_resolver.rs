@@ -41,7 +41,9 @@ impl Mode for GlobalMinor {
 fn registry_with(n: usize) -> ModeRegistry {
     let mut r = ModeRegistry::new();
     for i in 0..n {
-        r.register(GlobalMinor(ModeId::new(&format!("global-minor-{i}"))))
+        // `-mode` suffix: `ModeRegistry::register` has required it since the
+        // emacs-keys rename, and refuses an id without one.
+        r.register(GlobalMinor(ModeId::new(&format!("global-minor-{i}-mode"))))
             .unwrap();
     }
     r

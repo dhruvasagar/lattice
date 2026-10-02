@@ -1729,7 +1729,8 @@ struct ChunkInputs<'a> {
 // (+ projection). Kept as a parity oracle; deleted in B4.
 #[allow(dead_code)]
 fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec<CellRow> {
-    let mut rows: Vec<CellRow> = Vec::with_capacity((end_line - start_line) as usize);
+    // `saturating_sub`: see `build_display_rows`.
+    let mut rows: Vec<CellRow> = Vec::with_capacity(end_line.saturating_sub(start_line) as usize);
     for line_idx in start_line..end_line {
         if inputs.fold_index.line_inside_closed_fold(line_idx) {
             continue;
@@ -2245,7 +2246,15 @@ fn build_display_rows(
     end_line: u32,
 ) -> Vec<crate::display_matrix::DisplayLine> {
     use crate::display_matrix::DisplayLine;
-    let mut rows: Vec<DisplayLine> = Vec::with_capacity((end_line - start_line) as usize);
+    // An inverted range is EMPTY, and must stay cheap. The incremental build
+    // hands one over whenever an edit lands below the window a large file's
+    // matrix covers — nothing in the window changed, so the zone to rebuild
+    // ends (`affected_hi`, clamped to the window) before it starts
+    // (`edit_lo`). The loop below already does nothing for it; a bare
+    // `end_line - start_line` wrapped to ~4 billion and asked for 320 GB,
+    // which aborts the editor on an edit far from the viewport.
+    let mut rows: Vec<DisplayLine> =
+        Vec::with_capacity(end_line.saturating_sub(start_line) as usize);
     for line_idx in start_line..end_line {
         if inputs.fold_index.line_inside_closed_fold(line_idx) {
             continue;
@@ -4416,6 +4425,66 @@ mod tests {
             m.row_at_source_line(4990).is_none(),
             "line far below the window has no row"
         );
+    }
+
+    /// An edit BELOW the covered window leaves the window alone.
+    ///
+    /// The viewport is at the top of a 5000-line file, so the matrix covers
+    /// a few hundred lines; the edit is at line 2500. Nothing the window
+    /// shows changed, and the incremental build's rebuild zone comes out
+    /// inverted — it ends, clamped to the window, before the edit starts.
+    /// `build_display_rows` sized its `Vec` from `end - start`, which wrapped
+    /// to four billion rows: 320 GB, and an abort, in a release build
+    /// (`cells_worker_incremental_build/5000_lines` died exactly so in CI);
+    /// a subtraction overflow here. `:2500d` from the top of a large file,
+    /// or an LSP edit somewhere far away, is the same shape.
+    #[test]
+    fn an_edit_below_the_covered_window_does_not_touch_it() {
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+
+        let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(5000)), v(1), 50);
+        assert_eq!(recompute_pane(&pane, ct, &ws), WorkerDecision::Recomputed);
+        let covered_end = matrix_cell.load().covered_end_line();
+        assert!(
+            covered_end < 2500,
+            "precondition: line 2500 is outside the window (covered to {covered_end})"
+        );
+
+        // Same line count, one line's text changed, far below the window.
+        let text: String = (0..5000u32)
+            .map(|i| {
+                if i == 2500 {
+                    "EDITED".to_string()
+                } else {
+                    format!("line{i}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        pane.snapshot = Some(snap_of_versioned(&text, 2));
+        pane.version = v(2);
+        pane.last_edit = Some(lattice_cells::EditDelta {
+            start_line: 2500,
+            lines_removed: 0,
+            lines_added: 0,
+            ..Default::default()
+        });
+
+        let _ = recompute_pane(&pane, ct, &ws);
+
+        let m = matrix_cell.load();
+        assert!(m.covers(0, 50), "the viewport is still covered");
+        assert!(
+            m.row_at_source_line(10).is_some(),
+            "a line in the window still has its row"
+        );
+        assert_eq!(m.source_line_count, 5000);
     }
 
     /// Scrolling the viewport past the covered window (no version

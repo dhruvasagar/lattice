@@ -1,0 +1,8 @@
+# Check text out with LF on every platform.
+#
+# Several tests compare checked-in files byte-for-byte against generated
+# output (the plugin-API site reference, the guides' synced blocks, the
+# crate map) or scan sources for `\n#[cfg(test)]\n`. With git's Windows
+# default (`core.autocrlf=true`) the checkout gets CRLF and every one of
+# them fails on content that is, in fact, current.
+* text=auto eol=lf

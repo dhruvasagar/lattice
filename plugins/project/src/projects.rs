@@ -52,6 +52,12 @@ pub enum Refused {
     Unstorable,
 }
 
+/// Path separators. The host hands over NATIVE paths and a guest cannot know
+/// the host's OS, so a Windows root (`C:\src\lattice`) must split as well as
+/// a Unix one. A Unix name containing a literal `\` mis-splits — accepted, as
+/// such names are vanishingly rare beside every path on Windows.
+pub const SEPARATORS: [char; 2] = ['/', '\\'];
+
 /// Normalise a root for comparison and storage.
 ///
 /// Trailing slashes only: `~/src/lattice` and `~/src/lattice/` are one project,
@@ -62,10 +68,12 @@ pub enum Refused {
 /// is the honest outcome rather than a guess.
 pub fn normalize(root: &str) -> String {
     let trimmed = root.trim();
-    if trimmed.len() > 1 {
-        trimmed.trim_end_matches('/').to_string()
+    let t = trimmed.trim_end_matches(SEPARATORS);
+    // A root keeps its own separator: `/` and `C:\` are roots, `C:` is not.
+    if t.is_empty() || t.ends_with(':') {
+        trimmed[..(t.len() + 1).min(trimmed.len())].to_string()
     } else {
-        trimmed.to_string()
+        t.to_string()
     }
 }
 
@@ -151,7 +159,9 @@ pub fn encode(list: &[String]) -> Vec<u8> {
 /// (`~/work/api` and `~/oss/api`), so the basename is for humans and the path
 /// is the identity.
 pub fn basename(root: &str) -> &str {
-    root.rsplit('/').find(|s| !s.is_empty()).unwrap_or(root)
+    root.rsplit(SEPARATORS)
+        .find(|s| !s.is_empty())
+        .unwrap_or(root)
 }
 
 /// PB.1: does `path` live inside `root`?
@@ -180,7 +190,7 @@ pub fn is_under(root: &str, path: &str) -> bool {
     // `rest` is what follows the root: empty (the root itself), or something
     // that must begin at a component boundary. Without this check
     // `lattice-old` strips to `-old` and passes.
-    rest.is_empty() || rest.starts_with('/')
+    rest.is_empty() || rest.starts_with(SEPARATORS)
 }
 
 /// PB.1: `path` spelled relative to `root`, for display.
@@ -193,7 +203,9 @@ pub fn relative_to(root: &str, path: &str) -> String {
         return path.to_string();
     }
     let root = normalize(root);
-    path[root.len()..].trim_start_matches('/').to_string()
+    path[root.len()..]
+        .trim_start_matches(SEPARATORS)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -294,6 +306,12 @@ mod tests {
     #[test]
     fn the_filesystem_root_normalises_to_itself() {
         assert_eq!(normalize("/"), "/");
+        assert_eq!(
+            normalize(r"C:\"),
+            r"C:\",
+            "a drive root keeps its separator"
+        );
+        assert_eq!(normalize(r"C:\src\lattice\"), r"C:\src\lattice");
         let mut l = Vec::new();
         assert!(remember(&mut l, "/").is_ok());
     }
@@ -348,6 +366,7 @@ mod tests {
         assert_eq!(basename("/src/lattice/"), "lattice");
         assert_eq!(basename("lattice"), "lattice");
         assert_eq!(basename("/"), "/");
+        assert_eq!(basename(r"C:\src\lattice"), "lattice", "a Windows root");
     }
 
     #[test]

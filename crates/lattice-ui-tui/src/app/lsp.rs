@@ -3059,9 +3059,9 @@ mod tests {
         assert!(!crate::app::cursor_inside_range(Position::new(2, 6), &r));
     }
 
+    // The converter, not `file://` glued on: a Windows path is not a URI path.
     fn fake_uri(path: &str) -> lattice_lsp::lsp_types::Uri {
-        use std::str::FromStr;
-        lattice_lsp::lsp_types::Uri::from_str(&format!("file://{path}")).unwrap()
+        lattice_lsp::actor::uri_from_path(std::path::Path::new(path))
     }
 
     fn loc(path: &str, line: u32, col: u32) -> lattice_lsp::lsp_types::Location {
@@ -3295,7 +3295,13 @@ mod tests {
         let lattice_picker::RoutingPayload::LspLocation { path, line, .. } = routing else {
             panic!("expected LspLocation routing, got {routing:?}");
         };
-        assert_eq!(*path, std::path::PathBuf::from("/tmp/notarealfile.rs"));
+        // Through the same URI round trip the location took: on Windows the
+        // drive-less `/tmp/...` gains the current drive.
+        let expected = lattice_lsp::actor::uri_to_path(&lattice_lsp::actor::uri_from_path(
+            std::path::Path::new("/tmp/notarealfile.rs"),
+        ))
+        .expect("file uri");
+        assert_eq!(*path, expected);
         assert_eq!(*line, 3);
         // Column round-trips through utf-16→utf-8 conversion that
         // reads from the file's actual line text. For a missing

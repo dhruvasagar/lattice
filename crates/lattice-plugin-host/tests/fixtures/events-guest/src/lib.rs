@@ -238,7 +238,8 @@ impl Guest for Component {
             };
             let names: Vec<&str> = paths
                 .iter()
-                .filter_map(|p| p.rsplit('/').next())
+                // Native paths: `\` separates on Windows.
+                .filter_map(|p| p.rsplit(['/', '\\']).next())
                 .filter(|n| !n.is_empty())
                 .collect();
             record(&format!("6:files-changed:{}:{}", names.len(), names.join(",")));

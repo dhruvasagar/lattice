@@ -575,7 +575,8 @@ mod tests {
 
         assert_eq!(out.len(), 3, "walks recursively: {out:?}");
         assert!(out.iter().all(|p| p.ends_with(".rs")));
-        assert!(out.iter().any(|p| p.ends_with("sub/c.rs")));
+        // Component-wise: the walk returns native paths (`\` on Windows).
+        assert!(out.iter().any(|p| Path::new(p).ends_with("sub/c.rs")));
     }
 
     #[test]
@@ -792,6 +793,6 @@ mod tests {
         // Grant the parent; walk a child — starts_with permits it.
         let grant = read_grant(dir.path().to_path_buf());
         let out = walk_within_grant(&grant, dir.path().join("src").to_str().unwrap()).unwrap();
-        assert!(out.iter().any(|p| p.ends_with("src/main.rs")));
+        assert!(out.iter().any(|p| Path::new(p).ends_with("src/main.rs")));
     }
 }

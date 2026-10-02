@@ -325,7 +325,12 @@ mod tests {
     #[test]
     fn snapshot_path_uses_arc_for_zero_copy_clone() {
         let mut doc = Document::from_text("");
-        doc.save_as("/tmp/lattice-snapshot-test.txt").ok();
+        // `temp_dir`, not `/tmp`: a failed save leaves no path, and
+        // `/tmp` does not exist on Windows.
+        let path =
+            std::env::temp_dir().join(format!("lattice-snapshot-test-{}.txt", std::process::id()));
+        doc.save_as(&path).expect("save to the temp dir");
+        let _ = std::fs::remove_file(&path);
         let snap = DocumentSnapshot::from_document(&doc);
         let cloned = snap.clone();
         // Both clones point at the same Arc<PathBuf>.

@@ -2314,6 +2314,9 @@ mod uri_tests {
         );
     }
 
+    // Unix only: `/tmp/…` has no drive, so on Windows it is not absolute and
+    // is — correctly — given one (`file:///D:/tmp/…`).
+    #[cfg(unix)]
     #[test]
     fn absolute_path_unchanged_in_uri() {
         // Already-absolute paths should round-trip without extra

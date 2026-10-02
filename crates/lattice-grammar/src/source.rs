@@ -210,11 +210,11 @@ impl SourceLocation {
                 path,
                 line: Some(n),
             } => {
-                let label = format!("{}:{}", path.display(), n);
+                let label = escape_link_text(&format!("{}:{}", path.display(), n));
                 format!("[{label}](file:{label})")
             }
             SourceKind::File { path, line: None } => {
-                let label = format!("{}", path.display());
+                let label = escape_link_text(&path.display().to_string());
                 format!("[{label}](file:{label})")
             }
             SourceKind::CommandLine { history_index } => {
@@ -235,6 +235,21 @@ impl SourceLocation {
     }
 }
 
+/// Backslash-escape the link syntax's own punctuation (`\ [ ] ( )`), as
+/// `lattice_help::escape_link_text` does; the help parsers unescape. A
+/// Windows path is why: unescaped, `crates\lattice-host\src` lost every
+/// separator, in the label and the `file:` URL alike.
+fn escape_link_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '[' | ']' | '(' | ')') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -251,6 +266,16 @@ mod tests {
     fn builtin_file_renders_as_file_link_with_line() {
         let s = SourceLocation::builtin_file("src/foo.rs", 42);
         assert_eq!(s.as_link(), "[src/foo.rs:42](file:src/foo.rs:42)");
+    }
+
+    #[test]
+    fn file_link_escapes_backslashes_and_brackets() {
+        // A Windows `file!()` path; unescaped, the help parser ate the `\`s.
+        let s = SourceLocation::builtin_file(r"crates\x\src\a(b).rs", 3);
+        assert_eq!(
+            s.as_link(),
+            r"[crates\\x\\src\\a\(b\).rs:3](file:crates\\x\\src\\a\(b\).rs:3)"
+        );
     }
 
     #[test]

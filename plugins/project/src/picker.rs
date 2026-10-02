@@ -279,7 +279,7 @@ fn buffer_row(root: &str, entry: &BufferEntry, active: u32) -> (RawCandidate, Ro
     // The matched text carries BOTH, because annotations are shown and never
     // matched: a row whose directory the matcher could not see would make
     // `host/mod` unable to narrow to one of them.
-    let directory = match relative.rfind('/') {
+    let directory = match relative.rfind(projects::SEPARATORS) {
         Some(i) => relative[..=i].to_string(),
         // A file directly at the root. `./` rather than empty, or the
         // annotation column collapses for exactly those rows and the list

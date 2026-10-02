@@ -258,8 +258,10 @@ fn an_excerpt_outside_the_grant_is_denied() {
     let outside = tmp.path().join("secret.txt");
     std::fs::write(&outside, "shh\n").unwrap();
 
+    // A TOML literal string ('…'): a basic one reads a Windows path's `\U` as
+    // an escape.
     let manifest = lattice_plugin_host::PluginManifest::from_toml_str(&format!(
-        "id = \"viewer\"\nprovides = [\"multibuffer-view-source\"]\ncapabilities = [\"fs:read:{}\"]\n",
+        "id = \"viewer\"\nprovides = [\"multibuffer-view-source\"]\ncapabilities = ['fs:read:{}']\n",
         granted.display()
     ))
     .expect("manifest parses");

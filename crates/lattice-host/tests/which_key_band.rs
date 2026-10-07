@@ -128,6 +128,20 @@ async fn settle_band(editor: &mut Editor, done: impl Fn(&Editor) -> bool) -> boo
     false
 }
 
+/// Wait for an OPEN band to be taken down after its chord resolved.
+///
+/// Not [`settle_arming_to`]`(false)`, which is what these tests used: that
+/// waits for the gate to be disarmed, and firing the gate already disarmed
+/// it (`fire_elapsed` clears the deadline before running the handler). Once
+/// the band is up the condition is true before the resolving event has been
+/// forwarded at all, so the wait returned after a single drain and the test
+/// read a band nobody had been asked to close yet. Windows CI lost that race
+/// in `a_popup_opened_over_the_band_survives_the_bands_dismissal`. The band
+/// itself is the thing these tests assert on, so it is the thing to wait for.
+async fn settle_band_closed(editor: &mut Editor) {
+    settle_band(editor, |e| e.band_buffer.is_none()).await;
+}
+
 fn band_has_text(editor: &Editor) -> bool {
     band_text(editor).is_some_and(|t| !t.trim().is_empty())
 }
@@ -365,7 +379,7 @@ async fn resolving_a_chord_dismisses_an_open_band() {
     // which republishes with an empty list — the same path a real second
     // keystroke takes once the trie reaches a binding.
     let _ = editor.dispatch(Action::ScrollLineDown);
-    settle_arming_to(&mut editor, false).await;
+    settle_band_closed(&mut editor).await;
 
     assert!(
         editor.band_buffer.is_none(),
@@ -429,7 +443,7 @@ async fn which_keys_own_band_is_still_dismissed_when_the_chord_resolves() {
     assert!(editor.band_buffer.is_some(), "the hint opened");
 
     let _ = editor.dispatch(Action::ScrollLineDown);
-    settle_arming_to(&mut editor, false).await;
+    settle_band_closed(&mut editor).await;
 
     assert!(
         editor.band_buffer.is_none(),
@@ -463,7 +477,7 @@ async fn a_popup_opened_over_the_band_survives_the_bands_dismissal() {
     );
 
     let _ = editor.dispatch(Action::ScrollLineDown);
-    settle_arming_to(&mut editor, false).await;
+    settle_band_closed(&mut editor).await;
 
     assert!(
         editor.band_buffer.is_none(),

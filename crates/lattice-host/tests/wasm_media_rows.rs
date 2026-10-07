@@ -53,6 +53,41 @@ impl AsyncMediaSource for StubProducer {
     }
 }
 
+/// A producer whose FIRST answer is held until the test releases it, and
+/// whose later answers are immediate — so a second refresh can be made to
+/// land before the first.
+#[derive(Debug)]
+struct FirstCallHeld {
+    blocks: Vec<MediaBlockRequest>,
+    calls: Arc<std::sync::atomic::AtomicU32>,
+    release: Arc<tokio::sync::Notify>,
+    first_returned: Arc<tokio::sync::Notify>,
+}
+
+impl AsyncMediaSource for FirstCallHeld {
+    fn source_id(&self) -> u64 {
+        1
+    }
+    fn produce(
+        &self,
+        _buffer: u64,
+        _path: Option<std::path::PathBuf>,
+        _lines: u32,
+        _text: String,
+    ) -> MediaFuture<'_> {
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+        let blocks = self.blocks.clone();
+        let (release, first_returned) = (self.release.clone(), self.first_returned.clone());
+        Box::pin(async move {
+            if first {
+                release.notified().await;
+                first_returned.notify_one();
+            }
+            Ok(blocks)
+        })
+    }
+}
+
 fn block_at(line: u32) -> MediaBlockRequest {
     block_for(line, std::path::PathBuf::from("/tmp/shot.png"))
 }
@@ -376,6 +411,72 @@ async fn cached_version_advanced(editor: &Editor, buffer: lattice_core::BufferId
             tokio::time::timeout(Duration::from_millis(50), editor.async_landed.notified()).await;
     }
     false
+}
+
+/// Two refreshes in flight, and the OLDER one finishes last. Its result is for
+/// a document that no longer exists, so it must not replace the newer one.
+///
+/// It used to: the cache ended up stamped with the old version, and the pump
+/// then returned early on every tick (not current, but `pending` still named
+/// the newer request), so the blocks stayed stale until the next edit.
+#[tokio::test]
+async fn a_refresh_that_lands_late_does_not_overwrite_a_newer_one() {
+    let mut editor = Editor::boot(CoreDocument::from_text("a\nb\n"));
+    let buffer = editor.document_buffer_id;
+    let release = Arc::new(tokio::sync::Notify::new());
+    let first_returned = Arc::new(tokio::sync::Notify::new());
+    let mut r = MediaSourceRegistry::new();
+    let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    r.register(Arc::new(FirstCallHeld {
+        blocks: vec![block_at(0)],
+        calls: calls.clone(),
+        release: release.clone(),
+        first_returned: first_returned.clone(),
+    }));
+    editor.wasm_media = WasmMediaState::with_registry(Arc::new(arc_swap::ArcSwap::from_pointee(r)));
+
+    // Refresh 1, against the first version. Its producer is held.
+    let old_version = editor.document.snapshot().version;
+    editor.maybe_refresh_wasm_media();
+    // Wait until it is the one being held: the two tasks run on a pool, and
+    // if the second reached the producer first it would be held instead.
+    for _ in 0..1000 {
+        if calls.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "refresh 1 reached its producer"
+    );
+
+    // An edit, and refresh 2 against the new version. It lands at once.
+    insert_line(&editor).await;
+    let new_version = editor.document.snapshot().version;
+    assert_ne!(old_version, new_version);
+    editor.maybe_refresh_wasm_media();
+    assert!(
+        cached_version_advanced(&editor, buffer).await,
+        "the newer refresh lands while the older is still held"
+    );
+
+    // Now let the older one finish, and give it time to reach the cache.
+    release.notify_one();
+    first_returned.notified().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        editor
+            .wasm_media
+            .cache
+            .get_for(buffer)
+            .unwrap()
+            .document_version,
+        new_version,
+        "the late result is for a superseded version and must be dropped"
+    );
 }
 
 /// A file that cannot be measured is not a pending answer — it IS the answer.

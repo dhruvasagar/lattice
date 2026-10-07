@@ -11,8 +11,8 @@
 //! guest never says how tall anything is.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use lattice_core::BufferId;
 use lattice_mode::{MediaBlockRequest, MediaSourceRegistryHandle};
@@ -29,6 +29,27 @@ pub type MediaGeometry = (f32, f32);
 /// version, measured against which geometry. The geometry is part of the key
 /// because a resize changes neither of the other two.
 type RefreshKey = (BufferId, u64, Option<MediaGeometry>);
+
+/// Which request's result each buffer's cache entry currently holds.
+///
+/// `pending` single-flights a refresh on its key, so an edit or a resize while
+/// one is in flight starts a SECOND task — correctly, the first is answering a
+/// question nobody is asking any more. But both tasks then run on a
+/// multi-thread runtime with a `spawn_blocking` hop each, and nothing makes
+/// them finish in the order they started. When the older one lands last it
+/// overwrites the newer blocks and stamps the cache with the old version, and
+/// the pump cannot recover: the cache is not current, `pending` still names
+/// the newer request, so every tick returns early until the next edit.
+///
+/// A result is therefore written only if no LATER request has already landed
+/// for that buffer. An older result that arrives first still lands — typing
+/// through a slow producer keeps updating rather than waiting for a pause.
+///
+/// A mutex, not an atomic, because the check and the cache write have to be
+/// one step: two tasks that each pass the check and then write in the other
+/// order are the same bug with a smaller window. Held for a map insert, on a
+/// pool thread, never across an `await`.
+type LandedRequests = Arc<Mutex<std::collections::HashMap<BufferId, u64>>>;
 
 /// Per-buffer cache of a media plugin's blocks, resolved and sized.
 #[derive(Debug, Clone, Default)]
@@ -60,6 +81,12 @@ pub struct WasmMediaState {
     /// guard turned it straight back, and an image kept the row count it
     /// earned at the old pane width for the rest of the session.
     pending: Option<RefreshKey>,
+    /// Numbers each refresh as it is REQUESTED, so results can be ordered by
+    /// request rather than by arrival.
+    next_request: u64,
+    /// Per buffer, the request number of the newest result written to
+    /// [`Self::cache`]. See [`LandedRequests`].
+    landed: LandedRequests,
     /// Buffers this state has registered a [`MediaVirtualRowProvider`] for, so
     /// registration happens once per buffer and can be undone when the last
     /// producer goes away.
@@ -161,6 +188,9 @@ impl Editor {
 
         self.wasm_media.last_registry_epoch = epoch;
         self.wasm_media.pending = Some((buffer_id, version, geometry));
+        self.wasm_media.next_request += 1;
+        let request = self.wasm_media.next_request;
+        let landed = self.wasm_media.landed.clone();
 
         // Measurements already taken, keyed by path. The pump refreshes on
         // every document version — that is, on every keystroke in the buffer
@@ -239,17 +269,36 @@ impl Editor {
             // virtual rows, and `notify_one` publishes render state and asks
             // for a paint. Doing that per keystroke for an unchanged picture
             // is exactly the per-keystroke work paramount #1 forbids.
-            let unchanged = cache_slot
-                .get_for(buffer_id)
-                .is_some_and(|prior| same_blocks(&prior.blocks, &blocks));
-            cache_slot.insert_for(
-                buffer_id,
-                WasmMediaCache {
-                    document_version: version,
-                    geometry,
-                    blocks,
-                },
-            );
+            let unchanged = {
+                // Poisoning means a holder panicked mid-insert; the map is
+                // still a map, and refusing to ever write media again would
+                // be the worse outcome.
+                let mut landed = landed.lock().unwrap_or_else(|e| e.into_inner());
+                if landed
+                    .get(&buffer_id)
+                    .is_some_and(|&newest| newest > request)
+                {
+                    tracing::debug!(
+                        request,
+                        version,
+                        "media refresh superseded by a later one that already landed; dropped"
+                    );
+                    return;
+                }
+                landed.insert(buffer_id, request);
+                let unchanged = cache_slot
+                    .get_for(buffer_id)
+                    .is_some_and(|prior| same_blocks(&prior.blocks, &blocks));
+                cache_slot.insert_for(
+                    buffer_id,
+                    WasmMediaCache {
+                        document_version: version,
+                        geometry,
+                        blocks,
+                    },
+                );
+                unchanged
+            };
             if !unchanged {
                 generation.fetch_add(1, Ordering::Relaxed);
                 async_landed.notify_one();

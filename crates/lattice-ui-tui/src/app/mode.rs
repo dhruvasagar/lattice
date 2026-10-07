@@ -259,9 +259,17 @@ mod tests {
         // `${IFS}` stands in for the spaces because the spawn command line
         // is whitespace-split (no shell-quote parsing), so the script has to
         // reach `sh -c` as one token.
-        a.apply(crate::app::Action::TerminalSpawn(Some(
-            "sh -c seq${IFS}60;sleep${IFS}60".to_string(),
-        )));
+        //
+        // Unix only. Windows keeps the bare `seq 60` it has always passed
+        // with: the `sh` form produced no output at all on the Windows
+        // runner, and a ConPTY has no slave fd whose close could drop the
+        // output in the first place.
+        let command = if cfg!(windows) {
+            "seq 60"
+        } else {
+            "sh -c seq${IFS}60;sleep${IFS}60"
+        };
+        a.apply(crate::app::Action::TerminalSpawn(Some(command.to_string())));
         let id = a.editor.active_pane_buffer_id();
 
         // Wait for the child's output to build scrollback history.

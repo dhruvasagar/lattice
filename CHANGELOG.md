@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.9.3 — 2026-10-07
+
+A fixes release: Windows paths work end to end, a plugin write grant can
+no longer be escaped, `:files` opens instantly, and the plugin API and
+Rust API now have generated reference documentation.
+
+### Added
+- **Generated API documentation.** The plugin API reference is now built
+  from the WIT itself: one page per seam with full signatures and types,
+  an index, a JSON export, and examples extracted from guests that CI
+  compiles. The Rust API is published as rustdoc at `/api/`, with a
+  generated crate map. For agents there is `llms.txt`, `llms-full.txt`
+  and a Markdown mirror of the site.
+- **`<Esc>` closes help everywhere.** In a help or describe buffer `<Esc>`
+  now closes it in every display mode, including a split, where it used
+  to do nothing.
+
+### Changed
+- **`install.sh` installs the GUI build by default.** That binary is a
+  superset: it runs the terminal UI unless started with `--gui`. Where a
+  release has no GUI build for the platform the script falls back to the
+  terminal build. `--cli` pins the terminal build, `--gui` now requires
+  the GUI one, and `LATTICE_MODE` sets either from the environment.
+- **`:files` opens instantly.** The walk is parallel and honours
+  `.gitignore` / `.ignore` properly instead of a hardcoded skip list, and
+  the project's file list is warmed in the background at startup, so the
+  first open no longer waits on a cold filesystem.
+
+### Fixed
+- **A plugin could write outside its write grant.** A path that did not
+  exist yet and contained `..` (`<grant>/new/../../elsewhere`) was
+  compared without being normalised, so the write was permitted outside
+  the granted directory. It is now resolved before the comparison.
+- **Windows paths.** A sweep across the editor:
+  - LSP locations open: a `file:///C:/…` URI converts back to a path
+    Windows can open, so go-to-definition, references and `*problems*`
+    land on the file.
+  - The grep picker opens (`rg.exe` / `ag.exe` / `grep.exe` are found on
+    `PATH`), and the directory picker lists a canonical `\\?\C:\…` root
+    and walks up from `~`.
+  - Paths under home display as `~\…`, and `:cd` / completion list a
+    directory named by a canonical path.
+  - Magit's interactive rebase (drop, edit, reword) works: the editor
+    path git is handed is quoted.
+  - The project plugin names projects by their folder, inline media
+    accepts a rooted path without a drive, and source links in help keep
+    their separators.
+- **Bundled plugins load when `lattice` is a symlink.** With
+  `~/.local/bin/lattice` linked to a binary elsewhere, the plugins in
+  `~/.local/share/lattice/plugins` were never found, silently. The lookup
+  now tries beside the path you ran, then beside the file it points to.
+- **A far-away edit in a large file could abort the editor.** An edit
+  below the rendered window of a large file (`:2500d` from the top of a
+  5000-line file, or an LSP edit far from the viewport) attempted a
+  multi-hundred-gigabyte allocation.
+- **Help in a split shows the help.** With `help.describe-display` set to
+  a split or in-pane mode, the pane painted the buffer underneath; and in
+  the GUI an empty floating popup was drawn beside it.
+- **`<C-g>` cancels a stuck `:` line, search or prompt again.**
+- **`*problems*` and the references view are syntax-highlighted**,
+  including for languages a plugin provides.
+- **Inline code is legible on the cursor line** in markdown and org, in
+  every theme.
+- **Inline images stay current.** When an edit or resize overtook a slow
+  image refresh, the older result could land last and leave the images
+  stale until the next edit.
+- **A finished `git bisect` is recognised** on a git that quotes the term
+  (`is the first 'bad' commit`).
+- **Agenda and other scanned views are deterministic.** A root is walked
+  in file-name order, so the same directory gives the same view on every
+  machine.
+
 ## 0.9.2 — 2026-09-28
 
 Inline images and SVG, any picker's results into the error list, and a

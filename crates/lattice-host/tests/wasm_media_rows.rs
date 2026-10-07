@@ -88,6 +88,29 @@ fn registry_with(producer: StubProducer) -> MediaSourceRegistryHandle {
     Arc::new(arc_swap::ArcSwap::from_pointee(r))
 }
 
+/// Insert a line and WAIT for it. `apply_edit` only queues the edit for the
+/// document actor and returns a `Pending`; dropping that unawaited leaves the
+/// snapshot at the old version for as long as the actor takes. A refresh
+/// started straight after then sees nothing new and returns early, and a test
+/// waiting for the new version to be stamped waits for a refresh that was
+/// never started.
+async fn insert_line(editor: &Editor) {
+    let before = editor.document.snapshot().version;
+    editor
+        .document
+        .apply_edit(lattice_protocol::edit::Edit::insert(
+            lattice_protocol::position::Position::new(1, 0),
+            "c\n",
+        ))
+        .await
+        .expect("the edit applies");
+    assert_ne!(
+        editor.document.snapshot().version,
+        before,
+        "the edit is visible in the snapshot once its reply arrives"
+    );
+}
+
 /// Drain notifies accumulated during boot so `landed` measures only the
 /// refresh under test.
 async fn settle(editor: &Editor) {
@@ -312,16 +335,18 @@ async fn an_unchanged_refresh_does_not_bump_the_paint_generation() {
     }));
     settle(&editor).await;
     editor.maybe_refresh_wasm_media();
-    assert!(landed(&editor).await);
+    // The cache itself, not `landed`: one `async_landed` wake proves only
+    // that SOMETHING landed. If it was another producer's, the first refresh
+    // would still be in flight below, and its generation bump would be
+    // charged to the second.
+    assert!(
+        cached_version_advanced(&editor, buffer).await,
+        "the first refresh lands"
+    );
     let generation = editor.wasm_media.generation.load(Ordering::Relaxed);
 
     // A fresh document version with the SAME image at the same anchor.
-    let _ = editor
-        .document
-        .apply_edit(lattice_protocol::edit::Edit::insert(
-            lattice_protocol::position::Position::new(1, 0),
-            "c\n",
-        ));
+    insert_line(&editor).await;
     editor.maybe_refresh_wasm_media();
     assert!(
         cached_version_advanced(&editor, buffer).await,

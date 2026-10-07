@@ -249,11 +249,18 @@ mod tests {
         // `zt` and `zb` produce different viewport offsets.
         let mut a = app_with("", 10);
         // `seq 60` prints 60 lines into a 10-row terminal -> ~50 lines of
-        // scrollback. A single-token program + arg, because the spawn
-        // command line is whitespace-split (no shell-quote parsing). `seq`
-        // exits after printing; the grid retains its scrollback.
+        // scrollback. The shell then SLEEPS rather than exiting, so the
+        // slave side of the PTY stays open while the reader thread drains
+        // it: a child that exits before the master's first `read` can have
+        // its buffered output thrown away when the last slave fd closes,
+        // which is how this test saw `history=0` on a loaded macOS runner
+        // with a bare `seq 60`. The buffer's drop kills the sleeper.
+        //
+        // `${IFS}` stands in for the spaces because the spawn command line
+        // is whitespace-split (no shell-quote parsing), so the script has to
+        // reach `sh -c` as one token.
         a.apply(crate::app::Action::TerminalSpawn(Some(
-            "seq 60".to_string(),
+            "sh -c seq${IFS}60;sleep${IFS}60".to_string(),
         )));
         let id = a.editor.active_pane_buffer_id();
 

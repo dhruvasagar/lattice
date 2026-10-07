@@ -48,6 +48,10 @@ wins (except `$LATTICE_RUNTIME`, which always wins if set):
 | 3 | `<exe-dir>/../share/lattice/plugins/` | Relocatable tarballs / macOS `.app` bundles. |
 | 4 | `<workspace>/runtime/plugins/` | Running from a source checkout (`cargo run`). |
 
+`<exe-dir>` is the directory of the path you ran. When that path is a symlink,
+the directory holding the link is tried first and the directory of the file it
+points to second.
+
 **To point lattice at a different runtime root, set `$LATTICE_RUNTIME`:**
 
 ```sh

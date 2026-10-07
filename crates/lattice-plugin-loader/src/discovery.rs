@@ -6,6 +6,7 @@
 //! logged skip, never fatal: one malformed plugin dir must not stop the others
 //! or fail boot (the four-artefact graceful-degradation clause).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use lattice_plugin_host::PluginManifest;
@@ -57,22 +58,70 @@ pub fn default_plugins_dir() -> Option<PathBuf> {
 /// 3. `<exe-dir>/../share/lattice/plugins` — a relocatable install / `.app`,
 /// 4. `<exe-dir>/../../runtime/plugins` — dev, running from `target/<profile>/`.
 ///
+/// `<exe-dir>` is tried twice for 3 and 4: first the directory of the path the
+/// binary was **invoked through** ([`invoked_exe`]), then the directory of the
+/// file it resolves to (`current_exe`). They differ when the binary is reached
+/// through a symlink — `~/.local/bin/lattice -> ~/.cargo/bin/lattice` — and
+/// the plugins were installed beside the link, not beside its target. On
+/// Linux `current_exe` reads `/proc/self/exe`, which is always the target, so
+/// looking there alone found nothing and loaded no core plugins, silently.
+///
 /// `None` when no candidate exists — the editor then loads no core plugins (a
 /// benign skip, like an absent user plugins dir).
 pub fn default_core_plugins_dir() -> Option<PathBuf> {
+    let invoked = invoked_exe();
+    let resolved = std::env::current_exe().ok();
+    let exes: Vec<&Path> = [invoked.as_deref(), resolved.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
     core_plugins_dir_from(
         std::env::var_os("LATTICE_RUNTIME"),
         option_env!("LATTICE_INSTALL_PREFIX"),
-        std::env::current_exe().ok().as_deref(),
+        &exes,
     )
 }
 
+/// The path this process was started through, symlinks NOT followed: `argv[0]`
+/// made absolute. `None` when it cannot be turned into a file that exists —
+/// `argv[0]` is whatever the parent process chose to pass, so it is a hint to
+/// check, never a fact to trust.
+fn invoked_exe() -> Option<PathBuf> {
+    invoked_exe_from(
+        &PathBuf::from(std::env::args_os().next()?),
+        std::env::var_os("PATH"),
+        std::env::current_dir().ok().as_deref(),
+    )
+}
+
+/// The pure core of [`invoked_exe`]. An `argv[0]` with a directory part is
+/// taken as written (relative to `cwd`); a bare name was found by the shell on
+/// `$PATH`, so it is looked up there the same way. A bare name on Windows
+/// carries no `.exe` and so finds nothing; the resolved path covers it.
+fn invoked_exe_from(
+    arg0: &Path,
+    path_env: Option<OsString>,
+    cwd: Option<&Path>,
+) -> Option<PathBuf> {
+    let found = if arg0.is_absolute() {
+        arg0.to_path_buf()
+    } else if arg0.components().count() > 1 {
+        cwd?.join(arg0)
+    } else {
+        std::env::split_paths(&path_env?)
+            .map(|dir| dir.join(arg0))
+            .find(|candidate| candidate.is_file())?
+    };
+    found.is_file().then_some(found)
+}
+
 /// The pure search-path core of [`default_core_plugins_dir`] — takes the resolved
-/// inputs so it's testable without touching the process environment.
+/// inputs so it's testable without touching the process environment. `exes` is
+/// in priority order; each contributes the installed and the dev candidate.
 fn core_plugins_dir_from(
-    runtime_env: Option<std::ffi::OsString>,
+    runtime_env: Option<OsString>,
     install_prefix: Option<&str>,
-    exe: Option<&Path>,
+    exes: &[&Path],
 ) -> Option<PathBuf> {
     // Explicit override wins unconditionally (existence is discovery's concern).
     if let Some(root) = runtime_env {
@@ -87,7 +136,7 @@ fn core_plugins_dir_from(
                 .join("plugins"),
         );
     }
-    if let Some(dir) = exe.and_then(Path::parent) {
+    for dir in exes.iter().filter_map(|exe| exe.parent()) {
         // Installed: `<prefix>/bin/lattice` → `<prefix>/share/lattice/plugins`.
         candidates.push(dir.join("..").join("share").join("lattice").join("plugins"));
         // Dev: `<workspace>/target/<profile>/lattice` → `<workspace>/runtime/plugins`.
@@ -225,7 +274,7 @@ fn sole_wasm(plugin_dir: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::core_plugins_dir_from;
+    use super::{core_plugins_dir_from, invoked_exe_from};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -235,7 +284,7 @@ mod tests {
         let got = core_plugins_dir_from(
             Some("/opt/lattice-runtime".into()),
             Some("/usr"),
-            Some(Path::new("/usr/bin/lattice")),
+            &[Path::new("/usr/bin/lattice")],
         );
         assert_eq!(got, Some(PathBuf::from("/opt/lattice-runtime/plugins")));
     }
@@ -251,7 +300,7 @@ mod tests {
         let got = core_plugins_dir_from(
             None,
             Some(prefix.to_str().unwrap()),
-            Some(Path::new("/nowhere/bin/lattice")),
+            &[Path::new("/nowhere/bin/lattice")],
         );
         assert_eq!(got, Some(plugins));
     }
@@ -266,7 +315,7 @@ mod tests {
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         let dev_plugins = tmp.path().join("runtime").join("plugins");
         std::fs::create_dir_all(&dev_plugins).unwrap();
-        let got = core_plugins_dir_from(None, None, Some(&exe));
+        let got = core_plugins_dir_from(None, None, &[&exe]);
         // `<exe>/../../runtime/plugins` normalises to the created dir.
         assert_eq!(got.map(|p| p.exists()), Some(true));
         assert!(got_matches(&exe, &dev_plugins));
@@ -294,7 +343,7 @@ mod tests {
         std::fs::create_dir_all(&plugins).unwrap();
         std::fs::create_dir_all(prefix.join("bin")).unwrap();
 
-        let got = core_plugins_dir_from(None, None, Some(&prefix.join("bin").join("lattice")))
+        let got = core_plugins_dir_from(None, None, &[&prefix.join("bin").join("lattice")])
             .expect("an extracted archive must find the plugins shipped beside its binary");
 
         assert_eq!(
@@ -308,17 +357,111 @@ mod tests {
     #[test]
     fn none_when_no_candidate_exists() {
         assert_eq!(
-            core_plugins_dir_from(None, None, Some(Path::new("/nowhere/bin/lattice"))),
+            core_plugins_dir_from(None, None, &[Path::new("/nowhere/bin/lattice")]),
             None
         );
         // No exe at all (current_exe failed) + no prefix → None.
-        assert_eq!(core_plugins_dir_from(None, None, None), None);
+        assert_eq!(core_plugins_dir_from(None, None, &[]), None);
+    }
+
+    #[test]
+    fn a_symlinked_binary_finds_the_plugins_beside_the_link() {
+        // Issue #3: `~/.local/bin/lattice -> ~/.cargo/bin/lattice`, plugins in
+        // `~/.local/share/lattice/plugins`. The resolved path's prefix has no
+        // `share/`; the invoked path's does, and is asked first.
+        let tmp = tempfile::tempdir().unwrap();
+        let link_prefix = tmp.path().join("local");
+        let plugins = link_prefix.join("share").join("lattice").join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        let invoked = link_prefix.join("bin").join("lattice");
+        let resolved = tmp.path().join("cargo").join("bin").join("lattice");
+        // `<bin>/../share` only exists if `<bin>` does.
+        std::fs::create_dir_all(invoked.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(resolved.parent().unwrap()).unwrap();
+
+        // The resolved path alone is the reported bug: nothing found.
+        assert_eq!(core_plugins_dir_from(None, None, &[&resolved]), None);
+
+        let got = core_plugins_dir_from(None, None, &[&invoked, &resolved])
+            .expect("the plugins beside the symlink must be found");
+        assert_eq!(got.canonicalize().unwrap(), plugins.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn the_invoked_prefix_wins_when_both_prefixes_carry_plugins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let share = |prefix: &str| {
+            let dir = tmp.path().join(prefix).join("share/lattice/plugins");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(tmp.path().join(prefix).join("bin")).unwrap();
+            dir
+        };
+        let (beside_link, _beside_target) = (share("local"), share("cargo"));
+        let got = core_plugins_dir_from(
+            None,
+            None,
+            &[
+                &tmp.path().join("local/bin/lattice"),
+                &tmp.path().join("cargo/bin/lattice"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            got.canonicalize().unwrap(),
+            beside_link.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn the_invoked_path_is_argv0_made_absolute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("lattice");
+        std::fs::write(&exe, b"").unwrap();
+        let path_env = std::env::join_paths([tmp.path().join("empty"), bin.clone()]).unwrap();
+
+        // Absolute: as written.
+        assert_eq!(invoked_exe_from(&exe, None, None), Some(exe.clone()));
+        // With a directory part: against the working directory.
+        assert_eq!(
+            invoked_exe_from(Path::new("bin/lattice"), None, Some(tmp.path())),
+            Some(tmp.path().join("bin/lattice")),
+        );
+        // A bare name: found on `$PATH`, as the shell found it.
+        assert_eq!(
+            invoked_exe_from(Path::new("lattice"), Some(path_env.clone()), None),
+            Some(exe),
+        );
+    }
+
+    #[test]
+    fn an_argv0_that_names_no_file_is_ignored() {
+        // `argv[0]` is the parent's to set; an `exec -a` or a login shell's
+        // `-lattice` must fall through to the resolved path, not be believed.
+        let tmp = tempfile::tempdir().unwrap();
+        let path_env = std::env::join_paths([tmp.path()]).unwrap();
+        assert_eq!(
+            invoked_exe_from(Path::new("lattice"), Some(path_env), None),
+            None
+        );
+        assert_eq!(
+            invoked_exe_from(&tmp.path().join("gone/lattice"), None, None),
+            None
+        );
+        assert_eq!(
+            invoked_exe_from(Path::new("bin/lattice"), None, Some(tmp.path())),
+            None
+        );
+        // No `$PATH`, no working directory: nothing to resolve against.
+        assert_eq!(invoked_exe_from(Path::new("lattice"), None, None), None);
+        assert_eq!(invoked_exe_from(Path::new("bin/lattice"), None, None), None);
     }
 
     // The dev candidate path contains `..` segments; compare by canonicalized
     // existence rather than literal equality.
     fn got_matches(exe: &Path, expected_existing: &Path) -> bool {
-        let got = core_plugins_dir_from(None, None, Some(exe)).unwrap();
+        let got = core_plugins_dir_from(None, None, &[exe]).unwrap();
         got.canonicalize().ok() == expected_existing.canonicalize().ok()
     }
 }

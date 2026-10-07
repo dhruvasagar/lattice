@@ -26,6 +26,10 @@ directory. Lattice looks in this order:
 3. `<directory-of-the-binary>/../share/lattice/plugins`
 4. `<workspace>/runtime/plugins` (when running from `target/`)
 
+If `lattice` is a symlink, rules 3 and 4 look beside the link first and
+beside the file it points to second. So `~/.local/bin/lattice` linked to
+`~/.cargo/bin/lattice` finds plugins in `~/.local/share/lattice/plugins`.
+
 The usual causes are moving `bin/lattice` out of its extracted archive
 (which orphans it from `../share/lattice/plugins`), or building from source
 without running `cargo xtask build-core-plugins`. An absent plugin directory

@@ -22,6 +22,12 @@ on:
       # too, or the dead link is only found by the next docs change.
       - 'AGENTS.md'
       - 'README.md'
+      # The site's version badge is generated from the workspace version
+      # (sync-docs.sh writes site/data/version.toml from this file). A release
+      # commit touches only Cargo.toml, Cargo.lock and CHANGELOG.md, so
+      # without this entry a release never rebuilds the site and it keeps
+      # advertising the previous version until some unrelated docs change.
+      - 'Cargo.toml'
       - 'crates/**'
       - 'plugins/**'
       - '.github/workflows/deploy-docs.yml'
@@ -36,6 +42,12 @@ on:
       # too, or the dead link is only found by the next docs change.
       - 'AGENTS.md'
       - 'README.md'
+      # The site's version badge is generated from the workspace version
+      # (sync-docs.sh writes site/data/version.toml from this file). A release
+      # commit touches only Cargo.toml, Cargo.lock and CHANGELOG.md, so
+      # without this entry a release never rebuilds the site and it keeps
+      # advertising the previous version until some unrelated docs change.
+      - 'Cargo.toml'
       - 'crates/**'
       - 'plugins/**'
       - '.github/workflows/deploy-docs.yml'

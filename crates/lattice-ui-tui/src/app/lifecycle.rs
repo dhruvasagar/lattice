@@ -1978,6 +1978,41 @@ mod tests {
     }
 
     #[test]
+    fn pressing_dash_in_a_document_opens_oil_at_parent() {
+        // The same expectation as the test above, but through the KEY rather
+        // than the `Action`. The two paths differ: the chord resolves to the
+        // `action:oil-navigate-up` command, which oil-mode's global handler
+        // is also bound to — and on a buffer with no oil state that handler
+        // has nothing to say. Declining must fall through to the command's
+        // own body, not swallow the key.
+        let mut a = app_with("hi", 5);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
+        crate::app::test_helpers::press_chars(&mut a, "-");
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
+    }
+
+    /// The other half of the same key: inside an oil buffer `-` is
+    /// oil-mode's own chord, under oil-mode's own command name, and steps
+    /// to the parent. Paired with the test above so the two commands
+    /// cannot be folded back onto one name without one of them going red.
+    #[tokio::test]
+    async fn pressing_dash_in_an_oil_buffer_steps_to_the_parent() {
+        let tmp = unique_tempdir();
+        std::fs::create_dir_all(tmp.join("nested")).unwrap();
+
+        let mut a = app_with("hi", 10);
+        a.do_open_oil(Some(tmp.join("nested")));
+        let oil_id = a.active_pane_buffer_id();
+        let _ = crate::app::test_helpers::settle_mode(&mut a, "oil-mode").await;
+
+        crate::app::test_helpers::press_chars(&mut a, "-");
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
+        assert_eq!(a.oil_dir_for(oil_id).unwrap_or_default(), tmp);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn oil_navigate_up_from_document_lands_on_the_edited_file() {
         // `-` from a file buffer opens oil for the file's parent
         // with the cursor on the file you were editing (oil.nvim

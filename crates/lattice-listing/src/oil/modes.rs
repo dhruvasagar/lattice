@@ -45,7 +45,7 @@ fn oil_mode_keymap_entries() -> &'static [KeymapEntry] {
                 mode: Normal,
                 chord: "-",
                 doc: "Navigate to the parent directory in the oil buffer.",
-                cmd: "action:oil-navigate-up"
+                cmd: "action:oil-parent-directory"
             ),
             keymap_entry!(
                 mode: Normal,
@@ -150,7 +150,7 @@ impl Mode for OilMode {
                 handler: follow,
             },
             ActionHandlerContribution {
-                action_name: "action:oil-navigate-up",
+                action_name: "action:oil-parent-directory",
                 handler: up,
             },
             // `<C-s>` / `<C-v>` / `<C-t>`: open the entry in a split / vsplit /
@@ -283,7 +283,7 @@ mod tests {
         let bound: Vec<(&str, Option<&str>)> =
             km.entries.iter().map(|e| (e.chord, e.command)).collect();
         for (chord, cmd) in [
-            ("-", "action:oil-navigate-up"),
+            ("-", "action:oil-parent-directory"),
             ("<CR>", "action:oil-follow"),
             ("<C-s>", "action:oil-follow-split"),
             ("<C-v>", "action:oil-follow-vsplit"),
@@ -302,6 +302,6 @@ mod tests {
         let km = OilMode.keymap();
         let e = &km.entries[0];
         assert_eq!(e.chord, "-");
-        assert_eq!(e.command, Some("action:oil-navigate-up"));
+        assert_eq!(e.command, Some("action:oil-parent-directory"));
     }
 }

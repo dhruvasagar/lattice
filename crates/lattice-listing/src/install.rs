@@ -33,8 +33,13 @@ fn register_oil_commands(registry: &mut CommandRegistry) {
             "action:oil-follow",
             "oil `<CR>`: open the entry under the cursor — descend into a directory, or open a file in the current pane.",
         ),
+        // NOT `action:oil-navigate-up`: that name is the host's, bound to `-`
+        // at the Builtin layer to open oil at the current file's directory.
+        // Handlers bind by command NAME and globally, so sharing it put
+        // oil-mode's handler on the file-buffer chord too — where it finds no
+        // oil state, declines, and the key does nothing.
         (
-            "action:oil-navigate-up",
+            "action:oil-parent-directory",
             "oil `-`: re-list the parent directory, landing on the directory stepped out of.",
         ),
         (

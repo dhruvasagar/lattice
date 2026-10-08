@@ -591,6 +591,15 @@ mod tests {
     use crate::app::*;
     use lattice_protocol::edit::Edit;
 
+    /// Press `-` the way a user does: once `oil-global-mode`, which owns
+    /// the chord, is active on the buffer. A minor mode activates on a
+    /// spawned cascade after the major, so a bare key press straight after
+    /// opening a buffer would race it.
+    async fn press_dash(a: &mut App) {
+        let _ = settle_mode(a, "oil-global-mode").await;
+        crate::app::test_helpers::press_chars(a, "-");
+    }
+
     /// LM.3 test driver: reproduce oil `<CR>` the way
     /// `OilMode::action_handlers()` (`action:oil-follow`) does — resolve the
     /// entry under the cursor from the oil buffer's locals and apply the
@@ -1935,8 +1944,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    #[test]
-    fn oil_navigate_up_from_oil_buffer_goes_to_parent() {
+    #[tokio::test]
+    async fn oil_navigate_up_from_oil_buffer_goes_to_parent() {
         // `-` key from an oil buffer navigates to the parent
         // dir.
         let tmp = std::env::temp_dir().join(format!("lattice-oil-up-test-{}", std::process::id()));
@@ -1956,7 +1965,7 @@ mod tests {
             tmp.join("nested"),
         );
         // Trigger `-`.
-        a.apply(crate::app::Action::OilNavigateUp);
+        press_dash(&mut a).await;
         // Dir lives in the OilDir buffer-local (canonical).
         let dir_after = a.oil_dir_for(oil_id).unwrap_or_default();
         assert_eq!(dir_after, tmp);
@@ -1964,37 +1973,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    #[test]
-    fn oil_navigate_up_from_document_opens_oil_at_parent() {
+    #[tokio::test]
+    async fn oil_navigate_up_from_document_opens_oil_at_parent() {
         // `-` from a document buffer should open oil for the
         // parent of the document's path. Use a document with no
         // path -- this falls back to cwd.
         let mut a = app_with("hi", 5);
         // Start in a Document buffer (default).
         assert_eq!(a.editor.active_buffer, BufferKind::Document);
-        a.apply(crate::app::Action::OilNavigateUp);
+        press_dash(&mut a).await;
         // Active buffer should now be Oil.
         assert_eq!(a.editor.active_buffer, BufferKind::Oil);
     }
 
-    #[test]
-    fn pressing_dash_in_a_document_opens_oil_at_parent() {
-        // The same expectation as the test above, but through the KEY rather
-        // than the `Action`. The two paths differ: the chord resolves to the
-        // `action:oil-navigate-up` command, which oil-mode's global handler
-        // is also bound to — and on a buffer with no oil state that handler
-        // has nothing to say. Declining must fall through to the command's
-        // own body, not swallow the key.
+    #[tokio::test]
+    async fn pressing_dash_in_a_document_opens_oil_at_parent() {
+        // The regression this pins: `-` in a file buffer once did nothing,
+        // because oil-mode's handler had captured the chord and declined
+        // outside an oil buffer. `oil-global-mode` owns it in every buffer
+        // now and answers for each.
         let mut a = app_with("hi", 5);
         assert_eq!(a.editor.active_buffer, BufferKind::Document);
-        crate::app::test_helpers::press_chars(&mut a, "-");
+        press_dash(&mut a).await;
         assert_eq!(a.editor.active_buffer, BufferKind::Oil);
     }
 
-    /// The other half of the same key: inside an oil buffer `-` is
-    /// oil-mode's own chord, under oil-mode's own command name, and steps
-    /// to the parent. Paired with the test above so the two commands
-    /// cannot be folded back onto one name without one of them going red.
+    /// The other half of the same key: inside an oil buffer the one chord
+    /// steps to the parent. Paired with the test above because both
+    /// answers come from one handler, and each is the other's regression.
     #[tokio::test]
     async fn pressing_dash_in_an_oil_buffer_steps_to_the_parent() {
         let tmp = unique_tempdir();
@@ -2003,17 +2009,42 @@ mod tests {
         let mut a = app_with("hi", 10);
         a.do_open_oil(Some(tmp.join("nested")));
         let oil_id = a.active_pane_buffer_id();
-        let _ = crate::app::test_helpers::settle_mode(&mut a, "oil-mode").await;
 
-        crate::app::test_helpers::press_chars(&mut a, "-");
+        press_dash(&mut a).await;
         assert_eq!(a.editor.active_buffer, BufferKind::Oil);
         assert_eq!(a.oil_dir_for(oil_id).unwrap_or_default(), tmp);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    #[test]
-    fn oil_navigate_up_from_document_lands_on_the_edited_file() {
+    /// The third answer the one chord gives: on a file-tree row, oil opens
+    /// on the row's directory. The tree's major no longer binds `-`, so
+    /// this is the only thing that would notice the handler losing the
+    /// tree's case.
+    #[tokio::test]
+    async fn pressing_dash_on_a_file_tree_row_opens_oil_there() {
+        let tmp = unique_tempdir();
+        std::fs::write(tmp.join("a.txt"), "alpha").unwrap();
+
+        let mut a = app_with("xx", 10);
+        a.editor
+            .set_command_line_text(&format!("Filetree {}", tmp.display()));
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.editor.active_buffer, BufferKind::FileTree);
+
+        press_dash(&mut a).await;
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
+        assert_eq!(
+            a.oil_dir_for(a.active_pane_buffer_id()).unwrap_or_default(),
+            tmp
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn oil_navigate_up_from_document_lands_on_the_edited_file() {
         // `-` from a file buffer opens oil for the file's parent
         // with the cursor on the file you were editing (oil.nvim
         // behaviour), not at the origin row.
@@ -2028,7 +2059,7 @@ mod tests {
         a.do_edit(Some(tmp.join("target.txt")), false);
         assert_eq!(a.editor.active_buffer, BufferKind::Document);
 
-        a.apply(crate::app::Action::OilNavigateUp);
+        press_dash(&mut a).await;
         assert_eq!(a.editor.active_buffer, BufferKind::Oil);
         // Listing is dirs-first alpha: ["adir", "target.txt"], so
         // the edited file is row 1 -- the cursor must land there.
@@ -2073,8 +2104,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    #[test]
-    fn oil_navigate_up_lands_on_the_directory_left() {
+    #[tokio::test]
+    async fn oil_navigate_up_lands_on_the_directory_left() {
         // `-` inside an oil buffer steps up to the parent listing
         // with the cursor on the child directory you stepped out
         // of, so `-` then `<CR>` round-trips to the same place.
@@ -2090,7 +2121,7 @@ mod tests {
         a.do_open_oil(Some(tmp.join("nested")));
         assert_eq!(a.editor.active_buffer, BufferKind::Oil);
 
-        a.apply(crate::app::Action::OilNavigateUp);
+        press_dash(&mut a).await;
         assert_eq!(
             a.oil_dir_for(a.active_pane_buffer_id()).unwrap_or_default(),
             tmp
@@ -2317,8 +2348,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    #[test]
-    fn oil_navigate_up_re_mirrors_dir_into_buffer_locals() {
+    #[tokio::test]
+    async fn oil_navigate_up_re_mirrors_dir_into_buffer_locals() {
         // Regression: pressing `-` inside an oil buffer
         // updated OilBuffer::dir but didn't re-mirror the
         // `OilDir` buffer-local. The next `<CR>` on a file
@@ -2349,7 +2380,7 @@ mod tests {
             tmp.join("sub"),
         );
         // Navigate up.
-        a.do_oil_navigate_up();
+        press_dash(&mut a).await;
         // M.3.2.c.5: dir lives in the OilDir buffer-local
         // (single source of truth; no struct mirror to drift).
         let dir_after = a.oil_dir_for(oil_id).unwrap_or_default();
@@ -2389,8 +2420,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    #[test]
-    fn oil_open_with_relative_dir_stores_absolute_oil_dir() {
+    #[tokio::test]
+    async fn oil_open_with_relative_dir_stores_absolute_oil_dir() {
         // Regression for the navigate-up ENOENT: opening oil with
         // a relative dir used to store the relative path
         // verbatim. `Path::parent()` then returned `Some("")` for
@@ -2429,7 +2460,7 @@ mod tests {
             // Hit `-` once. Pre-fix this hit ENOENT for any
             // relative dir; post-fix it lands on the absolute
             // parent.
-            a.do_oil_navigate_up();
+            press_dash(&mut a).await;
             let after = a.oil_dir_for(oil_id).unwrap_or_default();
             assert_eq!(after, tmp, "navigate-up should land on tmp's absolute path");
             let _ = std::fs::remove_dir_all(&tmp);
@@ -2447,7 +2478,7 @@ mod tests {
             "OilDir should always be absolute, even when opened relative; got {stored:?}",
         );
         // `-` walks up to tmp.
-        a.do_oil_navigate_up();
+        press_dash(&mut a).await;
         let after = a.oil_dir_for(oil_id).unwrap_or_default();
         assert_eq!(
             after, tmp,

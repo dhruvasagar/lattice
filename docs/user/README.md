@@ -52,6 +52,7 @@ same surface).
 | Buffers and panes          | [`buffers`](help:buffers)                | ✅      |
 | File tree                  | [`file-tree-mode`](help:file-tree-mode)  | ✅      |
 | Oil (editable directory)   | [`oil-mode`](help:oil-mode)              | ✅      |
+|   — `-` from any buffer    | [`oil-global-mode`](help:oil-global-mode) | ✅      |
 |   — listing presentation   | [`directory-listing-mode`](help:directory-listing-mode) | ✅      |
 | Tables (markdown + org)    | [`table-mode`](help:table-mode)          | ✅      |
 | Org files                  | [`org`](help:org)                        | ✅      |

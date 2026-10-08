@@ -118,26 +118,10 @@ impl Mode for FileTreeMode {
                 }
             })
         });
-        // `-`: open an oil browser at the row's directory (the directory
-        // itself for a directory row, the file's parent for a file row) —
-        // the file-tree branch of the old `do_oil_navigate_up`.
-        let up: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
-            let (path, is_dir, _line) = file_tree_entry_at(ctx)?;
-            let dir = if is_dir {
-                path
-            } else {
-                path.parent().map(std::path::Path::to_path_buf)?
-            };
-            Some(Effect::OpenOil { dir: Some(dir) })
-        });
         vec![
             ActionHandlerContribution {
                 action_name: "action:file-tree-follow",
                 handler: follow,
-            },
-            ActionHandlerContribution {
-                action_name: "action:file-tree-navigate-up",
-                handler: up,
             },
             // `<C-s>` / `<C-v>` / `<C-t>`: open the row in a split / vsplit /
             // tab. A file opens directly; a directory path resolves to
@@ -162,12 +146,8 @@ fn file_tree_mode_keymap_entries() -> &'static [KeymapEntry] {
                 doc: "Open the row under the cursor: toggle a directory's expansion, or open a file in the current pane.",
                 cmd: "action:file-tree-follow"
             ),
-            keymap_entry!(
-                mode: Normal,
-                chord: "-",
-                doc: "Open an oil browser at the row's directory.",
-                cmd: "action:file-tree-navigate-up"
-            ),
+            // No `-` here: `oil-global-mode` owns it, and as a minor mode
+            // it would shadow one declared on this major.
             keymap_entry!(
                 mode: Normal,
                 chord: "<C-s>",
@@ -193,6 +173,22 @@ fn file_tree_mode_keymap_entries() -> &'static [KeymapEntry] {
 /// LM.4: resolve the tree row under the cursor — `(path, is-dir, line)` —
 /// from the `ActionContext`'s buffer-locals. `None` when the buffer carries
 /// no tree state or the cursor is past the last row.
+/// `-` on a file-tree row: open an oil browser at the row's directory —
+/// the directory itself for a directory row, the file's parent for a file
+/// row. `None` when the cursor is past the last row.
+///
+/// The body is the tree's; the chord is `oil-global-mode`'s, which calls
+/// this for buffers carrying [`FileTreeEntries`].
+pub(crate) fn file_tree_row_directory(ctx: &ActionContext<'_>) -> Option<Effect> {
+    let (path, is_dir, _line) = file_tree_entry_at(ctx)?;
+    let dir = if is_dir {
+        path
+    } else {
+        path.parent().map(std::path::Path::to_path_buf)?
+    };
+    Some(Effect::OpenOil { dir: Some(dir) })
+}
+
 fn file_tree_entry_at(ctx: &ActionContext<'_>) -> Option<(std::path::PathBuf, bool, u32)> {
     let entries = ctx.buffer_local::<FileTreeEntries>()?;
     let line = ctx.cursor.line;
@@ -342,7 +338,6 @@ mod tests {
             km.entries.iter().map(|e| (e.chord, e.command)).collect();
         for (chord, cmd) in [
             ("<CR>", "action:file-tree-follow"),
-            ("-", "action:file-tree-navigate-up"),
             ("<C-s>", "action:file-tree-follow-split"),
             ("<C-v>", "action:file-tree-follow-vsplit"),
             ("<C-t>", "action:file-tree-follow-tab"),

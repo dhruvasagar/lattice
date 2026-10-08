@@ -401,15 +401,9 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.repeat_last_change),
         source(),
     );
-    // `-` -- open oil for the parent directory of the current buffer's file,
-    // or navigate up one directory from within an oil buffer.
-    handle.bind(
-        layer,
-        mode,
-        &[lit_char('-')],
-        CommandInvocation::of(actions.oil_navigate_up),
-        source(),
-    );
+    // `-` is NOT bound here. It opens the oil directory view, which is a
+    // feature of lattice-listing, so `oil-global-mode` binds it on its own
+    // `MinorMode` layer. Builtin is universal vim grammar.
     // Specials.
     handle.bind(
         layer,

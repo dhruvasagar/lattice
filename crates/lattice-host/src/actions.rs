@@ -135,7 +135,6 @@ pub struct ActionIds {
     /// `action:prompt-line-cancel` — `<Esc>` / `<C-c>` on a generic
     /// `Effect::OpenPrompt` prompt.
     pub prompt_line_cancel: CommandId,
-    pub oil_navigate_up: CommandId,
     pub reselect_last_visual: CommandId,
     pub paste_after: CommandId,
     pub paste_before: CommandId,
@@ -779,12 +778,6 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:prompt-line-cancel",
             "Cancel a generic `Effect::OpenPrompt` prompt.",
             AppEffect::PromptLineCancel,
-        ),
-        oil_navigate_up: register_simple(
-            registry,
-            "action:oil-navigate-up",
-            "Lattice's `-`: open / step up in the oil-style directory view.",
-            AppEffect::OilNavigateUp,
         ),
         reselect_last_visual: register_simple(
             registry,
@@ -1929,7 +1922,6 @@ mod tests {
             ),
             (ids.prompt_line_submit, "action:prompt-line-submit"),
             (ids.prompt_line_cancel, "action:prompt-line-cancel"),
-            (ids.oil_navigate_up, "action:oil-navigate-up"),
             (ids.reselect_last_visual, "action:reselect-last-visual"),
             (ids.paste_after, "action:paste-after"),
             (ids.paste_before, "action:paste-before"),

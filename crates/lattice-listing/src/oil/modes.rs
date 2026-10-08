@@ -41,12 +41,8 @@ fn oil_mode_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
         vec![
-            keymap_entry!(
-                mode: Normal,
-                chord: "-",
-                doc: "Navigate to the parent directory in the oil buffer.",
-                cmd: "action:oil-parent-directory"
-            ),
+            // No `-` here: `oil-global-mode` owns it, and as a minor mode
+            // it would shadow one declared on this major.
             keymap_entry!(
                 mode: Normal,
                 chord: "<CR>",
@@ -131,27 +127,10 @@ impl Mode for OilMode {
                 }
             })
         });
-        // `-`: re-list to the parent, landing the cursor on the directory we
-        // stepped out of (oil.nvim's round-trip).
-        let up: ActionHandler = Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
-            let dir = ctx.buffer_local::<OilDir>()?.0.clone();
-            let parent = dir.parent()?.to_path_buf();
-            let view = lattice_core::BufferId(ctx.buffer_id.0 as u32);
-            let focus = dir.file_name().map(|n| n.to_string_lossy().into_owned());
-            Some(Effect::OilNavigate {
-                view,
-                dir: parent,
-                focus,
-            })
-        });
         vec![
             ActionHandlerContribution {
                 action_name: "action:oil-follow",
                 handler: follow,
-            },
-            ActionHandlerContribution {
-                action_name: "action:oil-parent-directory",
-                handler: up,
             },
             // `<C-s>` / `<C-v>` / `<C-t>`: open the entry in a split / vsplit /
             // tab. A file opens directly; a directory path resolves to
@@ -165,6 +144,24 @@ impl Mode for OilMode {
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
+}
+
+/// `-` in an oil buffer: re-list to the parent, landing the cursor on the
+/// directory stepped out of (oil.nvim's round-trip). `None` at the
+/// filesystem root, or on a buffer with no oil state.
+///
+/// The body is oil's; the chord is `oil-global-mode`'s, which calls this
+/// for buffers carrying an [`OilDir`].
+pub(crate) fn oil_parent_directory(ctx: &ActionContext<'_>) -> Option<Effect> {
+    let dir = ctx.buffer_local::<OilDir>()?.0.clone();
+    let parent = dir.parent()?.to_path_buf();
+    let view = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+    let focus = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+    Some(Effect::OilNavigate {
+        view,
+        dir: parent,
+        focus,
+    })
 }
 
 /// LM.3: resolve the oil entry under the cursor — `(oil dir, entry name,
@@ -283,7 +280,6 @@ mod tests {
         let bound: Vec<(&str, Option<&str>)> =
             km.entries.iter().map(|e| (e.chord, e.command)).collect();
         for (chord, cmd) in [
-            ("-", "action:oil-parent-directory"),
             ("<CR>", "action:oil-follow"),
             ("<C-s>", "action:oil-follow-split"),
             ("<C-v>", "action:oil-follow-vsplit"),
@@ -301,7 +297,7 @@ mod tests {
         use lattice_mode::Mode as _;
         let km = OilMode.keymap();
         let e = &km.entries[0];
-        assert_eq!(e.chord, "-");
-        assert_eq!(e.command, Some("action:oil-parent-directory"));
+        assert_eq!(e.chord, "<CR>");
+        assert_eq!(e.command, Some("action:oil-follow"));
     }
 }

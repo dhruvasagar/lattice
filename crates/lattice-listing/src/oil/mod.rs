@@ -32,8 +32,10 @@
 //! construction because the buffer-local IS the state. There's
 //! nothing to mirror.
 
+pub mod global_mode;
 pub mod modes;
 
+pub use global_mode::{OilGlobalMode, register_oil_global_mode};
 pub use modes::{OilDir, OilMode, register_oil_modes};
 
 use std::path::Path;

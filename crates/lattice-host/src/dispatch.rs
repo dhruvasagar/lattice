@@ -3628,10 +3628,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // (`Effect::Lsp(LspRequest::FollowLink)` → `editor.lsp_request`,
         // whose `FollowLink` arm calls `do_lsp_follow_link_at_cursor` and
         // returns its renderer signals).
-        Action::OilNavigateUp => {
-            let signals = editor.do_oil_navigate_up();
-            _out.renderer_signals.extend(signals);
-        }
+        // `Action::OilNavigateUp` removed — `-` is owned by
+        // `oil-global-mode` (lattice-listing), dispatched through the
+        // generic chord path like any other mode chord.
         Action::FollowLink => match editor.active_buffer {
             // Dashboard groups with Help: same read-only, link-bearing,
             // help-style follow behaviour (dashboard.md §9.2). Its HelpLinks
@@ -10888,7 +10887,19 @@ impl Editor {
             AppEffect::CommandLineDescribeUnderCursor => out
                 .next_actions
                 .push(Action::CommandLineDescribeUnderCursor),
-            AppEffect::OilNavigateUp => out.next_actions.push(Action::OilNavigateUp),
+            // Kept because it is in the WIT `app-effect`; the host no longer
+            // has a body for it. It means "do what `-` does", so it invokes
+            // the command `oil-global-mode` answers.
+            AppEffect::OilNavigateUp => {
+                match self.registry.load().id_by_name("action:oil-navigate-up") {
+                    Some(id) => out
+                        .next_actions
+                        .push(Action::Invoke(lattice_grammar::CommandInvocation::of(id))),
+                    None => tracing::debug!(
+                        "app-effect oil-navigate-up skipped: command not registered"
+                    ),
+                }
+            }
             AppEffect::ReselectLastVisual => out.next_actions.push(Action::ReselectLastVisual),
             AppEffect::SwapVisualEnds => out.next_actions.push(Action::SwapVisualEnds),
             AppEffect::PasteAfter => out.next_actions.push(Action::PasteAfter),
@@ -25477,96 +25488,10 @@ impl Editor {
         Vec::new()
     }
 
-    /// `-` -- navigate to the parent of the current buffer's
-    /// dir. In oil: compute the parent from `OilDir`. In file-
-    /// tree: open oil rooted at the parent of the entry under
-    /// the cursor (or the entry itself when it's a directory).
-    /// Anywhere else: open oil rooted at the parent of the
-    /// active document's path. Phase 5.8.AD.1.
-    pub fn do_oil_navigate_up(&mut self) -> Vec<RendererSignal> {
-        match self.active_buffer {
-            BufferKind::Oil => {
-                let id = self.active_pane_buffer_id();
-                let Some(current_dir) = self.oil_dir_for(id) else {
-                    return Vec::new();
-                };
-                let Some(parent) = current_dir.parent().map(std::path::Path::to_path_buf) else {
-                    return Vec::new();
-                };
-                // The directory we're stepping out of. oil.nvim
-                // places the cursor back on this entry in the parent
-                // listing so `-` round-trips to the row you left.
-                let came_from = current_dir
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned());
-                let mut snapshot = self.oil_snapshot_for(id).unwrap_or_default();
-                match snapshot.reload(&parent) {
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
-                    }
-                    Ok(()) => {
-                        self.set_oil_dir(id, parent);
-                        self.write_oil_listing(id, snapshot);
-                        self.cursor = lattice_protocol::Position::ZERO;
-                        self.scroll = 0;
-                        if let Some(name) = came_from {
-                            self.focus_oil_entry(&name);
-                        }
-                    }
-                }
-                Vec::new()
-            }
-            BufferKind::FileTree => {
-                let id = self.active_pane_buffer_id();
-                let line = self.cursor.line;
-                // A file row opens oil at its parent, focused on the
-                // file. A directory row opens oil *inside* itself, so
-                // there's no came-from entry to land on.
-                let (dir, came_from) = self
-                    .file_tree_entries_for(id)
-                    .and_then(|entries| {
-                        lattice_listing::file_tree::entry_at_line(&entries, line).map(|e| {
-                            if matches!(
-                                e.kind,
-                                lattice_listing::file_tree::FileTreeEntryKind::Directory { .. }
-                            ) {
-                                (e.path.clone(), None)
-                            } else {
-                                let name =
-                                    e.path.file_name().map(|n| n.to_string_lossy().into_owned());
-                                (e.path.parent().unwrap_or(&e.path).to_path_buf(), name)
-                            }
-                        })
-                    })
-                    .map(|(d, n)| (Some(d), n))
-                    .unwrap_or((None, None));
-                let signals = self.do_open_oil(dir);
-                if matches!(self.active_buffer, BufferKind::Oil)
-                    && let Some(name) = came_from
-                {
-                    self.focus_oil_entry(&name);
-                }
-                signals
-            }
-            _ => {
-                // From a file buffer, `-` opens oil for the file's
-                // parent with the cursor on the file you were editing.
-                let path = self.document.path();
-                let dir = path.as_ref().and_then(|p| p.parent().map(Into::into));
-                let came_from = path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().into_owned());
-                let signals = self.do_open_oil(dir);
-                if matches!(self.active_buffer, BufferKind::Oil)
-                    && let Some(name) = came_from
-                {
-                    self.focus_oil_entry(&name);
-                }
-                signals
-            }
-        }
-    }
+    // `do_oil_navigate_up` is gone — `-` is owned by `oil-global-mode`
+    // (lattice-listing), whose handler emits `Effect::OilNavigate` (in an
+    // oil buffer) or `Effect::OpenOil` (anywhere else). The appliers are
+    // `apply_oil_navigate` and `do_open_oil` above.
 
     /// After a `-` navigation lands in an oil listing, place the
     /// cursor on the entry the user came *from* -- the file they

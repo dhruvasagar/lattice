@@ -261,28 +261,24 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
     // `action_handlers` now. Help is following the same path: `<Esc>` is now
     // owned by `help-mode`'s keymap (`action:help-dismiss` → `Effect::DismissPopup`,
     // which the host applies as close-split-pane / dismiss-popup / restore), so
-    // it is NOT intercepted here. `<CR>` follow-link and `-` oil-up stay on this
-    // gate for now (`q` does NOT dismiss — it falls through to macro-record
+    // it is NOT intercepted here. `-` left too: `oil-global-mode` owns it in
+    // every buffer, Help included. Only `<CR>` follow-link stays on this gate
+    // for now (`q` does NOT dismiss — it falls through to macro-record
     // start). The other Help close paths are `:bd` and the State-A auto-dismiss
     // in App::apply.
     if matches!(ctx.active_buffer, BufferKind::Help)
         && matches!(ctx.modal, ModalState::Normal)
         && ctx.partial_chord.is_empty()
+        && matches!(chord.key, KeyKind::Special(SpecialKey::Enter))
     {
-        match chord.key {
-            KeyKind::Special(SpecialKey::Enter) => return Action::FollowLink,
-            KeyKind::Char('-') => return Action::OilNavigateUp,
-            _ => {}
-        }
+        return Action::FollowLink;
     }
 
     // Dashboard is a read-only, link-bearing help-style buffer: `<CR>`
     // follows the link under the cursor (dashboard.md §9.2), routed to the
     // same `do_help_follow_link` dispatcher via the `Action::FollowLink` arm.
-    // Deliberately NOT folded into the Help / FileTree gate above: that gate
-    // also maps `-` → `OilNavigateUp`, which on a non-oil buffer OPENS the
-    // oil file browser — surprising on the launch page. Only link-follow is
-    // special here; every other key keeps its plain Normal-mode meaning.
+    // Only link-follow is special here; every other key keeps its plain
+    // Normal-mode meaning.
     if matches!(ctx.active_buffer, BufferKind::Dashboard)
         && matches!(ctx.modal, ModalState::Normal)
         && ctx.partial_chord.is_empty()

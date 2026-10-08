@@ -17,6 +17,7 @@ use lattice_mode::SubsystemBoot;
 /// Register the listing crate's modes + the oil chord commands at boot.
 pub fn install(boot: &mut impl SubsystemBoot) {
     crate::oil::register_oil_modes(boot.modes_mut());
+    crate::oil::register_oil_global_mode(boot.modes_mut());
     crate::file_tree::register_file_tree_modes(boot.modes_mut());
     crate::listing_mode::register_listing_modes(boot.modes_mut());
     register_oil_commands(boot.commands_mut());
@@ -33,14 +34,12 @@ fn register_oil_commands(registry: &mut CommandRegistry) {
             "action:oil-follow",
             "oil `<CR>`: open the entry under the cursor — descend into a directory, or open a file in the current pane.",
         ),
-        // NOT `action:oil-navigate-up`: that name is the host's, bound to `-`
-        // at the Builtin layer to open oil at the current file's directory.
-        // Handlers bind by command NAME and globally, so sharing it put
-        // oil-mode's handler on the file-buffer chord too — where it finds no
-        // oil state, declines, and the key does nothing.
+        // `-` is not oil-mode's: `oil-global-mode` owns the chord in every
+        // buffer, and its one command is declared here because this is the
+        // listing crate's command list.
         (
-            "action:oil-parent-directory",
-            "oil `-`: re-list the parent directory, landing on the directory stepped out of.",
+            crate::oil::global_mode::NAVIGATE_UP,
+            "`-`: open oil on the directory containing this buffer's file; in an oil listing, step to the parent directory; on a file-tree row, open oil on the row's directory.",
         ),
         (
             "action:oil-follow-split",
@@ -74,10 +73,6 @@ fn register_file_tree_commands(registry: &mut CommandRegistry) {
         (
             "action:file-tree-follow",
             "file-tree `<CR>`: toggle a directory row's expansion, or open a file in the current pane.",
-        ),
-        (
-            "action:file-tree-navigate-up",
-            "file-tree `-`: open an oil browser at the row's directory.",
         ),
         (
             "action:file-tree-follow-split",

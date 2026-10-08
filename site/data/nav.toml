@@ -83,6 +83,7 @@ docs = [
   "picker",
   "file-tree-mode",
   "oil-mode",
+  "oil-global-mode",
   "project-search-mode",
   "multibuffer-mode",
   "image-mode",
@@ -383,6 +384,7 @@ docs = [
 "surround-mode"        = "Surround"
 "file-tree-mode"       = "File tree"
 "oil-mode"             = "Oil — editable directories"
+"oil-global-mode"      = "The `-` key"
 "project-search-mode"  = "Project search"
 "multibuffer-mode"     = "Multibuffer views"
 "narrow-mode"          = "Narrow"

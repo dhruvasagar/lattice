@@ -27,7 +27,7 @@ capabilities — whether or not you are in an oil buffer.
 |--------|-----------------|------------|
 | Open oil for the cwd | — | `:Oil` |
 | Open oil for a specific directory | — | `:Oil /path/to/dir` |
-| Open oil for the parent of the active file | `-` (Normal mode) | `:Oil` (when no buffer path is set) |
+| Open oil for the directory of the active file | `-` (Normal mode, from any buffer — see [oil-global-mode](help:oil-global-mode)) | `:Oil` |
 
 Oil presents the directory as a single flat list — one entry per line,
 no nesting. Subdirectories carry a trailing `/`.

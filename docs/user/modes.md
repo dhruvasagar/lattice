@@ -65,6 +65,7 @@ mode's auto-generated toggle.
 | `help-mode`           | (Composed with markdown-mode.) Read-only + link-follow + `:apropos` integration.                    |
 | `file-tree-mode`      | The file-tree buffer kind — directory listing, expand/collapse, icon rendering.                     |
 | `oil-mode`            | The oil-style editable directory listing.                                                           |
+| `oil-global-mode`     | A minor mode on in every buffer: `-` opens oil on the directory the buffer lives in.                |
 | `lsp-log-mode`        | The per-server log buffer (`*lsp:<server>*`).                                                        |
 | `lsp-trace-log-mode`  | The per-server JSON-RPC wire trace.                                                                  |
 | `lsp-server-log-mode` | The per-server stderr feed.                                                                          |

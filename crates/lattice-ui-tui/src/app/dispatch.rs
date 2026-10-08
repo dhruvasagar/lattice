@@ -138,7 +138,7 @@ impl App {
         //     show-message-request queue. `do_edit` is renderer-side
         //     because the gpui port opens a window, not a TUI pane.
         //
-        //   - `LspFollowLinkAtCursor` / `FollowLink` / `OilNavigateUp`
+        //   - `LspFollowLinkAtCursor` / `FollowLink`
         //     — reach for `do_edit` + `open_external_uri` + the
         //     BufferKind-dispatch help/oil/file-tree helpers, each of
         //     which terminates in a renderer-coupled chokepoint.
@@ -711,8 +711,6 @@ impl App {
             // the cursor wants `ensure_cursor_visible` and hover
             // auto-dismiss exactly as a `j` does.
             Action::MouseScroll { .. } | Action::MouseGoto { .. } => {}
-            // Phase 5.8.AF: migrated to host (consumed = true).
-            Action::OilNavigateUp => {}
             // M.10.7 (2026-06-03): four Action arms removed —
             // `MultibufferExpand`, `SearchTrigger`,
             // `SearchJumpToSource`, `SearchRefresh`. The variants

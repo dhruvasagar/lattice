@@ -1528,21 +1528,6 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_active_does_not_map_dash_to_oil_navigate_up() {
-        // Deliberately NOT folded into the Help/FileTree gate: that gate maps
-        // `-` → OilNavigateUp, which on the dashboard would open the oil file
-        // browser. `-` must keep its plain Normal-mode meaning here.
-        let (_, b) = fixture();
-        assert!(!matches!(
-            translate(
-                ctx_dashboard_active(ModalState::Normal, &b),
-                key(KeyCode::Char('-'))
-            ),
-            Action::OilNavigateUp
-        ));
-    }
-
-    #[test]
     fn help_active_routes_jk_through_normal_motions() {
         // `j` in help is the *same* line_down motion as in Normal --
         // active_buffer routing in the apply layer redirects which

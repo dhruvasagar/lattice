@@ -756,10 +756,6 @@ pub enum Action {
     /// `:describe-key CHORD`, `file:PATH:LINE` opens the file at
     /// the line. Cursor not on a link is a no-op.
     FollowLink,
-    /// `-` in any normal-mode context — context-sensitive:
-    /// • Document / FileTree → open oil for parent dir of current file / hovered entry
-    /// • Oil buffer → `oil.navigate_up()`
-    OilNavigateUp,
 
     // ---- 5.5.G.23.insert: host→App LSP autopilot follow-ups ----
     /// 5.5.G.23.insert: emitted by host-side `Editor::do_insert_text`

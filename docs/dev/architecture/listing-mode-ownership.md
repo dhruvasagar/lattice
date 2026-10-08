@@ -217,7 +217,7 @@ layer. No host keymap code, no new `Action` enum variants.
 | chord | oil-mode | file-tree-mode |
 |---|---|---|
 | `<CR>` | open file / re-list into dir | open file / toggle dir |
-| `-` | re-list to parent dir | open oil at parent of entry |
+| `-` | _not on the major — see §10_ | _not on the major — see §10_ |
 | `<C-s>` | open file in split (dir → oil-in-split) | same |
 | `<C-v>` | open file in vsplit (dir → oil-in-vsplit) | same |
 | `<C-t>` | open file in tab (dir → oil-in-tab) | same |
@@ -278,3 +278,54 @@ per-keystroke keystroke→glyph ratchet (CI) must not regress: moving
 lookup scoped to the buffer, which the existing keymap-resolution bench
 covers. No new bench is warranted unless the ratchet moves; if it does,
 that is the signal to add one.
+
+## 10. `-` belongs to `oil-global-mode`, not to either major
+
+LM.3/LM.4 left one piece behind. `-` also has to work from buffers that
+are not listings — a file opens oil on its directory — and a major's
+keymap cannot reach those. So the host kept a Builtin binding, an
+`Action::OilNavigateUp` and `Editor::do_oil_navigate_up` for that case,
+while the majors bound `-` for themselves. That is the half-migration §7
+says must not exist, and it failed in the way half-migrations do:
+oil-mode declared its `-` under the host's command name, handlers bind by
+name, and oil-mode's handler captured the file-buffer chord. It declined
+there, the dispatcher took a declining handler as the key being handled,
+and `-` did nothing in a file buffer for a release (0.9.2–0.9.3).
+
+`oil-global-mode` (`crates/lattice-listing/src/oil/global_mode.rs`) is a
+minor mode with `ActivationPolicy::Universal`. It owns the chord in every
+buffer, and the host has no binding, no `Action` variant and no method
+for it.
+
+**Why one mode owns all three answers.** A minor's keymap outranks a
+major's, and a `Universal` minor is active in oil and file-tree buffers
+too, so a `-` left on either major would be shadowed and silently dead.
+The chord is therefore declared once. Its handler asks each listing
+first — `oil_parent_directory` and `file_tree_row_directory` stay in the
+modules that own the state they read — and otherwise emits
+`Effect::OpenOil { dir: None }`. It branches on which buffer-local the
+buffer carries, never on `BufferKind`.
+
+**Trade-off accepted.** This puts two majors' `-` behaviour behind a
+sibling mode's keymap, which §2 argues against for `<CR>`. The
+alternative considered was `ActivationPolicy::Global` (document buffers
+only), which keeps `-` on each major and needs no shadowing argument, at
+the cost of `-` no longer working from help, the dashboard or a terminal.
+Reach won: `-` was a Builtin chord and users have it in every buffer.
+`the_listing_majors_leave_dash_to_this_mode` guards the consequence, so a
+`-` added back to a major fails a test instead of failing silently.
+
+**Cursor landing is the applier's job.** `OpenOil` has a WIT mirror, so
+it carries no focus entry. With no directory the host's `do_open_oil`
+resolves the current file's directory and lands on that file; bare `:Oil`
+does the same.
+
+**What stays in the host.** `AppEffect::OilNavigateUp` is in the WIT
+`app-effect` and cannot be removed without an ABI change. The host
+applies it by invoking `action:oil-navigate-up` by name, so a plugin that
+emits it gets exactly what `-` does.
+
+**Activation is a cascade.** A minor activates after its buffer's major,
+on a spawned task. For a brief window after a buffer opens `-` is not yet
+bound there. Every minor-mode chord has this property; tests wait for the
+mode before pressing the key.

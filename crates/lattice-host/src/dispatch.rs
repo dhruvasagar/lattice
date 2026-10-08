@@ -25334,6 +25334,16 @@ impl Editor {
     /// buffer at the same dir is already open, switch to it.
     /// Phase 5.8.AD.1: hoisted from TUI App.
     pub fn do_open_oil(&mut self, dir: Option<std::path::PathBuf>) -> Vec<RendererSignal> {
+        // No `dir` means "the directory of the file I am in", so the row to
+        // land on is that file (oil.nvim's behaviour). An explicit `dir` has
+        // no came-from entry: the caller named a place, not a file.
+        let came_from = match dir {
+            Some(_) => None,
+            None => self
+                .document
+                .path()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+        };
         let dir = match dir {
             Some(p) => p,
             None => match self
@@ -25355,6 +25365,9 @@ impl Editor {
         let dir = normalize_user_path_with_cwd(&dir, self.current_dir.as_deref());
         if let Some(existing_id) = self.oil_with_dir(&dir) {
             self.activate_oil(existing_id);
+            if let Some(name) = &came_from {
+                self.focus_oil_entry(name);
+            }
             self.set_message(
                 EchoLevel::Info,
                 format!("oil: {} (already open)", dir.display()),
@@ -25393,6 +25406,9 @@ impl Editor {
             let pane = self.pane_tree.active_mut();
             pane.cursor = lattice_protocol::Position::ZERO;
             pane.scroll = 0;
+        }
+        if let Some(name) = &came_from {
+            self.focus_oil_entry(name);
         }
         self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
         signals

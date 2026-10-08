@@ -2037,6 +2037,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// `:Oil` with no argument means "the directory of the file I am in",
+    /// so it lands on that file — the landing belongs to opening oil
+    /// without a directory, not to one chord that happens to do so. An
+    /// explicit directory names a place rather than a file, and lands at
+    /// the top.
+    #[test]
+    fn opening_oil_without_a_dir_lands_on_the_file_left() {
+        let tmp = unique_tempdir();
+        std::fs::create_dir_all(tmp.join("adir")).unwrap();
+        std::fs::write(tmp.join("target.txt"), "x").unwrap();
+
+        let mut a = app_with("hi", 5);
+        a.do_edit(Some(tmp.join("target.txt")), false);
+        a.do_open_oil(None);
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
+        // dirs-first alpha: ["adir", "target.txt"].
+        assert_eq!(a.editor.cursor.line, 1);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn opening_oil_at_an_explicit_dir_lands_at_the_top() {
+        let tmp = unique_tempdir();
+        std::fs::create_dir_all(tmp.join("adir")).unwrap();
+        std::fs::write(tmp.join("target.txt"), "x").unwrap();
+
+        let mut a = app_with("hi", 5);
+        a.do_edit(Some(tmp.join("target.txt")), false);
+        a.do_open_oil(Some(tmp.clone()));
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
+        assert_eq!(a.editor.cursor.line, 0);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn oil_navigate_up_lands_on_the_directory_left() {
         // `-` inside an oil buffer steps up to the parent listing

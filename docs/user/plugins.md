@@ -406,6 +406,11 @@ then copy the component in as `<name>.wasm`) and it's discovered at boot with it
 mode on by default — toggle it any time with `:<name>-mode`. The command prints the
 exact steps; the name must be lowercase kebab-case.
 
+Building a plugin needs Rust and the `wasm32-wasip2` target — the same
+[requirements as `init.rs`](help:init#what-you-need). `--scaffold-plugin`
+checks for both when it runs, and adds the target itself if you have `rustup`.
+*Using* a plugin that ships a prebuilt `.wasm` needs neither.
+
 **The API definition keeps itself current.** That `wit/` copy is a *cache* of
 lattice's canonical API, not a fork of it. The editor rewrites it from its own
 embedded package immediately before every build it runs, so a plugin is always

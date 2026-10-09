@@ -127,6 +127,7 @@ impl Guest for Config {
                 kinds: Some(vec![EventKind::PrePluginLoaded]),
                 path_globs: None,
                 major_modes: None,
+                minor_modes: None,
             },
             1,
         );
@@ -137,6 +138,7 @@ impl Guest for Config {
                 kinds: Some(vec![EventKind::PluginLoaded]),
                 path_globs: None,
                 major_modes: None,
+                minor_modes: None,
             },
             2,
         );
@@ -266,6 +268,10 @@ impl Guest for Plugin {
                 chord: "gh".to_string(),
                 command: "__ACTION__".to_string(),
             }],
+            // A minor mode claims no language, and this one overrides no
+            // options for its buffers. Both are the normal empty case.
+            target_language: None,
+            options: Vec::new(),
         });
     }
 }
@@ -337,13 +343,17 @@ pub fn scaffold_init() -> Result<()> {
 
     let d = dir.display();
     println!("Created a starter lattice config at {d}\n");
-    println!("Next — build it and drop the component in place:\n");
-    println!("  rustup target add wasm32-wasip2   # once");
-    println!("  cd {d}");
-    println!("  cargo build --release --target wasm32-wasip2");
-    println!("  cp target/wasm32-wasip2/release/lattice_init.wasm init.wasm\n");
-    println!("Then start lattice — or `:reload-config` in a running editor.");
-    println!("Edit src/lib.rs to customise; see docs/user/init.md for the seams.");
+    let ready = ensure_toolchain(&dir);
+    println!();
+    if ready {
+        println!("Next — start lattice. It compiles the config on first start (about a");
+        println!("minute, once; the result is cached) and loads it.");
+    } else {
+        println!("Once that is done, start lattice: it compiles the config on first");
+        println!("start (about a minute, once; the result is cached) and loads it.");
+    }
+    println!("Edit src/lib.rs to customise, then `:reload-config` in the running");
+    println!("editor — it rebuilds and reloads, no restart. See `:help init`.");
     Ok(())
 }
 
@@ -361,8 +371,8 @@ pub fn scaffold_plugin(name: &str) -> Result<()> {
     let d = dir.display();
     let wasm = format!("{}.wasm", name.replace('-', "_"));
     println!("Created a starter plugin `{name}` at {d}\n");
-    println!("Next — build it and drop the component in place:\n");
-    println!("  rustup target add wasm32-wasip2   # once");
+    ensure_toolchain(&dir);
+    println!("\nNext — build it and drop the component in place:\n");
     println!("  cd {d}");
     println!("  cargo build --release --target wasm32-wasip2");
     println!("  cp target/wasm32-wasip2/release/{wasm} {name}.wasm\n");
@@ -371,6 +381,60 @@ pub fn scaffold_plugin(name: &str) -> Result<()> {
     println!("binds `gh` (Normal) to a starter action. Edit src/lib.rs to grow it;");
     println!("see docs/user/plugins.md + `:describe-plugin-api <seam>`.");
     Ok(())
+}
+
+/// Check the machine can build what was just scaffolded, fix what can be fixed
+/// without asking, and say exactly what is left. Returns whether a build can
+/// run now.
+///
+/// A scaffold is a cargo crate, and lattice is routinely installed on machines
+/// with no Rust at all — the release archive needs none. Printing "run `rustup
+/// target add …`" at a user who has no `rustup` was the whole of the previous
+/// guidance, and the failure it led to (a config that silently never loads)
+/// was only visible in `*messages*`.
+///
+/// What it will and will not do on its own: adding the wasm target to an
+/// existing rustup install is small, idempotent and the obvious intent of
+/// `--scaffold-*`, so it runs. Installing Rust itself is not — that is a
+/// `curl | sh` of someone else's installer, so it is printed, never run.
+fn ensure_toolchain(dir: &Path) -> bool {
+    use lattice_plugin_loader::{Toolchain, ToolchainProblem, WASM_TARGET};
+
+    let Some(problem) = Toolchain::probe(dir).problem() else {
+        println!("Toolchain: cargo and the {WASM_TARGET} target are installed.");
+        return true;
+    };
+
+    if problem == (ToolchainProblem::NoWasmTarget { rustup: true }) {
+        println!("Toolchain: adding the {WASM_TARGET} target (rustup target add {WASM_TARGET})…");
+        // In `dir`, so the target lands on the toolchain rustup resolves
+        // there — the one the build will use. Output is inherited: this
+        // downloads, and a silent pause reads as a hang.
+        let added = std::process::Command::new("rustup")
+            .current_dir(dir)
+            .args(["target", "add", WASM_TARGET])
+            .status()
+            .is_ok_and(|status| status.success());
+        if added && Toolchain::probe(dir).problem().is_none() {
+            println!("Toolchain: ready.");
+            return true;
+        }
+        println!("Toolchain: could not add the target automatically.");
+    }
+
+    println!("Toolchain: {problem}.");
+    let remedy = problem.remedy();
+    if !remedy.is_empty() {
+        println!("\nRun:\n");
+        for command in remedy {
+            println!("  {command}");
+        }
+        if problem == ToolchainProblem::NoCargo {
+            println!("\n(Windows: download rustup-init.exe from https://rustup.rs instead of");
+            println!("the first line. Open a new shell afterwards so `cargo` is on PATH.)");
+        }
+    }
+    false
 }
 
 /// A plugin name must be a valid cargo crate name + WIT-friendly id: lowercase,

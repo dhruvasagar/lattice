@@ -63,7 +63,10 @@ here.
 
 - **No vimscript, no Lua, no elisp.** WASM is the single extension
   substrate; your config is Rust compiled to WASM
-  ([init](help:init)). This is a design decision, not a gap.
+  ([init](help:init)). This is a design decision, not a gap. Its cost is
+  that a programmable config needs a Rust toolchain with the `wasm32-wasip2`
+  target on the machine that runs the editor — the editor itself does not,
+  and `lattice --scaffold-init` tells you what is missing.
 - **No vim/emacs config compatibility.** Explicit non-goal.
 - **Rich inline media** (images, embedded widgets) is post-1.0.
 

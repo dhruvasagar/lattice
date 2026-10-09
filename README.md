@@ -32,6 +32,10 @@ elsewhere with `--prefix`.
 Or grab an archive from [releases](https://github.com/dhruvasagar/lattice/releases).
 Full instructions, including building from source (Rust 1.94+): [install guide](https://dhruvasagar.github.io/lattice/install/).
 
+The editor needs nothing else. A programmable config (`init.rs`) is compiled
+on your machine, so it needs Rust and the `wasm32-wasip2` target —
+`lattice --scaffold-init` checks, and adds the target if you have `rustup`.
+
 ## What works today
 
 | | |

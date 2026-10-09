@@ -75,8 +75,8 @@ pub mod source_record;
 pub mod watch;
 
 pub use build::{
-    BuildOutcome, CargoComponentBuilder, ComponentBuilder, Stamp, artifact_path, build_plugin,
-    source_stamp,
+    BuildOutcome, CargoComponentBuilder, ComponentBuilder, Stamp, Toolchain, ToolchainProblem,
+    WASM_TARGET, artifact_path, build_plugin, source_stamp,
 };
 pub use discovery::{
     DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir,

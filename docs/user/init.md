@@ -25,6 +25,54 @@ toolchain.
 
 ---
 
+## What you need
+
+**The editor needs nothing.** A release archive, the `.deb`, the AppImage or
+`install.sh` gives you a complete lattice — the four bundled plugins are
+already compiled, and none of what follows applies until you want a
+programmable config.
+
+**`init.rs` needs a Rust toolchain on the machine that runs the editor.** Your
+config is Rust source, and lattice compiles it locally — on first start, and
+again on every `:reload-config`. That takes:
+
+| Requirement | Why | Get it |
+|---|---|---|
+| **Rust** (`cargo` on `PATH`) — current stable; 1.85 is the floor | compiles `init.rs` | [rustup.rs](https://rustup.rs): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` (Windows: `rustup-init.exe`) |
+| The **`wasm32-wasip2`** target | your config is a WebAssembly component, not a native binary | `rustup target add wasm32-wasip2` |
+| **Network access**, for the first build only | cargo downloads `wit-bindgen` and its dependencies from crates.io | — |
+
+Nothing else: no `wasm-tools`, no `cargo-component`, no checkout of lattice.
+The API definitions your config compiles against are embedded in the editor
+and written into your config directory for you.
+
+[`lattice --scaffold-init`](#scaffold-it-lattice-scaffold-init) checks all of
+this when it runs. It adds the `wasm32-wasip2` target itself if you have
+`rustup`; if Rust is missing altogether it prints the commands above and
+leaves the install to you.
+
+Three things that are easy to get wrong:
+
+- **Installing Rust is not enough.** A fresh rustup install has only your
+  native target. Forgetting `rustup target add wasm32-wasip2` is the commonest
+  reason a first config does not load.
+- **Open a new shell after installing Rust.** rustup puts `cargo` on `PATH`
+  through your shell profile; a lattice started from a shell that predates the
+  install cannot see it.
+- **Rust from a distribution package** (`apt install cargo`, Homebrew's
+  `rust`) has no `rustup`, and usually no `wasm32-wasip2` standard library
+  either. Either install the target from the same place — some distributions
+  package it separately — or use rustup instead.
+
+The same requirements apply to any plugin you install **from source**
+(`plugins::require(...)`, or a `--scaffold-plugin` project). A plugin that
+ships a prebuilt `.wasm` needs none of it.
+
+When a config does not load, the reason is in `:messages` — look for
+`plugin=init`. [Troubleshooting](help:troubleshooting) has the common cases.
+
+---
+
 ## Where it lives and how it loads
 
 Your compiled config is a plugin directory at:
@@ -32,7 +80,10 @@ Your compiled config is a plugin directory at:
 ```
 <config>/lattice/init/
 ├── plugin.toml      # the manifest (id = "init", provides = [...])
-└── init.wasm        # your init.rs, compiled to a component
+├── Cargo.toml       # your config is a small cargo crate…
+├── src/lib.rs       # …and this is the file you edit
+├── wit/             # the editor's API, written for you — do not edit
+└── init.wasm        # the compiled component (built for you, cached)
 ```
 
 `<config>` is `~/.config` on **both Linux and macOS** (honoring
@@ -50,10 +101,16 @@ Your on-disk plugins live alongside it at `~/.config/lattice/plugins/`.
 - **Loaded with boot capabilities** — `init.rs` is your own trusted config, so
   it gets the pre-granted (`Bundled`) trust tier, not the consent-prompted tier
   a downloaded plugin gets.
-- **Reload without restarting** with `:reload-config` — it unloads the old
-  config (reversing every keymap, command, option, and subscription it added)
-  and re-instantiates `init.wasm` from disk with a fresh, clean sandbox. Edit,
-  rebuild, `:reload-config`, done.
+- **Built for you.** When `src/lib.rs` is newer than `init.wasm` — or there is
+  no `init.wasm` yet — lattice runs the build itself, off the UI thread, and
+  caches the result. An unchanged config costs nothing at start: no toolchain
+  is invoked at all. The first build is the slow one (about a minute, mostly
+  downloading and compiling `wit-bindgen`); later ones take a few seconds.
+- **Reload without restarting** with `:reload-config` — it recompiles
+  `src/lib.rs`, unloads the old config (reversing every keymap, command,
+  option, and subscription it added) and instantiates the new one in a fresh,
+  clean sandbox. Edit, `:reload-config`, done. If the build fails, the previous
+  config keeps running and the compiler's error is in `:messages`.
 
 An absent `<config>/lattice/init/` is the normal "no custom config" case — the
 editor boots with defaults, silently.
@@ -163,12 +220,12 @@ impl Guest for Component {
     fn register_events() {
         // Every save, any file.
         events::subscribe(
-            &EventFilter { kinds: Some(vec![EventKind::DocumentSaved]), path_globs: None, major_modes: None },
+            &EventFilter { kinds: Some(vec![EventKind::DocumentSaved]), path_globs: None, major_modes: None, minor_modes: None },
             ON_SAVE,
         );
         // Modal transitions (Normal↔Insert↔…).
         events::subscribe(
-            &EventFilter { kinds: Some(vec![EventKind::ModalModeChanged]), path_globs: None, major_modes: None },
+            &EventFilter { kinds: Some(vec![EventKind::ModalModeChanged]), path_globs: None, major_modes: None, minor_modes: None },
             ON_MODE,
         );
         // A document opening, narrowed to Rust files by a path glob.
@@ -177,6 +234,7 @@ impl Guest for Component {
                 kinds: Some(vec![EventKind::DocumentOpened]),
                 path_globs: Some(vec!["**/*.rs".into()]),
                 major_modes: None,
+                minor_modes: None,
             },
             ON_RUST_OPEN,
         );
@@ -654,7 +712,7 @@ impl Guest for Component {
 }
 
 fn kind(k: EventKind) -> EventFilter {
-    EventFilter { kinds: Some(vec![k]), path_globs: None, major_modes: None }
+    EventFilter { kinds: Some(vec![k]), path_globs: None, major_modes: None, minor_modes: None }
 }
 
 export!(Component);
@@ -696,18 +754,31 @@ This creates `~/.config/lattice/init/` with a complete WASM-component config cra
 — `Cargo.toml`, `plugin.toml`, `src/lib.rs` (a minimal config: an option, a
 keybinding, an event handler), and a `wit/` copy of *this editor's* API (so it
 builds with no separate checkout, matched to your version). It refuses to
-overwrite an existing config. Then build + install as below (the command prints
-these steps too):
+overwrite an existing config.
+
+It then checks [what you need](#what-you-need) and reports one of:
+
+- **`Toolchain: cargo and the wasm32-wasip2 target are installed.`** You are
+  done — start lattice.
+- **`Toolchain: adding the wasm32-wasip2 target…`** You had Rust via rustup but
+  not the target, so it ran `rustup target add wasm32-wasip2` for you.
+- **`Toolchain: Rust is not installed…`** followed by the commands to run. The
+  scaffold is written either way; install Rust, open a new shell, and start
+  lattice.
+
+Then just start the editor. It compiles the config on first start and loads
+it; from then on edit `src/lib.rs` and `:reload-config`.
+
+You never need to run `cargo` by hand, but you can — it is an ordinary crate,
+and building it yourself is the quickest way to read a long compiler error:
 
 ```bash
-rustup target add wasm32-wasip2                      # once
 cd ~/.config/lattice/init
 cargo build --release --target wasm32-wasip2
-cp target/wasm32-wasip2/release/lattice_init.wasm init.wasm
 ```
 
-Edit `src/lib.rs`, rebuild, and `:reload-config`. The rest of this section is the
-manual setup, if you'd rather assemble it yourself.
+The rest of this section is the manual setup, if you'd rather assemble the
+crate yourself.
 
 ### Manual setup
 

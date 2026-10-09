@@ -176,4 +176,8 @@ case ":$PATH:" in
 	*) printf '\n%s/bin is not on your PATH. Add it:\n    export PATH="%s/bin:$PATH"\n' "$PREFIX" "$PREFIX" ;;
 esac
 printf '\nNext: run `lattice` and press <CR> on "Tutor", or `lattice --scaffold-init` to start a config.\n'
+if ! command -v cargo >/dev/null 2>&1; then
+	printf 'The editor needs nothing else. A programmable config (init.rs) is compiled on\n'
+	printf 'your machine, so it needs Rust — `lattice --scaffold-init` says what to install.\n'
+fi
 printf 'Confirm the bundled plugins loaded with `:plugins` — four rows marked `bundled`.\n'

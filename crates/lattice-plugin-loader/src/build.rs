@@ -75,7 +75,7 @@ impl ComponentBuilder for CargoComponentBuilder {
         let target_dir = source_dir.join("target");
         let output = std::process::Command::new(&cargo)
             .current_dir(source_dir)
-            .args(["build", "--release", "--target", "wasm32-wasip2"])
+            .args(["build", "--release", "--target", WASM_TARGET])
             // Pin the target dir so a leaked `CARGO_TARGET_DIR` cannot
             // redirect the output away from where we stage from.
             .arg("--target-dir")
@@ -89,7 +89,14 @@ impl ComponentBuilder for CargoComponentBuilder {
             .env_remove("RUSTC_WRAPPER")
             .env_remove("RUSTC_WORKSPACE_WRAPPER")
             .output()
-            .map_err(|e| format!("failed to run cargo: {e}"))?;
+            .map_err(|e| match e.kind() {
+                // The commonest first-run failure there is: lattice came from
+                // a release archive and the machine has never had Rust on it.
+                // "No such file or directory" names neither the cause nor the
+                // fix, so say both.
+                std::io::ErrorKind::NotFound => ToolchainProblem::NoCargo.to_string(),
+                _ => format!("failed to run cargo: {e}"),
+            })?;
         if !output.status.success() {
             // The compiler's own diagnostics are the useful part; keep
             // the tail so `:plugins` can show why without holding a
@@ -104,15 +111,153 @@ impl ComponentBuilder for CargoComponentBuilder {
                 .rev()
                 .collect::<Vec<_>>()
                 .join("\n");
-            return Err(format!(
-                "cargo build failed ({}). Is the target installed? \
-                 `rustup target add wasm32-wasip2`\n{tail}",
-                output.status
+            // Only now, on the failure path, is the toolchain probed: it
+            // costs three process spawns, and a build that succeeded has
+            // already answered the question.
+            return Err(explain_failure(
+                &output.status.to_string(),
+                &tail,
+                Toolchain::probe(source_dir).problem(),
             ));
         }
-        let release = target_dir.join("wasm32-wasip2").join("release");
+        let release = target_dir.join(WASM_TARGET).join("release");
         find_component(&release)
             .ok_or_else(|| format!("build produced no .wasm in {}", release.display()))
+    }
+}
+
+/// The target every component is compiled for.
+pub const WASM_TARGET: &str = "wasm32-wasip2";
+
+/// A failed build's message. A toolchain problem leads when there is one,
+/// because then the compiler output underneath is a symptom (`can't find
+/// crate for core`) rather than the cause.
+///
+/// This used to append "Is the target installed?" to every failure, which
+/// sent a user with a plain type error in their `init.rs` off to reinstall a
+/// target they already had.
+fn explain_failure(status: &str, tail: &str, problem: Option<ToolchainProblem>) -> String {
+    match problem {
+        Some(problem) => format!("cargo build failed ({status}): {problem}\n{tail}"),
+        None => format!("cargo build failed ({status})\n{tail}"),
+    }
+}
+
+/// What this machine has of the toolchain a source build needs.
+///
+/// lattice itself needs none of it — a release archive runs on a machine
+/// that has never seen Rust, and every already-built plugin still loads
+/// ([`BuildOutcome::Cached`]). It is `init.rs`, and any plugin installed
+/// from source, that need `cargo` and the [`WASM_TARGET`] standard library.
+/// That requirement surfaces at the user's first `--scaffold-init`, so the
+/// probe exists to state it there rather than leave it to be discovered from
+/// a build failure in `*messages*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Toolchain {
+    /// `cargo --version` ran. False covers both "not installed" and a
+    /// rustup shim with no toolchain behind it — the remedy is the same.
+    pub cargo: bool,
+    /// `rustup` is on `PATH`, so a missing target can be added for the user.
+    pub rustup: bool,
+    /// The [`WASM_TARGET`] standard library is installed.
+    pub wasm_target: bool,
+}
+
+/// What stands between this machine and a component build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolchainProblem {
+    /// No working `cargo`.
+    NoCargo,
+    /// `cargo` works but the [`WASM_TARGET`] standard library is absent.
+    /// `rustup` says whether `rustup target add` is available to fix it.
+    NoWasmTarget { rustup: bool },
+}
+
+impl Toolchain {
+    /// Probe from `dir`. The directory matters: rustup resolves the active
+    /// toolchain per directory (`rust-toolchain.toml`, `rustup override`),
+    /// so the answer has to come from where the build will run.
+    ///
+    /// Blocking — three short process spawns. Never the UI or actor thread.
+    pub fn probe(dir: &Path) -> Self {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let runs = |program: &str, args: &[&str]| {
+            std::process::Command::new(program)
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+        };
+        // `--print target-libdir` answers for rustup and distro Rust alike:
+        // rustc prints where the target's libraries WOULD be whether or not
+        // they are installed, so the directory's existence is the test.
+        let wasm_target = runs(
+            "rustc",
+            &["--print", "target-libdir", "--target", WASM_TARGET],
+        )
+        .map(|out| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
+        .is_some_and(|libdir| libdir.is_dir());
+        Toolchain {
+            cargo: runs(&cargo, &["--version"]).is_some(),
+            rustup: runs("rustup", &["--version"]).is_some(),
+            wasm_target,
+        }
+    }
+
+    /// The first thing to fix, if anything. `None` means a build can run.
+    pub fn problem(&self) -> Option<ToolchainProblem> {
+        if !self.cargo {
+            Some(ToolchainProblem::NoCargo)
+        } else if !self.wasm_target {
+            Some(ToolchainProblem::NoWasmTarget {
+                rustup: self.rustup,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl ToolchainProblem {
+    /// The commands that fix it, one per line, ready to paste. Empty when
+    /// there is no command to give — a Rust that did not come from rustup
+    /// gets its target from wherever that Rust came from.
+    pub fn remedy(&self) -> Vec<String> {
+        let add_target = format!("rustup target add {WASM_TARGET}");
+        match self {
+            ToolchainProblem::NoCargo => vec![
+                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh".to_string(),
+                add_target,
+            ],
+            ToolchainProblem::NoWasmTarget { rustup: true } => vec![add_target],
+            ToolchainProblem::NoWasmTarget { rustup: false } => Vec::new(),
+        }
+    }
+}
+
+impl std::fmt::Display for ToolchainProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolchainProblem::NoCargo => write!(
+                f,
+                "Rust is not installed (no working `cargo` on PATH). init.rs and \
+                 plugins built from source need it: install Rust from \
+                 https://rustup.rs, then `rustup target add {WASM_TARGET}`"
+            ),
+            ToolchainProblem::NoWasmTarget { rustup: true } => write!(
+                f,
+                "the `{WASM_TARGET}` target is not installed: \
+                 `rustup target add {WASM_TARGET}`"
+            ),
+            ToolchainProblem::NoWasmTarget { rustup: false } => write!(
+                f,
+                "the `{WASM_TARGET}` target is not installed, and this Rust did \
+                 not come from rustup: install the target's standard library \
+                 from the same place Rust came from, or switch to rustup \
+                 (https://rustup.rs)"
+            ),
+        }
     }
 }
 
@@ -561,6 +706,79 @@ mod tests {
 
     /// Unique temp dir. The counter is load-bearing under parallel
     /// `cargo test`: a timestamp alone collides.
+    #[test]
+    fn a_missing_cargo_outranks_a_missing_target() {
+        // Without cargo there is no target to speak of; reporting the target
+        // first would send the user to run a `rustup` they do not have.
+        let none = Toolchain {
+            cargo: false,
+            rustup: false,
+            wasm_target: false,
+        };
+        assert_eq!(none.problem(), Some(ToolchainProblem::NoCargo));
+    }
+
+    #[test]
+    fn a_missing_target_says_whether_rustup_can_add_it() {
+        let with = |rustup| Toolchain {
+            cargo: true,
+            rustup,
+            wasm_target: false,
+        };
+        assert_eq!(
+            with(true).problem(),
+            Some(ToolchainProblem::NoWasmTarget { rustup: true })
+        );
+        assert_eq!(
+            with(true).problem().unwrap().remedy(),
+            vec!["rustup target add wasm32-wasip2".to_string()]
+        );
+        // No rustup: there is no command we can honestly hand over, and
+        // printing `rustup target add` anyway is the dead end this avoids.
+        let distro = with(false).problem().unwrap();
+        assert!(distro.remedy().is_empty());
+        assert!(!distro.to_string().contains("`rustup target add"));
+    }
+
+    #[test]
+    fn a_complete_toolchain_has_no_problem() {
+        let ready = Toolchain {
+            cargo: true,
+            rustup: false,
+            wasm_target: true,
+        };
+        assert_eq!(ready.problem(), None);
+    }
+
+    #[test]
+    fn installing_rust_from_nothing_ends_with_the_target() {
+        // The target is the step that gets forgotten: a fresh rustup install
+        // builds native code fine and fails only on the first component.
+        let remedy = ToolchainProblem::NoCargo.remedy();
+        assert!(remedy[0].contains("rustup.rs"));
+        assert_eq!(remedy.last().unwrap(), "rustup target add wasm32-wasip2");
+    }
+
+    #[test]
+    fn a_build_failure_blames_the_toolchain_only_when_it_is_at_fault() {
+        let tail = "error[E0308]: mismatched types";
+        let own_bug = explain_failure("exit status: 101", tail, None);
+        assert!(own_bug.contains(tail));
+        assert!(
+            !own_bug.contains("rustup"),
+            "a type error is not a toolchain problem: {own_bug}"
+        );
+
+        let no_target = explain_failure(
+            "exit status: 101",
+            "error[E0463]: can't find crate for `core`",
+            Some(ToolchainProblem::NoWasmTarget { rustup: true }),
+        );
+        assert!(no_target.contains("rustup target add wasm32-wasip2"));
+        // The cause leads; the compiler's symptom follows it.
+        assert!(no_target.find("rustup target add") < no_target.find("E0463"));
+    }
+
     fn tempdir(tag: &str) -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let pid = std::process::id();

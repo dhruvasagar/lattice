@@ -105,6 +105,17 @@ directory is indistinguishable from an empty one.
 - **macOS** 14+, or **Linux** with kernel 5.10+, or **Windows** 10+
 - **Build:** Rust 1.94+, `clang` (tree-sitter), `cmake` (some native deps)
 - **GPU mode (optional):** Metal on macOS, Vulkan on Linux
+- **A programmable config (optional):** Rust with the `wasm32-wasip2` target.
+  The editor itself runs with no Rust on the machine — but `init.rs` is Rust,
+  and lattice compiles it locally. `lattice --scaffold-init` checks for both
+  and adds the target for you when `rustup` is installed; otherwise:
+
+  ```sh
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # rustup.rs
+  rustup target add wasm32-wasip2
+  ```
+
+  Details: [configuring with `init.rs`](@/docs/config/init.md#what-you-need).
 
 ## Verify your install
 

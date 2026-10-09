@@ -36,6 +36,28 @@ without running `cargo xtask build-core-plugins`. An absent plugin directory
 is treated as "no plugins installed" and does not raise an error, which is
 why this fails silently.
 
+## My `init.rs` config isn't loading
+
+Your config is compiled on your machine, so this is almost always the Rust
+toolchain rather than the config. Open `:messages` and look for the line
+naming `plugin=init`:
+
+| The message says | What it means | Fix |
+|---|---|---|
+| `Rust is not installed (no working cargo on PATH)` | lattice came from a release archive and this machine has no Rust — or Rust was installed after this shell was opened | Install from [rustup.rs](https://rustup.rs), run `rustup target add wasm32-wasip2`, then start lattice from a **new** shell |
+| `the wasm32-wasip2 target is not installed` | Rust is there, the WebAssembly target is not | `rustup target add wasm32-wasip2` |
+| `…and this Rust did not come from rustup` | Rust came from a distribution package, which has no `rustup` and usually no wasm target | Install the target from the same package source, or switch to rustup |
+| `cargo build failed` followed by compiler errors | The toolchain is fine; `src/lib.rs` does not compile | Fix the error shown. The previous config, if there was one, keeps running |
+
+`lattice --scaffold-init` runs the same check before you ever start the
+editor, and adds the target for you when it can. The full list of
+requirements is in [`init`](help:init#what-you-need).
+
+A build that fails on a field the compiler says is *missing* right after an
+editor upgrade means the plugin API gained a field — add it (usually `None` or
+an empty list). The API your config compiles against is refreshed from the
+editor on every build, so it is always the current one.
+
 ## An LSP server won't start
 
 ```

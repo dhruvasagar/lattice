@@ -194,6 +194,21 @@ loads exactly as today — the manager layer is additive.
   and `*messages*` — never a failed boot, never a panic. If a *stale* rebuild
   fails but a previous artifact exists, the old artifact keeps loading (a broken
   new revision doesn't take the plugin down).
+- **The toolchain is a requirement of the *build*, not of the editor — and it
+  is stated before it is tripped over.** A release archive runs on a machine
+  with no Rust; `init.rs` and source plugins do not build there. "No toolchain"
+  was originally just one more logged skip, which is correct for boot and
+  useless to the person it happens to: the message was `failed to run cargo: No
+  such file or directory`, in a buffer a new user has not learned to open. So
+  `build::Toolchain::probe` names the two things a component build needs
+  (`cargo`, the `wasm32-wasip2` standard library) and `ToolchainProblem` carries
+  the remedy. Two callers: the builder's **failure path** (a failed build says
+  whether the toolchain is at fault, instead of guessing "is the target
+  installed?" at every compile error), and `lattice --scaffold-init` /
+  `--scaffold-plugin`, which probe *before* the user has started the editor and
+  add the target themselves when `rustup` is there to do it. Installing Rust
+  itself is printed, never run — that is someone else's `curl | sh`. The probe
+  is three process spawns and is never on the success path.
 
 ## 5b. The gap: the on-disk scan never asks whether its artifact is current
 

@@ -59,7 +59,7 @@ Why a crate exists at all is a design rule, not an accident of history: a new cr
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
-| [`lattice-compilation`](https://dhruvasagar.github.io/lattice/api/lattice_compilation/) | Native compilation mode: runs a build / test / lint command off-thread and streams its output into a read-only `*compilation*` buffer (CM.1). | `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-protocol`, `lattice-runtime`, `lattice-theme` | `lattice-host`, `lattice-plugin-host`, `lattice-plugin-loader` |
+| [`lattice-compilation`](https://dhruvasagar.github.io/lattice/api/lattice_compilation/) | Native compilation mode: runs a build / test / lint command off-thread and streams its output into a read-only `*compilation*` buffer (CM.1). | `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-protocol`, `lattice-runtime`, `lattice-theme` | `lattice-host`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-plugin-manager` |
 | [`lattice-dashboard`](https://dhruvasagar.github.io/lattice/api/lattice_dashboard/) | Lattice launch **dashboard** — the branded start page shown when the editor opens with no file argument. | `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-protocol`, `lattice-runtime`, `lattice-theme` | `lattice-host`, `lattice-plugin-host`, `lattice-plugin-loader` |
 | [`lattice-listing`](https://dhruvasagar.github.io/lattice/api/lattice_listing/) | Filesystem entry listings as buffers — the two views the editor offers over a directory tree. | `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-protocol`, `lattice-theme` | `lattice-host`, `lattice-ui-gpui`, `lattice-ui-tui` |
 | [`lattice-notify`](https://dhruvasagar.github.io/lattice/api/lattice_notify/) | Notifications: telling the user about work that has no buffer (NOTIF.1a). | `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-protocol`, `lattice-runtime` | `lattice-host`, `lattice-ui-gpui`, `lattice-ui-tui` |
@@ -97,7 +97,7 @@ Why a crate exists at all is a design rule, not an accident of history: a new cr
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
-| [`lattice-plugin-manager`](https://dhruvasagar.github.io/lattice/api/lattice_plugin_manager/) | The buffer-backed `:plugins` manager view: `plugins-mode` and the `:plugins` ex-command (PL8.H.2). | `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-plugin-trace`, `lattice-protocol`, `lattice-runtime` | `lattice-host` |
+| [`lattice-plugin-manager`](https://dhruvasagar.github.io/lattice/api/lattice_plugin_manager/) | The buffer-backed `:plugins` manager view: `plugins-mode` and the `:plugins` ex-command (PL8.H.2). | `lattice-cells`, `lattice-compilation`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-plugin-trace`, `lattice-protocol`, `lattice-runtime` | `lattice-host` |
 
 ## Layer 11
 

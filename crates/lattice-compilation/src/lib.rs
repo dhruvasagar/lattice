@@ -29,6 +29,7 @@ mod ansi;
 mod events;
 mod ex_commands;
 mod headerline;
+mod highlight;
 mod mode;
 mod parser;
 mod parser_factory;
@@ -41,6 +42,7 @@ pub use ex_commands::register_compilation_ex_commands;
 pub use headerline::{
     COMPILATION_HEADERLINE_PROVIDER_ID, CompilationHeaderline, CompilationHeadlineState,
 };
+pub use highlight::{DiagnosticHighlighter, highlight_diagnostics};
 pub use mode::{CompilationMode, apply_chunk};
 pub use parser::{
     CompilationLocation, CompilationParser, ParserRegistry, match_severity, parse_location_line,

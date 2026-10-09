@@ -131,20 +131,35 @@ impl KeymapResolution {
 /// assert_eq!(chord, "<C-n>");
 /// ```
 pub fn parse_describe_key_arg(s: &str) -> (Option<BindingMode>, &str) {
-    const PREFIXES: &[(&str, BindingMode)] = &[
-        ("n_", BindingMode::Normal),
-        ("i_", BindingMode::Insert),
-        ("v_", BindingMode::Visual),
-        ("r_", BindingMode::Replace),
-        ("c_", BindingMode::Command),
-        ("s_", BindingMode::Search),
-    ];
-    for (prefix, mode) in PREFIXES {
-        if let Some(rest) = s.strip_prefix(prefix) {
-            return (Some(*mode), rest);
+    let mut chars = s.chars();
+    if let (Some(letter), Some('_')) = (chars.next(), chars.next())
+        && let Some(mode) = describe_key_mode_for_letter(letter)
+    {
+        let rest = chars.as_str();
+        // `c_` on its own is a chord (change the line), not "Command mode,
+        // nothing". A prefix needs something to be a prefix OF.
+        if !rest.is_empty() {
+            return (Some(mode), rest);
         }
     }
     (None, s)
+}
+
+/// The mode a `:describe-key` prefix letter names: the `i` of `i_<C-n>`.
+///
+/// One table for the two readers that must agree on it — the argument
+/// parser above, and chord capture, which has to know that an `i` it has
+/// just read may be the start of a prefix rather than the whole answer.
+pub fn describe_key_mode_for_letter(letter: char) -> Option<BindingMode> {
+    match letter {
+        'n' => Some(BindingMode::Normal),
+        'i' => Some(BindingMode::Insert),
+        'v' => Some(BindingMode::Visual),
+        'r' => Some(BindingMode::Replace),
+        'c' => Some(BindingMode::Command),
+        's' => Some(BindingMode::Search),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -222,11 +237,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_prefix_only_no_chord() {
-        // "n_" with nothing after the prefix — chord_str is "".
-        let (mode, chord) = parse_describe_key_arg("n_");
-        assert_eq!(mode, Some(BindingMode::Normal));
-        assert_eq!(chord, "");
+    fn a_prefix_with_nothing_after_it_is_a_chord() {
+        // A prefix needs something to be a prefix OF. `c_` is a chord in its
+        // own right (change the line), and reading it as "Command mode,
+        // nothing" answered "cannot parse chord string" for it. This
+        // asserted the opposite until chord capture learned the prefix form
+        // and `c`, `_`, `<CR>` became a way to ask.
+        let (mode, chord) = parse_describe_key_arg("c_");
+        assert_eq!(mode, None);
+        assert_eq!(chord, "c_");
     }
 
     #[test]

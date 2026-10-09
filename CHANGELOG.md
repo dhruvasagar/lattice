@@ -33,6 +33,10 @@
   mode.** A mode, including a plugin's, that names a built-in language such
   as `bash` now has its file-less buffers highlighted with it. Before, only
   plugin-provided languages worked this way.
+- **`:describe-key` could not take a mode prefix.** Typing `i_` and then
+  a chord described `i` as soon as it was pressed. The prompt now waits
+  after a mode letter, so `i_<C-n>`, `n_j` and the rest work again; press
+  `<CR>` to describe the letter on its own.
 - **`:format` timed out on large files.** An external formatter whose
   output ran past 64 KiB was reported as timed out when it was only waiting
   to be read.

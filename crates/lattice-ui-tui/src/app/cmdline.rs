@@ -1387,6 +1387,62 @@ mod tests {
         );
     }
 
+    /// **Reported 2026-10-10.** `:describe-key i_<C-n>` stopped working:
+    /// the capture described `i` the moment it was pressed, and `_` and the
+    /// chord after it landed in the buffer as keystrokes.
+    ///
+    /// Letting the trie end a capture made every complete chord submit
+    /// itself, and to the trie `i` is complete. A mode letter may be the
+    /// first half of a prefix, so capture waits on one; `_` makes it a
+    /// prefix, and the chord after it ends the capture as usual.
+    #[test]
+    fn a_mode_prefix_can_be_captured_ahead_of_the_chord() {
+        let mut a = app_in_command_mode("describe-key");
+        a.apply(Action::CommandLineSubmit);
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            a.editor.command_line(),
+            "describe-key n",
+            "`i` alone waits: it may be the start of `n_`"
+        );
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('_'), KeyModifiers::NONE),
+        );
+        assert_eq!(a.editor.command_line(), "describe-key n_");
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
+        let body = a
+            .popup_help()
+            .expect("the chord after the prefix ended the capture")
+            .content
+            .as_string();
+        // `j` is bound in Visual too; the prefix is what leaves it out.
+        assert!(body.contains("[Normal mode]"), "{body}");
+        assert!(!body.contains("[Visual mode]"), "{body}");
+    }
+
+    /// The cost of the above, kept small: a mode letter on its own is still
+    /// describable, with `<CR>` to say it is the whole answer — the same
+    /// terminator `y` needs.
+    #[test]
+    fn a_lone_mode_letter_is_described_on_enter() {
+        let mut a = app_in_command_mode("describe-key");
+        a.apply(Action::CommandLineSubmit);
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+        );
+        press(&mut a, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let body = a.popup_help().expect("described").content.as_string();
+        assert!(body.contains("[Normal mode]"), "{body}");
+    }
+
     #[test]
     fn empty_submit_of_canonical_describe_key_arms_chord_prompt() {
         // Same prompt path through the canonical name, not just

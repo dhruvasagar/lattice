@@ -99,7 +99,9 @@ pub use registry::{
 };
 
 pub mod resolution;
-pub use resolution::{Continuation, KeymapResolution, LayerHit, parse_describe_key_arg};
+pub use resolution::{
+    Continuation, KeymapResolution, LayerHit, describe_key_mode_for_letter, parse_describe_key_arg,
+};
 
 pub mod events;
 pub use events::PartialChordPending;

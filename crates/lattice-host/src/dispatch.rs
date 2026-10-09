@@ -10673,10 +10673,47 @@ impl Editor {
         // the minibuffer's keymap and every major-mode / plugin chord the user
         // could be describing is invisible. That is what truncated
         // `<C-c><C-x><C-b>` to `<C-c><C-x>`.
-        if self.keymap.any_layer_expects_more(&self.chord_capture_seq) {
+        //
+        // A leading mode prefix (`i_`) is not part of the sequence: it says
+        // which mode's binding to describe, and the trie has no `i_<C-n>`.
+        let (opening_prefix, body) = Self::split_capture_mode_prefix(&self.chord_capture_seq);
+        // `i` may be the answer or the first half of `i_`. The trie cannot
+        // say which — to it `i` is simply bound — so capture waits, and
+        // `<CR>` ends it, exactly as it does for `y`. Without this the prefix
+        // form could not be typed at all: `i` submitted before `_` arrived.
+        if opening_prefix || body.is_empty() {
+            return;
+        }
+        if self.keymap.any_layer_expects_more(body) {
             return;
         }
         self.do_command_line_submit(out);
+    }
+
+    /// Chord capture's view of a `:describe-key` mode prefix.
+    ///
+    /// Returns `(true, _)` while the capture is exactly one mode letter and
+    /// could still become a prefix, and otherwise the chords AFTER a complete
+    /// `letter` `_` prefix (or all of them, when there is none).
+    fn split_capture_mode_prefix(
+        seq: &[lattice_protocol::chord::KeyChord],
+    ) -> (bool, &[lattice_protocol::chord::KeyChord]) {
+        let plain = |c: &lattice_protocol::chord::KeyChord| match c.key {
+            crate::chord::KeyKind::Char(ch) if c.mods.is_empty() => Some(ch),
+            _ => None,
+        };
+        let is_letter = seq
+            .first()
+            .and_then(plain)
+            .is_some_and(|ch| lattice_keymap::describe_key_mode_for_letter(ch).is_some());
+        if !is_letter {
+            return (false, seq);
+        }
+        match seq.get(1).map(plain) {
+            None => (true, seq),
+            Some(Some('_')) => (false, &seq[2..]),
+            Some(_) => (false, seq),
+        }
     }
 
     /// 5.5.G.23.cmdline: `<Tab>` — open the popup if closed, advance

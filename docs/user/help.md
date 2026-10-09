@@ -78,6 +78,12 @@ shown; modes with no binding are omitted to keep the output compact.
 :describe-key v_>        -- shows what > does in Visual mode
 ```
 
+The prompt reads keys as you press them, so after `:describe-key ` you
+type the prefix and then press the chord itself: `i`, `_`, then
+`Ctrl-n`. Because a mode letter may be the start of a prefix, the prompt
+waits after one. To describe the letter itself (`i`, `n`, `v`, `r`, `s`),
+press `<CR>` after it — the same way you finish `y` or `d`.
+
 The mode prefix follows the same convention as Neovim's `:map`
 commands (`nnoremap`, `inoremap`, etc.) — `n_` for normal, `i_` for
 insert — so muscle memory transfers.

@@ -39,15 +39,13 @@ on your machine, so it needs Rust and the `wasm32-wasip2` target —
 
 ## What works today
 
-| | |
-|---|---|
-| **Modal editing** | Vim grammar — operators, motions, text objects, registers, counts, macros, folds, marks |
-| **Code intelligence** | LSP: completion, diagnostics, hover, rename, references, inlay hints, symbols, code actions |
-| **Syntax** | Tree-sitter, 20 languages, incremental and O(viewport) |
-| **Git** | A magit port — status, stage/unstage by hunk, commit, rebase, blame, log, branches, stashes |
-| **Extensibility** | WASM Component Model plugin host; config is Rust compiled to WASM |
-| **Two renderers** | Terminal (first-class, for SSH) and GPU (`--gui`) |
-| **AI agents** | Claude Code over MCP; opencode's own TUI in a terminal buffer, or an ACP conversation buffer with diff review |
+| **Modal editing**     | Vim grammar — operators, motions, text objects, registers, counts, macros, folds, marks                       |
+| **Code intelligence** | LSP: completion, diagnostics, hover, rename, references, inlay hints, symbols, code actions                   |
+| **Syntax**            | Tree-sitter, 20 languages, incremental and O(viewport)                                                        |
+| **Git**               | A magit port — status, stage/unstage by hunk, commit, rebase, blame, log, branches, stashes                   |
+| **Extensibility**     | WASM Component Model plugin host; config is Rust compiled to WASM                                             |
+| **Two renderers**     | Terminal (first-class, for SSH) and GPU (`--gui`)                                                             |
+| **AI agents**         | Claude Code over MCP; opencode's own TUI in a terminal buffer, or an ACP conversation buffer with diff review |
 
 ## See it
 
@@ -181,25 +179,21 @@ command. The same pages are the editor's own `:help`.
 
 **Writing a plugin**
 
-| | |
-|---|---|
-| [Plugin authoring guide](docs/dev/guides/plugin-authoring.md) | Toolchain, ABI and versions, the `plugin.toml` manifest, sync vs async seams, the runtime contract. Read first. |
-| [Plugin patterns](docs/dev/guides/plugin-patterns.md) | Recipes: an operator, an action, a motion, an ex-command, a mode with options, a picker, events, reading the buffer and syntax tree, persistent state. Code quoted from plugins CI builds. |
+| [Plugin authoring guide](docs/dev/guides/plugin-authoring.md)                                                            | Toolchain, ABI and versions, the `plugin.toml` manifest, sync vs async seams, the runtime contract. Read first.                                                                            |
+| [Plugin patterns](docs/dev/guides/plugin-patterns.md)                                                                    | Recipes: an operator, an action, a motion, an ex-command, a mode with options, a picker, events, reading the buffer and syntax tree, persistent state. Code quoted from plugins CI builds. |
 | [Plugin-API reference](docs/dev/reference/plugin-api.md) ([site](https://dhruvasagar.github.io/lattice/dev/plugin-api/)) | Generated from the WIT: every world and its entry points, every seam, function signature, type and field, with examples. As JSON: [`plugin-api.json`](docs/dev/reference/plugin-api.json). |
-| [Bundled plugins](plugins/) | `comment`, `auto-pair`, `project`, `treesitter-context` — small, complete templates. |
+| [Bundled plugins](plugins/)                                                                                              | `comment`, `auto-pair`, `project`, `treesitter-context` — small, complete templates.                                                                                                       |
 
 **Contributing to the editor**
 
-| | |
-|---|---|
-| [Developing lattice](docs/dev/guides/developing-lattice.md) | **Start here** — dev loop, architecture mental model, mode ownership, "add your first X" walkthroughs. |
-| [Developer documentation](https://dhruvasagar.github.io/lattice/dev/) | Every design fragment, guide and audit, organised by subsystem ([`docs/dev/`](docs/dev/)). |
-| [Design spec](docs/dev/architecture/design.md) | Authoritative for what should exist. |
-| [Implementation ledger](docs/dev/operations/implementation.md) | Authoritative for what does exist. |
-| [Crate map](docs/dev/reference/crates.md) | All workspace crates, layered by dependency, with what each owns. |
-| [Rust API](https://dhruvasagar.github.io/lattice/api/) | rustdoc for every crate (locally: `cargo doc -p <crate> --no-deps --open`). |
-| [Benchmarks](docs/dev/operations/benchmarks.md) | Latest measured numbers vs. the §8.2 commitments. |
-| [How the API docs are generated](docs/dev/architecture/api-docs.md) | What is derived from what, and the tests that keep it current. |
+| [Developing lattice](docs/dev/guides/developing-lattice.md)           | **Start here** — dev loop, architecture mental model, mode ownership, "add your first X" walkthroughs. |
+| [Developer documentation](https://dhruvasagar.github.io/lattice/dev/) | Every design fragment, guide and audit, organised by subsystem ([`docs/dev/`](docs/dev/)).             |
+| [Design spec](docs/dev/architecture/design.md)                        | Authoritative for what should exist.                                                                   |
+| [Implementation ledger](docs/dev/operations/implementation.md)        | Authoritative for what does exist.                                                                     |
+| [Crate map](docs/dev/reference/crates.md)                             | All workspace crates, layered by dependency, with what each owns.                                      |
+| [Rust API](https://dhruvasagar.github.io/lattice/api/)                | rustdoc for every crate (locally: `cargo doc -p <crate> --no-deps --open`).                            |
+| [Benchmarks](docs/dev/operations/benchmarks.md)                       | Latest measured numbers vs. the §8.2 commitments.                                                      |
+| [How the API docs are generated](docs/dev/architecture/api-docs.md)   | What is derived from what, and the tests that keep it current.                                         |
 
 When something disagrees, `design.md` and `implementation.md` are the
 authoritative sources for what should exist and what currently does.

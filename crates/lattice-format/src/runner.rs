@@ -34,8 +34,8 @@ pub enum FormatError {
     /// The formatter ran and rejected the input. `stderr` is the
     /// compiler-style diagnostic and belongs in front of the user.
     Failed { program: String, stderr: String },
-    /// Killed at [`FORMAT_TIMEOUT`].
-    TimedOut { program: String },
+    /// Killed at its time limit ([`FORMAT_TIMEOUT`] for a formatter).
+    TimedOut { program: String, after: Duration },
     /// The formatter wrote bytes that are not UTF-8. Refusing is the
     /// only safe answer: splicing them into the rope would corrupt the
     /// buffer.
@@ -58,8 +58,8 @@ impl FormatError {
                     format!("{program}: {first}")
                 }
             }
-            Self::TimedOut { program } => {
-                format!("{program} timed out after {}s", FORMAT_TIMEOUT.as_secs())
+            Self::TimedOut { program, after } => {
+                format!("{program} timed out after {}s", after.as_secs())
             }
             Self::NotUtf8 { program } => format!("{program} produced invalid UTF-8"),
             Self::Io { program, message } => format!("{program}: {message}"),
@@ -82,12 +82,64 @@ impl FormatError {
 /// Blocking, bounded by [`FORMAT_TIMEOUT`]. On timeout the child is
 /// killed rather than left to leak.
 pub fn run(spec: &FormatterSpec, input: &str, path: Option<&Path>) -> Result<String, FormatError> {
-    let program = spec.program.to_string();
     let mut command = Command::new(spec.program);
     command.args(spec.args);
     if let (Some(flag), Some(p)) = (spec.filename_flag, path) {
         command.arg(format!("{flag}={}", p.display()));
     }
+    run_command(command, spec.program, input, FORMAT_TIMEOUT)
+}
+
+/// Wall-clock ceiling for a `:{range}!cmd` filter.
+///
+/// Far longer than a formatter's: the user typed this command and may well
+/// mean something slow. It exists so a command that waits on a terminal it
+/// does not have is eventually killed rather than leaked.
+pub const FILTER_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Run a shell command line over `input` — vim's `:{range}!cmd`.
+///
+/// The line goes to the platform shell (`sh -c`, or `cmd /C` on Windows),
+/// so pipes, quoting and globs mean what they mean in a terminal. `cwd` is
+/// where it runs. Blocking, bounded by `timeout`.
+pub fn run_shell(
+    command_line: &str,
+    input: &str,
+    cwd: Option<&Path>,
+    timeout: Duration,
+) -> Result<String, FormatError> {
+    let mut command = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(command_line);
+        c
+    } else {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(command_line);
+        c
+    };
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
+    run_command(command, command_line, input, timeout)
+}
+
+/// Feed `input` to `command`'s stdin and collect its stdout.
+///
+/// The three pipes are serviced concurrently. Writing all of stdin before
+/// reading any of stdout deadlocks as soon as the child answers with more
+/// than a pipe holds (64 KiB on Linux) before it has finished reading —
+/// which is any streaming filter, `cat` or `sed`, over a large buffer — and
+/// reading stdout only after the child exits has the same shape from the
+/// other side: a child blocked on a full stdout never exits. The first
+/// would hang where no timeout could reach it; the second surfaced as a
+/// spurious timeout on any file whose formatted text ran past the pipe.
+fn run_command(
+    mut command: Command,
+    label: &str,
+    input: &str,
+    timeout: Duration,
+) -> Result<String, FormatError> {
+    let program = label.to_string();
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -106,26 +158,46 @@ pub fn run(spec: &FormatterSpec, input: &str, path: Option<&Path>) -> Result<Str
         }
     };
 
-    // Write the buffer and close stdin, or the formatter waits forever
-    // for input that is already all there.
-    if let Some(mut stdin) = child.stdin.take() {
-        // A formatter that exits early (bad input) closes the pipe
-        // while we are still writing, which surfaces as a broken pipe.
-        // That is not an I/O failure worth reporting — the real error
-        // is on stderr, and `wait_with_output` below will collect it.
-        let _ = stdin.write_all(input.as_bytes());
+    // Write the buffer and close stdin, or the child waits forever for
+    // input that is already all there. On its own thread, so a child that
+    // answers as it reads cannot block us mid-write.
+    let writer = child.stdin.take().map(|mut stdin| {
+        let input = input.as_bytes().to_vec();
+        std::thread::spawn(move || {
+            // A child that exits early (bad input) closes the pipe while
+            // we are still writing, which surfaces as a broken pipe. That
+            // is not an I/O failure worth reporting — the real error is on
+            // stderr.
+            let _ = stdin.write_all(&input);
+        })
+    });
+    fn drain<R: std::io::Read + Send + 'static>(
+        pipe: Option<R>,
+    ) -> Option<std::thread::JoinHandle<Vec<u8>>> {
+        pipe.map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = pipe.read_to_end(&mut bytes);
+                bytes
+            })
+        })
     }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
 
     // Poll rather than block so the timeout can actually fire.
     let started = Instant::now();
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) => {
-                if started.elapsed() >= FORMAT_TIMEOUT {
+                if started.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(FormatError::TimedOut { program });
+                    return Err(FormatError::TimedOut {
+                        program,
+                        after: timeout,
+                    });
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -136,24 +208,21 @@ pub fn run(spec: &FormatterSpec, input: &str, path: Option<&Path>) -> Result<Str
                 });
             }
         }
-    }
-
-    let output = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(e) => {
-            return Err(FormatError::Io {
-                program,
-                message: e.to_string(),
-            });
-        }
     };
-    if !output.status.success() {
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
+    let collect = |handle: Option<std::thread::JoinHandle<Vec<u8>>>| {
+        handle.and_then(|h| h.join().ok()).unwrap_or_default()
+    };
+    let (stdout, stderr) = (collect(stdout), collect(stderr));
+    if !status.success() {
         return Err(FormatError::Failed {
             program,
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
         });
     }
-    String::from_utf8(output.stdout).map_err(|_| FormatError::NotUtf8 { program })
+    String::from_utf8(stdout).map_err(|_| FormatError::NotUtf8 { program })
 }
 
 #[cfg(test)]
@@ -269,5 +338,50 @@ mod tests {
         spec.filename_flag = Some("--name");
         let out = run(&spec, "x", Some(Path::new("/tmp/a.ts"))).unwrap();
         assert_eq!(out.trim(), "--name=/tmp/a.ts");
+    }
+
+    /// The reason the pipes are serviced concurrently. A megabyte through
+    /// `cat` is sixteen pipefuls: written-then-read it never returns, and
+    /// no timeout is watching the write.
+    #[cfg(unix)]
+    #[test]
+    fn a_streaming_filter_over_more_than_a_pipeful_does_not_deadlock() {
+        let input = "a line of text that is fairly ordinary\n".repeat(30_000);
+        assert!(input.len() > 1_000_000);
+        let output = run_shell("cat", &input, None, Duration::from_secs(20)).expect("cat runs");
+        assert_eq!(output.len(), input.len());
+        assert_eq!(output, input);
+    }
+
+    /// The command line goes to a shell: a pipe is a pipe.
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_line_is_run_by_a_shell() {
+        let out = run_shell("sort | uniq", "b\na\nb\n", None, Duration::from_secs(20));
+        assert_eq!(out.as_deref(), Ok("a\nb\n"));
+    }
+
+    /// A filter that fails reports its stderr and yields no text, so the
+    /// caller has nothing to put in the buffer.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_shell_line_carries_its_stderr() {
+        let err = run_shell(
+            "echo nope >&2; exit 3",
+            "x\n",
+            None,
+            Duration::from_secs(20),
+        )
+        .expect_err("non-zero exit");
+        assert_eq!(err.message(), "echo nope >&2; exit 3: nope");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_line_runs_in_the_directory_it_is_given() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("here.txt"), "").expect("write");
+        let out = run_shell("ls", "", Some(dir.path()), Duration::from_secs(20));
+        assert_eq!(out.as_deref(), Ok("here.txt\n"));
     }
 }

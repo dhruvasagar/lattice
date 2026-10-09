@@ -28,5 +28,5 @@ pub mod runner;
 pub mod spec;
 
 pub use apply::{changes_more_than_indentation, minimal_edits};
-pub use runner::{FORMAT_TIMEOUT, FormatError, run};
+pub use runner::{FILTER_TIMEOUT, FORMAT_TIMEOUT, FormatError, run, run_shell};
 pub use spec::FormatterSpec;

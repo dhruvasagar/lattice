@@ -40,8 +40,16 @@ fn injected_env_reaches_the_child() {
 
     let handles = lattice_terminal::spawn(cfg).expect("spawn sh");
 
-    // Poll the snapshot until the child's output appears (bounded ~3s).
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // Poll the snapshot until the child's output appears.
+    //
+    // The bound is a ceiling on a hang, not an expectation: the loop returns
+    // the moment the marker shows up, so a generous one costs a passing run
+    // nothing. It was 3s, which a loaded Windows runner exceeded — there the
+    // child is `sh` started through ConPTY, and the grid was still entirely
+    // blank when the deadline hit. A deadline short enough to be missed by a
+    // slow start reports "the env var never arrived" about a child that had
+    // not printed anything yet.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let text = grid_text(&handles.snapshot.load());
         if text.contains("MARKER=ok") {

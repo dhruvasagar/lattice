@@ -1804,7 +1804,7 @@ impl Editor {
             compilation_severity: self.compilation_severity.clone(),
             compilation_location_lines: self.compilation_location_lines.clone(),
             code_block_lines: self.code_block_lines.clone(),
-            compilation_theme_colors: self.compilation_theme_colors.clone(),
+            compilation_location_bg: self.compilation_location_bg,
         }
     }
 
@@ -11294,7 +11294,7 @@ impl Editor {
                 self.compilation_severity = std::sync::Arc::new(map);
             }
             // CM.3c (2026-07-22): per-buffer compilation location-line
-            // index for theme-based highlighting. Twin of
+            // index, for the jumpable-row tint. Twin of
             // CompilationGutterSet: stores the set of absolute buffer
             // line numbers that carry a navigable file location. An
             // empty vec (sent on Reset / a new run) clears the entry.
@@ -11308,11 +11308,11 @@ impl Editor {
                 }
                 self.compilation_location_lines = std::sync::Arc::new(map);
             }
-            // CM.3d (2026-07-22): resolved compilation theme colours
-            // — published once by the mode during activation. Store
+            // CM.3d (2026-07-22): the resolved location-row tint —
+            // published once by the mode during activation. Stored
             // for the renderers to read.
-            AppEffect::CompilationThemeColors { bg, fg } => {
-                self.compilation_theme_colors = std::sync::Arc::new((bg, fg));
+            AppEffect::CompilationThemeColors { bg } => {
+                self.compilation_location_bg = bg;
             }
             // CM.3d (2026-07-22): kill the running compilation.
             AppEffect::CompilationKill => {

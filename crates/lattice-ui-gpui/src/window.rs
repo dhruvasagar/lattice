@@ -2351,11 +2351,8 @@ impl EditorView {
                 rs_guard
                     .compilation_location_lines
                     .get(&pane.buffer_id)
-                    .and_then(|entries| entries.iter().find(|(l, _, _)| *l == line_idx as u32))
-                    .map(|_| {
-                        let (bg, _fg) = *rs_guard.compilation_theme_colors;
-                        bg
-                    })
+                    .and_then(|lines| lines.binary_search(&(line_idx as u32)).ok())
+                    .map(|_| rs_guard.compilation_location_bg)
             })
             .collect();
         // MC.3: fenced/indented code-block bg tint, from the render-state

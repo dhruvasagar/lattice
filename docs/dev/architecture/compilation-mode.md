@@ -271,7 +271,12 @@ a **location-line background tint** (theme element
 from surrounding prose; the tint colour resolves from the theme (no
 hardcoded RGB) and is produced off-thread in the drain
 (`scan_location_lines`), shipped to the renderer over a native
-`InboundBus` twin of the severity-gutter seam. `<CR>` on a matched line
+`InboundBus` twin of the severity-gutter seam. The index is a list of
+line numbers and the tint is a row background, nothing more: it says
+which rows `<CR>` jumps from. Where the location sits inside the line,
+and its link colour, is a foreground span that travels with the text
+(§8c) — the index once carried the path's byte range too, which only the
+TUI painted, with a colour no theme element named. `<CR>` on a matched line
 jumps to that source location (via `jump_to_file_line_col`) and syncs
 the error-list index. `<CR>` reads the cursor line and parses a location
 out of it directly (no precomputed buffer-line→entry map — stdout/stderr

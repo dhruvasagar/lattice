@@ -188,9 +188,6 @@ pub struct Theme {
     /// CM.3d (2026-07-22): background tint for compilation
     /// file-location lines (whole-line `compilation.location` bg).
     pub compilation_location_bg: Color,
-    /// CM.3d (2026-07-22): link-like foreground for the file-path
-    /// portion of compilation location lines.
-    pub compilation_location_fg: Color,
 }
 
 impl Default for Theme {
@@ -298,7 +295,6 @@ impl Default for Theme {
             diff_deletion_block_bg: Color::Rgb(60, 0, 0),
             diff_conflict_line_bg: Color::Rgb(60, 0, 60),
             compilation_location_bg: Color::Rgb(0x45, 0x47, 0x5a),
-            compilation_location_fg: Color::Rgb(0x89, 0xb4, 0xfa),
         }
     }
 }
@@ -564,7 +560,6 @@ pub fn build_tui_theme(
         diff_deletion_block_bg: resolved_bg(ids.diff_deletion_block),
         diff_conflict_line_bg: resolved_bg(ids.diff_conflict_line),
         compilation_location_bg: Color::Rgb(0x45, 0x47, 0x5a),
-        compilation_location_fg: Color::Rgb(0x89, 0xb4, 0xfa),
     }
 }
 

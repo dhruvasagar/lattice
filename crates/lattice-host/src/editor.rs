@@ -494,11 +494,10 @@ pub struct Editor {
     /// `AppEffect::CompilationLocationLines` arm and snapshotted
     /// into `RenderState::compilation_location_lines` at publish.
     /// The outer `Arc` lets the publish clone be O(1) and the
-    /// inner per-buffer `Arc<Vec<(u32,u32,u32)>>` lets the renderer read
+    /// inner per-buffer `Arc<Vec<u32>>` lets the renderer read
     /// wait-free.
-    pub compilation_location_lines: std::sync::Arc<
-        std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<Vec<(u32, u32, u32)>>>,
-    >,
+    pub compilation_location_lines:
+        std::sync::Arc<std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<Vec<u32>>>>,
     /// MC.2b: per-buffer set of source lines inside a fenced/indented code
     /// block, for the full-width `syntax.code_block` background tint. Recomputed
     /// from the syntax tree in `recompute_folds_because` (the same reparse-driven
@@ -524,12 +523,11 @@ pub struct Editor {
             std::sync::Arc<crate::diff::overlay::DiffSignMap>,
         >,
     >,
-    /// CM.3d (2026-07-22): resolved `compilation.location` theme
-    /// colours — published by the mode during activation so the TUI
-    /// and GPUI renderers read from the theme rather than hardcoding
-    /// RGB. `bg` is the location-line background tint; `fg` is the
-    /// link-like file-path foreground. Defaults: surface2 bg, blue fg.
-    pub compilation_theme_colors: std::sync::Arc<(u32, u32)>,
+    /// CM.3d (2026-07-22): the resolved `compilation.location` row
+    /// background, packed `0xRRGGBB` — published by the mode during
+    /// activation so the TUI and GPUI renderers read it from the theme
+    /// rather than hardcoding RGB. Default: surface2.
+    pub compilation_location_bg: u32,
     /// MRU list of canonical paths the user has opened via
     /// `:edit` (or any path flowing through `do_edit`). Newest
     /// first; deduplicated; capped at `MAX_RECENT_FILES`. Source

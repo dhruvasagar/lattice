@@ -415,9 +415,9 @@ impl Mode for CompilationMode {
                     resolve_fg(failure_id, 0xff4444),
                     resolve_fg(dim_id, 0x888888),
                 ));
-                // Ship resolved compilation.location colours to the
-                // renderer so TUI/GPUI read from the theme instead of
-                // hardcoding RGB.
+                // Ship the resolved `compilation.location` background to
+                // the renderers so TUI/GPUI read it from the theme
+                // instead of hardcoding RGB.
                 if let Some(bus) = ctx
                     .service::<CompilationThemeColorsBusHandle>()
                     .map(|h| (**h).clone())
@@ -427,12 +427,7 @@ impl Mode for CompilationMode {
                         .bg
                         .map(|c| c.to_rgb_u32(0))
                         .unwrap_or(0x45475a);
-                    let loc_fg = resolved
-                        .get(loc_id)
-                        .fg
-                        .map(|c| c.to_rgb_u32(0))
-                        .unwrap_or(0x89b4fa);
-                    let _ = bus.send((loc_bg, loc_fg));
+                    let _ = bus.send(loc_bg);
                 }
             }
 
@@ -451,9 +446,9 @@ impl Mode for CompilationMode {
 
             // CM.3c (2026-07-22): the off-thread location-line index
             // producer for theme-based highlighting. Twin of gutter_bus.
-            let location_bus: Option<InboundBus<(lattice_core::BufferId, Vec<(u32, u32, u32)>)>> =
-                ctx.service::<CompilationLocationBusHandle>()
-                    .map(|h| (**h).clone());
+            let location_bus: Option<InboundBus<(lattice_core::BufferId, Vec<u32>)>> = ctx
+                .service::<CompilationLocationBusHandle>()
+                .map(|h| (**h).clone());
 
             // CM.3d (2026-07-22): create + register the
             // compilation headerline — a sticky virtual row the
@@ -528,7 +523,7 @@ impl Mode for CompilationMode {
                 // actually has something to show.
                 let mut span_debt: usize = 0;
                 let mut severities: Vec<(u32, ErrorSeverity)> = Vec::new();
-                let mut location_lines: Vec<(u32, u32, u32)> = Vec::new();
+                let mut location_lines: Vec<u32> = Vec::new();
                 while let Some(first) = rx.recv().await {
                     let mut batch = vec![first];
                     while let Ok(more) = rx.try_recv() {

@@ -143,6 +143,28 @@ async fn a_plain_diagnostic_reaches_the_buffer_styled_on_its_own_line() {
                 Some((0, "error[E0308]".len(), Style::DiagnosticError))
             );
             assert_eq!(label(&spans, arrow), Some((1, 4, Style::Comment)));
+            // The jumpable row and how its text reads are two axes with
+            // two carriers: the row index says *which* line `<CR>` jumps
+            // from (the renderers tint it), the span says where the
+            // location is. The index used to carry the path's byte range
+            // as well, and only the TUI painted it.
+            let jumpable = editor
+                .compilation_location_lines
+                .get(&id)
+                .map(|l| l.to_vec())
+                .unwrap_or_default();
+            if jumpable.is_empty() {
+                // The index rides its own bus; it may land a tick later.
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                continue;
+            }
+            // Row 0 is the echoed command, which quotes the location.
+            assert_eq!(jumpable, vec![0, arrow as u32]);
+            let link = spans[arrow].iter().find(|s| s.style == Style::Link);
+            assert_eq!(
+                link.map(|s| &lines[arrow][s.start..s.end]),
+                Some("src/main.rs:3:17")
+            );
             for (i, line) in lines.iter().enumerate() {
                 if !line.starts_with(['w', 'e', ' ']) {
                     assert!(

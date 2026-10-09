@@ -75,19 +75,19 @@ use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity};
 pub type CompilationGutterBusHandle = Arc<InboundBus<(BufferId, Vec<(u32, ErrorSeverity)>)>>;
 
 /// CM.3c (2026-07-22): the off-thread → host-state seam for the
-/// `*compilation*` buffer's location-line index (theme-based
-/// highlighting). Twin of [`CompilationGutterBusHandle`]: the
+/// `*compilation*` buffer's location-line index (the jumpable-row
+/// tint). Twin of [`CompilationGutterBusHandle`]: the
 /// compilation drain sends `(buffer_id, full_location_lines)` through
 /// this bus whenever the index changes; the `install`-registered handler
 /// maps each send to [`AppEffect::CompilationLocationLines`].
 /// Registered as a ServiceRegistry handle under this exact alias; the
 /// drain looks it up via `ctx.service::<CompilationLocationBusHandle>()`.
-pub type CompilationLocationBusHandle = Arc<InboundBus<(BufferId, Vec<(u32, u32, u32)>)>>;
+pub type CompilationLocationBusHandle = Arc<InboundBus<(BufferId, Vec<u32>)>>;
 
-/// CM.3d (2026-07-22): the theme colours bus — the mode sends
-/// resolved `(bg, fg)` once during activation; the handler maps to
-/// [`AppEffect::CompilationThemeColors`].
-pub type CompilationThemeColorsBusHandle = Arc<InboundBus<(u32, u32)>>;
+/// CM.3d (2026-07-22): the theme colours bus — the mode sends the
+/// resolved `compilation.location` background once during activation;
+/// the handler maps to [`AppEffect::CompilationThemeColors`].
+pub type CompilationThemeColorsBusHandle = Arc<InboundBus<u32>>;
 
 /// CM.5: write-once slot holding the interned `compilation.ansi.*`
 /// element ids the pipe readers paint captured SGR with.
@@ -214,7 +214,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // through this whenever the index changes; the handler maps each
     // send to `AppEffect::CompilationLocationLines`, which the host
     // stores in the render-state slot the renderers read.
-    let location_bus = boot.inbound::<(BufferId, Vec<(u32, u32, u32)>), _>(|(buffer, lines)| {
+    let location_bus = boot.inbound::<(BufferId, Vec<u32>), _>(|(buffer, lines)| {
         vec![Effect::AppAction(AppEffect::CompilationLocationLines {
             buffer: buffer.0,
             lines,
@@ -223,14 +223,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.register_service::<CompilationLocationBusHandle>(Arc::new(location_bus));
 
     // CM.3d (2026-07-22): theme colours bus — the mode sends resolved
-    // `compilation.location` bg/fg once during activation so the
+    // `compilation.location` background once during activation so the
     // renderers read from the theme rather than hardcoding RGB.
-    let theme_colors_bus = boot.inbound::<(u32, u32), _>(|(bg, fg)| {
-        vec![Effect::AppAction(AppEffect::CompilationThemeColors {
-            bg,
-            fg,
-        })]
-    });
+    let theme_colors_bus = boot
+        .inbound::<u32, _>(|bg| vec![Effect::AppAction(AppEffect::CompilationThemeColors { bg })]);
     boot.register_service::<CompilationThemeColorsBusHandle>(Arc::new(theme_colors_bus));
 
     // CM.5: the slot the interned `compilation.ansi.*` element ids

@@ -5848,11 +5848,14 @@ pub(crate) fn compose_pane_lines(
             Some(bg) => apply_diff_tint(body, bg),
             None => body,
         };
-        // CM.3d (2026-07-22): compilation location line tint —
-        // background tint on the whole line + link foreground on
-        // the file-path portion.
+        // CM.3d (2026-07-22): compilation location line tint — a
+        // background on the whole row, saying `<CR>` jumps from here.
+        // Background only: how the line READS (the path as a link, the
+        // severity word) arrives as spans with the text, the same in
+        // both renderers. This used to recolour the path as well, which
+        // the GPUI peer never did.
         let body = match compilation_location_tint(view, ctx.buffer_id, line_idx) {
-            Some((start, end, bg, fg)) => apply_compilation_location_tint(body, start, end, bg, fg),
+            Some(bg) => apply_diff_tint(body, bg),
             None => body,
         };
         // MC.3: fenced/indented code-block background — the weakest, widest
@@ -6875,56 +6878,24 @@ fn apply_diff_tint(spans: Vec<Span<'static>>, bg: Color) -> Vec<Span<'static>> {
         .collect()
 }
 
-/// T.7 (2026-07-22): compilation location tint. Reads the
-/// per-buffer location-line index from the render-state snapshot and
-/// returns `(path_byte_start, path_byte_end, bg, fg)` for `line_idx`
-/// if it carries a file-location link.
+/// T.7 (2026-07-22): compilation location tint. Reads the per-buffer
+/// location-line index from the render-state snapshot and returns the
+/// row background for `line_idx` if `<CR>` can jump from it.
 fn compilation_location_tint(
     view: &FrameView<'_>,
     buffer_id: crate::buffers::BufferId,
     line_idx: u32,
-) -> Option<(u32, u32, Color, Color)> {
+) -> Option<Color> {
     let rs = view.app.render_state.load();
-    let entries = rs.compilation_location_lines.get(&buffer_id)?;
-    let entry = entries.iter().find(|(l, _, _)| *l == line_idx)?;
-    let (bg, fg) = *rs.compilation_theme_colors;
-    let bg = Color::Rgb(
+    let lines = rs.compilation_location_lines.get(&buffer_id)?;
+    // Ascending by construction: the drain appends as the log grows.
+    lines.binary_search(&line_idx).ok()?;
+    let bg = rs.compilation_location_bg;
+    Some(Color::Rgb(
         (bg >> 16) as u8,
         ((bg >> 8) & 0xff) as u8,
         (bg & 0xff) as u8,
-    );
-    let fg = Color::Rgb(
-        (fg >> 16) as u8,
-        ((fg >> 8) & 0xff) as u8,
-        (fg & 0xff) as u8,
-    );
-    Some((entry.1, entry.2, bg, fg))
-}
-
-/// Apply compilation location link tint: set the background tint on
-/// every span, and set the link foreground on spans whose byte range
-/// overlaps `[path_byte_start, path_byte_end)`.
-fn apply_compilation_location_tint(
-    spans: Vec<Span<'static>>,
-    path_byte_start: u32,
-    path_byte_end: u32,
-    bg: Color,
-    fg: Color,
-) -> Vec<Span<'static>> {
-    let mut byte_pos: usize = 0;
-    spans
-        .into_iter()
-        .map(|s| {
-            let span_len = s.content.len();
-            let span_end = byte_pos + span_len;
-            let inside_link =
-                byte_pos < path_byte_end as usize && span_end > path_byte_start as usize;
-            let style = s.style.bg(bg);
-            let style = if inside_link { style.fg(fg) } else { style };
-            byte_pos = span_end;
-            Span::styled(s.content.into_owned(), style)
-        })
-        .collect()
+    ))
 }
 
 /// SG.4b — the cell for one gutter column on one line.

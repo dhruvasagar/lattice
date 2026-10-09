@@ -77,6 +77,27 @@ pub fn match_severity(line: &str) -> Option<ErrorSeverity> {
     crate::parsers::match_severity(line)
 }
 
+/// CM.3c: scan a block of streamed text for location-bearing lines —
+/// those [`parse_location_line`] can navigate to — and return the
+/// absolute buffer line of each.
+///
+/// Mirrors [`scan_severities`]: `base_line` is the 0-based buffer
+/// line number the block's FIRST line lands on; line `i` of the
+/// block maps to absolute line `base_line + i`. The compilation
+/// drain calls this per chunk to grow the buffer's location-line
+/// index, which the renderers tint as jumpable rows.
+///
+/// Lines, not ranges. Where the location sits *within* a line is the
+/// highlighter's business ([`crate::DiagnosticHighlighter`]), and it
+/// travels as a span with the text.
+pub fn scan_location_lines(base_line: u32, text: &str) -> Vec<u32> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| parse_location_line(line).is_some())
+        .map(|(i, _)| base_line + i as u32)
+        .collect()
+}
+
 /// CM.3c: scan a block of streamed text for severity lines, returning
 /// `(absolute_line, severity)` for each match. `base_line` is the 0-based
 /// buffer line number the block's FIRST line lands on; line `i` of the
@@ -92,42 +113,6 @@ pub fn match_severity(line: &str) -> Option<ErrorSeverity> {
 /// may not be re-attributed (erring toward not-decorating a partial line,
 /// which is acceptable and does not occur with the newline-terminated
 /// reader output).
-/// CM.3c: scan a block of streamed text for location-bearing
-/// lines (lines whose text contains a file path + line:col that
-/// `parse_location_line` can navigate to). Returns
-/// `(absolute_line, path_byte_start, path_byte_end)` for each match.
-///
-/// Mirrors [`scan_severities`]: `base_line` is the 0-based buffer
-/// line number the block's FIRST line lands on; line `i` of the
-/// block maps to absolute line `base_line + i`. The compilation
-/// drain calls this per chunk to grow the buffer's location-line
-/// index. The byte range is the span of the file-path portion
-/// within the line text (for link-like fg highlighting).
-pub fn scan_location_lines(base_line: u32, text: &str) -> Vec<(u32, u32, u32)> {
-    text.lines()
-        .enumerate()
-        .filter_map(|(i, line)| {
-            let (start, end) = location_path_byte_range(line)?;
-            Some((base_line + i as u32, start as u32, end as u32))
-        })
-        .collect()
-}
-
-/// Return the byte range of the file-path portion of a location
-/// line. Uses [`parse_location_line`] to locate the path, then
-/// searches for its string representation in the line text.
-fn location_path_byte_range(line: &str) -> Option<(usize, usize)> {
-    let loc = parse_location_line(line)?;
-    let path_str = loc.path.to_str()?;
-    let byte_start = line.find(path_str)?;
-    let byte_end = byte_start + path_str.len();
-    Some((byte_start, byte_end))
-}
-
-/// CM.3c: scan a block of streamed text for severity lines, returning
-/// `(absolute_line, severity)` for each match. `base_line` is the 0-based
-/// buffer line number the block's FIRST line lands on; line `i` of the
-/// block (via [`str::lines`]) maps to absolute line `base_line + i`.
 pub fn scan_severities(base_line: u32, text: &str) -> Vec<(u32, ErrorSeverity)> {
     text.lines()
         .enumerate()
@@ -560,21 +545,13 @@ main.c:10:5: error: x
 plain prose
 ";
         let locs = scan_location_lines(0, block);
-        assert_eq!(locs.len(), 2, "two location lines expected");
-        assert_eq!(locs[0].0, 1, "line 1 = cargo `-->`");
-        assert_eq!(locs[1].0, 3, "line 3 = gnu full-form location");
+        assert_eq!(locs, vec![1, 3], "the cargo `-->` and the gnu full form");
     }
 
     #[test]
     fn scan_location_lines_respects_base_line_offset() {
-        assert_eq!(
-            scan_location_lines(10, "  --> src/a.rs:1:1\n"),
-            vec![(10, 6, 14)]
-        );
-        assert_eq!(
-            scan_location_lines(5, "x\nmain.c:3:3: error: e\n"),
-            vec![(6, 0, 6)]
-        );
+        assert_eq!(scan_location_lines(10, "  --> src/a.rs:1:1\n"), vec![10]);
+        assert_eq!(scan_location_lines(5, "x\nmain.c:3:3: error: e\n"), vec![6]);
     }
 
     #[test]

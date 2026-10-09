@@ -228,16 +228,15 @@ pub struct RenderState {
     /// compilation is active or no location lines have been produced.
     /// The value `Arc` makes both the publish clone and the render-path
     /// read O(1).
-    pub compilation_location_lines: std::sync::Arc<
-        std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<Vec<(u32, u32, u32)>>>,
-    >,
+    pub compilation_location_lines:
+        std::sync::Arc<std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<Vec<u32>>>>,
     /// MC.3: per-buffer set of source lines inside a fenced/indented code block.
     /// Snapshot of `Editor::code_block_lines`; renderers paint the full-width
     /// `syntax.code_block` background on any row whose index is in the set.
     pub code_block_lines:
         std::sync::Arc<std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<Vec<u32>>>>,
-    /// CM.3d (2026-07-22): snapshot of `Editor::compilation_theme_colors`.
-    pub compilation_theme_colors: std::sync::Arc<(u32, u32)>,
+    /// CM.3d (2026-07-22): snapshot of `Editor::compilation_location_bg`.
+    pub compilation_location_bg: u32,
 }
 
 impl Default for RenderState {
@@ -278,7 +277,7 @@ impl Default for RenderState {
             compilation_severity: std::sync::Arc::new(std::collections::HashMap::new()),
             compilation_location_lines: std::sync::Arc::new(std::collections::HashMap::new()),
             code_block_lines: std::sync::Arc::new(std::collections::HashMap::new()),
-            compilation_theme_colors: std::sync::Arc::new((0x45475a, 0x89b4fa)),
+            compilation_location_bg: 0x45475a,
         }
     }
 }

@@ -976,8 +976,8 @@ pub enum AppEffect {
         entries: Vec<(u32, lattice_protocol::error_list::ErrorSeverity)>,
     },
     /// CM.3c (2026-07-22): per-buffer compilation location-line
-    /// index for theme-based highlighting of navigable lines in
-    /// the `*compilation*` buffer. Twin of `CompilationGutterSet`:
+    /// index: which lines of the `*compilation*` buffer carry a
+    /// location `<CR>` can jump to, so the renderers can tint the row. Twin of `CompilationGutterSet`:
     /// the off-thread compilation drain scans each chunk for
     /// location-bearing lines (via `parse_location_line`) and
     /// ships the full list through an inbound bus; this effect
@@ -987,22 +987,21 @@ pub enum AppEffect {
     CompilationLocationLines {
         /// `BufferId.0` of the compilation buffer.
         buffer: u32,
-        /// (line, path_byte_start, path_byte_end) for each location line.
-        /// byte_start/end are the byte offsets of the file-path portion
-        /// within the line text, for link-like fg highlighting.
-        lines: Vec<(u32, u32, u32)>,
+        /// The buffer line of each location line, ascending.
+        ///
+        /// Lines only. Where the path sits within one is a foreground
+        /// matter and travels as a span with the text; this effect says
+        /// which rows are jumpable and nothing about how they read.
+        lines: Vec<u32>,
     },
-    /// CM.3d (2026-07-22): resolved compilation location theme colours
-    /// — published by the mode during activation so the renderer
-    /// reads `compilation.location` bg/fg from the theme rather than
-    /// hardcoding RGB values.
+    /// CM.3d (2026-07-22): the resolved `compilation.location` row tint
+    /// — published by the mode during activation so the renderer reads
+    /// it from the theme rather than hardcoding an RGB value.
     ///
     /// Stored editor-wide (not per buffer); the latest send wins.
     CompilationThemeColors {
         /// Background of a location line, packed `0xRRGGBB`.
         bg: u32,
-        /// Foreground of a location line's path, packed `0xRRGGBB`.
-        fg: u32,
     },
     /// CM.3d (2026-07-22): kill the running compilation child
     /// process. The host arm calls `CompilationService::kill()`.

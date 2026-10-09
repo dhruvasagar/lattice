@@ -29,16 +29,19 @@ Set Padding 20
 Set TypingSpeed 60ms
 
 Hide
-Type "export REPO=$(pwd) && export DEMO_HOME=$(mktemp -d) && clear"
+# XDG_CONFIG_HOME, not HOME: `:reload-config` recompiles init.rs with cargo,
+# and a rustup-managed cargo cannot find its toolchain under an empty HOME --
+# the rebuild fails (exit 126) and the reload silently keeps the old config.
+Type "export REPO=$(pwd) && export DEMO_HOME=$(mktemp -d) && export XDG_CONFIG_HOME=$DEMO_HOME/.config && clear"
 Enter
-Type "HOME=$DEMO_HOME lattice --scaffold-init"
+Type "lattice --scaffold-init"
 Enter
 Sleep 1s
-Type "cp $REPO/docs/media/tapes/fixtures/config-demo-plugin.toml $DEMO_HOME/.config/lattice/init/plugin.toml"
+Type "cp $REPO/docs/media/tapes/fixtures/config-demo-plugin.toml $XDG_CONFIG_HOME/lattice/init/plugin.toml"
 Enter
-Type "cp $REPO/docs/media/tapes/fixtures/config-demo-init.rs $DEMO_HOME/.config/lattice/init/src/lib.rs"
+Type "cp $REPO/docs/media/tapes/fixtures/config-demo-init.rs $XDG_CONFIG_HOME/lattice/init/src/lib.rs"
 Enter
-Type "cd $DEMO_HOME/.config/lattice/init && cargo build --release --target wasm32-wasip2 -q && cp target/wasm32-wasip2/release/lattice_init.wasm init.wasm"
+Type "cd $XDG_CONFIG_HOME/lattice/init && cargo build --release --target wasm32-wasip2 -q && cp target/wasm32-wasip2/release/lattice_init.wasm init.wasm"
 Enter
 Sleep 25s
 Type "clear"
@@ -47,15 +50,29 @@ Show
 
 # Show the programmatic command being defined -- this is the shot: a real
 # Rust function, not a remapped key.
-Type "HOME=$DEMO_HOME lattice src/lib.rs"
+Type "lattice src/lib.rs"
 Enter
 Sleep 3s
 Type "gg"
 Sleep 500ms
 
+# init.wasm is loaded at boot, so `:hello` already works here. The live
+# edit is what makes the reload visibly do something.
+Type ":hello Lattice"
+Enter
+Sleep 2s
+Type "/Hello"
+Enter
+Sleep 500ms
+Type "cwHowdy"
+Escape
+Sleep 500ms
+Type ":w"
+Enter
+Sleep 500ms
 Type ":reload-config"
 Enter
-Sleep 1500ms
+Sleep 4s
 
 Type ":hello Lattice"
 Enter
@@ -66,6 +83,6 @@ Enter
 Sleep 500ms
 
 Hide
-Type "rm -rf $DEMO_HOME"
+Type "rm -rf $DEMO_HOME; unset XDG_CONFIG_HOME"
 Enter
 Sleep 500ms

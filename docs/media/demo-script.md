@@ -93,7 +93,8 @@ Pause on the staged/unstaged split so the viewer sees the file move
 between sections. Then open a transient to show the depth:
 
 ```
-?                      ← the transient for the current context
+<C-c>g                 ← the dispatch transient (NOT `?` — that is backward
+                         search here, as it is in every other buffer)
 ```
 
 **Say, while the transient is up:** every one of these is a real command
@@ -106,6 +107,7 @@ README's lead clip.
 **Reset:**
 
 ```
+<Esc>                  ← dismiss the transient
 :q!
 ```
 ```sh
@@ -167,12 +169,21 @@ easy to undersell.
 
 ```sh
 export REPO=$(pwd) && export DEMO_HOME=$(mktemp -d)
-HOME=$DEMO_HOME lattice --scaffold-init
-cp $REPO/docs/media/tapes/fixtures/config-demo-plugin.toml $DEMO_HOME/.config/lattice/init/plugin.toml
-cp $REPO/docs/media/tapes/fixtures/config-demo-init.rs $DEMO_HOME/.config/lattice/init/src/lib.rs
-cd $DEMO_HOME/.config/lattice/init && cargo build --release --target wasm32-wasip2 -q \
+export XDG_CONFIG_HOME=$DEMO_HOME/.config
+lattice --scaffold-init
+cp $REPO/docs/media/tapes/fixtures/config-demo-plugin.toml $XDG_CONFIG_HOME/lattice/init/plugin.toml
+cp $REPO/docs/media/tapes/fixtures/config-demo-init.rs $XDG_CONFIG_HOME/lattice/init/src/lib.rs
+cd $XDG_CONFIG_HOME/lattice/init && cargo build --release --target wasm32-wasip2 -q \
   && cp target/wasm32-wasip2/release/lattice_init.wasm init.wasm
 ```
+
+`XDG_CONFIG_HOME`, **not** `HOME`. `:reload-config` recompiles `init.rs`
+with `cargo`, and with `HOME` pointed at an empty directory a
+rustup-managed `cargo` cannot find its toolchain: the rebuild fails
+(exit 126, reported only in `*messages*`) and the reload silently keeps
+the old config. Pre-building here also warms the target directory, which is
+what makes the on-camera rebuild take about three seconds rather than
+forty.
 
 **Say:** there is no Lua here, no vimscript, no elisp, and no JSON. One
 substrate: your config is Rust, compiled to WebAssembly, loaded by the
@@ -182,7 +193,7 @@ file — it is a program.
 **Do:**
 
 ```
-HOME=$DEMO_HOME lattice src/lib.rs
+lattice src/lib.rs     ← same shell, so XDG_CONFIG_HOME is still exported
 gg
 ```
 
@@ -191,14 +202,25 @@ registers a new ex-command through the grammar seam. A remapped key looks
 like every other editor's config; this does not.
 
 ```
-:reload-config
-:hello Lattice
+:hello Lattice         ← "Hello, Lattice! (from init.rs, compiled to WASM)"
+/Hello<CR>
+cwHowdy<Esc>           ← change the compiled function, live
+:w
+:reload-config         ← wait ~3s: it rebuilds, then swaps the config in
+:hello Lattice         ← "Howdy, Lattice! …"
 ```
 
-**Say:** that command did not exist when the editor started.
+**Say:** I just changed a compiled Rust function, and the running editor
+picked it up — no restart, no interpreter.
 
-**Clip C (~10s):** `:reload-config` → `:hello Lattice` → the output. The
-single most differentiating ten seconds in the video.
+**Do not say** "that command did not exist when the editor started". It
+did: `init.wasm` is loaded at boot (and when only the source is present,
+boot builds it). The edit is what makes the reload visibly do something;
+without it, `:hello` prints the same line before and after and the clip
+shows nothing.
+
+**Clip C (~12s):** the edit → `:reload-config` → `:hello Lattice` → the new
+output. The single most differentiating ten seconds in the video.
 
 **Reset:**
 
@@ -206,7 +228,7 @@ single most differentiating ten seconds in the video.
 :q!
 ```
 ```sh
-rm -rf $DEMO_HOME
+rm -rf $DEMO_HOME; unset XDG_CONFIG_HOME
 ```
 
 ---
@@ -282,7 +304,7 @@ loaded, because those are the two things that make a report actionable.
 |------|-------------------------------|--------|---------------------------------|----------------------------------------|
 | A    | magit staging                 | ~12s   | `magit-{tui,gpui}.png`          | README lead, gallery shot 1            |
 | B    | `:terminal` → `<Esc>` → `:ls` | ~15s   | `buffer-splits-{tui,gpui}.png`  | gallery shot 2                         |
-| C    | `:reload-config` → `:hello`   | ~10s   | `config-init-rs-{tui,gpui}.png` | gallery shot 3, and the strongest clip |
+| C    | edit → `:reload-config` → `:hello` | ~12s | `config-init-rs-{tui,gpui}.png` | gallery shot 3, and the strongest clip |
 | D    | agent diff review             | ~12s   | `org-and-agents-{tui,gpui}.png` | gallery shot 4                         |
 | E    | TUI + GPU side by side        | ~8s    | `two-renderers.png`             | gallery shot 5                         |
 

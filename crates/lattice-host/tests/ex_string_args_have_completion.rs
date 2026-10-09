@@ -71,6 +71,16 @@ const NO_CANDIDATE_SET: &[(&str, &str, &str)] = &[
     ),
     ("make", "command", "as `compile` — a build command override"),
     (
+        "shell-command",
+        "command",
+        "as `compile` — an arbitrary shell command line",
+    ),
+    (
+        "ex:filter",
+        "command",
+        "as `compile` — the shell command a range is piped through",
+    ),
+    (
         "search",
         "query",
         "a free-form search query is the question, not an answer",

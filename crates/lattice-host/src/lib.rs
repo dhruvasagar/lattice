@@ -67,6 +67,7 @@ pub mod editor;
 // BC.5: `emacs-keys-mode` moved to `lattice-mode` (a builtin). The host keeps
 // only its keymap-layer push (editor_boot keymap block + dispatch `:set`).
 pub mod visual;
+mod visual_marks;
 // Phase 5.7.B.1: Editor::boot extraction from
 // `lattice-ui-tui::app::boot::App::new`.
 mod editor_boot;

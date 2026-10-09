@@ -21767,12 +21767,18 @@ impl Editor {
                 // VM.3d-2: `n` / `N` / `*` / `#` are motions; the search they
                 // repeat. Same reasoning as `last_find`.
                 last_search: self.last_search.clone(),
-                // VM.3e: `'x` / `` `x `` are motions; the marks they jump to.
-                // None at all with no mark set, so the common keystroke copies
-                // nothing.
-                marks: (!self.marks.is_empty()).then(|| {
-                    std::sync::Arc::new(self.marks.clone()) as lattice_runtime::MarkResolverHandle
-                }),
+                // VM.3e: `'x` / `` `x `` are motions; the marks they jump to,
+                // `'<` / `'>` among them. None at all with no mark set and
+                // no selection made, so the common keystroke copies nothing.
+                marks: {
+                    let visual = self.visual_marks();
+                    (!self.marks.is_empty() || visual.is_some()).then(|| {
+                        std::sync::Arc::new(crate::visual_marks::HostMarks {
+                            named: self.marks.clone(),
+                            visual,
+                        }) as lattice_runtime::MarkResolverHandle
+                    })
+                },
                 viewport,
                 nostartofline: !self.option_cache.startofline,
                 // VM.3f: `H` / `L` keep this margin from the window's edges.
@@ -45363,9 +45369,13 @@ impl Editor {
             let count = inv.count.map(|c| c.0).unwrap_or(1).max(1);
             self.display_geometry(count)
         });
+        let marks = crate::visual_marks::HostMarks {
+            named: &self.marks,
+            visual: self.visual_marks(),
+        };
         let env = lattice_grammar::GrammarEnv {
             last_search: self.last_search.as_ref(),
-            marks: Some(&self.marks as &dyn lattice_grammar::MarkResolver),
+            marks: Some(&marks as &dyn lattice_grammar::MarkResolver),
             viewport: shown
                 .as_ref()
                 .map(|s| s as &dyn lattice_grammar::ViewportResolver),

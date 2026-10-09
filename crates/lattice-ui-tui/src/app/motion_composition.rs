@@ -551,6 +551,57 @@ mod tests {
         assert_eq!(body(&a), "X\n\n  four d\n  five e\n  six f");
     }
 
+    fn press_esc(a: &mut crate::app::App) {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        press(a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    /// vim: after a Visual selection, `'<` and `'>` are marks like any other
+    /// — the first non-blank of the line it started and ended on. Drawn
+    /// upwards here, so the order is the buffer's and not the gesture's.
+    #[test]
+    fn the_visual_marks_jump_to_where_the_last_selection_began_and_ended() {
+        let mut a = app_with(MARKED, 20);
+        a.editor.cursor = lattice_protocol::position::Position::new(4, 5);
+        press_chars(&mut a, "vkk");
+        press_esc(&mut a);
+        press_chars(&mut a, "gg'>");
+        assert_eq!(cursor(&a), (4, 2), "`'>` is the later end, line 5");
+        press_chars(&mut a, "'<");
+        assert_eq!(
+            cursor(&a),
+            (2, 0),
+            "`'<` is the earlier end, the blank line 3"
+        );
+        // The backtick form is the exact column.
+        press_chars(&mut a, "gg`>");
+        assert_eq!(cursor(&a), (4, 5));
+    }
+
+    /// vim: they compose with operators, which is what makes them motions
+    /// and not just jumps. `d'>` from above the selection deletes through
+    /// its last line.
+    #[test]
+    fn an_operator_takes_a_visual_mark_as_its_motion() {
+        let mut a = app_with(MARKED, 20);
+        a.editor.cursor = lattice_protocol::position::Position::new(1, 2);
+        press_chars(&mut a, "Vj");
+        press_esc(&mut a);
+        press_chars(&mut a, "ggd'>");
+        assert_eq!(body(&a), "  four d\n  five e\n  six f");
+    }
+
+    /// vim: before any selection they are unset, and say so.
+    #[test]
+    fn a_visual_mark_with_no_selection_yet_is_e20() {
+        let mut a = app_with(MARKED, 20);
+        press_chars(&mut a, "'<");
+        assert_eq!(
+            a.editor.last_message.as_ref().expect("an echo").text,
+            "E20: Mark not set"
+        );
+    }
+
     /// vim: `d'a` with no mark says E20 and deletes nothing; `'a` records no
     /// jump.
     #[test]

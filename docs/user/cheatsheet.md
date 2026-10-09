@@ -195,6 +195,7 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 | `m{a-z}` | Set mark |
 | `'{a-z}` | Jump to mark line |
 | `` `{a-z} `` | Jump to mark line + column |
+| `'<` / `'>` | Jump to the start / end line of the last Visual selection (`` `< `` / `` `> `` for the column) |
 | `<C-o>` `<C-i>` | Walk the jump list back / forward |
 
 ## Options

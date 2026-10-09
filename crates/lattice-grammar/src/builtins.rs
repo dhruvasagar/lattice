@@ -1663,7 +1663,10 @@ fn motion_viewport_bottom(ctx: &MotionContext) -> Result<MotionResult, CommandEr
 /// unset mark is E20, and the motion failing cancels an operator it feeds.
 fn mark_position(ctx: &MotionContext) -> Result<Position, CommandError> {
     let name = match &ctx.args {
-        crate::args::Args::Char(c) if c.is_ascii_alphanumeric() => *c,
+        // `<` and `>` are the ends of the last Visual selection. The host
+        // answers them from that selection rather than from stored marks;
+        // here they are names like any other.
+        crate::args::Args::Char(c) if c.is_ascii_alphanumeric() || matches!(c, '<' | '>') => *c,
         crate::args::Args::Char(_) => {
             return Err(CommandError::User("E78: Unknown mark".to_string()));
         }

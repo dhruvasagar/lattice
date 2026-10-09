@@ -41,9 +41,6 @@ here.
 ## Grammar and commands not yet implemented
 
 - `!` — filtering a range through an external command (`:%!sort`).
-- The `'<` / `'>` visual marks as motions — `'<` does not jump. The
-  `:'<,'>` command-line prefix does work, and is what Visual mode inserts
-  for you.
 - Ex ranges are partially implemented. What works: `:42` (go to a line),
   the `:'<,'>` prefix, `%s/` / `s/` for substitute, and `:g/` / `:v/`.
   What does not parse yet: `1,5`, `.` and `$`, `'a,'b`, `+n` / `-n`

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- **`'<` and `'>` are motions.** They jump to the start and end of the last
+  Visual selection (`` `< `` and `` `> `` to the exact column), and they
+  compose with operators, so `d'>` and `y'<` work. Before, they were
+  understood only in the `:'<,'>` prefix.
+
 ### Fixed
 - **A table with links in it did not line up.** table-mode measured a
   `[label](url)` cell as the width of its label, which is how a help page

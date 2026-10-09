@@ -112,6 +112,10 @@ Org writes its rules `|---+---|`; markdown writes `|---|---|` and can mark
 column alignment with colons. Both are tables, and aligning one **never**
 rewrites it into the other — the table says which it is, and that is preserved.
 
+Columns are sized by what is written in the buffer. A link counts in full —
+`[label](url)`, markup and all — because that is what you see while editing,
+so the pipes line up on screen even in a table of links.
+
 Markdown's alignment markers are honoured and kept:
 
 ```

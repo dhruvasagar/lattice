@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **A table with links in it did not line up.** table-mode measured a
+  `[label](url)` cell as the width of its label, which is how a help page
+  shows it and not how a buffer does, so every other row was padded short
+  by the length of the URL and the pipes drifted apart. Cells are now
+  measured as written.
+
 ## 0.9.5 — 2026-10-09
 
 A reading release. Build output and diffs that had been arriving as plain

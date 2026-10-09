@@ -29,9 +29,15 @@
 //!    the byte offset the caret sat at is meaningless afterwards; the mode
 //!    tracks the *cell* and re-derives an offset in the rendered line.
 //!
-//! Width is measured by `unicode-width`, through [`layout`]'s own helpers —
-//! shared rather than re-derived, because a second measurement that disagreed
-//! would align tables one way in help pages and another way under the caret.
+//! 4. **A link is as wide as it is written.** `layout` measures
+//!    `[label](url)` as `label`, because a help page shows it that way. A
+//!    buffer under the caret shows the markup, so here it is measured whole;
+//!    borrowing the help page's measure left every table with a link in it
+//!    out of line by the length of the URL.
+//!
+//! Width is still measured by `unicode-width`, and the padding and rule
+//! rendering are still [`layout`]'s own — shared rather than re-derived. What
+//! differs is only which text is measured, and that is passed in.
 
 use super::layout;
 
@@ -212,7 +218,7 @@ impl Table {
         for row in &self.rows {
             if let Row::Cells(cells) = row {
                 for (c, cell) in cells.iter().enumerate() {
-                    widths[c] = widths[c].max(layout::visible_width(cell));
+                    widths[c] = widths[c].max(layout::written_width(cell));
                 }
             }
         }
@@ -229,9 +235,12 @@ impl Table {
                         |c| aligns.get(c).copied().unwrap_or(layout::Align::Left),
                         *join,
                     ),
-                    Row::Cells(cells) => layout::render_row(cells, &widths, |c| {
-                        aligns.get(c).copied().unwrap_or(layout::Align::Left)
-                    }),
+                    Row::Cells(cells) => layout::render_row(
+                        cells,
+                        &widths,
+                        |c| aligns.get(c).copied().unwrap_or(layout::Align::Left),
+                        layout::written_width,
+                    ),
                 };
                 format!("{}{body}", self.indent)
             })
@@ -328,6 +337,35 @@ mod tests {
         let out = rendered("| Name | Qty |\n|---|---|\n| bread | 1 |\n", 0);
         let rule = out.lines().nth(1).unwrap();
         assert!(!rule.contains('+'), "markdown joins with pipes: {out}");
+    }
+
+    /// The buffer shows a link's markup, so the markup is what has to line
+    /// up. Measured as its label — the help page's measure — a row holding a
+    /// long URL is left sticking out past every other row's pipe.
+    #[test]
+    fn a_table_with_links_lines_its_pipes_up_as_written() {
+        let out = rendered(
+            "| [Guide](docs/dev/guides/plugin-authoring.md) | Read first. |\n\
+             | [API](docs/dev/reference/plugin-api.md) ([site](https://example.com/dev/plugin-api/)) | Generated. |\n\
+             | [Bundled](plugins/) | Small, 日本 templates. |",
+            0,
+        );
+        let pipe_columns = |line: &str| -> Vec<usize> {
+            line.char_indices()
+                .filter(|(_, c)| *c == '|')
+                .map(|(i, _)| unicode_width::UnicodeWidthStr::width(&line[..i]))
+                .collect()
+        };
+        let lines: Vec<&str> = out.lines().collect();
+        let first = pipe_columns(lines[0]);
+        assert_eq!(first.len(), 3);
+        for line in &lines {
+            assert_eq!(pipe_columns(line), first, "pipes out of line:\n{out}");
+        }
+        assert!(
+            lines[1].contains("(https://example.com/dev/plugin-api/)) |"),
+            "the widest cell sets the column and takes no padding:\n{out}"
+        );
     }
 
     /// Alignment markers are markdown's, and they have to survive a

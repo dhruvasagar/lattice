@@ -158,14 +158,28 @@ pub(super) fn cells(line: &str) -> Vec<String> {
     out.into_iter().map(|c| c.trim().to_string()).collect()
 }
 
-/// Columns the reader will see this cell occupy.
+/// Columns the reader of a *help page* will see this cell occupy.
 ///
 /// `[label](url)` measures as `label`, because that is all the link
 /// stripper leaves behind. Getting this wrong in the other direction —
 /// measuring the markup — would pad every column holding a cross-link
 /// out by the length of a URL nobody sees.
+///
+/// Only true where the stripper runs. A buffer being edited shows the
+/// markup, and is measured by [`written_width`].
 pub(super) fn visible_width(cell: &str) -> usize {
     UnicodeWidthStr::width(strip_link_markup(cell).as_str())
+}
+
+/// Columns this cell occupies exactly as written — markup and all.
+///
+/// What a buffer under the caret shows: nothing has stripped a link there,
+/// so `[label](url)` is as wide as it is long. Measuring it as `label` pads
+/// every other row by the difference and leaves the pipes of a table with
+/// links in it visibly out of line, which is the one thing aligning a table
+/// is for.
+pub(super) fn written_width(cell: &str) -> usize {
+    UnicodeWidthStr::width(cell)
 }
 
 fn strip_link_markup(cell: &str) -> String {
@@ -239,24 +253,31 @@ fn layout(table: &[String]) -> Vec<String> {
     let mut rows = rows.into_iter();
 
     if let Some(header) = rows.next() {
-        out.push(render_row(&header, &widths, align_of));
+        out.push(render_row(&header, &widths, align_of, visible_width));
     }
     out.push(render_separator(&widths, align_of, '|'));
     for row in rows {
-        out.push(render_row(&row, &widths, align_of));
+        out.push(render_row(&row, &widths, align_of, visible_width));
     }
     out
 }
 
+/// One row, each cell padded out to its column's width.
+///
+/// `width_of` must be the measure `widths` was built with. It is a parameter
+/// because the two callers measure different things — a help page shows a
+/// link as its label, a buffer shows it whole — and a row padded by one
+/// measure against widths taken by the other does not line up.
 pub(super) fn render_row(
     row: &[String],
     widths: &[usize],
     align_of: impl Fn(usize) -> Align,
+    width_of: impl Fn(&str) -> usize,
 ) -> String {
     let mut s = String::from("|");
     for (c, width) in widths.iter().enumerate() {
         let cell = row.get(c).map(String::as_str).unwrap_or("");
-        let pad = width.saturating_sub(visible_width(cell));
+        let pad = width.saturating_sub(width_of(cell));
         s.push(' ');
         match align_of(c) {
             Align::Left | Align::LeftMarked => {

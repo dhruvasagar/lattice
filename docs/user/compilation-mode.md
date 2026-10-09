@@ -109,13 +109,29 @@ Lines that don't contain a location (progress bars, summaries,
 backtraces) stream into the buffer untouched — only recognised
 locations become error-list entries.
 
-### Coloured output
+### Reading a compiler error
 
 Most tools turn their colours off when their output is captured rather
-than shown in a terminal, so a typical build arrives plain. When a tool
-insists on colour anyway — `cargo build --color=always`, `CLICOLOR_FORCE=1`,
+than shown in a terminal, so a typical build arrives plain. Lattice puts
+the cues back for you: the `error` / `warning` / `note` / `help` label
+is coloured by severity and its message is bold, the `-->` location
+reads as a link, the line-number gutter is dimmed so the code stands
+out, and the `^^^` under the offending span takes its diagnostic's
+colour (a secondary `---` is blue, as rustc draws it). Backtraces and
+`Caused by:` chains are styled the same way. This is the same reading
+`:plugins` gives a failed plugin build.
+
+It follows the layout rustc and cargo use. Output from a tool that lays
+its errors out differently is shown as-is — its error lines are still
+found, marked in the gutter and tinted as jumpable.
+
+### Coloured output
+
+When a tool insists on colour anyway — `cargo build --color=always`, `CLICOLOR_FORCE=1`,
 `ls --color=always` — Lattice reads it and paints the buffer to match,
-rather than showing you the raw escape codes.
+rather than showing you the raw escape codes. A line the tool coloured
+is shown in the tool's colours alone; the reading cues above apply only
+to lines that arrive plain.
 
 Progress lines that redraw themselves in place (`Building [===>  ] 41/1000`)
 show their final state, not every frame concatenated together.

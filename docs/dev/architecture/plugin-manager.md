@@ -515,7 +515,8 @@ already finds the locations and severities in it). It classifies plain text
 line by line rather than asking cargo for `--color always`: the block also
 carries trap backtraces, cause chains and lattice's own verdict line, none
 of which arrive coloured, and the same string is logged. `*compilation*`
-does not use it yet; adopting it there is open work, not a decision against.
+reads plain output through the same classifier (compilation-mode.md §8c),
+so a report looks the same in both views.
 
 **None of this is specific to `init`.** It was at first — `init.rs` was the
 only source the editor built in place, so it was the only one whose boot

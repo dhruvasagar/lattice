@@ -411,21 +411,64 @@ every intermediate `Building [===>   ] 41/1000` state concatenated into
 one unreadable row.
 
 **Span/text alignment is the subtle invariant.** The published span list
-must stay exactly as long as the buffer's text, or a later coloured line
+must stay exactly as long as the buffer's text, or a later styled line
 splices over the wrong row — a failure that is silent at the moment it
-is introduced and only shows up further down the log. Two mechanisms
+is introduced and only shows up further down the log. Three mechanisms
 maintain it: a flush pads its spans to the line count it actually
-appends (batches mix reader output with editor-generated summaries), and
-a wholly uncoloured flush publishes nothing at all but banks its line
-count as *debt*, paid as leading empty rows by the next flush that has
-colour to show. The debt is what makes the common case — no colour
-anywhere — cost zero publishes and zero renderer wakes without
-sacrificing alignment.
+appends (batches mix reader output with editor-generated summaries); a
+wholly unstyled flush publishes nothing at all but banks its line count
+as *debt*, paid as leading empty rows by the next flush that has
+something to show; and the highlight store **queues** splices per buffer
+rather than keeping the latest, because a log streams faster than the
+editor ticks and a splice is relative to the one before it. The debt is
+what keeps progress output — most of any build — at zero publishes.
 
 **Where it runs.** In the pipe reader's own thread, off the UI/actor
-thread, ahead of the parse it protects. Benched in three shapes
-(`compilation_ansi`): uncoloured ~600 MiB/s, which is the path nearly
-every real build takes.
+thread, ahead of the parse it protects. Benched in four shapes
+(`compilation_ansi`): plain ~1.2 GiB/s, which is the path nearly every
+real build takes, and ~800 MiB/s with the §8c reading pass on top.
+
+## 8c. Reading cues for plain output
+
+§8b paints what the tool coloured. Almost nothing arrives coloured — a
+pipe is exactly what makes cargo and rustc drop their colours — so the
+common build reached `*compilation*` as a wall of plain text in which
+the one line that mattered looked like the nineteen around it.
+
+The reader therefore runs every line through
+`DiagnosticHighlighter` as well: the classifier that puts back the cues
+a rustc-shaped report is laid out around — the coloured `error[E…]:`
+label, the dim gutter, the carets in their diagnostic's colour, the
+`-->` location as a link, and the frames of a backtrace or a cause
+chain. It is the same classifier `:plugins` shows a failed build
+through, so a compiler report reads the same in both.
+
+**One line, one authority.** A line the tool coloured keeps the tool's
+spans and nothing else; a line it left plain gets the classifier's. They
+are never merged — a second opinion laid over the tool's own would
+either repeat it or contradict it. The choice is made per line, not once
+per stream, so a build that colours its diagnostics and leaves a wrapper
+script's `error:` plain is read correctly on both. The classifier still
+*sees* every line: a caret's colour comes from the header above it, and
+that header may be one the tool coloured.
+
+**It sits beside the location tint, not over it.** The tint (§5) answers
+*can I jump from this line* and is driven by the parser registry, so it
+covers every tool with a parser. The classifier answers *how does this
+text read* and knows only the rustc layout. On a `-->` line both apply,
+on different axes: a row background from the tint, a foreground link
+from the classifier.
+
+**It is a reading aid, not a parser.** It never rejects a line and has no
+say in the error list; a tool it does not recognise is left unstyled
+rather than guessed at. Its styles are the shared semantic ones
+(`DiagnosticError`, `Comment`, `Link`, …), so every theme already
+covers them and there is nothing new to register.
+
+**Cost.** One pass of prefix checks per line on the reader thread:
+about 13 ns per line, measured as `compilation_ansi/plain_read` against
+`plain`. Lines with nothing to say — progress, program output — produce
+no spans and so still publish nothing.
 
 ## 9. Rejected alternatives
 

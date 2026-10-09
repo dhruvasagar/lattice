@@ -68,3 +68,96 @@ fn recompile_reuses_the_same_buffer() {
         "recompile reuses the existing *compilation* buffer"
     );
 }
+
+/// The cues a pipe strips from a diagnostic have to come back *on screen*,
+/// which is a longer road than the classifier: reader thread → drain task →
+/// the highlight store → the editor's tick → the buffer's highlight local.
+/// The unit tests on each stage passed while the road was cut in two places
+/// — the drain asked the service registry for the wrong type, and the store
+/// kept only the latest of several splices — so this drives a real boot and
+/// reads the far end.
+///
+/// The row matters as much as the style: a span one line out is the failure
+/// a streamed log produces, so each styled row is checked against the text
+/// of the line it sits on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plain_diagnostic_reaches_the_buffer_styled_on_its_own_line() {
+    use lattice_cells::Style;
+
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    let mut out = DispatchOutcome::default();
+    // Unstyled lines on both sides of each diagnostic, several of them, so
+    // the publishes are spread over more than one flush.
+    editor.apply_app_effect(
+        AppEffect::CompileRun {
+            cmdline: Some(
+                "printf 'building\\nwarning: unused\\nstill building\\n\
+                 error[E0308]: mismatched types\\n --> src/main.rs:3:17\\ndone\\n' 1>&2"
+                    .to_string(),
+            ),
+        },
+        &mut out,
+    );
+    let id = editor.buffers.by_name("*compilation*").unwrap();
+
+    let text_of = |e: &Editor| {
+        e.buffers
+            .document_handle(id)
+            .unwrap()
+            .snapshot()
+            .buffer
+            .as_string()
+    };
+    let spans_of = |e: &Editor| {
+        e.buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<lattice_host::modes::ExtraHighlights>())
+            .map(|h| h.0.clone())
+            .unwrap_or_default()
+    };
+    let label = |spans: &[Vec<lattice_cells::StyledSpan>], line: usize| {
+        spans
+            .get(line)
+            .and_then(|l| l.first())
+            .map(|s| (s.start, s.end, s.style))
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        editor.run_tick_pending();
+        let text = text_of(&editor);
+        let spans = spans_of(&editor);
+        let lines: Vec<&str> = text.lines().collect();
+        let row = |needle: &str| lines.iter().position(|l| l.starts_with(needle));
+        if text.contains("Compilation")
+            && let (Some(warning), Some(error), Some(arrow)) =
+                (row("warning:"), row("error[E0308]"), row(" -->"))
+            && label(&spans, error).is_some()
+        {
+            assert_eq!(
+                label(&spans, warning),
+                Some((0, "warning".len(), Style::DiagnosticWarning))
+            );
+            assert_eq!(
+                label(&spans, error),
+                Some((0, "error[E0308]".len(), Style::DiagnosticError))
+            );
+            assert_eq!(label(&spans, arrow), Some((1, 4, Style::Comment)));
+            for (i, line) in lines.iter().enumerate() {
+                if !line.starts_with(['w', 'e', ' ']) {
+                    assert!(
+                        spans.get(i).is_none_or(|l| l.is_empty()),
+                        "line {i} ({line:?}) has nothing to style, got {:?}",
+                        spans[i]
+                    );
+                }
+            }
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the diagnostic never arrived styled.\ntext: {text:?}\nspans: {spans:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}

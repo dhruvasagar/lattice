@@ -433,6 +433,13 @@ fn publish(events: &Arc<EventBus>, chunk: OutputChunk) {
 /// next). It is per-pipe, never shared — stdout and stderr are
 /// independent streams.
 ///
+/// A line the producer did not colour is then read by
+/// [`DiagnosticHighlighter`](crate::DiagnosticHighlighter), which puts
+/// back the cues a pipe took away. Which of the two styles a line is
+/// decided per line, in [`line_spans`]; the classifier sees every line
+/// either way, because the colour of a `^^^^` comes from the header
+/// above it.
+///
 /// CM.6b: `factories` mints this reader's **own** plugin parsers. Each
 /// reader gets fresh instances for exactly the reason the `sgr` state
 /// above is per-pipe: the two streams carry independent pending state,
@@ -461,6 +468,7 @@ fn read_parsed_pipe<R: std::io::Read>(
         }
     }
     let mut sgr = crate::ansi::SgrState::default();
+    let mut reading = crate::DiagnosticHighlighter::new();
     for line in reader.lines() {
         let raw = match line {
             Ok(l) => l,
@@ -481,7 +489,7 @@ fn read_parsed_pipe<R: std::io::Read>(
         }
         batch.push_str(&clean.text);
         batch.push('\n');
-        batch_spans.push(clean.spans);
+        batch_spans.push(line_spans(clean.spans, reading.line(&clean.text)));
         lines_in_batch += 1;
         if lines_in_batch >= READER_BATCH_LINES {
             publish(
@@ -505,10 +513,26 @@ fn read_parsed_pipe<R: std::io::Read>(
     }
 }
 
+/// The spans one output line is shown with: the producer's own colours when
+/// it sent any, the classifier's reading cues when it did not.
+///
+/// Never both. A coloured line is the tool's statement of how it should
+/// read, and a second opinion laid over it would either repeat that or
+/// contradict it. So the classifier is a fallback, taken line by line —
+/// which also covers the stream that colours its diagnostics and leaves
+/// its own wrapper script's `error:` lines plain.
+fn line_spans(
+    ansi: Vec<lattice_cells::StyledSpan>,
+    cues: Vec<lattice_cells::StyledSpan>,
+) -> Vec<lattice_cells::StyledSpan> {
+    if ansi.is_empty() { cues } else { ansi }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+    use lattice_cells::{Style, StyledSpan};
     use lattice_protocol::error_list::ErrorSeverity;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -724,6 +748,140 @@ mod tests {
             .collect();
         assert!(appended.contains("green"));
         assert!(!appended.contains('\u{1b}'));
+    }
+
+    /// Run the pipe reader over `output` and return each line it published
+    /// with the spans it was given. No process: the reader takes any `Read`.
+    fn read_lines(
+        output: &str,
+        palette: Option<&crate::AnsiPalette>,
+    ) -> Vec<(String, Vec<StyledSpan>)> {
+        let bus = Arc::new(EventBus::new());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompilationOutputPushed>();
+        bus.subscribe_typed::<CompilationOutputPushed>(tx);
+        let (qf_bus, _drain, _latest) = qf_capture();
+        let shared = Mutex::new(Vec::new());
+        read_parsed_pipe(
+            Some(output.as_bytes()),
+            &bus,
+            &qf_bus,
+            &shared,
+            palette,
+            None,
+        );
+        let mut lines = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let OutputChunk::Append { text, spans } = event.chunk {
+                assert_eq!(
+                    text.lines().count(),
+                    spans.len(),
+                    "one span list per line, or a later line splices a row out"
+                );
+                lines.extend(text.lines().map(str::to_string).zip(spans));
+            }
+        }
+        lines
+    }
+
+    /// What a reader would see styled on each line: the covered text and
+    /// its style.
+    fn styled(lines: &[(String, Vec<StyledSpan>)]) -> Vec<Vec<(&str, Style)>> {
+        lines
+            .iter()
+            .map(|(text, spans)| {
+                spans
+                    .iter()
+                    .map(|s| (&text[s.start..s.end], s.style))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn palette() -> crate::AnsiPalette {
+        let mut colors = [lattice_theme::ElementId(0); 16];
+        for (i, c) in colors.iter_mut().enumerate() {
+            *c = lattice_theme::ElementId(i as u32);
+        }
+        crate::AnsiPalette {
+            colors,
+            bold: lattice_theme::ElementId(100),
+        }
+    }
+
+    /// The common case, and the one that used to arrive as a wall: a pipe
+    /// makes rustc drop its colours, so the reader puts the cues back.
+    #[test]
+    fn a_plain_diagnostic_is_read_by_the_classifier() {
+        let lines = read_lines(
+            "error[E0308]: mismatched types\n \
+             --> src/main.rs:4:9\n  \
+             |\n\
+             4 |     let x: u8 = \"a\";\n  \
+             |                 ^^^ expected `u8`\n",
+            None,
+        );
+        assert_eq!(
+            styled(&lines),
+            vec![
+                vec![
+                    ("error[E0308]", Style::DiagnosticError),
+                    ("mismatched types", Style::Bold),
+                ],
+                vec![("-->", Style::Comment), ("src/main.rs:4:9", Style::Link)],
+                vec![("|", Style::Comment)],
+                vec![("4 |", Style::Comment)],
+                vec![
+                    ("|", Style::Comment),
+                    ("^^^ expected `u8`", Style::DiagnosticError),
+                ],
+            ]
+        );
+    }
+
+    /// A line the tool coloured is the tool's. The classifier would have
+    /// styled this one too; laying both down would say the same thing
+    /// twice, or two different things.
+    #[test]
+    fn a_line_the_tool_coloured_keeps_only_the_tools_colours() {
+        let p = palette();
+        let lines = read_lines("\u{1b}[31merror\u{1b}[0m: mismatched types\n", Some(&p));
+        assert_eq!(
+            styled(&lines),
+            vec![vec![("error", Style::Element(p.colors[1]))]]
+        );
+    }
+
+    /// Chosen line by line, not once per stream: a coloured header does not
+    /// leave the plain lines under it unread. And the classifier still saw
+    /// that header, or the caret below a `warning` would be an error's.
+    #[test]
+    fn a_plain_line_in_a_coloured_stream_is_still_read() {
+        let p = palette();
+        let lines = read_lines(
+            "\u{1b}[33mwarning\u{1b}[0m: unused variable\n  |     ^ unused\n",
+            Some(&p),
+        );
+        let styled = styled(&lines);
+        assert_eq!(styled[0], vec![("warning", Style::Element(p.colors[3]))]);
+        assert_eq!(
+            styled[1],
+            vec![
+                ("|", Style::Comment),
+                ("^ unused", Style::DiagnosticWarning)
+            ]
+        );
+    }
+
+    /// Most of a build is progress, and progress has nothing to say. It
+    /// must stay span-free: an all-empty flush is what the drain banks as
+    /// debt instead of waking the renderer for.
+    #[test]
+    fn progress_lines_carry_no_spans() {
+        let lines = read_lines(
+            "   Compiling lattice-core v0.9.4\n    Finished `dev` profile in 2.1s\n",
+            None,
+        );
+        assert!(lines.iter().all(|(_, spans)| spans.is_empty()), "{lines:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

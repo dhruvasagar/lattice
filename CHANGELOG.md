@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **`*compilation*` showed a compiler error as plain text.** A build's
+  output is captured through a pipe, which makes cargo and rustc drop
+  their colours, so an error looked like the lines around it. The buffer
+  now reads a diagnostic the way `:plugins` does: severity-coloured
+  labels, a dimmed gutter, carets in their diagnostic's colour, the
+  `-->` location as a link, styled backtraces.
+- **Colour a tool forced on never reached `*compilation*`.** Output from
+  `cargo build --color=always` had its escape codes stripped, as
+  documented, but was then shown uncoloured. It is painted now.
+- **Indent guides ran through a build log.** They drew a bar beside
+  rustc's own gutter; `*compilation*` no longer shows them.
+- **A secondary `--` beside a primary `^^^` coloured the whole line
+  blue**, in `:plugins` as well. Each underline now takes its own colour
+  and the message follows the primary one.
+
 ## 0.9.4 — 2026-10-09
 
 A first-config release. `lattice --scaffold-init` produced a config that

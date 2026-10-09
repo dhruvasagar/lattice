@@ -140,16 +140,16 @@ async fn append_at_end(handle: &Arc<dyn Document>, text: String) {
 /// CM.5: splice one flush's worth of ANSI spans onto the buffer's
 /// highlight list, or bank them as debt when there is nothing to show.
 ///
-/// `spans` holds the spans the reader produced (one entry per coloured
-/// line it saw); `text_lines` is how many lines the flush actually
+/// `spans` holds the spans the reader produced (one entry per line it
+/// read — the tool's own colours, or the classifier's cues); `text_lines` is how many lines the flush actually
 /// appends. The two differ whenever the batch mixed reader output with
 /// editor-generated text (a run summary), so `spans` is padded to
 /// `text_lines` before publishing — a span list shorter than the text
 /// would leave every later line splicing one row too high.
 ///
-/// When the whole flush is uncoloured, nothing is published and the
+/// When the whole flush is unstyled, nothing is published and the
 /// lines are added to `debt` instead. `debt` is then paid as leading
-/// empty rows by the next flush that does carry colour, which keeps
+/// empty rows by the next flush that does carry spans, which keeps
 /// the span list index-aligned with the buffer without waking the
 /// renderer for output that has nothing to paint.
 fn publish_spans(
@@ -265,6 +265,11 @@ impl Mode for CompilationMode {
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
             lattice_config::NoFile = true,
+            // A build log is not indented code. rustc aligns its `-->` and
+            // its `|` gutter with leading spaces, and a guide drawn through
+            // those columns puts a second bar beside the compiler's own.
+            // Same reasoning as plugins-mode and help-mode (IG.6).
+            lattice_config::core_options::IndentGuides = false,
         }
     }
 
@@ -513,14 +518,14 @@ impl Mode for CompilationMode {
                 let mut next_line: u32 = 0;
                 // CM.5: lines appended since the last span publish.
                 //
-                // Uncoloured output — every build that has not had
-                // colour forced on, which is nearly all of them —
-                // publishes nothing at all, and this counter is what
-                // makes that safe. The span list must stay the same
-                // length as the buffer or a later coloured chunk
-                // splices over the wrong rows, so the skipped lines
-                // are carried here and paid as empty padding by the
-                // first publish that actually has colour to show.
+                // Most of a build has nothing to style — progress lines,
+                // program output — and a flush made only of those
+                // publishes nothing at all. This counter is what makes
+                // that safe. The span list must stay the same length as
+                // the buffer or a later styled line splices over the
+                // wrong rows, so the skipped lines are carried here and
+                // paid as empty padding by the first publish that
+                // actually has something to show.
                 let mut span_debt: usize = 0;
                 let mut severities: Vec<(u32, ErrorSeverity)> = Vec::new();
                 let mut location_lines: Vec<(u32, u32, u32)> = Vec::new();
@@ -872,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn options_are_read_only_and_no_file() {
+    fn options_are_read_only_no_file_and_unguided() {
         let overrides = CompilationMode.options();
         let has_true = |type_id: std::any::TypeId| {
             overrides.iter().any(|ov| {
@@ -887,7 +892,15 @@ mod tests {
             has_true(std::any::TypeId::of::<lattice_config::NoFile>()),
             "expected NoFile = true override"
         );
-        assert_eq!(overrides.iter().count(), 2, "exactly ReadOnly + NoFile");
+        assert!(
+            overrides.iter().any(|ov| {
+                ov.option_type_id
+                    == std::any::TypeId::of::<lattice_config::core_options::IndentGuides>()
+                    && ov.downcast_value::<bool>() == Some(&false)
+            }),
+            "a build log is not indented code: no guides through rustc's gutter"
+        );
+        assert_eq!(overrides.iter().count(), 3);
     }
 
     #[test]

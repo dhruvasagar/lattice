@@ -18,9 +18,15 @@
 //!   cargo emits (a bold+colour prefix per diagnostic line).
 //! - **escape-heavy** — a progress renderer's cursor moves and `\r`
 //!   redraws, the worst realistic case for scan-and-discard work.
+//!
+//! And a fourth, **plain_read**: the plain shape again, with the
+//! `DiagnosticHighlighter` pass the reader runs on every line. Plain
+//! output is where that pass does its work — a coloured line keeps the
+//! tool's spans — so this is the real per-line cost of the common build,
+//! and its distance from `plain` is what the reading cues cost.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use lattice_compilation::{AnsiPalette, SgrState, clean_line};
+use lattice_compilation::{AnsiPalette, DiagnosticHighlighter, SgrState, clean_line};
 
 /// The bench does not stand up a theme registry, so the palette is
 /// built directly from interned-looking ids. `clean_line` only ever
@@ -99,6 +105,22 @@ fn bench_ansi(c: &mut Criterion) {
         });
         group.finish();
     }
+
+    let fixture = plain(LINES);
+    let bytes: usize = fixture.iter().map(|l| l.len()).sum();
+    let mut group = c.benchmark_group("compilation_ansi");
+    group.throughput(criterion::Throughput::Bytes(bytes as u64));
+    group.bench_function("plain_read", |b| {
+        b.iter(|| {
+            let mut state = SgrState::default();
+            let mut reading = DiagnosticHighlighter::new();
+            for line in &fixture {
+                let clean = clean_line(black_box(line), &mut state, Some(&p));
+                black_box(reading.line(&clean.text));
+            }
+        })
+    });
+    group.finish();
 }
 
 criterion_group!(benches, bench_ansi);

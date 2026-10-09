@@ -34493,20 +34493,11 @@ impl Editor {
         if let Some(pos) = cursor {
             self.set_cursor_clamped(pos);
         }
-        // OC.7c: give the buffer its major's language, now that it is the
-        // active document.
-        //
-        // The major was activated inside `ensure_named_synthetic_document`,
-        // ABOVE — before `activate_buffer` — so N.1.11's rebuild saw a
-        // `buffer_id` that was not yet `document_buffer_id` and returned
-        // early. Re-run it here, where the gate is true.
-        //
-        // Only matters for a pathless buffer. A file's language is resolved
-        // from its path before any mode activates, and the rebuild
-        // short-circuits when the handle already uses the right language —
-        // so this is one comparison for every other synthetic buffer.
-        let signals = self.rebuild_syntax_for_mode(id, lattice_mode::ModeId::new(mode_id));
-        self.enqueue_renderer_signals(signals);
+        // The buffer's language came from its major when the major was
+        // activated, inside `ensure_named_synthetic_document` above
+        // (`activate_major_by_id`), and `activate_buffer` promoted it. OC.7c
+        // re-ran the rebuild here because that activation used to skip a
+        // buffer that was not yet the active document.
         if reused {
             self.refresh_reopened_view(id);
         }

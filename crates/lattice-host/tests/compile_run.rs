@@ -313,3 +313,40 @@ async fn the_shell_command_buffer_is_highlighted_as_shell() {
     settle_text(&mut editor, build, |t| t.contains("Compilation")).await;
     assert!(editor.document_syntax_for(build).is_none());
 }
+
+/// The other way a pathless buffer is created — `Effect::OpenSyntheticBuffer`,
+/// which is how an org capture buffer opens — reaches its major's language
+/// through the same one call as `ModeActivator::ensure_named_document` does.
+///
+/// It used to need a second rebuild after the buffer became active. That
+/// re-run is gone, so this pins that the seeded path did not depend on it,
+/// and that the tree is of the seeded text rather than of the empty buffer
+/// the major was activated on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seeded_synthetic_buffer_is_parsed_as_its_majors_language() {
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    editor.open_synthetic_buffer_seeded(
+        "*seeded*",
+        "shell-command-mode",
+        Some("echo \"seeded\" $HOME\n"),
+        None,
+        None,
+    );
+    let id = editor.buffers.by_name("*seeded*").unwrap();
+    let syntax = editor
+        .document_syntax_for(id)
+        .cloned()
+        .expect("the major's language reached the seeded buffer");
+    assert_eq!(syntax.lang(), lattice_syntax::Lang::Bash);
+
+    let version = editor.buffers.document_handle(id).unwrap().text_version();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while syntax.snapshot().text_version() != version {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the seeded text was never parsed"
+        );
+        editor.run_tick_pending();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}

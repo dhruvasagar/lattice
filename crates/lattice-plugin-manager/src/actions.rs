@@ -26,7 +26,7 @@ use lattice_mode::{ActionContext, ActionHandler, BufferStoreHandle};
 use lattice_plugin_host::{PluginTracerHandle, TrustTier};
 use lattice_plugin_loader::{BulkOp, PluginLoaderHandle};
 
-use crate::render::{self, HEADER_LINES};
+use crate::render::HEADER_LINES;
 
 /// The `action:plugins-*` command names. Used for the handler bindings +
 /// dead-body registration; the keymap `cmd:` literals in `mode.rs` must match
@@ -146,8 +146,10 @@ fn refresh(ctx: &ActionContext<'_>) {
         return;
     };
     let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
-    let text = render::render_status_with_failures(&loader.plugin_status(), &loader.failed_loads());
-    crate::mode::spawn_write(&store, buffer_id, text);
+    let highlights = ctx
+        .services
+        .get::<lattice_mode::PendingSyntheticHighlights>();
+    crate::mode::spawn_rerender(&store, buffer_id, loader, highlights);
 }
 
 /// `r` — reload the plugin under the cursor (async: unload + re-instantiate from
@@ -157,17 +159,16 @@ pub fn reload_handler() -> ActionHandler {
         let name = plugin_name_at(ctx)?;
         let loader = ctx.services.get::<PluginLoaderHandle>()?;
         let store = ctx.services.get::<BufferStoreHandle>()?;
+        let highlights = ctx
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>();
         let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let name_c = name.clone();
             runtime.spawn(async move {
                 let _ = loader.reload(&name_c, TrustTier::UserInstalled).await;
                 if let Some(handle) = store.handle_for(buffer_id) {
-                    let text = render::render_status_with_failures(
-                        &loader.plugin_status(),
-                        &loader.failed_loads(),
-                    );
-                    crate::mode::write_all(&handle, text).await;
+                    crate::mode::rerender(&handle, &loader, highlights.as_deref(), buffer_id).await;
                 }
             });
         }
@@ -191,6 +192,9 @@ pub fn rebuild_handler() -> ActionHandler {
         let name = plugin_name_at(ctx)?;
         let loader = ctx.services.get::<PluginLoaderHandle>()?;
         let store = ctx.services.get::<BufferStoreHandle>()?;
+        let highlights = ctx
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>();
         let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return Some(Effect::Echo {
@@ -205,11 +209,7 @@ pub fn rebuild_handler() -> ActionHandler {
             // `cached`, on failure it reads `build-failed` — both are the
             // answer the user pressed `b` to get.
             if let Some(handle) = store.handle_for(buffer_id) {
-                let text = render::render_status_with_failures(
-                    &loader.plugin_status(),
-                    &loader.failed_loads(),
-                );
-                crate::mode::write_all(&handle, text).await;
+                crate::mode::rerender(&handle, &loader, highlights.as_deref(), buffer_id).await;
             }
             match result {
                 Ok(()) => tracing::info!(plugin = %name_c, "plugin rebuilt"),
@@ -237,6 +237,9 @@ pub fn update_handler() -> ActionHandler {
         let name = plugin_name_at(ctx)?;
         let loader = ctx.services.get::<PluginLoaderHandle>()?;
         let store = ctx.services.get::<BufferStoreHandle>()?;
+        let highlights = ctx
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>();
         let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return Some(Effect::Echo {
@@ -251,11 +254,7 @@ pub fn update_handler() -> ActionHandler {
             // failure reads `build-failed`, and a decline leaves the row as it
             // was — all three are the answer the user pressed `u` to get.
             if let Some(handle) = store.handle_for(buffer_id) {
-                let text = render::render_status_with_failures(
-                    &loader.plugin_status(),
-                    &loader.failed_loads(),
-                );
-                crate::mode::write_all(&handle, text).await;
+                crate::mode::rerender(&handle, &loader, highlights.as_deref(), buffer_id).await;
             }
             match result {
                 Ok(()) => tracing::info!(plugin = %name_c, "plugin updated"),
@@ -281,6 +280,9 @@ fn bulk_handler(op: BulkOp, progressive: &'static str) -> ActionHandler {
     Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
         let loader = ctx.services.get::<PluginLoaderHandle>()?;
         let store = ctx.services.get::<BufferStoreHandle>()?;
+        let highlights = ctx
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>();
         let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return Some(Effect::Echo {
@@ -290,12 +292,12 @@ fn bulk_handler(op: BulkOp, progressive: &'static str) -> ActionHandler {
         };
         runtime.spawn(async move {
             let repaint = |note: Option<String>| {
-                let text = render::render_status_full(
-                    &loader.plugin_status(),
-                    &loader.failed_loads(),
-                    note.as_deref(),
-                );
-                crate::mode::spawn_write(&store, buffer_id, text);
+                // The note lives with the view, not in this closure: a leg's
+                // own status events re-render too, and a render that did not
+                // know about the run would wipe `updating 3/7 (org)…` off the
+                // title the moment the leg started.
+                crate::mode::set_bulk_progress(note);
+                crate::mode::spawn_rerender(&store, buffer_id, loader.clone(), highlights.clone());
             };
             let report = loader
                 .run_bulk(op, &|done, total, name| {

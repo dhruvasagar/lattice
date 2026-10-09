@@ -16,9 +16,12 @@ write or install a plugin, see [`plugins`](help:plugins).
 Two sticky rows sit above the table.
 
 The first counts the set: how many plugins are loaded, how many are running,
-how many are quarantined, and how many failed to load. That last number is
-the one worth reading — a plugin that fails to load has no row in the table
-at all, so the header is the only place it is visible.
+how many are quarantined, how many failed to load, and how many are running
+an older build because their latest one did not compile. The last two are the
+ones worth reading. A plugin that fails to load has no row in the table at
+all, so the header is the only place it is visible; a plugin whose **build
+failed** has a row and works, which is exactly why it is easy to miss —
+nothing is broken, your edit simply did not take.
 
 The second lists the chords, grouped by the lowercase/uppercase convention
 below rather than one line per key.
@@ -106,13 +109,56 @@ fetched and built again, without it those bytes are the only copy.
 `:plugin-clean` does the same from the command line — it lists, and
 `:plugin-clean!` removes.
 
+## When something is wrong
+
+Two sections appear under the table, and only when there is something to
+put in them.
+
+**Build failed** lists plugins that are loaded and running on their previous
+artifact, because the latest build did not compile. The row reads
+`build-failed`; this section says why.
+
+**Failed to load** lists plugins that are not running at all — including
+your `init.rs` when it has never built.
+
+Under each name is the whole error, not a summary of it: for a build, the
+compiler's own report; for a load failure, the cause chain and any trap
+backtrace. It is laid out the way a terminal would show it —
+
+```
+  init  still running its previous build
+      cargo build failed (exit status: 101)
+      error[E0425]: cannot find value `Nope` in this scope
+        --> src/lib.rs:47:30
+         |
+      47 |                 minor_modes: Nope,
+         |                              ^^^^
+```
+
+— with the `error[…]` label in the error colour, the `-->` location as a
+link, the gutter dimmed, and the carets in the colour of the diagnostic they
+belong to (a warning's are a warning's). A backtrace gets the same treatment:
+dim frame numbers, addresses as numbers, symbols as functions. The text
+itself is plain, so you can yank any of it.
+
+A long report is cut at eighty lines, keeping the **start** — the first
+error is usually the cause and the rest follow from it — and says how many
+lines were dropped and how to see them. Cargo's `Compiling …` progress lines
+are left out.
+
+When `init.rs` fails because the toolchain is missing rather than because
+the code is wrong, the first line says so and names the command that fixes
+it: see [what `init.rs` needs](help:init#what-you-need).
+
 ## Live status
 
 The table reflects what the loader actually holds, not a snapshot taken
-when you opened it. The view subscribes to plugin-crash events, so a
-plugin that traps while you're looking at the list flips to
-`quarantined` in place — you don't need to `gr` to find out something
-died.
+when you opened it. The view re-renders itself when a plugin loads, unloads
+or crashes, and when a build starts, fails or finishes — so a plugin that
+traps while you're looking at the list flips to `quarantined` in place, and
+a `:reload-config` that fails to compile puts its error on screen without
+you touching a key. Fix the source, reload, and the section goes away the
+same way. You don't need `gr` to find out what happened.
 
 That matters because crash isolation is the point of the WASM host: a
 trapping plugin is contained rather than taking the editor with it, and

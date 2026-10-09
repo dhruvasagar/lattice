@@ -118,6 +118,16 @@ pub struct PluginStatus {
     pub source: SourceRecord,
     /// PM.8a: whether the cached artifact matches its source.
     pub build: BuildState,
+    /// The diagnostics of the build that failed, when `build` is
+    /// [`BuildState::Failed`].
+    ///
+    /// The state alone was a dead end: the row said `build-failed` and the
+    /// reason was a log line in another buffer, long since scrolled past. A
+    /// plugin in this state is *running* — on its previous artifact — so it
+    /// has no [`FailedLoad`] entry either, and without this the one place a
+    /// user looks for "what is wrong with my plugin" had the verdict and not
+    /// the evidence.
+    pub build_error: Option<String>,
 }
 
 /// PM.8a: how current a plugin's built artifact is.

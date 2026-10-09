@@ -304,11 +304,155 @@ pub fn render_status_styled(
         spans.push(row_spans);
     }
 
+    // Both sections build their own spans, index-aligned with their own
+    // lines, and both trail the table — see `render_status_with_failures`.
+    let (build_failures, build_spans) = build_failures_section(plugins);
+    out.push_str(&build_failures);
+    spans.extend(build_spans);
     let (failures, fail_spans) = failures_section(failed);
     out.push_str(&failures);
-    // The section builds its own spans, index-aligned with its own lines.
     spans.extend(fail_spans);
     RenderedStatus { text: out, spans }
+}
+
+/// How far a reason is indented under the entry it explains.
+const DIAGNOSTIC_INDENT: &str = "      ";
+
+/// Write an error — one line or a whole compiler report — under an entry.
+///
+/// **One buffer line per line of the error, each with its own span list.**
+/// This used to be a single `format!("      {}\n", error)` and a single
+/// `spans.push`. For a one-sentence load error that is right. For a build
+/// failure the error is twenty lines of rustc output, so the text grew by
+/// twenty lines and the span table by one: every line after it — including
+/// the next entry's red name — was styled with the spans of a line nineteen
+/// places above it. And only the first line was indented, so the report
+/// started under its entry and then fell back to column 0, where it read as
+/// a new top-level thing.
+///
+/// The reason keeps the default foreground wherever the highlighter has
+/// nothing to say: it is the text the reader came for, and dimming it would
+/// bury the useful half of the report. What the highlighter *does* mark is
+/// what a terminal would have — the `error[E…]` header, the `-->` location,
+/// the dim gutter, the carets — because a compiler report is laid out for the
+/// eye and loses that layout when it is printed as plain text.
+fn push_diagnostics(
+    out: &mut String,
+    spans: &mut Vec<Vec<lattice_cells::StyledSpan>>,
+    error: &str,
+) {
+    let mut highlighter = lattice_compilation::DiagnosticHighlighter::new();
+    let mut wrote_any = false;
+    for line in error.lines() {
+        wrote_any = true;
+        let line = line.trim_end();
+        if line.is_empty() {
+            // No trailing whitespace on a blank line — and still a span row,
+            // or everything below drifts by one.
+            out.push('\n');
+            spans.push(Vec::new());
+            continue;
+        }
+        let shift = DIAGNOSTIC_INDENT.len();
+        out.push_str(DIAGNOSTIC_INDENT);
+        out.push_str(line);
+        out.push('\n');
+        spans.push(
+            highlighter
+                .line(line)
+                .into_iter()
+                .map(|s| lattice_cells::StyledSpan {
+                    start: s.start + shift,
+                    end: s.end + shift,
+                    style: s.style,
+                })
+                .collect(),
+        );
+    }
+    if !wrote_any {
+        // An empty error is still an entry that failed; say so rather than
+        // leave a name with nothing under it.
+        out.push_str(DIAGNOSTIC_INDENT);
+        out.push_str("(no error message was recorded)\n");
+        spans.push(Vec::new());
+    }
+}
+
+/// The "build failed" block: plugins that are **loaded and running**, on an
+/// older artifact, because their latest build did not compile.
+///
+/// Separate from "failed to load" because it is a different situation with a
+/// different urgency. Those plugins are absent. These are present and
+/// working — on the code from before the edit — which is exactly why the
+/// failure is easy to miss: nothing is broken, the change simply did not
+/// take. The row's `build-failed` cell says that much; this says why, so the
+/// answer is on the same screen as the verdict instead of in `*messages*`,
+/// behind whatever has been logged since.
+fn build_failures_section(
+    plugins: &[PluginStatus],
+) -> (String, Vec<Vec<lattice_cells::StyledSpan>>) {
+    let broken: Vec<(&str, &str)> = plugins
+        .iter()
+        .filter_map(|p| Some((p.name.as_str(), p.build_error.as_deref()?)))
+        .collect();
+    if broken.is_empty() {
+        return (String::new(), Vec::new());
+    }
+    let warn = lattice_cells::Style::DiagnosticWarning;
+    let dim = lattice_cells::Style::Comment;
+    let mut out = String::new();
+    let mut spans: Vec<Vec<lattice_cells::StyledSpan>> = Vec::new();
+
+    let heading = format!("## Build failed ({})", broken.len());
+    out.push('\n');
+    spans.push(Vec::new());
+    out.push_str(&heading);
+    out.push('\n');
+    spans.push(vec![lattice_cells::StyledSpan {
+        start: 0,
+        end: heading.len(),
+        style: lattice_cells::Style::Heading2,
+    }]);
+    out.push('\n');
+    spans.push(Vec::new());
+
+    for (name, error) in broken {
+        // Warning, not error: the plugin works. The colour separates "your
+        // edit did not take" from "this plugin is gone" at a glance.
+        let mut line = String::from("  ");
+        let name_at = line.len();
+        line.push_str(name);
+        let mut row = vec![lattice_cells::StyledSpan {
+            start: name_at,
+            end: line.len(),
+            style: warn,
+        }];
+        line.push_str("  ");
+        let note_at = line.len();
+        line.push_str("still running its previous build");
+        row.push(lattice_cells::StyledSpan {
+            start: note_at,
+            end: line.len(),
+            style: dim,
+        });
+        out.push_str(&line);
+        out.push('\n');
+        spans.push(row);
+        push_diagnostics(&mut out, &mut spans, error);
+    }
+
+    let hint =
+        "Fix the error, then `b` on the plugin's row (or `:reload-config` for init) rebuilds it.";
+    out.push('\n');
+    spans.push(Vec::new());
+    out.push_str(hint);
+    out.push('\n');
+    spans.push(vec![lattice_cells::StyledSpan {
+        start: 0,
+        end: hint.len(),
+        style: dim,
+    }]);
+    (out, spans)
 }
 
 /// The trailing "failed to load" block, empty when nothing failed.
@@ -365,11 +509,7 @@ fn failures_section(failed: &[FailedLoad]) -> (String, Vec<Vec<lattice_cells::St
         out.push('\n');
         spans.push(row);
 
-        // The reason keeps the default foreground: it is the sentence the
-        // reader has to actually read, and dimming it would bury the useful
-        // half of the report under the decoration.
-        out.push_str(&format!("      {}\n", f.error));
-        spans.push(Vec::new());
+        push_diagnostics(&mut out, &mut spans, &f.error);
     }
 
     let hint = "If the plugin API changed, run `lattice --wit-sync` and restart to rebuild.";
@@ -401,6 +541,7 @@ mod tests {
             health,
             source: SourceRecord::Unknown,
             build: BuildState::NotBuilt,
+            build_error: None,
         }
     }
 
@@ -411,6 +552,131 @@ mod tests {
             build,
             ..status(name, TrustTier::UserInstalled, PluginHealth::Healthy)
         }
+    }
+
+    const RUSTC_REPORT: &str = "cargo build failed (exit status: 101)\n\
+        error[E0063]: missing field `minor_modes` in initializer of `EventFilter`\n  \
+        --> src/lib.rs:43:14\n   |\n\
+        43 |             &EventFilter {\n   \
+        |              ^^^^^^^^^^^ missing `minor_modes`\n\n\
+        error: could not compile `lattice-init` (lib) due to 1 previous error";
+
+    /// What each line's spans actually colour, for a rendered view.
+    fn coloured(r: &RenderedStatus) -> Vec<Vec<(String, lattice_cells::Style)>> {
+        r.text
+            .lines()
+            .zip(&r.spans)
+            .map(|(line, spans)| {
+                spans
+                    .iter()
+                    .map(|s| (line[s.start..s.end].to_string(), s.style))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The regression this pins: a multi-line error was written as one
+    /// `format!` and ONE span row, so the text grew by N lines and the span
+    /// table by one. Everything below was styled with the spans of a line
+    /// N-1 places above it.
+    #[test]
+    fn a_multi_line_error_keeps_one_span_row_per_line() {
+        let r = render_status_styled(
+            &[status("ok", TrustTier::Bundled, PluginHealth::Healthy)],
+            &[failure("init", RUSTC_REPORT), failure("zzz", "one line")],
+            None,
+        );
+        assert_eq!(
+            r.text.lines().count(),
+            r.spans.len(),
+            "every line needs its own span row:\n{}",
+            r.text
+        );
+        // …and the SECOND entry's name is still the thing coloured as an
+        // error on its own line, which is what drifted.
+        let lines: Vec<&str> = r.text.lines().collect();
+        let zzz = lines.iter().position(|l| l.starts_with("  zzz")).unwrap();
+        assert_eq!(
+            coloured(&r)[zzz][0],
+            ("zzz".to_string(), lattice_cells::Style::DiagnosticError)
+        );
+    }
+
+    #[test]
+    fn every_line_of_a_compiler_report_is_indented_under_its_entry() {
+        let out = render_status_with_failures(&[], &[failure("init", RUSTC_REPORT)]);
+        let at = out.lines().position(|l| l.starts_with("  init")).unwrap();
+        let report: Vec<&str> = out
+            .lines()
+            .skip(at + 1)
+            .take(RUSTC_REPORT.lines().count())
+            .collect();
+        for line in &report {
+            assert!(
+                line.is_empty() || line.starts_with(DIAGNOSTIC_INDENT),
+                "fell back to column 0: {line:?}\n{out}"
+            );
+            assert_eq!(line.trim_end(), *line, "trailing whitespace: {line:?}");
+        }
+        // rustc's own alignment survives: the `-->` is still two columns in
+        // from the report's edge, not flattened by a trim.
+        assert!(
+            report
+                .iter()
+                .any(|l| l.starts_with("        --> src/lib.rs:43:14"))
+        );
+    }
+
+    #[test]
+    fn a_compiler_report_is_highlighted_the_way_a_terminal_would() {
+        use lattice_cells::Style;
+        let r = render_status_styled(&[], &[failure("init", RUSTC_REPORT)], None);
+        let all: Vec<(String, Style)> = coloured(&r).into_iter().flatten().collect();
+        let has = |text: &str, style: Style| all.contains(&(text.to_string(), style));
+        assert!(has("error[E0063]", Style::DiagnosticError), "{all:?}");
+        assert!(has("src/lib.rs:43:14", Style::Link), "{all:?}");
+        assert!(has("43 |", Style::Comment), "{all:?}");
+        assert!(
+            has("^^^^^^^^^^^ missing `minor_modes`", Style::DiagnosticError),
+            "{all:?}"
+        );
+    }
+
+    /// A plugin running its previous artifact is NOT in "failed to load" —
+    /// it loaded. Before this section its row said `build-failed` and the
+    /// reason was nowhere in the view.
+    #[test]
+    fn a_loaded_plugin_whose_build_failed_shows_why() {
+        let stale = PluginStatus {
+            build: BuildState::Failed,
+            build_error: Some(RUSTC_REPORT.to_string()),
+            ..status("init", TrustTier::Bundled, PluginHealth::Healthy)
+        };
+        let r = render_status_styled(&[stale], &[], None);
+        assert!(r.text.contains("## Build failed (1)"), "{}", r.text);
+        assert!(r.text.contains("still running its previous build"));
+        assert!(r.text.contains("error[E0063]"));
+        assert!(
+            !r.text.contains("Failed to load"),
+            "it did load: {}",
+            r.text
+        );
+        assert_eq!(r.text.lines().count(), r.spans.len());
+        // Warning, not error: it works, the edit just did not take.
+        let lines: Vec<&str> = r.text.lines().collect();
+        let entry = lines.iter().rposition(|l| l.starts_with("  init")).unwrap();
+        assert_eq!(
+            coloured(&r)[entry][0],
+            ("init".to_string(), lattice_cells::Style::DiagnosticWarning)
+        );
+        // The table row is still where the chords expect it.
+        assert!(lines[HEADER_LINES].contains("init"));
+    }
+
+    #[test]
+    fn no_build_failure_no_section() {
+        let out = render_status(&[status("ok", TrustTier::Bundled, PluginHealth::Healthy)]);
+        assert!(!out.contains("Build failed"), "{out}");
     }
 
     /// The span must select exactly the cell's text. An off-by-one here

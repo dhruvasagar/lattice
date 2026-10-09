@@ -469,6 +469,58 @@ what the user agreed to is what gets deleted: between the prompt appearing and
 afterwards would delete the one that just arrived. The removal re-checks each
 name regardless.
 
+### 8.4 A failure is shown where the verdict is, in full
+
+The view said `build-failed` and the reason lived in `*messages*`. That is
+two buffers for one question, and at boot — where nobody is watching the log
+— it was worse than two: `build_init_if_needed` logged the error and
+discarded it, so a config that had never built was not in `:plugins` at all
+(a directory with no component in it "is not a plugin", so it was not a
+failed one either), and one that had fallen back to its previous artifact
+read `cached`. The failure a new user is most likely to hit was the one the
+view could not show.
+
+Three rules now hold:
+
+- **Every build failure reaches the loader's state.** `BuildActivity::Failed`
+  carries the diagnostics, and `PluginStatus::build_error` exposes them. The
+  boot build of `init.rs`, `:reload-config`, and a `require`d plugin that is
+  skipped or falls back all record — previously only the view's own `b` did.
+  A build that leaves *nothing* loaded also records a `FailedLoad`, with the
+  build's diagnostics as the reason rather than the "no component here" the
+  load attempt would report.
+- **The report is kept from the top.** `build::diagnostics` drops cargo's
+  progress lines and keeps the first eighty lines, not the last twenty: rustc
+  reports in source order and ends with a summary, so the tail of a long log
+  is `could not compile` and the cause is what was cut.
+- **The view re-renders on its own.** A build that fails outright loads
+  nothing and unloads nothing, so no lifecycle event fires. The loader
+  publishes `PluginStatusChanged` (typed, payload-free — subscribers re-read
+  the snapshot) whenever build activity or the failure set changes, and the
+  view listens to it alongside `PluginLoaded` / `PluginUnloaded` /
+  `PluginCrashed`, coalescing a burst behind a 40 ms settle so a reload's
+  unload→load never paints the row vanishing. Paramount goal #4: the result
+  reaches the screen without a keypress.
+
+Rendering is one function, `mode::rerender`, producing text and spans from a
+single snapshot. The chord handlers used to rewrite the text alone, leaving
+the previous render's spans over new lines; with a compiler report in the
+view, whose length changes on every build, that painted one line's colours
+on another. The bulk-run progress note moved into view state for the same
+reason — any re-render has to produce the same title.
+
+The report is highlighted by `lattice_compilation::DiagnosticHighlighter`,
+which lives there because that crate owns how compiler output is read (it
+already finds the locations and severities in it). It classifies plain text
+line by line rather than asking cargo for `--color always`: the block also
+carries trap backtraces, cause chains and lattice's own verdict line, none
+of which arrive coloured, and the same string is logged. `*compilation*`
+does not use it yet; adopting it there is open work, not a decision against.
+
+The buffer turns indent guides off (`display.indent-guides`, as help-mode
+does): its leading whitespace is layout, and a guide through each column of
+a rustc gutter made the report unreadable.
+
 ## 9. auto-pair as the first consumer (AP.4, reframed)
 
 AP.4 stops being "compile auto-pair into the binary" and becomes "**auto-pair is

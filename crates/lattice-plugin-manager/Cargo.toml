@@ -30,6 +30,10 @@ doctest = false
 [dependencies]
 # PM.8b: the sticky headerline row reporting builds in flight.
 lattice-cells = { path = "../lattice-cells" }
+# The diagnostics highlighter. A failed build's compiler output is shown in
+# this view, and `lattice-compilation` owns how compiler output is read — the
+# same crate already finds the locations and severities in it.
+lattice-compilation = { path = "../lattice-compilation" }
 # The install surface (`SubsystemBoot`) + the mode substrate (`Mode`,
 # `ModeContext`, `ModeId`, `CapabilitySet`, `LifecycleFuture`, `Subscription`,
 # `BufferStoreHandle`, `OptionOverrideSet`).
@@ -60,7 +64,9 @@ lattice-core = { path = "../lattice-core" }
 # `ReadOnly` / `NoFile` option overrides via `Mode::options()`.
 lattice-config = { path = "../lattice-config" }
 # Off-thread buffer writes + the crash-subscription drain (never the actor thread).
-tokio = { workspace = true, features = ["rt", "sync"] }
+# `macros` for `select!` over the two event sources the live refresh listens
+# to; `time` for the settle window that coalesces a burst into one render.
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -417,7 +417,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                 // Failure is a skip. A user whose init.rs stopped compiling
                 // must still get an editor — with their previous init.wasm if
                 // one exists (`StaleKept`), and without config if not.
-                build_init_if_needed(&init_dir).await;
+                let build_error = build_init_if_needed(&loader, &init_dir).await;
                 match loader.load_path(&init_dir, TrustTier::Bundled).await {
                     Ok(id) => tracing::info!(
                         id = id.0,
@@ -437,12 +437,22 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                     // A `plugin.toml` in the init dir is what tells them apart:
                     // if one is there the user meant to have config, so its
                     // absence is a failure they need to be told about.
-                    Err(err) if init_dir.join("plugin.toml").is_file() => tracing::warn!(
-                        dir = %init_dir.display(),
-                        error = %err,
-                        "user init.rs failed to load — plugins it requires will not install; \
-                         `lattice --wit-sync` then restart if the plugin API has changed"
-                    ),
+                    Err(err) if init_dir.join("plugin.toml").is_file() => {
+                        tracing::warn!(
+                            dir = %init_dir.display(),
+                            error = %err,
+                            "user init.rs failed to load — plugins it requires will not \
+                             install. `:plugins` shows why; `lattice --wit-sync` then \
+                             restart if the plugin API has changed"
+                        );
+                        // The log says it happened; `:plugins` is where a user
+                        // goes to ask why their config is not there. A failed
+                        // build is the cause when there was one — the load
+                        // error it leads to ("no component in this directory")
+                        // is what `load_path` deliberately does not record.
+                        let detail = build_error.unwrap_or_else(|| crate::error_chain(&err));
+                        loader.record_failure(crate::INIT_PLUGIN_ID, &init_dir, &detail);
+                    }
                     Err(err) => tracing::debug!(
                         dir = %init_dir.display(),
                         error = %err,
@@ -519,20 +529,35 @@ pub(crate) async fn build_init(init_dir: &std::path::Path) -> Option<crate::buil
 
 /// PM.7b: build the user's `init.rs` if its source changed (the boot path).
 ///
-/// A thin wrapper over [`build_init`] that logs and discards the outcome — at
-/// boot there is no user watching a `*messages*` echo, and a build failure
-/// falls back to the previous artifact regardless.
-async fn build_init_if_needed(init_dir: &std::path::Path) {
-    let Some(outcome) = build_init(init_dir).await else {
-        return;
-    };
+/// A thin wrapper over [`build_init`] that logs the outcome and hands a
+/// failure to the loader, returning its diagnostics. A build failure falls
+/// back to the previous artifact regardless.
+///
+/// This used to log and *discard*. At boot nobody is watching `*messages*`,
+/// so the warning scrolled past unread and the failure existed nowhere else:
+/// `:plugins` showed the old artifact as `cached`, or — with no artifact at
+/// all — showed nothing, because a directory with no component in it "is not
+/// a plugin" and so is not a failed one either.
+async fn build_init_if_needed(
+    loader: &crate::PluginLoader,
+    init_dir: &std::path::Path,
+) -> Option<String> {
+    let outcome = build_init(init_dir).await?;
     match outcome.error() {
-        Some(error) => tracing::warn!(
-            dir = %init_dir.display(),
-            %error,
-            "init.rs build failed; using the previous build if there is one"
-        ),
-        None => tracing::debug!(dir = %init_dir.display(), "init.rs is current"),
+        Some(error) => {
+            tracing::warn!(
+                dir = %init_dir.display(),
+                %error,
+                "init.rs build failed; using the previous build if there is one \
+                 (`:plugins` keeps the error)"
+            );
+            loader.note_build_failure(crate::INIT_PLUGIN_ID, error);
+            Some(error.to_string())
+        }
+        None => {
+            tracing::debug!(dir = %init_dir.display(), "init.rs is current");
+            None
+        }
     }
 }
 
@@ -596,6 +621,7 @@ async fn install_required_plugins(loader: &std::sync::Arc<crate::PluginLoader>) 
                         %error,
                         "plugin is running a previous build (rebuild failed)"
                     );
+                    loader.note_build_failure(&name, &error);
                 }
                 // The artifact is staged in the user root; load it through the
                 // ordinary discovery path so a `require`d plugin and a
@@ -619,11 +645,16 @@ async fn install_required_plugins(loader: &std::sync::Arc<crate::PluginLoader>) 
                     ),
                 }
             }
-            crate::pipeline::Install::Skipped { name, error } => tracing::warn!(
-                plugin = %name,
-                %error,
-                "required plugin skipped"
-            ),
+            crate::pipeline::Install::Skipped { name, error } => {
+                tracing::warn!(
+                    plugin = %name,
+                    %error,
+                    "required plugin skipped"
+                );
+                // Same gap as init: a plugin that never produced an artifact
+                // never reaches `load_path`, so nothing recorded it.
+                loader.record_failure(&name, &user_root.join(&name), &error);
+            }
         }
     }
 }

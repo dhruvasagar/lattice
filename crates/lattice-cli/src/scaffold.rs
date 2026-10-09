@@ -423,9 +423,10 @@ fn ensure_toolchain(dir: &Path) -> bool {
     }
 
     println!("Toolchain: {problem}.");
+    println!("{}", problem.hint());
     let remedy = problem.remedy();
     if !remedy.is_empty() {
-        println!("\nRun:\n");
+        println!();
         for command in remedy {
             println!("  {command}");
         }

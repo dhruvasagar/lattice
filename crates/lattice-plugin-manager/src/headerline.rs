@@ -84,6 +84,12 @@ pub struct PluginCounts {
     /// Never loaded at all. These do not appear in the table's rows, so the
     /// header is the only place their existence is visible.
     pub failed: usize,
+    /// Loaded and running, but on an older artifact: the latest build did not
+    /// compile. Counted apart from `failed` because these plugins work — and
+    /// that is exactly why the count earns a place up here. Nothing is
+    /// visibly broken, so the header is the first hint that an edit did not
+    /// take.
+    pub build_failed: usize,
     /// Shipped with the editor rather than installed by the user.
     pub bundled: usize,
 }
@@ -103,6 +109,9 @@ pub fn counts(plugins: &[PluginStatus], failed: &[FailedLoad]) -> PluginCounts {
         }
         if p.tier == TrustTier::Bundled {
             c.bundled += 1;
+        }
+        if p.build_error.is_some() {
+            c.build_failed += 1;
         }
     }
     c
@@ -142,6 +151,7 @@ fn stats_runs(c: &PluginCounts) -> Vec<Run> {
     push(c.ok, "ok", Role::Healthy);
     push(c.quarantined, "quarantined", Role::Problem);
     push(c.failed, "failed to load", Role::Problem);
+    push(c.build_failed, "build failed", Role::Problem);
     push(c.bundled, "bundled", Role::Count);
     runs
 }
@@ -339,11 +349,13 @@ mod tests {
             ok: 3,
             quarantined: 1,
             failed: 2,
+            build_failed: 1,
             bundled: 1,
         });
         let stats = text_of(&h.collect()[0]);
         assert!(stats.contains("1 quarantined"), "{stats}");
         assert!(stats.contains("2 failed to load"), "{stats}");
+        assert!(stats.contains("1 build failed"), "{stats}");
     }
 
     #[test]
@@ -386,6 +398,7 @@ mod tests {
             health,
             source: SourceRecord::Unknown,
             build: BuildState::NotBuilt,
+            build_error: None,
         };
         let plugins = vec![
             mk("auto-pair", TrustTier::Bundled, PluginHealth::Healthy),

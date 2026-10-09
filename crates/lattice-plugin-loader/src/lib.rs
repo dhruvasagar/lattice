@@ -82,7 +82,7 @@ pub use discovery::{
     DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir,
     default_source_cache_dir, discover, discover_one,
 };
-pub use events::LanguagesRegistered;
+pub use events::{LanguagesRegistered, PluginStatusChanged};
 pub use install::{
     autoload_enabled, disable_autoload, enable_autoload, flush_plugin_stores, install,
 };
@@ -211,7 +211,9 @@ struct LoadedRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BuildActivity {
     Running,
-    Failed,
+    /// Carries the build's diagnostics, so the view can show *why* — see
+    /// [`PluginStatus::build_error`].
+    Failed(String),
 }
 
 /// PM.8a: is this plugin's artifact current with its source?
@@ -420,7 +422,7 @@ fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> Bu
     // nothing.
     match activity {
         Some(BuildActivity::Running) => return BuildState::Building,
-        Some(BuildActivity::Failed) => return BuildState::Failed,
+        Some(BuildActivity::Failed(_)) => return BuildState::Failed,
         None => {}
     }
     let Some(source) = record.source.as_plugin_source() else {
@@ -1498,6 +1500,10 @@ impl PluginLoader {
                 health: r.health.clone(),
                 source: r.source.clone(),
                 build: build_state_of(r, activity.get(&r.name)),
+                build_error: match activity.get(&r.name) {
+                    Some(BuildActivity::Failed(error)) => Some(error.clone()),
+                    _ => None,
+                },
             })
             .collect();
         // Stable, name-sorted order (not raw load order). The `:plugins` view keys
@@ -1528,7 +1534,7 @@ impl PluginLoader {
     /// The view is a description of the current state, not a history.
     ///
     /// Pass [`error_chain`]'s output, not `err.to_string()` — see its doc.
-    fn record_failure(&self, name: &str, dir: &std::path::Path, error: &str) {
+    pub(crate) fn record_failure(&self, name: &str, dir: &std::path::Path, error: &str) {
         let Ok(mut failed) = self.failed.lock() else {
             // A poisoned mutex here would mean losing a diagnostic, and losing a
             // diagnostic is not worth taking the editor down over — this whole
@@ -1543,6 +1549,18 @@ impl PluginLoader {
             dir: dir.to_path_buf(),
             error: error.to_string(),
         });
+        // Released before publishing: a subscriber's first move is to call
+        // `failed_loads`, which takes this same lock.
+        drop(failed);
+        self.publish_status_changed();
+    }
+
+    /// Tell an open `:plugins` view its snapshot is out of date. See
+    /// [`PluginStatusChanged`] for why the lifecycle events are not enough.
+    fn publish_status_changed(&self) {
+        if let Some(bus) = &self.env.bus {
+            bus.publish_typed(PluginStatusChanged);
+        }
     }
 
     /// Drop `name`'s failure record — it loaded.
@@ -1552,8 +1570,18 @@ impl PluginLoader {
     /// `:plugin-reload`) and a stale "failed" row surviving a load that worked
     /// is a worse lie than no row at all.
     fn clear_failure(&self, name: &str) {
-        if let Ok(mut failed) = self.failed.lock() {
-            failed.retain(|f| f.name != name);
+        let cleared = match self.failed.lock() {
+            Ok(mut failed) => {
+                let before = failed.len();
+                failed.retain(|f| f.name != name);
+                failed.len() != before
+            }
+            Err(_) => false,
+        };
+        // Only when a record actually went away: this runs on every
+        // successful load, and almost none of them had failed before.
+        if cleared {
+            self.publish_status_changed();
         }
     }
 
@@ -1950,6 +1978,17 @@ impl PluginLoader {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Record that `name`'s build failed, with its diagnostics.
+    ///
+    /// For the build paths that do not run through [`rebuild`](Self::rebuild)
+    /// — the boot build of `init.rs` and of everything it `require`s. Those
+    /// used to `warn!` and move on, so a build that failed *at boot* was the
+    /// one build failure `:plugins` could not show: the row read `cached`
+    /// (the previous artifact's state) or was missing altogether.
+    pub(crate) fn note_build_failure(&self, name: &str, error: &str) {
+        self.set_build_activity(name, Some(BuildActivity::Failed(error.to_string())));
+    }
+
     fn set_build_activity(&self, name: &str, activity: Option<BuildActivity>) {
         if let Ok(mut map) = self.building.lock() {
             match activity {
@@ -1969,6 +2008,8 @@ impl PluginLoader {
             self.building_count
                 .store(running, std::sync::atomic::Ordering::Relaxed);
         }
+        // Outside the lock, for the same reason as `record_failure`.
+        self.publish_status_changed();
     }
 
     /// PM.8b: force a fresh build of `name` from its recorded source, then
@@ -2007,22 +2048,15 @@ impl PluginLoader {
     /// even though the previous config keeps running — so the handler logs the
     /// detail to `*messages*` and the row flips to `build-failed`.
     async fn rebuild_init(&self) -> Result<(), String> {
-        self.set_build_activity(INIT_PLUGIN_ID, Some(BuildActivity::Running));
+        // The activity flag is `reload_config`'s to set: `:reload-config`
+        // reaches the same build without passing through here, and it used
+        // to leave the row reading `cached` over a build that had just failed.
         match self.reload_config().await {
             Ok(report) => match report.build {
-                ConfigBuildStatus::BuildFailed(error) => {
-                    self.set_build_activity(INIT_PLUGIN_ID, Some(BuildActivity::Failed));
-                    Err(error)
-                }
-                _ => {
-                    self.set_build_activity(INIT_PLUGIN_ID, None);
-                    Ok(())
-                }
+                ConfigBuildStatus::BuildFailed(error) => Err(error),
+                _ => Ok(()),
             },
-            Err(err) => {
-                self.set_build_activity(INIT_PLUGIN_ID, Some(BuildActivity::Failed));
-                Err(error_chain(&err))
-            }
+            Err(err) => Err(error_chain(&err)),
         }
     }
 
@@ -2133,11 +2167,11 @@ impl PluginLoader {
             pipeline::Install::Ready {
                 stale: Some(err), ..
             } => {
-                self.set_build_activity(name, Some(BuildActivity::Failed));
+                self.note_build_failure(name, &err);
                 Err(err)
             }
             pipeline::Install::Skipped { error, .. } => {
-                self.set_build_activity(name, Some(BuildActivity::Failed));
+                self.note_build_failure(name, &error);
                 Err(error)
             }
             pipeline::Install::Ready { .. } => {
@@ -2319,6 +2353,7 @@ impl PluginLoader {
                 )
             })?;
         // Compile source → artifact in place first (the step reload cannot do).
+        self.set_build_activity(INIT_PLUGIN_ID, Some(BuildActivity::Running));
         let outcome = crate::install::build_init(&init_dir).await;
         let build = match &outcome {
             // No cargo project: a hand-built init.wasm is loaded as-is.
@@ -2339,8 +2374,30 @@ impl PluginLoader {
                 Some(error) => ConfigBuildStatus::BuildFailed(error.to_string()),
             },
         };
-        let id = self.sync_init(&init_dir, TrustTier::Bundled).await?;
-        Ok(ReloadConfigReport { id, build })
+        // Settle the flag BEFORE the reload: the reload republishes status,
+        // and the row must not read `building…` over a build that is done.
+        match &build {
+            ConfigBuildStatus::BuildFailed(error) => self.note_build_failure(INIT_PLUGIN_ID, error),
+            _ => self.set_build_activity(INIT_PLUGIN_ID, None),
+        }
+        match self.sync_init(&init_dir, TrustTier::Bundled).await {
+            Ok(id) => Ok(ReloadConfigReport { id, build }),
+            Err(err) => {
+                // Nothing loaded. With a failed build behind it, the build's
+                // diagnostics are the cause and the load error ("no .wasm in
+                // this directory") is only its consequence — and that
+                // consequence is the one failure `load_path` declines to
+                // record, so without this the config would be absent from
+                // `:plugins` entirely.
+                let detail = match &build {
+                    ConfigBuildStatus::BuildFailed(error) => error.clone(),
+                    _ => error_chain(&err),
+                };
+                self.note_build_failure(INIT_PLUGIN_ID, &detail);
+                self.record_failure(INIT_PLUGIN_ID, &init_dir, &detail);
+                Err(err)
+            }
+        }
     }
 
     /// Spawn [`reload_config`](Self::reload_config) on the runtime and report the

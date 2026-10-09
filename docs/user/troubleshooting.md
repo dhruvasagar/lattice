@@ -39,8 +39,9 @@ why this fails silently.
 ## My `init.rs` config isn't loading
 
 Your config is compiled on your machine, so this is almost always the Rust
-toolchain rather than the config. Open `:messages` and look for the line
-naming `plugin=init`:
+toolchain rather than the config. Open `:plugins`: `init` is listed under
+*Failed to load* (or *Build failed*) with the full error. Its first lines
+say one of:
 
 | The message says | What it means | Fix |
 |---|---|---|

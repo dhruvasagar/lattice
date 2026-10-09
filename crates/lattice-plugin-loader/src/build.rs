@@ -94,23 +94,11 @@ impl ComponentBuilder for CargoComponentBuilder {
                 // a release archive and the machine has never had Rust on it.
                 // "No such file or directory" names neither the cause nor the
                 // fix, so say both.
-                std::io::ErrorKind::NotFound => ToolchainProblem::NoCargo.to_string(),
+                std::io::ErrorKind::NotFound => ToolchainProblem::NoCargo.report(),
                 _ => format!("failed to run cargo: {e}"),
             })?;
         if !output.status.success() {
-            // The compiler's own diagnostics are the useful part; keep
-            // the tail so `:plugins` can show why without holding a
-            // whole build log in memory.
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail: String = stderr
-                .lines()
-                .rev()
-                .take(20)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
+            let tail = diagnostics(&String::from_utf8_lossy(&output.stderr));
             // Only now, on the failure path, is the toolchain probed: it
             // costs three process spawns, and a build that succeeded has
             // already answered the question.
@@ -129,6 +117,60 @@ impl ComponentBuilder for CargoComponentBuilder {
 /// The target every component is compiled for.
 pub const WASM_TARGET: &str = "wasm32-wasip2";
 
+/// How many lines of compiler output a failure keeps.
+const MAX_DIAGNOSTIC_LINES: usize = 80;
+
+/// The compiler's diagnostics out of cargo's stderr, for `:plugins`.
+///
+/// Two things the previous "last 20 lines" got wrong. It kept cargo's
+/// progress chatter (`Compiling wasmparser v0.251.0`), which on a cold build
+/// is most of the output and none of the answer. And it kept the **tail**:
+/// rustc reports errors in source order and ends with a summary, so with more
+/// than a screenful the tail is `error: could not compile` and the cause —
+/// the first error, the one everything after it usually follows from — is
+/// exactly what was cut.
+///
+/// So: progress lines dropped, the **head** kept, and a truncation says how
+/// much is missing and how to see it.
+fn diagnostics(stderr: &str) -> String {
+    const PROGRESS: &[&str] = &[
+        "Compiling ",
+        "Checking ",
+        "Downloading ",
+        "Downloaded ",
+        "Updating ",
+        "Locking ",
+        "Adding ",
+        "Blocking ",
+        "Fresh ",
+        "Finished ",
+    ];
+    let lines: Vec<&str> = stderr
+        .lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            !PROGRESS.iter().any(|verb| line.starts_with(verb))
+        })
+        .collect();
+    // Leading / trailing blank lines are left behind by the filter.
+    let first = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
+    let last = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .map_or(first, |i| i + 1);
+    let lines = &lines[first..last.max(first)];
+    if lines.len() <= MAX_DIAGNOSTIC_LINES {
+        return lines.join("\n");
+    }
+    let mut kept = lines[..MAX_DIAGNOSTIC_LINES].join("\n");
+    kept.push_str(&format!(
+        "\n… {} more lines — `cargo build --release --target {WASM_TARGET}` \
+         in the plugin's directory shows all of it",
+        lines.len() - MAX_DIAGNOSTIC_LINES
+    ));
+    kept
+}
+
 /// A failed build's message. A toolchain problem leads when there is one,
 /// because then the compiler output underneath is a symptom (`can't find
 /// crate for core`) rather than the cause.
@@ -138,7 +180,10 @@ pub const WASM_TARGET: &str = "wasm32-wasip2";
 /// target they already had.
 fn explain_failure(status: &str, tail: &str, problem: Option<ToolchainProblem>) -> String {
     match problem {
-        Some(problem) => format!("cargo build failed ({status}): {problem}\n{tail}"),
+        Some(problem) => format!(
+            "cargo build failed ({status}): {}\n{tail}",
+            problem.report()
+        ),
         None => format!("cargo build failed ({status})\n{tail}"),
     }
 }
@@ -236,26 +281,50 @@ impl ToolchainProblem {
     }
 }
 
+impl ToolchainProblem {
+    /// What to do about it, as a sentence — the half of the answer that is
+    /// not a command.
+    pub fn hint(&self) -> &'static str {
+        match self {
+            ToolchainProblem::NoCargo => {
+                "init.rs and source plugins are compiled on this machine, so they need it.\n\
+                 Install Rust from https://rustup.rs, then add the wasm target:"
+            }
+            ToolchainProblem::NoWasmTarget { rustup: true } => "Add it:",
+            ToolchainProblem::NoWasmTarget { rustup: false } => {
+                "Install the target's standard library from wherever Rust came from,\n\
+                 or switch to rustup (https://rustup.rs)."
+            }
+        }
+    }
+
+    /// The whole answer over several short lines: what is wrong, what to do,
+    /// and the commands. For `:plugins`, which does not wrap — as one
+    /// sentence this ran off the right edge of an 80-column window exactly
+    /// where the URL and the command were.
+    pub fn report(&self) -> String {
+        let mut report = format!("{self}.\n{}", self.hint());
+        for command in self.remedy() {
+            report.push_str("\n    ");
+            report.push_str(&command);
+        }
+        report
+    }
+}
+
 impl std::fmt::Display for ToolchainProblem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ToolchainProblem::NoCargo => write!(
-                f,
-                "Rust is not installed (no working `cargo` on PATH). init.rs and \
-                 plugins built from source need it: install Rust from \
-                 https://rustup.rs, then `rustup target add {WASM_TARGET}`"
-            ),
-            ToolchainProblem::NoWasmTarget { rustup: true } => write!(
-                f,
-                "the `{WASM_TARGET}` target is not installed: \
-                 `rustup target add {WASM_TARGET}`"
-            ),
+            ToolchainProblem::NoCargo => {
+                write!(f, "Rust is not installed (no working `cargo` on PATH)")
+            }
+            ToolchainProblem::NoWasmTarget { rustup: true } => {
+                write!(f, "the `{WASM_TARGET}` target is not installed")
+            }
             ToolchainProblem::NoWasmTarget { rustup: false } => write!(
                 f,
                 "the `{WASM_TARGET}` target is not installed, and this Rust did \
-                 not come from rustup: install the target's standard library \
-                 from the same place Rust came from, or switch to rustup \
-                 (https://rustup.rs)"
+                 not come from rustup"
             ),
         }
     }
@@ -707,6 +776,35 @@ mod tests {
     /// Unique temp dir. The counter is load-bearing under parallel
     /// `cargo test`: a timestamp alone collides.
     #[test]
+    fn diagnostics_drop_cargo_progress_and_keep_the_compiler() {
+        let stderr = "   Compiling wasmparser v0.251.0\n   Compiling lattice-init v0.0.0 (/x)\n\
+                      error[E0063]: missing field `minor_modes`\n  --> src/lib.rs:43:14\n\n\
+                      error: could not compile `lattice-init` (lib) due to 1 previous error\n";
+        let kept = diagnostics(stderr);
+        assert!(!kept.contains("Compiling"), "{kept}");
+        assert!(kept.starts_with("error[E0063]"), "{kept}");
+        assert!(kept.contains("--> src/lib.rs:43:14"));
+        assert!(kept.ends_with("due to 1 previous error"));
+    }
+
+    #[test]
+    fn a_long_build_log_keeps_the_first_error_not_the_summary() {
+        // rustc reports in source order and ends with a summary. The first
+        // error is the cause; keeping the tail kept the summary instead.
+        let mut stderr = String::from("error[E0001]: the first error, which is the cause\n");
+        for i in 0..200 {
+            stderr.push_str(&format!("  filler line {i}\n"));
+        }
+        stderr.push_str("error: could not compile `x` due to 9 previous errors\n");
+        let kept = diagnostics(&stderr);
+        assert!(kept.starts_with("error[E0001]"), "{kept}");
+        assert!(!kept.contains("could not compile"));
+        // 202 lines in, 80 kept: the reader is told what is missing.
+        assert!(kept.contains("… 122 more lines"), "{kept}");
+        assert_eq!(kept.lines().count(), MAX_DIAGNOSTIC_LINES + 1);
+    }
+
+    #[test]
     fn a_missing_cargo_outranks_a_missing_target() {
         // Without cargo there is no target to speak of; reporting the target
         // first would send the user to run a `rustup` they do not have.
@@ -737,7 +835,27 @@ mod tests {
         // printing `rustup target add` anyway is the dead end this avoids.
         let distro = with(false).problem().unwrap();
         assert!(distro.remedy().is_empty());
-        assert!(!distro.to_string().contains("`rustup target add"));
+        assert!(!distro.report().contains("rustup target add"));
+    }
+
+    #[test]
+    fn a_report_fits_a_window_that_does_not_wrap() {
+        // `:plugins` shows this indented by six columns and does not wrap.
+        for problem in [
+            ToolchainProblem::NoCargo,
+            ToolchainProblem::NoWasmTarget { rustup: true },
+            ToolchainProblem::NoWasmTarget { rustup: false },
+        ] {
+            for line in problem.report().lines() {
+                assert!(
+                    line.chars().count() <= 110,
+                    "too long for the view: {line:?}"
+                );
+            }
+        }
+        let report = ToolchainProblem::NoCargo.report();
+        assert!(report.starts_with("Rust is not installed"));
+        assert!(report.ends_with("rustup target add wasm32-wasip2"));
     }
 
     #[test]

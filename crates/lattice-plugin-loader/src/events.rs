@@ -45,3 +45,33 @@ lattice_protocol::register_event!(
      signalling that the mode/language catalog changed.",
     "lattice-plugin-loader",
 );
+
+/// Fired when what `:plugins` would show has changed **without** a plugin
+/// loading or unloading: a build started, finished or failed, or a load
+/// failure was recorded or cleared.
+///
+/// `Event::PluginLoaded` / `PluginUnloaded` cover the lifecycle, and a view
+/// that listens only to those is right until the first build that fails
+/// outright. That produces no lifecycle event at all — nothing loaded, nothing
+/// unloaded — so an open `*plugins*` buffer went on showing the state from
+/// before the build, and the failure it existed to report appeared only if the
+/// user happened to press refresh. The commonest case was the worst one: open
+/// `:plugins` to see why the config is missing, while the cold first build is
+/// still running, and watch a view that never changes.
+///
+/// Carries nothing. A subscriber re-reads [`PluginLoader::plugin_status`] and
+/// [`PluginLoader::failed_loads`]; a payload describing the change would be a
+/// second source of truth for a snapshot that is cheap to take.
+///
+/// [`PluginLoader::plugin_status`]: crate::PluginLoader::plugin_status
+/// [`PluginLoader::failed_loads`]: crate::PluginLoader::failed_loads
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PluginStatusChanged;
+
+lattice_protocol::register_event!(
+    PluginStatusChanged,
+    "plugin.status-changed",
+    "Fired when a plugin's build state or load-failure record changes without a \
+     load or unload — a build started, finished or failed.",
+    "lattice-plugin-loader",
+);

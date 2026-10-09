@@ -125,14 +125,65 @@ fn current_status_render(ctx: &ModeContext) -> Option<crate::render::RenderedSta
     ))
 }
 
-/// Re-render the manager buffer from the pre-rendered `text`, OFF the actor
-/// thread — the shared refresh the PL8.H.3 action handlers use after a reload /
-/// unload / explicit refresh. A no-op if there's no current runtime or the
-/// buffer is gone (never a panic).
-pub(crate) fn spawn_write(
+/// The bulk run's progress note for the title line (`updating 3/7 (org)…`),
+/// or `None` when no bulk run is in flight.
+///
+/// Process-wide because the view is: there is one `*plugins*` buffer, and
+/// every path that re-renders it — a chord's own completion, a status event,
+/// an explicit refresh — has to produce the same title or the note flickers
+/// in and out as they interleave.
+static BULK_PROGRESS: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+pub(crate) fn set_bulk_progress(note: Option<String>) {
+    if let Ok(mut slot) = BULK_PROGRESS.write() {
+        *slot = note;
+    }
+}
+
+/// The view as it should read right now.
+fn render_now(loader: &PluginLoaderHandle) -> crate::render::RenderedStatus {
+    let note = BULK_PROGRESS.read().ok().and_then(|n| n.clone());
+    crate::render::render_status_styled(
+        &loader.plugin_status(),
+        &loader.failed_loads(),
+        note.as_deref(),
+    )
+}
+
+/// How long the live refresh waits for a burst of events to finish before it
+/// renders once. Long enough to span a reload's unload→load, short enough to
+/// read as immediate.
+const REFRESH_SETTLE: std::time::Duration = std::time::Duration::from_millis(40);
+
+/// Re-render the buffer: text **and** highlights, from one snapshot.
+///
+/// The one way to repaint the view. The chord handlers used to rewrite the
+/// text alone, which left the previous render's spans in place over new
+/// lines. With a fixed-height table that was a colour on the wrong cell; with
+/// a compiler report in the view — whose length changes with every build —
+/// it is a red `error[E…]` painted across whatever now occupies that line.
+pub(crate) async fn rerender(
+    handle: &Arc<dyn Document>,
+    loader: &PluginLoaderHandle,
+    highlights: Option<&lattice_mode::PendingSyntheticHighlights>,
+    buffer_id: lattice_core::BufferId,
+) {
+    let rendered = render_now(loader);
+    write_all(handle, rendered.text).await;
+    // After the text: the spans index by line, so they mean nothing until
+    // the lines exist.
+    if let Some(highlights) = highlights {
+        highlights.store_and_wake(buffer_id, rendered.spans);
+    }
+}
+
+/// [`rerender`], spawned off the actor thread. A no-op without a runtime or
+/// once the buffer is gone.
+pub(crate) fn spawn_rerender(
     store: &BufferStoreHandle,
     buffer_id: lattice_core::BufferId,
-    text: String,
+    loader: Arc<PluginLoaderHandle>,
+    highlights: Option<Arc<lattice_mode::PendingSyntheticHighlights>>,
 ) {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         return;
@@ -141,7 +192,7 @@ pub(crate) fn spawn_write(
         return;
     };
     runtime.spawn(async move {
-        write_all(&handle, text).await;
+        rerender(&handle, &loader, highlights.as_deref(), buffer_id).await;
     });
 }
 
@@ -162,6 +213,13 @@ impl Mode for PluginManagerMode {
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
             lattice_config::NoFile = true,
+            // The view's leading whitespace is layout, not code structure: a
+            // table, entries indented under headings, and — under a failed
+            // build — a compiler report whose gutter (`   |`, `43 |`) is
+            // aligned with spaces. Guides drew a `│` through every one of
+            // those columns, so rustc's `|` sat beside two of ours and the
+            // report could not be read. Same reasoning as help-mode (IG.6).
+            lattice_config::core_options::IndentGuides = false,
         }
     }
 
@@ -334,29 +392,60 @@ impl Mode for PluginManagerMode {
                 );
             }
 
+            // Loads and unloads as well as crashes: a reload, an install, a
+            // `require` resolving at boot all change the table, and none of
+            // them is a crash.
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
             let sub_id = ctx.events().subscribe(
-                EventFilter::kind(EventKind::PluginCrashed),
+                EventFilter::kinds(vec![
+                    EventKind::PluginCrashed,
+                    EventKind::PluginLoaded,
+                    EventKind::PluginUnloaded,
+                ]),
                 SubscriptionTarget::Channel(tx),
             );
+            // …and the changes that are none of those: a build starting,
+            // failing or finishing. A build that fails outright loads nothing
+            // and unloads nothing, so without this the view sat on the state
+            // from before the build — see `PluginStatusChanged`. The sender
+            // is pruned by the bus once the task below drops its receiver.
+            let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<
+                lattice_plugin_loader::PluginStatusChanged,
+            >();
+            ctx.events().subscribe_typed(status_tx);
             let bus_handle = ctx.events_handle();
             let refresh_handle = handle.clone();
             let refresh_info = info;
             let refresh_highlights = highlights;
             runtime.spawn(async move {
-                while rx.recv().await.is_some() {
-                    // Coalesce a burst before re-rendering the whole snapshot.
-                    while rx.try_recv().is_ok() {}
-                    let status = loader.plugin_status();
-                    let failed = loader.failed_loads();
-                    // One snapshot feeds all three surfaces, so the header, the
-                    // table and its highlights can never disagree.
-                    refresh_info.set(crate::headerline::counts(&status, &failed));
-                    let rendered = crate::render::render_status_styled(&status, &failed, None);
-                    write_all(&refresh_handle, rendered.text).await;
-                    if let Some(ph) = &refresh_highlights {
-                        ph.store_and_wake(buffer_id, rendered.spans);
+                loop {
+                    // Either source ending means the mode deactivated (the
+                    // `Subscription` guard dropped the lifecycle sender).
+                    tokio::select! {
+                        event = rx.recv() => if event.is_none() { break },
+                        changed = status_rx.recv() => if changed.is_none() { break },
                     }
+                    // Let a burst land before rendering. A reload is an
+                    // unload, a load and two status changes a few
+                    // milliseconds apart; rendering each would show the row
+                    // vanish and come back — a flicker in a view the user is
+                    // reading. One frame of patience, then one render.
+                    tokio::time::sleep(REFRESH_SETTLE).await;
+                    while rx.try_recv().is_ok() {}
+                    while status_rx.try_recv().is_ok() {}
+                    // The header's counts come from the same moment as the
+                    // table, so the two cannot disagree.
+                    refresh_info.set(crate::headerline::counts(
+                        &loader.plugin_status(),
+                        &loader.failed_loads(),
+                    ));
+                    rerender(
+                        &refresh_handle,
+                        &loader,
+                        refresh_highlights.as_deref(),
+                        buffer_id,
+                    )
+                    .await;
                 }
             });
 

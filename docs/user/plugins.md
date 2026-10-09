@@ -44,9 +44,9 @@ feature uses — it is not a second-class bolt-on.
 | `:plugin-reload-all` | Reload every loaded plugin from the artifact on disk — no build, no network. |
 | `:plugin-update-all` | Update every loaded plugin. Pinned ones are skipped, not failed. |
 | `:plugin-clean` | List staged plugin directories nothing loads any more; `:plugin-clean!` removes them. |
-| `:plugins` | Open the **manager view** — a buffer listing every loaded plugin with health, tier, and capabilities. |
+| `:plugins` | Open the **manager view** — a buffer listing every loaded plugin with health, tier, source, build state and capabilities, plus the full error for anything that failed to build or load. |
 | `:plugin-trace` | Open `*plugin-trace*` — the live boundary-trace firehose across all plugins. |
-| `:reload-config` | Re-load your `init.rs` config module. |
+| `:reload-config` | Rebuild your `init.rs` and reload it. A build that fails keeps the previous config running and shows the compiler error in `:plugins`. |
 | `:set plugin.trace-level=debug` | Raise the global trace verbosity (see [observability](#observability-what-a-plugin-is-doing)). |
 | `:list-plugin-apis` / `:describe-plugin-api [<seam>]` | Browse the plugin **API catalog** (the WIT seams). |
 | `:list-plugins` / `:describe-plugin <name>` | List / describe the currently-loaded plugins. |
@@ -420,7 +420,10 @@ there is no reason to commit it.
 
 **When a plugin silently isn't there,** check `:plugins`: anything that tried to
 load and failed is listed under *Failed to load* with the reason and the
-directory. The usual cause after an editor upgrade is a component built against
+directory, and a plugin still running an older build because the latest one did
+not compile is listed under *Build failed*. Both show the whole error — the
+compiler's report or the trap backtrace, highlighted — and the view updates by
+itself as builds finish ([`plugins-mode`](help:plugins-mode#when-something-is-wrong)). The usual cause after an editor upgrade is a component built against
 an older API, and the usual fix is to let it rebuild — which happens on the next
 start.
 

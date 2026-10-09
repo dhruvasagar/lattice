@@ -68,8 +68,11 @@ The same requirements apply to any plugin you install **from source**
 (`plugins::require(...)`, or a `--scaffold-plugin` project). A plugin that
 ships a prebuilt `.wasm` needs none of it.
 
-When a config does not load, the reason is in `:messages` — look for
-`plugin=init`. [Troubleshooting](help:troubleshooting) has the common cases.
+When a config does not load, **`:plugins` says why**: `init` appears under
+*Failed to load* (or *Build failed*, if a previous build is still running)
+with the full error, highlighted — see
+[`plugins-mode`](help:plugins-mode#when-something-is-wrong).
+[Troubleshooting](help:troubleshooting) has the common cases.
 
 ---
 
@@ -110,7 +113,8 @@ Your on-disk plugins live alongside it at `~/.config/lattice/plugins/`.
   `src/lib.rs`, unloads the old config (reversing every keymap, command,
   option, and subscription it added) and instantiates the new one in a fresh,
   clean sandbox. Edit, `:reload-config`, done. If the build fails, the previous
-  config keeps running and the compiler's error is in `:messages`.
+  config keeps running and the compiler's error is in `:plugins`, under
+  *Build failed* — the view updates by itself if it is open.
 
 An absent `<config>/lattice/init/` is the normal "no custom config" case — the
 editor boots with defaults, silently.

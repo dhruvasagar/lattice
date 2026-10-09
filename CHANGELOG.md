@@ -25,6 +25,14 @@
   understood only in the `:'<,'>` prefix.
 
 ### Fixed
+- **Highlighting waited for a keypress after a background change.** When
+  a buffer's text changed on its own (a filter's result, a formatter, a
+  server's edit, streamed output), its syntax colours were not refreshed
+  until the next key. They now catch up as the change lands.
+- **A buffer with no file could not take a built-in language from its
+  mode.** A mode, including a plugin's, that names a built-in language such
+  as `bash` now has its file-less buffers highlighted with it. Before, only
+  plugin-provided languages worked this way.
 - **`:format` timed out on large files.** An external formatter whose
   output ran past 64 KiB was reported as timed out when it was only waiting
   to be read.

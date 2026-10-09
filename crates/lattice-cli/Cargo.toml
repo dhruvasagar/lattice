@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# Read by cargo-deb as the package's one-line `Description:`. Without it the
+# control file carries the placeholder "[generated from Rust crate lattice-cli]".
+description = "Modal, GPU-accelerated, plugin-first text editor"
 
 [[bin]]
 name = "lattice"
@@ -96,6 +99,14 @@ category        = "developer-tools"
 # icons renamed to the desktop's Icon= key. Icons come from the square
 # iconset, NOT the non-square assets/lattice-mark-512.png.
 [package.metadata.deb]
+# The package is named for what it ships — the GUI build — and matches the
+# `lattice-gui-<ver>-<arch>.deb` filename, rather than defaulting to the crate
+# name. Releases up to 0.9.3 shipped it as `lattice-cli`; Provides / Conflicts /
+# Replaces let apt upgrade those installs in place (Debian Policy 7.6.2).
+name = "lattice-gui"
+provides = "lattice-cli"
+conflicts = "lattice-cli"
+replaces = "lattice-cli"
 maintainer = "Dhruva Sagar <dhruva.sagar@gmail.com>"
 copyright = "Copyright © 2024 Dhruva Sagar"
 license-file = ["../../LICENSE", "0"]

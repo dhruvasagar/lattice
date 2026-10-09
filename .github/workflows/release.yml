@@ -341,6 +341,13 @@ jobs:
           [[ -f "$deb" ]] || { echo "::error::no .deb found to verify at $deb"; exit 1; }
           deb_listing="$(dpkg-deb -c "$deb")"
           check_paths "$deb_listing" "$deb"
+          # The control file's package name must match the filename: apt and
+          # dpkg report the former, users download the latter.
+          deb_name="$(dpkg-deb -f "$deb" Package)"
+          [[ "$deb_name" == "lattice-gui" ]] \
+            || { echo "::error::$deb declares Package: $deb_name, expected lattice-gui"; exit 1; }
+          dpkg-deb -f "$deb" Description | head -n1 | grep -qv "generated from Rust crate" \
+            || { echo "::error::$deb has a placeholder Description"; exit 1; }
           echo "ok: $deb"
 
           appimage="dist/lattice-gui-${VERSION}-${arch}.AppImage"

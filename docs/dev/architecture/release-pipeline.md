@@ -138,6 +138,15 @@ AppImage + .deb. Their icon must match the existing desktop entry
   - `com.lattice-editor.lattice.desktop` → `/usr/share/applications/`
   - each square PNG → `/usr/share/icons/hicolor/<size>x<size>/apps/com.lattice-editor.lattice.png`
     (renamed from `icon_NxN.png` to the `Icon=` key).
+
+  The package is named **`lattice-gui`** (`name` in the same section), to
+  match the artefact filename — cargo-deb would otherwise default to the crate
+  name, and `apt` would report a `lattice-cli` the user never downloaded.
+  Releases up to 0.9.3 did exactly that, so the section also declares
+  `Provides` / `Conflicts` / `Replaces: lattice-cli` (Debian Policy 7.6.2):
+  installing the renamed package removes the old one instead of colliding
+  with it over `/usr/bin/lattice`. The one-line `Description:` is the crate's
+  `package.description`. The `dist` leg asserts both on the built `.deb`.
 - **AppImage:** built with `linuxdeploy`, passing
   `-d assets/linux/com.lattice-editor.lattice.desktop` and
   `-i <icon_512x512.png renamed to com.lattice-editor.lattice.png>`. The icon

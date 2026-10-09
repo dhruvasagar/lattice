@@ -14,6 +14,11 @@
 //! a *reading* aid, deliberately not a parser: it never fails, never rejects
 //! a line, and a line it does not recognise is simply left unstyled.
 //!
+//! Two views read through it: `*compilation*`, where the pipe reader
+//! applies it to every line the tool left uncoloured, and `:plugins`, which
+//! shows a failed plugin build with it. One classifier, so a compiler report
+//! reads the same wherever it is shown.
+//!
 //! ## Why spans, and not the compiler's own colours
 //!
 //! `cargo --color always` would hand over rustc's real SGR sequences, and
@@ -33,6 +38,7 @@
 //! | `  --> src/lib.rs:43:14` | arrow dim, location as a link |
 //! | `43 \|     code` | gutter dim, code untouched |
 //! | `   \|     ^^^^ missing field` | gutter dim, marker + label in the diagnostic's colour |
+//! | `   \|     --   ^^^ expected u8` | each run its own colour: `-` secondary, `^` the diagnostic's |
 //! | `   = note: …` | `=` dim, label coloured |
 //! | `Caused by:` / `… backtrace:` | bold |
 //! | `   3: 0x1a2b - module!func` | index dim, address as a number, symbol as a function |
@@ -121,16 +127,12 @@ impl DiagnosticHighlighter {
             let has_line_number = body.as_bytes()[0].is_ascii_digit();
             let after = &line[gutter_end..];
             let marker = after.trim_start();
-            if !has_line_number && marker.starts_with(['^', '-', '_', '|']) {
+            // rustc always puts a space between the gutter and a marker. A
+            // `|---|---|` table rule does not, and is not one.
+            let spaced = after.starts_with(' ');
+            if !has_line_number && spaced && marker.starts_with(MARKERS) {
                 let at = gutter_end + (after.len() - marker.len());
-                // `^` is the primary span and takes the diagnostic's colour;
-                // `-` is a secondary one, which rustc draws in blue.
-                let style = if marker.starts_with('^') {
-                    self.severity
-                } else {
-                    Style::DiagnosticInfo
-                };
-                spans.push(span(at, line.len(), style));
+                spans.extend(marker_spans(line, at, self.severity));
             }
             return spans;
         }
@@ -194,6 +196,61 @@ fn severity_label(text: &str) -> Option<(usize, Style, bool)> {
         }
     }
     None
+}
+
+/// The characters rustc draws under a span.
+const MARKERS: [char; 4] = ['^', '-', '_', '|'];
+
+/// The spans of a marker line from `at` on: `--   ^^^ expected u8`.
+///
+/// One line can underline several spans, and they are not the same kind:
+/// `^` is the primary one and takes the diagnostic's colour, `-` is a
+/// secondary one, which rustc draws in blue. So each run is styled by what
+/// it is, and the label that follows takes the colour of the run it labels —
+/// the last one. Styling the line by its first character would paint the
+/// error's own `^^^ expected …` as a secondary note whenever a `--` sits to
+/// its left, which is the common shape of a type mismatch.
+fn marker_spans(line: &str, at: usize, severity: Style) -> Vec<StyledSpan> {
+    let mut spans = Vec::new();
+    let mut pos = at;
+    let mut last = Style::DiagnosticInfo;
+    loop {
+        let rest = &line[pos..];
+        let run = rest
+            .find(|c: char| !MARKERS.contains(&c))
+            .unwrap_or(rest.len());
+        if run == 0 {
+            break;
+        }
+        last = if rest[..run].contains('^') {
+            severity
+        } else {
+            Style::DiagnosticInfo
+        };
+        spans.push(StyledSpan {
+            start: pos,
+            end: pos + run,
+            style: last,
+        });
+        let gap = rest[run..].len() - rest[run..].trim_start().len();
+        pos += run + gap;
+        if gap == 0 {
+            break;
+        }
+    }
+    if pos < line.len() {
+        // What is left is the label. Joined to its run when nothing but
+        // the one space separates them, so the common case stays one span.
+        match spans.last_mut() {
+            Some(prev) if prev.end + 1 == pos => prev.end = line.len(),
+            _ => spans.push(StyledSpan {
+                start: pos,
+                end: line.len(),
+                style: last,
+            }),
+        }
+    }
+    spans
 }
 
 /// The byte offset of the gutter's `|` when `body` (already left-trimmed)
@@ -336,6 +393,34 @@ mod tests {
             &marker[spans[1].start..spans[1].end],
             "^^^^^^^^^^^ missing `minor_modes`"
         );
+    }
+
+    /// The classifier reads whatever a build prints, not only rustc. A
+    /// table's rule line starts with a pipe and a dash and is no marker.
+    /// The common shape of a type mismatch: a secondary `--` to the left of
+    /// the primary `^^^`. Each is its own colour, and the message belongs to
+    /// the primary — styled by the line's first character it read as a note.
+    #[test]
+    fn each_marker_run_on_a_line_takes_its_own_colour() {
+        assert_eq!(
+            styled("  |            --   ^^^ expected `u8`, found `&str`"),
+            vec![
+                ("|", Style::Comment),
+                ("--", Style::DiagnosticInfo),
+                ("^^^ expected `u8`, found `&str`", Style::DiagnosticError),
+            ]
+        );
+        // A continuation bar under a secondary span.
+        assert_eq!(
+            styled("  |            |"),
+            vec![("|", Style::Comment), ("|", Style::DiagnosticInfo)]
+        );
+    }
+
+    #[test]
+    fn a_table_rule_is_not_a_marker() {
+        assert_eq!(styled("|---|---|"), vec![("|", Style::Comment)]);
+        assert_eq!(styled("| a | b |"), vec![("|", Style::Comment)]);
     }
 
     #[test]

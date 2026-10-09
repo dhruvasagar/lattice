@@ -107,7 +107,8 @@ Open an issue on the [GitHub issue tracker](https://github.com/dhruvasagar/latti
 
 ### Is there a chat or forum?
 
-[GitHub Discussions](https://github.com/dhruvasagar/lattice/discussions) and
-[issues](https://github.com/dhruvasagar/lattice/issues). There's no Discord or
-Matrix room at 0.9 — an empty chat room is worse than none, and discussions
-keep answers searchable.
+Both. For chat there is a [Discord server](https://discord.gg/rqbeVSBBY) — the quickest way
+to ask "is this a bug or am I holding it wrong?". For anything worth finding
+again, use [GitHub Discussions](https://github.com/dhruvasagar/lattice/discussions)
+(questions, ideas) or [issues](https://github.com/dhruvasagar/lattice/issues)
+(bugs): those stay searchable, and a chat scrolls away.

@@ -15,7 +15,8 @@
 
 > **0.9 — alpha.** The editor is usable; the distribution is new. Expect
 > rough edges in install and first-run rather than in editing. Please file
-> what you hit: [issues](https://github.com/dhruvasagar/lattice/issues).
+> what you hit: [issues](https://github.com/dhruvasagar/lattice/issues) —
+> or come and ask on [Discord](https://discord.gg/rqbeVSBBY).
 
 ## Install
 
@@ -209,6 +210,14 @@ site, [`llms.txt`](https://dhruvasagar.github.io/lattice/llms.txt) indexes
 every doc as plain Markdown, and
 [`llms-full.txt`](https://dhruvasagar.github.io/lattice/llms-full.txt) is
 everything needed to write a plugin in one file.
+
+---
+
+## Community
+
+- [Discord](https://discord.gg/rqbeVSBBY) — chat, quick questions, showing what you built.
+- [Discussions](https://github.com/dhruvasagar/lattice/discussions) — questions and ideas worth finding again.
+- [Issues](https://github.com/dhruvasagar/lattice/issues) — bugs and concrete feature requests.
 
 ---
 

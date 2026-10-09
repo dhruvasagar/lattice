@@ -113,6 +113,52 @@ pub(crate) fn match_location(line: &str) -> Option<(PathBuf, u32, u32)> {
     None
 }
 
+/// Where the parts of a gnu-style line sit — the same three forms, in the
+/// same order and under the same path checks, as [`match_location`].
+///
+/// The full form's fourth capture is whatever word precedes the second
+/// colon, which for `main.go:10:5: undefined: x` is not a severity at all.
+/// It is reported as a label only when it is one of the keywords
+/// [`gnu_severity`] names; otherwise the line has a location and no more.
+pub(crate) fn shape(line: &str) -> Option<super::LineShape> {
+    if let Some(re) = full_re()
+        && let Ok(Some(caps)) = re.captures(line)
+        && let (Some(path), Some(col), Some(sev), Some(msg)) =
+            (caps.get(1), caps.get(3), caps.get(4), caps.get(5))
+    {
+        let known = matches!(
+            sev.as_str().trim().to_ascii_lowercase().as_str(),
+            "error" | "fatal error" | "warning" | "note"
+        );
+        return Some(super::LineShape {
+            location: path.start()..col.end(),
+            label: known.then(|| (sev.start()..sev.end(), gnu_severity(sev.as_str()))),
+            message: (known && !msg.as_str().is_empty()).then(|| msg.start()..msg.end()),
+        });
+    }
+    let location_only =
+        |path: fancy_regex::Match<'_>, l: fancy_regex::Match<'_>| super::LineShape {
+            location: path.start()..l.end(),
+            label: None,
+            message: None,
+        };
+    if let Some(re) = short_re()
+        && let Ok(Some(caps)) = re.captures(line)
+        && let (Some(path), Some(l)) = (caps.get(1), caps.get(2))
+        && is_path_like(path.as_str())
+    {
+        return Some(location_only(path, l));
+    }
+    if let Some(re) = grep_re()
+        && let Ok(Some(caps)) = re.captures(line)
+        && let (Some(path), Some(l)) = (caps.get(1), caps.get(2))
+        && is_file_like(path.as_str())
+    {
+        return Some(location_only(path, l));
+    }
+    None
+}
+
 /// CM.3c: severity of a gnu-style **full-form** diagnostic line
 /// (`path:line:col: severity: message`), or `None` when the line is not a
 /// gnu full-form diagnostic. Reuses the compiled [`FULL_PATTERN`]'s

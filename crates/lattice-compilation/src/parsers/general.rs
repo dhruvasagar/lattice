@@ -101,6 +101,19 @@ pub(crate) fn match_location(line: &str) -> Option<(PathBuf, u32, u32)> {
     None
 }
 
+/// Where the catch-all's location sits: the first `file:line[:col]`
+/// anywhere in the line, under the same checks as [`match_location`].
+pub(crate) fn shape(line: &str) -> Option<super::LineShape> {
+    let re = general_re()?;
+    let m = re.find_iter(line).flatten().next()?;
+    extract_entry(&m)?;
+    Some(super::LineShape {
+        location: m.start()..m.end(),
+        label: None,
+        message: None,
+    })
+}
+
 pub(crate) fn match_severity(_line: &str) -> Option<ErrorSeverity> {
     None
 }

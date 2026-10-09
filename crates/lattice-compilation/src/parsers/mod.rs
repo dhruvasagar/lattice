@@ -74,6 +74,46 @@ pub(crate) fn match_severity(line: &str) -> Option<ErrorSeverity> {
         .or_else(|| general::match_severity(line))
 }
 
+/// Where the parts of a one-line diagnostic sit in the line, as byte ranges.
+///
+/// The parsers answer *what* a line says — a path, a severity, a message —
+/// as an [`ErrorEntry`](lattice_protocol::error_list::ErrorEntry). This is
+/// the same match answering *where*, for the one consumer that has to paint
+/// it: [`crate::DiagnosticHighlighter`]. It exists so that consumer does not
+/// grow a second set of per-tool patterns that would then drift from these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LineShape {
+    /// `path:line` or `path:line:col`.
+    pub location: std::ops::Range<usize>,
+    /// The severity word, when the line carries one the parsers know.
+    pub label: Option<(std::ops::Range<usize>, ErrorSeverity)>,
+    /// What the diagnostic says. Only reported beside a `label`: without a
+    /// severity there is no telling a message from the rest of a log line.
+    pub message: Option<std::ops::Range<usize>>,
+}
+
+/// The shape of ONE line under the single-line parsers — gnu-style, a Rust
+/// panic, then the catch-all — in the order [`match_location_line`] tries
+/// them. `None` for a line none of them reads. The rustc `-->` line is not
+/// here: it is half of a multi-line layout, which the highlighter reads
+/// whole.
+///
+/// Every pattern behind this needs a `:` followed by a digit, so a line
+/// without one is turned away before any regex runs. Most of a build is
+/// such lines.
+pub(crate) fn line_shape(line: &str) -> Option<LineShape> {
+    let has_line_number = line
+        .as_bytes()
+        .windows(2)
+        .any(|w| w[0] == b':' && w[1].is_ascii_digit());
+    if !has_line_number {
+        return None;
+    }
+    gnu::shape(line)
+        .or_else(|| panicked::shape(line))
+        .or_else(|| general::shape(line))
+}
+
 /// Convert a 1-based line/column string (rustc + gnu tools are both
 /// 1-based) to the 0-based `u32` the error substrate +
 /// `Editor::jump_to_file_line_col` expect. Returns `None` on a

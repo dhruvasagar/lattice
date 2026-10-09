@@ -9,6 +9,9 @@
   now reads a diagnostic the way `:plugins` does: severity-coloured
   labels, a dimmed gutter, carets in their diagnostic's colour, the
   `-->` location as a link, styled backtraces.
+  One-line diagnostics from other tools (`main.c:10:5: error: …` from
+  gcc, clang, eslint; a Rust panic; any `file:line`) are styled as well,
+  from the same match that makes them jumpable.
 - **Colour a tool forced on never reached `*compilation*`.** Output from
   `cargo build --color=always` had its escape codes stripped, as
   documented, but was then shown uncoloured. It is painted now.

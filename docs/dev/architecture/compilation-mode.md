@@ -426,7 +426,7 @@ what keeps progress output — most of any build — at zero publishes.
 **Where it runs.** In the pipe reader's own thread, off the UI/actor
 thread, ahead of the parse it protects. Benched in four shapes
 (`compilation_ansi`): plain ~1.2 GiB/s, which is the path nearly every
-real build takes, and ~800 MiB/s with the §8c reading pass on top.
+real build takes; the §8c reading pass on top is costed there.
 
 ## 8c. Reading cues for plain output
 
@@ -452,23 +452,55 @@ script's `error:` plain is read correctly on both. The classifier still
 *sees* every line: a caret's colour comes from the header above it, and
 that header may be one the tool coloured.
 
+**Two kinds of line, read two ways.** rustc's report is a *layout*: a
+header, a gutter, carets under a span, spread over several lines and
+only readable as a whole. The classifier reads that itself, because no
+parser models it — the parsers want the header and the `-->` and nothing
+in between. Every other tool's diagnostic is *one line*
+(`main.c:10:5: error: …`, a Rust panic, a `grep -n` hit), and for those
+the classifier holds no patterns at all. It asks the parser module for
+the line's shape — `parsers::line_shape`, the byte ranges of the same
+match that produces the `ErrorEntry` — and paints what comes back: the
+location as a link, the severity word in its colour, the message bold.
+
+That split is the point. A second set of per-tool patterns in the
+classifier would drift from the parsers', and the drift would show as a
+line that is styled like a diagnostic and does not jump, or the reverse.
+With one match behind both, a tool the parsers learn to read is styled
+the same day, and a line they turn away — a timestamp, a version string
+— is turned away by both. A word in the severity position that is not a
+severity (Go's `undefined: x`) is not painted as one.
+
+The one piece of state crosses the two: gcc prints its source line and
+caret in rustc's gutter, so a one-line `warning:` sets the colour the
+caret below it takes.
+
 **It sits beside the location tint, not over it.** The tint (§5) answers
-*can I jump from this line* and is driven by the parser registry, so it
-covers every tool with a parser. The classifier answers *how does this
-text read* and knows only the rustc layout. On a `-->` line both apply,
-on different axes: a row background from the tint, a foreground link
-from the classifier.
+*can I jump from this line*; the classifier answers *how does this text
+read*. Both now come from the same parser match, on different axes: a
+row background from the tint, foreground spans from the classifier.
 
 **It is a reading aid, not a parser.** It never rejects a line and has no
-say in the error list; a tool it does not recognise is left unstyled
-rather than guessed at. Its styles are the shared semantic ones
+say in the error list; a line nothing recognises is left unstyled rather
+than guessed at. Its styles are the shared semantic ones
 (`DiagnosticError`, `Comment`, `Link`, …), so every theme already
 covers them and there is nothing new to register.
 
-**Cost.** One pass of prefix checks per line on the reader thread:
-about 13 ns per line, measured as `compilation_ansi/plain_read` against
-`plain`. Lines with nothing to say — progress, program output — produce
-no spans and so still publish nothing.
+**Plugin parsers are not styled.** A parser a plugin contributes (§5,
+CM.6b) feeds the error list and nothing else: the `error-parser` world
+returns entries, not byte ranges, so there is no shape to paint. Its
+lines reach `:cnext` and are plain in the buffer — as they already were
+for the gutter mark and the tint, which read the built-in matchers too.
+Widening the world to return ranges is the upgrade path for all three.
+
+**Cost.** On the reader thread. A line with no `:` followed by a digit
+— progress, most program output — is turned away by a byte scan before
+any pattern runs, and still publishes nothing. A rustc-layout line costs
+a few prefix checks, about 13 ns. A one-line diagnostic costs one more
+run of the pattern that matched it, about 0.5 µs, which is the price of
+the parsers returning entries rather than ranges. Benched as
+`compilation_ansi/plain_read`: ~180 MiB/s on a fixture where one line in
+four is a diagnostic.
 
 ## 9. Rejected alternatives
 

@@ -40,6 +40,25 @@ pub(crate) fn match_severity(line: &str) -> Option<ErrorSeverity> {
         .and_then(|m| if m { Some(ErrorSeverity::Error) } else { None })
 }
 
+/// Where the parts of a panic line sit. `panicked` is its severity word:
+/// the line has no `error:`, and that word is what says something went
+/// wrong.
+pub(crate) fn shape(line: &str) -> Option<super::LineShape> {
+    let re = panic_re()?;
+    let caps = re.captures(line).ok()??;
+    let (path, col) = (caps.get(1)?, caps.get(3)?);
+    const WORD: &str = "panicked";
+    let word = line[..path.start()].rfind(WORD)?;
+    Some(super::LineShape {
+        location: path.start()..col.end(),
+        label: Some((word..word + WORD.len(), ErrorSeverity::Error)),
+        message: caps
+            .get(4)
+            .filter(|m| !m.as_str().is_empty())
+            .map(|m| m.start()..m.end()),
+    })
+}
+
 pub struct TestPanicParser;
 
 impl TestPanicParser {

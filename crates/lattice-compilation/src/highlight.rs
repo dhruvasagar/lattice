@@ -43,6 +43,16 @@
 //! | `Caused by:` / `… backtrace:` | bold |
 //! | `   3: 0x1a2b - module!func` | index dim, address as a number, symbol as a function |
 //! | `      at src/lib.rs:10:5` | `at` dim, location as a link |
+//! | `main.c:10:5: error: …` | location as a link, label in its severity colour, message bold |
+//! | `thread 'main' panicked at src/main.rs:5:9:` | `panicked` in the error colour, location as a link |
+//! | `src/lib.rs:7:// TODO` and any other `file:line` | location as a link |
+//! | `    ^~~~` | clang's bare underline, in the diagnostic's colour |
+//!
+//! The first nine rows are rustc's layout and are read here. The rest are
+//! one-line diagnostics, and those are not read here at all: the parsers in
+//! [`crate::parsers`] already decide which lines they are and where each
+//! part sits, and this styles what they matched. One set of patterns, so
+//! what is jumpable and what is styled cannot disagree.
 //!
 //! The marker colour follows the diagnostic it belongs to, which is the one
 //! piece of state: a `^^^^` under a `warning:` is a warning's, so
@@ -161,7 +171,69 @@ impl DiagnosticHighlighter {
         if body.starts_with('…') || body.starts_with("For more information about this error") {
             return whole(Style::Comment);
         }
-        Vec::new()
+        // clang underlines with no gutter: a line that is only `^~~~`.
+        if body.trim_end().chars().all(|c| c == '^' || c == '~') {
+            return whole(self.severity);
+        }
+        // Everything above is rustc's layout. What is left is every other
+        // tool, and for those the parsers already know the line.
+        self.one_line_diagnostic(line)
+    }
+
+    /// A diagnostic that is one line long — `main.c:10:5: error: …` from
+    /// gcc, clang, eslint and the many tools that copy them, a Rust panic, a
+    /// `grep -n` hit — styled from what the parsers matched.
+    ///
+    /// Deliberately not a second set of patterns. Which lines are
+    /// diagnostics, and where their path ends, is the parser module's
+    /// decision and is made once; this only decides how the parts look. A
+    /// tool the parsers learn to read is therefore styled here the same day,
+    /// and a line they turn away (a timestamp, a version string) is turned
+    /// away here too.
+    fn one_line_diagnostic(&mut self, line: &str) -> Vec<StyledSpan> {
+        let Some(shape) = crate::parsers::line_shape(line) else {
+            return Vec::new();
+        };
+        let mut spans = vec![StyledSpan {
+            start: shape.location.start,
+            end: shape.location.end,
+            style: Style::Link,
+        }];
+        if let Some((range, severity)) = shape.label {
+            let (style, is_header) = severity_style(severity);
+            // gcc prints the source line and a `^` under it next, in the
+            // same gutter rustc uses; the caret is this diagnostic's.
+            if is_header {
+                self.severity = style;
+            }
+            spans.push(StyledSpan {
+                start: range.start,
+                end: range.end,
+                style,
+            });
+        }
+        if let Some(range) = shape.message {
+            spans.push(StyledSpan {
+                start: range.start,
+                end: range.end,
+                style: Style::Bold,
+            });
+        }
+        // A panic names its severity before its location.
+        spans.sort_by_key(|s| s.start);
+        spans
+    }
+}
+
+/// How a parsed severity is painted, and whether it opens a diagnostic —
+/// the same split [`severity_label`] makes for rustc's words: a `note`
+/// annotates the diagnostic above it and must not recolour its markers.
+fn severity_style(severity: lattice_protocol::error_list::ErrorSeverity) -> (Style, bool) {
+    use lattice_protocol::error_list::ErrorSeverity;
+    match severity {
+        ErrorSeverity::Error => (Style::DiagnosticError, true),
+        ErrorSeverity::Warning => (Style::DiagnosticWarning, true),
+        ErrorSeverity::Note | ErrorSeverity::Info => (Style::DiagnosticInfo, false),
     }
 }
 
@@ -199,7 +271,8 @@ fn severity_label(text: &str) -> Option<(usize, Style, bool)> {
 }
 
 /// The characters rustc draws under a span.
-const MARKERS: [char; 4] = ['^', '-', '_', '|'];
+/// `~` is gcc's and clang's range: `^~~~`.
+const MARKERS: [char; 5] = ['^', '~', '-', '_', '|'];
 
 /// The spans of a marker line from `at` on: `--   ^^^ expected u8`.
 ///
@@ -393,6 +466,88 @@ mod tests {
             &marker[spans[1].start..spans[1].end],
             "^^^^^^^^^^^ missing `minor_modes`"
         );
+    }
+
+    /// gcc, clang, eslint: the diagnostic is one line, location first.
+    #[test]
+    fn a_gnu_style_diagnostic_is_styled_from_the_parsers_match() {
+        assert_eq!(
+            styled("main.c:10:5: error: 'foo' undeclared"),
+            vec![
+                ("main.c:10:5", Style::Link),
+                ("error", Style::DiagnosticError),
+                ("'foo' undeclared", Style::Bold),
+            ]
+        );
+        assert_eq!(
+            styled("lib/a.js:3:1: warning: unused")[1],
+            ("warning", Style::DiagnosticWarning)
+        );
+    }
+
+    /// The word before the second colon is only a label when it is a
+    /// severity. Go prints `undefined: x` there.
+    #[test]
+    fn a_word_that_is_not_a_severity_is_not_painted_as_one() {
+        assert_eq!(
+            styled("./main.go:10:5: undefined: x"),
+            vec![("./main.go:10:5", Style::Link)]
+        );
+    }
+
+    /// gcc prints the source and a caret in rustc's gutter; the caret
+    /// belongs to the one-line diagnostic above it. And a `note:` must not
+    /// take the carets over.
+    #[test]
+    fn a_gcc_caret_takes_the_colour_of_its_one_line_diagnostic() {
+        let mut h = DiagnosticHighlighter::new();
+        h.line("main.c:3:9: warning: unused variable 'x'");
+        let caret = "      |         ^~~~";
+        let spans = h.line(caret);
+        assert_eq!(
+            (&caret[spans[1].start..spans[1].end], spans[1].style),
+            ("^~~~", Style::DiagnosticWarning)
+        );
+        h.line("main.c:1:1: note: declared here");
+        assert_eq!(h.line(caret)[1].style, Style::DiagnosticWarning);
+        // clang has no gutter at all.
+        let bare = h.line("        ^~~~");
+        assert_eq!(bare[0].style, Style::DiagnosticWarning);
+    }
+
+    #[test]
+    fn a_panic_names_its_severity_before_its_location() {
+        assert_eq!(
+            styled("thread 'main' panicked at src/main.rs:5:9: boom"),
+            vec![
+                ("panicked", Style::DiagnosticError),
+                ("src/main.rs:5:9", Style::Link),
+                ("boom", Style::Bold),
+            ]
+        );
+    }
+
+    /// The catch-all: a location anywhere in a line is a link, and a line
+    /// the parsers turn away is left alone here too.
+    #[test]
+    fn what_is_styled_is_exactly_what_the_parsers_read() {
+        assert_eq!(
+            styled("FAIL at tests/a.py:12 in setup"),
+            vec![("tests/a.py:12", Style::Link)]
+        );
+        for plain in [
+            "[12:34:56] warming caches",
+            "version:1 of the thing",
+            "   Compiling lattice-core v0.9.4",
+            "took 3:07 minutes",
+        ] {
+            assert!(styled(plain).is_empty(), "{plain:?} is not a diagnostic");
+            assert_eq!(
+                crate::parse_location_line(plain),
+                None,
+                "and the jump agrees"
+            );
+        }
     }
 
     /// The classifier reads whatever a build prints, not only rustc. A

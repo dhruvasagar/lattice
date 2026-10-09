@@ -121,9 +121,15 @@ colour (a secondary `---` is blue, as rustc draws it). Backtraces and
 `Caused by:` chains are styled the same way. This is the same reading
 `:plugins` gives a failed plugin build.
 
-It follows the layout rustc and cargo use. Output from a tool that lays
-its errors out differently is shown as-is — its error lines are still
-found, marked in the gutter and tinted as jumpable.
+Tools that report an error on one line — gcc, clang, eslint and
+everything else that prints `main.c:10:5: error: …` — are read too: the
+location is a link, the severity word is coloured, the message is bold,
+and gcc's `^` under the source line takes the colour of its diagnostic.
+A Rust panic gets the same treatment, and any `file:line` in a line of
+output reads as a link, since `<CR>` will take you there.
+
+What gets styled is exactly what Lattice can jump to. A tool whose
+errors it does not recognise at all is shown as plain text.
 
 ### Coloured output
 

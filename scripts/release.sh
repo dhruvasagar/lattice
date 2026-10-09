@@ -27,6 +27,7 @@
 # that stays a separate, deliberate act.
 #
 # It also refuses to tag a version CHANGELOG.md has no written section for.
+# A written `## Unreleased` section counts: it is retitled for the version.
 # The changelog is theme-grouped prose, not a commit list; nothing here can
 # author it, and the release body is built from it, so a missing section
 # would ship an empty release page.
@@ -131,6 +132,26 @@ echo "  on main, in sync with origin/main, $tag is free"
 
 # ---------------------------------------------------------------- changelog
 say "changelog"
+
+# Notes written as the work landed sit under `## Unreleased`. That section IS
+# the release's notes, so it is promoted — retitled with the version and the
+# date — rather than answered with an empty stub beside it. Without this the
+# script reported "no section" for a changelog that had one, and the author
+# was left to move the text by hand.
+if ! extract_section "$next" | grep -q . \
+    && extract_section Unreleased | tail -n +2 | grep -q '[^[:space:]]'; then
+    if [ "$dry_run" -eq 1 ]; then
+        die "CHANGELOG.md has no '## $next' section, but '## Unreleased' is written (a real run would retitle it '## $next')"
+    fi
+    tmp="$(mktemp)"
+    awk -v ver="$next" -v day="$(date +%F)" '
+        !done && /^## Unreleased[ \t]*$/ { print "## " ver " — " day; done = 1; next }
+        { print }
+    ' CHANGELOG.md > "$tmp"
+    cat "$tmp" > CHANGELOG.md
+    rm -f "$tmp"
+    echo "  '## Unreleased' retitled '## $next — $(date +%F)'"
+fi
 
 if ! extract_section "$next" | grep -q .; then
     [ "$dry_run" -eq 0 ] \

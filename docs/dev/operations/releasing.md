@@ -8,7 +8,9 @@ Design: `docs/dev/architecture/release-pipeline.md`.
 1. **Write the changelog entry.** Add a `## X.Y.Z — YYYY-MM-DD` section at the
    top of `CHANGELOG.md`, in theme-grouped prose (see the 0.9.0 entry). This
    is not optional bookkeeping: it becomes the annotated tag's message *and*
-   the GitHub Release body. If you skip it, `scripts/release.sh` inserts a
+   the GitHub Release body. Notes kept under `## Unreleased` as the work
+   landed count: `scripts/release.sh` retitles that section with the version
+   and the date and carries on. With neither section written, it inserts a
    dated stub and stops.
 2. **Cut it.**
    ```bash

@@ -1225,9 +1225,12 @@ pub fn open_project_diff(
     // PD.7a: the seam the diff styling rides on. Absent in a test host
     // that wired no highlight service — the view then renders uncoloured
     // rather than failing, which is the graceful-degradation rule.
-    let synthetic_highlights = services
-        .get::<lattice_mode::PendingSyntheticHighlightsHandle>()
-        .map(|h| (*h).clone());
+    //
+    // Looked up by the bare type the host registers. Asking for the
+    // handle alias misses (the `ServiceRegistry` `TypeId` rule), and a
+    // miss is indistinguishable from that test host: the view opens,
+    // the scan runs, and nothing is ever coloured.
+    let synthetic_highlights = services.get::<lattice_mode::PendingSyntheticHighlights>();
     // PD.7b: created and registered HERE, synchronously, because
     // `register_virtual_row_provider` needs `&mut` on the activator and
     // the scan is async. The scan then only pushes data into it.

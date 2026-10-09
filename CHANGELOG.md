@@ -12,6 +12,9 @@
 - **Colour a tool forced on never reached `*compilation*`.** Output from
   `cargo build --color=always` had its escape codes stripped, as
   documented, but was then shown uncoloured. It is painted now.
+- **The project diff was never coloured.** `:magit-project-diff` drew
+  its deleted lines but left added and changed lines in plain syntax
+  colours, with no green and no row tint. They are styled now.
 - **Indent guides ran through a build log.** They drew a bar beside
   rustc's own gutter; `*compilation*` no longer shows them.
 - **A secondary `--` beside a primary `^^^` coloured the whole line

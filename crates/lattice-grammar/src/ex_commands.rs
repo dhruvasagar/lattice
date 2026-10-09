@@ -2998,9 +2998,13 @@ fn apply_substitute(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     // Scope falls out of the invocation's range: `s/...` -> CurrentLine,
     // `%s/...` -> Whole. The parser front-end set this from the
     // delimiter prefix.
-    let scope = match ctx.range {
+    let scope = match &ctx.range {
         Some(Range::Whole) => SubstituteScope::Whole,
-        _ => SubstituteScope::CurrentLine,
+        Some(range) => match resolved_lines(range) {
+            Some((first, last)) => SubstituteScope::Lines { first, last },
+            None => SubstituteScope::CurrentLine,
+        },
+        None => SubstituteScope::CurrentLine,
     };
     Ok(Effect::Substitute {
         scope,
@@ -3066,7 +3070,24 @@ fn apply_global(ctx: &ExCommandContext) -> GrammarResult<Effect> {
         pattern,
         inverted,
         body: Box::new(body),
+        // `:g` with no range is the whole buffer, which is also what
+        // `Whole` and an unresolvable range come to.
+        lines: ctx.range.as_ref().and_then(resolved_lines),
     })
+}
+
+/// The inclusive 0-based lines of a range the `:` front-end has already
+/// resolved. `None` for anything else: `Whole`, the selection, or a range
+/// still symbolic. An ex-command's `apply` sees no buffer, so it can only
+/// read a range that has been made concrete for it.
+fn resolved_lines(range: &Range) -> Option<(u32, u32)> {
+    match range {
+        Range::Span {
+            start: crate::range::RangeBound::Line(a),
+            end: crate::range::RangeBound::Line(b),
+        } => Some(((*a).min(*b), (*a).max(*b))),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

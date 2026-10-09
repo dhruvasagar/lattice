@@ -135,6 +135,14 @@ pub enum SubstituteScope {
     CurrentLine,
     /// `:%s` -- every line of the buffer.
     Whole,
+    /// `:5,10s`, `:'<,'>s`, `:.,$s` -- an inclusive run of lines, 0-based,
+    /// already resolved from the range the `:` line gave.
+    Lines {
+        /// First line.
+        first: u32,
+        /// Last line, inclusive.
+        last: u32,
+    },
 }
 
 /// Scope for `Effect::QuitEditor`. Mirrors vim's `:q` (close the active
@@ -875,6 +883,9 @@ pub enum Effect {
         inverted: bool,
         /// The command to run on each selected line.
         body: Box<CommandInvocation>,
+        /// `:5,10g` -- only lines within this inclusive 0-based run are
+        /// considered. `None` is the whole buffer, `:g`'s default.
+        lines: Option<(u32, u32)>,
     },
     /// `:d` -- delete the current line including its trailing newline.
     /// Distinct from the standard `delete` operator with a `CurrentLine`

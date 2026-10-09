@@ -3,12 +3,20 @@
 ## Unreleased
 
 ### Added
+- **Ex ranges.** A `:` line takes vim's addresses: line numbers, `.`, `$`,
+  `%`, marks (`'a`, `'<`, `'>`), `/pattern/` and `?pattern?`, and `+n` / `-n`
+  offsets, alone or as a `from,to` pair. `:d`, `:y`, `:>`, `:<`, `:s`, `:g`
+  and `:narrow` act on the range (`:2,5d`, `:.,$s/a/b/`, `:'a,/end/>`), and a
+  range with no command jumps to its last line (`:$`, `:/TODO/`). Before,
+  only `:42`, `%s` and the `:'<,'>` prefix were understood.
 - **`'<` and `'>` are motions.** They jump to the start and end of the last
   Visual selection (`` `< `` and `` `> `` to the exact column), and they
   compose with operators, so `d'>` and `y'<` work. Before, they were
   understood only in the `:'<,'>` prefix.
 
 ### Fixed
+- **`:'<,'>s/…/…/` substituted on the cursor line only.** It now covers the
+  selected lines, as the prefix says.
 - **A table with links in it did not line up.** table-mode measured a
   `[label](url)` cell as the width of its label, which is how a help page
   shows it and not how a buffer does, so every other row was padded short

@@ -1736,13 +1736,14 @@ impl GpuiApp {
                 pattern,
                 inverted,
                 body,
+                lines,
             } => {
                 // Slice 3c.final.E.swap: build outcome inside the
                 // closure, return owned `DispatchOutcome` from
                 // `mutate_editor_with`. Same pattern as TUI edit.rs.
                 let mut out = self.mutate_editor_with(move |e| {
                     let mut out = lattice_host::dispatch::DispatchOutcome::default();
-                    e.do_global(&pattern, inverted, body.as_ref(), &mut out);
+                    e.do_global(&pattern, inverted, body.as_ref(), lines, &mut out);
                     out
                 });
                 for eff in std::mem::take(&mut out.effects) {

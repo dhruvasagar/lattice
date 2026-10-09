@@ -41,10 +41,11 @@ here.
 ## Grammar and commands not yet implemented
 
 - `!` — filtering a range through an external command (`:%!sort`).
-- Ex ranges are partially implemented. What works: `:42` (go to a line),
-  the `:'<,'>` prefix, `%s/` / `s/` for substitute, and `:g/` / `:v/`.
-  What does not parse yet: `1,5`, `.` and `$`, `'a,'b`, `+n` / `-n`
-  offsets, and `/pattern/` addresses.
+- A few ex-range forms: `;` between addresses, `\/` / `\?` / `\&`, and `*`.
+  Everything else in [ranges](help:ex-commands) works. Range commands
+  beyond `:d`, `:y`, `:>`, `:<`, `:s`, `:g` and `:narrow` — `:m`, `:t`,
+  `:normal`, `:sort`, `:j` — do not exist yet.
+- A substitute with a range other than `%` has no live preview.
 - Completion inside `:s/.../.../`.
 - `:autocmd` / `:add-hook`.
 - `:customize` — browsing and picking groups/modes works, and

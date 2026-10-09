@@ -78,7 +78,8 @@ the keymap equivalents.
 | `:s/pat/repl/`                       | Substitute first match on current line                          |
 | `:s/pat/repl/g`                      | All matches on current line                                     |
 | `:%s/pat/repl/g`                     | All matches in buffer                                           |
-| `:'<,'>s/pat/repl/g` (in Visual)     | All matches in selection                                        |
+| `:'<,'>s/pat/repl/g` (in Visual)     | All matches on the selected lines                               |
+| `:5,10s/pat/repl/g`                  | All matches on lines 5–10 (any [range](#ranges))                |
 | `:noh` / `:nohlsearch`               | Clear hlsearch overlay                                          |
 | `:g/pat/CMD`                         | Run `:CMD` on every line matching `pat`                         |
 | `:v/pat/CMD`                         | Run `:CMD` on every line *not* matching `pat`                   |
@@ -346,7 +347,8 @@ hit lights up in magenta with a strike-through overlay. Cancel
 submit (`<CR>`) commits.
 
 For `:%s/pat/repl/g`, the preview spans the whole buffer; for
-`:s/pat/repl/g`, just the current line.
+`:s/pat/repl/g`, just the current line. A substitute with any other
+range (`:5,10s/…`) has no preview yet; it applies on `<CR>` as usual.
 
 ### Pattern syntax
 
@@ -364,27 +366,67 @@ modifier escapes — `\u`, `\l` — land in a follow-up.)
 
 ## Ranges
 
-Most commands accept a range prefix.
+A range goes in front of a command and says which lines it acts on. The
+addresses are vim's.
 
-| Range          | Meaning                                                 |
-|----------------|---------------------------------------------------------|
-| (omitted)      | Current line for line-oriented ops; current cursor pos  |
-| `42`           | Line 42                                                 |
-| `42,50`        | Lines 42 through 50 inclusive                           |
-| `'a,'b`        | From mark `a` to mark `b`                               |
-| `'<,'>`        | The previous Visual selection                           |
-| `%`            | Whole buffer (= `1,$`)                                  |
-| `.`            | Current line                                            |
-| `$`            | Last line                                               |
-| `+5` / `-5`    | Relative to current                                     |
+| Address              | Meaning                                              |
+|----------------------|------------------------------------------------------|
+| `42`                 | Line 42                                              |
+| `.`                  | The cursor line                                      |
+| `$`                  | The last line                                        |
+| `%`                  | Every line (the same as `1,$`)                       |
+| `'a`                 | The line of mark `a`                                 |
+| `'<` / `'>`          | The first / last line of the last Visual selection   |
+| `/pat/`              | The next line matching `pat`, wrapping round         |
+| `?pat?`              | The previous line matching `pat`, wrapping round     |
+| `+5` / `-5`          | Five lines after / before; alone, from the cursor    |
 
-Examples:
+Two addresses joined by a comma are a range, both ends included:
+`42,50`, `.,$`, `'a,'b`, `/begin/,/end/`. Offsets attach to any address and
+chain: `$-5`, `/fn main/+1`, `.+3-1`. A missing side is the cursor line, so
+`,10` is `.,10` and `5,` is `5,.`. A range written backwards (`:9,3d`) is
+swapped.
+
+Patterns are the same regular expressions `:s` and `/` take.
+
+**What takes a range**
+
+| Command                    | With a range                                   |
+|----------------------------|------------------------------------------------|
+| `:d[elete]`                | Delete those lines (into the register, like `dd`) |
+| `:y[ank]`                  | Yank those lines                               |
+| `:>` / `:<`                | Shift those lines right / left                 |
+| `:s/pat/repl/[flags]`      | Substitute on those lines                      |
+| `:g/pat/cmd`, `:v/pat/cmd` | Run `cmd` on the matching lines among them     |
+| `:narrow`                  | Narrow to those lines                          |
+| (nothing)                  | Jump to the range's last line                  |
+
+With no range, `:d`, `:y`, `:>`, `:<` and `:s` act on the cursor line and
+`:g` on the whole buffer.
 
 ```
-:5,10d                   " delete lines 5..=10
-:%s/foo/bar/g            " substitute throughout buffer
-:.,$d                    " delete from cursor to end-of-buffer
+:5,10d                   " delete lines 5 through 10
+:%s/foo/bar/g            " substitute throughout the buffer
+:.,$d                    " delete from the cursor line to the end
+:'<,'>>                  " indent the lines last selected
+:/^fn /,/^}/y            " yank the next function
+:.,+3s/let/const/        " the cursor line and the three after it
+:$                       " go to the last line
+:/TODO/                  " go to the next line with TODO on it
 ```
+
+**When a range cannot be used**
+
+- A line outside the buffer is `E16: Invalid range` for a command, and
+  nothing is changed. A bare jump (`:99999`) is pulled back to the nearest
+  line instead.
+- An unset mark is `E20: Mark not set`; a pattern that matches nowhere is
+  `E486: Pattern not found`.
+- A command that takes no range refuses one with `E481: No range allowed`.
+
+Not supported yet: `;` between addresses (the second counted from the
+first), `\/`, `\?` and `\&` (the last search or substitute pattern), `*`,
+and filtering lines through a shell command (`:%!sort`).
 
 ---
 
@@ -454,7 +496,7 @@ declares `accepts_bang: true`.
 
 ```
 :%set tabstop=4<CR>
-                  → error: this command doesn't accept a range
+                  → error: E481: No range allowed
 ```
 
 Each command's schema declares `accepts_range`. Settings

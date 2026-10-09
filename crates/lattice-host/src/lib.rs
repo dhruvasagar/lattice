@@ -71,6 +71,7 @@ mod visual_marks;
 // Phase 5.7.B.1: Editor::boot extraction from
 // `lattice-ui-tui::app::boot::App::new`.
 mod editor_boot;
+mod ex_range;
 pub mod excommand;
 pub mod file_tree;
 pub mod folds;

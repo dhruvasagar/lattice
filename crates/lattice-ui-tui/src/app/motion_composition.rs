@@ -551,6 +551,177 @@ mod tests {
         assert_eq!(body(&a), "X\n\n  four d\n  five e\n  six f");
     }
 
+    // ── Ex ranges: `:1,5d`, `:.,$s/…`, `:%y`, `:'a,/pat/>` ──
+    //
+    // Typed: `:`, the line, `<CR>`. That is the host's command-line submit,
+    // the one path both renderers share, so the parser, the host's
+    // resolution and the operator dispatch are all in the test.
+
+    fn ex(a: &mut crate::app::App, line: &str) {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        press_chars(a, ":");
+        press_chars(a, line);
+        press(a, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    fn cursor_at(line: u32, byte: u32) -> crate::app::App {
+        let mut a = app_with(MARKED, 20);
+        a.editor.cursor = lattice_protocol::position::Position::new(line, byte);
+        a
+    }
+
+    fn echo(a: &crate::app::App) -> String {
+        a.editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default()
+    }
+
+    /// vim: `:2,4d` deletes lines 2 through 4, linewise, into the register.
+    #[test]
+    fn a_numbered_range_deletes_whole_lines() {
+        let mut a = cursor_at(0, 0);
+        ex(&mut a, "2,4d");
+        assert_eq!(body(&a), "  one a\n  five e\n  six f");
+        assert_eq!(
+            register(&a),
+            Some(("  two b\n\n  four d\n".to_string(), LINEWISE))
+        );
+    }
+
+    /// vim: `.` is the cursor line, `$` the last, `+n` / `-n` offsets from
+    /// the cursor, and a missing side is the cursor line.
+    #[test]
+    fn the_cursor_the_last_line_and_offsets_are_addresses() {
+        let mut a = cursor_at(1, 0);
+        ex(&mut a, ".,+1d");
+        assert_eq!(body(&a), "  one a\n  four d\n  five e\n  six f");
+
+        let mut a = cursor_at(3, 0);
+        ex(&mut a, ".,$d");
+        assert_eq!(body(&a), "  one a\n  two b\n");
+
+        let mut a = cursor_at(4, 0);
+        ex(&mut a, "-1,d");
+        assert_eq!(body(&a), "  one a\n  two b\n\n  six f");
+
+        let mut a = cursor_at(0, 0);
+        ex(&mut a, "$-1,$d");
+        assert_eq!(body(&a), "  one a\n  two b\n\n  four d");
+    }
+
+    /// vim: `%` is every line.
+    #[test]
+    fn percent_is_the_whole_buffer() {
+        let mut a = cursor_at(2, 0);
+        ex(&mut a, "%y");
+        assert_eq!(body(&a), MARKED, "a yank changes nothing");
+        assert_eq!(register(&a).map(|r| r.1), Some(LINEWISE));
+        assert!(register(&a).unwrap().0.starts_with("  one a\n  two b\n"));
+
+        ex(&mut a, "%d");
+        assert_eq!(body(&a), "");
+    }
+
+    /// vim: `'a` is a mark's line and `/pat/` the next matching line.
+    #[test]
+    fn marks_and_patterns_are_addresses() {
+        let mut a = marked((3, 2), (0, 0));
+        ex(&mut a, "'a,$d");
+        assert_eq!(body(&a), "  one a\n  two b\n");
+
+        let mut a = cursor_at(0, 0);
+        ex(&mut a, "/two/,/four/d");
+        assert_eq!(body(&a), "  one a\n  five e\n  six f");
+
+        // Backwards, from the last line.
+        let mut a = cursor_at(5, 0);
+        ex(&mut a, "?two?,.d");
+        assert_eq!(body(&a), "  one a");
+    }
+
+    /// vim: `:'<,'>` is the last Visual selection's lines, whichever way and
+    /// in whichever Visual mode it was drawn.
+    #[test]
+    fn the_visual_marks_address_the_selections_lines() {
+        let mut a = cursor_at(1, 4);
+        press_chars(&mut a, "vj");
+        press_esc(&mut a);
+        ex(&mut a, "'<,'>s/[a-z]+ //");
+        assert_eq!(body(&a), "  one a\n  b\n\n  four d\n  five e\n  six f");
+    }
+
+    /// vim: a range with no command is a jump to its last line.
+    #[test]
+    fn a_bare_range_is_a_jump() {
+        let mut a = cursor_at(0, 0);
+        ex(&mut a, "$");
+        assert_eq!(cursor(&a).0, 5);
+        ex(&mut a, "2,4");
+        assert_eq!(cursor(&a).0, 3);
+        ex(&mut a, "/six/");
+        assert_eq!(cursor(&a).0, 5);
+        ex(&mut a, ".-2");
+        assert_eq!(cursor(&a).0, 3);
+        // Out of the buffer is pulled back for a jump, as `:99999` is.
+        ex(&mut a, ".+99");
+        assert_eq!(cursor(&a).0, 5);
+    }
+
+    /// vim: `:s` and `:g` act on the lines of the range and no others.
+    #[test]
+    fn substitute_and_global_keep_to_the_range() {
+        let mut a = cursor_at(0, 0);
+        ex(&mut a, "4,5s/ /_/g");
+        assert_eq!(body(&a), "  one a\n  two b\n\n__four_d\n__five_e\n  six f");
+
+        let mut a = cursor_at(0, 0);
+        ex(&mut a, "1,4g/o/d");
+        assert_eq!(
+            body(&a),
+            "\n  five e\n  six f",
+            "`four` is in range, `six` is not"
+        );
+    }
+
+    /// vim: `:>` and `:<` shift the lines of the range.
+    #[test]
+    fn the_shift_commands_take_a_range() {
+        let mut a = cursor_at(0, 0);
+        ex(&mut a, "1,2<");
+        assert!(
+            body(&a).starts_with("one a\ntwo b\n\n  four d"),
+            "{:?}",
+            body(&a)
+        );
+    }
+
+    /// vim: a line outside the buffer is E16 for a command, an unset mark
+    /// E20, a pattern nowhere E486 — and nothing is changed.
+    #[test]
+    fn a_range_that_cannot_be_resolved_says_why_and_does_nothing() {
+        for (line, error) in [
+            ("1,99d", "E16: Invalid range"),
+            (".-9,.d", "E16: Invalid range"),
+            ("'z,$d", "E20: Mark not set"),
+            ("/nowhere/d", "E486: Pattern not found: nowhere"),
+        ] {
+            let mut a = cursor_at(2, 0);
+            ex(&mut a, line);
+            assert_eq!(body(&a), MARKED, "{line} must not edit");
+            assert_eq!(echo(&a), error, "{line}");
+        }
+    }
+
+    /// vim: a command that takes no range refuses one.
+    #[test]
+    fn a_command_that_takes_no_range_refuses_one() {
+        let mut a = cursor_at(0, 0);
+        ex(&mut a, "1,2registers");
+        assert!(echo(&a).contains("E481"), "{}", echo(&a));
+    }
+
     fn press_esc(a: &mut crate::app::App) {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         press(a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

@@ -12150,7 +12150,14 @@ impl Editor {
             // `dispatch_invocation`'s document path performs. `:N` / `:gg`
             // / `:G` now get jump-history from that path too (it pushes
             // for jump-class motions), so the duplicated push is gone.
-            Ok(inv) => self.dispatch_invocation(inv, out),
+            //
+            // The line's range is resolved to concrete lines first, here,
+            // where the cursor, the marks and the buffer are (see
+            // `ex_range`).
+            Ok(inv) => match self.resolve_ex_range(inv) {
+                Ok(inv) => self.dispatch_invocation(inv, out),
+                Err(err) => self.set_message(EchoLevel::Error, err.to_string()),
+            },
             Err(err) => {
                 self.set_message(EchoLevel::Error, err.to_string());
             }
@@ -22236,6 +22243,10 @@ impl Editor {
                 let last = last_addressable_line(&self.document.snapshot().buffer);
                 (0, last)
             }
+            lattice_grammar::SubstituteScope::Lines { first, last } => {
+                let end = last_addressable_line(&self.document.snapshot().buffer);
+                (first.min(end), last.min(end))
+            }
         };
         let mut total = 0usize;
         // Apply per line, top-down. fancy-regex's `replace_all` /
@@ -22337,7 +22348,12 @@ impl Editor {
     /// unhandled echo path) would be a behaviour regression. Once
     /// G.x retires `App::apply_effect`, the loop joins the planner
     /// here.
-    pub fn build_global_targets(&mut self, pattern: &str, inverted: bool) -> Option<Vec<u32>> {
+    pub fn build_global_targets(
+        &mut self,
+        pattern: &str,
+        inverted: bool,
+        lines: Option<(u32, u32)>,
+    ) -> Option<Vec<u32>> {
         if pattern.is_empty() {
             self.set_message(EchoLevel::Error, "empty pattern".to_string());
             return None;
@@ -22351,6 +22367,10 @@ impl Editor {
             for (i, line) in text.split_inclusive('\n').enumerate() {
                 if i as u32 > last {
                     break;
+                }
+                // `:5,10g` — only the lines the range named.
+                if lines.is_some_and(|(first, end)| (i as u32) < first || (i as u32) > end) {
+                    continue;
                 }
                 let stripped = line.trim_end_matches('\n');
                 let matches = stripped.contains(pattern);
@@ -22388,9 +22408,10 @@ impl Editor {
         pattern: &str,
         inverted: bool,
         body: &lattice_grammar::CommandInvocation,
+        lines: Option<(u32, u32)>,
         out: &mut DispatchOutcome,
     ) {
-        let Some(targets) = self.build_global_targets(pattern, inverted) else {
+        let Some(targets) = self.build_global_targets(pattern, inverted, lines) else {
             return;
         };
         for &line in targets.iter().rev() {
@@ -24349,7 +24370,7 @@ fn resolve_narrow_range(
                 let bl = resolve_bound(base, cursor, last, visual, marks) as i64;
                 (bl + *delta as i64).clamp(0, last as i64) as u32
             }
-            RangeBound::Pattern(_) => cursor,
+            RangeBound::Pattern(_) | RangeBound::PatternBackward(_) => cursor,
         }
     }
 

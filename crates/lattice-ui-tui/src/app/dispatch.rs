@@ -44,8 +44,7 @@ use lattice_grammar::effect::Effect;
 use lattice_host::dispatch::RendererSignal;
 use lattice_runtime::RuntimeError;
 
-use super::{Action, App, BufferKind, EchoLevel};
-use crate::excommand;
+use super::{Action, App, BufferKind};
 
 const COMMAND_HISTORY_CAP: usize = 100;
 
@@ -823,19 +822,6 @@ impl App {
         }
     }
 
-    pub(super) fn execute_ex_line(&mut self, line: &str) {
-        let reg = self.registry();
-        match excommand::parse(line, &reg) {
-            Ok(inv) => match self.dispatch_blocking(inv) {
-                Ok(eff) => self.apply_effect(eff),
-                Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
-            },
-            Err(err) => {
-                self.set_message(EchoLevel::Error, err.to_string());
-            }
-        }
-    }
-
     /// 5.5.G.23: body migrated to
     /// [`lattice_host::dispatch::Editor::run_invocation`]. Retained as
     /// a 1-line delegate because the host-side `Action::Invoke` arm
@@ -1144,7 +1130,8 @@ impl App {
                 pattern,
                 inverted,
                 body,
-            } => self.do_global(&pattern, inverted, body.as_ref()),
+                lines,
+            } => self.do_global(&pattern, inverted, body.as_ref(), lines),
             // 5.5.E.7.4: `DeleteCurrentLine` migrated to
             // `Editor::handle_effect`; routed through the grouped
             // no-op above.

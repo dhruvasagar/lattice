@@ -467,7 +467,7 @@ fn execute_operator(
         origin,
         linewise: matches!(
             invocation.range,
-            Some(Range::CurrentLine) | Some(Range::Whole)
+            Some(Range::CurrentLine) | Some(Range::Whole) | Some(Range::Span { .. })
         ) || visual_linewise
             || target_linewise,
         register: invocation.register_or_default(),
@@ -926,8 +926,26 @@ fn resolve_grammar_range(
                 }
             }
         }
-        Range::Span { .. } | Range::Custom(_) => Err(CommandError::InvalidArgs(
-            "Span and Custom ranges are not yet resolved in Phase 1",
+        // A `:` line's range, already resolved to concrete lines by the
+        // front-end that read it (the host knows the marks, the last
+        // search and the selection; this crate does not). Whole lines.
+        Range::Span {
+            start: crate::range::RangeBound::Line(a),
+            end: crate::range::RangeBound::Line(b),
+        } => {
+            let buffer = document.buffer();
+            let last = buffer.content_line_count().saturating_sub(1);
+            let (first, end_line) = ((*a).min(*b).min(last), (*a).max(*b).min(last));
+            Ok(ProtoRange::new(
+                Position::new(first, 0),
+                Position::new(end_line, line_byte_len(buffer, end_line)),
+            ))
+        }
+        Range::Span { .. } => Err(CommandError::InvalidArgs(
+            "a symbolic range must be resolved to lines before it is dispatched",
+        )),
+        Range::Custom(_) => Err(CommandError::InvalidArgs(
+            "Custom ranges are not resolved yet",
         )),
     }
 }

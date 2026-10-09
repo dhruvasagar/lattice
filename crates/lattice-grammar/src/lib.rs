@@ -141,7 +141,9 @@ pub use crate::introspect::{
     render_introspection, render_introspection_lines, render_introspection_with,
 };
 pub use crate::modal::{ModalState, SearchDirection, VisualKind};
-pub use crate::range::{Range, RangeBound};
+pub use crate::range::{
+    Range, RangeBound, RangeEnv, RangeError, parse_range_prefix, resolve_lines,
+};
 pub use crate::register::Register;
 pub use crate::registry::{
     ActionContext, ActionSpec, CommandRegistration, CommandRegistry, CommentSyntax, Curswant,

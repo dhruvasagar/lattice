@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use lattice_grammar::registry::{CommandRegistry, MotionId, TextObjectId};
-use lattice_grammar::{ArgValue, Args, CommandInvocation, CommandKind, Range, Target};
+use lattice_grammar::{ArgValue, Args, CommandInvocation, CommandKind, Range, RangeBound, Target};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExCommandError {
@@ -58,16 +58,18 @@ pub fn parse(line: &str, registry: &CommandRegistry) -> Result<CommandInvocation
         return Err(ExCommandError::Empty);
     }
 
-    // Vim's Visual `:` prefills the cmdline with `'<,'>` (the visual
-    // range). Strip that prefix and mark the resulting invocation
-    // `Range::Selection`, which resolves from `last_visual` (captured when
-    // `:` left Visual — `resolve_grammar_range` + the narrow handler read
-    // it). Lets `:'<,'>narrow` and other range-honoring commands act on
-    // the selection. (General `%` / `1,5` line-range prefixes are a
-    // separate enhancement; substitute keeps its own scope model.)
+    // Vim's Visual `:` prefills the cmdline with `'<,'>`. For a keyword
+    // command that is `Range::Selection`, which resolves from `last_visual`
+    // (captured when `:` left Visual) and is what `:'<,'>narrow` and its
+    // peers read. For the line-addressed commands below it is the two
+    // marks, like any other pair: `:'<,'>s/a/b/` is linewise in vim however
+    // the selection was drawn.
     if let Some(rest) = trimmed.strip_prefix("'<,'>") {
-        let inner = parse(rest, registry)?;
-        return Ok(inner.with_range(Range::Selection));
+        let marks = Range::Span {
+            start: RangeBound::Mark('<'),
+            end: RangeBound::Mark('>'),
+        };
+        return parse_ranged(rest.trim_start(), marks, Some(Range::Selection), registry);
     }
 
     // Bare line number: `:42` → go to line 42 (same as `42G`).
@@ -81,6 +83,19 @@ pub fn parse(line: &str, registry: &CommandRegistry) -> Result<CommandInvocation
             .with_count(lattice_grammar::command::Count(n.max(1))));
     }
 
+    // A range: `1,5`, `.,$`, `%`, `'a,'b`, `/pat/`, `+3`. Symbolic here —
+    // the host resolves it to lines when the line is executed
+    // (`Editor::resolve_ex_range`), where the cursor and the marks are.
+    let (range, rest) = lattice_grammar::parse_range_prefix(trimmed)
+        .map_err(|e| ExCommandError::BadArgs(e.to_string()))?;
+    if let Some(range) = range {
+        return parse_ranged(rest, range, None, registry);
+    }
+    // The operator commands take the cursor line when no range is given.
+    if let Some(inv) = try_parse_line_operator(trimmed, Range::CurrentLine, registry, false)? {
+        return Ok(inv);
+    }
+
     // Delimiter-syntax routes through the registry too -- the front-end
     // parses the body into Args::List.
     if let Some(inv) = try_parse_substitute(trimmed, registry)? {
@@ -91,6 +106,80 @@ pub fn parse(line: &str, registry: &CommandRegistry) -> Result<CommandInvocation
     }
 
     parse_invocation(trimmed, registry)
+}
+
+/// Parse what follows a range, and attach the range to it.
+///
+/// `keyword_range` is the range a keyword command receives when it differs
+/// from the line addresses (`Range::Selection` for the Visual prefix);
+/// `None` hands it `range` itself.
+fn parse_ranged(
+    rest: &str,
+    range: Range,
+    keyword_range: Option<Range>,
+    registry: &CommandRegistry,
+) -> Result<CommandInvocation, ExCommandError> {
+    // A range and nothing else is a jump to its last line (`:5`, `:$`,
+    // `:/TODO/`, `:'a`). Parsed as the go-to-line motion carrying the
+    // range; the host turns that into the motion's count.
+    if rest.is_empty() {
+        let id = registry
+            .id_by_name("motion:goto-last-line")
+            .ok_or_else(|| ExCommandError::Unknown("motion:goto-last-line".into()))?;
+        return Ok(CommandInvocation::of(id).with_range(range));
+    }
+    if let Some(inv) = try_parse_substitute(rest, registry)? {
+        // `try_parse_substitute` reads a leading `%` itself; after a range
+        // that would be two ranges.
+        if rest.starts_with('%') {
+            return Err(ExCommandError::BadArgs("E492: two ranges given".into()));
+        }
+        return Ok(inv.with_range(range));
+    }
+    if let Some(inv) = try_parse_global(rest, registry)? {
+        return Ok(inv.with_range(range));
+    }
+    if let Some(inv) = try_parse_line_operator(rest, range.clone(), registry, true)? {
+        return Ok(inv);
+    }
+    let inv = parse_invocation(rest, registry)?;
+    let accepts_range = registry
+        .ex_command_spec(inv.command)
+        .is_some_and(|spec| spec.accepts_range);
+    if !accepts_range {
+        return Err(ExCommandError::BadArgs("E481: No range allowed".into()));
+    }
+    Ok(inv.with_range(keyword_range.unwrap_or(range)))
+}
+
+/// vim's ex spellings of the linewise operators: `:d[elete]`, `:y[ank]`,
+/// `:>` and `:<`, each over a range of whole lines.
+///
+/// They are not separate commands. `:2,5d` is the delete operator given
+/// lines 2–5, the same command `dd` and `d4j` reach, so registers, undo and
+/// the read-only gate all behave as they do from a keystroke. The `:` line
+/// is a front-end onto the one dispatcher (design §5.2.1), and this is that
+/// front-end spelling an operator.
+///
+/// `ranged` is false for a line with no range. `:d` is then left to the
+/// registered `ex:delete`, which `:g/pat/d` also runs as its body.
+fn try_parse_line_operator(
+    rest: &str,
+    range: Range,
+    registry: &CommandRegistry,
+    ranged: bool,
+) -> Result<Option<CommandInvocation>, ExCommandError> {
+    let operator = match rest.trim() {
+        "d" | "de" | "del" | "dele" | "delet" | "delete" if ranged => "operator:delete",
+        "y" | "ya" | "yan" | "yank" => "operator:yank",
+        ">" => "operator:indent-right",
+        "<" => "operator:indent-left",
+        _ => return Ok(None),
+    };
+    let id = registry
+        .id_by_name(operator)
+        .ok_or_else(|| ExCommandError::Unknown(operator.into()))?;
+    Ok(Some(CommandInvocation::of(id).with_range(range)))
 }
 
 /// Parse the keyword form (`:cmd[!] [args]`) into a registry-bound
@@ -996,17 +1085,14 @@ impl CommandLineDecorations {
     }
 }
 
-/// Byte length of a leading range prefix (`%` whole-file, `'<,'>`
-/// visual range) at the start of `line`, or `None` when the line has
-/// no range prefix. Only the prefixes the ex-parser actually honors
-/// are recognised; anything else falls through to the command word.
+/// Byte length of a leading range prefix (`%`, `1,5`, `.,$`, `'<,'>`,
+/// `/pat/`, …) at the start of `line`, or `None` when the line has none
+/// or the range does not read. The same parser the ex-parser uses, so
+/// what is highlighted as a range is what will be taken as one.
 fn leading_range_len(line: &str) -> Option<usize> {
-    if line.starts_with("'<,'>") {
-        Some("'<,'>".len())
-    } else if line.starts_with('%') {
-        Some(1)
-    } else {
-        None
+    match lattice_grammar::parse_range_prefix(line) {
+        Ok((Some(_), rest)) => Some(line.len() - rest.len()),
+        _ => None,
     }
 }
 
@@ -1273,6 +1359,77 @@ mod tests {
         let d = command_line_decorations("%s/a/b/", &reg);
         assert_eq!(d.spans[0].range, 0..1);
         assert_eq!(d.spans[0].style, Style::Number);
+    }
+
+    /// Whatever the parser will take as a range is painted as one — the
+    /// same function reads both, so the two cannot disagree — and the
+    /// command after it is not flagged.
+    #[test]
+    fn mb4_any_range_is_highlighted_and_its_command_is_not_an_error() {
+        let reg = fixture();
+        for (line, range_len) in [
+            ("1,5d", 3),
+            (".,$s/a/b/", 3),
+            ("'a,'bd", 5),
+            ("/fn main/,+3y", 12),
+            ("$", 1),
+        ] {
+            let d = command_line_decorations(line, &reg);
+            assert_eq!(d.spans[0].range, 0..range_len, "{line}");
+            assert_eq!(d.spans[0].style, Style::Number, "{line}");
+            assert_eq!(d.error, None, "{line}");
+        }
+    }
+
+    /// The Visual prefix is the selection for a keyword command, and the
+    /// two marks — whole lines — for the line-addressed ones.
+    #[test]
+    fn the_visual_prefix_is_marks_for_line_commands_and_the_selection_for_keywords() {
+        let reg = fixture();
+        let marks = Range::Span {
+            start: RangeBound::Mark('<'),
+            end: RangeBound::Mark('>'),
+        };
+        for line in ["'<,'>d", "'<,'>s/a/b/", "'<,'>>", "'<,'>g/x/d"] {
+            assert_eq!(
+                parse(line, &reg).unwrap().range,
+                Some(marks.clone()),
+                "{line}"
+            );
+        }
+        // And on its own it is a jump to the selection's last line.
+        assert_eq!(parse("'<,'>", &reg).unwrap().range, Some(marks));
+    }
+
+    /// `:d` alone stays the registered command (it is `:g`'s usual body);
+    /// with a range it is the delete operator over those lines.
+    #[test]
+    fn a_ranged_delete_is_the_operator_and_a_bare_one_is_the_command() {
+        let reg = fixture();
+        let bare = parse("d", &reg).unwrap();
+        let ranged = parse("2,3d", &reg).unwrap();
+        assert_eq!(Some(bare.command), reg.id_by_name("ex:delete"));
+        assert_eq!(Some(ranged.command), reg.id_by_name("operator:delete"));
+        assert_eq!(
+            ranged.range,
+            Some(Range::Span {
+                start: RangeBound::Line(1),
+                end: RangeBound::Line(2),
+            })
+        );
+        // The shifts and yank take the cursor line when given no range.
+        assert_eq!(parse(">", &reg).unwrap().range, Some(Range::CurrentLine));
+        assert_eq!(parse("y", &reg).unwrap().range, Some(Range::CurrentLine));
+    }
+
+    /// Two ranges, `;`, and a range on a command that takes none are errors
+    /// that say so.
+    #[test]
+    fn a_malformed_or_unwelcome_range_is_an_error() {
+        let reg = fixture();
+        for line in ["1,5%s/a/b/", "1;5d", "1,2registers"] {
+            assert!(parse(line, &reg).is_err(), "{line}");
+        }
     }
 
     /// An empty line produces no decorations.

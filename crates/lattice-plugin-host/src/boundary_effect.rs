@@ -388,6 +388,14 @@ impl WitBoundary for NativeSubstituteScope {
         Ok(match self {
             NativeSubstituteScope::CurrentLine => WitSubstituteScope::CurrentLine,
             NativeSubstituteScope::Whole => WitSubstituteScope::Whole,
+            // A line run has no wire form yet: the WIT `substitute-scope`
+            // is a two-case enum. Refused rather than widened to `Whole`,
+            // which would substitute across lines nobody named.
+            NativeSubstituteScope::Lines { .. } => {
+                return Err(
+                    "SubstituteScope::Lines (a `:5,10s` range) has no WIT form yet".to_string(),
+                );
+            }
         })
     }
     fn from_wit(w: WitSubstituteScope) -> Result<Self, String> {
@@ -2111,6 +2119,7 @@ mod tests {
             pattern: "TODO".into(),
             inverted: false,
             body: Box::new(CommandInvocation::of(CommandId::new(0))),
+            lines: None,
         };
         let err = global.to_wit().expect_err("Global must not cross yet");
         assert!(err.contains("Global"), "error names the culprit: {err}");

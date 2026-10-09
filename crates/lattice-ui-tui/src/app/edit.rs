@@ -150,7 +150,13 @@ impl App {
     /// migrates host-side (a not-yet-migrated body effect would be a
     /// silent no-op via `Editor::handle_effect` alone; `apply_effect`
     /// still owns the full router today).
-    pub(super) fn do_global(&mut self, pattern: &str, inverted: bool, body: &CommandInvocation) {
+    pub(super) fn do_global(
+        &mut self,
+        pattern: &str,
+        inverted: bool,
+        body: &CommandInvocation,
+        lines: Option<(u32, u32)>,
+    ) {
         // 5.8.AF.3: planning + body-replay live on `Editor::do_global`.
         // The host applies each body effect inline (so cursor-
         // positional effects land on the right line) and emits the
@@ -168,7 +174,7 @@ impl App {
         let body = body.clone();
         let mut out = self.mutate_editor_with(move |e| {
             let mut out = lattice_host::dispatch::DispatchOutcome::default();
-            e.do_global(&pattern, inverted, &body, &mut out);
+            e.do_global(&pattern, inverted, &body, lines, &mut out);
             out
         });
         for eff in std::mem::take(&mut out.effects) {

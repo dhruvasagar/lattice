@@ -1,5 +1,88 @@
 # Changelog
 
+## 0.9.4 — 2026-10-09
+
+A first-config release. `lattice --scaffold-init` produced a config that
+did not compile in 0.9.2 and 0.9.3; that is fixed, the scaffolds now check
+for the Rust toolchain they need, the editor builds a plugin you are
+writing the way it builds your config, and a build that fails — any
+plugin's — is shown in `:plugins` in full instead of being left in
+`:messages`.
+
+### Fixed
+- **`--scaffold-init` and `--scaffold-plugin` wrote code that did not
+  build.** The starter `src/lib.rs` had fallen behind the plugin API, so a
+  fresh config failed to compile and never loaded. Both are fixed, and CI
+  now builds what each scaffold writes.
+- **A build that failed was invisible.** An `init.rs` that had never built
+  did not appear in `:plugins` at all, and one running its previous build
+  read `cached`; the reason was only in `:messages`. `:plugins` now lists it
+  under *Failed to load* or *Build failed* with the whole compiler report.
+  This holds for every plugin the editor builds: your config, a failed
+  `:reload-config`, the plugins your config `require`s, and plugin projects
+  in your plugins directory. A plugin directory with a manifest and nothing
+  loadable in it is reported too, instead of skipped with a log line.
+- **Your config rebuilt on every start.** A config built in its own
+  directory counted the build's output — the component, `Cargo.lock`, the
+  plugin's saved state — as a source change, so cargo ran at every start
+  even when nothing had changed. An unchanged config is now a plain load.
+- **A scaffolded plugin could not be built by the editor.** Its world was
+  written to `wit/plugin.wit`, a file the editor rewrites before each
+  build. New scaffolds use `wit/user-plugin.wit`; an existing one is moved
+  there automatically.
+- **`-` in a file buffer opens oil at that file's directory again.** It
+  had stopped doing anything outside a listing.
+- **The `.deb` is named `lattice-gui` inside as well as out.** The package
+  was published as `lattice-gui-<ver>-<arch>.deb` but declared itself
+  `lattice-cli`, with a placeholder description. It now provides, conflicts
+  with and replaces `lattice-cli`, so an existing install upgrades in
+  place. ([#6](https://github.com/dhruvasagar/lattice/issues/6))
+- **The site's version badge follows the release.** It stayed on the
+  previous version after 0.9.3 shipped.
+
+### Added
+- **The editor builds the plugin you are writing.** A plugin project in
+  `~/.config/lattice/plugins/` — a manifest beside a `Cargo.toml`, which is
+  what `--scaffold-plugin` writes — is compiled at start when its source
+  has changed, like `init.rs`. `b` on its row in `:plugins` rebuilds and
+  reloads it, and `:plugin-load <dir>` builds one that is not loaded yet.
+  No more `cargo build` and copying the component by hand.
+- **The scaffolds check the toolchain.** A release archive needs no Rust,
+  but `init.rs` is compiled on your machine. `--scaffold-init` and
+  `--scaffold-plugin` now say whether `cargo` and the `wasm32-wasip2`
+  target are present, run `rustup target add wasm32-wasip2` for you when
+  rustup is installed, and otherwise print the commands. `install.sh`
+  mentions it when `cargo` is not on your `PATH`.
+- **Highlighted error reports in `:plugins`.** Compiler output and trap
+  backtraces are shown the way a terminal would show them: the `error[…]`
+  label in the error colour, `-->` locations as links, the gutter dimmed,
+  carets in the colour of their diagnostic. The header counts build
+  failures.
+- **`:plugins` updates itself.** The view re-renders when a plugin loads or
+  unloads and when a build starts, fails or finishes, so a failing
+  `:reload-config` puts its error on screen without a keypress.
+- **Opening oil with no directory lands on the file you came from**,
+  including a bare `:Oil`.
+
+### Changed
+- **A long build log keeps its first eighty lines, not its last twenty**,
+  and drops cargo's `Compiling …` progress. The first error is usually the
+  cause; the tail was the summary.
+- **A build failure names the toolchain only when the toolchain is at
+  fault.** "Is the target installed?" used to follow every compile error;
+  a missing `cargo` now says "Rust is not installed" with the commands to
+  fix it.
+- **`-` is bound once, by `oil-global-mode`**, in every buffer rather than
+  separately in each listing mode. Behaviour is unchanged.
+
+### Documentation
+- `init.md` opens with what a programmable config needs (Rust, the
+  `wasm32-wasip2` target, network for the first build) and no longer tells
+  you to run `cargo build` and copy `init.wasm` by hand — the editor builds
+  it on first start and on `:reload-config`.
+- New troubleshooting entry for a config that does not load;
+  `plugins-mode.md` documents the failure sections and live refresh.
+
 ## 0.9.3 — 2026-10-07
 
 A fixes release: Windows paths work end to end, a plugin write grant can

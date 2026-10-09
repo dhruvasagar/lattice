@@ -163,34 +163,56 @@ async fn a_pinned_row_is_cell_for_cell_the_documents_own_row() {
 /// any line whether or not a chunk covers it.
 #[tokio::test]
 async fn a_header_outside_every_chunk_is_still_syntax_coloured() {
-    // Far more lines than `4 x viewport_height`, so the chunk built around the
-    // viewport cannot possibly reach back to line 1.
-    let text = source(1200);
+    // More lines than the worker's full-coverage cap (`WINDOW_CAP_LINES`,
+    // 2048): at or below it the matrix covers the whole file and line 1 is
+    // resident however far the viewport is scrolled. This used 1200 lines,
+    // which never left that regime — the precondition below held only
+    // because the matrix was still EMPTY when it was read, and failed
+    // whenever the worker happened to finish first (once on Windows, once
+    // on macOS).
+    const LINES: u32 = 6000;
+    const CURSOR: u32 = 5900;
+    let text = source(LINES as usize);
     let mut editor = editor_for(
         &text,
         vec![ContextScope {
             scope_start: 1,
-            scope_end: 1202,
+            scope_end: LINES + 2,
             header_start: 1,
             header_end: 1,
         }],
     );
     let pane_id = editor.pane_tree.active().id;
 
-    editor.cursor.line = 1100;
-    editor.scroll = 1090;
+    editor.cursor.line = CURSOR;
+    editor.scroll = CURSOR - 10;
     {
         let pane = editor.pane_tree.active_mut();
-        pane.cursor.line = 1100;
-        pane.scroll = 1090;
+        pane.cursor.line = CURSOR;
+        pane.scroll = CURSOR - 10;
     }
     settle(&mut editor, pane_id).await;
 
-    let cells = editor.render_state.load().cells.load_full();
-    let matrix = cells
-        .matrix_for_pane(pane_id)
-        .map(|c| c.load_full())
-        .expect("the pane has a built matrix");
+    // `settle` returns when the STRIP has landed, and the strip and the
+    // matrix come from different workers. Wait for the matrix as well, so
+    // the precondition is a statement about a matrix that exists.
+    let matrix_of = |editor: &Editor| {
+        let cells = editor.render_state.load().cells.load_full();
+        cells.matrix_for_pane(pane_id).map(|c| c.load_full())
+    };
+    for _ in 0..500 {
+        if matrix_of(&editor).is_some_and(|m| m.row_at_source_line(CURSOR).is_some()) {
+            break;
+        }
+        editor.run_tick_pending();
+        editor.publish_render_state();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let matrix = matrix_of(&editor).expect("the pane has a built matrix");
+    assert!(
+        matrix.row_at_source_line(CURSOR).is_some(),
+        "the matrix around the scrolled viewport never arrived"
+    );
     assert!(
         matrix.row_at_source_line(1).is_none(),
         "precondition: line 1 is NOT resident — if it were, this test would \

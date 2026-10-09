@@ -401,10 +401,26 @@ Revive it with `:plugin-reload` (or `r` in the `:plugins` view).
 **Scaffold one:** `lattice --scaffold-plugin <name>` writes a complete, buildable
 plugin project into `~/.config/lattice/plugins/<name>/` — a grammar action, a
 minor mode (`<name>-mode`) that binds a key to it, the `<name>.enabled` gate, and
-a `wit/` copy of the editor's API. Build it (`cargo build --target wasm32-wasip2`,
-then copy the component in as `<name>.wasm`) and it's discovered at boot with its
-mode on by default — toggle it any time with `:<name>-mode`. The command prints the
-exact steps; the name must be lowercase kebab-case.
+a `wit/` copy of the editor's API. Then just start lattice: **the editor builds
+it**, the same way it builds your `init.rs`, and loads it with its mode on by
+default — toggle it any time with `:<name>-mode`. The name must be lowercase
+kebab-case.
+
+That applies to any plugin whose source sits in its own directory under
+`~/.config/lattice/plugins/` — a manifest beside a `Cargo.toml`. At start the
+editor checks each one against the stamp from its last build and compiles the
+ones whose source changed; an unchanged plugin is a plain load and no toolchain
+runs. While you work on it, `b` on its row in `:plugins` rebuilds and reloads
+without a restart, and `:plugin-load <dir>` builds and loads one that is not
+loaded yet. A build that fails keeps the previous build running if there is one,
+and either way puts the compiler's report in `:plugins`. You can still run
+`cargo build` yourself — the component goes beside the manifest as `<name>.wasm`.
+
+Your plugin's own world lives in `wit/user-plugin.wit`. Everything else in
+`wit/` is the editor's API and is rewritten before each build; a plugin
+scaffolded before 0.9.4 kept its world in `wit/plugin.wit`, which collides with
+one of those files — the editor moves it to `user-plugin.wit` for you the first
+time it builds the plugin.
 
 Building a plugin needs Rust and the `wasm32-wasip2` target — the same
 [requirements as `init.rs`](help:init#what-you-need). `--scaffold-plugin`

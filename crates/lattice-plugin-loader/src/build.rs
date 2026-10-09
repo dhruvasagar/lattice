@@ -421,6 +421,23 @@ pub fn source_stamp(source_dir: &Path) -> String {
             if name.starts_with('.') || name == "target" {
                 continue;
             }
+            // What a build or a running plugin leaves at the top of a
+            // directory that is its own staging dir. A plugin built IN PLACE
+            // (`init`, or a project under `plugins/`) has its component
+            // staged beside its source, cargo's lockfile written there, and
+            // the host's per-plugin state under `data/`. Counting any of them
+            // made the fingerprint a function of the build's own output: the
+            // stamp was taken before the build, the build then changed the
+            // directory, and so every boot found a "changed source", invoked
+            // cargo, restaged — and moved the mtime again. The one requirement
+            // this module exists for, broken for exactly the plugins a user
+            // is most likely to be editing.
+            //
+            // Top level only: a `data/` or a `.wasm` deeper in the tree is
+            // the author's, and is source.
+            if dir == source_dir && is_in_place_product(&name, &entry) {
+                continue;
+            }
             let path = entry.path();
             match entry.file_type() {
                 Ok(ft) if ft.is_dir() => stack.push(path),
@@ -438,6 +455,24 @@ pub fn source_stamp(source_dir: &Path) -> String {
         }
     }
     format!("mtime:{newest}:files:{files}")
+}
+
+/// Is this top-level entry something a build or a running plugin put there,
+/// rather than source? See the call site in [`source_stamp`].
+///
+/// `Cargo.lock` is the judgement call. It can be hand-edited (`cargo
+/// update`), and then the artifact really is out of date; but cargo also
+/// rewrites it during the very build being stamped, and a fingerprint cannot
+/// tell those apart. The self-inflicted rebuild is the one that fires on
+/// every boot, so that is the one ruled out — after a manual `cargo update`,
+/// `b` in `:plugins` rebuilds.
+fn is_in_place_product(name: &str, entry: &std::fs::DirEntry) -> bool {
+    let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+    match name {
+        "data" => is_dir,
+        "Cargo.lock" => !is_dir,
+        _ => !is_dir && name.ends_with(".wasm"),
+    }
 }
 
 /// WT.3: what a cached artifact was built **from** and **against**.
@@ -626,12 +661,55 @@ fn warn_if_abi_skewed(stamped: Option<&Stamp>, name: &str) {
 /// failed would turn a recoverable condition into a missing feature.
 fn refresh_wit_package(source_dir: &Path) {
     let dir = source_dir.join("wit");
+    rescue_scaffolded_world(&dir);
     match lattice_wit::write_to(&dir) {
         Ok(()) => tracing::debug!(dir = %dir.display(), "wit package refreshed"),
         Err(error) => tracing::warn!(
             dir = %dir.display(),
             %error,
             "could not refresh the wit package; building against whatever is there"
+        ),
+    }
+}
+
+/// Where a scaffolded plugin keeps its own world. Named for the world it
+/// declares; the canonical package has no file of this name.
+pub const USER_WORLD_FILE: &str = "user-plugin.wit";
+
+/// Move a pre-0.9.4 scaffold's world out of the refresh's way.
+///
+/// `--scaffold-plugin` used to write the plugin's world to `wit/plugin.wit` —
+/// a name the canonical package also uses. The refresh below would overwrite
+/// it with the editor's base `plugin` world: the author's file gone, and a
+/// build that then fails on `World user-plugin not found`. That was latent
+/// while only hand-run cargo built these projects; it stops being latent the
+/// moment the editor builds them, so the file is moved first.
+///
+/// Recognised by content, not by name alone: only a `plugin.wit` that
+/// declares `world user-plugin` is the scaffold's, and nothing is moved over
+/// an existing destination.
+fn rescue_scaffolded_world(wit_dir: &Path) {
+    let legacy = wit_dir.join("plugin.wit");
+    let rescued = wit_dir.join(USER_WORLD_FILE);
+    if rescued.exists() {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(&legacy) else {
+        return;
+    };
+    if !text.contains("world user-plugin") {
+        return;
+    }
+    match std::fs::rename(&legacy, &rescued) {
+        Ok(()) => tracing::info!(
+            from = %legacy.display(),
+            to = %rescued.display(),
+            "moved the plugin's world out of a file the API package also uses"
+        ),
+        Err(error) => tracing::warn!(
+            path = %legacy.display(),
+            %error,
+            "could not move the plugin's world; the API refresh will overwrite it"
         ),
     }
 }
@@ -775,6 +853,35 @@ mod tests {
 
     /// Unique temp dir. The counter is load-bearing under parallel
     /// `cargo test`: a timestamp alone collides.
+    #[test]
+    fn a_scaffolded_world_survives_the_api_refresh() {
+        // A pre-0.9.4 scaffold: the plugin's world in `wit/plugin.wit`.
+        let dir = tempdir("rescue-world");
+        let wit = dir.join("wit");
+        std::fs::create_dir_all(&wit).unwrap();
+        let world = "package lattice:plugin-host@0.1.0;\nworld user-plugin {}\n";
+        std::fs::write(wit.join("plugin.wit"), world).unwrap();
+
+        refresh_wit_package(&dir);
+
+        // The author's world is intact under its new name…
+        assert_eq!(
+            std::fs::read_to_string(wit.join(USER_WORLD_FILE)).unwrap(),
+            world
+        );
+        // …and `plugin.wit` is now the editor's, as the refresh intends.
+        let canonical = std::fs::read_to_string(wit.join("plugin.wit")).unwrap();
+        assert!(canonical.contains("world plugin"));
+        assert!(!canonical.contains("world user-plugin"));
+
+        // A second refresh has nothing to rescue and must not touch it.
+        refresh_wit_package(&dir);
+        assert_eq!(
+            std::fs::read_to_string(wit.join(USER_WORLD_FILE)).unwrap(),
+            world
+        );
+    }
+
     #[test]
     fn diagnostics_drop_cargo_progress_and_keep_the_compiler() {
         let stderr = "   Compiling wasmparser v0.251.0\n   Compiling lattice-init v0.0.0 (/x)\n\
@@ -993,6 +1100,56 @@ mod tests {
 
         assert!(matches!(second, BuildOutcome::Cached { .. }));
         assert_eq!(b.calls(), 1, "the toolchain must not be invoked again");
+    }
+
+    /// A builder that behaves like cargo in the one way that matters here: it
+    /// writes into the source directory (the lockfile) as well as producing
+    /// a component.
+    struct InPlaceBuilder(AtomicUsize);
+
+    impl ComponentBuilder for InPlaceBuilder {
+        fn build(&self, source_dir: &Path) -> Result<PathBuf, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            std::fs::write(source_dir.join("Cargo.lock"), b"# lock").unwrap();
+            let out = source_dir.join("target");
+            std::fs::create_dir_all(&out).unwrap();
+            let wasm = out.join("built.wasm");
+            std::fs::write(&wasm, b"\0asm-stub").unwrap();
+            Ok(wasm)
+        }
+    }
+
+    /// The in-place case: the source directory IS the staging directory, as
+    /// it is for `init` and for a plugin project under `plugins/`. The build
+    /// stages its component beside the source and cargo writes a lockfile
+    /// there — and neither may make the next boot think the source changed.
+    #[test]
+    fn a_plugin_built_in_place_does_not_rebuild_on_the_next_boot() {
+        let root = tempdir("in-place-warm");
+        let src = root.join("mine");
+        std::fs::create_dir_all(src.join("src")).unwrap();
+        std::fs::write(src.join("plugin.toml"), "id = \"mine\"\n").unwrap();
+        std::fs::write(src.join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(src.join("src/lib.rs"), "// v1").unwrap();
+        let b = InPlaceBuilder(AtomicUsize::new(0));
+
+        let first = build_plugin(&b, &src, "mine", &root, false);
+        assert!(matches!(first, BuildOutcome::Fresh { .. }), "{first:?}");
+        assert!(src.join("mine.wasm").is_file(), "staged beside its source");
+
+        // The plugin runs and the host writes its state under `data/`.
+        std::fs::create_dir_all(src.join("data")).unwrap();
+        std::fs::write(src.join("data/state.json"), b"{}").unwrap();
+
+        let second = build_plugin(&b, &src, "mine", &root, false);
+        assert!(matches!(second, BuildOutcome::Cached { .. }), "{second:?}");
+        assert_eq!(b.0.load(Ordering::SeqCst), 1, "cargo must not run again");
+
+        // …and a real edit is still seen.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(src.join("src/lib.rs"), "// v2 — longer").unwrap();
+        let third = build_plugin(&b, &src, "mine", &root, false);
+        assert!(matches!(third, BuildOutcome::Fresh { .. }), "{third:?}");
     }
 
     #[test]

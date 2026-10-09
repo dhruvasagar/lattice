@@ -517,6 +517,37 @@ carries trap backtraces, cause chains and lattice's own verdict line, none
 of which arrive coloured, and the same string is logged. `*compilation*`
 does not use it yet; adopting it there is open work, not a decision against.
 
+**None of this is specific to `init`.** It was at first — `init.rs` was the
+only source the editor built in place, so it was the only one whose boot
+build could fail — and that was the wrong boundary. A plugin project under
+`plugins/` whose cargo project sits beside its manifest is the same shape
+(`discovery::is_in_place_project`; it is what `--scaffold-plugin` writes) and
+was the one kind of plugin the editor would not build at all: the scan loaded
+whatever component was there, and a directory with none was a `warn!` about a
+"malformed plugin dir". So the in-place build is now one primitive
+(`install::build_in_place`) with `init` as one caller, and
+`discover_and_load` runs it over every in-place project before loading,
+then records every manifest-bearing directory it still cannot load — with the
+build error as the reason when there is one. `rebuild` (`b`) and
+`:plugin-load` route in-place projects the same way. This is §5b's option (c)
+for the case where the source *is* the plugin directory: no resolver, no
+network, stamp-checked. Sources recorded elsewhere via `.source` remain
+SS.2–SS.4.
+
+Making the editor build those projects surfaced two defects that had been
+latent while only hand-run cargo built them:
+
+- **The source stamp counted the build's own output.** Built in place, the
+  component is staged beside the source, cargo writes `Cargo.lock` there, and
+  the host keeps per-plugin state under `data/`. All three were fingerprinted,
+  so the stamp taken before a build never matched the directory after it and
+  every boot rebuilt — for `init` too, since it shipped. `source_stamp` now
+  skips those three at the top level of the source directory.
+- **The scaffold kept its world in `wit/plugin.wit`**, a name the canonical
+  package also uses, so the pre-build API refresh replaced it. The scaffold
+  writes `wit/user-plugin.wit`, and the refresh moves a pre-0.9.4 world out
+  of the way first rather than overwriting an author's file.
+
 The buffer turns indent guides off (`display.indent-guides`, as help-mode
 does): its leading whitespace is layout, and a guide through each column of
 a rustc gutter made the report unreadable.

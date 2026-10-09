@@ -497,31 +497,54 @@ pub fn install(boot: &mut impl SubsystemBoot) {
 /// every caller is either the boot task or an off-keystroke reload task, both of
 /// which share the async runtime with the editor (paramount goal #1 / #4).
 pub(crate) async fn build_init(init_dir: &std::path::Path) -> Option<crate::build::BuildOutcome> {
-    if !init_dir.join("Cargo.toml").is_file() {
+    build_in_place(
+        std::sync::Arc::new(crate::build::CargoComponentBuilder),
+        init_dir,
+    )
+    .await
+}
+
+/// Build the cargo project in `dir` **in place**: the artifact is staged
+/// into the directory it was built from, as `<dir-name>.wasm`.
+///
+/// `init.rs` was the only caller, and there was no reason for it to be. A
+/// plugin under `plugins/` whose source sits beside its manifest is the same
+/// shape — it is what `--scaffold-plugin` writes — and was the one kind of
+/// plugin the editor would not build: the user ran cargo and copied the
+/// component by hand, and a build that failed left a directory the scan
+/// skipped as "malformed". Everything the init build does applies unchanged:
+/// stamp-checked (an unchanged source is a pure load), the API package
+/// refreshed first, no resolver, no network.
+///
+/// `None` when `dir` is not a cargo project — a hand-built component dropped
+/// in place must keep working, so that is not an error.
+pub(crate) async fn build_in_place(
+    builder: std::sync::Arc<dyn crate::build::ComponentBuilder>,
+    dir: &std::path::Path,
+) -> Option<crate::build::BuildOutcome> {
+    if !dir.join("Cargo.toml").is_file() {
         tracing::debug!(
-            dir = %init_dir.display(),
-            "init dir is not a cargo project; loading any prebuilt init.wasm as-is"
+            dir = %dir.display(),
+            "not a cargo project; loading any prebuilt component as-is"
         );
         return None;
     }
-    let dir = init_dir.to_path_buf();
+    let dir = dir.to_path_buf();
     match tokio::task::spawn_blocking(move || {
         let parent = dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        crate::build::build_plugin(
-            &crate::build::CargoComponentBuilder,
-            &dir,
-            "init",
-            &parent,
-            false,
-        )
+        let name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        crate::build::build_plugin(builder.as_ref(), &dir, &name, &parent, false)
     })
     .await
     {
         Ok(outcome) => Some(outcome),
         Err(e) => {
-            tracing::warn!(error = %e, "init.rs build task failed to run");
+            tracing::warn!(error = %e, "in-place build task failed to run");
             Some(crate::build::BuildOutcome::Failed {
-                error: format!("init.rs build task failed to run: {e}"),
+                error: format!("build task failed to run: {e}"),
             })
         }
     }

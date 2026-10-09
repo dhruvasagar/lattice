@@ -8,9 +8,12 @@
 //! `--scaffold-init` whose output did not compile — the first thing a new
 //! user's config does. The existing unit test checked that the files exist.
 //!
-//! So: run the real binary, then build what it wrote with the same builder
-//! the editor uses at boot ([`CargoComponentBuilder`] — same target, same
-//! env scrubbing, same `wit/` the scaffold embedded).
+//! So: run the real binary, then build what it wrote through
+//! [`build_plugin`] — the editor's whole build path, not just its cargo
+//! invocation. The difference is not academic. `build_plugin` first rewrites
+//! the API package into `wit/`, and the plugin scaffold kept its world in a
+//! file that rewrite replaces; a test that called the builder alone passed
+//! over a scaffold the editor could not build.
 //!
 //! Slow (a cold component build, twice) and it needs the network for
 //! `wit-bindgen`; that is the price of testing the claim rather than its
@@ -19,7 +22,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use lattice_plugin_loader::{CargoComponentBuilder, ComponentBuilder, Toolchain};
+use lattice_plugin_loader::{BuildOutcome, CargoComponentBuilder, Toolchain, build_plugin};
 
 /// Whether this machine can build a component. Without the toolchain there
 /// is nothing to test, so a developer's run skips — but CI has the target
@@ -52,10 +55,20 @@ fn scaffold(config_home: &Path, args: &[&str]) {
     );
 }
 
+/// Build `dir` in place, exactly as the editor does at boot, and return the
+/// staged component.
 fn assert_builds(dir: &Path) -> PathBuf {
-    CargoComponentBuilder
-        .build(dir)
-        .unwrap_or_else(|error| panic!("{} does not build:\n{error}", dir.display()))
+    let name = dir.file_name().unwrap().to_str().unwrap();
+    match build_plugin(
+        &CargoComponentBuilder,
+        dir,
+        name,
+        dir.parent().unwrap(),
+        false,
+    ) {
+        BuildOutcome::Fresh { artifact } => artifact,
+        other => panic!("{} does not build:\n{other:?}", dir.display()),
+    }
 }
 
 #[test]
@@ -66,12 +79,8 @@ fn the_init_scaffold_compiles() {
     }
     scaffold(tmp.path(), &["--scaffold-init"]);
     let wasm = assert_builds(&tmp.path().join("lattice").join("init"));
-    // The name the editor stages from: a renamed crate would build fine and
-    // then never be found.
-    assert_eq!(
-        wasm.file_name().and_then(|n| n.to_str()),
-        Some("lattice_init.wasm")
-    );
+    // Staged where the loader looks for it.
+    assert_eq!(wasm.file_name().and_then(|n| n.to_str()), Some("init.wasm"));
 }
 
 #[test]

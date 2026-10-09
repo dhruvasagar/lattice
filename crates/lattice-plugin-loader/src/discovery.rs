@@ -178,6 +178,21 @@ pub fn default_source_cache_dir() -> std::path::PathBuf {
 /// subdirectory needs a `plugin.toml` + exactly one `.wasm`; anything else is
 /// logged at `warn`/`debug` and skipped.
 pub fn discover(dir: &Path) -> Vec<DiscoveredPlugin> {
+    discover_reporting(dir).0
+}
+
+/// A directory that has a manifest — so it was meant to be a plugin — and
+/// could not be read as one: the path, and why.
+pub type MalformedPlugin = (std::path::PathBuf, String);
+
+/// [`discover`], also returning the directories that carry a manifest but
+/// could not be loaded as a plugin.
+///
+/// `discover` logs those and drops them, which is right for a caller that
+/// only wants the loadable set and wrong for the boot scan: a plugin whose
+/// component is missing because its build failed is a plugin that should be
+/// here and is not, and it belongs in `:plugins` rather than in a `warn!`.
+pub fn discover_reporting(dir: &Path) -> (Vec<DiscoveredPlugin>, Vec<MalformedPlugin>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) => {
@@ -188,11 +203,12 @@ pub fn discover(dir: &Path) -> Vec<DiscoveredPlugin> {
                 error = %err,
                 "plugins dir not readable; loading no on-disk plugins"
             );
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
     };
 
     let mut found = Vec::new();
+    let mut malformed = Vec::new();
     for entry in entries.flatten() {
         let plugin_dir = entry.path();
         if !plugin_dir.is_dir() {
@@ -201,14 +217,38 @@ pub fn discover(dir: &Path) -> Vec<DiscoveredPlugin> {
         match load_one(&plugin_dir) {
             Ok(Some(plugin)) => found.push(plugin),
             Ok(None) => {} // not a plugin dir (no manifest) — silently skip.
-            Err(reason) => tracing::warn!(
-                path = %plugin_dir.display(),
-                reason,
-                "skipping malformed plugin dir"
-            ),
+            Err(reason) => {
+                tracing::warn!(
+                    path = %plugin_dir.display(),
+                    reason,
+                    "skipping malformed plugin dir"
+                );
+                malformed.push((plugin_dir, reason));
+            }
         }
     }
-    found
+    (found, malformed)
+}
+
+/// The manifest id of the plugin in `plugin_dir`, when it has a manifest that
+/// parses — without requiring a component beside it. For naming a plugin
+/// that cannot be loaded yet (its build is about to run, or just failed).
+pub fn manifest_id(plugin_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(plugin_dir.join(MANIFEST_FILE)).ok()?;
+    Some(PluginManifest::from_toml_str(&text).ok()?.id)
+}
+
+/// Is `plugin_dir` a plugin whose **source lives in the directory itself** —
+/// a manifest beside a cargo project?
+///
+/// That is what `--scaffold-plugin` writes and what a plugin under
+/// development looks like. It is the same shape as the user's `init/`
+/// directory, and it is built the same way: in place, from what is on disk,
+/// with no resolver and no network. A plugin *installed* by `require` is
+/// staged without its source (that stays in the source cache), so this never
+/// matches one.
+pub fn is_in_place_project(plugin_dir: &Path) -> bool {
+    plugin_dir.join(MANIFEST_FILE).is_file() && plugin_dir.join("Cargo.toml").is_file()
 }
 
 /// Parse a single explicitly-named plugin directory — the `:plugin-load <path>`

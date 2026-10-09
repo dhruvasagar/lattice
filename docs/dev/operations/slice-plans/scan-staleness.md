@@ -9,6 +9,16 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 **Status:** 📝 planned (2026-08-27). Specced, not started — parked behind org
 work by choice, not blocked.
 
+**Partly overtaken (2026-10-09).** The scan now builds one class of plugin:
+a project whose source sits in its own plugin directory (manifest beside a
+`Cargo.toml` — what `--scaffold-plugin` writes). That landed with the
+`:plugins` build-failure work, as option (c) for the case that needs no
+`.source` marker at all; see `plugin-manager.md` §8.4. It does **not** settle
+any slice below: SS.1's pinning question and SS.2–SS.4 are about plugins whose
+source is recorded *elsewhere* (a `require`d plugin since dropped from the
+list, a cleaned git cache), and those still load whatever is staged without
+consulting the stamp.
+
 ## Why
 
 Three load paths, two of which check staleness. `init.rs` does

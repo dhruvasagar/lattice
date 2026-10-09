@@ -218,3 +218,116 @@ async fn an_explicit_load_of_a_broken_plugin_is_recorded() {
     assert_eq!(failed.len(), 1, "{failed:?}");
     assert_eq!(failed[0].name, "org");
 }
+
+// ---------------------------------------------------------------------------
+// A plugin whose source lives in its own directory is built by the scan, and a
+// build that fails is reported — for ANY plugin, not only `init`.
+// ---------------------------------------------------------------------------
+
+/// A builder that fails the way rustc does, and counts how often it was asked.
+struct FailingBuilder {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl FailingBuilder {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+const COMPILER_ERROR: &str = "cargo build failed (exit status: 101)\n\
+    error[E0425]: cannot find value `Nope` in this scope\n  --> src/lib.rs:47:30";
+
+impl lattice_plugin_loader::ComponentBuilder for FailingBuilder {
+    fn build(&self, _source_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(COMPILER_ERROR.to_string())
+    }
+}
+
+/// What `--scaffold-plugin` leaves behind before its first build: a manifest
+/// and a cargo project, and no component.
+fn write_source_plugin(root: &std::path::Path, id: &str) -> std::path::PathBuf {
+    let dir = root.join(id);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("plugin.toml"), format!("id = \"{id}\"\n")).unwrap();
+    std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+    std::fs::write(dir.join("src/lib.rs"), "// does not compile\n").unwrap();
+    dir
+}
+
+/// The case this whole area was blind to. The scan used to build nothing and
+/// log "skipping malformed plugin dir" — so the plugin a user was in the
+/// middle of writing was the one whose build error `:plugins` could not show.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_whose_build_fails_is_reported_with_the_compiler_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let dir = write_source_plugin(&plugins, "mine");
+    let loader = loader(tmp.path());
+    let builder = FailingBuilder::new();
+
+    let loaded = loader
+        .discover_and_load_with(&plugins, TrustTier::UserInstalled, builder.clone())
+        .await;
+
+    assert_eq!(loaded, 0);
+    assert_eq!(builder.calls(), 1, "the scan builds an in-place project");
+    let failed = loader.failed_loads();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].name, "mine");
+    assert_eq!(failed[0].dir, dir);
+    // The CAUSE, not its consequence. "no .wasm in this directory" is true
+    // and useless; the compiler error is what the author needs.
+    assert!(
+        failed[0].error.contains("error[E0425]"),
+        "{}",
+        failed[0].error
+    );
+    assert!(failed[0].error.contains("src/lib.rs:47:30"));
+}
+
+/// A manifest with nothing to load and nothing to build from is still a
+/// plugin that should be here and is not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_directory_with_no_component_is_reported_not_skipped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let dir = plugins.join("empty");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("plugin.toml"), "id = \"empty\"\n").unwrap();
+    let loader = loader(tmp.path());
+    let builder = FailingBuilder::new();
+
+    loader
+        .discover_and_load_with(&plugins, TrustTier::UserInstalled, builder.clone())
+        .await;
+
+    assert_eq!(builder.calls(), 0, "no cargo project, so nothing to build");
+    let failed = loader.failed_loads();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].name, "empty");
+    assert!(!failed[0].error.is_empty());
+}
+
+/// A prebuilt plugin — a manifest and a component, no cargo project — must
+/// not wake the toolchain. That is every installed plugin on every boot.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prebuilt_plugin_is_never_built() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    write_broken_plugin(&plugins, "prebuilt");
+    let loader = loader(tmp.path());
+    let builder = FailingBuilder::new();
+
+    loader
+        .discover_and_load_with(&plugins, TrustTier::UserInstalled, builder.clone())
+        .await;
+
+    assert_eq!(builder.calls(), 0);
+}

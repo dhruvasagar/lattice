@@ -76,7 +76,7 @@ pub mod watch;
 
 pub use build::{
     BuildOutcome, CargoComponentBuilder, ComponentBuilder, Stamp, Toolchain, ToolchainProblem,
-    WASM_TARGET, artifact_path, build_plugin, source_stamp,
+    USER_WORLD_FILE, WASM_TARGET, artifact_path, build_plugin, source_stamp,
 };
 pub use discovery::{
     DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir,
@@ -415,6 +415,52 @@ fn update_refusal(name: &str, source: Option<&resolve::PluginSource>) -> Option<
     }
 }
 
+/// What to call the plugin in `dir` before it can be loaded: its manifest id,
+/// else the directory's name. The same rule [`FailedLoad::name`] documents.
+fn plugin_name(dir: &std::path::Path) -> String {
+    discovery::manifest_id(dir).unwrap_or_else(|| {
+        dir.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    })
+}
+
+/// The subdirectories of `dir` that are in-place plugin projects, name-sorted
+/// so builds run (and their log lines read) in a predictable order.
+fn in_place_projects(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| discovery::is_in_place_project(path))
+        .collect();
+    found.sort();
+    found
+}
+
+/// Build state for a plugin built in place (see
+/// [`discovery::is_in_place_project`]): its directory is its own source.
+fn in_place_build_state(record: &LoadedRecord) -> BuildState {
+    let Some(dir) = record
+        .source_dir
+        .as_ref()
+        .filter(|dir| discovery::is_in_place_project(dir))
+    else {
+        return BuildState::NotBuilt;
+    };
+    let stamped = std::fs::read_to_string(dir.join(".build-stamp"))
+        .ok()
+        .as_deref()
+        .and_then(crate::build::Stamp::parse);
+    match stamped {
+        // A hand-built component in a cargo project: nothing to compare.
+        None => BuildState::NotBuilt,
+        Some(stamped) if stamped == crate::build::Stamp::current(dir) => BuildState::Cached,
+        Some(_) => BuildState::Stale,
+    }
+}
+
 fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> BuildState {
     // PM.8b: an in-flight or just-failed build is the more current answer —
     // the artifact on disk describes the *previous* build, and reporting
@@ -426,7 +472,10 @@ fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> Bu
         None => {}
     }
     let Some(source) = record.source.as_plugin_source() else {
-        return BuildState::NotBuilt;
+        // No recorded source — but a plugin (or `init`) whose cargo project
+        // sits beside its manifest is built in place, and its stamp answers
+        // the same question the same way.
+        return in_place_build_state(record);
     };
     if matches!(source, crate::resolve::PluginSource::Prebuilt { .. }) {
         // A prebuilt is downloaded, never built, so it has no staleness.
@@ -989,7 +1038,69 @@ impl PluginLoader {
     /// that fails (never aborting the others). Returns the count loaded. Runs on
     /// the caller (the multi-thread runtime), off the editor actor.
     pub async fn discover_and_load(&self, dir: &std::path::Path, tier: TrustTier) -> usize {
-        let discovered = discovery::discover(dir);
+        self.discover_and_load_with(dir, tier, Arc::new(build::CargoComponentBuilder))
+            .await
+    }
+
+    /// [`discover_and_load`](Self::discover_and_load) with the builder
+    /// injected, so the build-then-report behaviour is testable on a machine
+    /// that cannot compile a component.
+    ///
+    /// Before loading anything, every plugin in `dir` whose source lives in
+    /// its own directory is brought up to date — the same in-place,
+    /// stamp-checked build `init.rs` gets. Then anything that carries a
+    /// manifest and still cannot be loaded is **recorded**, with its build
+    /// error as the reason when it has one. Both halves used to be missing:
+    /// the scan built nothing, and a plugin with no component was a `warn!`
+    /// about a "malformed plugin dir" — so a plugin author's broken build was
+    /// the one build failure `:plugins` had no way to show.
+    pub async fn discover_and_load_with(
+        &self,
+        dir: &std::path::Path,
+        tier: TrustTier,
+        builder: Arc<dyn build::ComponentBuilder>,
+    ) -> usize {
+        let mut build_errors: std::collections::HashMap<std::path::PathBuf, String> =
+            std::collections::HashMap::new();
+        // User plugins only. The core set ships prebuilt and its scan must
+        // stay a pure load whatever happens to be in that directory.
+        let buildable = if tier == TrustTier::UserInstalled {
+            in_place_projects(dir)
+        } else {
+            Vec::new()
+        };
+        for plugin_dir in buildable {
+            // Loaded already (a `require` got there first): it is running,
+            // and rebuilding under it is `b`'s job, not the scan's.
+            if self.is_loaded(&plugin_name(&plugin_dir)) {
+                continue;
+            }
+            if let Some(error) = self
+                .ensure_built_in_place(builder.clone(), &plugin_dir, false)
+                .await
+            {
+                tracing::warn!(
+                    dir = %plugin_dir.display(),
+                    %error,
+                    "plugin build failed; using its previous build if there is one \
+                     (`:plugins` keeps the error)"
+                );
+                build_errors.insert(plugin_dir, error);
+            }
+        }
+
+        let (discovered, malformed) = discovery::discover_reporting(dir);
+        for (plugin_dir, reason) in malformed {
+            let name = plugin_name(&plugin_dir);
+            if self.is_loaded(&name) {
+                continue;
+            }
+            // The build error is the cause; "no component in this directory"
+            // is only what it led to.
+            let detail = build_errors.remove(&plugin_dir).unwrap_or(reason);
+            self.record_failure(&name, &plugin_dir, &detail);
+        }
+
         let mut loaded = 0;
         for plugin in discovered {
             // Already loaded by something else — skip rather than load it a
@@ -1711,12 +1822,25 @@ impl PluginLoader {
         };
         let this = Arc::clone(self);
         runtime.spawn(async move {
+            // A plugin directory that is a cargo project is built first, so
+            // `:plugin-load` on a plugin you are writing — or one whose build
+            // you have just fixed — does not need a `cargo build` and a copy
+            // in between.
+            let build_error = this
+                .ensure_built_in_place(Arc::new(build::CargoComponentBuilder), &dir, false)
+                .await;
             match this.load_path(&dir, TrustTier::UserInstalled).await {
                 Ok(id) => {
                     tracing::info!(id = id.0, dir = %dir.display(), "plugin loaded (:plugin-load)")
                 }
                 Err(err) => {
-                    tracing::warn!(dir = %dir.display(), error = %err, ":plugin-load failed")
+                    tracing::warn!(dir = %dir.display(), error = %err, ":plugin-load failed");
+                    // With no component, `load_path` sees "not a plugin" and
+                    // records nothing — but the build that should have
+                    // produced one failed, and that is worth showing.
+                    if let Some(error) = build_error {
+                        this.record_failure(&plugin_name(&dir), &dir, &error);
+                    }
                 }
             }
         });
@@ -1808,7 +1932,10 @@ impl PluginLoader {
                 // `init` is buildable in place even though its `SourceRecord` is
                 // `Unknown` (see `rebuild`), so it is the one exception to the
                 // buildable-source skip — `rebuild` routes it correctly.
-                if name != INIT_PLUGIN_ID && !source.is_buildable() {
+                if name != INIT_PLUGIN_ID
+                    && !source.is_buildable()
+                    && self.in_place_dir(name).is_none()
+                {
                     // Bundled ships prebuilt; Unknown has nowhere to build from.
                     return BulkLeg::Skipped(format!("no buildable source ({})", source.label()));
                 }
@@ -1978,6 +2105,54 @@ impl PluginLoader {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Bring the in-place cargo project in `dir` up to date, reflecting the
+    /// build in `:plugins` as it runs. Returns the diagnostics when the build
+    /// failed, `None` when it succeeded, was already current, or `dir` is not
+    /// a cargo project at all.
+    ///
+    /// `force` discards the stamp first — the `b` chord's meaning: build now,
+    /// whatever the stamp says.
+    pub(crate) async fn ensure_built_in_place(
+        &self,
+        builder: Arc<dyn build::ComponentBuilder>,
+        dir: &std::path::Path,
+        force: bool,
+    ) -> Option<String> {
+        if !dir.join("Cargo.toml").is_file() {
+            return None;
+        }
+        let name = plugin_name(dir);
+        self.set_build_activity(&name, Some(BuildActivity::Running));
+        if force {
+            let _ = std::fs::remove_file(dir.join(".build-stamp"));
+        }
+        let outcome = crate::install::build_in_place(builder, dir).await;
+        match outcome.as_ref().and_then(|o| o.error()) {
+            Some(error) => {
+                self.note_build_failure(&name, error);
+                Some(error.to_string())
+            }
+            None => {
+                self.set_build_activity(&name, None);
+                None
+            }
+        }
+    }
+
+    /// The directory `name` is built in place from, when it is loaded from a
+    /// cargo project with no other recorded source.
+    fn in_place_dir(&self, name: &str) -> Option<std::path::PathBuf> {
+        let loaded = self.loaded.lock().ok()?;
+        let record = loaded.iter().find(|r| r.name == name)?;
+        if record.source.is_buildable() {
+            return None;
+        }
+        record
+            .source_dir
+            .clone()
+            .filter(|dir| discovery::is_in_place_project(dir))
+    }
+
     /// Record that `name`'s build failed, with its diagnostics.
     ///
     /// For the build paths that do not run through [`rebuild`](Self::rebuild)
@@ -2036,6 +2211,23 @@ impl PluginLoader {
         // pressed it for and surfaces the compiler error on failure.
         if name == INIT_PLUGIN_ID {
             return self.rebuild_init().await;
+        }
+        // The same is true of any plugin whose source sits beside its
+        // manifest: no `SourceRecord`, nothing to resolve, and a perfectly
+        // good cargo project to build. `b` on a plugin you are writing used
+        // to answer "no buildable source (unknown)".
+        if let Some(dir) = self.in_place_dir(name) {
+            if let Some(error) = self
+                .ensure_built_in_place(Arc::new(build::CargoComponentBuilder), &dir, true)
+                .await
+            {
+                return Err(error);
+            }
+            return self
+                .reload(name, TrustTier::UserInstalled)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("rebuilt, but reload failed: {}", error_chain(&e)));
         }
         self.rebuild_with(name, resolve::RefreshPolicy::UseCache, "rebuild")
             .await

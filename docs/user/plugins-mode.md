@@ -119,7 +119,14 @@ artifact, because the latest build did not compile. The row reads
 `build-failed`; this section says why.
 
 **Failed to load** lists plugins that are not running at all — including
-your `init.rs` when it has never built.
+your `init.rs` when it has never built, and a plugin directory that has a
+manifest but nothing loadable in it.
+
+Both cover every plugin the editor builds, not only your config: `init.rs`,
+the plugins it `require`s, and any plugin project under
+`~/.config/lattice/plugins/` whose source sits beside its manifest (what
+`--scaffold-plugin` writes). Those are compiled at start when their source has
+changed, and `b` on the row rebuilds one on demand.
 
 Under each name is the whole error, not a summary of it: for a build, the
 compiler's own report; for a load failure, the cause chain and any trap

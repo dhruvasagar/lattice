@@ -369,17 +369,21 @@ pub fn scaffold_plugin(name: &str) -> Result<()> {
     write_scaffold_plugin(&dir, name)?;
 
     let d = dir.display();
-    let wasm = format!("{}.wasm", name.replace('-', "_"));
     println!("Created a starter plugin `{name}` at {d}\n");
-    ensure_toolchain(&dir);
-    println!("\nNext — build it and drop the component in place:\n");
-    println!("  cd {d}");
-    println!("  cargo build --release --target wasm32-wasip2");
-    println!("  cp target/wasm32-wasip2/release/{wasm} {name}.wasm\n");
-    println!("Then start lattice — the plugin is discovered from the plugins dir,");
-    println!("and `{name}.enabled` (default true) turns its `{name}-mode` on. It");
-    println!("binds `gh` (Normal) to a starter action. Edit src/lib.rs to grow it;");
-    println!("see docs/user/plugins.md + `:describe-plugin-api <seam>`.");
+    let ready = ensure_toolchain(&dir);
+    println!();
+    if ready {
+        println!("Next — start lattice. It compiles the plugin on first start (about a");
+        println!("minute, once; the result is cached) and loads it.");
+    } else {
+        println!("Once that is done, start lattice: it compiles the plugin on first");
+        println!("start (about a minute, once; the result is cached) and loads it.");
+    }
+    println!("`{name}.enabled` (default true) turns its `{name}-mode` on; it binds `gh`");
+    println!("(Normal) to a starter action. Edit src/lib.rs to grow it, then press `b`");
+    println!("on its row in `:plugins` to rebuild and reload — a build that fails shows");
+    println!("the compiler's report there. See `:help plugins` and");
+    println!("`:describe-plugin-api <seam>`.");
     Ok(())
 }
 
@@ -474,7 +478,16 @@ fn write_scaffold_plugin(dir: &Path, name: &str) -> Result<()> {
             .replace("__MODE__", &format!("{name}-mode"))
             .replace("__ACTION__", &format!("{name}-hello"))
     };
-    write(&dir.join("wit").join("plugin.wit"), PLUGIN_WORLD_WIT)?;
+    // NOT `plugin.wit`. The editor's own API package has a file of that name,
+    // and the build service rewrites the package into `wit/` before every
+    // build it runs — so a world stored there was replaced by the editor's
+    // base `plugin` world, and the scaffold stopped compiling the first time
+    // anything but a hand-run `cargo build` built it. Named for the world it
+    // declares, which the package will not use.
+    write(
+        &dir.join("wit").join(lattice_plugin_loader::USER_WORLD_FILE),
+        PLUGIN_WORLD_WIT,
+    )?;
     write(&dir.join("Cargo.toml"), &sub(PLUGIN_CARGO_TOML))?;
     write(&dir.join("plugin.toml"), &sub(PLUGIN_MANIFEST))?;
     write(&dir.join("src").join("lib.rs"), &sub(PLUGIN_LIB_RS))?;
@@ -567,7 +580,7 @@ mod tests {
         let dir = tmp.path().join("my-plugin");
         write_scaffold_plugin(&dir, "my-plugin").unwrap();
 
-        assert!(dir.join("wit/plugin.wit").exists());
+        assert!(dir.join("wit/user-plugin.wit").exists());
         assert!(
             dir.join("wit/types.wit").exists(),
             "the API package is copied"

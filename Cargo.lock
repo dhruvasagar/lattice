@@ -5276,7 +5276,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-agent"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "lattice-config",
  "lattice-core",
@@ -5293,7 +5293,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-ai"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "agent-client-protocol",
  "arc-swap",
@@ -5322,7 +5322,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-cells"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "criterion",
  "lattice-theme",
@@ -5330,7 +5330,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-cli"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -5348,7 +5348,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-compilation"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5370,7 +5370,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-completion"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "criterion",
  "lattice-cells",
@@ -5383,7 +5383,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-config"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5403,7 +5403,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-config-macros"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5412,7 +5412,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-core"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "criterion",
  "dirs 5.0.1",
@@ -5427,7 +5427,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-dashboard"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "lattice-cells",
@@ -5444,7 +5444,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-diff"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5469,7 +5469,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-format"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "lattice-diff",
  "lattice-protocol",
@@ -5481,7 +5481,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-grammar"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5497,7 +5497,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-help"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5511,7 +5511,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-host"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arboard",
  "arc-swap",
@@ -5572,7 +5572,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-keymap"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "internment",
@@ -5584,7 +5584,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-listing"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "lattice-cells",
  "lattice-config",
@@ -5597,7 +5597,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-lsp"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5625,7 +5625,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-magit"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5653,7 +5653,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-media"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "image",
  "lattice-cells",
@@ -5665,7 +5665,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-mode"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "bitflags 2.13.0",
@@ -5689,7 +5689,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-multibuffer"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5712,7 +5712,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-notify"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "lattice-config",
  "lattice-core",
@@ -5727,7 +5727,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-picker"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -5749,14 +5749,14 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-api"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "wit-parser",
 ]
 
 [[package]]
 name = "lattice-plugin-host"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5801,7 +5801,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-loader"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "dirs 5.0.1",
@@ -5836,7 +5836,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-manager"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "lattice-cells",
  "lattice-compilation",
@@ -5873,7 +5873,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-trace"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "lattice-config",
  "lattice-core",
@@ -5889,7 +5889,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-protocol"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "linkme",
  "serde",
@@ -5899,7 +5899,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-runtime"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5919,7 +5919,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-snippet"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "lattice-completion",
@@ -5938,7 +5938,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-syntax"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5979,7 +5979,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-terminal"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "alacritty_terminal",
  "arc-swap",
@@ -6000,7 +6000,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-theme"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arc-swap",
  "tracing",
@@ -6008,7 +6008,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-ui-gpui"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6038,7 +6038,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-ui-tui"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6084,7 +6084,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-vcs"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "criterion",
  "gix",

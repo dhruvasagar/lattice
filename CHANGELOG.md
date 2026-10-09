@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.9.5 — 2026-10-09
+
+A reading release. Build output and diffs that had been arriving as plain
+text are coloured: `*compilation*` now reads a compiler error the way
+`:plugins` does, for rustc and for tools that report on one line, and the
+project diff shows what was added. Two of these were not missing features
+but colour that was computed and then never reached the screen.
 
 ### Fixed
 - **`*compilation*` showed a compiler error as plain text.** A build's
@@ -23,6 +29,18 @@
 - **A secondary `--` beside a primary `^^^` coloured the whole line
   blue**, in `:plugins` as well. Each underline now takes its own colour
   and the message follows the primary one.
+
+### Changed
+- **A jumpable line in `*compilation*` looks the same in the terminal and
+  the GPU window.** The row keeps its background tint; the location on it
+  is now a link in both, where before only the terminal coloured the path
+  and did so with a colour no theme could change.
+- A search match or a selection on a jumpable line is no longer painted
+  over by the row tint.
+
+### Project
+- The repository has a Sponsor button, and the README, site and issue
+  chooser link the Discord server.
 
 ## 0.9.4 — 2026-10-09
 

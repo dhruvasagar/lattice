@@ -132,6 +132,7 @@ docs = [
   "completion",
   "folding",
   "compilation-mode",
+  "shell-command-mode",
   "project",
   "error-list",
 ]
@@ -393,6 +394,7 @@ docs = [
 "scan-view-clockreport-mode" = "The clock report"
 "lsp-mode"             = "The lsp-mode gate"
 "compilation-mode"     = "Compilation"
+"shell-command-mode"   = "Shell commands"
 "project"              = "Projects"
 "error-list"           = "The error list"
 "magit-status-mode"    = "The status buffer"

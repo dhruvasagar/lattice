@@ -15,7 +15,7 @@ github_repo = "https://github.com/dhruvasagar/lattice"
 # the footer must not be the copy that gets forgotten. README.md,
 # CONTRIBUTING.md, site/content/faq.md and .github/ISSUE_TEMPLATE/config.yml
 # carry the same URL and cannot read this value — change all five together.
-discord_invite = "https://discord.gg/rqbeVSBBY"
+discord_invite = "https://discord.gg/qbTW5gP4mz"
 tagline = "Combines vim's modal editing power with emacs's extensibility model on a non-blocking, multi-threaded core."
 # GitHub Actions dispatcher for the docs deploy workflow.
 deploy_ref = "https://github.com/dhruvasagar/lattice/actions/workflows/deploy-docs.yml"

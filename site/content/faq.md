@@ -107,7 +107,7 @@ Open an issue on the [GitHub issue tracker](https://github.com/dhruvasagar/latti
 
 ### Is there a chat or forum?
 
-Both. For chat there is a [Discord server](https://discord.gg/rqbeVSBBY) — the quickest way
+Both. For chat there is a [Discord server](https://discord.gg/qbTW5gP4mz) — the quickest way
 to ask "is this a bug or am I holding it wrong?". For anything worth finding
 again, use [GitHub Discussions](https://github.com/dhruvasagar/lattice/discussions)
 (questions, ideas) or [issues](https://github.com/dhruvasagar/lattice/issues)

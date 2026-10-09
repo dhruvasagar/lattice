@@ -61,7 +61,7 @@ There are no backwards-compatibility shims for vim or emacs configs; that
 is an explicit non-goal.
 
 Not sure whether an idea fits? Ask first — on
-[Discord](https://discord.gg/rqbeVSBBY) for a quick read, or in
+[Discord](https://discord.gg/qbTW5gP4mz) for a quick read, or in
 [Discussions](https://github.com/dhruvasagar/lattice/discussions) if it
 needs room. A decision that affects the design still belongs in an issue,
 where it can be found later.

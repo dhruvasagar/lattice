@@ -32,8 +32,8 @@ fn published_spans(
         .services
         .get::<lattice_mode::PendingSyntheticHighlights>()
         .expect("boot registers the synthetic-highlight store");
-    let map = pending.map.lock().unwrap();
-    match map.get(&buffer).map(|u| &u.op) {
+    let queued = pending.pending(buffer);
+    match queued.last().map(|u| &u.op) {
         Some(lattice_mode::HighlightsOp::Replace(spans)) => spans.clone(),
         Some(lattice_mode::HighlightsOp::InsertAt { spans, .. }) => spans.clone(),
         _ => Vec::new(),

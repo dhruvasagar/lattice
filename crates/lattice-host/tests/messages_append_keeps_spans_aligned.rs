@@ -111,8 +111,8 @@ fn backlog_seed_then_drain_never_merges_and_keeps_spans_aligned() {
         .services
         .get::<lattice_mode::PendingSyntheticHighlights>()
         .unwrap();
-    let map = pending.map.lock().unwrap();
-    let (start_line, spans) = match map.get(&id).map(|u| &u.op) {
+    let queued = pending.pending(id);
+    let (start_line, spans) = match queued.last().map(|u| &u.op) {
         Some(lattice_mode::HighlightsOp::InsertAt { start_line, spans }) => {
             (*start_line as usize, spans.clone())
         }

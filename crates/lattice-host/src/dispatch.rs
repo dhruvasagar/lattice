@@ -19413,16 +19413,7 @@ impl Editor {
         else {
             return;
         };
-        let entries: Vec<(
-            lattice_core::BufferId,
-            lattice_mode::pending_synthetic_highlights::HighlightsUpdate,
-        )> = {
-            let mut map = match pending.map.lock() {
-                Ok(m) => m,
-                Err(_) => return,
-            };
-            map.drain().collect()
-        };
+        let entries = pending.drain();
         // MG.21a: accumulated here rather than written per-entry so the
         // `provider_diff_signs` Arc is rebuilt once per drain, not once
         // per buffer.
@@ -19430,78 +19421,63 @@ impl Editor {
             lattice_core::BufferId,
             Vec<(u32, crate::diff::overlay::DiffSignKind)>,
         )> = Vec::new();
-        for (buf_id, update) in entries {
-            // DR.3: refinement rides the same update, so it is spliced
-            // by THIS loop rather than a parallel one — the property the
-            // sign-derivation comment below insists on.
-            let incoming_refine = update.refine;
-            let op = update.op;
+        for (buf_id, updates) in entries {
+            use lattice_mode::pending_synthetic_highlights::{
+                HighlightsOp, splice_insert, splice_remove,
+            };
             let locals = self.buffer_locals.entry(buf_id).or_default();
-            let existing = || {
-                locals
-                    .get::<crate::modes::ExtraHighlights>()
-                    .map(|e| e.0.clone())
-                    .unwrap_or_default()
+            // A streaming producer queues several updates per tick, and a
+            // splice is relative to the one before it — so they are folded
+            // in order onto ONE copy of the stored lists. A leading
+            // `Replace` (every queue that holds one starts with it) needs
+            // no copy at all.
+            let starts_fresh = matches!(
+                updates.first().map(|u| &u.op),
+                Some(HighlightsOp::Replace(_))
+            );
+            let (mut final_spans, mut final_refine) = if starts_fresh {
+                (Vec::new(), Vec::new())
+            } else {
+                (
+                    locals
+                        .get::<crate::modes::ExtraHighlights>()
+                        .map(|e| e.0.clone())
+                        .unwrap_or_default(),
+                    locals
+                        .get::<crate::modes::ExtraRefinement>()
+                        .map(|e| e.0.clone())
+                        .unwrap_or_default(),
+                )
             };
-            // DR.3: refinement takes the SAME op as the spans, through
-            // the same generic splice. A `=` expansion inserts lines
-            // mid-buffer; if only one list shifted, the refinement
-            // would sit over the wrong rows.
-            let existing_refine = || {
-                locals
-                    .get::<crate::modes::ExtraRefinement>()
-                    .map(|e| e.0.clone())
-                    .unwrap_or_default()
-            };
-            let (final_spans, final_refine) = match op {
-                lattice_mode::pending_synthetic_highlights::HighlightsOp::Replace(spans) => {
-                    (spans, incoming_refine)
+            for update in updates {
+                // DR.3: refinement rides the same update and takes the
+                // SAME op as the spans, through the same generic splice.
+                // A `=` expansion inserts lines mid-buffer; if only one
+                // list shifted, the refinement would sit over the wrong
+                // rows.
+                let incoming_refine = update.refine;
+                match update.op {
+                    HighlightsOp::Replace(spans) => {
+                        final_spans = spans;
+                        final_refine = incoming_refine;
+                    }
+                    HighlightsOp::InsertAt { start_line, spans } => {
+                        // Keep the refinement list the same length as the
+                        // span list even when the producer sent none, so
+                        // the two stay index-aligned.
+                        final_refine.resize(final_spans.len(), Vec::new());
+                        let inserted = spans.len();
+                        splice_insert(&mut final_spans, start_line, spans);
+                        let mut refine = incoming_refine;
+                        refine.resize(inserted, Vec::new());
+                        splice_insert(&mut final_refine, start_line, refine);
+                    }
+                    HighlightsOp::RemoveAt { start_line, count } => {
+                        splice_remove(&mut final_spans, start_line, count);
+                        splice_remove(&mut final_refine, start_line, count);
+                    }
                 }
-                lattice_mode::pending_synthetic_highlights::HighlightsOp::InsertAt {
-                    start_line,
-                    spans,
-                } => {
-                    let mut merged = existing();
-                    lattice_mode::pending_synthetic_highlights::splice_insert(
-                        &mut merged,
-                        start_line,
-                        spans,
-                    );
-                    let mut merged_refine = existing_refine();
-                    // Keep the refinement list the same length as the
-                    // span list even when the producer sent none, so
-                    // the two stay index-aligned.
-                    merged_refine.resize(
-                        merged.len().saturating_sub(incoming_refine.len()),
-                        Vec::new(),
-                    );
-                    lattice_mode::pending_synthetic_highlights::splice_insert(
-                        &mut merged_refine,
-                        start_line,
-                        incoming_refine,
-                    );
-                    merged_refine.resize(merged.len(), Vec::new());
-                    (merged, merged_refine)
-                }
-                lattice_mode::pending_synthetic_highlights::HighlightsOp::RemoveAt {
-                    start_line,
-                    count,
-                } => {
-                    let mut merged = existing();
-                    lattice_mode::pending_synthetic_highlights::splice_remove(
-                        &mut merged,
-                        start_line,
-                        count,
-                    );
-                    let mut merged_refine = existing_refine();
-                    lattice_mode::pending_synthetic_highlights::splice_remove(
-                        &mut merged_refine,
-                        start_line,
-                        count,
-                    );
-                    (merged, merged_refine)
-                }
-            };
+            }
             // MG.21a: derive the line-background signs from the SAME spans
             // that are about to be stored, after splicing. Deriving rather
             // than carrying signs on a parallel channel is what makes the
@@ -58162,6 +58138,43 @@ mod tests {
             ..Default::default()
         };
         ed
+    }
+
+    /// A log streams faster than the editor ticks: several appends are
+    /// published before one drain. Each is a splice relative to the one
+    /// before, so the drain has to apply all of them, in order.
+    #[test]
+    fn splices_published_between_drains_all_land_in_order() {
+        let mut editor = editor_with_highlights_service();
+        let buf = lattice_core::BufferId(7);
+        let pending = editor
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>()
+            .expect("PendingSyntheticHighlights registered");
+        pending.store_and_wake(buf, vec![row(Style::Comment)]);
+        pending.insert_at_and_wake(buf, 1, vec![row(Style::Link)]);
+        pending.insert_at_and_wake(buf, 2, vec![row(Style::Number)]);
+        editor.drain_pending_synthetic_highlights();
+        // And one more after the drain, onto what is now stored.
+        pending.insert_at_and_wake(buf, 3, vec![row(Style::Bold)]);
+        editor.drain_pending_synthetic_highlights();
+
+        let styles: Vec<Style> = editor
+            .buffer_locals
+            .get(&buf)
+            .and_then(|l| l.get::<crate::modes::ExtraHighlights>())
+            .map(|h| h.0.iter().map(|line| line[0].style).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            styles,
+            vec![Style::Comment, Style::Link, Style::Number, Style::Bold]
+        );
+        let refine_rows = editor
+            .buffer_locals
+            .get(&buf)
+            .and_then(|l| l.get::<crate::modes::ExtraRefinement>())
+            .map(|r| r.0.len());
+        assert_eq!(refine_rows, Some(4), "refinement stays row-aligned");
     }
 
     #[test]

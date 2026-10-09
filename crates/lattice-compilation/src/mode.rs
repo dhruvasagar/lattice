@@ -501,9 +501,11 @@ impl Mode for CompilationMode {
             // CM.5: the off-thread span publisher. Absent in a stripped
             // test harness, in which case output still streams (and is
             // still stripped) — just uncoloured.
-            let highlights: Option<PendingSyntheticHighlightsHandle> = ctx
-                .service::<PendingSyntheticHighlightsHandle>()
-                .map(|outer| (*outer).clone());
+            // Looked up by the bare type the host registers; asking for
+            // the handle alias misses (the `ServiceRegistry` `TypeId`
+            // rule) and the buffer silently never gains a span.
+            let highlights: Option<PendingSyntheticHighlightsHandle> =
+                ctx.service::<PendingSyntheticHighlights>();
 
             let drain_state = hl_state.clone();
             let drain_version = hl_version.clone();
@@ -729,9 +731,8 @@ mod tests {
 
     /// The spans currently stored for `id`, as line lengths.
     fn stored(h: &PendingSyntheticHighlights, id: lattice_core::BufferId) -> Option<Vec<usize>> {
-        let map = h.map.lock().ok()?;
-        let update = map.get(&id)?;
-        match &update.op {
+        let queued = h.pending(id);
+        match &queued.last()?.op {
             lattice_mode::pending_synthetic_highlights::HighlightsOp::InsertAt {
                 spans, ..
             } => Some(spans.iter().map(|l| l.len()).collect()),
@@ -743,8 +744,8 @@ mod tests {
     }
 
     fn start_line_of(h: &PendingSyntheticHighlights, id: lattice_core::BufferId) -> Option<u32> {
-        let map = h.map.lock().ok()?;
-        match &map.get(&id)?.op {
+        let queued = h.pending(id);
+        match &queued.last()?.op {
             lattice_mode::pending_synthetic_highlights::HighlightsOp::InsertAt {
                 start_line,
                 ..

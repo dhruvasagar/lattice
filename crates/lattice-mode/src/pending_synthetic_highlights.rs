@@ -77,10 +77,13 @@ pub struct HighlightsUpdate {
 /// `*_and_wake` method fires the editor's `async_landed` notify, so the
 /// spans reach the screen without a keystroke (the inbound-wake rule).
 ///
-/// **One pending update per buffer.** The map holds the latest undrained
-/// update; a second store for the same buffer before the drain runs
-/// replaces the first. Two splices in quick succession therefore need a
-/// drain between them, or a `Replace` instead.
+/// **Updates queue per buffer, in order.** A splice is relative to whatever
+/// came before it, so two of them stored between drains must both be
+/// applied — a streaming producer publishes many times per tick, and
+/// keeping only the latest would drop rows and leave every later line one
+/// row out. A `Replace` describes the whole buffer and so supersedes
+/// everything queued ahead of it; the queue restarts there. Take the
+/// pending updates with [`Self::drain`].
 ///
 /// # Examples
 ///
@@ -94,12 +97,14 @@ pub struct HighlightsUpdate {
 /// *pending.waker.lock().unwrap() = Some(wake.clone()); // the host does this at boot
 ///
 /// pending.remove_at_and_wake(BufferId(3), 10, 2);
-/// let update = pending.map.lock().unwrap().remove(&BufferId(3)).unwrap();
-/// assert!(matches!(update.op, HighlightsOp::RemoveAt { start_line: 10, count: 2 }));
+/// let (buffer, updates) = pending.drain().remove(0);
+/// assert_eq!(buffer, BufferId(3));
+/// assert!(matches!(updates[0].op, HighlightsOp::RemoveAt { start_line: 10, count: 2 }));
 /// ```
 pub struct PendingSyntheticHighlights {
-    /// Undrained updates by buffer; the host's tick drain empties it.
-    pub map: Arc<Mutex<HashMap<BufferId, HighlightsUpdate>>>,
+    /// Undrained updates by buffer, oldest first; the host's tick drain
+    /// empties it through [`Self::drain`].
+    pub map: Arc<Mutex<HashMap<BufferId, Vec<HighlightsUpdate>>>>,
     /// The editor's `async_landed` notify, installed by the host at boot.
     /// `None` (a test harness) means stores land but nothing wakes.
     pub waker: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
@@ -129,15 +134,13 @@ impl PendingSyntheticHighlights {
         spans: Vec<Vec<StyledSpan>>,
         refine: Vec<Vec<RefineSpan>>,
     ) {
-        if let Ok(mut map) = self.map.lock() {
-            map.insert(
-                buffer_id,
-                HighlightsUpdate {
-                    op: HighlightsOp::Replace(spans),
-                    refine,
-                },
-            );
-        }
+        self.push(
+            buffer_id,
+            HighlightsUpdate {
+                op: HighlightsOp::Replace(spans),
+                refine,
+            },
+        );
         self.fire_waker();
     }
 
@@ -172,15 +175,13 @@ impl PendingSyntheticHighlights {
         spans: Vec<Vec<StyledSpan>>,
         refine: Vec<Vec<RefineSpan>>,
     ) {
-        if let Ok(mut map) = self.map.lock() {
-            map.insert(
-                buffer_id,
-                HighlightsUpdate {
-                    op: HighlightsOp::InsertAt { start_line, spans },
-                    refine,
-                },
-            );
-        }
+        self.push(
+            buffer_id,
+            HighlightsUpdate {
+                op: HighlightsOp::InsertAt { start_line, spans },
+                refine,
+            },
+        );
         self.fire_waker();
     }
 
@@ -190,15 +191,13 @@ impl PendingSyntheticHighlights {
     /// underlying text edit DELETED `count` lines at `start_line`
     /// (e.g. toggle-diff collapsing inline content back down).
     pub fn remove_at_and_wake(&self, buffer_id: BufferId, start_line: u32, count: usize) {
-        if let Ok(mut map) = self.map.lock() {
-            map.insert(
-                buffer_id,
-                HighlightsUpdate {
-                    op: HighlightsOp::RemoveAt { start_line, count },
-                    refine: Default::default(),
-                },
-            );
-        }
+        self.push(
+            buffer_id,
+            HighlightsUpdate {
+                op: HighlightsOp::RemoveAt { start_line, count },
+                refine: Default::default(),
+            },
+        );
         self.fire_waker();
     }
 
@@ -207,6 +206,38 @@ impl PendingSyntheticHighlights {
     /// ExtraHighlights are still valid — the Editor needs to repaint.
     pub fn wake(&self) {
         self.fire_waker();
+    }
+
+    /// Queue `update` behind what is already pending for `buffer_id`. A
+    /// `Replace` empties the queue first: nothing ahead of it can still
+    /// matter.
+    fn push(&self, buffer_id: BufferId, update: HighlightsUpdate) {
+        if let Ok(mut map) = self.map.lock() {
+            let queue = map.entry(buffer_id).or_default();
+            if matches!(update.op, HighlightsOp::Replace(_)) {
+                queue.clear();
+            }
+            queue.push(update);
+        }
+    }
+
+    /// Take every pending update, per buffer, in the order they were
+    /// stored. The host's tick drain calls this; apply each buffer's
+    /// updates front to back.
+    pub fn drain(&self) -> Vec<(BufferId, Vec<HighlightsUpdate>)> {
+        match self.map.lock() {
+            Ok(mut map) => map.drain().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// The updates pending for `buffer_id`, oldest first, left in place.
+    pub fn pending(&self, buffer_id: BufferId) -> Vec<HighlightsUpdate> {
+        self.map
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&buffer_id).cloned())
+            .unwrap_or_default()
     }
 
     fn fire_waker(&self) {
@@ -269,6 +300,54 @@ mod tests {
 
     fn labels(spans: &[Vec<StyledSpan>]) -> Vec<usize> {
         spans.iter().map(|v| v[0].end).collect()
+    }
+
+    /// The streaming case: a producer publishes twice before the host
+    /// drains once. Keeping only the second would drop a row and leave
+    /// every later line painted one row out.
+    #[test]
+    fn two_splices_stored_before_a_drain_are_both_kept_in_order() {
+        let pending = PendingSyntheticHighlights::new();
+        let id = BufferId(1);
+        pending.insert_at_and_wake(id, 0, vec![line(1)]);
+        pending.insert_at_and_wake(id, 1, vec![line(2)]);
+        let starts: Vec<Option<u32>> = pending
+            .pending(id)
+            .iter()
+            .map(|u| match &u.op {
+                HighlightsOp::InsertAt { start_line, .. } => Some(*start_line),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts, vec![Some(0), Some(1)]);
+    }
+
+    /// A `Replace` describes the whole buffer, so what was queued ahead of
+    /// it is dead — but a splice queued after it is relative to it and
+    /// must survive.
+    #[test]
+    fn a_replace_supersedes_what_was_queued_and_keeps_what_follows() {
+        let pending = PendingSyntheticHighlights::new();
+        let id = BufferId(1);
+        pending.insert_at_and_wake(id, 0, vec![line(1)]);
+        pending.store_and_wake(id, vec![line(7)]);
+        pending.insert_at_and_wake(id, 1, vec![line(2)]);
+        let queued = pending.pending(id);
+        assert_eq!(queued.len(), 2);
+        assert!(matches!(queued[0].op, HighlightsOp::Replace(_)));
+        assert!(matches!(
+            queued[1].op,
+            HighlightsOp::InsertAt { start_line: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn draining_empties_the_queue() {
+        let pending = PendingSyntheticHighlights::new();
+        pending.store_and_wake(BufferId(1), vec![line(1)]);
+        assert_eq!(pending.drain().len(), 1);
+        assert!(pending.drain().is_empty());
+        assert!(pending.pending(BufferId(1)).is_empty());
     }
 
     #[test]

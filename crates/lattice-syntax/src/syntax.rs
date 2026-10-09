@@ -2519,6 +2519,41 @@ const MAX: i32 = 10;\n\
         );
     }
 
+    /// A table with a header and a delimiter row is a `pipe_table`, and its
+    /// cells are leaves of the block grammar — the inline grammar never saw
+    /// them, so a correct table lost all its highlighting while the same
+    /// rows without a delimiter (a paragraph) kept theirs.
+    #[test]
+    fn a_table_cell_is_highlighted_like_the_paragraph_it_would_otherwise_be() {
+        let row = "| **bold** | `code` and [link](http://x) |\n";
+        let styles_on_row = |src: &str, line: u32| -> Vec<Style> {
+            let mut syn = Syntax::for_language(Lang::Markdown).unwrap().unwrap();
+            syn.parse_at(src, 1);
+            let mut styles: Vec<Style> = syn
+                .highlight_lines(line, line + 1)
+                .unwrap()
+                .remove(0)
+                .into_iter()
+                .map(|s| s.style)
+                .filter(|s| *s != Style::Default)
+                .collect();
+            styles.dedup();
+            styles
+        };
+        let as_paragraph = styles_on_row(row, 0);
+        let as_table = styles_on_row(&format!("| a | b |\n|---|---|\n{row}"), 2);
+        assert!(
+            as_paragraph.len() >= 3,
+            "the fixture has emphasis, a code span and a link: {as_paragraph:?}"
+        );
+        for style in &as_paragraph {
+            assert!(
+                as_table.contains(style),
+                "{style:?} is styled in a paragraph and missing in a table cell: {as_table:?}"
+            );
+        }
+    }
+
     // ---- Slice B.2: incremental reparse parity tests -----------
     //
     // Tree-sitter's failure mode for a malformed `InputEdit` is a

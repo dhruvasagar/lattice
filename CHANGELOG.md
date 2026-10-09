@@ -8,6 +8,10 @@
   shows it and not how a buffer does, so every other row was padded short
   by the length of the URL and the pipes drifted apart. Cells are now
   measured as written.
+- **A proper markdown table lost its highlighting.** With a header and a
+  `|---|---|` row, bold, code spans and links inside the cells were shown as
+  plain text; the same rows without the rule were coloured. Cells are now
+  highlighted either way.
 
 ## 0.9.5 — 2026-10-09
 

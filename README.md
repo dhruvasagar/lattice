@@ -39,6 +39,8 @@ on your machine, so it needs Rust and the `wasm32-wasip2` target —
 
 ## What works today
 
+|                       |                                                                                                               |
+|-----------------------|---------------------------------------------------------------------------------------------------------------|
 | **Modal editing**     | Vim grammar — operators, motions, text objects, registers, counts, macros, folds, marks                       |
 | **Code intelligence** | LSP: completion, diagnostics, hover, rename, references, inlay hints, symbols, code actions                   |
 | **Syntax**            | Tree-sitter, 20 languages, incremental and O(viewport)                                                        |
@@ -179,6 +181,8 @@ command. The same pages are the editor's own `:help`.
 
 **Writing a plugin**
 
+|                                                                                                                          |                                                                                                                                                                                            |
+|--------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | [Plugin authoring guide](docs/dev/guides/plugin-authoring.md)                                                            | Toolchain, ABI and versions, the `plugin.toml` manifest, sync vs async seams, the runtime contract. Read first.                                                                            |
 | [Plugin patterns](docs/dev/guides/plugin-patterns.md)                                                                    | Recipes: an operator, an action, a motion, an ex-command, a mode with options, a picker, events, reading the buffer and syntax tree, persistent state. Code quoted from plugins CI builds. |
 | [Plugin-API reference](docs/dev/reference/plugin-api.md) ([site](https://dhruvasagar.github.io/lattice/dev/plugin-api/)) | Generated from the WIT: every world and its entry points, every seam, function signature, type and field, with examples. As JSON: [`plugin-api.json`](docs/dev/reference/plugin-api.json). |
@@ -186,6 +190,8 @@ command. The same pages are the editor's own `:help`.
 
 **Contributing to the editor**
 
+|                                                                       |                                                                                                        |
+|-----------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------|
 | [Developing lattice](docs/dev/guides/developing-lattice.md)           | **Start here** — dev loop, architecture mental model, mode ownership, "add your first X" walkthroughs. |
 | [Developer documentation](https://dhruvasagar.github.io/lattice/dev/) | Every design fragment, guide and audit, organised by subsystem ([`docs/dev/`](docs/dev/)).             |
 | [Design spec](docs/dev/architecture/design.md)                        | Authoritative for what should exist.                                                                   |

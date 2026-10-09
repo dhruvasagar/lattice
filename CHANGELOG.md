@@ -18,7 +18,7 @@
   own `*shell-command*` buffer (`<C-c>` stops it, `gr` runs it again). It
   is separate from `:compile`: the output is not parsed for errors, and a
   one-off command never replaces a build's output, its error list or the
-  command `:recompile` re-runs.
+  command `:recompile` re-runs. The buffer is highlighted as shell.
 - **`'<` and `'>` are motions.** They jump to the start and end of the last
   Visual selection (`` `< `` and `` `> `` to the exact column), and they
   compose with operators, so `d'>` and `y'<` work. Before, they were

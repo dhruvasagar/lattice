@@ -289,8 +289,9 @@ impl ModeRegistry {
                         existing = %e.get(),
                         rejected = %id,
                         lang = %e.key(),
-                        "ModeRegistry: ignoring duplicate target_language \
-                         claim; first registration wins"
+                        "ModeRegistry: a second major names this language; \
+                         the first stays the one its files open in (the \
+                         second's pathless buffers are still parsed as it)"
                     );
                 }
             }

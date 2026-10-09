@@ -267,3 +267,49 @@ async fn a_shell_command_does_not_disturb_the_build() {
     let rebuilt = settle_text(&mut editor, build, |t| t.contains("Compilation")).await;
     assert!(rebuilt.starts_with("$ printf 'main.c:3:5"), "{rebuilt:?}");
 }
+
+/// `*shell-command*` is read as shell, and stays read as shell while the
+/// command is still printing.
+///
+/// Two things had to be true and neither was. A synthetic buffer has no
+/// path, so nothing detected a language for it; and its text arrives on the
+/// tick, off any keystroke, where nothing asked for a reparse. The second
+/// would have left every line after the first frame the colour of nothing
+/// until a key was pressed, so this never dispatches one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_shell_command_buffer_is_highlighted_as_shell() {
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    let mut out = DispatchOutcome::default();
+
+    editor.execute_ex_line("!echo \"quoted\" 42", &mut out);
+    let shell = editor.buffers.by_name("*shell-command*").unwrap();
+    let shown = settle_text(&mut editor, shell, |t| t.contains("Command finished")).await;
+
+    let syntax = editor
+        .document_syntax_for(shell)
+        .cloned()
+        .expect("the major's language reached the buffer");
+    assert_eq!(syntax.lang(), lattice_syntax::Lang::Bash);
+
+    // The tree is of the text on screen, not of the empty buffer the mode
+    // was activated on.
+    let version = editor
+        .buffers
+        .document_handle(shell)
+        .unwrap()
+        .text_version();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while syntax.snapshot().text_version() != version {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the streamed text was never reparsed: {shown:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    // And the build's buffer is still not a shell script.
+    editor.execute_ex_line("compile echo built", &mut out);
+    let build = editor.buffers.by_name("*compilation*").unwrap();
+    settle_text(&mut editor, build, |t| t.contains("Compilation")).await;
+    assert!(editor.document_syntax_for(build).is_none());
+}

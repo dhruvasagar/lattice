@@ -483,6 +483,20 @@ pub trait Mode: Send + Sync + 'static {
     /// registration wins and later claims warn, matching
     /// `target_buffer_kind`.
     ///
+    /// **It is also the grammar a pathless buffer is parsed with.** A
+    /// file's language is detected from its name before any mode
+    /// activates. A synthetic buffer has nothing to detect from, so the
+    /// host asks its major: an org capture buffer is parsed as `org`
+    /// because `org-mode` says so here, and `*shell-command*` as `bash`
+    /// because `shell-command-mode` does. One declaration, one host path
+    /// (`Editor::lang_for_major`), native and plugin alike.
+    ///
+    /// That second reading holds for a **compiled-in** language too.
+    /// Naming one (`"bash"`, `"rust"`) does not make this the major its
+    /// files open in — the built-in table is consulted first, so the
+    /// claim on file-open is inert — but a pathless buffer this is the
+    /// major of is highlighted with that grammar.
+    ///
     /// The built-in language majors (`rust-mode`, `markdown-mode`,
     /// …) do **not** declare this yet — they resolve through
     /// `lattice_syntax::major_mode_id_for_lang`'s table, which is

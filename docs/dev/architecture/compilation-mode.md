@@ -540,6 +540,24 @@ therefore cannot say `2e 1w` and reports the exit status instead (`ok` /
 `failed`). Escape sequences are still stripped and painted for both — that
 is not parsing, it is not showing `ESC[31m` as text.
 
+**The shell target is highlighted as shell.** `shell-command-mode`
+declares `Mode::target_language() == Some("bash")`, and the host parses
+the buffer with that grammar. It is the declaration `org-mode` makes for
+its capture buffer and the same host path (`Editor::lang_for_major`):
+a pathless buffer is parsed as its major's language. Nothing new crosses
+the plugin boundary — `target-language` is already on the WIT
+`mode-declaration` — so a plugin major gets the same by the same means.
+Naming a compiled-in language is not a claim on its files: the built-in
+table is consulted first, so `.sh` still opens in `bash-mode`.
+
+Two things it depended on, both generic: the major's language is applied
+on the synthetic-buffer activation path (it was applied only on a mode
+toggle and in `open_synthetic_buffer_seeded`), and `run_tick_pending`
+ends by requesting a reparse of text the tick changed. Without the second
+a streamed buffer kept the colours of its first frame until a key was
+pressed. `compilation-mode` declares no language: its text is coloured by
+the diagnostic highlighter, which knows what a diagnostic is.
+
 Rejected: routing `:!cmd` to `:compile` (the first cut — it is the
 conflict above), and a separate shell-output mechanism (a second process
 runner and a second streaming drain for the same job).

@@ -121,6 +121,12 @@ impl Editor {
         // read. The full kind-driven `activate_major_for_buffer_kind`
         // calls this too; we mirror the contract here.
         self.recompute_options_for_buffer(buffer_id);
+        // The major's language, when it declares one. The mode-toggle path
+        // does this for itself; this one activates a major on a buffer
+        // nothing is showing yet, and a pathless buffer has no other way
+        // to learn what it should be parsed as.
+        let signals = self.rebuild_syntax_for_mode(buffer_id, major_id);
+        self.enqueue_renderer_signals(signals);
     }
 
     /// Append `text` to the end of the Document at `buffer_id`.

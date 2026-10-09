@@ -512,6 +512,26 @@ mod tests {
         );
     }
 
+    /// A plugin major may name a COMPILED-IN language, and the name survives
+    /// to the registered mode.
+    ///
+    /// That is all the plugin side has to do for its pathless buffers to be
+    /// highlighted: the host reads `target_language()` off the active major
+    /// (`Editor::lang_for_major`) and resolves a built-in name to the built-in
+    /// grammar. It is the declaration `shell-command-mode` makes natively for
+    /// `*shell-command*`, and `compile_run.rs` in `lattice-host` proves the
+    /// host half over this same registry lookup.
+    #[test]
+    fn a_major_may_name_a_built_in_language_for_its_buffers() {
+        let mut registry = ModeRegistry::default();
+        let id = register_plugin_mode(&mut registry, None, &major_for("my-output-mode", "bash"))
+            .expect("a well-formed major registers");
+        assert_eq!(
+            registry.get(id).expect("registered").target_language(),
+            Some("bash")
+        );
+    }
+
     /// A major need not claim a language — that is manual activation, and the
     /// index must stay empty rather than gaining a `None` key.
     #[test]

@@ -40,6 +40,10 @@ purpose:
 - **Nothing is parsed.** The output is shown as the command printed it —
   no error list entries, no gutter marks, no jump-to-location. Colours the
   command itself emits are kept.
+- **It is highlighted as shell.** The `$ command` line and the output are
+  coloured with the shell grammar: strings, variables, keywords. That is
+  colouring only. Output that is not shell is coloured as though it were,
+  which is usually fine and occasionally odd.
 - **It has its own buffer.** A `:!git status` between a build and its
   `:recompile` leaves `*compilation*`, the error list and the command
   `:recompile` re-runs exactly as they were.

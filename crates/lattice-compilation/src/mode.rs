@@ -270,6 +270,27 @@ impl Mode for CompilationMode {
         ModeKind::Major
     }
 
+    /// `*shell-command*` is read as shell: it opens with the `$ command`
+    /// line and what follows is whatever that command printed. Nothing
+    /// here knows what that is, which is the point of the buffer — the
+    /// grammar gives strings, variables and keywords a colour without the
+    /// output being *parsed* for anything.
+    ///
+    /// The same declaration `org-mode` makes for an org capture buffer, and
+    /// the same host path: a pathless buffer is parsed as its major's
+    /// language. Naming a compiled-in language does not claim its files —
+    /// a `.sh` still opens in `bash-mode`.
+    ///
+    /// `*compilation*` declares nothing. Its text is coloured by
+    /// [`crate::DiagnosticHighlighter`], which knows what a diagnostic
+    /// is; a grammar over the top would only fight it.
+    fn target_language(&self) -> Option<&str> {
+        match self.0 {
+            RunTarget::Shell => Some("bash"),
+            RunTarget::Compilation => None,
+        }
+    }
+
     /// MG.RO: `read-only-mode` is where the operator gate actually is.
     ///
     /// `ReadOnly = true` above stops Insert-mode TYPING and nothing else — it

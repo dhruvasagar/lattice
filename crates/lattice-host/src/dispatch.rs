@@ -16382,6 +16382,13 @@ impl Editor {
         let registry = self.mode_registry.load();
         let mode = registry.get(mode_id)?;
         let name = mode.target_language()?;
+        // A compiled-in name first. A major may name one — it is how
+        // `shell-command-mode` reads its output as bash, and a plugin major
+        // may do the same — and `Lang::Plugin("bash")` would name a grammar
+        // no plugin registered, so the buffer would silently stay plain.
+        if let Some(lang) = lattice_syntax::Lang::builtin_by_name(name) {
+            return Some(lang);
+        }
         Some(lattice_syntax::Lang::Plugin(
             lattice_syntax::plugin_lang::LanguageName::intern(name),
         ))
@@ -16392,7 +16399,7 @@ impl Editor {
     /// highlighting reflects the new language. Skips when the
     /// mode has no language mapping (e.g. TextMode) or when
     /// the language is already correct.
-    fn rebuild_syntax_for_mode(
+    pub(crate) fn rebuild_syntax_for_mode(
         &mut self,
         buffer_id: lattice_core::BufferId,
         mode_id: lattice_mode::ModeId,
@@ -16400,6 +16407,45 @@ impl Editor {
         let Some(new_lang) = self.lang_for_major(mode_id) else {
             return Vec::new();
         };
+        // A buffer that is not the active document: a synthetic buffer's
+        // major is activated when the buffer is CREATED, which is before
+        // anything shows it. Build its handle into its own slot, where
+        // `activate_buffer` finds it. Without this the major's language
+        // reached only buffers opened through `open_synthetic_buffer_seeded`,
+        // which re-runs this once the buffer is active; one created through
+        // `ModeActivator::ensure_named_document` stayed plain.
+        if buffer_id != self.document_buffer_id {
+            if self
+                .document_syntax_for(buffer_id)
+                .is_some_and(|s| s.lang() == new_lang)
+            {
+                return Vec::new();
+            }
+            let Some(handle) = self.buffers.document_handle(buffer_id) else {
+                return Vec::new();
+            };
+            // Only a pathless buffer. A file opened in the background has
+            // its language detected from its path by the open itself, and
+            // parsing it a second time here would be work for nothing.
+            if handle.path().is_some() {
+                return Vec::new();
+            }
+            let text = handle.text();
+            let version = handle.text_version();
+            let (syntax, parsed_sync) = self.build_open_syntax(new_lang, &text, version);
+            let parsed = if parsed_sync {
+                version
+            } else {
+                version.wrapping_sub(1)
+            };
+            let locals = self.buffer_locals.entry(buffer_id).or_default();
+            locals.insert(crate::modes::DocumentSyntax(syntax));
+            locals.insert(crate::modes::DocumentLastParsedTextVersion(parsed));
+            locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(
+                version.wrapping_sub(1),
+            ));
+            return Vec::new();
+        }
         // Short-circuit: if the syntax handle already uses this
         // language, there's nothing to rebuild.
         if self.syntax.as_ref().is_some_and(|s| s.lang() == new_lang) {
@@ -19222,6 +19268,16 @@ impl Editor {
         // DL.3b: same shape for mode-published inline virtual text.
         self.drain_pending_inlays();
         signals.extend(self.drain_tick_callbacks());
+        // Text that changed during this tick is reparsed by this tick.
+        //
+        // The drains above write to buffers — a mode streaming a command's
+        // output, a filter's result, a server's edit — and until now the
+        // only thing that asked for a reparse was the keystroke tail. So a
+        // buffer with a grammar that filled in on its own kept the colours
+        // of its previous text until a key was pressed, which is the
+        // "works after I hit something" bug the inbound primitive exists
+        // to rule out, one layer down. One comparison when nothing changed.
+        self.maybe_reparse_syntax();
         signals
     }
 
@@ -20330,9 +20386,7 @@ impl Editor {
         // language mode (e.g. `:bash-mode` on a `.zshrc` buffer) would
         // change the mode identity but leave syntax highlighting on the
         // previously-detected language (or Plain).
-        let syntax_signals = if matches!(kind, lattice_mode::ModeKind::Major)
-            && buffer_id == self.document_buffer_id
-        {
+        let syntax_signals = if matches!(kind, lattice_mode::ModeKind::Major) {
             self.rebuild_syntax_for_mode(buffer_id, mode_id)
         } else {
             Vec::new()

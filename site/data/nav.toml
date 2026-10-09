@@ -26,13 +26,13 @@
 #
 #   REFERENCE holds per-surface keymap tables — one buffer kind, one minor
 #   mode, one language grammar. You arrive by search or cross-link, not by
-#   browsing. 94 of the 136 topics live here; keeping them out of the main
+#   browsing. 95 of the 175 topics live here; keeping them out of the main
 #   sidebar is the single biggest readability win in this layout.
 #
 #   That ratio keeps climbing — it was 74 of 113 when this file was written,
 #   and every per-mode doc added since has landed in Reference. It is still
 #   the right split (nobody browses a keymap table), but Reference is now
-#   more than two-thirds of the corpus, so its GROUPS are what readers
+#   more than half of the corpus, so its GROUPS are what readers
 #   actually navigate. Keep them meaningful; a group past ~25 entries wants
 #   splitting rather than another row.
 
@@ -69,6 +69,7 @@ docs = [
   "command-line-mode",
   "ex-commands",
   "surround-mode",
+  "table-mode",
   "formatting",
 ]
 
@@ -132,7 +133,6 @@ docs = [
   "completion",
   "folding",
   "compilation-mode",
-  "shell-command-mode",
   "project",
   "error-list",
 ]
@@ -147,15 +147,17 @@ docs = [
   "magit-status-mode",
   "magit-transient",
   "diff-mode",
+  "diff-conflict-mode",
 ]
 
 [[section]]
 slug = "terminal"
 title = "Terminal & AI agents"
-description = "Shells as buffers, coding agents wired to the editor, and background-work notifications."
+description = "Shells as buffers, one-off shell commands, coding agents wired to the editor, and background-work notifications."
 [[section.group]]
 docs = [
   "terminal-mode",
+  "shell-command-mode",
   "claude-code-mode",
   "opencode-mode",
   "notifications",
@@ -221,7 +223,6 @@ docs = [
   "yaml-mode",
   "sql-mode",
   "markdown-mode",
-  "table-mode",
   "wit-mode",
 ]
 
@@ -347,7 +348,6 @@ docs = [
   "notifications-mode",
   "plugins-mode",
   "problems-minor-mode",
-  "diff-conflict-mode",
   "plugin-trace-mode",
 ]
 

@@ -522,6 +522,49 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    registry.register_ex_command(
+        "ex:filter",
+        "Filter lines through a shell command, replacing them with its output (`:{range}!cmd`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: true,
+            parse_args: Arc::new(|rest, _bang| {
+                let command = rest.trim();
+                if command.is_empty() {
+                    return Err(CommandError::BadArgs("E471: Argument required".into()));
+                }
+                Ok(Args::String(command.to_string()))
+            }),
+            apply: Arc::new(|ctx| {
+                let command = match &ctx.args {
+                    Args::String(command) => command.clone(),
+                    _ => return Err(CommandError::BadArgs("expected a command line".into())),
+                };
+                // With no range it is the cursor line that is filtered;
+                // the `:` front-end sends a bare `:!cmd` elsewhere.
+                let lines = match &ctx.range {
+                    Some(Range::Whole) => None,
+                    Some(range) => Some(
+                        resolved_lines(range)
+                            .ok_or(CommandError::InvalidArgs("a filter needs a line range"))?,
+                    ),
+                    None => {
+                        return Err(CommandError::InvalidArgs("a filter needs a line range"));
+                    }
+                };
+                Ok(Effect::FilterLines { lines, command })
+            }),
+            args_schema: vec![crate::args::ArgSpec::required(
+                "command",
+                crate::args::ArgKind::String,
+                "shell command the lines are piped through",
+            )],
+            surface_form: SurfaceForm::Delimiter {
+                hint: ":{range}!command  (e.g. :%!sort, :.!date)".into(),
+            },
+        },
+    );
     let set_option = registry.register_ex_command(
         "ex:set",
         "Set a view option (`:set <option>`).",

@@ -2171,6 +2171,9 @@ pub struct Editor {
     /// `ExternalFormatOutcome`.
     pub pending_external_format_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<crate::dispatch::ExternalFormatOutcome>>,
+    /// `:{range}!cmd`: the result of the filter that is running, if one is.
+    pub pending_filter_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<crate::shell_filter::FilterOutcome>>,
     pub pending_format_token: Option<CancellationToken>,
     pub pending_signature_help_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<SignatureHelpOutcome>>,

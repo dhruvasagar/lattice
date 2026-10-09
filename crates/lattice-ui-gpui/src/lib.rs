@@ -1460,6 +1460,7 @@ impl GpuiApp {
             | Effect::ListDiagnostics
             | Effect::ListErrors
             | Effect::DeleteCurrentLine
+            | Effect::FilterLines { .. }
             | Effect::Substitute { .. }
             | Effect::DescribeCommand { .. }
             | Effect::Apropos { .. }

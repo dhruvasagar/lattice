@@ -684,6 +684,13 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             );
         }
         NativeEffect::DeleteCurrentLine => WitEffect::DeleteCurrentLine,
+        NativeEffect::FilterLines { .. } => {
+            return Err(
+                "Effect::FilterLines runs a subprocess; it has no WIT form, and a plugin \
+                 does not gain that capability by returning an effect"
+                    .to_string(),
+            );
+        }
         NativeEffect::DescribeCommand { name, anchor } => {
             WitEffect::DescribeCommand(WitDescribeCommandPayload {
                 name: name.clone(),

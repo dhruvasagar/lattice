@@ -75,6 +75,7 @@ mod ex_range;
 pub mod excommand;
 pub mod file_tree;
 pub mod folds;
+pub mod shell_filter;
 // D.3.f.0 (2026-05-29): FoldProvider trait + registry. See
 // `docs/dev/architecture/fold-architecture.md`. Substrate-only
 // slice; the five existing fold methods become Primary

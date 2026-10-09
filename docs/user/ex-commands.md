@@ -398,6 +398,7 @@ Patterns are the same regular expressions `:s` and `/` take.
 | `:>` / `:<`                | Shift those lines right / left                 |
 | `:s/pat/repl/[flags]`      | Substitute on those lines                      |
 | `:g/pat/cmd`, `:v/pat/cmd` | Run `cmd` on the matching lines among them     |
+| `:!cmd`                    | Filter those lines through a shell command     |
 | `:narrow`                  | Narrow to those lines                          |
 | (nothing)                  | Jump to the range's last line                  |
 
@@ -425,10 +426,51 @@ With no range, `:d`, `:y`, `:>`, `:<` and `:s` act on the cursor line and
 - A command that takes no range refuses one with `E481: No range allowed`.
 
 Not supported yet: `;` between addresses (the second counted from the
-first), `\/`, `\?` and `\&` (the last search or substitute pattern), `*`,
-and filtering lines through a shell command (`:%!sort`).
+first), `\/`, `\?` and `\&` (the last search or substitute pattern), and `*`.
+
 
 ---
+
+## Shell commands (`:!`)
+
+`!` hands a command line to your shell (`sh -c`; `cmd /C` on Windows), so
+pipes, quoting and globs work as they do in a terminal.
+
+**With a range, it filters.** The lines of the range are the command's
+input, and what it prints replaces them:
+
+```
+:%!sort                  " sort the whole buffer
+:.!date                  " replace the cursor line with the date
+:5,20!column -t          " line up a table
+:'<,'>!jq .              " pretty-print the selected JSON
+:/BEGIN/,/END/!sort -u   " sort and de-duplicate a marked block
+```
+
+The output can be more or fewer lines than went in; a command that prints
+nothing deletes the lines. One filter is one undo step.
+
+The command runs in the background, so the editor stays responsive while a
+slow one works, and the lines are replaced when it finishes. Two things
+follow from that:
+
+- If you change the buffer before it finishes, its output is **not**
+  applied, and the echo line says so. It was computed from lines that are
+  no longer what it saw.
+- One filter runs at a time. A second while the first is still running is
+  refused.
+
+A command that exits with an error changes nothing; the first line of what
+it wrote to stderr is shown. A command still running after 60 seconds is
+stopped. It runs in the directory of the file being edited.
+
+**With no range, it runs the command and shows its output.** `:!cargo
+test` is the same as [`:compile cargo test`](help:compilation-mode): the
+output streams into the `*compilation*` buffer, errors in it are jumpable,
+and `<C-c>` there stops the command.
+
+Not supported: `%` and `#` in the command standing for file names, `:!!`
+to repeat the last command, and `:r !cmd` to read a command's output in.
 
 ## Aliases
 

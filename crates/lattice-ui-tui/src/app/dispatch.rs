@@ -1037,6 +1037,7 @@ impl App {
             | Effect::ListDiagnostics
             | Effect::ListErrors
             | Effect::DeleteCurrentLine
+            | Effect::FilterLines { .. }
             | Effect::Substitute { .. }
             | Effect::RecordJump
             // BC.8c: the showDocument open effects are host-applied in
@@ -1431,7 +1432,10 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         // into the target, and with a `cut` deletes from the source too).
         Effect::WriteToFile { .. } => true,
         // Ex-effects that the host turns into edits / yanks at apply time.
-        Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
+        Effect::Substitute { .. }
+        | Effect::Global { .. }
+        | Effect::DeleteCurrentLine
+        | Effect::FilterLines { .. } => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
         // L4b: the diagnostics popup neither mutates nor yanks.
         Effect::ShowDiagnosticsPopup { .. } => false,
@@ -1590,7 +1594,10 @@ fn effect_mutates(effect: &Effect) -> bool {
         Effect::ApplyEdit { .. } => true,
         // XF.1: a change rather than a yank, so `.` may repeat it.
         Effect::WriteToFile { .. } => true,
-        Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
+        Effect::Substitute { .. }
+        | Effect::Global { .. }
+        | Effect::DeleteCurrentLine
+        | Effect::FilterLines { .. } => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
         // L4b: the diagnostics popup is not a buffer mutation.
         Effect::ShowDiagnosticsPopup { .. } => false,

@@ -892,6 +892,18 @@ pub enum Effect {
     /// range, which preserves the newline (vim's `dd` semantics differ
     /// from `:d` -- §5.2.1).
     DeleteCurrentLine,
+    /// `:{range}!cmd` -- filter lines through a shell command: the lines are
+    /// the command's stdin and its stdout replaces them. The host runs it
+    /// off-thread and applies the result as one undo step. No WIT mirror:
+    /// running a subprocess is a capability a plugin does not get by
+    /// returning an effect.
+    FilterLines {
+        /// The inclusive 0-based lines, already resolved from the range.
+        /// `None` is every line (`:%!cmd`).
+        lines: Option<(u32, u32)>,
+        /// The command line, handed to the platform shell as written.
+        command: String,
+    },
     /// `:describe-command <name>` (DESIGN.md §5.11). The host queries
     /// its `CommandRegistry` for the named entry and renders the
     /// metadata into a help overlay. Carried as a sentinel because

@@ -91,6 +91,17 @@ pub fn parse(line: &str, registry: &CommandRegistry) -> Result<CommandInvocation
     if let Some(range) = range {
         return parse_ranged(rest, range, None, registry);
     }
+    // `:!cmd` with no range runs the command and shows what it prints. That
+    // is `:compile cmd`: a streaming buffer the output lands in, `<C-c>` to
+    // stop it, and nothing blocked while it runs — spelled the way vim
+    // users type it.
+    if let Some(command) = trimmed.strip_prefix('!') {
+        let command = command.trim();
+        if command.is_empty() {
+            return Err(ExCommandError::BadArgs("E471: Argument required".into()));
+        }
+        return parse_invocation(&format!("compile {command}"), registry);
+    }
     // The operator commands take the cursor line when no range is given.
     if let Some(inv) = try_parse_line_operator(trimmed, Range::CurrentLine, registry, false)? {
         return Ok(inv);
@@ -127,6 +138,19 @@ fn parse_ranged(
             .id_by_name("motion:goto-last-line")
             .ok_or_else(|| ExCommandError::Unknown("motion:goto-last-line".into()))?;
         return Ok(CommandInvocation::of(id).with_range(range));
+    }
+    // `:{range}!cmd` — the lines through a shell command.
+    if let Some(command) = rest.strip_prefix('!') {
+        let id = registry
+            .id_by_name("ex:filter")
+            .ok_or_else(|| ExCommandError::Unknown("ex:filter".into()))?;
+        let command = command.trim();
+        if command.is_empty() {
+            return Err(ExCommandError::BadArgs("E471: Argument required".into()));
+        }
+        return Ok(CommandInvocation::of(id)
+            .with_range(range)
+            .with_args(Args::String(command.to_string())));
     }
     if let Some(inv) = try_parse_substitute(rest, registry)? {
         // `try_parse_substitute` reads a leading `%` itself; after a range
@@ -1195,6 +1219,23 @@ pub fn command_line_decorations(line: &str, registry: &CommandRegistry) -> Comma
     }
     let rest = &line[cursor..];
 
+    // Shell form: `:!cmd` runs it, `:{range}!cmd` filters the lines
+    // through it. What follows the `!` is the shell's, not ours to judge.
+    if rest.starts_with('!') {
+        deco.spans.push(CommandLineSpan {
+            range: cursor..cursor + 1,
+            style: Style::Keyword,
+        });
+        if end > cursor + 1 {
+            deco.spans.push(CommandLineSpan {
+                range: cursor + 1..end,
+                style: Style::String,
+            });
+        }
+        deco.param_hint = Some("<shell command>".to_string());
+        return deco;
+    }
+
     // Substitute delimiter form (`s/…/…/…`).
     if rest.starts_with("s/") {
         tokenize_substitute(line, cursor, &mut deco.spans);
@@ -1420,6 +1461,31 @@ mod tests {
         // The shifts and yank take the cursor line when given no range.
         assert_eq!(parse(">", &reg).unwrap().range, Some(Range::CurrentLine));
         assert_eq!(parse("y", &reg).unwrap().range, Some(Range::CurrentLine));
+    }
+
+    /// `!` after a range filters those lines; alone it runs the command
+    /// and shows its output, which is `:compile`.
+    #[test]
+    fn a_bang_filters_a_range_and_runs_a_command_without_one() {
+        let reg = fixture();
+        let filter = parse("2,4!sort -r", &reg).unwrap();
+        assert_eq!(Some(filter.command), reg.id_by_name("ex:filter"));
+        assert_eq!(filter.args, Args::String("sort -r".into()));
+        assert_eq!(parse("%!sort", &reg).unwrap().range, Some(Range::Whole));
+        assert_eq!(
+            parse(".!date", &reg).unwrap().range,
+            Some(Range::Span {
+                start: RangeBound::CurrentLine,
+                end: RangeBound::CurrentLine,
+            })
+        );
+        for line in ["!", "%!", "1,2!   "] {
+            assert!(parse(line, &reg).is_err(), "{line}");
+        }
+        // And the line is not flagged while it is typed.
+        for line in ["%!sort -r", "!ls -la"] {
+            assert_eq!(command_line_decorations(line, &reg).error, None, "{line}");
+        }
     }
 
     /// Two ranges, `;`, and a range on a command that takes none are errors
@@ -2001,13 +2067,14 @@ mod tests {
     /// line. The parser has no `ex:<typed>` fallback — a command with no
     /// alias row answers "unknown command" however it is spelled, which is
     /// how `:Oil` (documented in `ex-commands.md` and `oil-mode.md`), `:format`
-    /// and `:reload-snippets` all shipped dead. `:s/` and `:g/` are
-    /// delimiter-form and reached by their own parsers, not the table.
+    /// and `:reload-snippets` all shipped dead. `:s/`, `:g/` and
+    /// `:{range}!` are delimiter-form and reached by their own parsers,
+    /// not the table.
     #[test]
     fn every_ex_command_has_a_typed_name() {
         let r = fixture();
         let table = aliases();
-        let delimiter_form = ["ex:substitute", "ex:global"];
+        let delimiter_form = ["ex:substitute", "ex:global", "ex:filter"];
         let mut missing: Vec<&str> = r
             .names()
             .filter(|n| n.starts_with("ex:") && !delimiter_form.contains(n))

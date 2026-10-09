@@ -4528,6 +4528,11 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // editor.* mutation through `apply_edit_blocking`.
             editor.do_delete_line();
         }
+        Effect::FilterLines { lines, command } => {
+            // `:{range}!cmd`. Starts the command off-thread; the lines are
+            // replaced when it lands (`drain_pending_filter`).
+            editor.do_filter_lines(lines, command);
+        }
         Effect::Substitute {
             scope,
             pattern,
@@ -19132,6 +19137,7 @@ impl Editor {
         signals.extend(self.drain_pending_rename());
         self.drain_pending_format();
         self.drain_pending_external_format();
+        self.drain_pending_filter();
         signals.extend(self.drain_inbound_apply_edits());
         // I4 (Claude Code IDE peer, `openDiff`): drain programmatic side-by-side
         // diff requests, opening each on the actor thread (host-drained, same as
@@ -43140,7 +43146,10 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         // must auto-exit after it for the same reason `d` does.
         Effect::WriteToFile { .. } => true,
         // Ex-effects that the host turns into edits / yanks at apply time.
-        Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
+        Effect::Substitute { .. }
+        | Effect::Global { .. }
+        | Effect::DeleteCurrentLine
+        | Effect::FilterLines { .. } => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
         // L4b: the diagnostics popup neither mutates nor yanks.
         Effect::ShowDiagnosticsPopup { .. } => false,
@@ -43298,7 +43307,10 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         Effect::ApplyEdit { .. } => true,
         // XF.1: a change rather than a yank, so `.` may repeat it.
         Effect::WriteToFile { .. } => true,
-        Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
+        Effect::Substitute { .. }
+        | Effect::Global { .. }
+        | Effect::DeleteCurrentLine
+        | Effect::FilterLines { .. } => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
         // L4b: the diagnostics popup is not a buffer mutation.
         Effect::ShowDiagnosticsPopup { .. } => false,

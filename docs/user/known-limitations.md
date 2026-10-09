@@ -40,7 +40,7 @@ here.
 
 ## Grammar and commands not yet implemented
 
-- `!` — filtering a range through an external command (`:%!sort`).
+- In `:!cmd`: `%` / `#` for file names, `:!!`, and `:r !cmd`.
 - A few ex-range forms: `;` between addresses, `\/` / `\?` / `\&`, and `*`.
   Everything else in [ranges](help:ex-commands) works. Range commands
   beyond `:d`, `:y`, `:>`, `:<`, `:s`, `:g` and `:narrow` — `:m`, `:t`,

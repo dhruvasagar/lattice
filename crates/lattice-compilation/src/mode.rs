@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use lattice_cells::{HeaderlineProvider, VirtualRowProvider};
-use lattice_grammar::{AppEffect, CommandRegistryHandle, Effect};
+use lattice_grammar::{AppEffect, CommandRegistryHandle, Effect, RunTarget};
 use lattice_mode::inbound::InboundBus;
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerRegistration, ActionHandlerRegistryHandle,
@@ -49,12 +49,33 @@ fn count_newlines(text: &str) -> u32 {
     text.matches('\n').count() as u32
 }
 
-/// Major mode for the `*compilation*` buffer.
-pub struct CompilationMode;
+/// Major mode for a streamed command-output buffer: `*compilation*`, and
+/// `*shell-command*` for `:!cmd`.
+///
+/// One mode type, registered once per [`RunTarget`]. The two buffers behave
+/// the same — streamed, read-only, reading cues, `<CR>` jumps, `<C-c>`
+/// stops, `gr` runs it again — and differ only in which run they show and
+/// which commands those chords name. Carrying that as a field keeps it one
+/// implementation; two copies of a 300-line `on_activate` would drift.
+pub struct CompilationMode(pub RunTarget);
 
 impl CompilationMode {
+    /// The build's mode, `compilation-mode`.
+    pub const COMPILE: Self = Self(RunTarget::Compilation);
+    /// `:!cmd`'s mode, `shell-command-mode`.
+    pub const SHELL: Self = Self(RunTarget::Shell);
+
+    /// `compilation-mode`.
     pub fn mode_id() -> ModeId {
-        ModeId::new("compilation-mode")
+        Self::mode_id_for(RunTarget::Compilation)
+    }
+
+    /// The mode id of `target`'s buffer.
+    pub fn mode_id_for(target: RunTarget) -> ModeId {
+        ModeId::new(match target {
+            RunTarget::Compilation => "compilation-mode",
+            RunTarget::Shell => "shell-command-mode",
+        })
     }
 }
 
@@ -73,9 +94,21 @@ impl CompilationMode {
 /// The host's `translate_mode_keymaps` pass auto-pushes these as a
 /// `MajorMode(compilation-mode)` layer; K.1.c scopes them to
 /// `*compilation*` buffers.
-fn compilation_keymap_entries() -> &'static [KeymapEntry] {
-    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
-    ENTRIES.get_or_init(|| {
+fn compilation_keymap_entries(target: RunTarget) -> &'static [KeymapEntry] {
+    static COMPILE: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    static SHELL: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    if target == RunTarget::Shell {
+        // `<C-c>` stops THIS buffer's command. No `<CR>` jump: nothing in
+        // this buffer is parsed, so there is nothing to jump from.
+        return SHELL.get_or_init(|| {
+            vec![keymap_entry! {
+                mode: Normal, chord: "<C-c>",
+                doc: "Stop the running shell command",
+                cmd: "shell-command-kill"
+            }]
+        });
+    }
+    COMPILE.get_or_init(|| {
         // RV.2 (2026-08-10): `gr` is NOT declared here. It lives once on
         // `refreshable-view-mode`; this mode names its refresh target
         // via `Mode::refresh_action()` below, and the shared minor
@@ -230,7 +263,7 @@ impl Mode for CompilationMode {
     type Guard = CompilationModeGuard;
 
     fn id(&self) -> ModeId {
-        Self::mode_id()
+        Self::mode_id_for(self.0)
     }
 
     fn kind(&self) -> ModeKind {
@@ -284,7 +317,7 @@ impl Mode for CompilationMode {
     /// RV.2: `gr` is deliberately absent — see
     /// [`Self::refresh_action`].
     fn keymap(&self) -> Keymap {
-        Keymap::from_entries(compilation_keymap_entries())
+        Keymap::from_entries(compilation_keymap_entries(self.0))
     }
 
     /// RV.2 (2026-08-10): recompile is this mode's refresh.
@@ -295,7 +328,11 @@ impl Mode for CompilationMode {
     /// same command the mode's own `gr` entry used to name directly.
     /// See `docs/dev/architecture/mode-architecture.md` §5.5.
     fn refresh_action(&self) -> Option<&'static str> {
-        Some("action:compilation-recompile")
+        Some(match self.0 {
+            RunTarget::Compilation => "action:compilation-recompile",
+            // `gr` in `*shell-command*` runs that command again.
+            RunTarget::Shell => "action:shell-command-rerun",
+        })
     }
 
     /// OA.4b: this view folds by blocks, so `<Tab>` / `<S-Tab>` come from the
@@ -334,6 +371,7 @@ impl Mode for CompilationMode {
     }
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
+        let target = self.0;
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
@@ -524,6 +562,25 @@ impl Mode for CompilationMode {
                 let mut span_debt: usize = 0;
                 let mut severities: Vec<(u32, ErrorSeverity)> = Vec::new();
                 let mut location_lines: Vec<u32> = Vec::new();
+                // A build's output is read for diagnostics; a one-off
+                // command's is not. `:!cmd` shows what the command printed
+                // and stops there — no gutter marks, no jump tint, no
+                // counts — so its buffer scans nothing.
+                let parses = target == RunTarget::Compilation;
+                let scan_sev = |base: u32, text: &str| {
+                    if parses {
+                        scan_severities(base, text)
+                    } else {
+                        Vec::new()
+                    }
+                };
+                let scan_loc = |base: u32, text: &str| {
+                    if parses {
+                        scan_location_lines(base, text)
+                    } else {
+                        Vec::new()
+                    }
+                };
                 while let Some(first) = rx.recv().await {
                     let mut batch = vec![first];
                     while let Ok(more) = rx.try_recv() {
@@ -539,6 +596,11 @@ impl Mode for CompilationMode {
                     let mut pending_start = next_line;
                     let mut dirty = false;
                     for event in batch {
+                        // Every output buffer's drain hears every run.
+                        // This one keeps its own.
+                        if event.target != target {
+                            continue;
+                        }
                         match event.chunk {
                             OutputChunk::Reset { ref header } => {
                                 let flush = std::mem::take(&mut pending);
@@ -562,6 +624,7 @@ impl Mode for CompilationMode {
                                         s.running = true;
                                         s.last_counts = None;
                                         s.killed = false;
+                                        s.failed = false;
                                     }
                                 }
                                 drain_version.fetch_add(1, Ordering::Release);
@@ -570,9 +633,9 @@ impl Mode for CompilationMode {
                                 // and scan the header itself (rare, but keeps the
                                 // index consistent with the buffer content).
                                 severities.clear();
-                                severities.extend(scan_severities(0, header));
+                                severities.extend(scan_sev(0, header));
                                 location_lines.clear();
-                                location_lines.extend(scan_location_lines(0, header));
+                                location_lines.extend(scan_loc(0, header));
                                 next_line = count_newlines(header);
                                 // The reset replaced the buffer, so the
                                 // prior run's spans are gone with it.
@@ -584,8 +647,8 @@ impl Mode for CompilationMode {
                                 dirty = true;
                             }
                             OutputChunk::Append { text, spans } => {
-                                severities.extend(scan_severities(next_line, &text));
-                                location_lines.extend(scan_location_lines(next_line, &text));
+                                severities.extend(scan_sev(next_line, &text));
+                                location_lines.extend(scan_loc(next_line, &text));
                                 next_line = next_line.saturating_add(count_newlines(&text));
                                 if pending.is_empty() {
                                     pending_start = next_line.saturating_sub(count_newlines(&text));
@@ -595,8 +658,8 @@ impl Mode for CompilationMode {
                                 dirty = true;
                             }
                             OutputChunk::Finished { summary } => {
-                                severities.extend(scan_severities(next_line, &summary));
-                                location_lines.extend(scan_location_lines(next_line, &summary));
+                                severities.extend(scan_sev(next_line, &summary));
+                                location_lines.extend(scan_loc(next_line, &summary));
                                 if pending.is_empty() {
                                     pending_start = next_line;
                                 }
@@ -619,7 +682,10 @@ impl Mode for CompilationMode {
                                 if let Ok(mut s) = drain_state.write() {
                                     s.running = false;
                                     s.last_counts = Some((errors, warnings));
-                                    s.killed = summary.contains("Compilation terminated");
+                                    s.killed = summary.contains(" terminated");
+                                    s.failed = summary.contains(" exited abnormally")
+                                        || summary.contains(" failed to launch")
+                                        || summary.contains(" wait failed");
                                 }
                                 drain_version.fetch_add(1, Ordering::Release);
                                 dirty = true;
@@ -670,10 +736,14 @@ impl Mode for CompilationMode {
             // registration). Tolerates missing services (test harness
             // without full boot wiring) via `?`.
             let mut action_registrations: Vec<ActionHandlerRegistration> = Vec::new();
-            if let (Some(cmd_registry_arc), Some(action_handlers_arc)) = (
-                ctx.service::<CommandRegistryHandle>(),
-                ctx.service::<ActionHandlerRegistryHandle>(),
-            ) {
+            // Only where the output is parsed: `*shell-command*` binds no
+            // jump chord, so it registers no jump handler.
+            if target == RunTarget::Compilation
+                && let (Some(cmd_registry_arc), Some(action_handlers_arc)) = (
+                    ctx.service::<CommandRegistryHandle>(),
+                    ctx.service::<ActionHandlerRegistryHandle>(),
+                )
+            {
                 let cmd_registry_snapshot = cmd_registry_arc.load();
                 if let Some(jump_command_id) =
                     cmd_registry_snapshot.id_by_name("action:compilation-jump")
@@ -864,16 +934,16 @@ mod tests {
 
     #[test]
     fn kind_is_major_with_no_capability_requirements() {
-        assert_eq!(CompilationMode.kind(), ModeKind::Major);
+        assert_eq!(CompilationMode::COMPILE.kind(), ModeKind::Major);
         assert_eq!(
-            CompilationMode.required_capabilities(),
+            CompilationMode::COMPILE.required_capabilities(),
             CapabilitySet::empty()
         );
     }
 
     #[test]
     fn options_are_read_only_no_file_and_unguided() {
-        let overrides = CompilationMode.options();
+        let overrides = CompilationMode::COMPILE.options();
         let has_true = |type_id: std::any::TypeId| {
             overrides.iter().any(|ov| {
                 ov.option_type_id == type_id && ov.downcast_value::<bool>() == Some(&true)
@@ -930,7 +1000,7 @@ mod tests {
         );
         services.register(ids);
         let ctx = DecorationCtx::new(lattice_core::BufferId(7), &services);
-        let decos = CompilationMode.gutter_decorations(&ctx);
+        let decos = CompilationMode::COMPILE.gutter_decorations(&ctx);
         assert_eq!(
             decos,
             vec![
@@ -959,7 +1029,7 @@ mod tests {
             entries: std::sync::Arc::new(vec![(2, GutterSeverityLevel::Error)]),
         });
         let ctx = DecorationCtx::new(lattice_core::BufferId(7), &services);
-        assert!(CompilationMode.gutter_decorations(&ctx).is_empty());
+        assert!(CompilationMode::COMPILE.gutter_decorations(&ctx).is_empty());
     }
 
     #[test]
@@ -969,7 +1039,7 @@ mod tests {
         use lattice_mode::{DecorationCtx, ServiceRegistry};
         let services = ServiceRegistry::new();
         let ctx = DecorationCtx::new(lattice_core::BufferId(1), &services);
-        assert!(CompilationMode.gutter_decorations(&ctx).is_empty());
+        assert!(CompilationMode::COMPILE.gutter_decorations(&ctx).is_empty());
     }
 
     #[test]
@@ -1019,7 +1089,7 @@ mod tests {
             },
         );
 
-        let km = CompilationMode.keymap();
+        let km = CompilationMode::COMPILE.keymap();
         for entry in &km.entries {
             if let Some(cmd_name) = entry.command {
                 assert!(

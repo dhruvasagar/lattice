@@ -122,7 +122,8 @@ pub mod source;
 pub mod target;
 
 pub use crate::app_effect::{
-    AppEffect, ErrorTarget, HScroll, InsertLineEdit, PaneDirection, ScrollPos, ViewportPos,
+    AppEffect, ErrorTarget, HScroll, InsertLineEdit, PaneDirection, RunTarget, ScrollPos,
+    ViewportPos,
 };
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 pub use crate::cancel::{CancellationToken, CheckCancelled};

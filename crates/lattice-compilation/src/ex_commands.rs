@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use lattice_grammar::CommandRegistry;
-use lattice_grammar::app_effect::AppEffect;
+use lattice_grammar::app_effect::{AppEffect, RunTarget};
 use lattice_grammar::args::{ArgKind, ArgSpec, Args};
 use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::Effect;
@@ -51,6 +51,7 @@ pub fn register_compilation_ex_commands(registry: &mut CommandRegistry) {
             apply: Arc::new(|ctx| {
                 Ok(Effect::AppAction(AppEffect::CompileRun {
                     cmdline: arg_to_cmdline(&ctx.args),
+                    target: RunTarget::Compilation,
                 }))
             }),
             args_schema: vec![ArgSpec::required(
@@ -79,7 +80,12 @@ pub fn register_compilation_ex_commands(registry: &mut CommandRegistry) {
                     ))
                 }
             }),
-            apply: Arc::new(|_ctx| Ok(Effect::AppAction(AppEffect::CompileRun { cmdline: None }))),
+            apply: Arc::new(|_ctx| {
+                Ok(Effect::AppAction(AppEffect::CompileRun {
+                    cmdline: None,
+                    target: RunTarget::Compilation,
+                }))
+            }),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -105,6 +111,7 @@ pub fn register_compilation_ex_commands(registry: &mut CommandRegistry) {
             apply: Arc::new(|ctx| {
                 Ok(Effect::AppAction(AppEffect::CompileRun {
                     cmdline: arg_to_cmdline(&ctx.args),
+                    target: RunTarget::Compilation,
                 }))
             }),
             args_schema: vec![ArgSpec::optional(
@@ -126,7 +133,80 @@ pub fn register_compilation_ex_commands(registry: &mut CommandRegistry) {
             accepts_bang: false,
             accepts_range: false,
             parse_args: Arc::new(|_s: &str, _bang: bool| Ok(Args::None)),
-            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::CompilationKill))),
+            apply: Arc::new(|_| {
+                Ok(Effect::AppAction(AppEffect::CompilationKill {
+                    target: RunTarget::Compilation,
+                }))
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
+    // `:shell-command <cmd>` — what `:!cmd` spells. A one-off command in
+    // its own buffer: it does not become `:recompile`'s command and its
+    // output does not replace the build's error list.
+    registry.register_ex_command(
+        "shell-command",
+        "Run a shell command and stream its output into the *shell-command* buffer (`:!cmd`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(|s: &str, _bang: bool| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    return Err(CommandError::BadArgs("E471: Argument required".into()));
+                }
+                Ok(Args::String(trimmed.to_string()))
+            }),
+            apply: Arc::new(|ctx| {
+                Ok(Effect::AppAction(AppEffect::CompileRun {
+                    cmdline: arg_to_cmdline(&ctx.args),
+                    target: RunTarget::Shell,
+                }))
+            }),
+            args_schema: vec![ArgSpec::required(
+                "command",
+                ArgKind::String,
+                "shell command to run",
+            )],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
+    // `gr` in `*shell-command*`: run that buffer's command again. An
+    // action rather than an ex-command — it is a chord's target, named by
+    // the mode's `refresh_action` — and registered here, by the crate that
+    // owns the mode, rather than in the host's action table.
+    registry.register_action(
+        "action:shell-command-rerun",
+        "shell-command-mode `gr`: run the last `:!` command again.",
+        lattice_grammar::registry::ActionSpec {
+            apply: Arc::new(|_ctx| {
+                Ok(Effect::AppAction(AppEffect::CompileRun {
+                    cmdline: None,
+                    target: RunTarget::Shell,
+                }))
+            }),
+            args_schema: vec![],
+        },
+    );
+
+    // `<C-c>` in `*shell-command*`.
+    registry.register_ex_command(
+        "shell-command-kill",
+        "Stop the running `:!` shell command.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(|_s: &str, _bang: bool| Ok(Args::None)),
+            apply: Arc::new(|_| {
+                Ok(Effect::AppAction(AppEffect::CompilationKill {
+                    target: RunTarget::Shell,
+                }))
+            }),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },

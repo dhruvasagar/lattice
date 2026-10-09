@@ -505,7 +505,7 @@ impl WitBoundary for NativeAppEffect {
                         .to_string(),
                 );
             }
-            NativeAppEffect::CompilationKill => {
+            NativeAppEffect::CompilationKill { .. } => {
                 return Err(
                     "AppEffect::CompilationKill kills the running compilation child process; \
                      its plugin (WIT) surface is deferred with the plugin host"

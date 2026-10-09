@@ -18,6 +18,10 @@ pub struct CompilationHeadlineState {
     pub last_counts: Option<(usize, usize)>,
     pub running: bool,
     pub killed: bool,
+    /// The command exited non-zero or could not be launched. What a run
+    /// with no parsed diagnostics has to go on: `:!false` reports no
+    /// errors and still did not succeed.
+    pub failed: bool,
 }
 
 /// A `Headerline` impl backed by `CompilationHeadlineState`.
@@ -78,7 +82,7 @@ impl Headerline for CompilationHeaderline {
             ("\u{27f3}", self.in_progress_fg)
         } else if killed {
             ("\u{25a0}", self.failure_fg)
-        } else if has_errors {
+        } else if has_errors || state.failed {
             ("\u{2717}", self.failure_fg)
         } else {
             ("\u{2714}", self.success_fg)
@@ -109,6 +113,8 @@ impl Headerline for CompilationHeaderline {
             " \u{2026}"
         } else if killed {
             " killed"
+        } else if state.failed {
+            " failed"
         } else {
             " ok"
         };
@@ -155,6 +161,7 @@ mod tests {
             last_counts: counts,
             running,
             killed,
+            failed: false,
         }))
     }
 

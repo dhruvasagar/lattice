@@ -157,6 +157,27 @@ pub enum InsertLineEdit {
     DedentLine,
 }
 
+/// Which streamed-output buffer a command run belongs to.
+///
+/// A build and a one-off shell command are the same mechanism — a command
+/// run off-thread, its output streamed into a read-only buffer you can stop
+/// and jump from — put to two different uses, and the uses must not leak
+/// into each other. `:compile` remembers its command for `:recompile` and
+/// fills the error list `:cnext` walks; a `:!ls` in between must not replace
+/// either. So each target has its own buffer, its own last command, and its
+/// own running process.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+pub enum RunTarget {
+    /// `:compile` / `:make` / `:recompile` — the `*compilation*` buffer.
+    /// Its diagnostics are the error list.
+    #[default]
+    Compilation,
+    /// `:!cmd` — the `*shell-command*` buffer. No error list.
+    Shell,
+}
+
 /// Variants are added incrementally during slice 8.i as each
 /// historical `Action` variant is promoted from the legacy
 /// `bind_legacy` bridge to a typed `CommandInvocation`.
@@ -895,6 +916,9 @@ pub enum AppEffect {
     CompileRun {
         /// Shell command line to run; `None` re-runs the last one.
         cmdline: Option<String>,
+        /// Which output buffer the run belongs to — a build, or a
+        /// one-off `:!cmd`. Each has its own last command.
+        target: RunTarget,
     },
     /// CM.3b (2026-07-22): `<CR>` on a location line in the
     /// `*compilation*` buffer. The `compilation-mode` action handler
@@ -1003,9 +1027,12 @@ pub enum AppEffect {
         /// Background of a location line, packed `0xRRGGBB`.
         bg: u32,
     },
-    /// CM.3d (2026-07-22): kill the running compilation child
-    /// process. The host arm calls `CompilationService::kill()`.
-    CompilationKill,
+    /// CM.3d (2026-07-22): kill the running child process of `target`.
+    /// The host arm calls that target's `CompilationService::kill()`.
+    CompilationKill {
+        /// Whose process: the build's, or the `:!cmd` one.
+        target: RunTarget,
+    },
     /// CM.4 (2026-07-22): `:copen`. The host arm reads the core
     /// error list and calls
     /// `lattice_multibuffer::providers::problems::create_problems_view`,

@@ -464,10 +464,12 @@ A command that exits with an error changes nothing; the first line of what
 it wrote to stderr is shown. A command still running after 60 seconds is
 stopped. It runs in the directory of the file being edited.
 
-**With no range, it runs the command and shows its output.** `:!cargo
-test` is the same as [`:compile cargo test`](help:compilation-mode): the
-output streams into the `*compilation*` buffer, errors in it are jumpable,
-and `<C-c>` there stops the command.
+**With no range, it runs the command and shows its output.** `:!git
+status` streams into the `*shell-command*` buffer; `<C-c>` there stops it
+and `gr` runs it again. It is deliberately separate from
+[`:compile`](help:compilation-mode): nothing in the output is parsed, and
+it never touches the build's output, error list or `:recompile` command.
+See [shell-command-mode](help:shell-command-mode).
 
 Not supported: `%` and `#` in the command standing for file names, `:!!`
 to repeat the last command, and `:r !cmd` to read a command's output in.

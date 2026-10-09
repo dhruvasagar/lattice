@@ -14,8 +14,11 @@
   them with its output, as one undo step. It runs in the background, so a
   slow command does not freeze the editor; if the buffer changes before it
   finishes, the output is discarded rather than written over your edit.
-  With no range, `:!cmd` runs the command and streams its output into
-  `*compilation*`.
+  With no range, `:!cmd` runs the command and streams its output into its
+  own `*shell-command*` buffer (`<C-c>` stops it, `gr` runs it again). It
+  is separate from `:compile`: the output is not parsed for errors, and a
+  one-off command never replaces a build's output, its error list or the
+  command `:recompile` re-runs.
 - **`'<` and `'>` are motions.** They jump to the start and end of the last
   Visual selection (`` `< `` and `` `> `` to the exact column), and they
   compose with operators, so `d'>` and `y'<` work. Before, they were

@@ -57,6 +57,9 @@ impl OutputChunk {
 /// service to the `*compilation*` buffer drain.
 #[derive(Debug, Clone)]
 pub struct CompilationOutputPushed {
+    /// Which run this is output from. Every output buffer's drain hears
+    /// every chunk and keeps its own.
+    pub target: lattice_grammar::RunTarget,
     pub chunk: OutputChunk,
 }
 

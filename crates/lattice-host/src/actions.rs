@@ -1665,7 +1665,10 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             registry,
             "action:compilation-recompile",
             "compilation-mode `gr`: recompile — re-run the last compilation command.",
-            AppEffect::CompileRun { cmdline: None },
+            AppEffect::CompileRun {
+                cmdline: None,
+                target: lattice_grammar::RunTarget::Compilation,
+            },
         ),
         // CM.3b: `<CR>` jump-to-source. The CommandSpec stays (the
         // `compilation-mode` chord binds it + the mode's per-buffer

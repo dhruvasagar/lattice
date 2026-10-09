@@ -507,6 +507,43 @@ the parsers returning entries rather than ranges. Benched as
 `compilation_ansi/plain_read`: ~180 MiB/s on a fixture where one line in
 four is a diagnostic.
 
+## 8d. Run targets: the build, and `:!cmd`
+
+`:!cmd` wants what this subsystem already is — a command run off-thread,
+its output streamed into a read-only buffer, `<C-c>` to stop it — and
+must not be the build. A one-off `:!git status` between a `:compile` and
+its `:recompile` would otherwise become the command that is recompiled,
+overwrite the build's output and replace the error list.
+
+So a run has a **target**, `RunTarget::{Compilation, Shell}`, and the
+target is carried, not branched on at the edges:
+
+- **One service type, two instances.** The instance *is* the state that
+  must not be shared: the last command and the child process. `:recompile`
+  re-runs the build's; `gr` in `*shell-command*` re-runs that buffer's;
+  `<C-c>` stops the one whose buffer you are in.
+- **One event, stamped.** `CompilationOutputPushed` carries its target.
+  Every output buffer's drain hears every chunk and keeps its own.
+- **One mode type, registered twice** (`compilation-mode`,
+  `shell-command-mode`). The buffers share streaming, read-only-ness, the
+  headerline and escape handling; a second copy of `on_activate` would
+  drift from the first.
+- **One effect each.** `CompileRun` and `CompilationKill` gain the target
+  rather than acquiring twins, so the host still has one arm for "start a
+  run" and one for "stop it".
+
+**The shell target parses nothing.** No error parsers, no reading cues, no
+severity or location scan, no `<CR>` jump, and its diagnostics bus goes
+nowhere. A build's output is read for errors because that is what a build
+is for; a one-off command's output is just what it printed. The headerline
+therefore cannot say `2e 1w` and reports the exit status instead (`ok` /
+`failed`). Escape sequences are still stripped and painted for both — that
+is not parsing, it is not showing `ESC[31m` as text.
+
+Rejected: routing `:!cmd` to `:compile` (the first cut — it is the
+conflict above), and a separate shell-output mechanism (a second process
+runner and a second streaming drain for the same job).
+
 ## 9. Rejected alternatives
 
 - **Multibuffer as the primary artefact.** Rejected: a multibuffer

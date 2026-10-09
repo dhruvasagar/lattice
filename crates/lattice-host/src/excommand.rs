@@ -91,16 +91,16 @@ pub fn parse(line: &str, registry: &CommandRegistry) -> Result<CommandInvocation
     if let Some(range) = range {
         return parse_ranged(rest, range, None, registry);
     }
-    // `:!cmd` with no range runs the command and shows what it prints. That
-    // is `:compile cmd`: a streaming buffer the output lands in, `<C-c>` to
-    // stop it, and nothing blocked while it runs — spelled the way vim
-    // users type it.
+    // `:!cmd` with no range runs the command and shows what it prints, in
+    // `*shell-command*`: a streaming buffer of its own, `<C-c>` to stop it,
+    // nothing blocked while it runs. `:shell-command` is the registered
+    // command; this is the way vim users spell it.
     if let Some(command) = trimmed.strip_prefix('!') {
         let command = command.trim();
         if command.is_empty() {
             return Err(ExCommandError::BadArgs("E471: Argument required".into()));
         }
-        return parse_invocation(&format!("compile {command}"), registry);
+        return parse_invocation(&format!("shell-command {command}"), registry);
     }
     // The operator commands take the cursor line when no range is given.
     if let Some(inv) = try_parse_line_operator(trimmed, Range::CurrentLine, registry, false)? {

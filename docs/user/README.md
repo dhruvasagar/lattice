@@ -65,6 +65,7 @@ same surface).
 | Scan views                 | [`scan-view-mode`](help:scan-view-mode) | ✅      |
 |   — `cr` clock report      | [`scan-view-clockreport-mode`](help:scan-view-clockreport-mode) | ✅      |
 | Compilation mode           | [`compilation-mode`](help:compilation-mode) | ✅      |
+| Shell commands (`:!`)      | [`shell-command-mode`](help:shell-command-mode) | ✅  |
 | The error list             | [`error-list`](help:error-list)          | ✅      |
 | The problems view          | [`problems-minor-mode`](help:problems-minor-mode) | ✅      |
 | Narrow mode                | [`narrow-mode`](help:narrow-mode)        | ✅      |

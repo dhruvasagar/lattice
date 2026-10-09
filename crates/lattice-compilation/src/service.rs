@@ -105,8 +105,27 @@ struct RunState {
 
 /// Default [`CompilationService`]: `sh -c <cmd>`, pipe-captured,
 /// streamed over the event bus.
-pub struct DefaultCompilationService {
+/// Where a run's chunks go: the event bus, stamped with the run's target.
+/// The readers and the coordinator each hold one, so nothing that publishes
+/// can forget which buffer it is publishing for.
+#[derive(Clone)]
+pub(crate) struct Outlet {
     events: Arc<EventBus>,
+    target: lattice_grammar::RunTarget,
+}
+
+impl Outlet {
+    #[cfg(test)]
+    pub(crate) fn compilation(events: Arc<EventBus>) -> Self {
+        Self {
+            events,
+            target: lattice_grammar::RunTarget::Compilation,
+        }
+    }
+}
+
+pub struct DefaultCompilationService {
+    events: Outlet,
     runtime: tokio::runtime::Handle,
     state: Arc<Mutex<RunState>>,
     /// CM.3a: the off-thread → host-state seam for parsed error
@@ -144,7 +163,10 @@ impl DefaultCompilationService {
         qf_bus: InboundBus<Vec<ErrorEntry>>,
     ) -> Self {
         Self {
-            events,
+            events: Outlet {
+                events,
+                target: lattice_grammar::RunTarget::Compilation,
+            },
             runtime,
             state: Arc::new(Mutex::new(RunState::default())),
             qf_bus,
@@ -158,6 +180,15 @@ impl DefaultCompilationService {
     /// Separate from [`Self::new`] because a stripped test harness
     /// stands up neither a theme registry nor the slot — and a service
     /// without one is still correct, just monochrome.
+    /// Run for `target` rather than the build: its chunks are stamped for
+    /// that target's buffer, and its wording says "Command", not
+    /// "Compilation". Each target is its own service instance, so each has
+    /// its own last command and its own child process.
+    pub fn for_target(mut self, target: lattice_grammar::RunTarget) -> Self {
+        self.events.target = target;
+        self
+    }
+
     pub fn with_ansi_slot(mut self, slot: crate::CompilationAnsiSlot) -> Self {
         self.ansi = Some(slot);
         self
@@ -178,7 +209,7 @@ impl DefaultCompilationService {
     }
 
     fn publish(&self, chunk: OutputChunk) {
-        self.events.publish_typed(CompilationOutputPushed { chunk });
+        publish(&self.events, chunk);
     }
 }
 
@@ -213,7 +244,14 @@ impl CompilationService for DefaultCompilationService {
                     None => {
                         drop(st);
                         self.publish(OutputChunk::Reset {
-                            header: "no previous compilation command\n\n".to_string(),
+                            header: match self.events.target {
+                                lattice_grammar::RunTarget::Compilation => {
+                                    "no previous compilation command\n\n".to_string()
+                                }
+                                lattice_grammar::RunTarget::Shell => {
+                                    "no previous shell command\n\n".to_string()
+                                }
+                            },
                         });
                         return;
                     }
@@ -286,7 +324,7 @@ impl CompilationService for DefaultCompilationService {
                     publish(
                         &events,
                         OutputChunk::Finished {
-                            summary: format!("\nCompilation failed to launch — {e}\n"),
+                            summary: format!("\n{} failed to launch — {e}\n", noun(events.target)),
                         },
                     );
                     return;
@@ -363,15 +401,15 @@ impl CompilationService for DefaultCompilationService {
                     Ok(status) => {
                         if status.success() {
                             tracing::info!("compilation finished");
-                            format!("\nCompilation finished — {status}\n")
+                            format!("\n{} finished — {status}\n", noun(events.target))
                         } else {
                             tracing::info!(%status, "compilation exited abnormally");
-                            format!("\nCompilation exited abnormally — {status}\n")
+                            format!("\n{} exited abnormally — {status}\n", noun(events.target))
                         }
                     }
-                    Err(e) => format!("\nCompilation wait failed — {e}\n"),
+                    Err(e) => format!("\n{} wait failed — {e}\n", noun(events.target)),
                 },
-                None => "\nCompilation terminated\n".to_string(),
+                None => format!("\n{} terminated\n", noun(events.target)),
             };
             publish(&events, OutputChunk::Finished { summary });
         });
@@ -403,8 +441,20 @@ impl CompilationService for DefaultCompilationService {
 
 /// Free helper so the coordinator closure (which owns `events` by
 /// move) can publish without borrowing `&self`.
-fn publish(events: &Arc<EventBus>, chunk: OutputChunk) {
-    events.publish_typed(CompilationOutputPushed { chunk });
+fn publish(outlet: &Outlet, chunk: OutputChunk) {
+    outlet.events.publish_typed(CompilationOutputPushed {
+        target: outlet.target,
+        chunk,
+    });
+}
+
+/// What a run is called in its own buffer: a build "compiles", a one-off
+/// command just runs.
+fn noun(target: lattice_grammar::RunTarget) -> &'static str {
+    match target {
+        lattice_grammar::RunTarget::Compilation => "Compilation",
+        lattice_grammar::RunTarget::Shell => "Command",
+    }
 }
 
 /// CM.3a+. Blocking line-reader for one captured pipe.
@@ -448,7 +498,7 @@ fn publish(events: &Arc<EventBus>, chunk: OutputChunk) {
 /// [`ParserRegistry::register_before_catch_all`].
 fn read_parsed_pipe<R: std::io::Read>(
     pipe: Option<R>,
-    events: &Arc<EventBus>,
+    events: &Outlet,
     qf_bus: &InboundBus<Vec<ErrorEntry>>,
     shared: &Mutex<Vec<ErrorEntry>>,
     ansi: Option<&crate::ansi::AnsiPalette>,
@@ -461,8 +511,18 @@ fn read_parsed_pipe<R: std::io::Read>(
     let mut batch = String::new();
     let mut batch_spans: Vec<Vec<lattice_cells::StyledSpan>> = Vec::new();
     let mut lines_in_batch = 0usize;
-    let mut registry = ParserRegistry::with_builtins();
-    if let Some(factories) = factories {
+    // Only a build's output is parsed. A one-off `:!cmd` gets no error
+    // parsers and no diagnostic reading cues: its output is shown as the
+    // command printed it. Escape sequences are still handled below for
+    // every target — that is not parsing, it is not showing `ESC[31m` as
+    // text.
+    let parses = events.target == lattice_grammar::RunTarget::Compilation;
+    let mut registry = if parses {
+        ParserRegistry::with_builtins()
+    } else {
+        ParserRegistry::new()
+    };
+    if let Some(factories) = factories.filter(|_| parses) {
         for parser in factories.create_all() {
             registry.register_before_catch_all(parser);
         }
@@ -489,7 +549,11 @@ fn read_parsed_pipe<R: std::io::Read>(
         }
         batch.push_str(&clean.text);
         batch.push('\n');
-        batch_spans.push(line_spans(clean.spans, reading.line(&clean.text)));
+        batch_spans.push(if parses {
+            line_spans(clean.spans, reading.line(&clean.text))
+        } else {
+            clean.spans
+        });
         lines_in_batch += 1;
         if lines_in_batch >= READER_BATCH_LINES {
             publish(
@@ -763,7 +827,7 @@ mod tests {
         let shared = Mutex::new(Vec::new());
         read_parsed_pipe(
             Some(output.as_bytes()),
-            &bus,
+            &Outlet::compilation(bus.clone()),
             &qf_bus,
             &shared,
             palette,

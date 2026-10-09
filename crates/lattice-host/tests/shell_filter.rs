@@ -156,13 +156,17 @@ async fn a_second_filter_is_refused_while_the_first_is_running() {
     assert_eq!(text(&editor), "DELTA\nALPHA\nBRAVO\nCHARLIE\nECHO\n");
 }
 
-/// With no range, `:!cmd` runs the command and shows its output — the
-/// `*compilation*` buffer — and filters nothing.
+/// With no range, `:!cmd` runs the command and shows its output in its own
+/// buffer, and filters nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn without_a_range_the_command_runs_and_its_output_is_shown() {
     let mut editor = editor_at(0);
     ex(&mut editor, "!echo hello");
-    assert!(editor.buffers.by_name("*compilation*").is_some());
+    assert!(editor.buffers.by_name("*shell-command*").is_some());
+    assert!(
+        editor.buffers.by_name("*compilation*").is_none(),
+        "a one-off command is not a build"
+    );
     assert!(editor.pending_filter_rx.is_none(), "nothing is filtered");
 }
 

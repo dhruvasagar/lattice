@@ -57,8 +57,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lattice_core::{BufferFlags, BufferId};
-use lattice_grammar::AppEffect;
 use lattice_grammar::effect::Effect;
+use lattice_grammar::{AppEffect, RunTarget};
 use lattice_mode::inbound::InboundBus;
 use lattice_mode::{GutterSeverityLevel, ModeActivator, SubsystemBoot};
 use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity};
@@ -125,6 +125,10 @@ pub fn gutter_level(severity: ErrorSeverity) -> GutterSeverityLevel {
 /// (`listed = false`).
 pub const COMPILATION_BUFFER_NAME: &str = "*compilation*";
 
+/// Synthetic name of the `:!cmd` output buffer. Separate from
+/// `*compilation*` so a one-off command never overwrites a build's output.
+pub const SHELL_COMMAND_BUFFER_NAME: &str = "*shell-command*";
+
 /// Compilation-mode's synthetic-buffer flags: unlisted (skipped by
 /// `:bn` / `:bp`), non-hidden, non-ephemeral — the canonical shape for
 /// a mode-owned subsystem buffer.
@@ -150,28 +154,62 @@ const COMPILATION_BUFFER_FLAGS: BufferFlags = BufferFlags {
 /// or `None` when the compilation service is not registered.
 pub fn start_compilation(
     activator: &mut dyn ModeActivator,
+    target: RunTarget,
     cmdline: Option<String>,
     cwd: Option<PathBuf>,
 ) -> Option<BufferId> {
     let id = activator.ensure_named_document(
-        COMPILATION_BUFFER_NAME,
-        CompilationMode::mode_id(),
+        buffer_name(target),
+        CompilationMode::mode_id_for(target),
         COMPILATION_BUFFER_FLAGS,
     );
-    // `services.get::<CompilationServiceHandle>()` returns
-    // `Arc<Arc<dyn CompilationService>>` per the ServiceRegistry
-    // Arc/TypeId convention — unwrap one layer before `run`.
-    let svc = activator.services().get::<CompilationServiceHandle>()?;
-    (*svc).clone().run(cmdline, cwd);
+    service_for(&activator.services(), target)?.run(cmdline, cwd);
     Some(id)
 }
+
+/// The synthetic name of `target`'s output buffer.
+pub fn buffer_name(target: RunTarget) -> &'static str {
+    match target {
+        RunTarget::Compilation => COMPILATION_BUFFER_NAME,
+        RunTarget::Shell => SHELL_COMMAND_BUFFER_NAME,
+    }
+}
+
+/// The service that runs `target`'s commands, or `None` when it is not
+/// registered.
+///
+/// Each target has its own instance, because the instance *is* the state
+/// that must not be shared: the last command (`:recompile` re-runs the
+/// build's, `gr` in `*shell-command*` re-runs that buffer's) and the child
+/// process (`<C-c>` stops the one whose buffer you are in).
+pub fn service_for(
+    services: &lattice_mode::ServiceRegistry,
+    target: RunTarget,
+) -> Option<Arc<dyn CompilationService>> {
+    // `get::<XHandle>()` yields `Arc<XHandle>` per the ServiceRegistry
+    // Arc/TypeId convention — unwrap one layer.
+    match target {
+        RunTarget::Compilation => services
+            .get::<CompilationServiceHandle>()
+            .map(|svc| (*svc).clone()),
+        RunTarget::Shell => services
+            .get::<ShellCommandService>()
+            .map(|svc| svc.0.clone()),
+    }
+}
+
+/// The `:!cmd` runner's registration key. A newtype, not an alias: it wraps
+/// the same trait object the build's service is, and an alias would be the
+/// same `TypeId` and so the same registry slot.
+pub struct ShellCommandService(pub Arc<dyn CompilationService>);
 
 /// Wire the compilation subsystem's ex-commands, mode, service, and
 /// off-keystroke wake into the editor at boot. One Phase-B line in
 /// `editor_boot.rs`.
 pub fn install(boot: &mut impl SubsystemBoot) {
     register_compilation_ex_commands(boot.commands_mut());
-    boot.modes_mut().register(CompilationMode).ok();
+    boot.modes_mut().register(CompilationMode::COMPILE).ok();
+    boot.modes_mut().register(CompilationMode::SHELL).ok();
 
     // CM.3a: the sanctioned off-thread → host-state seam for parsed
     // error entries (LSP-diagnostics shape). The stderr reader
@@ -251,16 +289,33 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     let parser_factories = CompilationParserFactories::new_handle();
     boot.register_service::<CompilationParserFactoriesHandle>(parser_factories.clone());
 
+    let shell_ansi_slot = ansi_slot.clone();
     let svc: CompilationServiceHandle = Arc::new(
         DefaultCompilationService::new(
             boot.event_bus().clone(),
             boot.runtime_handle().clone(),
             qf_bus,
         )
-        .with_ansi_slot(ansi_slot)
+        .with_ansi_slot(ansi_slot.clone())
         .with_parser_factories(parser_factories),
     );
     boot.register_service::<CompilationServiceHandle>(svc);
+
+    // `:!cmd`'s runner: the same service type, a second instance, so it has
+    // its own last command and its own child process. Its diagnostics bus
+    // goes nowhere on purpose — a one-off command's `file:line` output is
+    // jumpable in its buffer, but it is not the build's error list and must
+    // not replace it. Plugin error parsers are a build concern and are not
+    // given to it either.
+    let nowhere = boot.inbound::<Vec<ErrorEntry>, _>(|_| Vec::new());
+    let shell = DefaultCompilationService::new(
+        boot.event_bus().clone(),
+        boot.runtime_handle().clone(),
+        nowhere,
+    )
+    .for_target(RunTarget::Shell)
+    .with_ansi_slot(shell_ansi_slot);
+    boot.register_service::<ShellCommandService>(ShellCommandService(Arc::new(shell)));
 
     // Streamed output arrives off-keystroke; wake the editor so the
     // `*compilation*` buffer repaints without a keypress.

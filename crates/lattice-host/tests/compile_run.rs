@@ -35,6 +35,7 @@ fn compile_run_creates_the_compilation_buffer_without_panicking() {
     editor.apply_app_effect(
         AppEffect::CompileRun {
             cmdline: Some("echo hello".to_string()),
+            target: lattice_grammar::RunTarget::Compilation,
         },
         &mut out,
     );
@@ -54,6 +55,7 @@ fn recompile_reuses_the_same_buffer() {
     editor.apply_app_effect(
         AppEffect::CompileRun {
             cmdline: Some("echo one".to_string()),
+            target: lattice_grammar::RunTarget::Compilation,
         },
         &mut out,
     );
@@ -61,7 +63,13 @@ fn recompile_reuses_the_same_buffer() {
     assert!(first.is_some());
 
     // `:recompile` (no cmdline) must not create a second buffer or panic.
-    editor.apply_app_effect(AppEffect::CompileRun { cmdline: None }, &mut out);
+    editor.apply_app_effect(
+        AppEffect::CompileRun {
+            cmdline: None,
+            target: lattice_grammar::RunTarget::Compilation,
+        },
+        &mut out,
+    );
     assert_eq!(
         editor.buffers.by_name("*compilation*"),
         first,
@@ -95,6 +103,7 @@ async fn a_plain_diagnostic_reaches_the_buffer_styled_on_its_own_line() {
                  error[E0308]: mismatched types\\n --> src/main.rs:3:17\\ndone\\n' 1>&2"
                     .to_string(),
             ),
+            target: lattice_grammar::RunTarget::Compilation,
         },
         &mut out,
     );
@@ -182,4 +191,79 @@ async fn a_plain_diagnostic_reaches_the_buffer_styled_on_its_own_line() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+}
+
+/// Run the tick until `buffer`'s text satisfies `done`, dispatching nothing.
+async fn settle_text(
+    editor: &mut Editor,
+    buffer: lattice_core::BufferId,
+    done: impl Fn(&str) -> bool,
+) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        editor.run_tick_pending();
+        let text = editor
+            .buffers
+            .document_handle(buffer)
+            .unwrap()
+            .snapshot()
+            .buffer
+            .as_string();
+        if done(&text) {
+            return text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the output never settled: {text:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// `:!cmd` and `:compile` are the same machinery put to two uses, and the
+/// uses must not leak. A one-off command in between a build and its
+/// `:recompile` must not become the command that is recompiled, must not
+/// overwrite the build's output, and must not replace the error list the
+/// build filled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shell_command_does_not_disturb_the_build() {
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    let mut out = DispatchOutcome::default();
+
+    editor.execute_ex_line("compile printf 'main.c:3:5: error: bad\\n' 1>&2", &mut out);
+    let build = editor.buffers.by_name("*compilation*").unwrap();
+    let built = settle_text(&mut editor, build, |t| t.contains("Compilation")).await;
+    assert!(built.contains("main.c:3:5: error: bad"));
+    let errors_after_build = editor.error_list().len();
+    assert_eq!(
+        errors_after_build, 1,
+        "the build's diagnostic is the error list"
+    );
+
+    editor.execute_ex_line("!printf 'other.c:9:1: error: not a build\\n'", &mut out);
+    let shell = editor.buffers.by_name("*shell-command*").unwrap();
+    assert_ne!(shell, build, "its own buffer");
+    let shown = settle_text(&mut editor, shell, |t| t.contains("Command finished")).await;
+    assert!(shown.contains("other.c:9:1: error: not a build"));
+
+    // The build's buffer and error list are as the build left them.
+    assert_eq!(settle_text(&mut editor, build, |_| true).await, built);
+    assert_eq!(editor.error_list().len(), errors_after_build);
+
+    // Nothing in the shell buffer is parsed: no styled spans, no jumpable
+    // rows, no gutter marks — though the line would earn all three in a
+    // build.
+    let spans = editor
+        .buffer_locals
+        .get(&shell)
+        .and_then(|l| l.get::<lattice_host::modes::ExtraHighlights>())
+        .map(|h| h.0.iter().flatten().count())
+        .unwrap_or(0);
+    assert_eq!(spans, 0);
+    assert!(!editor.compilation_location_lines.contains_key(&shell));
+
+    // And `:recompile` still means the build.
+    editor.execute_ex_line("recompile", &mut out);
+    let rebuilt = settle_text(&mut editor, build, |t| t.contains("Compilation")).await;
+    assert!(rebuilt.starts_with("$ printf 'main.c:3:5"), "{rebuilt:?}");
 }

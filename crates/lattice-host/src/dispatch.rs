@@ -11225,7 +11225,7 @@ impl Editor {
             // crate (`lattice-compilation`) owns the streaming buffer
             // + process lifecycle; the host arm is generic glue
             // (ensure buffer → activate → repaint → echo).
-            AppEffect::CompileRun { cmdline } => {
+            AppEffect::CompileRun { cmdline, target } => {
                 // PR.4: the project root, resolved from the buffer the
                 // command fired in — read BEFORE `start_compilation`,
                 // which activates `*compilation*` and would otherwise
@@ -11242,17 +11242,23 @@ impl Editor {
                 // drain) and runs the service. `self` coerces to
                 // `&mut dyn ModeActivator`. The host's only role is generic:
                 // activate the returned buffer + repaint.
-                match lattice_compilation::start_compilation(self, cmdline, cwd) {
+                //
+                // `target` picks which output buffer and which run state:
+                // the build's, or `:!cmd`'s own.
+                let (started, missing) = match target {
+                    lattice_grammar::RunTarget::Compilation => {
+                        ("compilation started", "compilation: service not registered")
+                    }
+                    lattice_grammar::RunTarget::Shell => {
+                        ("command started", "shell-command: service not registered")
+                    }
+                };
+                match lattice_compilation::start_compilation(self, target, cmdline, cwd) {
                     Some(id) => {
                         let _ = self.activate_buffer(id);
-                        self.set_message(EchoLevel::Info, "compilation started".to_string());
+                        self.set_message(EchoLevel::Info, started.to_string());
                     }
-                    None => {
-                        self.set_message(
-                            EchoLevel::Warn,
-                            "compilation: service not registered".to_string(),
-                        );
-                    }
+                    None => self.set_message(EchoLevel::Warn, missing.to_string()),
                 }
             }
             // CM.2 (2026-07-22): `:cnext`/`:cprev`/`:cc`/`:cfirst`/
@@ -11319,16 +11325,16 @@ impl Editor {
             AppEffect::CompilationThemeColors { bg } => {
                 self.compilation_location_bg = bg;
             }
-            // CM.3d (2026-07-22): kill the running compilation.
-            AppEffect::CompilationKill => {
-                // Look up the registered compilation service and
-                // call its kill method. No-op if unregistered.
-                if let Some(svc) = self
-                    .services
-                    .get::<lattice_compilation::CompilationServiceHandle>()
-                {
-                    (**svc).kill();
-                    self.set_message(EchoLevel::Info, "compilation killed".to_string());
+            // CM.3d (2026-07-22): kill `target`'s running child. No-op when
+            // its service is not registered.
+            AppEffect::CompilationKill { target } => {
+                if let Some(svc) = lattice_compilation::service_for(&self.services, target) {
+                    svc.kill();
+                    let what = match target {
+                        lattice_grammar::RunTarget::Compilation => "compilation killed",
+                        lattice_grammar::RunTarget::Shell => "command stopped",
+                    };
+                    self.set_message(EchoLevel::Info, what.to_string());
                 }
             }
             // CM.3b (2026-07-22): `<CR>` on a `*compilation*` location

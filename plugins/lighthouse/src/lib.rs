@@ -47,10 +47,14 @@ use std::sync::Mutex;
 use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::events::EventFilter;
 use lattice::plugin_host::host_services::{self, ArchiveFormat, OutputState, ServerConfig};
+use lattice::plugin_host::modes::{
+    self, ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding,
+    ModeKind,
+};
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
-    ActionContext, ArgDefault, ArgKind, ArgSpec, Args, EchoLevel, EchoPayload, Effect, EventKind,
-    ExCommandContext, ExCommandSpec, LatencyClass, MotionContext, MotionResult,
+    ActionContext, ActionSpec, ArgDefault, ArgKind, ArgSpec, Args, EchoLevel, EchoPayload, Effect,
+    EventKind, ExCommandContext, ExCommandSpec, LatencyClass, MotionContext, MotionResult,
     OpenSyntheticBufferPayload, OperatorContext, Range, SurfaceForm, TextObjectContext,
 };
 // `Event` is already in scope from the world's own `use types.{event}`.
@@ -58,6 +62,7 @@ use lattice::plugin_host::types::{
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
 
 mod install;
+mod list;
 mod registry;
 
 use install::{Installed, Installer, Phase};
@@ -69,6 +74,56 @@ const CB_INSTALL: u32 = 1;
 const CB_UNINSTALL: u32 = 2;
 const CB_UPDATE: u32 = 3;
 const CB_UPDATE_ALL: u32 = 4;
+const CB_SERVERS: u32 = 5;
+
+// Action callback ids — the chords of `*lsp-servers*`. A third namespace.
+const ROW_INSTALL: u32 = 1;
+const ROW_UPDATE: u32 = 2;
+const ROW_UNINSTALL: u32 = 3;
+const ROW_LOG: u32 = 4;
+const ROW_REFRESH: u32 = 5;
+
+/// The minor mode that owns `*lsp-servers*`'s chords.
+const SERVERS_MODE: &str = "lighthouse-servers-mode";
+
+/// The row chords: `(chord, action, callback, doc)`. One table, read by both
+/// the action registration and the mode's keymap, so a chord cannot be bound
+/// to an action that was never registered.
+const ROW_KEYS: [(&str, &str, u32, &str); 5] = [
+    (
+        "i",
+        "lsp-servers-install",
+        ROW_INSTALL,
+        "Install the language server on the cursor's row of `*lsp-servers*` \
+         (or reinstall it). The row updates as the install proceeds.",
+    ),
+    (
+        "u",
+        "lsp-servers-update",
+        ROW_UPDATE,
+        "Update the language server on the cursor's row of `*lsp-servers*` to \
+         the version the registry pins, if it is not already there.",
+    ),
+    (
+        "x",
+        "lsp-servers-uninstall",
+        ROW_UNINSTALL,
+        "Uninstall the language server on the cursor's row of `*lsp-servers*`.",
+    ),
+    (
+        "<CR>",
+        "lsp-servers-log",
+        ROW_LOG,
+        "Open the install log, `*lsp-install:<server>*`, of the language \
+         server on the cursor's row of `*lsp-servers*`.",
+    ),
+    (
+        "gr",
+        "lsp-servers-refresh",
+        ROW_REFRESH,
+        "Redraw `*lsp-servers*` from the registry and what is installed.",
+    ),
+];
 
 // Event-handler ids — a different namespace from the callbacks above.
 const ON_REQUEST: u32 = 1;
@@ -388,6 +443,86 @@ fn cmd_update_all() -> Vec<Effect> {
     )
 }
 
+/// `:lsp-servers`. The list is drawn by the events instance — it is the one
+/// that knows what is in flight — so this asks for a redraw and opens the
+/// buffer, with the mode that owns its chords riding the output mode.
+fn cmd_servers() -> Vec<Effect> {
+    host_services::emit_event(REQUEST_EVENT, b"list -");
+    vec![Effect::OpenSyntheticBuffer(OpenSyntheticBufferPayload {
+        name: list::BUFFER.to_string(),
+        mode_id: OUTPUT_MODE.to_string(),
+        content: None,
+        cursor: None,
+        activate_minor: Some(SERVERS_MODE.to_string()),
+    })]
+}
+
+/// A chord in `*lsp-servers*`. Unlike the ex-commands these stay in the
+/// list: the row itself is where the result shows, and jumping to the log on
+/// every keypress would take the user out of the view they are working in.
+fn row_action(action: u32, ctx: &ActionContext, doc: &Document) -> Vec<Effect> {
+    if action == ROW_REFRESH {
+        host_services::emit_event(REQUEST_EVENT, b"list -");
+        return Vec::new();
+    }
+    let line = doc.line(ctx.cursor.line).unwrap_or_default();
+    let Some(name) = list::server_on_line(&line) else {
+        return echo(
+            EchoLevel::Info,
+            "lsp-servers: no server on this line".to_string(),
+        );
+    };
+    let (registry, _) = registry();
+    let request = |verb: &str| {
+        host_services::emit_event(REQUEST_EVENT, format!("{verb} {name}").as_bytes());
+    };
+    match action {
+        ROW_INSTALL => {
+            if registry.get(name).is_none() {
+                return echo(
+                    EchoLevel::Warn,
+                    format!(
+                        "lsp-servers: '{name}' is not in the registry, so it cannot be installed"
+                    ),
+                );
+            }
+            request("install");
+            echo(
+                EchoLevel::Info,
+                format!("lsp-servers: installing {name} \u{2014} <CR> shows its log"),
+            )
+        }
+        ROW_UPDATE => match needs_update(&registry, name) {
+            Ok(()) => {
+                request("install");
+                echo(
+                    EchoLevel::Info,
+                    format!("lsp-servers: updating {name} \u{2014} <CR> shows its log"),
+                )
+            }
+            Err(nothing_to_do) => echo(EchoLevel::Info, format!("lsp-servers: {nothing_to_do}")),
+        },
+        ROW_UNINSTALL => {
+            if installed_record(name).is_none() {
+                return echo(
+                    EchoLevel::Info,
+                    format!("lsp-servers: '{name}' is not installed"),
+                );
+            }
+            request("uninstall");
+            echo(EchoLevel::Info, format!("lsp-servers: uninstalling {name}"))
+        }
+        ROW_LOG => vec![Effect::OpenSyntheticBuffer(OpenSyntheticBufferPayload {
+            name: install::buffer_name(name),
+            mode_id: OUTPUT_MODE.to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
+        })],
+        _ => Vec::new(),
+    }
+}
+
 fn no_arg_spec() -> ExCommandSpec {
     ExCommandSpec {
         latency_class: LatencyClass::Reflex,
@@ -428,7 +563,7 @@ fn on_request(payload: &[u8]) {
     let Some((verb, name)) = text.split_once(' ') else {
         return;
     };
-    if !matches!(verb, "install" | "uninstall") {
+    if !matches!(verb, "install" | "uninstall" | "list") {
         return;
     }
     let buffer = install::buffer_name(name);
@@ -448,15 +583,21 @@ fn on_request(payload: &[u8]) {
     let mut installer = INSTALLER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if verb == "uninstall" {
-        installer.uninstall(&mut edge, &registry, name);
-        return;
+    let platform = platform();
+    match verb {
+        "uninstall" => installer.uninstall(&mut edge, &registry, name),
+        // The command checked the name; it is checked again because this is
+        // a bus event and anything may have published it.
+        "install" => {
+            if let Some(server) = registry.get(name) {
+                installer.request(&mut edge, server, &platform);
+            }
+        }
+        // "list": nothing to do but the redraw below.
+        _ => {}
     }
-    // The command checked the name; it is checked again because this is a
-    // bus event and anything may have published it.
-    if let Some(server) = registry.get(name) {
-        installer.request(&mut edge, server, &platform());
-    }
+    // Whatever just happened, the list now says something else.
+    list::show(&mut edge, &registry, &platform, &installer);
 }
 
 fn on_job(ev: &Event) {
@@ -471,6 +612,9 @@ fn on_job(ev: &Event) {
         Event::JobFinished(f) => {
             let (registry, _) = registry();
             installer.finished(&mut edge, &registry, f.id, f.outcome.clone());
+            // A job ending is a row changing: "installing…" becomes
+            // "installed", or goes back to what it was.
+            list::show(&mut edge, &registry, &platform(), &installer);
         }
         _ => {}
     }
@@ -527,6 +671,49 @@ impl Guest for Component {
             CB_PARSE,
             CB_UPDATE_ALL,
         );
+        lattice::plugin_host::grammar::register_ex_command(
+            "lsp-servers",
+            "List every language server lighthouse can install, with its \
+             version and whether it is installed, in `*lsp-servers*`. The list \
+             redraws by itself as installs proceed. On a server's row: `i` \
+             installs it, `u` updates it, `x` uninstalls it, `<CR>` opens its \
+             install log, `gr` redraws.",
+            &no_arg_spec(),
+            CB_PARSE,
+            CB_SERVERS,
+        );
+        for (_chord, action, callback, doc) in ROW_KEYS {
+            lattice::plugin_host::grammar::register_action(
+                action,
+                doc,
+                &ActionSpec {
+                    args_schema: Vec::new(),
+                },
+                callback,
+            );
+        }
+    }
+
+    /// `lighthouse-servers-mode`: the chords of `*lsp-servers*`, in the
+    /// mode's own keymap layer. Manual — it is activated on that one buffer,
+    /// by the effect that opens it, and nowhere else.
+    fn register_modes() {
+        modes::register_mode(&ModeDeclaration {
+            id: SERVERS_MODE.to_string(),
+            kind: ModeKind::Minor,
+            activation_policy: ActivationPolicy::Manual,
+            capabilities: ModeCapabilities::empty(),
+            keymap: ROW_KEYS
+                .iter()
+                .map(|(chord, action, _, _)| ModeKeymapBinding {
+                    binding_mode: BindingMode::Normal,
+                    chord: (*chord).to_string(),
+                    command: (*action).to_string(),
+                })
+                .collect(),
+            target_language: None,
+            options: vec![],
+        });
     }
 
     fn register_events() {
@@ -596,17 +783,22 @@ impl GrammarCallbacks for Component {
             CB_UNINSTALL => cmd_uninstall(&ctx),
             CB_UPDATE => cmd_update(&ctx),
             CB_UPDATE_ALL => cmd_update_all(),
+            CB_SERVERS => cmd_servers(),
             other => return Err(format!("lighthouse: unknown ex-command callback {other}")),
         })
     }
 
     fn apply_action(
-        _c: u32,
-        _ctx: ActionContext,
-        _doc: &Document,
+        c: u32,
+        ctx: ActionContext,
+        doc: &Document,
         _tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
-        Err("lighthouse: no actions".into())
+        if ROW_KEYS.iter().any(|(_, _, callback, _)| *callback == c) {
+            Ok(row_action(c, &ctx, doc))
+        } else {
+            Err(format!("lighthouse: unknown action callback {c}"))
+        }
     }
     fn apply_motion(
         _c: u32,

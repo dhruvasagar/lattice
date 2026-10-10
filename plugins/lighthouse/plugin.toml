@@ -16,7 +16,9 @@
 #   - NO `fs:` capability. Servers install under the plugin's own data
 #     directory, which host-side calls reach without one (design §3.6).
 id = "lighthouse"
-provides = ["grammar", "events"]
+# `grammar` before `modes`: the mode's chords name this plugin's own actions,
+# which have to exist when the bindings are made.
+provides = ["grammar", "events", "modes"]
 capabilities = [
     "net:http:github.com",
     "net:http:release-assets.githubusercontent.com",

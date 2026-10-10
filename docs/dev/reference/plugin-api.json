@@ -11079,12 +11079,13 @@
     },
     {
       "name": "lighthouse-plugin",
-      "doc": "The `lighthouse` bundled plugin's world (LH.1) — the language-server\nmanager. Design: `docs/dev/architecture/lighthouse.md`.\n\nThe seams, and why each is here:\n  - **grammar** — the `:lsp-install` family of ex-commands.\n    `apply-ex-command`'s signature takes a `borrow<document>` and an\n    optional `borrow<tree-snapshot>`, so `buffer` and `tree-sitter` are\n    imported for the SIGNATURE; this plugin reads neither.\n  - **host-services** — everything it does: `host-platform` and `data-dir`\n    to decide what to fetch and where, `http-download` /\n    `extract-archive` / `set-executable` to fetch it, `register-server` to\n    hand it to the editor, `output-*` to show the work, `store-*` to\n    remember it.\n  - **events** — a job's outcome arrives as `job-finished`, and that is\n    the only place it arrives. The install is a state machine stepped from\n    `on-event`.\n\nThe component is instantiated once per seam, and the two instances share\nnothing but the store and the data directory: an ex-command starts a job on\nthe grammar instance, and the events instance hears how it went. Whatever\none must tell the other goes through `store-*`.\n\n`logging` is intentionally NOT imported, the `auto-pair` rule: keeping it\nout of the combined world keeps `log` off the sync grammar linker.",
+      "doc": "The `lighthouse` bundled plugin's world (LH.1) — the language-server\nmanager. Design: `docs/dev/architecture/lighthouse.md`.\n\nThe seams, and why each is here:\n  - **grammar** — the `:lsp-install` family of ex-commands.\n    `apply-ex-command`'s signature takes a `borrow<document>` and an\n    optional `borrow<tree-snapshot>`, so `buffer` and `tree-sitter` are\n    imported for the SIGNATURE; this plugin reads neither.\n  - **host-services** — everything it does: `host-platform` and `data-dir`\n    to decide what to fetch and where, `http-download` /\n    `extract-archive` / `set-executable` to fetch it, `register-server` to\n    hand it to the editor, `output-*` to show the work, `store-*` to\n    remember it.\n  - **events** — a job's outcome arrives as `job-finished`, and that is\n    the only place it arrives. The install is a state machine stepped from\n    `on-event`.\n  - **modes** — `lighthouse-servers-mode`, a manual minor that rides the\n    host's `plugin-output-mode` on the `*lsp-servers*` buffer and owns the\n    chords that act on the row under the cursor. The chords are bound in\n    that mode's own layer, so they exist in that buffer and nowhere else.\n\nThe component is instantiated once per seam, and the instances share\nnothing but the store and the data directory — not memory. So the commands\ndo no work: one validates, publishes a plugin-defined request event, and\nopens the buffer; the events instance hears the request, runs the install\nand draws the result.\n\n`logging` is intentionally NOT imported, the `auto-pair` rule: keeping it\nout of the combined world keeps `log` off the sync grammar linker.",
       "imports": [
         "buffer",
         "events",
         "grammar",
         "host-services",
+        "modes",
         "tree-sitter",
         "types"
       ],
@@ -11101,6 +11102,18 @@
           "params": [],
           "result": null,
           "signature": "register-grammar: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-modes",
+          "display_name": "register-modes",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-modes: func()",
           "doc": null,
           "examples": []
         },

@@ -49,9 +49,18 @@ native subsystem from WIT — which a trivial plugin never exercises.
 - `:lsp-update <server>` / `:lsp-update-all` — install a newer pinned version;
   keep the old until the new verifies.
 - `:lsp-uninstall <server>` — remove the tree + unregister the `ServerConfig`.
-- `:lsp-servers` — a buffer listing every registry server, its installed version
-  (if any), and health. (The everything-is-a-buffer manager surface, the
+- `:lsp-servers` — a buffer listing every registry server, its version and
+  state (not installed, installing, installed, update available, files
+  missing, no build for this machine). It redraws by itself as installs
+  proceed. On a row: `i` install, `u` update, `x` uninstall, `<CR>` open that
+  server's log, `gr` redraw. (The everything-is-a-buffer manager surface, the
   `:plugins` view precedent.)
+
+**`*lsp-servers*` is a plugin output buffer too**, with one thing added: the
+plugin's own manual minor, `lighthouse-servers-mode`, activated on it by the
+effect that opens it. The minor owns the row chords, in its own keymap layer —
+they exist in that buffer and nowhere else. A row chord answers in the echo
+area and stays in the list; the row is where the result shows.
 
 **`*lsp-install:<server>*` is a plugin output buffer** (§3.5): lighthouse
 chooses its name, opens it (`effect.open-synthetic-buffer`), and writes every

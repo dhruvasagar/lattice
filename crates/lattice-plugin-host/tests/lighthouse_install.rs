@@ -289,6 +289,48 @@ impl Editor {
         .expect("the command dispatches")
     }
 
+    /// Run a row action of `*lsp-servers*` as the chord would: on a buffer
+    /// holding the list's text, with the cursor on `line`.
+    fn row_action(&self, action: &str, text: &str, line: u32) -> lattice_grammar::effect::Effect {
+        let id = self
+            .commands
+            .id_by_name(action)
+            .unwrap_or_else(|| panic!("the action `{action}` is registered"));
+        let mut document = lattice_core::Document::from_text(text);
+        let cancel = CancellationToken::never();
+        tokio::task::block_in_place(|| {
+            lattice_grammar::execute_with_env(
+                &self.commands,
+                &mut document,
+                BufferId(1),
+                Position { line, byte: 0 },
+                CommandInvocation::of(id),
+                &cancel,
+                GrammarEnv::default(),
+            )
+            .expect("the action dispatches")
+        })
+    }
+
+    /// `*lsp-servers*` as the output store has it.
+    fn list(&self) -> OutputSnapshot {
+        self.output.snapshot("*lsp-servers*").unwrap_or_default()
+    }
+
+    /// Wait until some row of the list contains `want`.
+    async fn list_shows(&self, want: &str) -> OutputSnapshot {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let snap = self.list();
+            if snap.lines.iter().any(|l| l.contains(want))
+                || tokio::time::Instant::now() >= deadline
+            {
+                return snap;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     fn log(&self, server: &str) -> OutputSnapshot {
         self.output
             .snapshot(&format!("*lsp-install:{server}*"))
@@ -724,4 +766,140 @@ async fn starting_up_removes_the_scratch_files_of_an_interrupted_install() {
 
     // `register-events` has returned by the time `boot` does.
     assert_eq!(editor.tree(), vec!["fake-ls/0.9/fake-ls"]);
+}
+
+/// The line number of `server`'s row in a rendered list.
+fn row_of(list: &OutputSnapshot, server: &str) -> u32 {
+    list.lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(server))
+        .unwrap_or_else(|| panic!("no row for {server}: {:?}", list.lines)) as u32
+}
+
+fn text_of(list: &OutputSnapshot) -> String {
+    let mut text = list.lines.join("\n");
+    text.push('\n');
+    text
+}
+
+/// `:lsp-servers` opens the list with the mode that owns its chords, and the
+/// list is drawn from the registry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lsp_servers_lists_the_registry_in_a_buffer_with_its_own_mode() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("SKIP: lighthouse component not built");
+        return;
+    };
+    let editor = boot(wasm, &entry("fake-ls", 1, &"0".repeat(64)), |_| {}).await;
+
+    match editor.command("lsp-servers", "") {
+        lattice_grammar::effect::Effect::OpenSyntheticBuffer {
+            name,
+            mode_id,
+            activate_minor,
+            ..
+        } => {
+            assert_eq!(name, "*lsp-servers*");
+            assert_eq!(mode_id, "plugin-output-mode");
+            assert_eq!(
+                activate_minor.as_deref(),
+                Some("lighthouse-servers-mode"),
+                "the chords ride the output mode on this one buffer"
+            );
+        }
+        other => panic!("expected the list to be opened, got {other:?}"),
+    }
+
+    let list = editor.list_shows("fake-ls").await;
+    assert_eq!(
+        list.lines,
+        vec![
+            "  Server         Version     Status",
+            "  fake-ls        1.0         not installed",
+            "  rust-analyzer  2026-10-05  not installed",
+            "",
+            "i install   u update   x uninstall   <CR> show log   gr refresh",
+        ],
+        "the overlay's server and the bundled one, aligned"
+    );
+    assert_eq!(
+        list.status.map(|s| s.text),
+        Some("2 servers \u{b7} 0 installed".to_string())
+    );
+}
+
+/// The manager loop: `i` on a row installs that server, and the row changes
+/// by itself when the install finishes — nobody asks for a redraw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_chord_acts_on_its_server_and_the_list_redraws_itself() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("SKIP: lighthouse component not built");
+        return;
+    };
+    let archive = gzip(SERVER_SCRIPT);
+    let port = serve(archive.clone());
+    let editor = boot(wasm, &entry("fake-ls", port, &sha256_hex(&archive)), |_| {}).await;
+    editor.command("lsp-servers", "");
+    let list = editor.list_shows("fake-ls").await;
+    let text = text_of(&list);
+
+    // On the heading, or the keys line: nothing to act on, and it says so.
+    for line in [0, list.lines.len() as u32 - 1] {
+        let said = echoed(editor.row_action("lsp-servers-install", &text, line));
+        assert!(said.contains("no server on this line"), "{said}");
+    }
+    // `u` and `x` on a server that is not installed are answered on the spot.
+    let row = row_of(&list, "fake-ls");
+    let said = echoed(editor.row_action("lsp-servers-update", &text, row));
+    assert!(said.contains(":lsp-install fake-ls"), "{said}");
+    let said = echoed(editor.row_action("lsp-servers-uninstall", &text, row));
+    assert!(said.contains("not installed"), "{said}");
+    assert_eq!(editor.tree(), Vec::<String>::new(), "nothing happened yet");
+
+    // `i` stays in the list — it answers in the echo area, not by opening
+    // the log — and the row is what shows the result.
+    let said = echoed(editor.row_action("lsp-servers-install", &text, row));
+    assert!(said.contains("installing fake-ls"), "{said}");
+
+    let list = editor
+        .list_shows("fake-ls        1.0         installed")
+        .await;
+    assert!(
+        list.lines
+            .iter()
+            .any(|l| l == "  fake-ls        1.0         installed"),
+        "the row became `installed` with no redraw requested: {:?}",
+        list.lines
+    );
+    assert_eq!(
+        list.status.as_ref().map(|s| s.text.as_str()),
+        Some("2 servers \u{b7} 1 installed")
+    );
+    assert_eq!(editor.tree(), vec!["fake-ls/1.0/fake-ls"]);
+
+    // `<CR>` opens that server's log.
+    let text = text_of(&list);
+    let row = row_of(&list, "fake-ls");
+    match editor.row_action("lsp-servers-log", &text, row) {
+        lattice_grammar::effect::Effect::OpenSyntheticBuffer { name, mode_id, .. } => {
+            assert_eq!(name, "*lsp-install:fake-ls*");
+            assert_eq!(mode_id, "plugin-output-mode");
+        }
+        other => panic!("expected the log to be opened, got {other:?}"),
+    }
+
+    // `x` removes it, and the row goes back.
+    let said = echoed(editor.row_action("lsp-servers-uninstall", &text, row));
+    assert!(said.contains("uninstalling fake-ls"), "{said}");
+    let list = editor
+        .list_shows("fake-ls        1.0         not installed")
+        .await;
+    assert!(
+        list.lines
+            .iter()
+            .any(|l| l == "  fake-ls        1.0         not installed"),
+        "{:?}",
+        list.lines
+    );
+    assert_eq!(editor.tree(), Vec::<String>::new());
 }

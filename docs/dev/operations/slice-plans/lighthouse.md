@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0 ✅ (LH.0.1–LH.0.7); LH.1.1–LH.1.2 ✅; LH.1.3 next.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅ (LH.0.1–LH.0.7); LH.1 ✅ (LH.1.1–LH.1.3; LH.1.2b ⛔); LH.2 next.** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -202,7 +202,7 @@ its instance id. **Seen red:** with the old comparison restored, three of the
 four fail — including the fixture's own job, which had only ever passed because
 the two numbers were both `0`.
 
-### LH.1 — the lighthouse plugin  🚧
+### LH.1 — the lighthouse plugin  ✅ (LH.1.2b ⛔)
 The core WASM Component plugin consuming LH.0. Crate `plugins/lighthouse/`.
 
 #### LH.1.1 — the crate, the registry, and `:lsp-install`  ✅
@@ -303,11 +303,48 @@ buffer. Deferred until a server that needs it is added to the registry: the
 seam exists and is tested (LH.0.3), and an install path with no entry that
 exercises it is untested code that looks finished.
 
-#### LH.1.3 — the `:lsp-servers` manager view  📝
-A read-only buffer listing every registry server, its installed version and
-health; in-view chords (install / update / uninstall the row) on the plugin's
-own mode. **Exit:** `:lsp-servers` lists the registry and live-updates as an
-install completes.
+#### LH.1.3 — the `:lsp-servers` manager view  ✅
+A read-only buffer listing every registry server, its version and state, with
+chords on the row. **Exit:** `:lsp-servers` lists the registry and the row
+changes by itself as an install completes.
+
+**Landed, with no new host seam.** Everything it needed existed:
+
+- **The buffer** is a plugin output buffer (LH.0.5), `*lsp-servers*`. The
+  events instance redraws it — reset, then a line per server — after every
+  request and every finished job. Nothing is cached: a row is worked out from
+  the registry, the installed records and the in-flight table each time, so
+  the list cannot disagree with the state it is drawn from.
+- **The chords** belong to `lighthouse-servers-mode`, a *manual* minor the
+  plugin declares through the `modes` seam and names as `activate-minor` in
+  the effect that opens the buffer. `i` install, `u` update, `x` uninstall,
+  `<CR>` open that server's log, `gr` redraw — each an action the plugin
+  registers, which reads the server off the cursor's line. One table holds
+  chord, action and callback, so a chord cannot be bound to an action that was
+  never registered.
+- **A row chord stays in the list.** The ex-commands open the log; the row
+  chords answer in the echo area and let the row show the result, because
+  being thrown out of the view on every keypress is not managing a list.
+- `list.rs` — rows, rendering and the read-back (`server_on_line`, the
+  inverse of `render`, held to it by a test). Seven states are told apart,
+  including a record whose files are gone and an installed server the registry
+  no longer lists.
+
+Tests: 7 more in the plugin (45 total); 2 more end-to-end in `lattice-plugin-host`
+(10 total) — the list as drawn, and the manager loop: `i` on a row installs
+that server and the row becomes `installed` with no redraw requested, `<CR>`
+opens its log, `x` puts the row back. And
+`lattice-plugin-loader/tests/lighthouse_plugin.rs`, 3 tests through the real
+loader with the **shipped manifest**: the plugin loads whole, all five
+commands register, and the five chords are bound in the mode's own layer and
+nowhere else (`i`, `u` and `x` in `Builtin` would break vim everywhere).
+
+**Not tested:** a keypress in a real `*lsp-servers*` buffer. The chords are
+proven bound in the right layer and the actions proven to do the right thing
+given a cursor line; what joins them — the editor activating a plugin's
+manual minor from `activate-minor` and resolving the chord over
+`read-only-mode` — is the host's generic path, exercised by other plugins but
+not by a test of this one.
 
 ### LH.2 — core-plugin staging  📝
 Add lighthouse to `cargo xtask build-core-plugins` so it is discovered at boot as

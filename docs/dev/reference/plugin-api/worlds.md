@@ -394,16 +394,21 @@ The seams, and why each is here:
   - **events** — a job's outcome arrives as `job-finished`, and that is
     the only place it arrives. The install is a state machine stepped from
     `on-event`.
+  - **modes** — `lighthouse-servers-mode`, a manual minor that rides the
+    host's `plugin-output-mode` on the `*lsp-servers*` buffer and owns the
+    chords that act on the row under the cursor. The chords are bound in
+    that mode's own layer, so they exist in that buffer and nowhere else.
 
-The component is instantiated once per seam, and the two instances share
-nothing but the store and the data directory: an ex-command starts a job on
-the grammar instance, and the events instance hears how it went. Whatever
-one must tell the other goes through `store-*`.
+The component is instantiated once per seam, and the instances share
+nothing but the store and the data directory — not memory. So the commands
+do no work: one validates, publishes a plugin-defined request event, and
+opens the buffer; the events instance hears the request, runs the install
+and draws the result.
 
 `logging` is intentionally NOT imported, the `auto-pair` rule: keeping it
 out of the combined world keeps `log` off the sync grammar linker.
 
-**Imports:** [`buffer`](buffer.md), [`events`](events.md), [`grammar`](grammar.md), [`host-services`](host-services.md), [`tree-sitter`](tree-sitter.md), [`types`](types.md)  
+**Imports:** [`buffer`](buffer.md), [`events`](events.md), [`grammar`](grammar.md), [`host-services`](host-services.md), [`modes`](modes.md), [`tree-sitter`](tree-sitter.md), [`types`](types.md)  
 **Exports:** [`grammar-callbacks`](grammar-callbacks.md)
 
 **Entry points it exports**
@@ -412,6 +417,12 @@ out of the combined world keeps `log` off the sync grammar linker.
 
 ```wit
 register-grammar: func()
+```
+
+### `register-modes`
+
+```wit
+register-modes: func()
 ```
 
 ### `register-events`

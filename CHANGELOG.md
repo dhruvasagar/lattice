@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.6 — 2026-10-10
 
 ### Added
 - **Ex ranges.** A `:` line takes vim's addresses: line numbers, `.`, `$`,

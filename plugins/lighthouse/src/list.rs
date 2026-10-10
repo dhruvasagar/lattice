@@ -138,9 +138,14 @@ fn column_width<'a>(cells: impl Iterator<Item = &'a str>, heading: &'a str) -> u
         .unwrap_or(0)
 }
 
-/// The buffer's lines: a heading, a row per server in aligned columns, and
-/// the keys.
-pub fn render(rows: &[Row], platform: &str) -> Vec<String> {
+/// The buffer's lines: a heading, a row per server in aligned columns, the
+/// keys — and, when the user's own registry file could not be used, why.
+///
+/// That last line is the only place such a file's mistake is guaranteed to
+/// be seen. It is skipped whole when it is wrong, so the servers it meant to
+/// add are simply absent and the ones it meant to replace are silently the
+/// bundled ones; without this the list would look complete and be wrong.
+pub fn render(rows: &[Row], platform: &str, problem: Option<&str>) -> Vec<String> {
     let name_w = column_width(rows.iter().map(|r| r.name.as_str()), HEADINGS[0]);
     let version_w = column_width(rows.iter().map(|r| r.version.as_str()), HEADINGS[1]);
     let line = |name: &str, version: &str, status: &str| {
@@ -158,6 +163,11 @@ pub fn render(rows: &[Row], platform: &str) -> Vec<String> {
     }
     lines.push(String::new());
     lines.push(KEYS.to_string());
+    if let Some(problem) = problem {
+        lines.push(String::new());
+        // Not indented, so it can never read back as a server's row.
+        lines.push(format!("! ignored: {problem}"));
+    }
     lines
 }
 
@@ -210,7 +220,13 @@ pub fn installed_records(host: &impl Host) -> Vec<(String, Installed)> {
 }
 
 /// Redraw `*lsp-servers*` from the current state.
-pub fn show(host: &mut impl Host, registry: &Registry, platform: &str, installer: &Installer) {
+pub fn show(
+    host: &mut impl Host,
+    registry: &Registry,
+    problem: Option<&str>,
+    platform: &str,
+    installer: &Installer,
+) {
     let installed = installed_records(host);
     let rows = rows(
         registry,
@@ -225,7 +241,7 @@ pub fn show(host: &mut impl Host, registry: &Registry, platform: &str, installer
         Phase::Succeeded
     };
     host.reset(BUFFER);
-    for line in render(&rows, platform) {
+    for line in render(&rows, platform, problem) {
         host.say(BUFFER, &line);
     }
     host.status(BUFFER, phase, &summary(&rows));
@@ -359,7 +375,7 @@ binary = "m"
     fn the_columns_line_up_and_the_keys_are_the_last_line() {
         let installed = vec![("zls".to_string(), record("0.13.0", "bin/zls"))];
         let rows = rows(&registry(), PLATFORM, &installed, |_| false, |_| true);
-        let lines = render(&rows, PLATFORM);
+        let lines = render(&rows, PLATFORM, None);
         assert_eq!(
             lines,
             vec![
@@ -392,19 +408,37 @@ binary = "m"
             |name| name == "mac-only",
             |_| true,
         );
-        let lines = render(&rows, PLATFORM);
+        let lines = render(&rows, PLATFORM, None);
         let read_back: Vec<&str> = lines.iter().filter_map(|l| server_on_line(l)).collect();
         assert_eq!(
             read_back,
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>()
         );
 
-        let empty = render(&[], PLATFORM);
+        let empty = render(&[], PLATFORM, None);
         assert!(
             empty.iter().all(|l| server_on_line(l).is_none()),
             "{empty:?}"
         );
         assert!(empty.iter().any(|l| l.contains("registry is empty")));
+    }
+
+    #[test]
+    fn a_registry_file_that_was_ignored_is_reported_under_the_list() {
+        let (registry, problem) = Registry::load(Some("[[server]]\nname = \"../x\"\n"));
+        let problem = problem.expect("the overlay is rejected");
+        let rows = rows(&registry, PLATFORM, &[], |_| false, |_| true);
+        let lines = render(&rows, PLATFORM, Some(&problem));
+        let last = lines.last().unwrap();
+        assert!(
+            last.starts_with("! ignored: registry.toml in the data directory"),
+            "{last}"
+        );
+        assert_eq!(
+            lines.iter().filter_map(|l| server_on_line(l)).count(),
+            rows.len(),
+            "the note is not mistaken for a server"
+        );
     }
 
     #[test]

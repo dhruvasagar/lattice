@@ -1110,7 +1110,7 @@ use-package `require` (git/local source, built on first boot into that cache).
 
 **Bundled-plugin candidates** (Phase 8 -- post-Phase-7 plugin host; concrete inventory in `docs/../operations/implementation.md`):
 
-- **LSP server manager** -- install / update / uninstall LSPs into a managed `${XDG_DATA_HOME}/lattice/lsp/<name>/<version>/` tree; bundled registry of common servers; SHA-pinned downloads. Lighthouse implementation -- the first non-trivial bundled plugin we build, validating that the WIT surface is sized correctly.
+- **LSP server manager** -- install / update / uninstall LSPs into a managed, versioned tree in the plugin's own data directory; bundled registry of common servers; SHA-pinned downloads. **Built** as `lighthouse` ([`lighthouse.md`](lighthouse.md)) -- the first non-trivial bundled plugin, and the one that sized the download / archive / subprocess / output-buffer seams.
 - **Plugin manager** -- install / update / uninstall third-party plugins; capability-prompt UX.
 - **Project / workspace fuzzy-finder** (Telescope / fzf-lua equivalent).
 - **Project-wide grep** (ripgrep wrapper, results-as-buffer).

@@ -49,6 +49,14 @@ const CORE_PLUGINS: &[(&str, &str, &str)] = &[
         ),
         "sticky",
     ),
+    (
+        "lighthouse",
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../plugins/lighthouse/target/wasm32-wasip2/release/lighthouse.wasm"
+        ),
+        ":lsp-install rust-analyzer",
+    ),
 ];
 
 #[derive(Default)]

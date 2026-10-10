@@ -20,6 +20,7 @@ package lattice:plugin-host@0.2.0;
 ///     host's `plugin-output-mode` on the `*lsp-servers*` buffer and owns the
 ///     chords that act on the row under the cursor. The chords are bound in
 ///     that mode's own layer, so they exist in that buffer and nowhere else.
+///   - **help** — the `:help lighthouse` page, shipped with the plugin.
 ///
 /// The component is instantiated once per seam, and the instances share
 /// nothing but the store and the data directory — not memory. So the commands
@@ -39,11 +40,13 @@ world lighthouse-plugin {
     import host-services;
     import events;
     import modes;
+    import help;
 
     export register-grammar: func();
     export grammar-callbacks;
 
     export register-modes: func();
+    export register-help-topics: func();
 
     export register-events: func();
     export on-event: func(handler: u32, ev: event);

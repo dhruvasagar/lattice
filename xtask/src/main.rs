@@ -15,7 +15,13 @@ use std::process::{Command, ExitCode};
 /// The plugins that ship with lattice. Each is a standalone `wasm32-wasip2` cargo
 /// project under `plugins/<name>/` (NOT a workspace member — it builds in a clean
 /// env, the `lattice-plugin-host` `build.rs` precedent).
-const CORE_PLUGINS: &[&str] = &["auto-pair", "treesitter-context", "project", "comment"];
+const CORE_PLUGINS: &[&str] = &[
+    "auto-pair",
+    "treesitter-context",
+    "project",
+    "comment",
+    "lighthouse",
+];
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);

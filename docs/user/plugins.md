@@ -24,7 +24,8 @@ feature uses — it is not a second-class bolt-on.
 > `:plugin-load` / `:plugin-unload` / `:plugin-reload` commands, the `:plugins`
 > manager view, the `init.rs` config path, and the full boundary-trace
 > observability stack (`:plugin-trace`, `plugin.trace-level`, guest logging).
-> **Two *core plugins* ship today** — `auto-pair` and `treesitter-context`:
+> **Five *core plugins* ship today** — `auto-pair`, `treesitter-context`,
+> `project`, `comment` and `lighthouse`:
 > prebuilt, discovered at boot, on by default, and each carrying its own
 > `:help` page inside its component (see
 > [`core-plugins`](help:core-plugins)). The frontier is more core plugins

@@ -18,7 +18,7 @@
 id = "lighthouse"
 # `grammar` before `modes`: the mode's chords name this plugin's own actions,
 # which have to exist when the bindings are made.
-provides = ["grammar", "events", "modes"]
+provides = ["grammar", "events", "modes", "help"]
 capabilities = [
     "net:http:github.com",
     "net:http:release-assets.githubusercontent.com",

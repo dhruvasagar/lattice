@@ -398,6 +398,7 @@ The seams, and why each is here:
     host's `plugin-output-mode` on the `*lsp-servers*` buffer and owns the
     chords that act on the row under the cursor. The chords are bound in
     that mode's own layer, so they exist in that buffer and nowhere else.
+  - **help** — the `:help lighthouse` page, shipped with the plugin.
 
 The component is instantiated once per seam, and the instances share
 nothing but the store and the data directory — not memory. So the commands
@@ -408,7 +409,7 @@ and draws the result.
 `logging` is intentionally NOT imported, the `auto-pair` rule: keeping it
 out of the combined world keeps `log` off the sync grammar linker.
 
-**Imports:** [`buffer`](buffer.md), [`events`](events.md), [`grammar`](grammar.md), [`host-services`](host-services.md), [`modes`](modes.md), [`tree-sitter`](tree-sitter.md), [`types`](types.md)  
+**Imports:** [`buffer`](buffer.md), [`events`](events.md), [`grammar`](grammar.md), [`help`](help.md), [`host-services`](host-services.md), [`modes`](modes.md), [`tree-sitter`](tree-sitter.md), [`types`](types.md)  
 **Exports:** [`grammar-callbacks`](grammar-callbacks.md)
 
 **Entry points it exports**
@@ -423,6 +424,12 @@ register-grammar: func()
 
 ```wit
 register-modes: func()
+```
+
+### `register-help-topics`
+
+```wit
+register-help-topics: func()
 ```
 
 ### `register-events`

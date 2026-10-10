@@ -95,6 +95,9 @@ fn rig(base: &std::path::Path) -> Rig {
             mode_registry: Some(modes.clone()),
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             keymap: Some(keymap.clone()),
+            // The manifest lists `help`, and an unwired seam fails the WHOLE
+            // load rather than that one seam.
+            help_topics: Some(lattice_help::topics::builtin_topics().into_handle()),
             tracer: None,
             meta_sink: Some(Arc::new(RecordingSink::default()) as Arc<dyn PluginMetaSink>),
             ..Default::default()

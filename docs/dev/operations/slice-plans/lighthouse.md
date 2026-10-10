@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0 ✅ (LH.0.1–LH.0.7); LH.1 ✅ (LH.1.1–LH.1.3; LH.1.2b ⛔); LH.2 next.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅, LH.1 ✅, LH.2 ✅. Open: LH.3 📝 (publish 0.2.0 — needs Dhruva), LH.0.2b ⛔ (`zip`), LH.1.2b ⛔ (recipes).** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -339,18 +339,49 @@ loader with the **shipped manifest**: the plugin loads whole, all five
 commands register, and the five chords are bound in the mode's own layer and
 nowhere else (`i`, `u` and `x` in `Builtin` would break vim everywhere).
 
-**Not tested:** a keypress in a real `*lsp-servers*` buffer. The chords are
-proven bound in the right layer and the actions proven to do the right thing
-given a cursor line; what joins them — the editor activating a plugin's
-manual minor from `activate-minor` and resolving the chord over
-`read-only-mode` — is the host's generic path, exercised by other plugins but
-not by a test of this one.
+**Not tested in this slice:** a keypress in a real `*lsp-servers*` buffer —
+the join between "bound in the right layer" and "right given a cursor line".
+LH.2 added that test.
 
-### LH.2 — core-plugin staging  📝
-Add lighthouse to `cargo xtask build-core-plugins` so it is discovered at boot as
-`TrustTier::Bundled` (the PM.1–PM.4 pipeline `auto-pair` ships through — no
-`include_bytes!`). **Exit:** a fresh editor has lighthouse loaded (`:plugins`
-shows it, `:lsp-servers` works) with no user install step.
+### LH.2 — core-plugin staging  ✅
+Lighthouse ships with the editor. **Exit:** a fresh editor has lighthouse
+loaded with no user install step.
+
+**Landed.**
+
+- **Staging**, everywhere the set of core plugins is written down: `xtask`'s
+  `CORE_PLUGINS`, the four loops in `release.yml` that check a staged layout
+  and each archive, and the `.deb` asset list (`the_deb_carries_every_core_plugin`
+  holds that list to `CORE_PLUGINS`). The registry is compiled into the
+  component, so the staged plugin is still two files and a marker.
+- **`:help lighthouse`** — `doc/lighthouse.md`, shipped inside the component
+  through the `help` seam like every other core plugin's page
+  (`core_plugin_help.rs` now loads it too).
+- **A registry file that was ignored now says so.** Writing the help page's
+  "if your file has a mistake" paragraph showed it was false: a rejected
+  overlay was reported only if you then asked for a server it would have
+  added. One that meant to *replace* a bundled server failed silently and the
+  bundled one was used. `:lsp-servers` now carries the reason under the list.
+- User docs: the core-plugins table, the LSP page's *Installing servers* and
+  its `command not found` troubleshooting entry, and a changelog entry under
+  `## Unreleased`.
+
+**The test that was missing** — `lattice-host/tests/lighthouse_servers_view.rs`,
+4 tests in a booted editor with the shipped component and manifest, pressing
+keys. It closes the join LH.1.3 left open, on the three points where this
+could have been wired and inert:
+
+- `activate-minor` does activate a *plugin's* manual minor (one with no
+  `default_modes` gate) on the list;
+- `x` reaches the plugin's action although the buffer is read-only and
+  `read-only-mode` exists to refuse that key — and in an ordinary buffer `x`
+  still deletes;
+- the action reads the server off a row the host drew asynchronously.
+
+**What staging itself is not tested by:** nothing boots an editor from
+`runtime/plugins/` in CI. `cargo xtask build-core-plugins` was run by hand and
+produced `runtime/plugins/lighthouse/`; the release workflow's layout checks
+are what would catch a staging regression, at release time.
 
 ### LH.3 — publish plugin API 0.2.0  📝
 Publish `lattice-wit`, `lattice-plugin-sdk` and `lattice-plugin-sdk-derive` at

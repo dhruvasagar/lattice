@@ -46,6 +46,7 @@ use std::sync::Mutex;
 
 use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::events::EventFilter;
+use lattice::plugin_host::help;
 use lattice::plugin_host::host_services::{self, ArchiveFormat, OutputState, ServerConfig};
 use lattice::plugin_host::modes::{
     self, ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding,
@@ -567,7 +568,7 @@ fn on_request(payload: &[u8]) {
         return;
     }
     let buffer = install::buffer_name(name);
-    let (registry, _) = registry();
+    let (registry, problem) = registry();
     let Some(mut edge) = Edge::open() else {
         let _ = host_services::output_append(
             &buffer,
@@ -597,7 +598,13 @@ fn on_request(payload: &[u8]) {
         _ => {}
     }
     // Whatever just happened, the list now says something else.
-    list::show(&mut edge, &registry, &platform, &installer);
+    list::show(
+        &mut edge,
+        &registry,
+        problem.as_deref(),
+        &platform,
+        &installer,
+    );
 }
 
 fn on_job(ev: &Event) {
@@ -610,11 +617,17 @@ fn on_job(ev: &Event) {
     match ev {
         Event::JobProgress(p) => installer.progress(&mut edge, p.id, p.done, p.total),
         Event::JobFinished(f) => {
-            let (registry, _) = registry();
+            let (registry, problem) = registry();
             installer.finished(&mut edge, &registry, f.id, f.outcome.clone());
             // A job ending is a row changing: "installing…" becomes
             // "installed", or goes back to what it was.
-            list::show(&mut edge, &registry, &platform(), &installer);
+            list::show(
+                &mut edge,
+                &registry,
+                problem.as_deref(),
+                &platform(),
+                &installer,
+            );
         }
         _ => {}
     }
@@ -714,6 +727,16 @@ impl Guest for Component {
             target_language: None,
             options: vec![],
         });
+    }
+
+    fn register_help_topics() {
+        let _ = help::register_topic(
+            "",
+            "Install, update and remove language servers from inside the editor \
+             — `:lsp-install`, `:lsp-servers`.",
+            include_str!("../doc/lighthouse.md"),
+            &["lsp-install".to_string(), "lsp-servers".to_string()],
+        );
     }
 
     fn register_events() {

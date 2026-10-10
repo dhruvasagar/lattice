@@ -822,6 +822,7 @@ fn event_path(event: &Event) -> Option<&Path> {
         // LH.0: a host job may name a file, but it is not a document event —
         // a `path_glob` subscription is about buffers.
         | Event::JobProgress { .. }
+        | Event::JobOutput { .. }
         | Event::JobFinished { .. } => None,
     }
 }
@@ -889,6 +890,7 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         | Event::FilesChanged { .. }
         // LH.0: not buffer-scoped either.
         | Event::JobProgress { .. }
+        | Event::JobOutput { .. }
         | Event::JobFinished { .. } => None,
     }
 }

@@ -24,8 +24,8 @@ use crate::boundary::path_to_wit;
 use crate::lattice::plugin_host::types::{
     Event as WitEvent, EventAppliedEdit as WitEventAppliedEdit, EventDocumentChanged,
     EventDocumentOpened, EventDocumentPath, EventFilter as WitEventFilter, EventJobFinished,
-    EventJobProgress, EventKind as WitEventKind, EventModalModeChanged, EventModeLifecycle,
-    EventOptionChanged, EventPlugin as WitEventPlugin,
+    EventJobOutput, EventJobProgress, EventKind as WitEventKind, EventModalModeChanged,
+    EventModeLifecycle, EventOptionChanged, EventPlugin as WitEventPlugin,
     EventPluginLifecycle as WitEventPluginLifecycle, EventSelectionsChanged,
 };
 use lattice_keymap::ModeId;
@@ -133,6 +133,7 @@ impl WitBoundary for NativeEventKind {
             NativeEventKind::FilesChanged => WitEventKind::FilesChanged,
             // LH.0: a plugin's own host job moved, or ended.
             NativeEventKind::JobProgress => WitEventKind::JobProgress,
+            NativeEventKind::JobOutput => WitEventKind::JobOutput,
             NativeEventKind::JobFinished => WitEventKind::JobFinished,
         })
     }
@@ -159,6 +160,7 @@ impl WitBoundary for NativeEventKind {
             // OR.2: what a guest passes to `subscribe` to hear its own watch.
             WitEventKind::FilesChanged => NativeEventKind::FilesChanged,
             WitEventKind::JobProgress => NativeEventKind::JobProgress,
+            WitEventKind::JobOutput => NativeEventKind::JobOutput,
             WitEventKind::JobFinished => NativeEventKind::JobFinished,
         })
     }
@@ -310,6 +312,10 @@ impl WitBoundary for NativeEvent {
                 done: *done,
                 total: *total,
             }),
+            NativeEvent::JobOutput { id, lines, .. } => WitEvent::JobOutput(EventJobOutput {
+                id: *id,
+                lines: lines.clone(),
+            }),
             NativeEvent::JobFinished { id, result, .. } => {
                 WitEvent::JobFinished(EventJobFinished {
                     id: *id,
@@ -408,6 +414,11 @@ impl WitBoundary for NativeEvent {
                 id: p.id,
                 done: p.done,
                 total: p.total,
+            },
+            WitEvent::JobOutput(p) => NativeEvent::JobOutput {
+                plugin: 0,
+                id: p.id,
+                lines: p.lines,
             },
             WitEvent::JobFinished(p) => NativeEvent::JobFinished {
                 plugin: 0,

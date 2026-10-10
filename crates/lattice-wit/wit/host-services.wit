@@ -517,4 +517,30 @@ interface host-services {
     /// denied path, a path with nothing there, or a directory — each named. On
     /// a platform with no executable bit it is `ok` and does nothing.
     set-executable: func(path: string) -> result<_, string>;
+
+    /// Run the program `command` with `args`, in `cwd` (`""` for the editor's
+    /// own). **A job** (see `cancel-job`): returns its id; what the process
+    /// writes arrives as `job-output`, and its exit as `job-finished`.
+    ///
+    /// **Gated on `proc:spawn`, which only a bundled plugin is ever granted.**
+    /// The process is not sandboxed — it runs as the user, with the user's
+    /// environment and reach — so this is full trust, and a user-installed
+    /// plugin is refused here whatever its manifest asks for.
+    ///
+    /// `command` is a program, found on `PATH` or named by path; `args` are
+    /// passed to it as given. **No shell is involved**: nothing is split,
+    /// expanded or interpolated, so an argument containing spaces or `;` is one
+    /// argument. A caller that wants a shell runs `sh` and says so.
+    ///
+    /// The process has no stdin. `job-finished` is `ok` for exit status 0 and
+    /// otherwise an `err` naming the status — an ordinary outcome, with the
+    /// output that explains it already delivered. A program that cannot be
+    /// started at all (not found, not executable) is reported the same way, as
+    /// the job's outcome.
+    ///
+    /// Cancelling kills the process and everything it started.
+    ///
+    /// `err` here for a plugin without the grant, an empty `command`, a `cwd`
+    /// that is not a directory, or a seam with no event bus to report on.
+    spawn-process: func(command: string, args: list<string>, cwd: string) -> result<u64, string>;
 }

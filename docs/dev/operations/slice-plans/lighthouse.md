@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0.1–LH.0.2 ✅; LH.0.3 next.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0.1–LH.0.3 ✅; LH.0.4 next.** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -98,14 +98,22 @@ registry on the platforms lattice builds for. Additive when it lands — a new
 case on `archive-format`, which **is** an ABI change to that enum, so batch it
 with the next generation.
 
-#### LH.0.3 — `spawn-process` (proc:spawn)  📝
+#### LH.0.3 — `spawn-process` (proc:spawn)  ✅
 `spawn-process(command, args, cwd) -> result<u64, string>` gated on `proc:spawn`
 (**bundled-only** — `capability.rs` already withholds it from `UserInstalled`);
-stdout/stderr lines and the exit status arrive as addressed events, coalesced.
-Killed when the owning instance drops. **Exit:** a bundled plugin spawns a
-subprocess and hears its output and exit; a user-installed plugin is denied; a
-non-zero exit is an ordinary outcome, never a panic. Check `lattice-compilation`
-/ shell-command for a reusable line-reader before writing a third.
+a host job whose output arrives as the `job-output` arm (batched lines, stdout
+and stderr interleaved) and whose exit is `job-finished`. **Exit:** a bundled
+plugin spawns a subprocess and hears its output and exit; a user-installed
+plugin is denied; a non-zero exit is an ordinary outcome, never a panic.
+
+**Landed.** `process_host.rs` (10 unit tests) + `tests/spawn_seam.rs` (3,
+through the fixture guest at both trust tiers). `job-output` is the one new
+`event` arm — inside the unpublished 0.2.0, so no further bump. No shell: argv
+is passed as given. A cancel signals the child's **process group**; the first
+version of that test passed with the group kill removed (the job ends promptly
+either way), so it now asserts the grandchild is gone. `lattice-compilation`'s
+runner was checked and not reused: it is `:compile`'s own (shell cmdline,
+error parsing, `unsafe` libc), not a plain "run argv, stream lines".
 
 #### LH.0.4 — `register-server` / `unregister-server`  📝
 A `server-config` WIT record mirroring `lattice_lsp::config::ServerConfig`;

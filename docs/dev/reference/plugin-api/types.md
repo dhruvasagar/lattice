@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (149)
+## Types (150)
 
 ### variant `arg-value`
 
@@ -3125,6 +3125,7 @@ enum event-kind {
     plugin-unloaded,
     files-changed,
     job-progress,
+    job-output,
     job-finished,
 }
 ```
@@ -3166,6 +3167,8 @@ filters on. Each arm pairs 1:1 with an `event` variant arm.
 - `job-progress` — LH.0: a long-running host job this plugin started — a download,
   say — has made progress. Addressed the same way: a plugin only ever
   hears about its own jobs.
+- `job-output` — LH.0.3: a host job this plugin started wrote output — a
+  subprocess's lines.
 - `job-finished` — LH.0: a host job this plugin started has ended, one way or the
   other.
 
@@ -3232,6 +3235,25 @@ record event-job-progress {
   unit is — bytes received, for `http-download`.
 - `total`: `option<u64>` — The total in the same units; `none` when it is not known, in which
   case there is no percentage to show, only a running count.
+
+### record `event-job-output`
+
+```wit
+record event-job-output {
+    id: u64,
+    lines: list<string>,
+}
+```
+
+`event.job-output` payload (LH.0.3).
+
+**Fields**
+
+- `id`: `u64` — The id the host-service returned.
+- `lines`: `list<string>` — Whole lines without their terminators, in arrival order — stdout
+  and stderr interleaved, not told apart. Bytes that are not UTF-8
+  are replaced, and a line longer than the host's bound is cut short
+  and marked with `…`.
 
 ### record `event-job-finished`
 
@@ -3397,6 +3419,7 @@ variant event {
     plugin-unloaded(event-plugin-lifecycle),
     files-changed(list<string>),
     job-progress(event-job-progress),
+    job-output(event-job-output),
     job-finished(event-job-finished),
 }
 ```
@@ -3442,6 +3465,11 @@ carry the initial content the native event already clones for observers.
   work is a few deliveries rather than one per step — and a job that
   completes inside one interval sends none at all. Do not wait for
   one before expecting `job-finished`.
+- `job-output`: [`event-job-output`](#record-event-job-output) — LH.0.3: output from a host job — what a process started with
+  `spawn-process` wrote. **Batched**: a quiet interval's lines arrive
+  together, so a chatty tool is a few deliveries a second, and none
+  is dropped. All of a job's output is delivered before its
+  `job-finished`.
 - `job-finished`: [`event-job-finished`](#record-event-job-finished) — LH.0: a host job ended. Exactly one per id a host-service returned
   — a cancelled job reports here too, as `err("cancelled")` — so a
   plugin can drive a state machine off it without a timeout.

@@ -648,6 +648,21 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   **All or nothing**: a sibling `<dest>.part`, renamed only when the whole archive has been read.
   Only "executable or not" survives from an archive's mode bits. `set-executable` exists because
   WASI has no `chmod` and a bare `.gz` or a direct download carries no mode.
+- **Subprocess (✅ LH.0.3)**: `host-services.spawn-process(command, args, cwd) -> result<u64, string>`,
+  a host job, and the first enforcement of `proc:spawn` ([`lighthouse.md`](lighthouse.md) §3.3).
+  The grant is bundled-only and that is decided in `capability::grant`, not at the seam — the
+  seam only reads `grant.proc_spawn` — so the test that matters runs one component with one
+  manifest at both tiers and watches the user-installed one be refused.
+
+  **No shell**: argv is passed as given, so nothing a registry carries can become a second
+  command. Output is the `job-output` arm — batched lines, stdout and stderr interleaved, all
+  delivered before `job-finished`. A non-zero exit is an `err` naming the status, not a host
+  failure.
+
+  **A cancel signals the process group.** Killing only the direct child ends the job just as
+  promptly and orphans whatever it started, which is why the test asserts the *grandchild* is
+  gone rather than that the job ended. The group is signalled through `kill(1)`, not
+  `libc::kill`: the crate denies `unsafe`, and one short-lived process on a cancel is the price.
 - **Host-minted ids (✅ OR.3)**: `host-services.new-uuid() -> result<string, string>`, a random
   (v4) UUID, uppercase, canonical `8-4-4-4-12`.
 

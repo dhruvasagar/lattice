@@ -329,8 +329,9 @@ impl EventActor {
         }
         // LH.0: a host job is addressed the same way, for the same reason —
         // what a plugin is fetching or running is its own business.
-        if let NativeEvent::JobProgress { plugin, .. } | NativeEvent::JobFinished { plugin, .. } =
-            &event
+        if let NativeEvent::JobProgress { plugin, .. }
+        | NativeEvent::JobOutput { plugin, .. }
+        | NativeEvent::JobFinished { plugin, .. } = &event
             && *plugin != self.id.0
         {
             return;

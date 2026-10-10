@@ -797,6 +797,24 @@ let outcome = match host_services::set_executable(dest) {
 record(&outcome);
 ```
 
+A bundled plugin can also run a program — a package manager, for a tool with
+no pre-built binary. Its output arrives as `job-output` events, a batch of
+lines at a time, and its exit as `job-finished`. User-installed plugins are
+refused: a subprocess is not sandboxed.
+
+<!-- example: events-guest:host-services.spawn-process -->
+```rust
+events::subscribe(&kind_filter(EventKind::JobOutput), 10);
+events::subscribe(&kind_filter(EventKind::JobFinished), 10);
+// No shell: each element of `args` is one argument, whatever it
+// contains. `""` runs it in the editor's working directory.
+let outcome = match host_services::spawn_process(command, &args, "") {
+    Ok(_id) => "spawn:started".to_string(),
+    Err(e) => format!("spawn:err({e})"),
+};
+record(&outcome);
+```
+
 ## Reading the buffer and the syntax tree
 
 Callbacks that need text get a `borrow<document>`: a snapshot, so a

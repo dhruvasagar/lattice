@@ -468,6 +468,21 @@ pub enum Event {
         /// The total in the same units, when it is known.
         total: Option<u64>,
     },
+    /// LH.0.3: a host job produced output — the lines a subprocess wrote
+    /// (`host-services.spawn-process`), stdout and stderr interleaved as they
+    /// arrived.
+    ///
+    /// **Batched**, not one event per line: a quiet interval's worth at a
+    /// time, bounded in size, with nothing dropped. Addressed like
+    /// [`Self::JobProgress`].
+    JobOutput {
+        /// The host-issued numeric plugin id that started the job.
+        plugin: u32,
+        /// The id the host-service returned.
+        id: u64,
+        /// Whole lines, without their terminators, in arrival order.
+        lines: Vec<String>,
+    },
     /// LH.0: a host job ended. Exactly one per job, always, including a
     /// cancelled one: a consumer drives a state machine off this and a job
     /// that could end silently would strand it.
@@ -549,6 +564,7 @@ impl Event {
             Event::BackgroundTaskFinished { .. } => EventKind::BackgroundTaskFinished,
             Event::FilesChanged { .. } => EventKind::FilesChanged,
             Event::JobProgress { .. } => EventKind::JobProgress,
+            Event::JobOutput { .. } => EventKind::JobOutput,
             Event::JobFinished { .. } => EventKind::JobFinished,
         }
     }
@@ -618,6 +634,8 @@ pub enum EventKind {
     /// Discriminator for [`Event::JobProgress`] (LH.0). Addressed by the
     /// delivery actor, like [`Self::FilesChanged`].
     JobProgress,
+    /// Discriminator for [`Event::JobOutput`] (LH.0.3).
+    JobOutput,
     /// Discriminator for [`Event::JobFinished`] (LH.0).
     JobFinished,
 }

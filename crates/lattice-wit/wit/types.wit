@@ -1901,6 +1901,9 @@ interface types {
         /// say — has made progress. Addressed the same way: a plugin only ever
         /// hears about its own jobs.
         job-progress,
+        /// LH.0.3: a host job this plugin started wrote output — a
+        /// subprocess's lines.
+        job-output,
         /// LH.0: a host job this plugin started has ended, one way or the
         /// other.
         job-finished,
@@ -1981,6 +1984,12 @@ interface types {
         /// completes inside one interval sends none at all. Do not wait for
         /// one before expecting `job-finished`.
         job-progress(event-job-progress),
+        /// LH.0.3: output from a host job — what a process started with
+        /// `spawn-process` wrote. **Batched**: a quiet interval's lines arrive
+        /// together, so a chatty tool is a few deliveries a second, and none
+        /// is dropped. All of a job's output is delivered before its
+        /// `job-finished`.
+        job-output(event-job-output),
         /// LH.0: a host job ended. Exactly one per id a host-service returned
         /// — a cancelled job reports here too, as `err("cancelled")` — so a
         /// plugin can drive a state machine off it without a timeout.
@@ -2002,6 +2011,17 @@ interface types {
         /// The total in the same units; `none` when it is not known, in which
         /// case there is no percentage to show, only a running count.
         total: option<u64>,
+    }
+
+    /// `event.job-output` payload (LH.0.3).
+    record event-job-output {
+        /// The id the host-service returned.
+        id: u64,
+        /// Whole lines without their terminators, in arrival order — stdout
+        /// and stderr interleaved, not told apart. Bytes that are not UTF-8
+        /// are replaced, and a line longer than the host's bound is cut short
+        /// and marked with `…`.
+        lines: list<string>,
     }
 
     /// `event.job-finished` payload (LH.0).

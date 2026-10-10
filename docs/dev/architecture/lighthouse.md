@@ -113,6 +113,7 @@ seam and the job it stops was usually started from the events seam.
 ```wit
 // arms of `event` (types.wit)
 job-progress(event-job-progress),   // { id, done, total: option<u64> }
+job-output(event-job-output),       // { id, lines: list<string> }
 job-finished(event-job-finished),   // { id, outcome: result<_, string> }
 
 // host-services
@@ -210,8 +211,8 @@ Windows registry entry or a zip-only server (clangd).
 ### 3.3 `proc:spawn` — `spawn-process`
 
 ```wit
-/// Run `command` with `args` in `cwd`. A job: returns its id at once; output
-/// lines and the exit status arrive as addressed events.
+/// Run `command` with `args` in `cwd`. A job: returns its id at once; what the
+/// process writes arrives as `job-output`, its exit as `job-finished`.
 /// Capability-gated on `proc:spawn`, which is BUNDLED-PLUGINS-ONLY (arbitrary
 /// spawn ≈ full trust; `capability.rs` withholds it from user-installed plugins).
 spawn-process: func(command: string, args: list<string>, cwd: string)
@@ -222,6 +223,20 @@ Used only for the **package-manager install recipes** (`npm i -g`,
 `pip install`, `go install`) where no pre-built binary exists. The *preferred*
 path is a pre-built binary download (§3.1) — no toolchain, no arbitrary
 execution.
+
+**No shell.** `command` is a program and `args` reach it as given; nothing is
+split or expanded, so a registry string cannot become a second command. A
+caller that wants a shell runs `sh` and says so.
+
+**Output is batched lines**, stdout and stderr interleaved: a quiet interval's
+worth per `job-output`, bounded in size, nothing dropped, all of it before the
+`job-finished`. A non-zero exit is an ordinary outcome — an `err` naming the
+status, with the output that explains it already delivered.
+
+**A cancel kills the tree, not the child.** `npm` is a script that starts
+`node`, which starts more; killing only the direct child ends the job just as
+promptly and leaves processes nobody owns. The child leads its own process
+group and the group is signalled.
 
 There is **no separate task surface.** The July draft had `start-task` /
 `push-output` / `finalize` so the host could own a streaming buffer on the

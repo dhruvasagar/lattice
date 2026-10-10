@@ -5,7 +5,8 @@
 //! A host-service whose work outlasts a guest call — a download, an unpack, a
 //! subprocess — does not return when the work is done. It validates, returns an
 //! **id**, and runs on a thread of its own; the guest hears the rest as
-//! [`Event::JobProgress`] and exactly one [`Event::JobFinished`], addressed to
+//! `Event::JobProgress` (and `Event::JobOutput`, for work that prints) and
+//! exactly one `Event::JobFinished`, addressed to
 //! the plugin that asked. This module is that shape, once, so each such seam is
 //! only its own work.
 //!
@@ -104,6 +105,16 @@ impl Job {
             id: self.id,
             done,
             total,
+        });
+    }
+
+    /// Deliver a batch of output lines. Not coalesced here — the caller
+    /// batches, since only it knows what a quiet interval of its work is.
+    pub(crate) fn output(&self, lines: Vec<String>) {
+        self.bus.publish(NativeEvent::JobOutput {
+            plugin: self.plugin,
+            id: self.id,
+            lines,
         });
     }
 }
@@ -264,7 +275,11 @@ pub(crate) mod test_support {
 
     pub(crate) fn job_bus(bus: &EventBus) -> UnboundedReceiver<NativeEvent> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        for kind in [EventKind::JobProgress, EventKind::JobFinished] {
+        for kind in [
+            EventKind::JobProgress,
+            EventKind::JobOutput,
+            EventKind::JobFinished,
+        ] {
             bus.subscribe(
                 EventFilter::kind(kind),
                 SubscriptionTarget::Channel(tx.clone()),
@@ -278,11 +293,17 @@ pub(crate) mod test_support {
         pub(crate) plugin: u32,
         pub(crate) result: Result<(), String>,
         pub(crate) progress: Vec<(u64, Option<u64>)>,
+        /// Every output line, in order, across all deliveries.
+        pub(crate) output: Vec<String>,
+        /// How many `JobOutput` deliveries those lines arrived in.
+        pub(crate) output_batches: usize,
     }
 
     pub(crate) fn outcome_of(rx: &mut UnboundedReceiver<NativeEvent>, id: u64) -> Outcome {
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut progress = Vec::new();
+        let mut output = Vec::new();
+        let mut output_batches = 0;
         while Instant::now() < deadline {
             match rx.try_recv() {
                 Ok(NativeEvent::JobProgress {
@@ -291,6 +312,10 @@ pub(crate) mod test_support {
                     total,
                     ..
                 }) if got == id => progress.push((done, total)),
+                Ok(NativeEvent::JobOutput { id: got, lines, .. }) if got == id => {
+                    output.extend(lines);
+                    output_batches += 1;
+                }
                 Ok(NativeEvent::JobFinished {
                     plugin,
                     id: got,
@@ -300,6 +325,8 @@ pub(crate) mod test_support {
                         plugin,
                         result,
                         progress,
+                        output,
+                        output_batches,
                     };
                 }
                 Ok(_) => {}

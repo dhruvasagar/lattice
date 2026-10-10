@@ -113,6 +113,7 @@ fn label(ev: &Event) -> &'static str {
         Event::PluginUnloaded(_) => "plugin-unloaded",
         Event::FilesChanged(_) => "files-changed",
         Event::JobProgress(_) => "job-progress",
+        Event::JobOutput(_) => "job-output",
         Event::JobFinished(_) => "job-finished",
     }
 }
@@ -132,6 +133,10 @@ const DOWNLOAD_REQUEST: &str = "/data/download-request";
 /// LH.0.2. Present ⇒ unpack from `register-events`. Three lines: the archive,
 /// the destination, and `gz` or `tar-gz`.
 const EXTRACT_REQUEST: &str = "/data/extract-request";
+
+/// LH.0.3. Present ⇒ run a process from `register-events`. First line the
+/// program, each further line one argument.
+const SPAWN_REQUEST: &str = "/data/spawn-request";
 
 /// PH7.8c: present ⇒ ring our own doorbell from `register-events`. A marker
 /// file rather than an unconditional emit, so only the test that is about this
@@ -275,6 +280,23 @@ impl Guest for Component {
             record(&outcome);
             // @end-example
         }
+        // LH.0.3: run a process, if the test asked for one.
+        if let Ok(request) = std::fs::read_to_string(SPAWN_REQUEST) {
+            let mut lines = request.lines();
+            let command = lines.next().unwrap_or_default();
+            let args: Vec<String> = lines.map(str::to_string).collect();
+            // @example host-services.spawn-process: Run a program with explicit arguments and subscribe to its output and exit
+            events::subscribe(&kind_filter(EventKind::JobOutput), 10);
+            events::subscribe(&kind_filter(EventKind::JobFinished), 10);
+            // No shell: each element of `args` is one argument, whatever it
+            // contains. `""` runs it in the editor's working directory.
+            let outcome = match host_services::spawn_process(command, &args, "") {
+                Ok(_id) => "spawn:started".to_string(),
+                Err(e) => format!("spawn:err({e})"),
+            };
+            record(&outcome);
+            // @end-example
+        }
     }
 
     /// Deliver one matching event. Handler 3 traps, handler 4 is a no-op (the
@@ -321,6 +343,22 @@ impl Guest for Component {
                     Err(e) => record(&format!("8:job-finished:err({e})")),
                 },
                 _ => record("8:not-a-job-event"),
+            }
+            return;
+        }
+        // LH.0.3: a process wrote something, or exited.
+        if handler == 10 {
+            match &ev {
+                Event::JobOutput(o) => {
+                    for line in &o.lines {
+                        record(&format!("10:out:{line}"));
+                    }
+                }
+                Event::JobFinished(f) => match &f.outcome {
+                    Ok(()) => record("10:exit:ok"),
+                    Err(e) => record(&format!("10:exit:err({e})")),
+                },
+                _ => record("10:not-a-job-event"),
             }
             return;
         }

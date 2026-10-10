@@ -130,6 +130,7 @@ pub mod tree_resource;
 mod download_host;
 mod extract_host;
 mod job;
+mod process_host;
 pub mod ui_host;
 pub mod wake;
 mod watch_host;
@@ -1524,6 +1525,35 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
             &src,
             &dest,
             format,
+        )?;
+        Ok(self.launch_job(pending))
+    }
+
+    /// LH.0.3 `spawn-process`. A job; gated on `proc:spawn`, which only the
+    /// bundled tier is ever granted.
+    fn spawn_process(
+        &mut self,
+        command: String,
+        args: Vec<String>,
+        cwd: String,
+    ) -> Result<u64, String> {
+        let Some(ctx) = &self.event_emit else {
+            tracing::warn!(
+                command = %command,
+                "spawn-process refused: plugin has no event bus wired on this seam"
+            );
+            return Err(format!(
+                "spawn denied: '{command}' — this seam has no event bus, so the outcome \
+                 could never be delivered"
+            ));
+        };
+        let pending = process_host::prepare(
+            &self.grant,
+            Arc::clone(&ctx.bus),
+            ctx.plugin_id.0,
+            &command,
+            args,
+            &cwd,
         )?;
         Ok(self.launch_job(pending))
     }

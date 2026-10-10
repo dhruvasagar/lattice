@@ -28,7 +28,7 @@ does — a bounded `walk` covers the fuzzy-finder.
 
 - [`position`](types.md#record-position) from [`types`](types.md)
 
-## Functions (24)
+## Functions (25)
 
 ### `can-write-file`
 
@@ -556,6 +556,51 @@ duplicate. It also reads a file the guest may not be editing at all,
 per `source-location.buffer` above. The `document` resource is no help
 either: it is the guest's OWN buffer, and the line in question is one
 the view does not compose.
+
+### `spawn-process`
+
+```wit
+spawn-process: func(command: string, args: list<string>, cwd: string) -> result<u64, string>
+```
+
+Run the program `command` with `args`, in `cwd` (`""` for the editor's
+own). **A job** (see `cancel-job`): returns its id; what the process
+writes arrives as `job-output`, and its exit as `job-finished`.
+
+**Gated on `proc:spawn`, which only a bundled plugin is ever granted.**
+The process is not sandboxed — it runs as the user, with the user's
+environment and reach — so this is full trust, and a user-installed
+plugin is refused here whatever its manifest asks for.
+
+`command` is a program, found on `PATH` or named by path; `args` are
+passed to it as given. **No shell is involved**: nothing is split,
+expanded or interpolated, so an argument containing spaces or `;` is one
+argument. A caller that wants a shell runs `sh` and says so.
+
+The process has no stdin. `job-finished` is `ok` for exit status 0 and
+otherwise an `err` naming the status — an ordinary outcome, with the
+output that explains it already delivered. A program that cannot be
+started at all (not found, not executable) is reported the same way, as
+the job's outcome.
+
+Cancelling kills the process and everything it started.
+
+`err` here for a plugin without the grant, an empty `command`, a `cwd`
+that is not a directory, or a seam with no event bus to report on.
+
+**Example — Run a program with explicit arguments and subscribe to its output and exit** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+events::subscribe(&kind_filter(EventKind::JobOutput), 10);
+events::subscribe(&kind_filter(EventKind::JobFinished), 10);
+// No shell: each element of `args` is one argument, whatever it
+// contains. `""` runs it in the editor's working directory.
+let outcome = match host_services::spawn_process(command, &args, "") {
+    Ok(_id) => "spawn:started".to_string(),
+    Err(e) => format!("spawn:err({e})"),
+};
+record(&outcome);
+```
 
 ### `store-delete`
 

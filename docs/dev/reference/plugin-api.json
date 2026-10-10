@@ -2114,6 +2114,39 @@
           "examples": []
         },
         {
+          "name": "spawn-process",
+          "display_name": "spawn-process",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "command",
+              "type": "string"
+            },
+            {
+              "name": "args",
+              "type": "list<string>"
+            },
+            {
+              "name": "cwd",
+              "type": "string"
+            }
+          ],
+          "result": "result<u64, string>",
+          "signature": "spawn-process: func(command: string, args: list<string>, cwd: string) -> result<u64, string>",
+          "doc": "Run the program `command` with `args`, in `cwd` (`\"\"` for the editor's\nown). **A job** (see `cancel-job`): returns its id; what the process\nwrites arrives as `job-output`, and its exit as `job-finished`.\n\n**Gated on `proc:spawn`, which only a bundled plugin is ever granted.**\nThe process is not sandboxed — it runs as the user, with the user's\nenvironment and reach — so this is full trust, and a user-installed\nplugin is refused here whatever its manifest asks for.\n\n`command` is a program, found on `PATH` or named by path; `args` are\npassed to it as given. **No shell is involved**: nothing is split,\nexpanded or interpolated, so an argument containing spaces or `;` is one\nargument. A caller that wants a shell runs `sh` and says so.\n\nThe process has no stdin. `job-finished` is `ok` for exit status 0 and\notherwise an `err` naming the status — an ordinary outcome, with the\noutput that explains it already delivered. A program that cannot be\nstarted at all (not found, not executable) is reported the same way, as\nthe job's outcome.\n\nCancelling kills the process and everything it started.\n\n`err` here for a plugin without the grant, an empty `command`, a `cwd`\nthat is not a directory, or a seam with no event bus to report on.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.spawn-process",
+              "caption": "Run a program with explicit arguments and subscribe to its output and exit",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "events::subscribe(&kind_filter(EventKind::JobOutput), 10);\nevents::subscribe(&kind_filter(EventKind::JobFinished), 10);\n// No shell: each element of `args` is one argument, whatever it\n// contains. `\"\"` runs it in the editor's working directory.\nlet outcome = match host_services::spawn_process(command, &args, \"\") {\n    Ok(_id) => \"spawn:started\".to_string(),\n    Err(e) => format!(\"spawn:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
+        },
+        {
           "name": "store-delete",
           "display_name": "store-delete",
           "kind": "freestanding",
@@ -9390,7 +9423,7 @@
           "name": "event-kind",
           "kind": "enum",
           "doc": "Mirrors `lattice_protocol::EventKind` — the discriminator a subscription\nfilters on. Each arm pairs 1:1 with an `event` variant arm.",
-          "definition": "enum event-kind {\n    document-opened,\n    document-closed,\n    before-save,\n    document-saved,\n    document-changed,\n    selections-changed,\n    modal-mode-changed,\n    before-quit,\n    option-changed,\n    major-entered,\n    major-exiting,\n    minor-activated,\n    minor-deactivated,\n    plugin,\n    pre-plugin-loaded,\n    plugin-loaded,\n    plugin-unloaded,\n    files-changed,\n    job-progress,\n    job-finished,\n}",
+          "definition": "enum event-kind {\n    document-opened,\n    document-closed,\n    before-save,\n    document-saved,\n    document-changed,\n    selections-changed,\n    modal-mode-changed,\n    before-quit,\n    option-changed,\n    major-entered,\n    major-exiting,\n    minor-activated,\n    minor-deactivated,\n    plugin,\n    pre-plugin-loaded,\n    plugin-loaded,\n    plugin-unloaded,\n    files-changed,\n    job-progress,\n    job-output,\n    job-finished,\n}",
           "members": [
             {
               "name": "document-opened",
@@ -9488,6 +9521,11 @@
               "doc": "LH.0: a long-running host job this plugin started — a download,\nsay — has made progress. Addressed the same way: a plugin only ever\nhears about its own jobs."
             },
             {
+              "name": "job-output",
+              "type": null,
+              "doc": "LH.0.3: a host job this plugin started wrote output — a\nsubprocess's lines."
+            },
+            {
               "name": "job-finished",
               "type": null,
               "doc": "LH.0: a host job this plugin started has ended, one way or the\nother."
@@ -9544,6 +9582,25 @@
               "name": "total",
               "type": "option<u64>",
               "doc": "The total in the same units; `none` when it is not known, in which\ncase there is no percentage to show, only a running count."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "event-job-output",
+          "kind": "record",
+          "doc": "`event.job-output` payload (LH.0.3).",
+          "definition": "record event-job-output {\n    id: u64,\n    lines: list<string>,\n}",
+          "members": [
+            {
+              "name": "id",
+              "type": "u64",
+              "doc": "The id the host-service returned."
+            },
+            {
+              "name": "lines",
+              "type": "list<string>",
+              "doc": "Whole lines without their terminators, in arrival order — stdout\nand stderr interleaved, not told apart. Bytes that are not UTF-8\nare replaced, and a line longer than the host's bound is cut short\nand marked with `…`."
             }
           ],
           "examples": []
@@ -9772,7 +9829,7 @@
           "name": "event",
           "kind": "variant",
           "doc": "Mirrors `lattice_protocol::Event` (owned; delivered to `on-event`). Each\nmulti-field arm carries an explicit payload record (the `effect` mirror\nprecedent); ids cross as `u64`, paths as `string` (a non-UTF-8 path is a\ntyped boundary error, never lossy). Text-bearing arms (`document-opened`)\ncarry the initial content the native event already clones for observers.",
-          "definition": "variant event {\n    document-opened(event-document-opened),\n    document-closed(u64),\n    before-save(event-document-path),\n    document-saved(event-document-path),\n    document-changed(event-document-changed),\n    selections-changed(event-selections-changed),\n    modal-mode-changed(event-modal-mode-changed),\n    before-quit,\n    option-changed(event-option-changed),\n    major-entered(event-mode-lifecycle),\n    major-exiting(event-mode-lifecycle),\n    minor-activated(event-mode-lifecycle),\n    minor-deactivated(event-mode-lifecycle),\n    plugin(event-plugin),\n    pre-plugin-loaded(string),\n    plugin-loaded(event-plugin-lifecycle),\n    plugin-unloaded(event-plugin-lifecycle),\n    files-changed(list<string>),\n    job-progress(event-job-progress),\n    job-finished(event-job-finished),\n}",
+          "definition": "variant event {\n    document-opened(event-document-opened),\n    document-closed(u64),\n    before-save(event-document-path),\n    document-saved(event-document-path),\n    document-changed(event-document-changed),\n    selections-changed(event-selections-changed),\n    modal-mode-changed(event-modal-mode-changed),\n    before-quit,\n    option-changed(event-option-changed),\n    major-entered(event-mode-lifecycle),\n    major-exiting(event-mode-lifecycle),\n    minor-activated(event-mode-lifecycle),\n    minor-deactivated(event-mode-lifecycle),\n    plugin(event-plugin),\n    pre-plugin-loaded(string),\n    plugin-loaded(event-plugin-lifecycle),\n    plugin-unloaded(event-plugin-lifecycle),\n    files-changed(list<string>),\n    job-progress(event-job-progress),\n    job-output(event-job-output),\n    job-finished(event-job-finished),\n}",
           "members": [
             {
               "name": "document-opened",
@@ -9868,6 +9925,11 @@
               "name": "job-progress",
               "type": "event-job-progress",
               "doc": "LH.0: how far a host job has got. **Coalesced** host-side, so fast\nwork is a few deliveries rather than one per step — and a job that\ncompletes inside one interval sends none at all. Do not wait for\none before expecting `job-finished`."
+            },
+            {
+              "name": "job-output",
+              "type": "event-job-output",
+              "doc": "LH.0.3: output from a host job — what a process started with\n`spawn-process` wrote. **Batched**: a quiet interval's lines arrive\ntogether, so a chatty tool is a few deliveries a second, and none\nis dropped. All of a job's output is delivered before its\n`job-finished`."
             },
             {
               "name": "job-finished",

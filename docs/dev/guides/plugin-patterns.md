@@ -837,6 +837,30 @@ let config = host_services::ServerConfig {
 let registered = host_services::register_server(&config);
 ```
 
+A downloaded program has to match the machine. Your plugin is `wasm32`
+wherever it runs, so ask:
+
+<!-- example: events-guest:host-services.host-platform -->
+```rust
+let platform = host_services::host_platform();
+let build = format!("{}-{}", platform.os, platform.arch);
+```
+
+And it has to go somewhere. The calls above take paths on the host, where your
+`/data` means nothing; `data-dir` is that directory's real path, and everything
+under it is yours to use with no `fs:` capability in the manifest:
+
+<!-- example: events-guest:host-services.data-dir -->
+```rust
+// …and named to the host by its real path. No `fs:` capability
+// is needed for anything under this directory.
+let outcome = match host_services::data_dir() {
+    Some(dir) => host_services::set_executable(&format!("{dir}/tool"))
+        .map(|()| dir),
+    None => Err("no data dir".to_string()),
+};
+```
+
 To show any of this to the user, write to an **output buffer**: a read-only
 buffer that follows its last line, which your plugin fills and the editor
 displays. It works from any export, including `on-event`, which cannot return

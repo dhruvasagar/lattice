@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0 ✅ (four job/registration seams + output buffers); LH.1 next.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅ (four job/registration seams, output buffers, host facts); LH.1 next.** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -170,16 +170,32 @@ the LSP logs), with the plugin given the producer's end:
 No bench: the write path is a ring push and a channel send per call, off the
 keystroke path, and the per-call WASM overhead is already ratcheted.
 
+#### LH.0.6 — `host-platform` + `data-dir`  ✅
+Carved at the start of LH.1.1: a guest cannot tell what machine it is on, and
+cannot name its own data directory to a host-side seam. Design §3.6, which
+also **moves the install tree** into the plugin's data directory and records
+why. **Exit:** a guest with no `fs:` capability marks a file in its data dir
+executable by host path; one directory up is refused.
+
+**Landed.** Two functions and a record, additive inside 0.2.0.
+`CapabilityGrant` gains `data_dir`, set by the host where it mounts the
+directory (never by a manifest, and not for an unsafe plugin id);
+`grant_permits_walk` / `_write` accept paths under it, so every seam built on
+them — download, extract, set-executable, read, walk, watch — follows without
+a line of its own. 4 unit tests on the reach (inside; outside, sibling and
+`..`; symlink out; a read-only `fs` grant stays read-only) and
+`tests/host_info_seam.rs` with a real guest.
+
 ### LH.1 — the lighthouse plugin  📝
 The core WASM Component plugin consuming LH.0. Crate `plugins/lighthouse/`.
 
 #### LH.1.1 — crate scaffold + registry + install core  📝
 The guest crate (`wasm32-wasip2`, `plugin.toml` requesting
-`net:http:<registry-hosts>` + `proc:spawn` + `fs:write:<managed-tree>`); a
+`net:http:<registry-hosts>` + `proc:spawn`, and no `fs:` grant — LH.0.6); a
 compiled-in `registry.toml` (per server × platform: pinned version, URL,
 SHA-256, archive kind + binary path, or a package-manager `recipe`); the
 download → extract → lay down
-`${XDG_DATA_HOME}/lattice/lsp/<name>/<version>/` state machine, driven by
+`<data-dir>/lsp/<name>/<version>/` state machine, driven by
 events. **Exit:** given a registry entry, the core produces a versioned install
 tree; a tampered SHA ends in a reported failure with no partial tree.
 

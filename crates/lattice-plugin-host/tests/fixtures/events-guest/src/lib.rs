@@ -149,6 +149,10 @@ const SERVER_WITHDRAW: &str = "/data/server-withdraw";
 /// buffer name) from `register-events`.
 const OUTPUT_REQUEST: &str = "/data/output-request";
 
+/// LH.0.6. Present ⇒ report the host platform and data dir, and mark a file
+/// in the data dir executable through its HOST path.
+const HOST_INFO_REQUEST: &str = "/data/host-info-request";
+
 /// PH7.8c: present ⇒ ring our own doorbell from `register-events`. A marker
 /// file rather than an unconditional emit, so only the test that is about this
 /// behaviour pays for it.
@@ -340,6 +344,35 @@ impl Guest for Component {
                 host_services::unregister_server(token);
                 // @end-example
                 record("unregister:done");
+            }
+        }
+        if std::fs::metadata(HOST_INFO_REQUEST).is_ok() {
+            // @example host-services.host-platform: Pick the native build to download for the machine the editor is running on
+            let platform = host_services::host_platform();
+            let build = format!("{}-{}", platform.os, platform.arch);
+            // @end-example
+            record(&format!("platform:{build}"));
+            // Written through WASI, at the guest's `/data`…
+            let _ = std::fs::write("/data/tool", "#!/bin/sh\n");
+            // @example host-services.data-dir: Name a file in the plugin's own data directory to a host-side call
+            // …and named to the host by its real path. No `fs:` capability
+            // is needed for anything under this directory.
+            let outcome = match host_services::data_dir() {
+                Some(dir) => host_services::set_executable(&format!("{dir}/tool"))
+                    .map(|()| dir),
+                None => Err("no data dir".to_string()),
+            };
+            // @end-example
+            match outcome {
+                Ok(dir) => record(&format!("data-dir:{dir}")),
+                Err(e) => record(&format!("data-dir:err({e})")),
+            }
+            // One level up is the plugin's home, not its data: out of reach.
+            if let Some(dir) = host_services::data_dir() {
+                match host_services::set_executable(&format!("{dir}/../plugin.toml")) {
+                    Ok(()) => record("escape:ok"),
+                    Err(_) => record("escape:denied"),
+                }
             }
         }
         if let Ok(request) = std::fs::read_to_string(OUTPUT_REQUEST) {

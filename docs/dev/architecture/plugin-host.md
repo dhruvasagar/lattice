@@ -663,6 +663,13 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   promptly and orphans whatever it started, which is why the test asserts the *grandchild* is
   gone rather than that the job ended. The group is signalled through `kill(1)`, not
   `libc::kill`: the crate denies `unsafe`, and one short-lived process on a cancel is the price.
+- **Host facts (✅ LH.0.6)**: `host-services.host-platform() -> platform` (`os`, `arch` — a guest is
+  `wasm32` everywhere and cannot tell) and `data-dir() -> option<string>`, the host path of the
+  guest's `/data` ([`lighthouse.md`](lighthouse.md) §3.6). With the second comes a rule: the
+  host-side path checks accept anything under the plugin's own data directory with no `fs:`
+  capability. `CapabilityGrant::data_dir` carries it, set where the host mounts the directory.
+  It is no new reach — WASI already mounts that directory writable — it lets host-side seams act
+  where the guest already can.
 - **Output buffers (✅ LH.0.5)**: `host-services.output-append(name, lines)` /
   `output-status(name, state, text)` / `output-reset(name)` ([`lighthouse.md`](lighthouse.md) §3.5)
   — how a plugin shows work in flight. An events handler returns nothing, so it cannot open a

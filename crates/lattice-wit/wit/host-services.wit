@@ -56,6 +56,14 @@ interface host-services {
         tar-gz,
     }
 
+    /// LH.0.6: the platform the editor is running on.
+    record platform {
+        /// `linux`, `macos`, `windows`, … — Rust's `std::env::consts::OS`.
+        os: string,
+        /// `x86_64`, `aarch64`, … — Rust's `std::env::consts::ARCH`.
+        arch: string,
+    }
+
     /// LH.0.5: what an output buffer's headerline says its work is doing.
     enum output-state {
         /// In flight.
@@ -611,6 +619,25 @@ interface host-services {
     /// that names nothing — or one another instance of this plugin made — is
     /// silently nothing.
     unregister-server: func(token: u64);
+
+    /// LH.0.6: the platform the editor is running on.
+    ///
+    /// A guest is `wasm32` wherever it runs and cannot tell. A plugin that
+    /// fetches a native program needs to know which build to fetch.
+    host-platform: func() -> platform;
+
+    /// LH.0.6: this plugin's private data directory, as an absolute path **on
+    /// the host** — the directory the guest sees as `/data`.
+    ///
+    /// The calls that act on the host's behalf (`http-download`,
+    /// `extract-archive`, `set-executable`, `register-server`, `read-file`,
+    /// `walk`) take host paths, and `/data` means nothing to them. This is the
+    /// path to give them. Every one of those calls accepts a path under it
+    /// with no `fs:` capability in the manifest: the directory is the
+    /// plugin's own.
+    ///
+    /// `none` when the plugin has no data directory, or its path is not UTF-8.
+    data-dir: func() -> option<string>;
 
     /// LH.0.5: append `lines` to one of this plugin's **output buffers** —
     /// a read-only, live-tailing buffer the plugin fills and the editor shows.

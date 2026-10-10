@@ -1821,6 +1821,26 @@
           ]
         },
         {
+          "name": "data-dir",
+          "display_name": "data-dir",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": "option<string>",
+          "signature": "data-dir: func() -> option<string>",
+          "doc": "LH.0.6: this plugin's private data directory, as an absolute path **on\nthe host** — the directory the guest sees as `/data`.\n\nThe calls that act on the host's behalf (`http-download`,\n`extract-archive`, `set-executable`, `register-server`, `read-file`,\n`walk`) take host paths, and `/data` means nothing to them. This is the\npath to give them. Every one of those calls accepts a path under it\nwith no `fs:` capability in the manifest: the directory is the\nplugin's own.\n\n`none` when the plugin has no data directory, or its path is not UTF-8.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.data-dir",
+              "caption": "Name a file in the plugin's own data directory to a host-side call",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// …and named to the host by its real path. No `fs:` capability\n// is needed for anything under this directory.\nlet outcome = match host_services::data_dir() {\n    Some(dir) => host_services::set_executable(&format!(\"{dir}/tool\"))\n        .map(|()| dir),\n    None => Err(\"no data dir\".to_string()),\n};"
+            }
+          ]
+        },
+        {
           "name": "delete-file",
           "display_name": "delete-file",
           "kind": "freestanding",
@@ -1933,6 +1953,26 @@
               "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
               "language": "rust",
               "code": "events::subscribe(&kind_filter(EventKind::JobFinished), 9);\nlet outcome = match host_services::extract_archive(src, dest, format) {\n    Ok(_id) => \"extract:started\".to_string(),\n    Err(e) => format!(\"extract:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
+        },
+        {
+          "name": "host-platform",
+          "display_name": "host-platform",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": "platform",
+          "signature": "host-platform: func() -> platform",
+          "doc": "LH.0.6: the platform the editor is running on.\n\nA guest is `wasm32` wherever it runs and cannot tell. A plugin that\nfetches a native program needs to know which build to fetch.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.host-platform",
+              "caption": "Pick the native build to download for the machine the editor is running on",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let platform = host_services::host_platform();\nlet build = format!(\"{}-{}\", platform.os, platform.arch);"
             }
           ]
         },
@@ -2557,6 +2597,25 @@
               "name": "tar-gz",
               "type": null,
               "doc": "A gzip-compressed tar. The destination is the DIRECTORY to create."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "platform",
+          "kind": "record",
+          "doc": "LH.0.6: the platform the editor is running on.",
+          "definition": "record platform {\n    os: string,\n    arch: string,\n}",
+          "members": [
+            {
+              "name": "os",
+              "type": "string",
+              "doc": "`linux`, `macos`, `windows`, … — Rust's `std::env::consts::OS`."
+            },
+            {
+              "name": "arch",
+              "type": "string",
+              "doc": "`x86_64`, `aarch64`, … — Rust's `std::env::consts::ARCH`."
             }
           ],
           "examples": []

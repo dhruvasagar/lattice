@@ -61,9 +61,10 @@ them on screen. The name follows `*lsp-log*` (dash) rather than `*lsp:<lang>:<ro
 `lattice_lsp::buffer_names`, and an install is not one. Status rides the
 headerline (the async-buffer-status rule).
 
-The **managed install tree** is `${XDG_DATA_HOME}/lattice/lsp/<name>/<version>/`
-— versioned so an update is atomic (install new, flip the registration, GC old)
-and a bad version rolls back.
+The **managed install tree** is `<data-dir>/lsp/<name>/<version>/`, inside the
+plugin's own data directory (`~/.config/lattice/plugins/lighthouse/data/` by
+default; §3.6) — versioned so an update is atomic (install new, flip the
+registration, GC old) and a bad version rolls back.
 
 ## 3. The host-services extension it forces (the real work) — LOAD-BEARING
 
@@ -360,6 +361,59 @@ text in a buffer of its own is no new reach.
 never precedes the text. A headerline-only change (a percentage ticking) takes
 the same path; it edits no text, so nothing else would repaint it.
 
+### 3.6 What a plugin knows about its host — `host-platform` / `data-dir`
+
+Two facts a guest could not obtain, both needed before the first byte is
+downloaded.
+
+```wit
+host-platform: func() -> platform;       // { os, arch }
+data-dir:      func() -> option<string>; // host path of the guest's /data
+```
+
+**`host-platform`.** A guest is `wasm32` wherever it runs. The registry is keyed
+on `os`-`arch`, and the value has to be the machine the binary will run on.
+
+**`data-dir`, and the reach that comes with it.** The seams above act on the
+host's behalf and take host paths; `/data` means nothing to them, and the
+guest had no way to say where `/data` really is. Returning the path is half of
+it. The other half: those seams check paths against the manifest's `fs:`
+grants, where the data directory never appeared — it is a WASI mount, not a
+grant. So the capability grant now carries the data directory, and the shared
+path checks (`grant_permits_read` / `grant_permits_write`) accept anything
+under it. This grants nothing new: the guest can already create, overwrite and
+delete everything in that directory through WASI. It only lets the host do, on
+the plugin's behalf, what the plugin may do itself.
+
+Lighthouse therefore needs **no `fs:` capability at all**. That is the reason
+the install tree lives in the data directory rather than
+`${XDG_DATA_HOME}/lattice/lsp/`, as this fragment first had it:
+
+> **UX (higher court):** the first plan is worse. `install.sh` puts the bundled
+> plugins under `~/.local/share/lattice` and upgrades by replacing that
+> directory; plugin stores kept there were deleted on every reinstall until
+> they moved (plugin-host, 2026-09-22). Servers beside them invite the same
+> loss — a re-download of every server after each editor upgrade.
+> **Paramount goals:** protects #2 (least privilege: the manifest asks for the
+> network and nothing on disk); sacrifices nothing at runtime.
+> **Heuristic #1:** yes on merit — a plugin's whole home is already one
+> directory by decision, and built artefacts already live there.
+> **Heuristic #2:** anchored on the capability model and the data-loss record,
+> not on where another editor keeps servers.
+> **Heuristic #3:** the third option was a `fs-grants` call returning the
+> manifest's own writable prefixes; it keeps a second home for the plugin and
+> still needs a per-OS path in a static manifest.
+> **Heuristic #6:** no new crate.
+> **Mode ownership:** untouched.
+
+The cost, stated: server binaries sit under a *config* directory, which is not
+where a filesystem-hierarchy purist expects hundreds of megabytes. Anyone who
+syncs `~/.config` should exclude `lattice/plugins/*/data/`.
+
+The effect write-gate (`EffectAuthorizer`, which vets file-writing *effects* a
+grammar action returns) is deliberately not widened: it has no caller that
+needs it, and a reach nobody uses is only surface.
+
 ## 4. The bundled server registry
 
 A `registry.toml` compiled into the plugin: per server, per platform
@@ -394,8 +448,9 @@ the host never interprets it.
 - **Security.** `net:http` is host-scoped (only the registry's download hosts,
   redirect hops included);
   `proc:spawn` is bundled-only (lighthouse ships pre-granted; a user-installed
-  plugin can never reach it); SHA-pinning bounds supply-chain risk; the managed
-  tree is the only `fs:write` grant.
+  plugin can never reach it); SHA-pinning bounds supply-chain risk; there is no
+  `fs:` grant — the managed tree is inside the plugin's own data directory
+  (§3.6).
 
 ## 6. Rejected alternatives
 

@@ -149,10 +149,13 @@ pub(crate) fn grant_permits_walk(grant: &CapabilityGrant, root: &Path) -> bool {
     // synced folder — and `delete-file` then refused to discard a capture
     // draft that had never been saved (CD.6).
     let canon_root = crate::effect_authorizer::resolve_for_compare(root);
-    grant.fs.iter().any(|g| {
-        let canon_prefix = std::fs::canonicalize(&g.prefix).unwrap_or_else(|_| g.prefix.clone());
+    let within = |prefix: &Path| {
+        let canon_prefix = std::fs::canonicalize(prefix).unwrap_or_else(|_| prefix.to_path_buf());
         canon_root.starts_with(&canon_prefix)
-    })
+    };
+    // LH.0.6: the plugin's own data dir is always within reach — it is
+    // mounted writable for the guest already (see `CapabilityGrant::data_dir`).
+    grant.fs.iter().any(|g| within(&g.prefix)) || grant.data_dir.as_deref().is_some_and(within)
 }
 
 /// The same check for a FILE — on the file itself when it exists, on its parent
@@ -197,6 +200,8 @@ pub fn grant_permits_read(grant: &CapabilityGrant, file: &Path) -> bool {
 pub fn grant_permits_write(grant: &CapabilityGrant, file: &Path) -> bool {
     let writable = CapabilityGrant {
         fs: grant.fs.iter().filter(|g| g.write).cloned().collect(),
+        // Writable by construction: WASI mounts it read-write.
+        data_dir: grant.data_dir.clone(),
         ..Default::default()
     };
     grant_permits_read(&writable, file)
@@ -532,6 +537,79 @@ mod tests {
         let grant = write_grant(granted.path().to_path_buf());
         assert!(delete_within_grant(&grant, file.to_str().unwrap()).is_err());
         assert!(file.exists());
+    }
+
+    fn data_dir_grant(dir: PathBuf) -> CapabilityGrant {
+        CapabilityGrant {
+            data_dir: Some(dir),
+            ..Default::default()
+        }
+    }
+
+    /// LH.0.6: the data dir is within reach with no `fs:` capability at all.
+    #[test]
+    fn a_plugin_reaches_its_own_data_dir_without_an_fs_grant() {
+        let data = tempfile::tempdir().unwrap();
+        let grant = data_dir_grant(data.path().to_path_buf());
+        let existing = data.path().join("servers.txt");
+        std::fs::write(&existing, "x").unwrap();
+        // Existing, new, and new-under-a-directory-that-does-not-exist-yet:
+        // an install tree is created as it is written.
+        for path in [
+            existing,
+            data.path().join("new.bin"),
+            data.path().join("lsp/rust-analyzer/1.0/rust-analyzer"),
+        ] {
+            assert!(grant_permits_read(&grant, &path), "read {path:?}");
+            assert!(grant_permits_write(&grant, &path), "write {path:?}");
+        }
+    }
+
+    #[test]
+    fn the_data_dir_grants_nothing_outside_itself() {
+        let data = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let grant = data_dir_grant(data.path().join("plugin/data"));
+        std::fs::create_dir_all(data.path().join("plugin/data")).unwrap();
+        for path in [
+            other.path().join("x"),
+            // A sibling plugin's data dir.
+            data.path().join("neighbour/data/x"),
+            // Out through `..`.
+            data.path().join("plugin/data/../../neighbour/data/x"),
+        ] {
+            assert!(!grant_permits_read(&grant, &path), "read {path:?}");
+            assert!(!grant_permits_write(&grant, &path), "write {path:?}");
+        }
+    }
+
+    /// The data dir obeys the same symlink rule as a granted prefix: a link
+    /// inside it that points out is outside.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_data_dir_is_denied() {
+        let data = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target = other.path().join("precious");
+        std::fs::write(&target, "x").unwrap();
+        let link = data.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let grant = data_dir_grant(data.path().to_path_buf());
+        assert!(!grant_permits_write(&grant, &link));
+        assert!(!grant_permits_read(&grant, &link));
+    }
+
+    /// A read-only `fs` grant stays read-only when a data dir is also present
+    /// — the data dir adds its own directory, not write access elsewhere.
+    #[test]
+    fn a_data_dir_does_not_make_a_read_grant_writable() {
+        let data = tempfile::tempdir().unwrap();
+        let notes = tempfile::tempdir().unwrap();
+        let mut grant = read_grant(notes.path().to_path_buf());
+        grant.data_dir = Some(data.path().to_path_buf());
+        let note = notes.path().join("a.org");
+        assert!(grant_permits_read(&grant, &note));
+        assert!(!grant_permits_write(&grant, &note));
     }
 
     /// A link under the writable prefix that points outside it resolves

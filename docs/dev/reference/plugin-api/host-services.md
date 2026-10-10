@@ -28,7 +28,7 @@ does — a bounded `walk` covers the fuzzy-finder.
 
 - [`position`](types.md#record-position) from [`types`](types.md)
 
-## Functions (30)
+## Functions (32)
 
 ### `can-write-file`
 
@@ -120,6 +120,36 @@ Ok(vec![Effect::Echo(EchoPayload {
     level: EchoLevel::Info,
     text,
 })])
+```
+
+### `data-dir`
+
+```wit
+data-dir: func() -> option<string>
+```
+
+LH.0.6: this plugin's private data directory, as an absolute path **on
+the host** — the directory the guest sees as `/data`.
+
+The calls that act on the host's behalf (`http-download`,
+`extract-archive`, `set-executable`, `register-server`, `read-file`,
+`walk`) take host paths, and `/data` means nothing to them. This is the
+path to give them. Every one of those calls accepts a path under it
+with no `fs:` capability in the manifest: the directory is the
+plugin's own.
+
+`none` when the plugin has no data directory, or its path is not UTF-8.
+
+**Example — Name a file in the plugin's own data directory to a host-side call** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+// …and named to the host by its real path. No `fs:` capability
+// is needed for anything under this directory.
+let outcome = match host_services::data_dir() {
+    Some(dir) => host_services::set_executable(&format!("{dir}/tool"))
+        .map(|()| dir),
+    None => Err("no data dir".to_string()),
+};
 ```
 
 ### `delete-file`
@@ -282,6 +312,24 @@ let outcome = match host_services::extract_archive(src, dest, format) {
     Err(e) => format!("extract:err({e})"),
 };
 record(&outcome);
+```
+
+### `host-platform`
+
+```wit
+host-platform: func() -> platform
+```
+
+LH.0.6: the platform the editor is running on.
+
+A guest is `wasm32` wherever it runs and cannot tell. A plugin that
+fetches a native program needs to know which build to fetch.
+
+**Example — Pick the native build to download for the machine the editor is running on** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let platform = host_services::host_platform();
+let build = format!("{}-{}", platform.os, platform.arch);
 ```
 
 ### `http-download`
@@ -968,7 +1016,7 @@ let outcome = match host_services::watch(target) {
 record(&outcome);
 ```
 
-## Types (4)
+## Types (5)
 
 ### record `server-config`
 
@@ -1020,6 +1068,22 @@ LH.0.2: the archive kinds `extract-archive` unpacks.
 - `gz` — One gzip-compressed file (`rust-analyzer-…-linux-gnu.gz`). The
   destination is the FILE to write.
 - `tar-gz` — A gzip-compressed tar. The destination is the DIRECTORY to create.
+
+### record `platform`
+
+```wit
+record platform {
+    os: string,
+    arch: string,
+}
+```
+
+LH.0.6: the platform the editor is running on.
+
+**Fields**
+
+- `os`: `string` — `linux`, `macos`, `windows`, … — Rust's `std::env::consts::OS`.
+- `arch`: `string` — `x86_64`, `aarch64`, … — Rust's `std::env::consts::ARCH`.
 
 ### enum `output-state`
 

@@ -1669,6 +1669,26 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         self.server_registrations.retain(|r| r.token != token);
     }
 
+    /// LH.0.6 `host-platform`. `std::env::consts`, so it names the platform
+    /// the editor was BUILT for — which is the one a downloaded binary has to
+    /// run on.
+    fn host_platform(&mut self) -> crate::lattice::plugin_host::host_services::Platform {
+        crate::lattice::plugin_host::host_services::Platform {
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+        }
+    }
+
+    /// LH.0.6 `data-dir`. `None` for a path that is not UTF-8 — it cannot
+    /// cross as a `string`.
+    fn data_dir(&mut self) -> Option<String> {
+        self.grant
+            .data_dir
+            .as_deref()
+            .and_then(Path::to_str)
+            .map(str::to_string)
+    }
+
     /// LH.0.5 `output-append`.
     fn output_append(&mut self, name: String, lines: Vec<String>) -> Result<(), String> {
         let (output, plugin) = self.output_target("output-append")?;
@@ -4638,7 +4658,7 @@ impl PluginHost {
         manifest: &PluginManifest,
         tier: TrustTier,
     ) -> (WasiCtx, GrantOutcome, PathBuf) {
-        let outcome = grant(manifest, tier);
+        let mut outcome = grant(manifest, tier);
         // SECURITY (isolation, defense-in-depth): the id is validated at parse
         // (`from_toml_str` rejects a path-escaping id), but a programmatic
         // `PluginManifest::new` bypasses that. Re-check HERE — the true security
@@ -4655,6 +4675,9 @@ impl PluginHost {
                     "plugin data dir create failed; the data mount is degraded"
                 );
             }
+            // LH.0.6: only on this arm. An unsafe id gets no mount, so it
+            // gets no host-side reach either.
+            outcome.grant.data_dir = Some(dir.clone());
             dir
         } else {
             tracing::error!(

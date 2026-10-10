@@ -80,6 +80,19 @@ pub struct CapabilityGrant {
     /// The editor capabilities a plugin-declared mode requires (enforced at
     /// mode activation, PH7.11).
     pub editor: CapabilitySet,
+    /// LH.0.6: the plugin's private data dir, as a HOST path — set by the
+    /// host when it mounts one, never by a manifest.
+    ///
+    /// WASI already mounts this directory writable at `/data`, so the guest
+    /// can do anything to it. What it could not do was name it to a host-side
+    /// seam: `http-download`, `extract-archive` and `register-server` take
+    /// host paths and check them against `fs`, where the data dir never
+    /// appeared. Carrying it here lets those checks pass for the one directory
+    /// the plugin owns outright, and grants no reach it did not have.
+    ///
+    /// Deliberately not an entry in `fs`: that list is also the preopen list,
+    /// and the directory is already mounted.
+    pub data_dir: Option<PathBuf>,
 }
 
 /// The result of computing a grant: the effective [`CapabilityGrant`] plus the

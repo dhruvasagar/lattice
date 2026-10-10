@@ -376,6 +376,63 @@ register-languages: func()
 ```
 
 
+## world `lighthouse-plugin`
+
+The `lighthouse` bundled plugin's world (LH.1) — the language-server
+manager. Design: `docs/dev/architecture/lighthouse.md`.
+
+The seams, and why each is here:
+  - **grammar** — the `:lsp-install` family of ex-commands.
+    `apply-ex-command`'s signature takes a `borrow<document>` and an
+    optional `borrow<tree-snapshot>`, so `buffer` and `tree-sitter` are
+    imported for the SIGNATURE; this plugin reads neither.
+  - **host-services** — everything it does: `host-platform` and `data-dir`
+    to decide what to fetch and where, `http-download` /
+    `extract-archive` / `set-executable` to fetch it, `register-server` to
+    hand it to the editor, `output-*` to show the work, `store-*` to
+    remember it.
+  - **events** — a job's outcome arrives as `job-finished`, and that is
+    the only place it arrives. The install is a state machine stepped from
+    `on-event`.
+
+The component is instantiated once per seam, and the two instances share
+nothing but the store and the data directory: an ex-command starts a job on
+the grammar instance, and the events instance hears how it went. Whatever
+one must tell the other goes through `store-*`.
+
+`logging` is intentionally NOT imported, the `auto-pair` rule: keeping it
+out of the combined world keeps `log` off the sync grammar linker.
+
+**Imports:** [`buffer`](buffer.md), [`events`](events.md), [`grammar`](grammar.md), [`host-services`](host-services.md), [`tree-sitter`](tree-sitter.md), [`types`](types.md)  
+**Exports:** [`grammar-callbacks`](grammar-callbacks.md)
+
+**Entry points it exports**
+
+### `register-grammar`
+
+```wit
+register-grammar: func()
+```
+
+### `register-events`
+
+```wit
+register-events: func()
+```
+
+### `on-event`
+
+```wit
+on-event: func(handler: u32, ev: event)
+```
+
+### `on-wake`
+
+```wit
+on-wake: func(id: wake-id)
+```
+
+
 ## world `media-plugin`
 
 The world an inline-media provider implements.

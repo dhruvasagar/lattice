@@ -3,7 +3,7 @@
 
 # `tree-sitter`
 
-**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `context-plugin` (imports), `grammar-plugin` (imports), `project-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `treesitter-context-plugin` (imports)
+**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `context-plugin` (imports), `grammar-plugin` (imports), `lighthouse-plugin` (imports), `project-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `treesitter-context-plugin` (imports)
 
 Structural queries for plugins (plugin-treesitter-seam.md). The host already
 parses every buffer with tree-sitter (`lattice-syntax`) and publishes an

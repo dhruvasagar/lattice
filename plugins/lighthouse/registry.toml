@@ -1,0 +1,61 @@
+# The servers lighthouse can install. Compiled into the plugin.
+#
+# Adding a server is an edit here and nothing else — plus, if it downloads
+# from a host not already listed, a `net:http:<host>` line in `plugin.toml`.
+#
+# Per server:
+#   name           what `:lsp-install <name>` takes, and the install directory
+#   lsp-id         the editor's id for this language's server. Installing
+#                  SHADOWS the built-in config with the same id, so the
+#                  managed binary replaces the `PATH` lookup instead of
+#                  running beside it. Match `lattice-lsp`'s defaults.
+#   language-id    the LSP `languageId` sent on `didOpen`
+#   version        the pinned release. An update is a new pin.
+#   args           passed to the server verbatim
+#   file-patterns  which files start it
+#   root-markers   how its workspace root is found
+#
+# Per platform, keyed `<os>-<arch>` as the editor reports them (`linux`,
+# `macos`, `windows`; `x86_64`, `aarch64`):
+#   url            https only
+#   sha256         of the file at `url`. MANDATORY, and checked by the host as
+#                  the bytes arrive: a mismatch installs nothing.
+#   archive        `gz` (one compressed file) or `tar-gz`
+#   binary         the server executable, relative to the unpacked tree. For
+#                  `gz` it is the name the single file is given.
+#
+# The digests below are the ones GitHub publishes for each release asset;
+# linux-x86_64 was also downloaded and hashed when it was pinned.
+
+[[server]]
+name = "rust-analyzer"
+lsp-id = "rust"
+language-id = "rust"
+version = "2026-10-05"
+args = []
+file-patterns = ["*.rs"]
+root-markers = ["Cargo.toml", "rust-project.json", ".git"]
+
+[server.platform.linux-x86_64]
+url = "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-05/rust-analyzer-x86_64-unknown-linux-gnu.gz"
+sha256 = "28070188df63b6f217768040781decc8db43bc9d29b126847acb365575b09bc9"
+archive = "gz"
+binary = "rust-analyzer"
+
+[server.platform.linux-aarch64]
+url = "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-05/rust-analyzer-aarch64-unknown-linux-gnu.gz"
+sha256 = "3974c863acbbd96ef2cc02a7aaa79123935b05f27ffe4fd393fc229522f75cb9"
+archive = "gz"
+binary = "rust-analyzer"
+
+[server.platform.macos-x86_64]
+url = "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-05/rust-analyzer-x86_64-apple-darwin.gz"
+sha256 = "32400dfe2b1472fff9689e063dbb80b8c90e0d4f883af49de7abbba3f2e20705"
+archive = "gz"
+binary = "rust-analyzer"
+
+[server.platform.macos-aarch64]
+url = "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-05/rust-analyzer-aarch64-apple-darwin.gz"
+sha256 = "64d3f6b8aacd94a93a03298d7988dfa0c747f8a4fcc539a4e59d9c9f920ca62f"
+archive = "gz"
+binary = "rust-analyzer"

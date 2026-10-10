@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0 ✅ (LH.0.1–LH.0.7); LH.1 next.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅ (LH.0.1–LH.0.7); LH.1.1 ✅; LH.1.2 next.** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -202,29 +202,77 @@ its instance id. **Seen red:** with the old comparison restored, three of the
 four fail — including the fixture's own job, which had only ever passed because
 the two numbers were both `0`.
 
-### LH.1 — the lighthouse plugin  📝
+### LH.1 — the lighthouse plugin  🚧
 The core WASM Component plugin consuming LH.0. Crate `plugins/lighthouse/`.
 
-#### LH.1.1 — crate scaffold + registry + install core  📝
-The guest crate (`wasm32-wasip2`, `plugin.toml` requesting
-`net:http:<registry-hosts>` + `proc:spawn`, and no `fs:` grant — LH.0.6); a
-compiled-in `registry.toml` (per server × platform: pinned version, URL,
-SHA-256, archive kind + binary path, or a package-manager `recipe`); the
-download → extract → lay down
-`<data-dir>/lsp/<name>/<version>/` state machine, driven by
-events. **Exit:** given a registry entry, the core produces a versioned install
-tree; a tampered SHA ends in a reported failure with no partial tree.
+#### LH.1.1 — the crate, the registry, and `:lsp-install`  ✅
+Re-carved when it started: the July carving ended this slice at "the core
+produces a tree" with no command to run it, which could only have been tested
+against a fake. `:lsp-install` and its output buffer moved here from LH.1.2 so
+the slice ends at something the real host can be made to do. **Exit:**
+`:lsp-install <server>` produces a versioned install tree and reports each step
+in `*lsp-install:<server>*`; a download that fails its SHA-256 ends in a
+reported failure with no partial tree.
 
-#### LH.1.2 — commands, the `*lsp-install:<server>*` buffer, registration  📝
-`:lsp-install` / `:lsp-update` / `:lsp-update-all` / `:lsp-uninstall`; each
-returns at once. The plugin opens `*lsp-install:<server>*`
-(`effect.open-synthetic-buffer`, mode `plugin-output-mode`), writes a line per
-event with `output-append`, and keeps status in the headerline with
-`output-status`; a failure's message lands in the buffer. On success,
-`register-server` a config whose `command` is the managed binary. Update is
-install-new → verify → flip registration → GC old. **Exit:** `:lsp-install rust-analyzer` on a machine
-without it → progress is visible live with no keypress, and a `.rs` buffer then
-gets diagnostics with no `PATH` entry; `:lsp-uninstall` reverses it.
+**Landed.** `plugins/lighthouse/` and the `lighthouse-plugin` world (grammar +
+events).
+
+- `registry.rs` — `registry.toml`, compiled in, with **rust-analyzer
+  2026-10-05** for linux and macOS on x86_64 and aarch64 (digests as GitHub
+  publishes them; linux-x86_64 downloaded and hashed when pinned). Everything
+  is validated on parse, by server and field: names and versions are one path
+  component, `binary` stays inside the tree, the digest is mandatory, URLs are
+  https. A user's `registry.toml` in the data directory is laid over it — add
+  a server, or replace a bundled one by name; a broken overlay costs only
+  itself. 13 tests, one of which pins that every bundled download host has its
+  `net:http:` line in `plugin.toml`.
+- `install.rs` — the state machine, written against a `Host` trait so every
+  failure branch runs under `cargo test`. Work happens under
+  `<version>.partial/` and `<version>.download` and one rename puts the tree
+  in place, so an installed directory existing *means* the install finished.
+  Scratch names left by an editor exit are swept at startup. 17 tests.
+- `lib.rs` — the adapter, and one decision: **the command does no work.** It
+  validates, publishes a `lighthouse.request` event and opens the buffer; the
+  events instance installs. So a job is started and stepped by one instance
+  (its in-flight table is plain memory), and its `job-finished` is queued
+  behind the call that started it. It also keeps WASI file calls off the
+  grammar instance, where they cannot be driven — found by the first run of
+  the end-to-end test, which panicked on exactly that.
+- `tests/lighthouse_install.rs` (in `lattice-plugin-host`) — 5 tests through
+  the shipped component as the loader stands it up, installing a script served
+  from loopback: the happy path down to running the installed binary; a digest
+  mismatch; an unreachable server and a successful retry; an unknown name; the
+  startup sweep.
+
+**Not done here, on purpose:** package-manager `recipe` installs (no registry
+entry needs one yet — `spawn-process` is ready for it; LH.1.2b below), and a
+server-name completion for the argument.
+
+**Gap, pre-existing and now larger:** a plugin's own unit tests (30 here) run
+with `cargo test` in the plugin's directory and are **not run by CI or by
+`scripts/precommit.sh`** — true of `project`'s too. CI compiles the plugin and
+runs the end-to-end test; the fake-host suite is by hand.
+
+#### LH.1.2 — registration, `:lsp-uninstall`, `:lsp-update`  📝
+What makes an installed server *used*. On a successful install,
+`register-server` a config whose `command` is the managed binary (by host
+path, from `data-dir`); at startup, re-register everything recorded as
+installed, so a server survives a restart. `:lsp-uninstall <server>` removes
+the tree and the registration. `:lsp-update <server>` / `:lsp-update-all`
+install the registry's pin when it differs from what is installed, then drop
+the old version's tree — install-new → verify → flip registration → GC old.
+Registrations live on the events instance (they last as long as the instance
+that made them), so uninstall is a request event like install. **Exit:**
+`:lsp-install rust-analyzer` on a machine without it → a `.rs` buffer opened
+afterwards runs the managed binary with no `PATH` entry, and still does after
+a restart; `:lsp-uninstall` reverses it.
+
+#### LH.1.2b — package-manager `recipe` installs  ⛔
+A registry entry that names a command to run (`npm install --prefix …`)
+instead of a URL, through `spawn-process`, its output streamed into the same
+buffer. Deferred until a server that needs it is added to the registry: the
+seam exists and is tested (LH.0.3), and an install path with no entry that
+exercises it is untested code that looks finished.
 
 #### LH.1.3 — the `:lsp-servers` manager view  📝
 A read-only buffer listing every registry server, its installed version and

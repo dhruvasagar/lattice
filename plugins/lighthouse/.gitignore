@@ -1,0 +1,3 @@
+# Build artifacts of the standalone plugin guest (its own workspace target/).
+# The .wasm is rebuilt by the host crate's build.rs; never commit it.
+/target

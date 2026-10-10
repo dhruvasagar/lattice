@@ -3,7 +3,7 @@
 
 # Lattice Plugin API
 
-The plugin API is the WIT package `lattice:plugin-host@0.2.0` — 31 interfaces ("seams") and 25 worlds. It is the whole contract: a plugin written in any language with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees exactly what is on these pages and nothing else. This reference is generated from the `.wit` files in `crates/lattice-wit/wit/`, so it cannot disagree with them.
+The plugin API is the WIT package `lattice:plugin-host@0.2.0` — 31 interfaces ("seams") and 26 worlds. It is the whole contract: a plugin written in any language with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees exactly what is on these pages and nothing else. This reference is generated from the `.wit` files in `crates/lattice-wit/wit/`, so it cannot disagree with them.
 
 New to writing plugins? Start with the [plugin authoring guide](../../dev/guides/plugin-authoring.md), then come back here for the detail. The same reference in machine-readable form — every seam, signature, type and member — is `docs/dev/reference/plugin-api.json` in the repository and `/plugin-api.json` on the documentation site.
 
@@ -16,7 +16,7 @@ New to writing plugins? Start with the [plugin authoring guide](../../dev/guides
 - **Errors** are `result<T, string>`: an `err` carries a message the host surfaces to the user, so it should say what went wrong.
 - **WIT to Rust** (wit-bindgen): kebab-case becomes `snake_case` for functions and fields and `UpperCamelCase` for types; `list<T>` is `Vec<T>`, `option<T>` is `Option<T>`, `result<T, E>` is `Result<T, E>`, `borrow<r>` is `&R`.
 
-## Worlds (25)
+## Worlds (26)
 
 Each world's entry points — the `register-*` functions the host calls on load — are on the [worlds page](plugin-api/worlds.md).
 
@@ -35,6 +35,7 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`help-plugin`](plugin-api/worlds.md#world-help-plugin) | `register-help-topics` | [`help`](plugin-api/help.md), [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md) |
 | [`keymap-plugin`](plugin-api/worlds.md#world-keymap-plugin) | `register-keymap` | [`keymap`](plugin-api/keymap.md), [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md) |
 | [`language-plugin`](plugin-api/worlds.md#world-language-plugin) | `register-languages` | [`language`](plugin-api/language.md), [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md) |
+| [`lighthouse-plugin`](plugin-api/worlds.md#world-lighthouse-plugin) | [`grammar-callbacks`](plugin-api/grammar-callbacks.md); `register-grammar`, `register-events`, `on-event`, `on-wake` | [`buffer`](plugin-api/buffer.md), [`events`](plugin-api/events.md), [`grammar`](plugin-api/grammar.md), [`host-services`](plugin-api/host-services.md), [`tree-sitter`](plugin-api/tree-sitter.md), [`types`](plugin-api/types.md) |
 | [`media-plugin`](plugin-api/worlds.md#world-media-plugin) | [`media`](plugin-api/media.md) | [`host-services`](plugin-api/host-services.md), [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md), [`types`](plugin-api/types.md) |
 | [`modes-plugin`](plugin-api/worlds.md#world-modes-plugin) | `register-modes` | [`logging`](plugin-api/logging.md), [`modes`](plugin-api/modes.md), [`project`](plugin-api/project.md) |
 | [`multibuffer-view-plugin`](plugin-api/worlds.md#world-multibuffer-view-plugin) | [`multibuffer-view-source`](plugin-api/multibuffer-view-source.md); `register-multibuffer-views` | [`host-services`](plugin-api/host-services.md), [`logging`](plugin-api/logging.md), [`multibuffer-view-registry`](plugin-api/multibuffer-view-registry.md), [`project`](plugin-api/project.md), [`types`](plugin-api/types.md) |

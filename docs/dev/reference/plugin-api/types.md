@@ -3,7 +3,7 @@
 
 # `types`
 
-**Direction:** shared types only (not called directly) · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `completion-source-plugin` (imports), `context-plugin` (imports), `decorations-plugin` (imports), `events-plugin` (imports), `grammar-plugin` (imports), `media-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `project-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `transient-source-plugin` (imports), `treesitter-context-plugin` (imports)
+**Direction:** shared types only (not called directly) · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `completion-source-plugin` (imports), `context-plugin` (imports), `decorations-plugin` (imports), `events-plugin` (imports), `grammar-plugin` (imports), `lighthouse-plugin` (imports), `media-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `project-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `transient-source-plugin` (imports), `treesitter-context-plugin` (imports)
 
 Shared boundary records/variants — the owned, WIT-serializable mirrors of
 the native grammar + picker/completion types (plugin-host.md §4). Every

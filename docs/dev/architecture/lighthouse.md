@@ -428,12 +428,45 @@ needs it, and a reach nobody uses is only surface.
 ## 4. The bundled server registry
 
 A `registry.toml` compiled into the plugin: per server, per platform
-(`os`-`arch`), the pinned version, download URL, SHA-256, and either a
-`binary` path inside the archive or a `recipe` (package-manager command). SHA
-pinning is mandatory — a mismatch aborts the install (supply-chain integrity),
-enforced by the download seam itself (§3.1).
+(`os`-`arch`), the pinned version, download URL, SHA-256, archive kind and the
+`binary` path inside it. (A package-manager `recipe` is planned and not built —
+slice plan LH.1.2b.) SHA pinning is mandatory — a mismatch aborts the install
+(supply-chain integrity), enforced by the download seam itself (§3.1).
 Adding a server is a registry edit, not code. The registry is the plugin's data;
 the host never interprets it.
+
+**Validated on parse, every field.** Each one ends up somewhere it could do
+harm: `name` and `version` become directory names, `binary` becomes a path
+that is marked executable and handed to the editor to run. So a name is one
+path component, a binary path stays inside its tree, a URL is https, and a
+missing or malformed digest is an error naming the server and the field —
+found when the registry is read, not three steps into an install.
+
+**A user overlay.** A `registry.toml` in the plugin's data directory is laid
+over the bundled one: it adds servers, or replaces a bundled one by name (a
+different pin, a private mirror). A broken overlay is skipped and reported; the
+bundled servers are unaffected. The manifest's `net:http:` list is not
+overlaid — a server from a new host still needs its host granted, which for a
+bundled plugin means a build. That is deliberate: the registry is data a user
+can edit, and where the editor may connect is not.
+
+### 4.1 Two instances, one of which does the work
+
+The host instantiates a plugin once per seam, so lighthouse is a grammar
+instance (the ex-commands) and an events instance (`on-event`) that share a
+store, a data directory and no memory. **The command does no work.** It
+validates its argument, publishes a `lighthouse.request` plugin event, and
+returns the effect that opens the buffer. The events instance hears the
+request and runs the install.
+
+- The command returns at once, whatever the network is doing.
+- A job is started and stepped by the same instance, so the table of installs
+  in flight is plain memory, not a store two instances race to update.
+- `job-finished` is queued behind the `on-event` call that started the job, so
+  its id is always recorded before its outcome can arrive.
+- A grammar action cannot make WASI file calls — it runs on the synchronous
+  dispatch path, where they cannot be driven. The install's renames and
+  removes are WASI calls, so they have to be on the events side regardless.
 
 ## 5. Paramount-goal alignment
 

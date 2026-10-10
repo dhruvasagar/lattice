@@ -302,6 +302,21 @@ jobs:
       - name: Install mold linker (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
+      - name: Drop the previous run's criterion data
+        # `rust-cache` restores `target/`, and a `target/criterion/` left
+        # by an earlier run comes back with it — incomplete: the `base/`
+        # directories are there and their `sample.json` is not. Criterion
+        # takes any `base/` as a baseline to compare against, so every
+        # bench logged "Failed to access file .../base/sample.json".
+        #
+        # A fresh run does write `sample.json`, `--quick` included (two
+        # quick runs back to back compare cleanly), so the damage is in
+        # what the cache keeps, not in criterion. Nothing was lost by it:
+        # this job records, it does not compare (shared-runner variance
+        # dwarfs the signal, per the note above). Starting clean makes
+        # that explicit and keeps a deleted bench's numbers out of the
+        # uploaded artifact.
+        run: rm -rf target/criterion
       - name: cargo bench --workspace
         # Quick mode: small sample sizes, ~10x faster than full
         # criterion. Trades p99 fidelity for CI runtime; full runs

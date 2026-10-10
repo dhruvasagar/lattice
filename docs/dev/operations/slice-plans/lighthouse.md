@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0 ✅ (four job/registration seams, output buffers, host facts); LH.1 next.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅ (LH.0.1–LH.0.7); LH.1 next.** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -66,8 +66,9 @@ the plan did not have:
   embedded in Rust source (the scaffold templates, one fixture) and now covers
   it. Publishing the three crates and bumping `lattice-org-plugin`'s pin is
   **LH.3**, held to the end on purpose.
-- **Cancel-by-id is process-wide, scoped by plugin id** — the instance that
-  cancels is not the one that started the job.
+- **Cancel-by-id is process-wide, scoped to the plugin** — the instance that
+  cancels is not the one that started the job. (Scoped by the wrong number
+  until LH.0.7.)
 - **A job requested inside `register-events` is held** until the subscriptions
   are wired. It has a test only because the fixture lingers in
   `register-events`; without that the race is never lost and a host with no
@@ -185,6 +186,21 @@ them — download, extract, set-executable, read, walk, watch — follows withou
 a line of its own. 4 unit tests on the reach (inside; outside, sibling and
 `..`; symlink out; a read-only `fs` grant stays read-only) and
 `tests/host_info_seam.rs` with a real guest.
+
+#### LH.0.7 — jobs report to the plugin, not the seam instance  ✅
+A defect in LH.0.1–LH.0.3, found reading the loader before writing LH.1: job
+events were addressed to the *instance* id of the store that started the job,
+and each seam instance has its own. A job started from an ex-command (grammar
+instance) was addressed to an id the events instance does not have — `ok(id)`,
+then silence. `cancel-job` from the other instance missed the same way.
+
+**Landed.** `PluginHost::job_owner(name)` — one number per plugin name —
+stamped on both stores' emit context; jobs carry it, `cancel-job` is scoped by
+it, and the event actor filters on it. `tests/job_addressing.rs`: 4 tests that
+first hand two other plugins their owner numbers so this plugin's differs from
+its instance id. **Seen red:** with the old comparison restored, three of the
+four fail — including the fixture's own job, which had only ever passed because
+the two numbers were both `0`.
 
 ### LH.1 — the lighthouse plugin  📝
 The core WASM Component plugin consuming LH.0. Crate `plugins/lighthouse/`.

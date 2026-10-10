@@ -611,7 +611,9 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
 
   **Two lifetimes, on purpose.** The guard that cancels on drop lives on the starting
   `PluginState` (unload and quarantine stop a job, as they stop a watch). `cancel-job(id)` goes
-  through a process-wide table scoped by plugin id, because the instance that cancels — a chord, on
+  through a process-wide table scoped by the plugin's **job owner** (one number per plugin name,
+  shared by its seam instances — LH.0.7; not the per-instance plugin id, which is also what job
+  events are addressed by), because the instance that cancels — a chord, on
   the grammar seam — is routinely not the instance that started it, and ids are sequential, so the
   ownership check is all that keeps one plugin off another's job. Cancellation is cooperative: a
   job stops at its next step.

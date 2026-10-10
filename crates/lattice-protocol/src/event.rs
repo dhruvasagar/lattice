@@ -458,7 +458,9 @@ pub enum Event {
     /// publishes none — a consumer must not wait for progress before expecting
     /// [`Self::JobFinished`].
     JobProgress {
-        /// The host-issued numeric plugin id that started the job.
+        /// The job-owner number of the plugin that started the job — one per
+        /// plugin, shared by all its seam instances (not a per-instance
+        /// plugin id; `PluginHost::job_owner`).
         plugin: u32,
         /// The id the host-service returned.
         id: u64,
@@ -476,7 +478,9 @@ pub enum Event {
     /// time, bounded in size, with nothing dropped. Addressed like
     /// [`Self::JobProgress`].
     JobOutput {
-        /// The host-issued numeric plugin id that started the job.
+        /// The job-owner number of the plugin that started the job — one per
+        /// plugin, shared by all its seam instances (not a per-instance
+        /// plugin id; `PluginHost::job_owner`).
         plugin: u32,
         /// The id the host-service returned.
         id: u64,
@@ -489,7 +493,9 @@ pub enum Event {
     ///
     /// Addressed like [`Self::JobProgress`].
     JobFinished {
-        /// The host-issued numeric plugin id that started the job.
+        /// The job-owner number of the plugin that started the job — one per
+        /// plugin, shared by all its seam instances (not a per-instance
+        /// plugin id; `PluginHost::job_owner`).
         plugin: u32,
         /// The id the host-service returned.
         id: u64,

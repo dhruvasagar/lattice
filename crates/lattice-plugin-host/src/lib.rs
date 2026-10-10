@@ -1239,6 +1239,15 @@ struct EventEmitCtx {
     plugin_id: PluginId,
     /// The bus `emit-event` publishes `Event::Plugin` onto.
     bus: Arc<EventBus>,
+    /// LH.0.7: who a host job started here reports to — one number per
+    /// PLUGIN, shared by every seam instance of it
+    /// ([`PluginHost::job_owner`]).
+    ///
+    /// Not `plugin_id`, which is per *instance*: a plugin with a grammar seam
+    /// and an events seam is two stores with two ids. A job started from an
+    /// ex-command runs on the grammar store, and its outcome has to reach
+    /// `on-event`, which is the other one.
+    job_owner: u32,
 }
 
 /// PO.5: what the guest `logging` seam needs to route a `log` call — the plugin's
@@ -1532,7 +1541,7 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         let pending = download_host::prepare(
             &self.grant,
             Arc::clone(&ctx.bus),
-            ctx.plugin_id.0,
+            ctx.job_owner,
             &url,
             &sha256,
             &dest,
@@ -1566,7 +1575,7 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         let pending = extract_host::prepare(
             &self.grant,
             Arc::clone(&ctx.bus),
-            ctx.plugin_id.0,
+            ctx.job_owner,
             &src,
             &dest,
             format,
@@ -1595,7 +1604,7 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         let pending = process_host::prepare(
             &self.grant,
             Arc::clone(&ctx.bus),
-            ctx.plugin_id.0,
+            ctx.job_owner,
             &command,
             args,
             &cwd,
@@ -1739,7 +1748,7 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
             return;
         }
         if let Some(ctx) = &self.event_emit {
-            job::cancel(ctx.plugin_id.0, id);
+            job::cancel(ctx.job_owner, id);
         }
     }
 
@@ -3607,6 +3616,8 @@ pub struct PluginHost {
     // Monotonic source of host-issued `PluginId`s. `&self` methods allocate,
     // so this is atomic.
     next_id: AtomicU32,
+    // LH.0.7: one job-owner number per plugin NAME. See `job_owner`.
+    job_owners: Mutex<std::collections::HashMap<String, u32>>,
     // PO.5: the boundary tracer, so each instantiate/spawn path can stamp a
     // plugin's `PluginState.log_ctx` (the guest `logging` seam routes into it).
     // Set once by the loader (`set_tracer`) after it builds the tracer — the host
@@ -4126,6 +4137,7 @@ impl PluginHost {
             cache,
             data_dir_base: data_dir_base.into(),
             next_id: AtomicU32::new(0),
+            job_owners: Mutex::new(std::collections::HashMap::new()),
             tracer: std::sync::OnceLock::new(),
             project: std::sync::OnceLock::new(),
             cancel: std::sync::OnceLock::new(),
@@ -4393,6 +4405,21 @@ impl PluginHost {
     /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
     pub fn set_modeline(&self, modeline: lattice_mode::ModelineServiceHandle, bus: Arc<EventBus>) {
         let _ = self.ui.set(ui_host::UiCtx { modeline, bus });
+    }
+
+    /// LH.0.7: the number host jobs started by plugin `name` are addressed
+    /// to. The same for every seam instance of that plugin, and for a reload
+    /// of it; never shared between two names.
+    ///
+    /// A separate number space from [`PluginId`]: a job event's `plugin` field
+    /// is only ever compared with another job owner.
+    pub fn job_owner(&self, name: &str) -> u32 {
+        let mut owners = self
+            .job_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next = owners.len() as u32;
+        *owners.entry(name.to_string()).or_insert(next)
     }
 
     /// Allocate the next host-issued [`PluginId`]. Monotonic and unique for the

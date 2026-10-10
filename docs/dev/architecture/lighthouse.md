@@ -107,8 +107,19 @@ seam) — they are separate `Store`s.
 A job is owned by the `PluginState` that started it and is cancelled when that
 state drops (unload, quarantine): mechanism lives where its lifetime matches,
 with no teardown wiring to forget. Cancel **by id** is separate and
-process-wide, scoped by plugin id — the chord that cancels runs on the grammar
+process-wide, scoped to the plugin — the chord that cancels runs on the grammar
 seam and the job it stops was usually started from the events seam.
+
+**"The plugin" is not a plugin id.** Each seam instance has its own host-issued
+id, so a grammar instance and an events instance of one plugin are two numbers.
+Jobs are therefore addressed, and cancel is scoped, by a **job owner**: one
+number per plugin *name*, stamped on every instance of it
+(`PluginHost::job_owner`). LH.0.1–LH.0.3 used the starting instance's id, which
+made the paragraph above false in exactly the case it describes: a job started
+from an ex-command reported to an id no event actor holds, and its outcome was
+dropped. Every test of the time started and heard its job on one instance,
+where the two numbers coincide. LH.0.7 fixed it, with tests that keep them
+apart.
 
 **One event vocabulary for every kind of job**, not a pair of arms per seam:
 

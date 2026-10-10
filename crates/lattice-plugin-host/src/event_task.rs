@@ -327,12 +327,15 @@ impl EventActor {
         {
             return;
         }
-        // LH.0: a host job is addressed the same way, for the same reason —
-        // what a plugin is fetching or running is its own business.
+        // LH.0: a host job is addressed too, for the same reason — what a
+        // plugin is fetching or running is its own business. But to the
+        // PLUGIN, not to this instance (LH.0.7): the job may have been
+        // started by the plugin's grammar instance, from an ex-command, and
+        // this is the instance that has an `on-event` to hear about it.
         if let NativeEvent::JobProgress { plugin, .. }
         | NativeEvent::JobOutput { plugin, .. }
         | NativeEvent::JobFinished { plugin, .. } = &event
-            && *plugin != self.id.0
+            && Some(*plugin) != self.store.data().event_emit.as_ref().map(|c| c.job_owner)
         {
             return;
         }
@@ -480,6 +483,7 @@ impl PluginHost {
         store.data_mut().event_emit = Some(EventEmitCtx {
             plugin_id: id,
             bus: Arc::clone(bus),
+            job_owner: self.job_owner(&manifest.id),
         });
         // PO.5: route this plugin's `logging` calls into the tracer (Layer 2),
         // also before `register-events` — a guest may narrate from there.

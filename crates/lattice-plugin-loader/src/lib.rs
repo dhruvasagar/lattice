@@ -695,6 +695,14 @@ pub struct WiredSeams {
     /// Unwired, every buffer reads as closed, so a capture's write-back into
     /// its caller is skipped with a message blaming a buffer that is open.
     pub buffer_store: bool,
+    /// LH.0.4: whether the HOST carries the editor's language-server
+    /// registrar, which `register-server` forwards to.
+    ///
+    /// Unwired, every registration is refused — a server manager would install
+    /// servers the editor then never starts. The LSP subsystem publishes the
+    /// registrar from its own `install`, so this is a boot-ORDER pin: it goes
+    /// `false` if the loader is ever installed ahead of it.
+    pub language_servers: bool,
 }
 
 impl WiredSeams {
@@ -724,6 +732,7 @@ impl WiredSeams {
             && self.view_args
             && self.view_decoration_epoch
             && self.buffer_store
+            && self.language_servers
     }
 }
 
@@ -1021,6 +1030,7 @@ impl PluginLoader {
             view_args: self.host.view_args_wired(),
             view_decoration_epoch: self.host.decoration_epoch_wired(),
             buffer_store: self.host.buffer_store_wired(),
+            language_servers: self.host.language_server_registrar_wired(),
         }
     }
 

@@ -28,7 +28,7 @@ does — a bounded `walk` covers the fuzzy-finder.
 
 - [`position`](types.md#record-position) from [`types`](types.md)
 
-## Functions (25)
+## Functions (27)
 
 ### `can-write-file`
 
@@ -510,6 +510,56 @@ by name: a re-register refreshes the doc (a plugin reload).
 host_services::register_event(SavedEcho::NAME, SavedEcho::DOC);
 ```
 
+### `register-server`
+
+```wit
+register-server: func(config: server-config) -> result<u64, string>
+```
+
+Tell the editor about a language server, so buffers it handles get one.
+Returns a token for `unregister-server`.
+
+**Gated on `proc:spawn`** — bundled plugins only — because that is what
+this is: `command` is a program the editor will run, unsandboxed, the
+next time a matching buffer opens. A plugin that could register a
+server could run anything.
+
+While registered, the config **shadows** any server the editor already
+had under the same `id`: a managed install replaces the `PATH` lookup
+for its language instead of running beside it. Registering the same
+`id` again shadows the earlier registration, which is how an update
+switches versions.
+
+**Nothing is started or restarted here.** The server is spawned on the
+next buffer open its patterns match; one already running for those
+buffers keeps the program it was started with until it is restarted.
+
+The registration lasts as long as the plugin instance that made it and
+is withdrawn when the plugin unloads, so a plugin that is gone leaves
+no server pointing into its install tree.
+
+`err` for a plugin without the grant, an empty `id` / `command` /
+`language-id`, no `file-patterns`, initialization options that are not
+JSON, or an editor with no language-server support wired — each named.
+
+**Example — Register an installed language server so matching buffers start it** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let config = host_services::ServerConfig {
+    id: id.to_string(),
+    // An absolute path into the install tree — no `PATH` entry
+    // needed, which is the point of managing the install.
+    command: command.to_string(),
+    args: vec!["--stdio".to_string()],
+    env: Vec::new(),
+    root_markers: vec![".git".to_string()],
+    file_patterns: vec![pattern.to_string()],
+    language_id: id.to_string(),
+    initialization_options: None,
+};
+let registered = host_services::register_server(&config);
+```
+
 ### `set-executable`
 
 ```wit
@@ -707,6 +757,22 @@ fn save(list: &[String]) -> Result<(), String> {
 }
 ```
 
+### `unregister-server`
+
+```wit
+unregister-server: func(token: u64)
+```
+
+Withdraw a registration. Whatever it shadowed applies again. A token
+that names nothing — or one another instance of this plugin made — is
+silently nothing.
+
+**Example — Withdraw a server registration by its token, restoring what it shadowed** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+host_services::unregister_server(token);
+```
+
 ### `unwatch`
 
 ```wit
@@ -819,7 +885,41 @@ let outcome = match host_services::watch(target) {
 record(&outcome);
 ```
 
-## Types (2)
+## Types (3)
+
+### record `server-config`
+
+```wit
+record server-config {
+    id: string,
+    command: string,
+    args: list<string>,
+    env: list<tuple<string, string>>,
+    root-markers: list<string>,
+    file-patterns: list<string>,
+    language-id: string,
+    initialization-options: option<string>,
+}
+```
+
+LH.0.4: one language server, as `register-server` takes it.
+
+**Fields**
+
+- `id`: `string` — Stable identifier — by convention the language id (`rust`). While
+  registered, this config **replaces** every server the editor
+  already knew under the same id.
+- `command`: `string` — The program to run. An absolute path into the plugin's managed
+  install tree, typically; a bare name is looked up on `PATH`.
+- `args`: `list<string>` — Arguments, passed verbatim (`--stdio`).
+- `env`: `list<tuple<string, string>>` — Extra environment variables for the server process.
+- `root-markers`: `list<string>` — Workspace-root markers (`Cargo.toml`, `.git`), searched upwards
+  from the buffer's path. Empty: the buffer's own directory.
+- `file-patterns`: `list<string>` — Globs for the files this server handles (`*.rs`). At least one.
+- `language-id`: `string` — The LSP `languageId` sent when a buffer is opened.
+- `initialization-options`: `option<string>` — The server's `initializationOptions`, as JSON text; `none` sends
+  none. JSON as a string because the options are the server's own
+  vocabulary and the host only forwards them.
 
 ### enum `archive-format`
 

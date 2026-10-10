@@ -74,6 +74,13 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         .service::<LspSupervisorHandle>()
         .expect("LspSupervisorHandle registered as a Phase-A service before lattice_lsp::install"))
     .clone();
+    // LH.0.4: publish the supervisor as the editor's language-server registrar,
+    // so a plugin's `register-server` reaches it through a `lattice-mode` trait
+    // and the plugin host never names an LSP type. Registered under the alias
+    // (the registry keys by `TypeId`); the loader looks it up under the same.
+    boot.register_service::<lattice_mode::LanguageServerRegistrarHandle>(std::sync::Arc::new(
+        lsp.clone(),
+    ));
     register_lsp_completion_mode(boot.modes_mut(), lsp);
 
     // ── Off-keystroke wakes ─────────────────────────────────────────────────

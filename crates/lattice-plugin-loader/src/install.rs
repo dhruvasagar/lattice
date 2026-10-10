@@ -155,6 +155,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // owns no runtime by design, so it cannot make one — this crate, which spawns
     // every actor, is where an executor is actually in scope.
     host.set_sleeper(Arc::new(TokioSleeper));
+    // LH.0.4: the LSP subsystem publishes itself as the language-server
+    // registrar (`lattice_lsp::install`, which runs before this). Looked up
+    // under the alias it was registered under.
+    if let Some(registrar) = boot.service::<lattice_mode::LanguageServerRegistrarHandle>() {
+        host.set_language_server_registrar((*registrar).clone());
+    } else {
+        tracing::debug!("language-server registrar unwired: `register-server` will refuse");
+    }
     if let Some(cancel) = boot.service::<lattice_mode::ForegroundCancelHandle>() {
         host.set_foreground_cancel((*cancel).clone());
     } else {

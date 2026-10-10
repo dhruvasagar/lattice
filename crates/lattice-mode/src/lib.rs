@@ -180,6 +180,7 @@ pub mod inbound;
 // (so callers need no direct `lattice-keymap` dep). See
 // `project_keymap_entry_macro_dual_copy` — the former duplicate is gone.
 pub use lattice_keymap::keymap_entry;
+pub mod language_server;
 pub mod locals;
 pub mod mode;
 pub mod modeline;
@@ -255,6 +256,9 @@ pub use crate::decoration_source::{
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::guards::{GuardStore, GuardStoreHandle};
+pub use crate::language_server::{
+    LanguageServerRegistrar, LanguageServerRegistrarHandle, LanguageServerSpec,
+};
 pub use crate::locals::{
     BufferLocal, BufferLocals, BufferScopeDir, BufferScopeSource, BufferScopeSourceRegistry,
     BufferScopeSourceRegistryHandle, LocalDescriptor,

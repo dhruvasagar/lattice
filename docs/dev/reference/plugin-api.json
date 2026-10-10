@@ -2068,6 +2068,31 @@
           ]
         },
         {
+          "name": "register-server",
+          "display_name": "register-server",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "config",
+              "type": "server-config"
+            }
+          ],
+          "result": "result<u64, string>",
+          "signature": "register-server: func(config: server-config) -> result<u64, string>",
+          "doc": "Tell the editor about a language server, so buffers it handles get one.\nReturns a token for `unregister-server`.\n\n**Gated on `proc:spawn`** — bundled plugins only — because that is what\nthis is: `command` is a program the editor will run, unsandboxed, the\nnext time a matching buffer opens. A plugin that could register a\nserver could run anything.\n\nWhile registered, the config **shadows** any server the editor already\nhad under the same `id`: a managed install replaces the `PATH` lookup\nfor its language instead of running beside it. Registering the same\n`id` again shadows the earlier registration, which is how an update\nswitches versions.\n\n**Nothing is started or restarted here.** The server is spawned on the\nnext buffer open its patterns match; one already running for those\nbuffers keeps the program it was started with until it is restarted.\n\nThe registration lasts as long as the plugin instance that made it and\nis withdrawn when the plugin unloads, so a plugin that is gone leaves\nno server pointing into its install tree.\n\n`err` for a plugin without the grant, an empty `id` / `command` /\n`language-id`, no `file-patterns`, initialization options that are not\nJSON, or an editor with no language-server support wired — each named.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.register-server",
+              "caption": "Register an installed language server so matching buffers start it",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let config = host_services::ServerConfig {\n    id: id.to_string(),\n    // An absolute path into the install tree — no `PATH` entry\n    // needed, which is the point of managing the install.\n    command: command.to_string(),\n    args: vec![\"--stdio\".to_string()],\n    env: Vec::new(),\n    root_markers: vec![\".git\".to_string()],\n    file_patterns: vec![pattern.to_string()],\n    language_id: id.to_string(),\n    initialization_options: None,\n};\nlet registered = host_services::register_server(&config);"
+            }
+          ]
+        },
+        {
           "name": "set-executable",
           "display_name": "set-executable",
           "kind": "freestanding",
@@ -2263,6 +2288,31 @@
           ]
         },
         {
+          "name": "unregister-server",
+          "display_name": "unregister-server",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "token",
+              "type": "u64"
+            }
+          ],
+          "result": null,
+          "signature": "unregister-server: func(token: u64)",
+          "doc": "Withdraw a registration. Whatever it shadowed applies again. A token\nthat names nothing — or one another instance of this plugin made — is\nsilently nothing.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.unregister-server",
+              "caption": "Withdraw a server registration by its token, restoring what it shadowed",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "host_services::unregister_server(token);"
+            }
+          ]
+        },
+        {
           "name": "unwatch",
           "display_name": "unwatch",
           "kind": "freestanding",
@@ -2356,6 +2406,55 @@
         }
       ],
       "types": [
+        {
+          "name": "server-config",
+          "kind": "record",
+          "doc": "LH.0.4: one language server, as `register-server` takes it.",
+          "definition": "record server-config {\n    id: string,\n    command: string,\n    args: list<string>,\n    env: list<tuple<string, string>>,\n    root-markers: list<string>,\n    file-patterns: list<string>,\n    language-id: string,\n    initialization-options: option<string>,\n}",
+          "members": [
+            {
+              "name": "id",
+              "type": "string",
+              "doc": "Stable identifier — by convention the language id (`rust`). While\nregistered, this config **replaces** every server the editor\nalready knew under the same id."
+            },
+            {
+              "name": "command",
+              "type": "string",
+              "doc": "The program to run. An absolute path into the plugin's managed\ninstall tree, typically; a bare name is looked up on `PATH`."
+            },
+            {
+              "name": "args",
+              "type": "list<string>",
+              "doc": "Arguments, passed verbatim (`--stdio`)."
+            },
+            {
+              "name": "env",
+              "type": "list<tuple<string, string>>",
+              "doc": "Extra environment variables for the server process."
+            },
+            {
+              "name": "root-markers",
+              "type": "list<string>",
+              "doc": "Workspace-root markers (`Cargo.toml`, `.git`), searched upwards\nfrom the buffer's path. Empty: the buffer's own directory."
+            },
+            {
+              "name": "file-patterns",
+              "type": "list<string>",
+              "doc": "Globs for the files this server handles (`*.rs`). At least one."
+            },
+            {
+              "name": "language-id",
+              "type": "string",
+              "doc": "The LSP `languageId` sent when a buffer is opened."
+            },
+            {
+              "name": "initialization-options",
+              "type": "option<string>",
+              "doc": "The server's `initializationOptions`, as JSON text; `none` sends\nnone. JSON as a string because the options are the server's own\nvocabulary and the host only forwards them."
+            }
+          ],
+          "examples": []
+        },
         {
           "name": "archive-format",
           "kind": "enum",

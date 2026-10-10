@@ -663,6 +663,23 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   promptly and orphans whatever it started, which is why the test asserts the *grandchild* is
   gone rather than that the job ended. The group is signalled through `kill(1)`, not
   `libc::kill`: the crate denies `unsafe`, and one short-lived process on a cancel is the price.
+- **Language servers (✅ LH.0.4)**: `host-services.register-server(server-config) -> result<u64, string>`
+  / `unregister-server(token)` ([`lighthouse.md`](lighthouse.md) §3.4) — how a plugin that installed
+  a server tells the editor to use it.
+
+  **Gated on `proc:spawn`**, deliberately not on the `LSP` editor capability: the config's
+  `command` is a program the editor runs on the next matching buffer open, so registering is
+  spawning at one remove.
+
+  **The host does not depend on `lattice-lsp`.** The seam forwards to a
+  `lattice_mode::LanguageServerRegistrar` service; the LSP subsystem implements and registers it
+  from its own `install`, the loader hands it to the host (pinned in `WiredSeams::language_servers`,
+  a boot-order pin). A registration shadows same-`id` boot-time configs and restores them when
+  withdrawn; nothing is started or restarted by registering.
+
+  **Withdrawn with the instance.** The registration is a guard on the guest's `Store`, as a watch
+  is — and `unregister-server` only finds tokens that store made, so a guessed token cannot
+  withdraw another plugin's server.
 - **Host-minted ids (✅ OR.3)**: `host-services.new-uuid() -> result<string, string>`, a random
   (v4) UUID, uppercase, canonical `8-4-4-4-12`.
 

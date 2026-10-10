@@ -815,6 +815,28 @@ let outcome = match host_services::spawn_process(command, &args, "") {
 record(&outcome);
 ```
 
+Having installed a language server, a bundled plugin tells the editor to use
+it. The registration replaces any server the editor already knew under the same
+id, starts nothing by itself — the next matching buffer does — and is withdrawn
+automatically when the plugin unloads:
+
+<!-- example: events-guest:host-services.register-server -->
+```rust
+let config = host_services::ServerConfig {
+    id: id.to_string(),
+    // An absolute path into the install tree — no `PATH` entry
+    // needed, which is the point of managing the install.
+    command: command.to_string(),
+    args: vec!["--stdio".to_string()],
+    env: Vec::new(),
+    root_markers: vec![".git".to_string()],
+    file_patterns: vec![pattern.to_string()],
+    language_id: id.to_string(),
+    initialization_options: None,
+};
+let registered = host_services::register_server(&config);
+```
+
 ## Reading the buffer and the syntax tree
 
 Callbacks that need text get a `borrow<document>`: a snapshot, so a

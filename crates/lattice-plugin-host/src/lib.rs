@@ -1195,6 +1195,16 @@ struct PluginState {
     /// channel closing — stops every watch with no bookkeeping anyone can
     /// forget to write. `unwatch` is then a `remove` on this map.
     watches: std::collections::HashMap<PathBuf, watch_host::Watch>,
+    /// LH.0.4: the editor's language-server registrar, stamped per store.
+    /// `None` on a host nothing wired one into — `register-server` then
+    /// refuses, by name.
+    language_servers: Option<lattice_mode::LanguageServerRegistrarHandle>,
+    /// LH.0.4: the servers this guest registered.
+    ///
+    /// On the `Store`, as `watches` are: dropping a registration withdraws it,
+    /// so a plugin that is unloaded or quarantined leaves no server pointing
+    /// into an install tree nobody manages any more.
+    server_registrations: Vec<ServerRegistration>,
     /// LH.0: the host jobs this guest started that may still be running.
     ///
     /// On the `Store` for `watches`' reason — dropping a guard cancels its
@@ -1254,6 +1264,19 @@ impl WasiView for PluginState {
 /// omits the outer `wasmtime::Result`. Walk logic + the capability gate live in
 /// [`host_services::walk_within_grant`]; the impl just forwards with the Store's
 /// grant.
+/// LH.0.4: one registered language server. Dropping it withdraws the
+/// registration.
+struct ServerRegistration {
+    token: u64,
+    registrar: lattice_mode::LanguageServerRegistrarHandle,
+}
+
+impl Drop for ServerRegistration {
+    fn drop(&mut self) {
+        self.registrar.unregister(self.token);
+    }
+}
+
 impl PluginState {
     /// LH.0: start a validated host job and return its id — or, inside
     /// `register-events`, hold it until the subscriptions that will hear its
@@ -1556,6 +1579,72 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
             &cwd,
         )?;
         Ok(self.launch_job(pending))
+    }
+
+    /// LH.0.4 `register-server`. Gated on `proc:spawn`: registering a command
+    /// the editor will run IS spawning it, one buffer-open later.
+    fn register_server(
+        &mut self,
+        config: crate::lattice::plugin_host::host_services::ServerConfig,
+    ) -> Result<u64, String> {
+        if !self.grant.proc_spawn {
+            // info!: user-actionable (a plugin was denied a capability).
+            tracing::info!(
+                server = %config.id,
+                "host-services register-server denied: plugin has no proc:spawn grant"
+            );
+            return Err(format!(
+                "register-server denied: '{}' — registering a server makes the editor run \
+                 its command, which needs the `proc:spawn` grant (bundled plugins only)",
+                config.id
+            ));
+        }
+        for (field, value) in [
+            ("id", &config.id),
+            ("command", &config.command),
+            ("language-id", &config.language_id),
+        ] {
+            if value.is_empty() {
+                return Err(format!("register-server failed: `{field}` is empty"));
+            }
+        }
+        if config.file_patterns.is_empty() {
+            return Err(format!(
+                "register-server failed: '{}' has no file patterns, so no buffer would \
+                 ever start it",
+                config.id
+            ));
+        }
+        let Some(registrar) = self.language_servers.clone() else {
+            return Err(format!(
+                "register-server failed: '{}' — this editor has no language-server \
+                 support wired",
+                config.id
+            ));
+        };
+        let token = registrar
+            .register(lattice_mode::LanguageServerSpec {
+                id: config.id,
+                command: PathBuf::from(config.command),
+                args: config.args,
+                env: config.env,
+                root_markers: config.root_markers,
+                file_patterns: config.file_patterns,
+                language_id: config.language_id,
+                initialization_options: config.initialization_options,
+            })
+            .map_err(|e| format!("register-server failed: {e}"))?;
+        self.server_registrations
+            .push(ServerRegistration { token, registrar });
+        Ok(token)
+    }
+
+    /// LH.0.4 `unregister-server`. Only a registration THIS instance made: the
+    /// token is looked up in this store, so one plugin cannot withdraw
+    /// another's server by guessing a number.
+    fn unregister_server(&mut self, token: u64) {
+        // The drop is the unregister.
+        self.server_registrations.retain(|r| r.token != token);
     }
 
     /// LH.0.2 `set-executable`. Immediate; gated on `fs:write`.
@@ -3491,6 +3580,9 @@ pub struct PluginHost {
     decoration_epoch: std::sync::OnceLock<lattice_mode::DecorationEpochHandle>,
     /// CD.6b: the buffer store, for `clamp-position`.
     buffers: std::sync::OnceLock<lattice_mode::BufferStoreHandle>,
+    // LH.0.4: the editor's language-server registrar, when it has one. Set-once
+    // through the shared `Arc`, like its neighbours.
+    language_servers: std::sync::OnceLock<lattice_mode::LanguageServerRegistrarHandle>,
     // OC.3 / ML.6: what the `ui` seam acts on — the modeline element registry
     // and the bus content updates publish onto. Both halves are required (a
     // registry with no bus registers descriptors nothing ever repaints), so
@@ -3964,6 +4056,7 @@ impl PluginHost {
             view_args: std::sync::OnceLock::new(),
             decoration_epoch: std::sync::OnceLock::new(),
             buffers: std::sync::OnceLock::new(),
+            language_servers: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
             stores: Mutex::new(std::collections::HashMap::new()),
             _epoch_ticker: epoch_ticker,
@@ -4136,6 +4229,26 @@ impl PluginHost {
     /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
     pub fn set_buffer_store(&self, buffers: lattice_mode::BufferStoreHandle) {
         let _ = self.buffers.set(buffers);
+    }
+
+    /// LH.0.4: hand the host the editor's language-server registrar, which
+    /// `register-server` forwards to.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_language_server_registrar(
+        &self,
+        registrar: lattice_mode::LanguageServerRegistrarHandle,
+    ) {
+        let _ = self.language_servers.set(registrar);
+    }
+
+    /// LH.0.4: whether a registrar was ever wired.
+    ///
+    /// Pinned at boot for `view_args_wired`'s reason: unwired,
+    /// `register-server` refuses every call, and a server manager would
+    /// install servers the editor then never starts.
+    pub fn language_server_registrar_wired(&self) -> bool {
+        self.language_servers.get().is_some()
     }
 
     /// CD.6b: whether a buffer store was ever wired.
@@ -4383,6 +4496,8 @@ impl PluginHost {
             // GRAMMAR store is the one that needs it: a capture commits from a
             // chord, and that is where the caller's extent is asked.
             buffers: self.buffers.get().cloned(),
+            language_servers: self.language_servers.get().cloned(),
+            server_registrations: Vec::new(),
             // PH7.8c: opened by `spawn_event_plugin` around `register-events`
             // and closed by its flush. Every other seam publishes straight
             // through, which is what `None` means.

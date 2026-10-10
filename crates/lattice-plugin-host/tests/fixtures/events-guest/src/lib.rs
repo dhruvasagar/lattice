@@ -138,6 +138,13 @@ const EXTRACT_REQUEST: &str = "/data/extract-request";
 /// program, each further line one argument.
 const SPAWN_REQUEST: &str = "/data/spawn-request";
 
+/// LH.0.4. Present ⇒ register a language server from `register-events`. Three
+/// lines: the server id, the command, and one file pattern.
+const SERVER_REQUEST: &str = "/data/server-request";
+
+/// LH.0.4. Present as well ⇒ withdraw that registration straight away.
+const SERVER_WITHDRAW: &str = "/data/server-withdraw";
+
 /// PH7.8c: present ⇒ ring our own doorbell from `register-events`. A marker
 /// file rather than an unconditional emit, so only the test that is about this
 /// behaviour pays for it.
@@ -296,6 +303,40 @@ impl Guest for Component {
             };
             record(&outcome);
             // @end-example
+        }
+        // LH.0.4: register a language server, if the test asked for one.
+        if let Ok(request) = std::fs::read_to_string(SERVER_REQUEST) {
+            let mut lines = request.lines();
+            let (id, command, pattern) = (
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+            );
+            // @example host-services.register-server: Register an installed language server so matching buffers start it
+            let config = host_services::ServerConfig {
+                id: id.to_string(),
+                // An absolute path into the install tree — no `PATH` entry
+                // needed, which is the point of managing the install.
+                command: command.to_string(),
+                args: vec!["--stdio".to_string()],
+                env: Vec::new(),
+                root_markers: vec![".git".to_string()],
+                file_patterns: vec![pattern.to_string()],
+                language_id: id.to_string(),
+                initialization_options: None,
+            };
+            let registered = host_services::register_server(&config);
+            // @end-example
+            match &registered {
+                Ok(_token) => record("register:ok"),
+                Err(e) => record(&format!("register:err({e})")),
+            }
+            if let (Ok(token), true) = (registered, std::fs::metadata(SERVER_WITHDRAW).is_ok()) {
+                // @example host-services.unregister-server: Withdraw a server registration by its token, restoring what it shadowed
+                host_services::unregister_server(token);
+                // @end-example
+                record("unregister:done");
+            }
         }
     }
 

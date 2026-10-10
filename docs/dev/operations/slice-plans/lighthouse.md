@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0.1–LH.0.3 ✅; LH.0.4 next.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅ (all four host seams); LH.1 next.** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -115,14 +115,30 @@ either way), so it now asserts the grandchild is gone. `lattice-compilation`'s
 runner was checked and not reused: it is `:compile`'s own (shell cmdline,
 error parsing, `unsafe` libc), not a plain "run argv, stream lines".
 
-#### LH.0.4 — `register-server` / `unregister-server`  📝
+#### LH.0.4 — `register-server` / `unregister-server`  ✅
 A `server-config` WIT record mirroring `lattice_lsp::config::ServerConfig`;
-`register-server` mutates the native `LspSupervisor`'s config map,
-`unregister-server(token)` reverses it, and plugin unload reverses it too (the
-teardown-token pattern). **Open at slice start:** how `lattice-plugin-host`
-reaches the supervisor — it has no `lattice-lsp` dependency today, so this is a
-host-wired service/trait rather than a direct call. **Exit:** register → a
-matching buffer open spawns that server → unregister → it does not.
+`register-server` adds it to the running `LspSupervisor`, `unregister-server`
+reverses it, and so does the plugin instance going away. **Exit:** register → a
+matching buffer open runs that server → unregister → it does not.
+
+**Landed.** Three layers, each tested where it lives:
+
+- `lattice-lsp`: the supervisor could only be configured **before** it was
+  spawned — the handle exposed no way to add a config. It now keeps boot-time
+  configs and runtime registrations apart (`RegisterConfig` / `UnregisterConfig`
+  commands, fire-and-forget). 7 tests, one of which runs a marker script as the
+  "server" to prove the registered binary is the one reached for.
+- `lattice-mode`: `LanguageServerRegistrar` + `LanguageServerSpec`, the answer
+  to the question this slice opened with. `lattice-lsp` implements and registers
+  it from its own `install`; **`lattice-host` is untouched**.
+- `lattice-plugin-host`: the seam, gated on **`proc:spawn`** (not an LSP
+  capability — registering a command is spawning it one buffer-open later).
+  `tests/register_server_seam.rs`, 4 tests against a recording registrar, both
+  trust tiers. `WiredSeams::language_servers` pins the boot order.
+
+Semantics settled here: a registration **shadows** same-`id` configs rather than
+adding beside them; the newest registration for an id wins; nothing is started
+or restarted by registering.
 
 ### LH.1 — the lighthouse plugin  📝
 The core WASM Component plugin consuming LH.0. Crate `plugins/lighthouse/`.

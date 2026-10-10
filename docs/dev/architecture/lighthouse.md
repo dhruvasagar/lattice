@@ -246,19 +246,51 @@ it owns (§2) and the three calls have nothing left to do.
 ### 3.4 `register-server` — mutate the supervisor from WIT
 
 ```wit
-/// Register (or replace) a ServerConfig from a plugin. `command` points at the
-/// managed install tree; the native LspSupervisor then spawns it on the next
-/// matching buffer open. Returns a token the plugin drops (or `unregister`s) on
-/// uninstall — the teardown-token pattern.
-register-server: func(config: server-config) -> result<server-token, string>;
-unregister-server: func(token: server-token);
+record server-config {
+	id: string, command: string, args: list<string>,
+	env: list<tuple<string, string>>, root-markers: list<string>,
+	file-patterns: list<string>, language-id: string,
+	initialization-options: option<string>,   // JSON text
+}
+
+/// Tell the editor about a language server. Returns a token.
+register-server: func(config: server-config) -> result<u64, string>;
+unregister-server: func(token: u64);
 ```
 
-`server-config` mirrors `lattice_lsp::config::ServerConfig` (name / command /
-args / env / root-markers / file-patterns / language-id / init-options) as a WIT
-record. The supervisor already keys servers by config; the seam is a
-capability-gated mutation of that map (the grammar/config registry-mutation
-precedent). This is the only piece that touches `lattice-lsp`.
+`server-config` mirrors `lattice_lsp::config::ServerConfig` field for field.
+
+**Gated on `proc:spawn`, not on an LSP capability.** `command` is a program the
+editor will run, unsandboxed, the next time a matching buffer opens — so
+registering a server *is* spawning, one buffer-open later, and a plugin that
+could do the one could do the other. Bundled plugins only, like §3.3.
+
+**A registration shadows; it does not add.** While registered, the config
+replaces every server the editor already had under the same `id`: a managed
+rust-analyzer supersedes the `PATH` lookup instead of running beside it and
+doubling every diagnostic. A second registration for the same `id` shadows the
+first, which is how an update switches versions and how a failed one rolls back
+(§2). Unregistering restores exactly what was shadowed, because the supervisor
+keeps boot-time configs and runtime registrations apart and recomputes the
+effective list on each change.
+
+**Nothing is started or restarted.** The config applies from the next matching
+buffer open; a server already running keeps the program it was started with
+until it is restarted. Registration is a fire-and-forget message to the
+supervisor's task — it can arrive on the dispatch thread — visible on the next
+snapshot.
+
+**A registration lives as long as the plugin instance that made it** and is
+withdrawn when that instance drops, so an unloaded server manager leaves no
+server pointing into an install tree nobody manages. The teardown-token
+pattern, with the guard on the `Store` as a watch's is.
+
+**How the plugin host reaches the supervisor without depending on it:** a
+`LanguageServerRegistrar` trait in `lattice-mode`, which both sides already
+depend on. `lattice-lsp` implements it over its supervisor handle and registers
+it as a service from its own `install`; the plugin loader looks the service up
+and hands it to the host. `lattice-host` is not involved, and this is the only
+piece of lighthouse that touches `lattice-lsp`.
 
 ## 4. The bundled server registry
 

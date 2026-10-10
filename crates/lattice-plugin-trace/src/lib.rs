@@ -21,6 +21,12 @@
 //! The per-plugin `*plugin-trace:<name>*` view + the `:plugins` manager `t`
 //! drill-in land in PO.4.2; the live `plugin.trace-level` option in PO.4.3.
 //!
+//! LH.0.5 added the trace view's twin, `plugin-output-mode` (`output.rs`): the
+//! same seed-then-tail drain over a different store — text a plugin wrote
+//! (`host-services.output-append`) instead of calls the host observed. It has
+//! no ex-command; a plugin opens its own buffer. Design:
+//! `docs/dev/architecture/lighthouse.md` §3.5.
+//!
 //! Design: `docs/dev/architecture/plugin-observability.md` §6.
 
 use std::sync::Arc;
@@ -30,12 +36,14 @@ use lattice_mode::SubsystemBoot;
 
 mod format;
 mod mode;
+mod output;
 
 pub use format::{
     SHARED_BUFFER_NAME, TRACE_MODE_ID, format_trace_line, parse_per_plugin_name,
     per_plugin_buffer_name,
 };
 pub use mode::PluginTraceMode;
+pub use output::{OUTPUT_MODE_ID, OutputLanded, OutputWakeHandle, PluginOutputMode};
 
 /// Install the plugin-trace views: register `plugin-trace-mode` + the
 /// `:plugin-trace` ex-command. Seated in the host's Phase-B install list (before
@@ -50,6 +58,19 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(PluginTraceMode)
         .expect("plugin-trace-mode registers without conflict");
+
+    // LH.0.5: the mode of a plugin's output buffer (`output-append`). It has
+    // no ex-command — a plugin opens its own buffer with the ordinary
+    // `open-synthetic-buffer` effect naming this mode.
+    boot.modes_mut()
+        .register(PluginOutputMode)
+        .expect("plugin-output-mode registers without conflict");
+    // The drain writes off-thread; this is what gets the write painted
+    // without a keypress. The wake is baked into `InboundBus::send`, and
+    // there is nothing for the host to apply — the text is already in the
+    // buffer and the headerline already has its new version.
+    let wake = boot.inbound::<OutputLanded, _>(|_| Vec::new());
+    boot.register_service::<OutputWakeHandle>(Arc::new(wake));
 
     boot.commands_mut().register_ex_command(
         "plugin-trace",

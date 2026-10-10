@@ -53,9 +53,10 @@ native subsystem from WIT — which a trivial plugin never exercises.
   (if any), and health. (The everything-is-a-buffer manager surface, the
   `:plugins` view precedent.)
 
-**`*lsp-install:<server>*` is the plugin's buffer**, not the host's: lighthouse
-opens it (`effect.open-synthetic-buffer`), owns its mode, and appends a line per
-host event. The name follows `*lsp-log*` (dash) rather than `*lsp:<lang>:<root>*`
+**`*lsp-install:<server>*` is a plugin output buffer** (§3.5): lighthouse
+chooses its name, opens it (`effect.open-synthetic-buffer`), and writes every
+line and the headerline; the host's generic `plugin-output-mode` is what puts
+them on screen. The name follows `*lsp-log*` (dash) rather than `*lsp:<lang>:<root>*`
 (colon) on purpose — the colon form is parsed as a server-instance buffer by
 `lattice_lsp::buffer_names`, and an install is not one. Status rides the
 headerline (the async-buffer-status rule).
@@ -292,6 +293,73 @@ it as a service from its own `install`; the plugin loader looks the service up
 and hands it to the host. `lattice-host` is not involved, and this is the only
 piece of lighthouse that touches `lattice-lsp`.
 
+### 3.5 Plugin output buffers — `output-append` / `output-status` / `output-reset`
+
+The four seams above let a plugin start work and hear how it went. None lets it
+*show* that. A job's events arrive in `on-event`, which returns nothing: it
+cannot return an `open-synthetic-buffer` effect, and no host function writes to
+a buffer. The plan assumed otherwise; the gap was found when LH.1 started.
+
+Native streaming buffers already have one shape, and this is it:
+
+```
+producer ──► store (bounded ring) ──► typed event on the bus ──► the mode that
+                                                                 owns the buffer
+```
+
+`*compilation*`, `*messages*`, the LSP logs and `*plugin-trace*` are all this.
+The producer never holds a buffer; the mode, in `on_activate`, seeds from the
+store, subscribes, and drains off-thread into its own document.
+
+So a plugin gets the producer's end, and nothing else:
+
+```wit
+output-append: func(name: string, lines: list<string>) -> result<_, string>;
+output-status: func(name: string, state: output-state, text: string) -> result<_, string>;
+output-reset:  func(name: string) -> result<_, string>;
+```
+
+- **The store** (`lattice-plugin-host::output`) keeps, per buffer name, the last
+  10 000 lines and one headerline status, and publishes `PluginOutputPushed`
+  (a typed bus event, not an arm of the WIT `event` variant — nothing crosses
+  back to a guest, so the ABI's event vocabulary is untouched).
+- **The mode** (`plugin-output-mode`, in `lattice-plugin-trace` beside the trace
+  view it is a twin of) is read-only, tails the event for the buffer whose name
+  it was activated on, and renders the status as a headerline.
+- **The plugin** opens the buffer with the ordinary `open-synthetic-buffer`
+  effect naming that mode, from whichever command should show it.
+
+Writing and opening are independent, in either order. Lines written before the
+buffer is opened are in the ring and seed it; a buffer opened first fills when
+the first line comes. That is why there is a store and not only an event: an
+event alone reaches only a buffer that is already open, and an install is
+started by the same command whose effect opens the buffer.
+
+**Seed and tail join exactly.** The mode subscribes before it snapshots, so no
+line falls between them — and one can be in both. Each line has a position
+(`epoch` = which page of the buffer, changed by a reset; `seq` = line within
+it), and the view drops precisely the overlap. A trace view tolerates a repeated
+record; an install log that says "downloading" twice is wrong.
+
+**Ownership is by plugin name**, which a reload keeps and a host-issued id does
+not. The first plugin to write a name owns it; another plugin's write is an
+`err` naming the owner. An unload drops the plugin's buffers. Epochs are
+store-wide and only rise, so a view left open across that reload sees the first
+new line as a new page rather than as lines it already showed.
+
+**Bounds.** 32 buffers per plugin (the names are plugin-chosen and may embed
+user input), 1024 lines per call, 4096 characters per line, names in the
+`*name*` form. Past a bound the call is an `err` or the excess is dropped with a
+marker line; nothing grows without limit.
+
+**No capability.** A plugin can already log and already open synthetic buffers;
+text in a buffer of its own is no new reach.
+
+**The wake.** The drain writes off-thread, then sends on an `InboundBus` whose
+`send` *is* the wake — after the write, not at publish time, so the repaint
+never precedes the text. A headerline-only change (a percentage ticking) takes
+the same path; it edits no text, so nothing else would repaint it.
+
 ## 4. The bundled server registry
 
 A `registry.toml` compiled into the plugin: per server, per platform
@@ -313,12 +381,16 @@ the host never interprets it.
   on (§3.0); progress is a buffer-backed streaming view (O(viewport) to render),
   never UI-thread work.
 - **#4 Asynchronicity.** Results are addressed events on the plugin's own event
-  actor — they reach the screen without a keypress, by construction.
+  actor; what the plugin writes about them reaches the screen through an
+  `InboundBus` wake (§3.5) — without a keypress, by construction.
 - **UX (higher court).** Zero-friction "it just works" server install, with a
   transparent, cancellable, buffer-backed progress trace — no opaque hangs.
-- **Mode ownership.** The commands, the `*lsp-install:<server>*` buffer, the
-  `:lsp-servers` view and their chords all live in the plugin. The host gains
-  generic primitives only: zero `Editor::` methods, zero host `Action` variants.
+- **Mode ownership.** The commands, the `:lsp-servers` view and their chords
+  live in the plugin, as do the name and every line of
+  `*lsp-install:<server>*`. That buffer's *mode* is the generic
+  `plugin-output-mode`, which owns its whole surface in its own crate — the
+  drain, the headerline, the read-only gate. Nothing is split with the host:
+  zero `Editor::` methods, zero host `Action` variants.
 - **Security.** `net:http` is host-scoped (only the registry's download hosts,
   redirect hops included);
   `proc:spawn` is bundled-only (lighthouse ships pre-granted; a user-installed
@@ -353,9 +425,23 @@ the host never interprets it.
   component's import set is fixed, and an import the sync linker cannot satisfy
   fails the WHOLE component at instantiation.
 - **A host-owned task buffer** (`start-task` / `push-output` / `finalize`).
-  Rejected: it puts a provider's buffer production in the host. A plugin can
-  already open and write a synthetic buffer; it only lacked the events to drive
-  one.
+  Rejected: it welds a job to a buffer, so the host decides what an install
+  looks like. What landed keeps them apart — jobs know nothing of buffers
+  (§3.0), an output buffer knows nothing of jobs (§3.5), and the plugin decides
+  which lines of which job go where. (This entry first claimed a plugin "can
+  already open and write a synthetic buffer"; it could open one and never
+  write to it, which is why §3.5 exists.)
+- **A multibuffer view over a log file the plugin writes**, refreshed with
+  `refresh-view`. Needed no host work. Rejected on UX: every refresh rebuilds
+  the whole view, so a busy install restyles the viewport many times a second —
+  a pixel change to content nobody edited.
+- **Letting `on-event` return effects.** Rejected: it changes an export every
+  events plugin implements, turns an observation-only seam into a mutation
+  path, and still needs an append effect that does not exist.
+- **The mode tailing job events directly**, with no `output-*` calls. Rejected:
+  an install is several jobs plus steps that are not jobs (verify, register),
+  and the lines between them are the plugin's to write. The host would have to
+  format progress it does not understand.
 - **Raw `wasi:http` sockets.** Rejected: unbounded ambient network reach defeats
   the capability model; the gated `http-download` host-service keeps the host
   owning the client and the grant bounding the reach.

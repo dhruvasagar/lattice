@@ -56,6 +56,16 @@ interface host-services {
         tar-gz,
     }
 
+    /// LH.0.5: what an output buffer's headerline says its work is doing.
+    enum output-state {
+        /// In flight.
+        running,
+        /// Finished, and worked.
+        succeeded,
+        /// Finished, and did not.
+        failed,
+    }
+
     /// OA.23: a file and a 0-based line in it — where a composed line came
     /// from.
     record source-location {
@@ -601,4 +611,43 @@ interface host-services {
     /// that names nothing — or one another instance of this plugin made — is
     /// silently nothing.
     unregister-server: func(token: u64);
+
+    /// LH.0.5: append `lines` to one of this plugin's **output buffers** —
+    /// a read-only, live-tailing buffer the plugin fills and the editor shows.
+    ///
+    /// This is how a plugin shows the progress of work it started. A job's
+    /// events arrive in `on-event`, which returns nothing and so cannot open
+    /// a buffer or write to one; this can be called from there, or from any
+    /// other export.
+    ///
+    /// `name` is the buffer's name, in the `*name*` form every editor-made
+    /// buffer has (`*lsp-install:rust-analyzer*`). Writing does not open
+    /// anything: the lines are kept, and a buffer of that name in
+    /// `plugin-output-mode` shows them — both those written before it was
+    /// opened and those that arrive after, without a keypress. To put it in
+    /// front of the user, return `effect::open-synthetic-buffer` naming the
+    /// same `name` and `mode-id: "plugin-output-mode"` from a command.
+    ///
+    /// A string containing newlines becomes that many lines. The buffer keeps
+    /// the most recent 10 000 lines; one call adds at most 1024, and a line is
+    /// cut at 4096 characters.
+    ///
+    /// `err` for a `name` not in the `*name*` form, one another plugin already
+    /// writes to, or a 33rd buffer for this plugin — each named.
+    output-append: func(name: string, lines: list<string>) -> result<_, string>;
+
+    /// LH.0.5: set the **headerline** of an output buffer — the one row that
+    /// stays at the top while the lines scroll: an icon for `state`, then
+    /// `text`. Each call replaces the last. Use it for where the work is
+    /// (`downloading… 43%`) and how it ended; use `output-append` for what
+    /// should stay on the page.
+    ///
+    /// `err` as `output-append`.
+    output-status: func(name: string, state: output-state, text: string) -> result<_, string>;
+
+    /// LH.0.5: empty an output buffer and clear its headerline, so a second
+    /// run starts on a clean page instead of under the first.
+    ///
+    /// `err` as `output-append`.
+    output-reset: func(name: string) -> result<_, string>;
 }

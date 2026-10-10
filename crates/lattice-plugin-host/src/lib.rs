@@ -104,6 +104,7 @@ pub mod manifest;
 pub mod mode_host;
 pub mod multibuffer_view_host;
 pub mod multibuffer_view_task;
+pub mod output;
 pub mod picker_host;
 pub mod picker_source;
 pub mod picker_task;
@@ -1199,6 +1200,9 @@ struct PluginState {
     /// `None` on a host nothing wired one into — `register-server` then
     /// refuses, by name.
     language_servers: Option<lattice_mode::LanguageServerRegistrarHandle>,
+    /// LH.0.5: the editor's plugin-output store, stamped per store. `None` on
+    /// a host nothing wired one into — the `output-*` calls then refuse.
+    output: Option<crate::output::PluginOutputHandle>,
     /// LH.0.4: the servers this guest registered.
     ///
     /// On the `Store`, as `watches` are: dropping a registration withdraws it,
@@ -1278,6 +1282,24 @@ impl Drop for ServerRegistration {
 }
 
 impl PluginState {
+    /// LH.0.5: the output store and the name this plugin writes under, for the
+    /// `output-*` call `func`. A buffer is owned by plugin NAME, which a
+    /// reload keeps, so a store with no name stamped cannot own one.
+    fn output_target(
+        &self,
+        func: &str,
+    ) -> Result<(crate::output::PluginOutputHandle, String), String> {
+        let Some(output) = self.output.clone() else {
+            return Err(format!(
+                "{func} failed: this editor has no plugin-output store wired"
+            ));
+        };
+        let Some(plugin) = self.plugin_name.clone() else {
+            return Err(format!("{func} failed: this plugin instance has no name"));
+        };
+        Ok((output, plugin))
+    }
+
     /// LH.0: start a validated host job and return its id — or, inside
     /// `register-events`, hold it until the subscriptions that will hear its
     /// outcome are on the bus (the spawn starts it; see `deferred_jobs`).
@@ -1645,6 +1667,41 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
     fn unregister_server(&mut self, token: u64) {
         // The drop is the unregister.
         self.server_registrations.retain(|r| r.token != token);
+    }
+
+    /// LH.0.5 `output-append`.
+    fn output_append(&mut self, name: String, lines: Vec<String>) -> Result<(), String> {
+        let (output, plugin) = self.output_target("output-append")?;
+        output
+            .append(&plugin, &name, lines)
+            .map_err(|e| format!("output-append failed: {e}"))
+    }
+
+    /// LH.0.5 `output-status`.
+    fn output_status(
+        &mut self,
+        name: String,
+        state: crate::lattice::plugin_host::host_services::OutputState,
+        text: String,
+    ) -> Result<(), String> {
+        use crate::lattice::plugin_host::host_services::OutputState;
+        let (output, plugin) = self.output_target("output-status")?;
+        let state = match state {
+            OutputState::Running => crate::output::OutputState::Running,
+            OutputState::Succeeded => crate::output::OutputState::Succeeded,
+            OutputState::Failed => crate::output::OutputState::Failed,
+        };
+        output
+            .set_status(&plugin, &name, crate::output::OutputStatus { state, text })
+            .map_err(|e| format!("output-status failed: {e}"))
+    }
+
+    /// LH.0.5 `output-reset`.
+    fn output_reset(&mut self, name: String) -> Result<(), String> {
+        let (output, plugin) = self.output_target("output-reset")?;
+        output
+            .reset(&plugin, &name)
+            .map_err(|e| format!("output-reset failed: {e}"))
     }
 
     /// LH.0.2 `set-executable`. Immediate; gated on `fs:write`.
@@ -3583,6 +3640,8 @@ pub struct PluginHost {
     // LH.0.4: the editor's language-server registrar, when it has one. Set-once
     // through the shared `Arc`, like its neighbours.
     language_servers: std::sync::OnceLock<lattice_mode::LanguageServerRegistrarHandle>,
+    // LH.0.5: the plugin-output store the `output-*` calls write into.
+    output: std::sync::OnceLock<crate::output::PluginOutputHandle>,
     // OC.3 / ML.6: what the `ui` seam acts on — the modeline element registry
     // and the bus content updates publish onto. Both halves are required (a
     // registry with no bus registers descriptors nothing ever repaints), so
@@ -4057,6 +4116,7 @@ impl PluginHost {
             decoration_epoch: std::sync::OnceLock::new(),
             buffers: std::sync::OnceLock::new(),
             language_servers: std::sync::OnceLock::new(),
+            output: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
             stores: Mutex::new(std::collections::HashMap::new()),
             _epoch_ticker: epoch_ticker,
@@ -4249,6 +4309,30 @@ impl PluginHost {
     /// install servers the editor then never starts.
     pub fn language_server_registrar_wired(&self) -> bool {
         self.language_servers.get().is_some()
+    }
+
+    /// LH.0.5: hand the host the plugin-output store the `output-*` calls
+    /// write into.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_plugin_output(&self, output: crate::output::PluginOutputHandle) {
+        let _ = self.output.set(output);
+    }
+
+    /// LH.0.5: drop the output buffers plugin `name` holds — the loader calls
+    /// this on unload, as it reclaims the plugin's trace ring.
+    pub fn forget_plugin_output(&self, name: &str) {
+        if let Some(output) = self.output.get() {
+            output.forget_plugin(name);
+        }
+    }
+
+    /// LH.0.5: whether an output store was ever wired.
+    ///
+    /// Pinned at boot for `view_args_wired`'s reason: unwired, every
+    /// `output-*` call refuses, and a plugin's progress buffer stays empty.
+    pub fn plugin_output_wired(&self) -> bool {
+        self.output.get().is_some()
     }
 
     /// CD.6b: whether a buffer store was ever wired.
@@ -4497,6 +4581,7 @@ impl PluginHost {
             // chord, and that is where the caller's extent is asked.
             buffers: self.buffers.get().cloned(),
             language_servers: self.language_servers.get().cloned(),
+            output: self.output.get().cloned(),
             server_registrations: Vec::new(),
             // PH7.8c: opened by `spawn_event_plugin` around `register-events`
             // and closed by its flush. Every other seam publishes straight

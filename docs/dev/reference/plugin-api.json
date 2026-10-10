@@ -2010,6 +2010,93 @@
           ]
         },
         {
+          "name": "output-append",
+          "display_name": "output-append",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "lines",
+              "type": "list<string>"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "output-append: func(name: string, lines: list<string>) -> result<_, string>",
+          "doc": "LH.0.5: append `lines` to one of this plugin's **output buffers** —\na read-only, live-tailing buffer the plugin fills and the editor shows.\n\nThis is how a plugin shows the progress of work it started. A job's\nevents arrive in `on-event`, which returns nothing and so cannot open\na buffer or write to one; this can be called from there, or from any\nother export.\n\n`name` is the buffer's name, in the `*name*` form every editor-made\nbuffer has (`*lsp-install:rust-analyzer*`). Writing does not open\nanything: the lines are kept, and a buffer of that name in\n`plugin-output-mode` shows them — both those written before it was\nopened and those that arrive after, without a keypress. To put it in\nfront of the user, return `effect::open-synthetic-buffer` naming the\nsame `name` and `mode-id: \"plugin-output-mode\"` from a command.\n\nA string containing newlines becomes that many lines. The buffer keeps\nthe most recent 10 000 lines; one call adds at most 1024, and a line is\ncut at 4096 characters.\n\n`err` for a `name` not in the `*name*` form, one another plugin already\nwrites to, or a 33rd buffer for this plugin — each named.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.output-append",
+              "caption": "Append lines to a plugin-owned output buffer, from any export",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let appended = host_services::output_append(\n    name,\n    &[\n        \"resolving rust-analyzer\".to_string(),\n        // One string, two lines: the host splits on newlines.\n        \"downloading\\nverifying\".to_string(),\n    ],\n);"
+            }
+          ]
+        },
+        {
+          "name": "output-reset",
+          "display_name": "output-reset",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "name",
+              "type": "string"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "output-reset: func(name: string) -> result<_, string>",
+          "doc": "LH.0.5: empty an output buffer and clear its headerline, so a second\nrun starts on a clean page instead of under the first.\n\n`err` as `output-append`.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.output-reset",
+              "caption": "Empty an output buffer before a new run so it does not land under the last one",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let reset = host_services::output_reset(name);"
+            }
+          ]
+        },
+        {
+          "name": "output-status",
+          "display_name": "output-status",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "state",
+              "type": "output-state"
+            },
+            {
+              "name": "text",
+              "type": "string"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "output-status: func(name: string, state: output-state, text: string) -> result<_, string>",
+          "doc": "LH.0.5: set the **headerline** of an output buffer — the one row that\nstays at the top while the lines scroll: an icon for `state`, then\n`text`. Each call replaces the last. Use it for where the work is\n(`downloading… 43%`) and how it ended; use `output-append` for what\nshould stay on the page.\n\n`err` as `output-append`.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.output-status",
+              "caption": "Set an output buffer's headerline to say what the work is doing",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let status = host_services::output_status(\n    name,\n    host_services::OutputState::Running,\n    \"downloading\\u{2026} 43%\",\n);"
+            }
+          ]
+        },
+        {
           "name": "read-file",
           "display_name": "read-file",
           "kind": "freestanding",
@@ -2470,6 +2557,30 @@
               "name": "tar-gz",
               "type": null,
               "doc": "A gzip-compressed tar. The destination is the DIRECTORY to create."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "output-state",
+          "kind": "enum",
+          "doc": "LH.0.5: what an output buffer's headerline says its work is doing.",
+          "definition": "enum output-state {\n    running,\n    succeeded,\n    failed,\n}",
+          "members": [
+            {
+              "name": "running",
+              "type": null,
+              "doc": "In flight."
+            },
+            {
+              "name": "succeeded",
+              "type": null,
+              "doc": "Finished, and worked."
+            },
+            {
+              "name": "failed",
+              "type": null,
+              "doc": "Finished, and did not."
             }
           ],
           "examples": []

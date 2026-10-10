@@ -837,6 +837,48 @@ let config = host_services::ServerConfig {
 let registered = host_services::register_server(&config);
 ```
 
+To show any of this to the user, write to an **output buffer**: a read-only
+buffer that follows its last line, which your plugin fills and the editor
+displays. It works from any export, including `on-event`, which cannot return
+an effect. Name the buffer in the `*name*` form; the lines are kept whether or
+not anyone has it open:
+
+<!-- example: events-guest:host-services.output-append -->
+```rust
+let appended = host_services::output_append(
+    name,
+    &[
+        "resolving rust-analyzer".to_string(),
+        // One string, two lines: the host splits on newlines.
+        "downloading\nverifying".to_string(),
+    ],
+);
+```
+
+To put the buffer on screen, return `Effect::OpenSyntheticBuffer` from a
+command, with the same `name` and `mode_id: "plugin-output-mode"`. Opening and
+writing can happen in either order.
+
+The row pinned at the top is the headerline. Use it for where the work is, and
+how it ended — each call replaces the last:
+
+<!-- example: events-guest:host-services.output-status -->
+```rust
+let status = host_services::output_status(
+    name,
+    host_services::OutputState::Running,
+    "downloading\u{2026} 43%",
+);
+```
+
+Before a second run, empty the buffer so the new output does not land under
+the old:
+
+<!-- example: events-guest:host-services.output-reset -->
+```rust
+let reset = host_services::output_reset(name);
+```
+
 ## Reading the buffer and the syntax tree
 
 Callbacks that need text get a `borrow<document>`: a snapshot, so a

@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0 ✅ (all four host seams); LH.1 next.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅ (four job/registration seams + output buffers); LH.1 next.** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -64,8 +64,8 @@ the plan did not have:
 - **The plugin API moved to `0.2.0`** — adding arms to `event` breaks every
   guest that matches on it. `cargo xtask bump-plugin-api` had missed the WIT
   embedded in Rust source (the scaffold templates, one fixture) and now covers
-  it. **Still to do, outward-facing, not done here:** publish the three crates
-  and bump `lattice-org-plugin`'s pin, per `releasing.md`.
+  it. Publishing the three crates and bumping `lattice-org-plugin`'s pin is
+  **LH.3**, held to the end on purpose.
 - **Cancel-by-id is process-wide, scoped by plugin id** — the instance that
   cancels is not the one that started the job.
 - **A job requested inside `register-events` is held** until the subscriptions
@@ -140,6 +140,36 @@ Semantics settled here: a registration **shadows** same-`id` configs rather than
 adding beside them; the newest registration for an id wins; nothing is started
 or restarted by registering.
 
+#### LH.0.5 — plugin output buffers (`output-append` / `-status` / `-reset`)  ✅
+Carved at the start of LH.1, when its "verify at slice start" check failed: an
+events handler returns nothing, so a plugin could open a synthetic buffer and
+never write to it. Design §3.5. **Exit:** a line a plugin writes shows in a
+`plugin-output-mode` buffer of that name with no keypress, whether written
+before or after the buffer was opened.
+
+**Landed.** The native streaming-buffer shape (`*compilation*`, `*messages*`,
+the LSP logs), with the plugin given the producer's end:
+
+- `lattice-plugin-host::output` — the store (per-name ring + status), the typed
+  `PluginOutputPushed` event, and `Tail`, the seed/tail join. 16 unit tests,
+  including the bounds and the reload case.
+- `host-services` — three functions and one enum, additive inside 0.2.0. No
+  capability. `tests/output_seam.rs`: 4 tests with a real guest (lines, status
+  and reset cross in order; another plugin's buffer, a malformed name and an
+  unwired host are each a named `err`).
+- `lattice-plugin-trace` — `plugin-output-mode` beside the trace view: drain,
+  headerline, read-only. 6 unit tests on the headerline and the batch fold.
+- `lattice-plugin-loader` — builds the store, binds its publisher to the bus,
+  drops a plugin's buffers on unload; `WiredSeams::plugin_output` pins the
+  wiring.
+- `lattice-host/tests/plugin_output_view.rs` — 7 tests on a booted editor, none
+  of which presses a key before asserting. **Seen red:** with the wake removed,
+  the append and status-only tests fail; with `read-only-mode` un-implied, `x`
+  edits the log.
+
+No bench: the write path is a ring push and a channel send per call, off the
+keystroke path, and the per-call WASM overhead is already ratcheted.
+
 ### LH.1 — the lighthouse plugin  📝
 The core WASM Component plugin consuming LH.0. Crate `plugins/lighthouse/`.
 
@@ -156,13 +186,11 @@ tree; a tampered SHA ends in a reported failure with no partial tree.
 #### LH.1.2 — commands, the `*lsp-install:<server>*` buffer, registration  📝
 `:lsp-install` / `:lsp-update` / `:lsp-update-all` / `:lsp-uninstall`; each
 returns at once. The plugin opens `*lsp-install:<server>*`
-(`effect.open-synthetic-buffer`), appends a line per event, and keeps status in
-the headerline; a failure's message lands in the buffer. On success,
+(`effect.open-synthetic-buffer`, mode `plugin-output-mode`), writes a line per
+event with `output-append`, and keeps status in the headerline with
+`output-status`; a failure's message lands in the buffer. On success,
 `register-server` a config whose `command` is the managed binary. Update is
-install-new → verify → flip registration → GC old. **Verify at slice start:**
-that a plugin can append to its own read-only synthetic buffer and set its
-headerline from an event handler today; either gap is a small generic seam, not
-a lighthouse special case. **Exit:** `:lsp-install rust-analyzer` on a machine
+install-new → verify → flip registration → GC old. **Exit:** `:lsp-install rust-analyzer` on a machine
 without it → progress is visible live with no keypress, and a `.rs` buffer then
 gets diagnostics with no `PATH` entry; `:lsp-uninstall` reverses it.
 
@@ -177,6 +205,15 @@ Add lighthouse to `cargo xtask build-core-plugins` so it is discovered at boot a
 `TrustTier::Bundled` (the PM.1–PM.4 pipeline `auto-pair` ships through — no
 `include_bytes!`). **Exit:** a fresh editor has lighthouse loaded (`:plugins`
 shows it, `:lsp-servers` works) with no user install step.
+
+### LH.3 — publish plugin API 0.2.0  📝
+Publish `lattice-wit`, `lattice-plugin-sdk` and `lattice-plugin-sdk-derive` at
+0.2.0 and bump `lattice-org-plugin`'s pin, per `releasing.md`. **Last, and only
+once LH.1 and LH.2 are done** (decided 2026-10-10): 0.2.0 is unpublished, so
+every WIT change lighthouse turns out to need lands inside it for free — LH.0.5
+already did — where each one after publication is another version. Outward-facing
+and irreversible; done with Dhruva, not by an agent alone. Until it lands,
+`lattice-org-plugin` does not instantiate against this branch.
 
 ## Notes
 

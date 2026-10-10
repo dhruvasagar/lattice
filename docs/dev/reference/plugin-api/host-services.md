@@ -28,7 +28,7 @@ does — a bounded `walk` covers the fuzzy-finder.
 
 - [`position`](types.md#record-position) from [`types`](types.md)
 
-## Functions (27)
+## Functions (30)
 
 ### `can-write-file`
 
@@ -430,6 +430,89 @@ Ok(vec![Effect::Echo(EchoPayload {
     level: EchoLevel::Info,
     text: format!("{a}|{b}"),
 })])
+```
+
+### `output-append`
+
+```wit
+output-append: func(name: string, lines: list<string>) -> result<_, string>
+```
+
+LH.0.5: append `lines` to one of this plugin's **output buffers** —
+a read-only, live-tailing buffer the plugin fills and the editor shows.
+
+This is how a plugin shows the progress of work it started. A job's
+events arrive in `on-event`, which returns nothing and so cannot open
+a buffer or write to one; this can be called from there, or from any
+other export.
+
+`name` is the buffer's name, in the `*name*` form every editor-made
+buffer has (`*lsp-install:rust-analyzer*`). Writing does not open
+anything: the lines are kept, and a buffer of that name in
+`plugin-output-mode` shows them — both those written before it was
+opened and those that arrive after, without a keypress. To put it in
+front of the user, return `effect::open-synthetic-buffer` naming the
+same `name` and `mode-id: "plugin-output-mode"` from a command.
+
+A string containing newlines becomes that many lines. The buffer keeps
+the most recent 10 000 lines; one call adds at most 1024, and a line is
+cut at 4096 characters.
+
+`err` for a `name` not in the `*name*` form, one another plugin already
+writes to, or a 33rd buffer for this plugin — each named.
+
+**Example — Append lines to a plugin-owned output buffer, from any export** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let appended = host_services::output_append(
+    name,
+    &[
+        "resolving rust-analyzer".to_string(),
+        // One string, two lines: the host splits on newlines.
+        "downloading\nverifying".to_string(),
+    ],
+);
+```
+
+### `output-reset`
+
+```wit
+output-reset: func(name: string) -> result<_, string>
+```
+
+LH.0.5: empty an output buffer and clear its headerline, so a second
+run starts on a clean page instead of under the first.
+
+`err` as `output-append`.
+
+**Example — Empty an output buffer before a new run so it does not land under the last one** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let reset = host_services::output_reset(name);
+```
+
+### `output-status`
+
+```wit
+output-status: func(name: string, state: output-state, text: string) -> result<_, string>
+```
+
+LH.0.5: set the **headerline** of an output buffer — the one row that
+stays at the top while the lines scroll: an icon for `state`, then
+`text`. Each call replaces the last. Use it for where the work is
+(`downloading… 43%`) and how it ended; use `output-append` for what
+should stay on the page.
+
+`err` as `output-append`.
+
+**Example — Set an output buffer's headerline to say what the work is doing** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let status = host_services::output_status(
+    name,
+    host_services::OutputState::Running,
+    "downloading\u{2026} 43%",
+);
 ```
 
 ### `read-file`
@@ -885,7 +968,7 @@ let outcome = match host_services::watch(target) {
 record(&outcome);
 ```
 
-## Types (3)
+## Types (4)
 
 ### record `server-config`
 
@@ -937,6 +1020,24 @@ LH.0.2: the archive kinds `extract-archive` unpacks.
 - `gz` — One gzip-compressed file (`rust-analyzer-…-linux-gnu.gz`). The
   destination is the FILE to write.
 - `tar-gz` — A gzip-compressed tar. The destination is the DIRECTORY to create.
+
+### enum `output-state`
+
+```wit
+enum output-state {
+    running,
+    succeeded,
+    failed,
+}
+```
+
+LH.0.5: what an output buffer's headerline says its work is doing.
+
+**Cases**
+
+- `running` — In flight.
+- `succeeded` — Finished, and worked.
+- `failed` — Finished, and did not.
 
 ### record `source-location`
 

@@ -51,6 +51,10 @@ lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
 # `ReadOnly` / `NoFile` option overrides via `Mode::options()`.
 lattice-config = { path = "../lattice-config" }
+# LH.0.5: the output buffer's headerline (`Headerline`, `HeaderlineProvider`).
+lattice-cells = { path = "../lattice-cells" }
+# LH.0.5: the headerline's mode-owned theme elements.
+lattice-theme = { path = "../lattice-theme" }
 # Off-thread buffer writes + the trace-subscription drain (never the actor thread).
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }

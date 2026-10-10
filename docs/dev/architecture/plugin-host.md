@@ -663,6 +663,17 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   promptly and orphans whatever it started, which is why the test asserts the *grandchild* is
   gone rather than that the job ended. The group is signalled through `kill(1)`, not
   `libc::kill`: the crate denies `unsafe`, and one short-lived process on a cancel is the price.
+- **Output buffers (✅ LH.0.5)**: `host-services.output-append(name, lines)` /
+  `output-status(name, state, text)` / `output-reset(name)` ([`lighthouse.md`](lighthouse.md) §3.5)
+  — how a plugin shows work in flight. An events handler returns nothing, so it cannot open a
+  buffer or write to one; these are the producer's end of the shape every native streaming buffer
+  has. The lines go into a bounded per-name ring (`output.rs`) that publishes a typed
+  `PluginOutputPushed`; `plugin-output-mode` (`lattice-plugin-trace`), activated on a buffer of that
+  name, seeds from the ring and tails the event off-thread. The plugin opens the buffer itself with
+  `open-synthetic-buffer`. Writing and opening are independent and in either order.
+
+  No capability. A buffer is owned by plugin **name** — stable across a reload — and another
+  plugin's write is an `err`. Bounded per plugin, per call and per line.
 - **Language servers (✅ LH.0.4)**: `host-services.register-server(server-config) -> result<u64, string>`
   / `unregister-server(token)` ([`lighthouse.md`](lighthouse.md) §3.4) — how a plugin that installed
   a server tells the editor to use it.

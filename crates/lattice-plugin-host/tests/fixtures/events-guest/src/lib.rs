@@ -145,6 +145,10 @@ const SERVER_REQUEST: &str = "/data/server-request";
 /// LH.0.4. Present as well ⇒ withdraw that registration straight away.
 const SERVER_WITHDRAW: &str = "/data/server-withdraw";
 
+/// LH.0.5. Present ⇒ write to the output buffer it names (one line: the
+/// buffer name) from `register-events`.
+const OUTPUT_REQUEST: &str = "/data/output-request";
+
 /// PH7.8c: present ⇒ ring our own doorbell from `register-events`. A marker
 /// file rather than an unconditional emit, so only the test that is about this
 /// behaviour pays for it.
@@ -336,6 +340,33 @@ impl Guest for Component {
                 host_services::unregister_server(token);
                 // @end-example
                 record("unregister:done");
+            }
+        }
+        if let Ok(request) = std::fs::read_to_string(OUTPUT_REQUEST) {
+            let name = request.lines().next().unwrap_or_default();
+            // @example host-services.output-reset: Empty an output buffer before a new run so it does not land under the last one
+            let reset = host_services::output_reset(name);
+            // @end-example
+            // @example host-services.output-status: Set an output buffer's headerline to say what the work is doing
+            let status = host_services::output_status(
+                name,
+                host_services::OutputState::Running,
+                "downloading\u{2026} 43%",
+            );
+            // @end-example
+            // @example host-services.output-append: Append lines to a plugin-owned output buffer, from any export
+            let appended = host_services::output_append(
+                name,
+                &[
+                    "resolving rust-analyzer".to_string(),
+                    // One string, two lines: the host splits on newlines.
+                    "downloading\nverifying".to_string(),
+                ],
+            );
+            // @end-example
+            match reset.and(status).and(appended) {
+                Ok(()) => record("output:ok"),
+                Err(e) => record(&format!("output:err({e})")),
             }
         }
     }

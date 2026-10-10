@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0 ✅ (LH.0.1–LH.0.7); LH.1.1 ✅; LH.1.2 next.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅ (LH.0.1–LH.0.7); LH.1.1–LH.1.2 ✅; LH.1.3 next.** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -253,19 +253,48 @@ with `cargo test` in the plugin's directory and are **not run by CI or by
 `scripts/precommit.sh`** — true of `project`'s too. CI compiles the plugin and
 runs the end-to-end test; the fake-host suite is by hand.
 
-#### LH.1.2 — registration, `:lsp-uninstall`, `:lsp-update`  📝
-What makes an installed server *used*. On a successful install,
-`register-server` a config whose `command` is the managed binary (by host
-path, from `data-dir`); at startup, re-register everything recorded as
-installed, so a server survives a restart. `:lsp-uninstall <server>` removes
-the tree and the registration. `:lsp-update <server>` / `:lsp-update-all`
-install the registry's pin when it differs from what is installed, then drop
-the old version's tree — install-new → verify → flip registration → GC old.
-Registrations live on the events instance (they last as long as the instance
-that made them), so uninstall is a request event like install. **Exit:**
-`:lsp-install rust-analyzer` on a machine without it → a `.rs` buffer opened
-afterwards runs the managed binary with no `PATH` entry, and still does after
-a restart; `:lsp-uninstall` reverses it.
+#### LH.1.2 — registration, `:lsp-uninstall`, `:lsp-update`  ✅
+What makes an installed server *used*. **Exit:** an installed server is
+registered with the editor by its managed path, with no `PATH` entry, and still
+is after a restart; `:lsp-uninstall` reverses it; `:lsp-update` moves to a new
+pin without a moment with no server.
+
+**Landed.**
+
+- **One routine keeps the editor in step with the records**
+  (`Installer::reconcile`): register every installed server not yet
+  registered, withdraw every registration whose server is no longer
+  installed. It runs at startup, after an install and after an uninstall —
+  three callers, so there is no path that leaves the two disagreeing. Startup
+  is what makes an install outlive its session: a registration lasts only as
+  long as the plugin instance that made it.
+- **Update is install.** `:lsp-update <server>` / `:lsp-update-all` request an
+  install of the registry's pin when it differs from what is installed. The
+  new version is fetched and verified beside the old; `reconcile` registers
+  the new one *before* withdrawing the old (the editor takes the newest
+  registration for an id); the old tree is deleted last. A failed update
+  leaves the old version installed and registered.
+- **`:lsp-uninstall`** deletes the record, reconciles (which withdraws), then
+  removes the files — the editor is never pointed at a tree being deleted.
+- **Refusals that would otherwise be silent.** A record whose files are gone
+  is not registered (it would shadow a working `PATH` server with one that
+  cannot start) and says so. An install the editor refuses to register ends
+  `installed, but not registered`, not `installed`. An installed server the
+  registry no longer lists is left installed and unregistered.
+- The command side reads the store through `host-services` and answers on the
+  spot when there is nothing to do (`not installed`, `up to date`).
+
+Tests: 8 more in the plugin (38 total), 3 more end-to-end (8 total) —
+registration with the spec as the registry wrote it and the command as an
+absolute host path; a restart, which registers with no command run; uninstall
+down to the directory being gone and staying gone across a restart; update,
+asserting the order register-new → withdraw-old and that only the new tree
+remains.
+
+**What this does not test:** that a `.rs` buffer then *runs* the managed
+binary. That is the supervisor's behaviour given a registration, and its test
+is LH.0.4's (a marker script standing in for the server). No test crosses
+both; the join is the `LanguageServerRegistrar` trait.
 
 #### LH.1.2b — package-manager `recipe` installs  ⛔
 A registry entry that names a command to run (`npm install --prefix …`)

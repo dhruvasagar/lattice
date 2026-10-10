@@ -15,7 +15,15 @@
 //!   path) are talking about the same files — the final rename is a guest
 //!   call on a tree the host wrote;
 //! * every step is in the output buffer's store, in order;
-//! * a digest that does not match installs nothing and leaves nothing.
+//! * a digest that does not match installs nothing and leaves nothing;
+//! * the editor is told to run the installed binary by its real path, is
+//!   told again after a restart, is moved to the new version by an update
+//!   before the old one is withdrawn, and is told to stop by an uninstall.
+//!
+//! "The editor" here is a recorder behind `LanguageServerRegistrar`, where
+//! the LSP supervisor stands in the real one. What a registration then does —
+//! which binary a matching buffer runs — is the supervisor's own test
+//! (`lattice-lsp`, LH.0.4).
 //!
 //! The server it installs is a shell script served from loopback, named in an
 //! overlay registry — the same `registry.toml` a user would write to add a
@@ -28,12 +36,12 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lattice_core::BufferId;
 use lattice_grammar::{Args, CommandInvocation, CommandRegistry, GrammarEnv};
-use lattice_mode::CapabilitySet;
+use lattice_mode::{CapabilitySet, LanguageServerRegistrar, LanguageServerSpec};
 use lattice_plugin_host::output::{OutputSnapshot, OutputState, PluginOutput, PluginOutputHandle};
 use lattice_plugin_host::{Capability, PluginBudget, PluginHost, PluginManifest, TrustTier};
 use lattice_protocol::CancellationToken;
@@ -89,16 +97,47 @@ fn serve(body: Vec<u8>) -> u16 {
     port
 }
 
-/// One overlay entry for this machine's platform.
+/// What the editor was told, in order.
+#[derive(Debug, Clone, PartialEq)]
+enum Told {
+    Register(u64, LanguageServerSpec),
+    Unregister(u64),
+}
+
+#[derive(Default)]
+struct Recorder {
+    told: Mutex<Vec<Told>>,
+}
+
+impl LanguageServerRegistrar for Recorder {
+    fn register(&self, spec: LanguageServerSpec) -> Result<u64, String> {
+        let mut told = self.told.lock().unwrap();
+        let token = 100 + told.len() as u64;
+        told.push(Told::Register(token, spec));
+        Ok(token)
+    }
+
+    fn unregister(&self, token: u64) {
+        self.told.lock().unwrap().push(Told::Unregister(token));
+    }
+}
+
+/// One overlay entry for this machine's platform, at version `1.0`.
 fn entry(name: &str, port: u16, sha256: &str) -> String {
+    entry_at(name, "1.0", port, sha256)
+}
+
+fn entry_at(name: &str, version: &str, port: u16, sha256: &str) -> String {
     format!(
         r#"
 [[server]]
 name = "{name}"
 lsp-id = "fake"
 language-id = "fake"
-version = "1.0"
+version = "{version}"
+args = ["--stdio"]
 file-patterns = ["*.fake"]
+root-markers = [".git"]
 
 [server.platform.{os}-{arch}]
 url = "http://127.0.0.1:{port}/{name}.gz"
@@ -112,10 +151,12 @@ binary = "{name}"
 }
 
 struct Editor {
-    _dirs: TempDir,
+    /// `Option` so a restart can carry the directories into the next editor.
+    dirs: Option<TempDir>,
     data_dir: PathBuf,
     host: PluginHost,
     output: PluginOutputHandle,
+    lsp: Arc<Recorder>,
     commands: CommandRegistry,
     actor: tokio::task::JoinHandle<()>,
 }
@@ -131,15 +172,24 @@ impl Drop for Editor {
 /// `before` run on the data directory first.
 async fn boot(wasm: &str, registry: &str, before: impl FnOnce(&Path)) -> Editor {
     let dirs = TempDir::new().unwrap();
-    let data_base = dirs.path().join("data");
-    let data_dir = data_base.join(PLUGIN_ID).join("data");
+    let data_dir = dirs.path().join("data").join(PLUGIN_ID).join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
     std::fs::write(data_dir.join("registry.toml"), registry).unwrap();
     before(&data_dir);
+    boot_in(wasm, dirs).await
+}
+
+/// Start an editor over directories that may already hold a previous
+/// session's installs.
+async fn boot_in(wasm: &str, dirs: TempDir) -> Editor {
+    let data_base = dirs.path().join("data");
+    let data_dir = data_base.join(PLUGIN_ID).join("data");
 
     let host = PluginHost::with_dirs(dirs.path().join("cache"), &data_base).expect("host builds");
     let output: PluginOutputHandle = Arc::new(PluginOutput::new());
     host.set_plugin_output(output.clone());
+    let lsp = Arc::new(Recorder::default());
+    host.set_language_server_registrar(lsp.clone());
     let component = host.compile(&std::fs::read(wasm).unwrap()).unwrap();
     // The shipped manifest's capabilities, with loopback standing in for the
     // release hosts. Note what is absent: any `fs:` grant.
@@ -174,22 +224,40 @@ async fn boot(wasm: &str, registry: &str, before: impl FnOnce(&Path)) -> Editor 
     grammar.register_all(&mut commands);
 
     Editor {
-        _dirs: dirs,
+        dirs: Some(dirs),
         data_dir,
         host,
         output,
+        lsp,
         commands,
         actor,
     }
 }
 
 impl Editor {
-    /// Run `:lsp-install <arg>` through the real sync trampoline.
+    /// Quit, and start again on the same disk: a new host, new plugin
+    /// instances, nothing in memory carried over.
+    async fn restart(mut self, wasm: &str) -> Editor {
+        self.actor.abort();
+        let dirs = self.dirs.take().expect("the directories are still held");
+        drop(self);
+        boot_in(wasm, dirs).await
+    }
+
+    fn told(&self) -> Vec<Told> {
+        self.lsp.told.lock().unwrap().clone()
+    }
+
     fn lsp_install(&self, arg: &str) -> lattice_grammar::effect::Effect {
+        self.command("lsp-install", arg)
+    }
+
+    /// Run `:<name> <arg>` through the real sync trampoline.
+    fn command(&self, name: &str, arg: &str) -> lattice_grammar::effect::Effect {
         let id = self
             .commands
-            .id_by_name("lsp-install")
-            .expect(":lsp-install is registered");
+            .id_by_name(name)
+            .unwrap_or_else(|| panic!(":{name} is registered"));
         let mut document = lattice_core::Document::from_text("x\n");
         let cancel = CancellationToken::never();
         let args = if arg.is_empty() {
@@ -339,7 +407,189 @@ async fn lsp_install_downloads_verifies_and_installs_a_server() {
             "Downloaded; SHA-256 verified".to_string(),
             "Unpacking".to_string(),
             "Installed fake-ls 1.0".to_string(),
+            "Registered with the editor: files opened from now on use it.".to_string(),
         ]
+    );
+
+    // And the editor was told to run it — by the path the HOST knows it at,
+    // with everything else as the registry wrote it.
+    let told = editor.told();
+    let [Told::Register(_, spec)] = told.as_slice() else {
+        panic!("exactly one registration: {told:?}");
+    };
+    assert_eq!(
+        std::fs::canonicalize(&spec.command).unwrap(),
+        std::fs::canonicalize(&binary).unwrap()
+    );
+    assert!(spec.command.is_absolute());
+    assert_eq!(spec.id, "fake");
+    assert_eq!(spec.language_id, "fake");
+    assert_eq!(spec.args, vec!["--stdio"]);
+    assert_eq!(spec.file_patterns, vec!["*.fake"]);
+    assert_eq!(spec.root_markers, vec![".git"]);
+}
+
+fn echoed(effect: lattice_grammar::effect::Effect) -> String {
+    match effect {
+        lattice_grammar::effect::Effect::Echo { text, .. } => text,
+        other => panic!("expected an echo, got {other:?}"),
+    }
+}
+
+/// A registration lasts as long as the plugin instance that made it, so an
+/// install outlives the session only if startup makes it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_installed_server_is_registered_again_after_a_restart() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("SKIP: lighthouse component not built");
+        return;
+    };
+    let archive = gzip(SERVER_SCRIPT);
+    let port = serve(archive.clone());
+    let editor = boot(wasm, &entry("fake-ls", port, &sha256_hex(&archive)), |_| {}).await;
+    editor.lsp_install("fake-ls");
+    assert_eq!(
+        editor.settled("fake-ls").await.status.map(|s| s.state),
+        Some(OutputState::Succeeded)
+    );
+    let binary = std::fs::canonicalize(editor.data_dir.join("lsp/fake-ls/1.0/fake-ls")).unwrap();
+
+    let editor = editor.restart(wasm).await;
+
+    // No command was run in this session. `register-events` has returned by
+    // the time `boot` does, and that is where the registration is made.
+    let told = editor.told();
+    let [Told::Register(_, spec)] = told.as_slice() else {
+        panic!("registered once at startup, with nothing asked: {told:?}");
+    };
+    assert_eq!(std::fs::canonicalize(&spec.command).unwrap(), binary);
+    assert_eq!(spec.id, "fake");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lsp_uninstall_withdraws_the_server_and_removes_its_files() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("SKIP: lighthouse component not built");
+        return;
+    };
+    let archive = gzip(SERVER_SCRIPT);
+    let port = serve(archive.clone());
+    let editor = boot(wasm, &entry("fake-ls", port, &sha256_hex(&archive)), |_| {}).await;
+
+    // Not installed yet: refused on the spot, nothing published.
+    let text = echoed(editor.command("lsp-uninstall", "fake-ls"));
+    assert!(text.contains("not installed"), "{text}");
+
+    editor.lsp_install("fake-ls");
+    let installed = editor.settled("fake-ls").await;
+    assert_eq!(
+        installed.status.as_ref().map(|s| s.state),
+        Some(OutputState::Succeeded)
+    );
+    let told = editor.told();
+    let [Told::Register(token, _)] = told.as_slice() else {
+        panic!("registered once: {told:?}");
+    };
+    let token = *token;
+
+    editor.command("lsp-uninstall", "fake-ls");
+    let log = editor.settled_after("fake-ls", Some(installed.epoch)).await;
+
+    assert_eq!(
+        log.status.as_ref().map(|s| s.text.as_str()),
+        Some("fake-ls uninstalled"),
+        "{log:?}"
+    );
+    assert_eq!(
+        editor.told().last(),
+        Some(&Told::Unregister(token)),
+        "the editor was told to stop using it"
+    );
+    assert_eq!(editor.tree(), Vec::<String>::new());
+    assert!(
+        !editor.data_dir.join("lsp/fake-ls").exists(),
+        "the server's directory is gone, not just emptied"
+    );
+    assert_eq!(editor.installed_record("fake-ls"), None);
+
+    // And it stays gone: a restart finds nothing to register.
+    let editor = editor.restart(wasm).await;
+    assert_eq!(editor.told(), Vec::new());
+}
+
+/// An update is an install of the registry's new pin, and the order is the
+/// point: fetch and verify beside the old version, register the new one,
+/// withdraw the old, and only then delete it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lsp_update_moves_to_the_new_pin_and_removes_the_old_version() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("SKIP: lighthouse component not built");
+        return;
+    };
+    let archive = gzip(SERVER_SCRIPT);
+    let digest = sha256_hex(&archive);
+    let port = serve(archive);
+    let editor = boot(wasm, &entry("fake-ls", port, &digest), |_| {}).await;
+
+    // Nothing installed: nothing to update, and it says what to do instead.
+    let text = echoed(editor.command("lsp-update", "fake-ls"));
+    assert!(text.contains(":lsp-install fake-ls"), "{text}");
+
+    editor.lsp_install("fake-ls");
+    let first = editor.settled("fake-ls").await;
+    assert_eq!(
+        first.status.as_ref().map(|s| s.state),
+        Some(OutputState::Succeeded)
+    );
+
+    // Installed at the pin: up to date, for one and for all.
+    let text = echoed(editor.command("lsp-update", "fake-ls"));
+    assert!(text.contains("fake-ls 1.0 is up to date"), "{text}");
+    let text = echoed(editor.command("lsp-update-all", ""));
+    assert!(text.contains("up to date"), "{text}");
+
+    // The registry moves to 1.1.
+    std::fs::write(
+        editor.data_dir.join("registry.toml"),
+        entry_at("fake-ls", "1.1", port, &digest),
+    )
+    .unwrap();
+    let text = echoed(editor.command("lsp-update-all", ""));
+    assert!(text.contains("updating fake-ls"), "{text}");
+    let log = editor.settled_after("fake-ls", Some(first.epoch)).await;
+    assert_eq!(
+        log.status.as_ref().map(|s| s.text.as_str()),
+        Some("fake-ls 1.1 installed"),
+        "{log:?}"
+    );
+    assert!(
+        log.lines[0].ends_with("(replacing 1.0)"),
+        "the first line says what it replaces: {:?}",
+        log.lines
+    );
+
+    let told = editor.told();
+    let [
+        Told::Register(old, _),
+        Told::Register(_, new),
+        Told::Unregister(withdrawn),
+    ] = told.as_slice()
+    else {
+        panic!("register 1.0, register 1.1, THEN withdraw 1.0: {told:?}");
+    };
+    assert_eq!(
+        withdrawn, old,
+        "it is the old registration that is withdrawn"
+    );
+    assert!(
+        new.command.ends_with("lsp/fake-ls/1.1/fake-ls"),
+        "{:?}",
+        new.command
+    );
+    assert_eq!(editor.tree(), vec!["fake-ls/1.1/fake-ls"], "1.0 is gone");
+    assert_eq!(
+        editor.installed_record("fake-ls").as_deref(),
+        Some("1.1\nfake-ls")
     );
 }
 
@@ -435,16 +685,13 @@ async fn an_unknown_server_is_refused_with_the_names_that_exist() {
     let editor = boot(wasm, &entry("fake-ls", 1, &"0".repeat(64)), |_| {}).await;
 
     for arg in ["gopls-nightly", ""] {
-        match editor.lsp_install(arg) {
-            lattice_grammar::effect::Effect::Echo { text, .. } => {
-                assert!(
-                    text.contains("fake-ls") && text.contains("rust-analyzer"),
-                    "{arg:?}: names the overlay's server and the bundled one: {text}"
-                );
-            }
-            other => panic!("{arg:?}: expected an echo, got {other:?}"),
-        }
+        let text = echoed(editor.lsp_install(arg));
+        assert!(
+            text.contains("fake-ls") && text.contains("rust-analyzer"),
+            "{arg:?}: names the overlay's server and the bundled one: {text}"
+        );
     }
+    assert_eq!(editor.told(), Vec::new(), "the editor was told nothing");
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(editor.tree(), Vec::<String>::new());
     assert!(

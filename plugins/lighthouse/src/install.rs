@@ -3,10 +3,14 @@
 //! An install is two host jobs and a few file operations between them:
 //!
 //! ```text
-//! request ─► download ──ok──► extract ──ok──► mark executable ─► move into place ─► record
+//! request ─► download ──ok──► extract ──ok──► mark executable ─► move into place ─► record ─► register
 //!               │                │                  │                  │
 //!               └──── err ───────┴──────────────────┴──────────────────┴─► clean up, report
 //! ```
+//!
+//! "Register" is what makes an installed server *used*: the editor is told to
+//! run the managed binary for that language. It is not a step of the install
+//! so much as a consequence of the record — see [`Installer::reconcile`].
 //!
 //! Each job ends in exactly one `job-finished` event, and [`Installer`] is
 //! stepped from it. Nothing here waits.
@@ -39,7 +43,7 @@
 //! removes the scratch names, and [`sweep`] removes any an editor exit left
 //! behind.
 
-use crate::registry::{Archive, Server};
+use crate::registry::{Archive, Registry, Server};
 
 /// Store-key prefix of the installed-server records.
 pub const INSTALLED_PREFIX: &str = "installed/";
@@ -73,8 +77,21 @@ pub trait Host {
     /// The names in a directory. Absent is empty.
     fn list(&self, dir: &str) -> Vec<String>;
 
+    /// Whether a file exists.
+    fn exists(&self, path: &str) -> bool;
+
     fn put(&mut self, key: &str, value: &str) -> Result<(), String>;
     fn get(&self, key: &str) -> Option<String>;
+    /// Forget a key. Absent is fine.
+    fn delete(&mut self, key: &str);
+    /// Every key carrying `prefix`, in full.
+    fn keys(&self, prefix: &str) -> Vec<String>;
+
+    /// Tell the editor to run `binary` (relative to the data directory) as
+    /// `server`. Returns a token for [`unregister`](Self::unregister).
+    fn register(&mut self, server: &Server, binary: &str) -> Result<u64, String>;
+    /// Withdraw a registration.
+    fn unregister(&mut self, token: u64);
 
     /// Append one line to an output buffer.
     fn say(&mut self, buffer: &str, line: &str);
@@ -102,6 +119,11 @@ impl Installed {
         let version = lines.next()?.to_string();
         let binary = lines.next()?.to_string();
         (!version.is_empty() && !binary.is_empty()).then_some(Self { version, binary })
+    }
+
+    /// The executable, relative to the data directory.
+    pub fn binary_path(&self, name: &str) -> String {
+        format!("{}/{}", tree(name, &self.version), self.binary)
     }
 }
 
@@ -144,10 +166,30 @@ impl Job {
     }
 }
 
-/// The installs in flight, keyed by the id of the host job each is waiting on.
+/// A server the editor has been told about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Registered {
+    name: String,
+    version: String,
+    token: u64,
+}
+
+/// What this plugin instance is doing and has done: the installs in flight,
+/// keyed by the id of the host job each is waiting on, and the servers it has
+/// registered with the editor.
+///
+/// Both are plain memory, and both are right to be: a host job does not
+/// outlive the instance that started it, and neither does a registration.
 #[derive(Debug, Default)]
 pub struct Installer {
     jobs: Vec<(u64, Job)>,
+    registered: Vec<Registered>,
+}
+
+fn is_scratch(entry: &str) -> bool {
+    [".partial", ".partial.part", ".download", ".download.part"]
+        .iter()
+        .any(|suffix| entry.ends_with(suffix))
 }
 
 /// `12.3 MB`, to one decimal — a download's size is read at a glance, not
@@ -196,7 +238,136 @@ fn put_in_place(host: &mut impl Host, job: &Job) -> Result<(), String> {
 
 impl Installer {
     pub const fn new() -> Self {
-        Self { jobs: Vec::new() }
+        Self {
+            jobs: Vec::new(),
+            registered: Vec::new(),
+        }
+    }
+
+    /// Make the editor's view match the installed records: register every
+    /// installed server it has not been told about, and withdraw every
+    /// registration whose server is no longer installed.
+    ///
+    /// Run at startup (nothing is registered yet, so this is what makes an
+    /// install survive a restart), after an install, and after an uninstall.
+    /// One routine for all three, so there is no path on which the records
+    /// and the registrations can be left disagreeing.
+    ///
+    /// A server whose version changed is registered at the new version
+    /// BEFORE the old registration is withdrawn. The editor takes the newest
+    /// registration for an id, so there is no moment with neither.
+    pub fn reconcile(&mut self, host: &mut impl Host, registry: &Registry) {
+        let installed: Vec<(String, Installed)> = host
+            .keys(INSTALLED_PREFIX)
+            .iter()
+            .filter_map(|key| key.strip_prefix(INSTALLED_PREFIX))
+            .filter_map(|name| installed(host, name).map(|record| (name.to_string(), record)))
+            .collect();
+
+        for (name, record) in &installed {
+            let current = self
+                .registered
+                .iter()
+                .any(|r| r.name == *name && r.version == record.version);
+            if current {
+                continue;
+            }
+            // The registry is where the editor-facing half of a server lives
+            // (its language, its file patterns). An installed server the
+            // registry no longer lists cannot be described, so it is left
+            // installed and unregistered rather than guessed at.
+            let Some(server) = registry.get(name) else {
+                continue;
+            };
+            let binary = record.binary_path(name);
+            let buffer = buffer_name(name);
+            if !host.exists(&binary) {
+                // Registering a command that is not there would shadow a
+                // working server on `PATH` with one that cannot start.
+                host.say(
+                    &buffer,
+                    &format!(
+                        "error: {name} {} is recorded as installed but its files are missing; run :lsp-install {name}",
+                        record.version
+                    ),
+                );
+                continue;
+            }
+            match host.register(server, &binary) {
+                Ok(token) => {
+                    let mut superseded = Vec::new();
+                    self.registered.retain(|r| {
+                        if r.name == *name {
+                            superseded.push(r.token);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    self.registered.push(Registered {
+                        name: name.clone(),
+                        version: record.version.clone(),
+                        token,
+                    });
+                    for token in superseded {
+                        host.unregister(token);
+                    }
+                }
+                Err(e) => host.say(
+                    &buffer,
+                    &format!("error: could not register {name} with the editor: {e}"),
+                ),
+            }
+        }
+
+        let mut withdrawn = Vec::new();
+        self.registered.retain(|r| {
+            if installed.iter().any(|(name, _)| *name == r.name) {
+                true
+            } else {
+                withdrawn.push(r.token);
+                false
+            }
+        });
+        for token in withdrawn {
+            host.unregister(token);
+        }
+    }
+
+    /// Whether the editor has been told to run `name` at `version`.
+    fn is_registered(&self, name: &str, version: &str) -> bool {
+        self.registered
+            .iter()
+            .any(|r| r.name == name && r.version == version)
+    }
+
+    /// Remove `name`: its registration, its record and its files.
+    pub fn uninstall(&mut self, host: &mut impl Host, registry: &Registry, name: &str) {
+        let buffer = buffer_name(name);
+        if self.is_installing(name) {
+            host.say(
+                &buffer,
+                &format!("{name} is being installed; uninstall it once that finishes"),
+            );
+            return;
+        }
+        host.reset(&buffer);
+        let Some(record) = installed(host, name) else {
+            host.say(&buffer, &format!("{name} is not installed"));
+            host.status(&buffer, Phase::Failed, &format!("{name}: not installed"));
+            return;
+        };
+        // Record first, then the registration that follows from it, then the
+        // files: the editor is never pointed at a tree that is being deleted.
+        host.delete(&format!("{INSTALLED_PREFIX}{name}"));
+        self.reconcile(host, registry);
+        host.remove_tree(&server_dir(name));
+        host.say(&buffer, &format!("Removed {name} {}", record.version));
+        host.say(
+            &buffer,
+            "A server that is already running keeps running until the editor restarts.",
+        );
+        host.status(&buffer, Phase::Succeeded, &format!("{name} uninstalled"));
     }
 
     /// Whether an install of `name` is in flight.
@@ -308,7 +479,13 @@ impl Installer {
 
     /// A host job ended. Steps the install it belongs to; an id this
     /// installer is not waiting on is ignored.
-    pub fn finished(&mut self, host: &mut impl Host, id: u64, outcome: Result<(), String>) {
+    pub fn finished(
+        &mut self,
+        host: &mut impl Host,
+        registry: &Registry,
+        id: u64,
+        outcome: Result<(), String>,
+    ) {
         let Some(at) = self.jobs.iter().position(|(job_id, _)| *job_id == id) else {
             return;
         };
@@ -346,6 +523,31 @@ impl Installer {
             Step::Extract => match put_in_place(host, &job) {
                 Ok(()) => {
                     host.say(&buffer, &format!("Installed {} {}", job.name, job.version));
+                    self.reconcile(host, registry);
+                    if !self.is_registered(&job.name, &job.version) {
+                        // `reconcile` said why. The files are in place and
+                        // the record is written, so the next startup tries
+                        // again; this session just does not have the server.
+                        host.status(
+                            &buffer,
+                            Phase::Failed,
+                            &format!("{} {} installed, but not registered", job.name, job.version),
+                        );
+                        return;
+                    }
+                    host.say(
+                        &buffer,
+                        "Registered with the editor: files opened from now on use it.",
+                    );
+                    // The version just replaced, if any — only now, after
+                    // the editor has been moved off it.
+                    let dir = server_dir(&job.name);
+                    for entry in host.list(&dir) {
+                        if entry != job.version && !is_scratch(&entry) {
+                            host.remove_tree(&format!("{dir}/{entry}"));
+                            host.say(&buffer, &format!("Removed the previous version, {entry}"));
+                        }
+                    }
                     host.status(
                         &buffer,
                         Phase::Succeeded,
@@ -477,6 +679,31 @@ mod tests {
             }
             names.into_iter().collect()
         }
+        fn exists(&self, path: &str) -> bool {
+            self.has(path)
+        }
+        fn delete(&mut self, key: &str) {
+            self.store.remove(key);
+        }
+        fn keys(&self, prefix: &str) -> Vec<String> {
+            self.store
+                .keys()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect()
+        }
+        fn register(&mut self, server: &Server, binary: &str) -> Result<u64, String> {
+            self.calls.push(format!(
+                "register {} as {} -> {binary}",
+                server.name, server.lsp_id
+            ));
+            self.refuses("register")?;
+            self.next_id += 1;
+            Ok(self.next_id)
+        }
+        fn unregister(&mut self, token: u64) {
+            self.calls.push(format!("unregister {token}"));
+        }
         fn put(&mut self, key: &str, value: &str) -> Result<(), String> {
             self.refuses("put")?;
             self.store.insert(key.to_string(), value.to_string());
@@ -507,9 +734,7 @@ mod tests {
             .clone()
     }
 
-    fn tarball_server() -> Server {
-        Registry::parse(
-            r#"
+    const ZLS: &str = r#"
 [[server]]
 name = "zls"
 lsp-id = "zig"
@@ -521,12 +746,44 @@ url = "https://example.org/zls.tar.gz"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 archive = "tar-gz"
 binary = "bin/zls"
-"#,
-        )
-        .unwrap()
-        .get("zls")
-        .unwrap()
-        .clone()
+"#;
+
+    /// The bundled servers plus `zls`, a tarball.
+    fn registry() -> Registry {
+        let (registry, problem) = Registry::load(Some(ZLS));
+        assert_eq!(problem, None);
+        registry
+    }
+
+    fn tarball_server() -> Server {
+        registry().get("zls").unwrap().clone()
+    }
+
+    /// The calls that told the editor something, in order.
+    fn editor_calls(host: &Fake) -> Vec<&str> {
+        host.calls
+            .iter()
+            .filter(|c| c.starts_with("register") || c.starts_with("unregister"))
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// Install `server` to completion.
+    fn install(installer: &mut Installer, host: &mut Fake, server: &Server) {
+        let extract = through_download(installer, host, server);
+        let build = &server.platform[PLATFORM];
+        host.files.insert(format!(
+            "lsp/{}/{}.partial/{}",
+            server.name, server.version, build.binary
+        ));
+        installer.finished(host, &registry(), extract, Ok(()));
+        assert_eq!(host.last_status().0, Phase::Succeeded, "{:?}", host.said);
+    }
+
+    fn at_version(server: &Server, version: &str) -> Server {
+        let mut newer = server.clone();
+        newer.version = version.to_string();
+        newer
     }
 
     fn setup(server: Server) -> (Installer, Fake, Server) {
@@ -539,7 +796,7 @@ binary = "bin/zls"
         let download = host.next_id;
         host.files
             .insert(download_file(&server.name, &server.version));
-        installer.finished(host, download, Ok(()));
+        installer.finished(host, &registry(), download, Ok(()));
         (host.next_id != download).then_some(host.next_id)
     }
 
@@ -572,7 +829,7 @@ binary = "bin/zls"
 
         host.files
             .insert(format!("lsp/rust-analyzer/{v}.partial/rust-analyzer"));
-        installer.finished(&mut host, extract, Ok(()));
+        installer.finished(&mut host, &registry(), extract, Ok(()));
 
         assert!(host.has(&format!("lsp/rust-analyzer/{v}/rust-analyzer")));
         assert!(
@@ -601,7 +858,7 @@ binary = "bin/zls"
         );
         host.files.insert("lsp/zls/0.13.0.partial/bin/zls".into());
         host.files.insert("lsp/zls/0.13.0.partial/README".into());
-        installer.finished(&mut host, extract, Ok(()));
+        installer.finished(&mut host, &registry(), extract, Ok(()));
 
         assert!(host.has("lsp/zls/0.13.0/bin/zls"));
         assert!(host.has("lsp/zls/0.13.0/README"), "the whole tree moves");
@@ -617,6 +874,7 @@ binary = "bin/zls"
         let download = host.next_id;
         installer.finished(
             &mut host,
+            &registry(),
             download,
             Err("download failed: sha256 mismatch".into()),
         );
@@ -643,7 +901,12 @@ binary = "bin/zls"
         let (mut installer, mut host, server) = setup(tarball_server());
         let extract = through_download(&mut installer, &mut host, &server);
         host.files.insert("lsp/zls/0.13.0.partial/half".into());
-        installer.finished(&mut host, extract, Err("extract failed: truncated".into()));
+        installer.finished(
+            &mut host,
+            &registry(),
+            extract,
+            Err("extract failed: truncated".into()),
+        );
 
         assert!(host.files.is_empty(), "left behind: {:?}", host.files);
         assert_eq!(host.last_status().0, Phase::Failed);
@@ -655,7 +918,7 @@ binary = "bin/zls"
         let (mut installer, mut host, server) = setup(tarball_server());
         let extract = through_download(&mut installer, &mut host, &server);
         host.files.insert("lsp/zls/0.13.0.partial/README".into());
-        installer.finished(&mut host, extract, Ok(()));
+        installer.finished(&mut host, &registry(), extract, Ok(()));
 
         assert_eq!(installed(&host, "zls"), None);
         assert!(host.files.is_empty(), "left behind: {:?}", host.files);
@@ -680,7 +943,7 @@ binary = "bin/zls"
                         "lsp/rust-analyzer/{}.partial/rust-analyzer",
                         server.version
                     ));
-                    installer.finished(&mut host, extract, Ok(()));
+                    installer.finished(&mut host, &registry(), extract, Ok(()));
                 }
             }
             assert_eq!(host.last_status().0, Phase::Failed, "{op}");
@@ -702,6 +965,10 @@ binary = "bin/zls"
                 assert!(host.files.is_empty(), "{op} left {:?}", host.files);
             }
             assert_eq!(installed(&host, "rust-analyzer"), None, "{op}");
+            assert!(
+                editor_calls(&host).is_empty(),
+                "{op}: nothing was registered"
+            );
         }
     }
 
@@ -713,13 +980,18 @@ binary = "bin/zls"
         let extract = through_download(&mut installer, &mut host, &server);
         host.files
             .insert(format!("lsp/rust-analyzer/{v}.partial/rust-analyzer"));
-        installer.finished(&mut host, extract, Ok(()));
+        installer.finished(&mut host, &registry(), extract, Ok(()));
         let record = installed(&host, "rust-analyzer");
         assert!(record.is_some());
 
         installer.request(&mut host, &server, PLATFORM);
         let download = host.next_id;
-        installer.finished(&mut host, download, Err("download failed: offline".into()));
+        installer.finished(
+            &mut host,
+            &registry(),
+            download,
+            Err("download failed: offline".into()),
+        );
 
         assert!(host.has(&format!("lsp/rust-analyzer/{v}/rust-analyzer")));
         assert_eq!(installed(&host, "rust-analyzer"), record);
@@ -735,7 +1007,7 @@ binary = "bin/zls"
             format!("Installing rust-analyzer {v} for {PLATFORM}")
         );
         let download = host.next_id;
-        installer.finished(&mut host, download, Err("offline".into()));
+        installer.finished(&mut host, &registry(), download, Err("offline".into()));
 
         host.store.insert(
             "installed/rust-analyzer".into(),
@@ -747,7 +1019,7 @@ binary = "bin/zls"
             format!("Reinstalling rust-analyzer {v} for {PLATFORM}")
         );
         let download = host.next_id;
-        installer.finished(&mut host, download, Err("offline".into()));
+        installer.finished(&mut host, &registry(), download, Err("offline".into()));
 
         host.store.insert(
             "installed/rust-analyzer".into(),
@@ -758,6 +1030,187 @@ binary = "bin/zls"
             host.said[0],
             format!("Installing rust-analyzer {v} for {PLATFORM} (replacing 2025-01-01)")
         );
+    }
+
+    #[test]
+    fn a_finished_install_is_registered_with_the_editor_by_its_managed_path() {
+        let (mut installer, mut host, server) = setup(rust_analyzer());
+        install(&mut installer, &mut host, &server);
+        assert_eq!(
+            editor_calls(&host),
+            vec![format!(
+                "register rust-analyzer as rust -> lsp/rust-analyzer/{}/rust-analyzer",
+                server.version
+            )]
+        );
+        assert!(host
+            .said
+            .iter()
+            .any(|l| l.starts_with("Registered with the editor")));
+    }
+
+    /// An install survives a restart because startup reconciles: nothing is
+    /// registered in a fresh instance, and the records say what should be.
+    #[test]
+    fn startup_registers_every_installed_server_that_is_really_there() {
+        let (mut installer, mut host) = (Installer::new(), Fake::default());
+        host.store.insert(
+            "installed/rust-analyzer".into(),
+            "2026-10-05\nrust-analyzer".into(),
+        );
+        host.files
+            .insert("lsp/rust-analyzer/2026-10-05/rust-analyzer".into());
+        // Recorded, but someone deleted the files.
+        host.store
+            .insert("installed/zls".into(), "0.13.0\nbin/zls".into());
+        // Recorded, files present, but no registry entry describes it.
+        host.store
+            .insert("installed/orphan".into(), "1\norphan".into());
+        host.files.insert("lsp/orphan/1/orphan".into());
+
+        installer.reconcile(&mut host, &registry());
+
+        assert_eq!(
+            editor_calls(&host),
+            vec!["register rust-analyzer as rust -> lsp/rust-analyzer/2026-10-05/rust-analyzer"]
+        );
+        assert!(
+            host.said
+                .iter()
+                .any(|l| l.contains("zls") && l.contains("files are missing")),
+            "{:?}",
+            host.said
+        );
+
+        // And it is idempotent: a second pass has nothing left to do.
+        let before = host.calls.len();
+        installer.reconcile(&mut host, &registry());
+        assert_eq!(host.calls.len(), before);
+    }
+
+    /// An update: the new version is registered BEFORE the old registration
+    /// is withdrawn, and the old tree goes only after both.
+    #[test]
+    fn an_update_flips_the_registration_and_then_removes_the_old_version() {
+        let (mut installer, mut host, server) = setup(tarball_server());
+        install(&mut installer, &mut host, &server);
+        host.calls.clear();
+
+        let newer = at_version(&server, "0.14.0");
+        installer.request(&mut host, &newer, PLATFORM);
+        assert!(
+            host.said[0].ends_with("(replacing 0.13.0)"),
+            "{:?}",
+            host.said
+        );
+        let extract = finish_download(&mut installer, &mut host, &newer).unwrap();
+        host.files.insert("lsp/zls/0.14.0.partial/bin/zls".into());
+        assert!(
+            host.has("lsp/zls/0.13.0/bin/zls"),
+            "the old version is untouched while the new one is fetched"
+        );
+        installer.finished(&mut host, &registry(), extract, Ok(()));
+
+        let calls = editor_calls(&host);
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls[0], "register zls as zig -> lsp/zls/0.14.0/bin/zls");
+        assert!(calls[1].starts_with("unregister "), "{calls:?}");
+        assert!(host.has("lsp/zls/0.14.0/bin/zls"));
+        assert!(!host.has("lsp/zls/0.13.0/bin/zls"), "the old tree is gone");
+        assert_eq!(installed(&host, "zls").unwrap().version, "0.14.0");
+        assert!(host
+            .said
+            .iter()
+            .any(|l| l == "Removed the previous version, 0.13.0"));
+    }
+
+    /// A failed update costs nothing: the old version stays installed AND
+    /// registered.
+    #[test]
+    fn a_failed_update_leaves_the_old_version_registered() {
+        let (mut installer, mut host, server) = setup(tarball_server());
+        install(&mut installer, &mut host, &server);
+        host.calls.clear();
+
+        let newer = at_version(&server, "0.14.0");
+        installer.request(&mut host, &newer, PLATFORM);
+        let download = host.next_id;
+        installer.finished(&mut host, &registry(), download, Err("offline".into()));
+
+        assert!(editor_calls(&host).is_empty(), "{:?}", host.calls);
+        assert!(host.has("lsp/zls/0.13.0/bin/zls"));
+        assert_eq!(installed(&host, "zls").unwrap().version, "0.13.0");
+    }
+
+    /// The editor refuses the registration: the server is installed, and the
+    /// buffer does not claim more than that.
+    #[test]
+    fn an_install_the_editor_will_not_register_says_so() {
+        let (mut installer, mut host, server) = setup(rust_analyzer());
+        host.refuse = Some("register");
+        let extract = through_download(&mut installer, &mut host, &server);
+        host.files.insert(format!(
+            "lsp/rust-analyzer/{}.partial/rust-analyzer",
+            server.version
+        ));
+        installer.finished(&mut host, &registry(), extract, Ok(()));
+
+        let (phase, text) = host.last_status();
+        assert_eq!(*phase, Phase::Failed);
+        assert!(text.ends_with("installed, but not registered"), "{text}");
+        assert!(host
+            .said
+            .iter()
+            .any(|l| l.starts_with("error: could not register")));
+        assert!(
+            installed(&host, "rust-analyzer").is_some(),
+            "the record stays, so the next startup tries again"
+        );
+    }
+
+    #[test]
+    fn uninstall_withdraws_the_registration_then_removes_the_record_and_files() {
+        let (mut installer, mut host, server) = setup(rust_analyzer());
+        install(&mut installer, &mut host, &server);
+        host.calls.clear();
+
+        installer.uninstall(&mut host, &registry(), "rust-analyzer");
+
+        let calls = editor_calls(&host);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].starts_with("unregister "));
+        assert_eq!(installed(&host, "rust-analyzer"), None);
+        assert!(host.files.is_empty(), "left behind: {:?}", host.files);
+        assert_eq!(host.last_status().0, Phase::Succeeded);
+
+        // Nothing is left for a later reconcile to resurrect.
+        host.calls.clear();
+        installer.reconcile(&mut host, &registry());
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn uninstalling_what_is_not_installed_says_so_and_touches_nothing() {
+        let (mut installer, mut host) = (Installer::new(), Fake::default());
+        host.files.insert("lsp/other/1/other".into());
+        installer.uninstall(&mut host, &registry(), "rust-analyzer");
+
+        assert_eq!(host.last_status().0, Phase::Failed);
+        assert_eq!(host.said, vec!["rust-analyzer is not installed"]);
+        assert!(host.has("lsp/other/1/other"));
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn a_server_being_installed_cannot_be_uninstalled_out_from_under_it() {
+        let (mut installer, mut host, server) = setup(rust_analyzer());
+        installer.request(&mut host, &server, PLATFORM);
+        let resets = host.resets;
+        installer.uninstall(&mut host, &registry(), "rust-analyzer");
+
+        assert!(installer.is_installing("rust-analyzer"));
+        assert_eq!(host.resets, resets, "the install's log is not wiped");
+        assert!(host.said.last().unwrap().contains("being installed"));
     }
 
     #[test]
@@ -838,8 +1291,8 @@ binary = "bin/zls"
     fn events_for_a_job_that_is_not_ours_are_ignored() {
         let (mut installer, mut host) = (Installer::new(), Fake::default());
         installer.progress(&mut host, 99, 1, Some(2));
-        installer.finished(&mut host, 99, Ok(()));
-        installer.finished(&mut host, 99, Err("x".into()));
+        installer.finished(&mut host, &registry(), 99, Ok(()));
+        installer.finished(&mut host, &registry(), 99, Err("x".into()));
         assert!(host.statuses.is_empty() && host.said.is_empty() && host.calls.is_empty());
     }
 

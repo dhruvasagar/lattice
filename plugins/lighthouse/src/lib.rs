@@ -5,7 +5,9 @@
 //!
 //! `:lsp-install <server>` fetches a server the registry knows, checks it
 //! against a pinned SHA-256, unpacks it into the plugin's own data directory,
-//! and reports every step into `*lsp-install:<server>*` as it happens.
+//! registers it with the editor, and reports every step into
+//! `*lsp-install:<server>*` as it happens. `:lsp-update` moves an installed
+//! server to the registry's current pin; `:lsp-uninstall` removes one.
 //!
 //! ## Two instances, and which one does the work
 //!
@@ -44,7 +46,7 @@ use std::sync::Mutex;
 
 use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::events::EventFilter;
-use lattice::plugin_host::host_services::{self, ArchiveFormat, OutputState};
+use lattice::plugin_host::host_services::{self, ArchiveFormat, OutputState, ServerConfig};
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ArgDefault, ArgKind, ArgSpec, Args, EchoLevel, EchoPayload, Effect, EventKind,
@@ -58,12 +60,15 @@ use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
 mod install;
 mod registry;
 
-use install::{Installer, Phase};
-use registry::{Archive, Registry};
+use install::{Installed, Installer, Phase};
+use registry::{Archive, Registry, Server};
 
 // Ex-command callback ids.
 const CB_PARSE: u32 = 0;
 const CB_INSTALL: u32 = 1;
+const CB_UNINSTALL: u32 = 2;
+const CB_UPDATE: u32 = 3;
+const CB_UPDATE_ALL: u32 = 4;
 
 // Event-handler ids — a different namespace from the callbacks above.
 const ON_REQUEST: u32 = 1;
@@ -175,8 +180,38 @@ impl install::Host for Edge {
             .collect()
     }
 
+    fn exists(&self, path: &str) -> bool {
+        std::path::Path::new(&Self::in_guest(path)).exists()
+    }
+
     fn put(&mut self, key: &str, value: &str) -> Result<(), String> {
         host_services::store_put(key, value.as_bytes())
+    }
+
+    fn delete(&mut self, key: &str) {
+        let _ = host_services::store_delete(key);
+    }
+
+    fn keys(&self, prefix: &str) -> Vec<String> {
+        host_services::store_keys(prefix)
+    }
+
+    fn register(&mut self, server: &Server, binary: &str) -> Result<u64, String> {
+        host_services::register_server(&ServerConfig {
+            id: server.lsp_id.clone(),
+            // The editor runs this, so it is the HOST's name for the file.
+            command: self.on_host(binary),
+            args: server.args.clone(),
+            env: Vec::new(),
+            root_markers: server.root_markers.clone(),
+            file_patterns: server.file_patterns.clone(),
+            language_id: server.language_id.clone(),
+            initialization_options: None,
+        })
+    }
+
+    fn unregister(&mut self, token: u64) {
+        host_services::unregister_server(token);
     }
 
     fn get(&self, key: &str) -> Option<String> {
@@ -233,9 +268,15 @@ fn cmd_install(ctx: &ExCommandContext) -> Vec<Effect> {
             format!("lsp-install: no server named '{name}' (available: {available}){why}"),
         );
     }
-    host_services::emit_event(REQUEST_EVENT, format!("install {name}").as_bytes());
+    ask("install", &name)
+}
+
+/// Publish a request for the events instance, and open the buffer it will
+/// report into.
+fn ask(verb: &str, name: &str) -> Vec<Effect> {
+    host_services::emit_event(REQUEST_EVENT, format!("{verb} {name}").as_bytes());
     vec![Effect::OpenSyntheticBuffer(OpenSyntheticBufferPayload {
-        name: install::buffer_name(&name),
+        name: install::buffer_name(name),
         mode_id: OUTPUT_MODE.to_string(),
         content: None,
         cursor: None,
@@ -243,7 +284,121 @@ fn cmd_install(ctx: &ExCommandContext) -> Vec<Effect> {
     })]
 }
 
-fn server_arg_spec() -> ExCommandSpec {
+/// What the store says is installed, read through `host-services` — the one
+/// way the command side may read anything.
+fn installed_record(name: &str) -> Option<Installed> {
+    host_services::store_get(&format!("{}{name}", install::INSTALLED_PREFIX))
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|text| Installed::decode(&text))
+}
+
+/// Every installed server's name.
+fn installed_names() -> Vec<String> {
+    host_services::store_keys(install::INSTALLED_PREFIX)
+        .iter()
+        .filter_map(|key| key.strip_prefix(install::INSTALLED_PREFIX))
+        .map(str::to_string)
+        .collect()
+}
+
+/// `:lsp-uninstall <server>`.
+fn cmd_uninstall(ctx: &ExCommandContext) -> Vec<Effect> {
+    let Some(name) = arg_server(&ctx.args) else {
+        let installed = installed_names();
+        let which = if installed.is_empty() {
+            "nothing is installed".to_string()
+        } else {
+            format!("installed: {}", installed.join(", "))
+        };
+        return echo(
+            EchoLevel::Warn,
+            format!("lsp-uninstall: which server? ({which})"),
+        );
+    };
+    if installed_record(&name).is_none() {
+        return echo(
+            EchoLevel::Warn,
+            format!("lsp-uninstall: '{name}' is not installed"),
+        );
+    }
+    ask("uninstall", &name)
+}
+
+/// Whether `name` is installed at something other than the registry's pin.
+/// `Err` is the message for when there is nothing to do.
+fn needs_update(registry: &Registry, name: &str) -> Result<(), String> {
+    let Some(record) = installed_record(name) else {
+        return Err(format!(
+            "'{name}' is not installed — :lsp-install {name} installs it"
+        ));
+    };
+    let Some(server) = registry.get(name) else {
+        return Err(format!(
+            "'{name}' is installed but no longer in the registry, so there is \
+             nothing to update it to"
+        ));
+    };
+    if server.version == record.version {
+        return Err(format!("{name} {} is up to date", record.version));
+    }
+    Ok(())
+}
+
+/// `:lsp-update <server>`. An update is an install of the registry's pin: the
+/// new version is fetched and verified beside the old one, the editor is
+/// moved onto it, and only then is the old one removed.
+fn cmd_update(ctx: &ExCommandContext) -> Vec<Effect> {
+    let Some(name) = arg_server(&ctx.args) else {
+        return echo(
+            EchoLevel::Warn,
+            "lsp-update: which server? (:lsp-update-all updates every one)".to_string(),
+        );
+    };
+    let (registry, _) = registry();
+    match needs_update(&registry, &name) {
+        Ok(()) => ask("install", &name),
+        Err(nothing_to_do) => echo(EchoLevel::Info, format!("lsp-update: {nothing_to_do}")),
+    }
+}
+
+/// `:lsp-update-all`. Several installs at once have no single buffer to
+/// open, so this one reports in the echo area and each server reports in its
+/// own buffer.
+fn cmd_update_all() -> Vec<Effect> {
+    let (registry, _) = registry();
+    let stale: Vec<String> = installed_names()
+        .into_iter()
+        .filter(|name| needs_update(&registry, name).is_ok())
+        .collect();
+    if stale.is_empty() {
+        return echo(
+            EchoLevel::Info,
+            "lsp-update-all: everything installed is up to date".to_string(),
+        );
+    }
+    for name in &stale {
+        host_services::emit_event(REQUEST_EVENT, format!("install {name}").as_bytes());
+    }
+    echo(
+        EchoLevel::Info,
+        format!(
+            "lsp-update-all: updating {} — progress is in each *lsp-install:<server>* buffer",
+            stale.join(", ")
+        ),
+    )
+}
+
+fn no_arg_spec() -> ExCommandSpec {
+    ExCommandSpec {
+        latency_class: LatencyClass::Reflex,
+        accepts_bang: false,
+        accepts_range: false,
+        args_schema: Vec::new(),
+        surface_form: SurfaceForm::Keyword,
+    }
+}
+
+fn server_arg_spec(prompt: &str) -> ExCommandSpec {
     ExCommandSpec {
         // The command itself only publishes a request; the download is a host
         // job reported through events.
@@ -254,7 +409,7 @@ fn server_arg_spec() -> ExCommandSpec {
             name: "server".to_string(),
             kind: ArgKind::String,
             doc: "a server from the registry, e.g. `rust-analyzer`".to_string(),
-            prompt: "Install server: ".to_string(),
+            prompt: prompt.to_string(),
             default: ArgDefault::None,
             completion: None,
             picker: None,
@@ -270,16 +425,14 @@ fn on_request(payload: &[u8]) {
     let Ok(text) = std::str::from_utf8(payload) else {
         return;
     };
-    let Some(("install", name)) = text.split_once(' ') else {
+    let Some((verb, name)) = text.split_once(' ') else {
         return;
     };
+    if !matches!(verb, "install" | "uninstall") {
+        return;
+    }
     let buffer = install::buffer_name(name);
     let (registry, _) = registry();
-    // The command checked the name; it is checked again because this is a
-    // bus event and anything may have published it.
-    let Some(server) = registry.get(name) else {
-        return;
-    };
     let Some(mut edge) = Edge::open() else {
         let _ = host_services::output_append(
             &buffer,
@@ -295,7 +448,15 @@ fn on_request(payload: &[u8]) {
     let mut installer = INSTALLER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    installer.request(&mut edge, server, &platform());
+    if verb == "uninstall" {
+        installer.uninstall(&mut edge, &registry, name);
+        return;
+    }
+    // The command checked the name; it is checked again because this is a
+    // bus event and anything may have published it.
+    if let Some(server) = registry.get(name) {
+        installer.request(&mut edge, server, &platform());
+    }
 }
 
 fn on_job(ev: &Event) {
@@ -307,7 +468,10 @@ fn on_job(ev: &Event) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match ev {
         Event::JobProgress(p) => installer.progress(&mut edge, p.id, p.done, p.total),
-        Event::JobFinished(f) => installer.finished(&mut edge, f.id, f.outcome.clone()),
+        Event::JobFinished(f) => {
+            let (registry, _) = registry();
+            installer.finished(&mut edge, &registry, f.id, f.outcome.clone());
+        }
         _ => {}
     }
 }
@@ -330,9 +494,38 @@ impl Guest for Component {
              at once; the download, its SHA-256 check and the unpack are \
              reported live in `*lsp-install:<server>*`, and so is any failure. \
              Running it again for an installed server reinstalls it.",
-            &server_arg_spec(),
+            &server_arg_spec("Install server: "),
             CB_PARSE,
             CB_INSTALL,
+        );
+        lattice::plugin_host::grammar::register_ex_command(
+            "lsp-uninstall",
+            "Remove a language server lighthouse installed: its files, and its \
+             registration with the editor, so the language goes back to \
+             whatever server is on `PATH`. A server that is already running \
+             keeps running until the editor restarts.",
+            &server_arg_spec("Uninstall server: "),
+            CB_PARSE,
+            CB_UNINSTALL,
+        );
+        lattice::plugin_host::grammar::register_ex_command(
+            "lsp-update",
+            "Update an installed language server to the version lighthouse's \
+             registry pins. The new version is downloaded and verified beside \
+             the old one, which stays in use until the new one is ready and \
+             is removed only after. Says so if the server is already current.",
+            &server_arg_spec("Update server: "),
+            CB_PARSE,
+            CB_UPDATE,
+        );
+        lattice::plugin_host::grammar::register_ex_command(
+            "lsp-update-all",
+            "Update every installed language server whose version differs \
+             from the one lighthouse's registry pins. Each reports in its own \
+             `*lsp-install:<server>*` buffer.",
+            &no_arg_spec(),
+            CB_PARSE,
+            CB_UPDATE_ALL,
         );
     }
 
@@ -351,6 +544,14 @@ impl Guest for Component {
         // install the last editor session did not finish.
         if let Some(mut edge) = Edge::open() {
             install::sweep(&mut edge);
+            // And nothing is registered yet: a registration lasts as long as
+            // the instance that made it. This is what makes an install
+            // outlive the session it was made in.
+            let (registry, _) = registry();
+            INSTALLER
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .reconcile(&mut edge, &registry);
         }
     }
 
@@ -392,6 +593,9 @@ impl GrammarCallbacks for Component {
     ) -> Result<Vec<Effect>, String> {
         Ok(match c {
             CB_INSTALL => cmd_install(&ctx),
+            CB_UNINSTALL => cmd_uninstall(&ctx),
+            CB_UPDATE => cmd_update(&ctx),
+            CB_UPDATE_ALL => cmd_update_all(),
             other => return Err(format!("lighthouse: unknown ex-command callback {other}")),
         })
     }

@@ -1,4 +1,4 @@
-# Lighthouse — the LSP server manager (bundled plugin)
+# Lighthouse — the LSP server manager (core plugin)
 
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
 > paramount-goal alignment. Slice sequencing lives in
@@ -8,11 +8,16 @@
 > [`lsp-architecture.md`](lsp-architecture.md) (the supervisor/actor/client the
 > installed servers plug into).
 >
-> **Status: 📝 designed, not built.** Captured for future reference. The first
-> non-trivial bundled 8b plugin; deliberately sequenced AFTER a trivial bundled
-> plugin (`auto-pair`) that de-risks the packaging/load pipeline with zero new
-> host surface. Lighthouse's real cost is the **host-services extension it forces**
-> (§3), not the plugin itself.
+> **Status: 🚧 in progress.** The first non-trivial **core plugin** — it ships
+> through the pipeline `auto-pair` proved (`plugins/<name>/`, staged by
+> `cargo xtask build-core-plugins`, discovered at boot as `TrustTier::Bundled`).
+> Lighthouse's real cost is the **host-services extension it forces** (§3), not
+> the plugin itself.
+>
+> **Revised 2026-10-10** against the host as it now stands. The July draft
+> specified blocking calls (`http-fetch -> list<u8>`, a three-call task surface
+> owning a host buffer); neither survives contact with the two-linker reality.
+> §3.0 records why, and §6 keeps the superseded shapes as rejected alternatives.
 
 ## 1. Why
 
@@ -38,8 +43,9 @@ native subsystem from WIT — which a trivial plugin never exercises.
 ## 2. What lighthouse does (user surface)
 
 - `:lsp-install <server>` — fetch + verify + install the named server into the
-  managed tree; register its `ServerConfig`; progress streams into a
-  buffer-backed view.
+  managed tree; register its `ServerConfig`. Returns at once: the install runs
+  in the background and its progress — and its error, if it fails — streams
+  live into `*lsp-install:<server>*`.
 - `:lsp-update <server>` / `:lsp-update-all` — install a newer pinned version;
   keep the old until the new verifies.
 - `:lsp-uninstall <server>` — remove the tree + unregister the `ServerConfig`.
@@ -47,70 +53,127 @@ native subsystem from WIT — which a trivial plugin never exercises.
   (if any), and health. (The everything-is-a-buffer manager surface, the
   `:plugins` view precedent.)
 
+**`*lsp-install:<server>*` is the plugin's buffer**, not the host's: lighthouse
+opens it (`effect.open-synthetic-buffer`), owns its mode, and appends a line per
+host event. The name follows `*lsp-log*` (dash) rather than `*lsp:<lang>:<root>*`
+(colon) on purpose — the colon form is parsed as a server-instance buffer by
+`lattice_lsp::buffer_names`, and an install is not one. Status rides the
+headerline (the async-buffer-status rule).
+
 The **managed install tree** is `${XDG_DATA_HOME}/lattice/lsp/<name>/<version>/`
 — versioned so an update is atomic (install new, flip the registration, GC old)
 and a bad version rolls back.
 
 ## 3. The host-services extension it forces (the real work) — LOAD-BEARING
 
-Lighthouse is small; the **four host seams it needs are not built** (only the
-`fs:walk` host-service is wired today). These are **general** plugin-host
-capabilities — every future plugin that touches the network / a subprocess / a
-long task uses them — so they land as a host-services extension
-([`plugin-host.md`](plugin-host.md)), and lighthouse *consumes* them. They map
-directly to design.md §5.5.6's first five WIT prerequisites.
+Lighthouse is small; the **host seams it needs are not built**. They are
+**general** plugin-host capabilities — every future plugin that touches the
+network, an archive or a subprocess uses them — so they land in
+`lattice-plugin-host` ([`plugin-host.md`](plugin-host.md)) knowing nothing about
+LSP, and lighthouse *consumes* them.
 
 Each runs **host-side with full host authority** (the host process is not
 sandboxed), so — like `walk_within_grant` — the capability grant is re-checked at
 the seam, not delegated to WASI.
 
-### 3.1 `net:http` host-service — `http-fetch`
+### 3.0 The shape every long-running seam takes: request → addressed events
+
+A long-running host-service **returns an id immediately** and reports through
+**events addressed to the plugin that asked** — the `watch` → `files-changed`
+shape (OR.2), not a call that blocks until the work is done. Three facts about
+the host force this, and each was verified against source rather than assumed:
+
+- **`host-services` is wired on BOTH linkers**, including the synchronous one
+  the grammar seam runs on the dispatch thread. A component's import set is fixed
+  for the whole artefact, and `:lsp-install` is a grammar-seam ex-command — so a
+  call that blocks for the length of a download blocks the editor. "Async-linker
+  only" is not a shape the Component Model offers.
+- **The per-call budget is wall clock** (`PluginBudget::epoch_deadline`, 5 s by
+  default, host time included since OA.0b). A download inside one guest call
+  traps.
+- **The bytes have nowhere good to go.** A 40 MB archive returned as `list<u8>`
+  is copied into guest memory, and the guest then cannot write it from the
+  grammar seam at all (the sync WASI filesystem shim panics there — `read-file`'s
+  doc comment).
+
+So the host does the I/O off-thread and streams to disk; the guest holds an id.
+Delivery rides the plugin's own event actor, which is what makes a result reach
+the screen **without a keypress**. Ids are host-global, because the instance
+that starts a job (grammar seam) is not the instance that hears about it (events
+seam) — they are separate `Store`s.
+
+A job is owned by the `PluginState` that started it and is cancelled when that
+state drops (unload, quarantine): mechanism lives where its lifetime matches,
+with no teardown wiring to forget.
+
+### 3.1 `net:http` — `http-download`
 
 ```wit
-/// Fetch `url` (GET) → the response bytes. Capability-gated: the URL's host must
-/// be in one of the plugin's granted `net:http:<host>` prefixes, else `err`. A
-/// gated host-service, NOT a raw `wasi:http` socket — the host owns the client,
-/// so redirects / TLS / timeouts are host policy, and the grant bounds reach.
-http-fetch: func(url: string) -> result<list<u8>, string>;
+/// Download `url` (GET) to the file `dest`, verified against `sha256` (hex).
+/// Returns a download id at once; progress and the outcome arrive as the
+/// `download-progress` / `download-finished` events, addressed to this plugin.
+http-download: func(url: string, sha256: string, dest: string)
+	-> result<u64, string>;
+
+/// Stop a download. Idempotent; an unknown or finished id is `ok`.
+cancel-download: func(id: u64);
 ```
 
-Async-linker import (off the keystroke path). Bounded response size; streaming
-variant deferred until a real streaming consumer needs it (the `walk`-vs-stream
-precedent). Lighthouse fetches a pinned binary/archive URL, then verifies SHA
-before touching the filesystem.
+Gated twice, both re-checked host-side, both refused **synchronously** so a
+plugin author sees a manifest problem at the call rather than as a late event:
 
-### 3.2 `proc:spawn` host-service — `spawn-process`
+- the URL's host must match a granted `net:http:<host>` entry — and so must
+  **every redirect hop**. The host follows redirects itself and re-checks each
+  one; a release URL that bounces to a CDN needs the CDN granted too, by name.
+  A redirect is otherwise a way to turn one granted host into any host.
+- `dest` must lie within an `fs:write` grant.
+
+Host policy, not guest policy: `https` only (plain `http` solely to a loopback
+address, which is what makes the seam testable), bounded redirects, bounded
+size, connect/read timeouts.
+
+**The SHA check is structural.** The body streams to `<dest>.part` while being
+hashed; only a match renames it into place, and every other exit — mismatch,
+cancel, short read, size cap — deletes the part file. "A tampered download
+leaves no partial install" is therefore a property of the seam, not of each
+plugin's discipline. The host hashes; the expected value is the guest's data and
+the host never learns where it came from.
+
+Progress is **coalesced** (a quiet interval between `download-progress`
+deliveries), so a fast link is a handful of guest calls rather than one per
+chunk. No bytes-returning `http-fetch` is offered: nothing needs one yet, and a
+small bounded variant is additive when something does.
+
+### 3.2 `extract-archive`
+
+The unpack is host-side for §3.0's reasons plus one more: fuel. Inflating a
+release archive in the guest is CPU-bound work inside a fuel-metered call.
+Same request → addressed-event shape, gated on `fs:write` over the destination,
+with entries that escape it (`..`, absolute paths, symlinks out) refused.
+Formats are the ones the registry needs (`gz` single-file, `tar.gz`, `zip`).
+
+### 3.3 `proc:spawn` — `spawn-process`
 
 ```wit
-/// Run `command` with `args` in `cwd`, streaming stdout/stderr, → exit status.
+/// Run `command` with `args` in `cwd`. Returns a process id at once; output
+/// lines and the exit status arrive as addressed events.
 /// Capability-gated on `proc:spawn`, which is BUNDLED-PLUGINS-ONLY (arbitrary
-/// spawn ≈ full trust; user-installed plugins are denied it at grant time,
-/// `capability.rs`). Output streams through the long-running-task surface (§3.3).
+/// spawn ≈ full trust; `capability.rs` withholds it from user-installed plugins).
 spawn-process: func(command: string, args: list<string>, cwd: string)
-    -> result<process-exit, string>;
+	-> result<u64, string>;
 ```
 
 Used only for the **package-manager install recipes** (`npm i -g`,
 `pip install`, `go install`) where no pre-built binary exists. The *preferred*
-path is a pre-built binary fetch (§3.1) — no toolchain, no arbitrary execution.
+path is a pre-built binary download (§3.1) — no toolchain, no arbitrary
+execution.
 
-### 3.3 Long-running-task surface — `start-task` / `push-output` / `finalize`
+There is **no separate task surface.** The July draft had `start-task` /
+`push-output` / `finalize` so the host could own a streaming buffer on the
+plugin's behalf. With output arriving as events, the plugin appends to a buffer
+it owns (§2) and the three calls have nothing left to do.
 
-A three-call shape so a plugin-driven install streams its stdout into a
-buffer-backed view without blocking the renderer (design.md §5.5.6 #5):
-
-```wit
-start-task: func(title: string) -> task-id;
-push-output: func(task: task-id, line: string);
-finalize:    func(task: task-id, outcome: task-outcome);
-```
-
-The host owns the `*lsp-install:<server>*` buffer + its headerline progress
-(the async-buffer-status-in-headerline standing rule); the plugin just pushes
-lines. Reuses the synthetic-buffer streaming substrate the LSP-log / plugin-trace
-views already prove.
-
-### 3.4 `lsp-register-server` seam — mutate the supervisor from WIT
+### 3.4 `register-server` — mutate the supervisor from WIT
 
 ```wit
 /// Register (or replace) a ServerConfig from a plugin. `command` points at the
@@ -123,16 +186,17 @@ unregister-server: func(token: server-token);
 
 `server-config` mirrors `lattice_lsp::config::ServerConfig` (name / command /
 args / env / root-markers / file-patterns / language-id / init-options) as a WIT
-record — **the WIT type design.md §5.5.6 #1 calls the first blocker.** The
-supervisor already keys servers by config; the seam is a capability-gated
-mutation of that map (the grammar/config registry-mutation precedent).
+record. The supervisor already keys servers by config; the seam is a
+capability-gated mutation of that map (the grammar/config registry-mutation
+precedent). This is the only piece that touches `lattice-lsp`.
 
 ## 4. The bundled server registry
 
 A `registry.toml` compiled into the plugin: per server, per platform
 (`os`-`arch`), the pinned version, download URL, SHA-256, and either a
 `binary` path inside the archive or a `recipe` (package-manager command). SHA
-pinning is mandatory — a mismatch aborts the install (supply-chain integrity).
+pinning is mandatory — a mismatch aborts the install (supply-chain integrity),
+enforced by the download seam itself (§3.1).
 Adding a server is a registry edit, not code. The registry is the plugin's data;
 the host never interprets it.
 
@@ -142,14 +206,19 @@ the host never interprets it.
   net / proc / task / supervisor-mutation seams to exist and be sized right, which
   is exactly why design.md nominates it first among non-trivial plugins. Every
   later plugin reuses those seams.
-- **#1 Performance.** Downloads / installs / subprocesses are async host-services
-  off the keystroke path; progress is a buffer-backed streaming view (O(viewport)
-  to render), never UI-thread work.
-- **#4 Asynchronicity.** Each install is a spawned task; nothing blocks the actor
-  or the renderer.
+- **#1 Performance.** Every seam returns an id and does its I/O on a host
+  thread, so no call can stall the dispatch thread whichever linker it arrives
+  on (§3.0); progress is a buffer-backed streaming view (O(viewport) to render),
+  never UI-thread work.
+- **#4 Asynchronicity.** Results are addressed events on the plugin's own event
+  actor — they reach the screen without a keypress, by construction.
 - **UX (higher court).** Zero-friction "it just works" server install, with a
   transparent, cancellable, buffer-backed progress trace — no opaque hangs.
-- **Security.** `net:http` is host-scoped (only the registry's download hosts);
+- **Mode ownership.** The commands, the `*lsp-install:<server>*` buffer, the
+  `:lsp-servers` view and their chords all live in the plugin. The host gains
+  generic primitives only: zero `Editor::` methods, zero host `Action` variants.
+- **Security.** `net:http` is host-scoped (only the registry's download hosts,
+  redirect hops included);
   `proc:spawn` is bundled-only (lighthouse ships pre-granted; a user-installed
   plugin can never reach it); SHA-pinning bounds supply-chain risk; the managed
   tree is the only `fs:write` grant.
@@ -167,24 +236,35 @@ the host never interprets it.
   *primary* path: needs a toolchain the user may not have, is slow, and runs
   arbitrary build scripts. Pre-built binary + SHA is primary; source/pkg-manager
   recipes are the bundled-only fallback (§3.2).
+- **Native, inside `lattice-lsp`.** The strongest form of the rejection above —
+  `lattice-lsp` does own the LSP domain. But it would pull an HTTP / hashing /
+  archive / process surface into a crate that today only talks to local server
+  processes, and the same seams would be built a second time for plugins.
+- **A separately installed (user-tier) plugin.** Rejected: the user would have
+  to install a plugin before servers could install themselves, and `proc:spawn`
+  is withheld from that tier, so the package-manager recipes could never run.
+- **A blocking `http-fetch(url) -> list<u8>`** (this fragment's first draft).
+  Rejected in §3.0: it blocks the dispatch thread from a grammar action, trips
+  the wall-clock budget, and routes the archive through guest memory.
+- **A truly async import on its own interface**, imported only by non-grammar
+  worlds. Rejected: lighthouse needs the grammar seam for its ex-commands, a
+  component's import set is fixed, and an import the sync linker cannot satisfy
+  fails the WHOLE component at instantiation.
+- **A host-owned task buffer** (`start-task` / `push-output` / `finalize`).
+  Rejected: it puts a provider's buffer production in the host. A plugin can
+  already open and write a synthetic buffer; it only lacked the events to drive
+  one.
 - **Raw `wasi:http` sockets.** Rejected: unbounded ambient network reach defeats
-  the capability model; the gated `http-fetch` host-service keeps the host owning
-  the client and the grant bounding the reach.
+  the capability model; the gated `http-download` host-service keeps the host
+  owning the client and the grant bounding the reach.
 
-## 7. Slices (future)
+## 7. Slices
 
-The build order puts the host-services extension first (it is the blocker), then
-the plugin:
-
-1. **Host §3.1–§3.4** — `http-fetch`, `spawn-process` + the task surface,
-   `register-server`/`unregister-server`; capability re-checks; the WIT records;
-   async-seam instrumentation + a bench where perf-relevant. (Host-runtime work,
-   `lattice-plugin-host`.)
-2. **The `lighthouse` plugin** — the registry, the install/update/uninstall
-   commands, the managed tree, the `:lsp-servers` buffer view, and the
-   `ServerConfig` registration. (`plugins/lighthouse/`.)
-3. **Bundling** — ship compiled-in / in `core-plugins/`, pre-granted
-   (`net:http:<registry-hosts>`, `proc:spawn`, `fs:write:<managed-tree>`).
+Sequencing and status live in the
+[slice plan](../operations/slice-plans/lighthouse.md): the host seams (§3) land
+first because they are the blocker, then the plugin, then staging it as a core
+plugin.
 
 Deferred: a general `:plugin-install` (third-party plugin manager) reuses the
-same `http-fetch` + SHA + managed-tree machinery — lighthouse proves the shape.
+same `http-download` + SHA + `extract-archive` machinery — lighthouse proves the
+shape.

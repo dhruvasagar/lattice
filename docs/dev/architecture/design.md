@@ -3053,8 +3053,8 @@ plugin *exports* its source world; the host instantiates it and drives it
 > [`plugin-host.md`](plugin-host.md) + [`plugin-observability.md`](plugin-observability.md).
 > **Designed-but-not-yet-built seams:** the **tree-sitter query seam**
 > ([`plugin-treesitter-seam.md`](plugin-treesitter-seam.md), v1), and the
-> lighthouse host-services extensions (`http-fetch` / `spawn-process` + task
-> surface / `register-server`, [`lighthouse.md`](lighthouse.md)). The block below
+> lighthouse host-services extensions (`http-download` / `extract-archive` /
+> `spawn-process` / `register-server`, [`lighthouse.md`](lighthouse.md)). The block below
 > is kept for the shape of the contract.
 
 ```wit

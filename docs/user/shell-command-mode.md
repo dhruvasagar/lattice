@@ -22,10 +22,18 @@ project of the buffer you ran it from.
 The output streams in as the command produces it, and the editor stays
 responsive while it runs — you can switch away and come back.
 
-| Key | Does |
-|---|---|
+| Command                  | Does                                         |
+|--------------------------|----------------------------------------------|
+| `:!command`              | Run `command` and show its output            |
+| `:shell-command command` | The same, by name                            |
+| `:shell-command-kill`    | Stop the running command (what `<C-c>` runs) |
+
+Inside the buffer:
+
+| Key     | Does             |
+|---------|------------------|
 | `<C-c>` | Stop the command |
-| `gr` | Run it again |
+| `gr`    | Run it again     |
 
 The headerline shows the command and how it ended: running, `ok`,
 `failed` (a non-zero exit) or `killed`.

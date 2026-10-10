@@ -32,151 +32,151 @@ shows full metadata.
 
 ### Buffer / file
 
-| Command                | Action                                                       |
-|------------------------|--------------------------------------------------------------|
-| `:w` / `:write`        | Write buffer to its current path                             |
-| `:w PATH`              | Write to `PATH`                                              |
-| `:wq` / `:x`           | Write + quit                                                 |
-| `:q` / `:quit`         | Quit if buffer is clean                                      |
-| `:q!`                  | Quit unconditionally                                         |
-| `:e PATH` / `:edit`    | Open `PATH` in active pane; a path with no file yet opens an empty `[New]` buffer that `:w` creates |
-| `:e!`                  | Reload current file from disk                                |
-| `:bn` / `:bnext`       | Cycle to next buffer                                         |
-| `:bp` / `:bprev`       | Cycle to previous buffer                                     |
-| `:b N`                 | Switch to buffer #N                                          |
-| `:b PATTERN`           | Switch to buffer matching PATTERN                            |
-| `:buffers` / `:b`      | Open the fuzzy buffer switcher (picker)                     |
+| Command                                       | Action                                                                                                                                                                                                                                    |
+|-----------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `:w` / `:write`                               | Write buffer to its current path                                                                                                                                                                                                          |
+| `:w PATH`                                     | Write to `PATH`                                                                                                                                                                                                                           |
+| `:wq` / `:x`                                  | Write + quit                                                                                                                                                                                                                              |
+| `:q` / `:quit`                                | Quit if buffer is clean                                                                                                                                                                                                                   |
+| `:q!`                                         | Quit unconditionally                                                                                                                                                                                                                      |
+| `:e PATH` / `:edit`                           | Open `PATH` in active pane; a path with no file yet opens an empty `[New]` buffer that `:w` creates                                                                                                                                       |
+| `:e!`                                         | Reload current file from disk                                                                                                                                                                                                             |
+| `:bn` / `:bnext`                              | Cycle to next buffer                                                                                                                                                                                                                      |
+| `:bp` / `:bprev`                              | Cycle to previous buffer                                                                                                                                                                                                                  |
+| `:b N`                                        | Switch to buffer #N                                                                                                                                                                                                                       |
+| `:b PATTERN`                                  | Switch to buffer matching PATTERN                                                                                                                                                                                                         |
+| `:buffers` / `:b`                             | Open the fuzzy buffer switcher (picker)                                                                                                                                                                                                   |
 | `:history [commands\|searches\|pane-buffers]` | Fuzzy picker over history. `commands` (default): command line (`q:`). `searches`: search line (`q/` / `q?`). `pane-buffers`: this pane's buffer trail (`<C-6>` / `<C-7>`). `<CR>` loads into the prompt / walks to the stop; does not run |
-| `:bd` / `:bdelete`     | Close active buffer                                          |
-| `:bd!`                 | Close even if dirty                                          |
-| `:ls`                  | List every open buffer as static text                       |
+| `:bd` / `:bdelete`                            | Close active buffer                                                                                                                                                                                                                       |
+| `:bd!`                                        | Close even if dirty                                                                                                                                                                                                                       |
+| `:ls`                                         | List every open buffer as static text                                                                                                                                                                                                     |
 
 ### Splits / panes
 
-| Command          | Action                                                |
-|------------------|-------------------------------------------------------|
-| `:split` / `:sp` | Horizontal split of active pane                       |
-| `:vsplit`/`:vsp` | Vertical split                                        |
-| `:close` / `:cl` | Close active pane                                     |
-| `:only` / `:on`  | Close every pane except the active one                |
+| Command          | Action                                 |
+|------------------|----------------------------------------|
+| `:split` / `:sp` | Horizontal split of active pane        |
+| `:vsplit`/`:vsp` | Vertical split                         |
+| `:close` / `:cl` | Close active pane                      |
+| `:only` / `:on`  | Close every pane except the active one |
 
 `<C-w>`-prefixed chords (`<C-w>s`, `<C-w>v`, `<C-w>q`, ...) are
 the keymap equivalents.
 
 ### File tree / oil
 
-| Command           | Action                                                   |
-|-------------------|----------------------------------------------------------|
-| `:Tree [path]`    | Open file tree rooted at `path` (default: current dir)   |
-| `:TreeClose`      | Dismiss file-tree pane                                   |
-| `:Oil [path]`     | Open oil-style editable directory listing                |
+| Command        | Action                                                 |
+|----------------|--------------------------------------------------------|
+| `:Tree [path]` | Open file tree rooted at `path` (default: current dir) |
+| `:TreeClose`   | Dismiss file-tree pane                                 |
+| `:Oil [path]`  | Open oil-style editable directory listing              |
 
 ### Search / substitute
 
-| Command                              | Action                                                          |
-|--------------------------------------|-----------------------------------------------------------------|
-| `:s/pat/repl/`                       | Substitute first match on current line                          |
-| `:s/pat/repl/g`                      | All matches on current line                                     |
-| `:%s/pat/repl/g`                     | All matches in buffer                                           |
-| `:'<,'>s/pat/repl/g` (in Visual)     | All matches on the selected lines                               |
-| `:5,10s/pat/repl/g`                  | All matches on lines 5–10 (any [range](#ranges))                |
-| `:noh` / `:nohlsearch`               | Clear hlsearch overlay                                          |
-| `:g/pat/CMD`                         | Run `:CMD` on every line matching `pat`                         |
-| `:v/pat/CMD`                         | Run `:CMD` on every line *not* matching `pat`                   |
+| Command                          | Action                                           |
+|----------------------------------|--------------------------------------------------|
+| `:s/pat/repl/`                   | Substitute first match on current line           |
+| `:s/pat/repl/g`                  | All matches on current line                      |
+| `:%s/pat/repl/g`                 | All matches in buffer                            |
+| `:'<,'>s/pat/repl/g` (in Visual) | All matches on the selected lines                |
+| `:5,10s/pat/repl/g`              | All matches on lines 5–10 (any [range](#ranges)) |
+| `:noh` / `:nohlsearch`           | Clear hlsearch overlay                           |
+| `:g/pat/CMD`                     | Run `:CMD` on every line matching `pat`          |
+| `:v/pat/CMD`                     | Run `:CMD` on every line *not* matching `pat`    |
 
 ### Options / customize
 
-| Command                                | Action                                                                |
-|----------------------------------------|-----------------------------------------------------------------------|
-| `:set NAME=VALUE`                      | Set typed option                                                      |
-| `:set NAME` (boolean)                  | Set to true                                                           |
-| `:set noNAME` (boolean)                | Set to false                                                          |
-| `:set NAME?`                           | Echo current value                                                    |
-| `:options`                             | List every customizable option                                        |
-| `:describe-option NAME`                | Show one option's full metadata                                       |
-| `:describe-option-resolution NAME`     | Show which resolver layer provides `NAME`'s value                     |
-| `:customize`                           | Open the customize picker                                             |
-| `:customize <group>`                   | Open the focused group view                                           |
-| `:customize <mode-name>`               | Open the mode's contributed-options view                              |
+| Command                            | Action                                            |
+|------------------------------------|---------------------------------------------------|
+| `:set NAME=VALUE`                  | Set typed option                                  |
+| `:set NAME` (boolean)              | Set to true                                       |
+| `:set noNAME` (boolean)            | Set to false                                      |
+| `:set NAME?`                       | Echo current value                                |
+| `:options`                         | List every customizable option                    |
+| `:describe-option NAME`            | Show one option's full metadata                   |
+| `:describe-option-resolution NAME` | Show which resolver layer provides `NAME`'s value |
+| `:customize`                       | Open the customize picker                         |
+| `:customize <group>`               | Open the focused group view                       |
+| `:customize <mode-name>`           | Open the mode's contributed-options view          |
 
 ### Modes
 
-| Command              | Action                                              |
-|----------------------|-----------------------------------------------------|
-| `:<mode-name>`          | Toggle a registered mode (e.g. `:lsp-mode`)      |
+| Command                  | Action                                          |
+|--------------------------|-------------------------------------------------|
+| `:<mode-name>`           | Toggle a registered mode (e.g. `:lsp-mode`)     |
 | `:describe-active-modes` | The mode stack live on this buffer, with chords |
-| `:list-modes`           | List every registered mode                       |
-| `:describe-mode N`      | Show one mode's metadata                         |
+| `:list-modes`            | List every registered mode                      |
+| `:describe-mode N`       | Show one mode's metadata                        |
 
 ### LSP
 
 See [`lsp`](help:lsp) for the full inventory. Most-used:
 
-| Command                        | Action                                                |
-|--------------------------------|-------------------------------------------------------|
-| `:lsp-format`                  | Format the buffer                                     |
-| `:lsp-format-range`            | Format the Visual selection                          |
-| `:lsp-rename NEWNAME`          | Rename symbol under cursor                            |
-| `:lsp-symbols`                 | Document symbol picker                                |
-| `:lsp-workspace-symbol QUERY`  | Workspace symbol search                               |
-| `:lsp-code-action`             | Code-action picker                                    |
-| `:lsp-status`                  | Per-server attach + capability status                 |
-| `:lsp-log [server]`            | Open per-server log buffer                            |
-| `:lsp-trace SERVER`            | Toggle JSON-RPC tracing for SERVER                    |
-| `:lsp-trace-log [server]`      | Open the trace log                                    |
-| `:lsp-restart SERVER`          | Restart SERVER                                        |
-| `:lsp-server-log`              | Open the server's stderr feed                         |
+| Command                       | Action                                |
+|-------------------------------|---------------------------------------|
+| `:lsp-format`                 | Format the buffer                     |
+| `:lsp-format-range`           | Format the Visual selection           |
+| `:lsp-rename NEWNAME`         | Rename symbol under cursor            |
+| `:lsp-symbols`                | Document symbol picker                |
+| `:lsp-workspace-symbol QUERY` | Workspace symbol search               |
+| `:lsp-code-action`            | Code-action picker                    |
+| `:lsp-status`                 | Per-server attach + capability status |
+| `:lsp-log [server]`           | Open per-server log buffer            |
+| `:lsp-trace SERVER`           | Toggle JSON-RPC tracing for SERVER    |
+| `:lsp-trace-log [server]`     | Open the trace log                    |
+| `:lsp-restart SERVER`         | Restart SERVER                        |
+| `:lsp-server-log`             | Open the server's stderr feed         |
 
 ### Diagnostics
 
-| Command                | Action                                                         |
-|------------------------|----------------------------------------------------------------|
-| `:diagnostics`         | Open the diagnostics picker                                    |
-| `:diag-next` / `:cnext`| Jump to the next diagnostic                                    |
-| `:diag-prev` / `:cprev`| Jump to the previous                                           |
+| Command                 | Action                      |
+|-------------------------|-----------------------------|
+| `:diagnostics`          | Open the diagnostics picker |
+| `:diag-next` / `:cnext` | Jump to the next diagnostic |
+| `:diag-prev` / `:cprev` | Jump to the previous        |
 
 ### Help / introspection
 
-| Command                       | Action                                                     |
-|-------------------------------|------------------------------------------------------------|
-| `:help [TOPIC]`               | Open help for TOPIC; no arg → topic index                  |
-| `:describe-command NAME`      | Show one command's metadata                                |
-| `:list-commands`              | List every registered command, grouped by source (built-in / plugin / user) |
-| `:describe-active-modes`      | The mode stack live on this buffer: major + minors, each with its chords (`<C-h>m`) |
-| `:describe-mode NAME`         | Show one named mode's metadata (kind, options, capabilities) (`<C-h>M`) |
-| `:list-modes`                 | List every registered mode + its `:<mode-name>` toggle     |
-| `:describe-buffer`            | Show active buffer's state summary                         |
-| `:describe-key CHORD`         | Show what CHORD does (in every mode it's bound)            |
-| `:describe-bindings`          | Only the chords that can fire on this buffer (`<C-h>K`)    |
-| `:describe-events`            | List every typed event                                     |
-| `:describe-event NAME`        | Show one event's descriptor                                |
-| `:apropos PATTERN`            | Search commands + options + events for PATTERN             |
-| `:keymap`                     | Every default chord binding in every mode (the exhaustive reference) |
+| Command                  | Action                                                                              |
+|--------------------------|-------------------------------------------------------------------------------------|
+| `:help [TOPIC]`          | Open help for TOPIC; no arg → topic index                                           |
+| `:describe-command NAME` | Show one command's metadata                                                         |
+| `:list-commands`         | List every registered command, grouped by source (built-in / plugin / user)         |
+| `:describe-active-modes` | The mode stack live on this buffer: major + minors, each with its chords (`<C-h>m`) |
+| `:describe-mode NAME`    | Show one named mode's metadata (kind, options, capabilities) (`<C-h>M`)             |
+| `:list-modes`            | List every registered mode + its `:<mode-name>` toggle                              |
+| `:describe-buffer`       | Show active buffer's state summary                                                  |
+| `:describe-key CHORD`    | Show what CHORD does (in every mode it's bound)                                     |
+| `:describe-bindings`     | Only the chords that can fire on this buffer (`<C-h>K`)                             |
+| `:describe-events`       | List every typed event                                                              |
+| `:describe-event NAME`   | Show one event's descriptor                                                         |
+| `:apropos PATTERN`       | Search commands + options + events for PATTERN                                      |
+| `:keymap`                | Every default chord binding in every mode (the exhaustive reference)                |
 
 ### State / scratch
 
-| Command           | Action                                          |
-|-------------------|-------------------------------------------------|
-| `:reg`/`:registers` | List populated registers                      |
-| `:marks`          | List set marks                                  |
-| `:jumps`          | Not a command — the ring is `:picker jumps`, and `<C-o>` / `<C-i>` walk it |
-| `:reload-snippets`| Re-read every snippet file                      |
+| Command             | Action                                                                     |
+|---------------------|----------------------------------------------------------------------------|
+| `:reg`/`:registers` | List populated registers                                                   |
+| `:marks`            | List set marks                                                             |
+| `:jumps`            | Not a command — the ring is `:picker jumps`, and `<C-o>` / `<C-i>` walk it |
+| `:reload-snippets`  | Re-read every snippet file                                                 |
 
 ### Completion
 
-| Command            | Action                                          |
-|--------------------|-------------------------------------------------|
-| `:complete`        | Trigger LSP completion at cursor                |
+| Command     | Action                           |
+|-------------|----------------------------------|
+| `:complete` | Trigger LSP completion at cursor |
 
 ### Misc
 
-| Command                | Action                                         |
-|------------------------|------------------------------------------------|
-| `:hover [TEXT]`        | Open a hover popup with `TEXT` (testing path)  |
-| `:HoverClose`          | Dismiss active hover popup                     |
-| `:42`                  | Jump to line 42                                |
-| `:'a,'b!CMD`           | (Future) Filter range through external `CMD`   |
-| `:!CMD`                | (Future) Run external `CMD`                    |
+| Command         | Action                                        |
+|-----------------|-----------------------------------------------|
+| `:hover [TEXT]` | Open a hover popup with `TEXT` (testing path) |
+| `:HoverClose`   | Dismiss active hover popup                    |
+| `:42`           | Jump to line 42                               |
+| `:'a,'b!CMD`    | (Future) Filter range through external `CMD`  |
+| `:!CMD`         | (Future) Run external `CMD`                   |
 
 ---
 
@@ -369,17 +369,17 @@ modifier escapes — `\u`, `\l` — land in a follow-up.)
 A range goes in front of a command and says which lines it acts on. The
 addresses are vim's.
 
-| Address              | Meaning                                              |
-|----------------------|------------------------------------------------------|
-| `42`                 | Line 42                                              |
-| `.`                  | The cursor line                                      |
-| `$`                  | The last line                                        |
-| `%`                  | Every line (the same as `1,$`)                       |
-| `'a`                 | The line of mark `a`                                 |
-| `'<` / `'>`          | The first / last line of the last Visual selection   |
-| `/pat/`              | The next line matching `pat`, wrapping round         |
-| `?pat?`              | The previous line matching `pat`, wrapping round     |
-| `+5` / `-5`          | Five lines after / before; alone, from the cursor    |
+| Address     | Meaning                                            |
+|-------------|----------------------------------------------------|
+| `42`        | Line 42                                            |
+| `.`         | The cursor line                                    |
+| `$`         | The last line                                      |
+| `%`         | Every line (the same as `1,$`)                     |
+| `'a`        | The line of mark `a`                               |
+| `'<` / `'>` | The first / last line of the last Visual selection |
+| `/pat/`     | The next line matching `pat`, wrapping round       |
+| `?pat?`     | The previous line matching `pat`, wrapping round   |
+| `+5` / `-5` | Five lines after / before; alone, from the cursor  |
 
 Two addresses joined by a comma are a range, both ends included:
 `42,50`, `.,$`, `'a,'b`, `/begin/,/end/`. Offsets attach to any address and
@@ -391,16 +391,16 @@ Patterns are the same regular expressions `:s` and `/` take.
 
 **What takes a range**
 
-| Command                    | With a range                                   |
-|----------------------------|------------------------------------------------|
+| Command                    | With a range                                      |
+|----------------------------|---------------------------------------------------|
 | `:d[elete]`                | Delete those lines (into the register, like `dd`) |
-| `:y[ank]`                  | Yank those lines                               |
-| `:>` / `:<`                | Shift those lines right / left                 |
-| `:s/pat/repl/[flags]`      | Substitute on those lines                      |
-| `:g/pat/cmd`, `:v/pat/cmd` | Run `cmd` on the matching lines among them     |
-| `:!cmd`                    | Filter those lines through a shell command     |
-| `:narrow`                  | Narrow to those lines                          |
-| (nothing)                  | Jump to the range's last line                  |
+| `:y[ank]`                  | Yank those lines                                  |
+| `:>` / `:<`                | Shift those lines right / left                    |
+| `:s/pat/repl/[flags]`      | Substitute on those lines                         |
+| `:g/pat/cmd`, `:v/pat/cmd` | Run `cmd` on the matching lines among them        |
+| `:!cmd`                    | Filter those lines through a shell command        |
+| `:narrow`                  | Narrow to those lines                             |
+| (nothing)                  | Jump to the range's last line                     |
 
 With no range, `:d`, `:y`, `:>`, `:<` and `:s` act on the cursor line and
 `:g` on the whole buffer.
@@ -466,7 +466,8 @@ stopped. It runs in the directory of the file being edited.
 
 **With no range, it runs the command and shows its output.** `:!git
 status` streams into the `*shell-command*` buffer; `<C-c>` there stops it
-and `gr` runs it again. It is deliberately separate from
+and `gr` runs it again. `:shell-command` is the same command by name, and
+`:shell-command-kill` stops it from anywhere. It is deliberately separate from
 [`:compile`](help:compilation-mode): nothing in the output is parsed, and
 it never touches the build's output, error list or `:recompile` command.
 See [shell-command-mode](help:shell-command-mode).
@@ -481,15 +482,15 @@ short alias + sometimes a vim-style abbreviation. The full
 alias table is dynamic; `:describe-command NAME` lists each
 command's known aliases. Examples:
 
-| Long form            | Aliases                                |
-|----------------------|----------------------------------------|
-| `:write`             | `:w`                                   |
-| `:edit`              | `:e`                                   |
-| `:quit`              | `:q`                                   |
-| `:buffer-next`       | `:bn`, `:bnext`                        |
-| `:nohlsearch`        | `:noh`                                 |
-| `:diagnostics-next`  | `:diag-next`, `:dnext`, `:cnext`, `:cn`|
-| `:buffer-picker`     | `:buffers`, `:b`                       |
+| Long form           | Aliases                                 |
+|---------------------|-----------------------------------------|
+| `:write`            | `:w`                                    |
+| `:edit`             | `:e`                                    |
+| `:quit`             | `:q`                                    |
+| `:buffer-next`      | `:bn`, `:bnext`                         |
+| `:nohlsearch`       | `:noh`                                  |
+| `:diagnostics-next` | `:diag-next`, `:dnext`, `:cnext`, `:cn` |
+| `:buffer-picker`    | `:buffers`, `:b`                        |
 
 ---
 

@@ -23,10 +23,10 @@ use crate::WitBoundary;
 use crate::boundary::path_to_wit;
 use crate::lattice::plugin_host::types::{
     Event as WitEvent, EventAppliedEdit as WitEventAppliedEdit, EventDocumentChanged,
-    EventDocumentOpened, EventDocumentPath, EventFilter as WitEventFilter,
-    EventKind as WitEventKind, EventModalModeChanged, EventModeLifecycle, EventOptionChanged,
-    EventPlugin as WitEventPlugin, EventPluginLifecycle as WitEventPluginLifecycle,
-    EventSelectionsChanged,
+    EventDocumentOpened, EventDocumentPath, EventFilter as WitEventFilter, EventJobFinished,
+    EventJobProgress, EventKind as WitEventKind, EventModalModeChanged, EventModeLifecycle,
+    EventOptionChanged, EventPlugin as WitEventPlugin,
+    EventPluginLifecycle as WitEventPluginLifecycle, EventSelectionsChanged,
 };
 use lattice_keymap::ModeId;
 use lattice_protocol::event::AppliedEdit as NativeEventAppliedEdit;
@@ -131,6 +131,9 @@ impl WitBoundary for NativeEventKind {
             }
             // OR.2: a plugin's own directory watch fired.
             NativeEventKind::FilesChanged => WitEventKind::FilesChanged,
+            // LH.0: a plugin's own host job moved, or ended.
+            NativeEventKind::JobProgress => WitEventKind::JobProgress,
+            NativeEventKind::JobFinished => WitEventKind::JobFinished,
         })
     }
 
@@ -155,6 +158,8 @@ impl WitBoundary for NativeEventKind {
             WitEventKind::PluginUnloaded => NativeEventKind::PluginUnloaded,
             // OR.2: what a guest passes to `subscribe` to hear its own watch.
             WitEventKind::FilesChanged => NativeEventKind::FilesChanged,
+            WitEventKind::JobProgress => NativeEventKind::JobProgress,
+            WitEventKind::JobFinished => NativeEventKind::JobFinished,
         })
     }
 }
@@ -296,6 +301,21 @@ impl WitBoundary for NativeEvent {
                     .filter_map(|p| p.to_str().map(str::to_string))
                     .collect(),
             ),
+            // LH.0. As with a watch batch, the plugin id does not cross: the
+            // delivery actor has already matched it.
+            NativeEvent::JobProgress {
+                id, done, total, ..
+            } => WitEvent::JobProgress(EventJobProgress {
+                id: *id,
+                done: *done,
+                total: *total,
+            }),
+            NativeEvent::JobFinished { id, result, .. } => {
+                WitEvent::JobFinished(EventJobFinished {
+                    id: *id,
+                    outcome: result.clone(),
+                })
+            }
         })
     }
 
@@ -380,6 +400,19 @@ impl WitBoundary for NativeEvent {
             WitEvent::FilesChanged(paths) => NativeEvent::FilesChanged {
                 plugin: 0,
                 paths: paths.into_iter().map(std::path::PathBuf::from).collect(),
+            },
+            // LH.0: likewise host-originated, so likewise unaddressed —
+            // delivered to nobody if a guest ever fabricates one.
+            WitEvent::JobProgress(p) => NativeEvent::JobProgress {
+                plugin: 0,
+                id: p.id,
+                done: p.done,
+                total: p.total,
+            },
+            WitEvent::JobFinished(p) => NativeEvent::JobFinished {
+                plugin: 0,
+                id: p.id,
+                result: p.outcome,
             },
         })
     }

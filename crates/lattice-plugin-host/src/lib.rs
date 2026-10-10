@@ -127,6 +127,8 @@ pub mod trampoline;
 pub mod tree_resource;
 // OR.2: the `host-services.watch` / `unwatch` seam — a debounced directory
 // watch whose batches are addressed to the plugin that armed them.
+mod download_host;
+mod job;
 pub mod ui_host;
 pub mod wake;
 mod watch_host;
@@ -1191,6 +1193,17 @@ struct PluginState {
     /// channel closing — stops every watch with no bookkeeping anyone can
     /// forget to write. `unwatch` is then a `remove` on this map.
     watches: std::collections::HashMap<PathBuf, watch_host::Watch>,
+    /// LH.0: the host jobs this guest started that may still be running.
+    ///
+    /// On the `Store` for `watches`' reason — dropping a guard cancels its
+    /// job, so unload and quarantine stop a download with nothing to remember.
+    /// Finished guards are pruned as new ones are added.
+    jobs: Vec<job::JobGuard>,
+    /// LH.0: jobs requested while `register-events` is still running, held
+    /// unstarted until this plugin's subscriptions are on the bus —
+    /// `deferred_events`' window, for what a guest can START. A transfer from
+    /// a local mirror can finish in less time than the wiring takes.
+    deferred_jobs: Vec<job::PendingJob>,
     /// PM.7: plugins this guest declared via `plugin-manager.require` during
     /// `register-plugins`. Recorded here, drained by
     /// [`PluginHost::spawn_plugin_manager_plugin`] after the export returns —
@@ -1239,6 +1252,22 @@ impl WasiView for PluginState {
 /// omits the outer `wasmtime::Result`. Walk logic + the capability gate live in
 /// [`host_services::walk_within_grant`]; the impl just forwards with the Store's
 /// grant.
+impl PluginState {
+    /// LH.0: start a validated host job and return its id — or, inside
+    /// `register-events`, hold it until the subscriptions that will hear its
+    /// outcome are on the bus (the spawn starts it; see `deferred_jobs`).
+    fn launch_job(&mut self, pending: job::PendingJob) -> u64 {
+        let id = pending.id();
+        if self.deferred_events.is_some() {
+            self.deferred_jobs.push(pending);
+        } else {
+            self.jobs.retain(|j| !j.is_done());
+            self.jobs.push(pending.start());
+        }
+        id
+    }
+}
+
 impl crate::lattice::plugin_host::host_services::Host for PluginState {
     /// OA.23: where a line of a multibuffer came from.
     ///
@@ -1433,6 +1462,49 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
     fn unwatch(&mut self, path: String) -> Result<(), String> {
         self.watches.remove(&PathBuf::from(&path));
         Ok(())
+    }
+
+    /// LH.0.1 `http-download`. Validates against the grant and returns a job
+    /// id; the transfer runs on its own thread and reports through
+    /// `job-progress` / `job-finished`, addressed to this plugin.
+    ///
+    /// Refused without an event bus for `watch`'s reason: the outcome could
+    /// never be delivered, and a download nobody hears about is a file that
+    /// appears on disk with no way to know it is complete.
+    fn http_download(&mut self, url: String, sha256: String, dest: String) -> Result<u64, String> {
+        let Some(ctx) = &self.event_emit else {
+            tracing::warn!(
+                url = %url,
+                "http-download refused: plugin has no event bus wired on this seam"
+            );
+            return Err(format!(
+                "http download denied: '{url}' — this seam has no event bus, so the \
+                 outcome could never be delivered"
+            ));
+        };
+        let pending = download_host::prepare(
+            &self.grant,
+            Arc::clone(&ctx.bus),
+            ctx.plugin_id.0,
+            &url,
+            &sha256,
+            &dest,
+        )?;
+        Ok(self.launch_job(pending))
+    }
+
+    /// LH.0 `cancel-job`. Scoped to this plugin's own jobs by the host-issued
+    /// id, so a guessed id cannot stop another plugin's work.
+    fn cancel_job(&mut self, id: u64) {
+        // Still held for the registration window: it never started, but the
+        // guest holds its id and is owed exactly one outcome.
+        if let Some(at) = self.deferred_jobs.iter().position(|j| j.id() == id) {
+            self.deferred_jobs.swap_remove(at).cancel_unstarted();
+            return;
+        }
+        if let Some(ctx) = &self.event_emit {
+            job::cancel(ctx.plugin_id.0, id);
+        }
     }
 
     /// OR.1 `store-put`. Gated on `state:write`; `err` names which of the three
@@ -4271,6 +4343,8 @@ impl PluginHost {
                 multibuffer_view_host::MultibufferViewContributions::default(),
             // OR.2: empty until the guest arms one; dropped with this `Store`.
             watches: std::collections::HashMap::new(),
+            jobs: Vec::new(),
+            deferred_jobs: Vec::new(),
             require_contributions: Default::default(),
         };
         let mut store = Store::new(&self.engine, state);

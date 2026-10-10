@@ -55,7 +55,7 @@ id = "init"
 provides = ["config", "keymap", "events"]
 "#;
 
-const INIT_WIT: &str = r#"package lattice:plugin-host@0.1.0;
+const INIT_WIT: &str = r#"package lattice:plugin-host@0.2.0;
 
 // Your init.rs world — the seams you use. EXPORT the register-* your guest
 // implements; IMPORT the host APIs you call. Add/remove seams as needed. Browse
@@ -205,7 +205,7 @@ provides = ["grammar", "modes"]
 default_mode = "__MODE__"
 "#;
 
-const PLUGIN_WORLD_WIT: &str = r#"package lattice:plugin-host@0.1.0;
+const PLUGIN_WORLD_WIT: &str = r#"package lattice:plugin-host@0.2.0;
 
 // Your plugin world — a grammar action + a minor mode that binds a key to it.
 // Add seams (config, events, decorations, …) + their exports as you grow it.

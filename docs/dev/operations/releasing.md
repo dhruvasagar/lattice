@@ -142,9 +142,12 @@ cargo xtask bump-plugin-api 0.2.0
 cargo test -p lattice-wit      # the guard proves it landed everywhere
 ```
 
-That rewrites every `package` declaration, all three published crate versions,
-the SDK's `version` on its dependency on the derive crate, and refreshes
-`Cargo.lock`. Then publish the three crates (above), because a plugin cannot
+That rewrites every `package` declaration, the WIT embedded in Rust source
+(the `lattice plugin new` scaffold templates and one fixture's inline world —
+`INLINE_WIT` in the xtask), all three published crate versions, the SDK's
+`version` on its dependency on the derive crate, and refreshes `Cargo.lock`.
+It does **not** touch prose: the `lattice-wit = "X.Y"` lines in `README.md`,
+the two crate READMEs and `plugin-authoring.md` are edited by hand. Then publish the three crates (above), because a plugin cannot
 target a generation that is not on the index.
 
 The rule the guard enforces: **the crates' `major.minor` equals the WIT

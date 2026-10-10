@@ -28,7 +28,7 @@ does — a bounded `walk` covers the fuzzy-finder.
 
 - [`position`](types.md#record-position) from [`types`](types.md)
 
-## Functions (20)
+## Functions (22)
 
 ### `can-write-file`
 
@@ -61,6 +61,32 @@ Ok(vec![Effect::Echo(EchoPayload {
     level: EchoLevel::Info,
     text,
 })])
+```
+
+### `cancel-job`
+
+```wit
+cancel-job: func(id: u64)
+```
+
+Cancel a job this plugin started. It still reports `job-finished`, as
+`err("cancelled")`.
+
+Any instance of the same plugin may cancel — the chord that cancels an
+install runs on the grammar seam, and the job it stops may have been
+started from the events seam. Another plugin's id, an id that has
+already finished and an id that never existed are all silently nothing:
+a cancel is idempotent, because the alternative is a guest that must
+track host state to avoid an error.
+
+Cooperative: the job stops at its next step, not mid-step.
+
+**Example — Cancel a job by the id the function that started it returned** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+// A cancel of an id that is not ours to cancel — or not anyone's —
+// is nothing, so a plugin need not track which are still running.
+host_services::cancel_job(u64::MAX);
 ```
 
 ### `clamp-position`
@@ -206,6 +232,63 @@ Ok(vec![Effect::Echo(EchoPayload {
         ctx.buffer_id, ctx.cursor.line
     ),
 })])
+```
+
+### `http-download`
+
+```wit
+http-download: func(url: string, sha256: string, dest: string) -> result<u64, string>
+```
+
+Download `url` (GET) to the file `dest`, accepting it only if its
+SHA-256 equals `sha256` (64 hex digits, either case). **A job** (see
+above): returns its id; `job-progress` counts bytes received.
+
+The bytes go from the socket to the disk without visiting the guest —
+which matters beyond speed, because a guest cannot write files from
+every seam (see `read-file`).
+
+**Two grants, both re-checked host-side**, and both refused here, as an
+immediate `err`, so a manifest problem shows up at the call rather than
+as an event some time later:
+
+- the URL's host must be a granted `net:http:<host>`. A grant entry
+  carrying a port (`net:http:localhost:8080`) matches that port only;
+  one without matches any. The match is exact: a subdomain is a
+  different host.
+- `dest` must lie within a granted `fs:write` prefix.
+
+**Every redirect hop is checked against the same grant.** The host
+follows redirects itself, and a hop to an ungranted host fails the job
+with a message naming that host. A release URL that bounces to a CDN
+therefore needs the CDN granted by name — otherwise one granted host
+would be a door to any host a server cared to point at.
+
+`https` only; plain `http` is accepted solely for a loopback address.
+Redirects, size and time are bounded by the host.
+
+**The hash check is not the guest's to remember.** The body is written
+to a sibling `<dest>.part` and renamed into place only on a match. A
+mismatch, a cancel, a dropped connection and an oversized body all leave
+`dest` untouched and no part file behind, so "is the file there" is a
+sound test for "was it verified". An existing `dest` is replaced, by the
+rename, only on success. Missing parent directories are created.
+
+`err` for a malformed URL or digest, either refusal above, or a seam
+with no event bus to report on — each named.
+
+**Example — Subscribe to the job events, then fetch a pinned file into a granted directory** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+events::subscribe(&kind_filter(EventKind::JobProgress), 8);
+events::subscribe(&kind_filter(EventKind::JobFinished), 8);
+let outcome = match host_services::http_download(url, sha256, dest) {
+    // The id is what `job-finished` will carry; a plugin running
+    // several jobs keys its state by it.
+    Ok(_id) => "download:started".to_string(),
+    Err(e) => format!("download:err({e})"),
+};
+record(&outcome);
 ```
 
 ### `local-utc-offset-seconds`

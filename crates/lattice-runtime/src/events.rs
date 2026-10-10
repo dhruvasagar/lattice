@@ -818,7 +818,11 @@ fn event_path(event: &Event) -> Option<&Path> {
         // match or miss a whole batch on the basis of an arbitrary member, which
         // is worse than not matching at all — a plugin filters the batch inside
         // its own handler, which is where it re-reads the files anyway.
-        | Event::FilesChanged { .. } => None,
+        | Event::FilesChanged { .. }
+        // LH.0: a host job may name a file, but it is not a document event —
+        // a `path_glob` subscription is about buffers.
+        | Event::JobProgress { .. }
+        | Event::JobFinished { .. } => None,
     }
 }
 
@@ -882,7 +886,10 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         | Event::BackgroundTaskFinished { .. }
         // OR.2: a watch batch is about files on disk, most of which are not
         // open in any buffer and therefore in no major mode at all.
-        | Event::FilesChanged { .. } => None,
+        | Event::FilesChanged { .. }
+        // LH.0: not buffer-scoped either.
+        | Event::JobProgress { .. }
+        | Event::JobFinished { .. } => None,
     }
 }
 

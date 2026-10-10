@@ -327,6 +327,14 @@ impl EventActor {
         {
             return;
         }
+        // LH.0: a host job is addressed the same way, for the same reason —
+        // what a plugin is fetching or running is its own business.
+        if let NativeEvent::JobProgress { plugin, .. } | NativeEvent::JobFinished { plugin, .. } =
+            &event
+            && *plugin != self.id.0
+        {
+            return;
+        }
         let wit = match event.to_wit() {
             Ok(w) => w,
             Err(error) => {
@@ -598,6 +606,13 @@ impl PluginHost {
             for (name, payload) in deferred {
                 crate::host_services::emit_plugin_event(bus, name, payload);
             }
+        }
+        // LH.0: and start the jobs it asked for from there, for the same
+        // reason and at the same point — now there is something to hear the
+        // outcome.
+        let state = store.data_mut();
+        for pending in std::mem::take(&mut state.deferred_jobs) {
+            state.jobs.push(pending.start());
         }
 
         let actor = EventActor {

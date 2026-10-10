@@ -5787,6 +5787,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "streaming-iterator",
  "tempfile",
  "thiserror 2.0.18",
@@ -5794,6 +5795,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tree-sitter",
+ "ureq",
  "wasmtime 46.0.1",
  "wasmtime-wasi",
  "wat",
@@ -5855,7 +5857,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lattice-plugin-sdk-derive",
  "rmp-serde",
@@ -5864,7 +5866,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-sdk-derive"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6097,7 +6099,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-wit"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "lazy_static"

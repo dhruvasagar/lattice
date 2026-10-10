@@ -109,6 +109,10 @@ the **auto-pair epic (AP.0.1→AP.4) is complete** — auto-pair is the first
 track (PM.1–PM.4)**. **Remaining Phase-8 work:** the plugin-manager
 **user track (PM.5–PM.8** — use-package `require` + build-on-boot), more
 core plugins, and repackaging the built-in modes as WASM components.
+**Lighthouse (LSP server manager) is under way (2026-10-10):** re-planned as
+request → addressed-event host seams, and the first, `http-download`
+(LH.0.1 — the first enforcement of `net:http`), has landed; see
+[`slice-plans/lighthouse.md`](slice-plans/lighthouse.md).
 
 **Gutter signs (2026-09-08, SG.1–SG.4b landed).** A generic sign mechanism —
 vim's `:sign define` / `:sign place`, with the host owning what a sign IS and

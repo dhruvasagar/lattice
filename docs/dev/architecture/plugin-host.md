@@ -595,6 +595,46 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   the grant, no event bus on this seam, a missing path, or a watcher the platform refused — and
   never fatal: the plugin falls back to indexing on boot plus an explicit resync, which is degraded
   and honest rather than appearing to work and going stale.
+- **Host jobs (✅ LH.0)** — the shape of every host-service whose work outlasts the call, in
+  `job.rs`. Full rationale in [`lighthouse.md`](lighthouse.md) §3.0.
+
+  **A request, not a call.** The function returns an id and the host works on its own thread; the
+  outcome is the `job-finished` arm of `event` (with coalesced `job-progress`), addressed to the
+  requesting plugin exactly as a watch batch is. Not a preference: `host-services` is on the
+  grammar seam's sync linker too, so a call that lasted as long as a download would run on the
+  dispatch thread, and from any seam it would outlive the per-call wall-clock budget.
+
+  **One event vocabulary for every kind of job.** An arm added to the `event` variant breaks every
+  guest that matches on it and moves the package version; per-seam arms (`download-finished`,
+  `extract-finished`, …) would spend an ABI generation each. A guest keys its state by id and knows
+  what it started. Exactly one `job-finished` per id, a cancelled job included.
+
+  **Two lifetimes, on purpose.** The guard that cancels on drop lives on the starting
+  `PluginState` (unload and quarantine stop a job, as they stop a watch). `cancel-job(id)` goes
+  through a process-wide table scoped by plugin id, because the instance that cancels — a chord, on
+  the grammar seam — is routinely not the instance that started it, and ids are sequential, so the
+  ownership check is all that keeps one plugin off another's job. Cancellation is cooperative: a
+  job stops at its next step.
+
+  **Started from `register-events`, a job is held** until the subscriptions it will report to are
+  on the bus (PH7.8c's window, for what a guest can *start*). A lost `job-finished` strands the
+  state machine waiting on it.
+- **Download (✅ LH.0.1)**: `host-services.http-download(url, sha256, dest) -> result<u64, string>`,
+  a host job, and the first enforcement of the `net:http:<host>` grant that has ridden the manifest
+  as metadata since PH7.2 ([`lighthouse.md`](lighthouse.md) §3.1).
+
+  **Refusals a manifest can fix are synchronous** — an ungranted host, a destination outside
+  `fs:write`, a malformed digest — so they surface at the call. What only the network knows (a
+  status, a redirect, a hash) arrives as the event.
+
+  **Redirects are followed by the host, one grant-checked hop at a time.** The client follows none
+  itself; a hop to an ungranted host fails the download naming that host. Otherwise a grant for one
+  host is a grant for whichever host it chooses to point at. The match is exact — a subdomain is a
+  different host — and `https`-only, bar loopback.
+
+  **The part file is the integrity mechanism.** The body streams to `<dest>.part` while being
+  hashed and is renamed into place only on a matching SHA-256; every other exit removes it. A
+  plugin cannot forget to verify, and "the file exists" is a sound test for "it was verified".
 - **Host-minted ids (✅ OR.3)**: `host-services.new-uuid() -> result<string, string>`, a random
   (v4) UUID, uppercase, canonical `8-4-4-4-12`.
 

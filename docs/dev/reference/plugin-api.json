@@ -1,5 +1,5 @@
 {
-  "package": "lattice:plugin-host@0.1.0",
+  "package": "lattice:plugin-host@0.2.0",
   "interfaces": [
     {
       "name": "buffer",
@@ -1767,6 +1767,31 @@
           ]
         },
         {
+          "name": "cancel-job",
+          "display_name": "cancel-job",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "id",
+              "type": "u64"
+            }
+          ],
+          "result": null,
+          "signature": "cancel-job: func(id: u64)",
+          "doc": "Cancel a job this plugin started. It still reports `job-finished`, as\n`err(\"cancelled\")`.\n\nAny instance of the same plugin may cancel — the chord that cancels an\ninstall runs on the grammar seam, and the job it stops may have been\nstarted from the events seam. Another plugin's id, an id that has\nalready finished and an id that never existed are all silently nothing:\na cancel is idempotent, because the alternative is a guest that must\ntrack host state to avoid an error.\n\nCooperative: the job stops at its next step, not mid-step.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.cancel-job",
+              "caption": "Cancel a job by the id the function that started it returned",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// A cancel of an id that is not ours to cancel — or not anyone's —\n// is nothing, so a plugin need not track which are still running.\nhost_services::cancel_job(u64::MAX);"
+            }
+          ]
+        },
+        {
           "name": "clamp-position",
           "display_name": "clamp-position",
           "kind": "freestanding",
@@ -1875,6 +1900,39 @@
               "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
               "language": "rust",
               "code": "let answer = match host_services::excerpt_source(\n    u64::from(ctx.buffer_id),\n    ctx.cursor.line,\n) {\n    Some(loc) => format!(\"{}@{} in {}\", loc.path, loc.line, loc.buffer),\n    None => \"none\".to_string(),\n};\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\n        \"excerpt-source({},{})={answer}\",\n        ctx.buffer_id, ctx.cursor.line\n    ),\n})])"
+            }
+          ]
+        },
+        {
+          "name": "http-download",
+          "display_name": "http-download",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "url",
+              "type": "string"
+            },
+            {
+              "name": "sha256",
+              "type": "string"
+            },
+            {
+              "name": "dest",
+              "type": "string"
+            }
+          ],
+          "result": "result<u64, string>",
+          "signature": "http-download: func(url: string, sha256: string, dest: string) -> result<u64, string>",
+          "doc": "Download `url` (GET) to the file `dest`, accepting it only if its\nSHA-256 equals `sha256` (64 hex digits, either case). **A job** (see\nabove): returns its id; `job-progress` counts bytes received.\n\nThe bytes go from the socket to the disk without visiting the guest —\nwhich matters beyond speed, because a guest cannot write files from\nevery seam (see `read-file`).\n\n**Two grants, both re-checked host-side**, and both refused here, as an\nimmediate `err`, so a manifest problem shows up at the call rather than\nas an event some time later:\n\n- the URL's host must be a granted `net:http:<host>`. A grant entry\n  carrying a port (`net:http:localhost:8080`) matches that port only;\n  one without matches any. The match is exact: a subdomain is a\n  different host.\n- `dest` must lie within a granted `fs:write` prefix.\n\n**Every redirect hop is checked against the same grant.** The host\nfollows redirects itself, and a hop to an ungranted host fails the job\nwith a message naming that host. A release URL that bounces to a CDN\ntherefore needs the CDN granted by name — otherwise one granted host\nwould be a door to any host a server cared to point at.\n\n`https` only; plain `http` is accepted solely for a loopback address.\nRedirects, size and time are bounded by the host.\n\n**The hash check is not the guest's to remember.** The body is written\nto a sibling `<dest>.part` and renamed into place only on a match. A\nmismatch, a cancel, a dropped connection and an oversized body all leave\n`dest` untouched and no part file behind, so \"is the file there\" is a\nsound test for \"was it verified\". An existing `dest` is replaced, by the\nrename, only on success. Missing parent directories are created.\n\n`err` for a malformed URL or digest, either refusal above, or a seam\nwith no event bus to report on — each named.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.http-download",
+              "caption": "Subscribe to the job events, then fetch a pinned file into a granted directory",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "events::subscribe(&kind_filter(EventKind::JobProgress), 8);\nevents::subscribe(&kind_filter(EventKind::JobFinished), 8);\nlet outcome = match host_services::http_download(url, sha256, dest) {\n    // The id is what `job-finished` will carry; a plugin running\n    // several jobs keys its state by it.\n    Ok(_id) => \"download:started\".to_string(),\n    Err(e) => format!(\"download:err({e})\"),\n};\nrecord(&outcome);"
             }
           ]
         },
@@ -9255,7 +9313,7 @@
           "name": "event-kind",
           "kind": "enum",
           "doc": "Mirrors `lattice_protocol::EventKind` — the discriminator a subscription\nfilters on. Each arm pairs 1:1 with an `event` variant arm.",
-          "definition": "enum event-kind {\n    document-opened,\n    document-closed,\n    before-save,\n    document-saved,\n    document-changed,\n    selections-changed,\n    modal-mode-changed,\n    before-quit,\n    option-changed,\n    major-entered,\n    major-exiting,\n    minor-activated,\n    minor-deactivated,\n    plugin,\n    pre-plugin-loaded,\n    plugin-loaded,\n    plugin-unloaded,\n    files-changed,\n}",
+          "definition": "enum event-kind {\n    document-opened,\n    document-closed,\n    before-save,\n    document-saved,\n    document-changed,\n    selections-changed,\n    modal-mode-changed,\n    before-quit,\n    option-changed,\n    major-entered,\n    major-exiting,\n    minor-activated,\n    minor-deactivated,\n    plugin,\n    pre-plugin-loaded,\n    plugin-loaded,\n    plugin-unloaded,\n    files-changed,\n    job-progress,\n    job-finished,\n}",
           "members": [
             {
               "name": "document-opened",
@@ -9346,6 +9404,16 @@
               "name": "files-changed",
               "type": null,
               "doc": "OR.2: a directory this plugin asked the host to watch changed. One\nkind for every watch; the host addresses each batch to the plugin\nthat armed it, so subscribing to this kind never surfaces another\nplugin's watch."
+            },
+            {
+              "name": "job-progress",
+              "type": null,
+              "doc": "LH.0: a long-running host job this plugin started — a download,\nsay — has made progress. Addressed the same way: a plugin only ever\nhears about its own jobs."
+            },
+            {
+              "name": "job-finished",
+              "type": null,
+              "doc": "LH.0: a host job this plugin started has ended, one way or the\nother."
             }
           ],
           "examples": []
@@ -9375,6 +9443,49 @@
               "name": "minor-modes",
               "type": "option<list<string>>",
               "doc": "Restrict minor-mode lifecycle events to ones naming these minors —\nthe peer of `major-modes`, and NOT the same field.\n\n`minor-activated` / `minor-deactivated` carry the MINOR's name, so\na `major-modes` constraint rejects every one of them. Without this\na subscriber wanting one specific minor had to subscribe\nunfiltered and compare names in its handler — which wakes the\nplugin's task for every minor activation in every buffer, to do\nnothing.\n\nSeparate rather than merged into one `modes` list because there\nare far more minors than majors and the two ask different\nquestions: `major-modes` means *the buffer is entering one of\nthese majors*, this means *this specific minor turned on*. A\nmerged field would answer both at once and let a subscription fire\non a name collision across the two namespaces.\n\nConstraining both matches NOTHING, since no event carries both\nnames — the honest reading of \"a major event AND a minor event\"."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "event-job-progress",
+          "kind": "record",
+          "doc": "`event.job-progress` payload (LH.0).",
+          "definition": "record event-job-progress {\n    id: u64,\n    done: u64,\n    total: option<u64>,\n}",
+          "members": [
+            {
+              "name": "id",
+              "type": "u64",
+              "doc": "The id the host-service returned."
+            },
+            {
+              "name": "done",
+              "type": "u64",
+              "doc": "Units done so far. The function that started the job says what a\nunit is — bytes received, for `http-download`."
+            },
+            {
+              "name": "total",
+              "type": "option<u64>",
+              "doc": "The total in the same units; `none` when it is not known, in which\ncase there is no percentage to show, only a running count."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "event-job-finished",
+          "kind": "record",
+          "doc": "`event.job-finished` payload (LH.0).",
+          "definition": "record event-job-finished {\n    id: u64,\n    outcome: result<_, string>,\n}",
+          "members": [
+            {
+              "name": "id",
+              "type": "u64",
+              "doc": "The id the host-service returned."
+            },
+            {
+              "name": "outcome",
+              "type": "result<_, string>",
+              "doc": "`ok`: the job did what it was asked. `err`: it did not, the message\nsays why, and the function that started it says what is left\nbehind — for `http-download`, nothing."
             }
           ],
           "examples": []
@@ -9584,7 +9695,7 @@
           "name": "event",
           "kind": "variant",
           "doc": "Mirrors `lattice_protocol::Event` (owned; delivered to `on-event`). Each\nmulti-field arm carries an explicit payload record (the `effect` mirror\nprecedent); ids cross as `u64`, paths as `string` (a non-UTF-8 path is a\ntyped boundary error, never lossy). Text-bearing arms (`document-opened`)\ncarry the initial content the native event already clones for observers.",
-          "definition": "variant event {\n    document-opened(event-document-opened),\n    document-closed(u64),\n    before-save(event-document-path),\n    document-saved(event-document-path),\n    document-changed(event-document-changed),\n    selections-changed(event-selections-changed),\n    modal-mode-changed(event-modal-mode-changed),\n    before-quit,\n    option-changed(event-option-changed),\n    major-entered(event-mode-lifecycle),\n    major-exiting(event-mode-lifecycle),\n    minor-activated(event-mode-lifecycle),\n    minor-deactivated(event-mode-lifecycle),\n    plugin(event-plugin),\n    pre-plugin-loaded(string),\n    plugin-loaded(event-plugin-lifecycle),\n    plugin-unloaded(event-plugin-lifecycle),\n    files-changed(list<string>),\n}",
+          "definition": "variant event {\n    document-opened(event-document-opened),\n    document-closed(u64),\n    before-save(event-document-path),\n    document-saved(event-document-path),\n    document-changed(event-document-changed),\n    selections-changed(event-selections-changed),\n    modal-mode-changed(event-modal-mode-changed),\n    before-quit,\n    option-changed(event-option-changed),\n    major-entered(event-mode-lifecycle),\n    major-exiting(event-mode-lifecycle),\n    minor-activated(event-mode-lifecycle),\n    minor-deactivated(event-mode-lifecycle),\n    plugin(event-plugin),\n    pre-plugin-loaded(string),\n    plugin-loaded(event-plugin-lifecycle),\n    plugin-unloaded(event-plugin-lifecycle),\n    files-changed(list<string>),\n    job-progress(event-job-progress),\n    job-finished(event-job-finished),\n}",
           "members": [
             {
               "name": "document-opened",
@@ -9675,6 +9786,16 @@
               "name": "files-changed",
               "type": "list<string>",
               "doc": "OR.2: absolute paths that changed under a directory this plugin\nwatches, coalesced — a `git pull` rewriting two hundred files\narrives as ONE delivery carrying two hundred paths. Deduplicated and\nsorted; a removal is reported as a change (the consumer stats it),\nbecause an index that cannot see deletions offers destinations that\nno longer exist. A non-UTF-8 path is skipped rather than failing the\nbatch — `walk`'s rule, for `walk`'s reason.\n\nNo plugin id crosses: a guest only ever receives its own watch."
+            },
+            {
+              "name": "job-progress",
+              "type": "event-job-progress",
+              "doc": "LH.0: how far a host job has got. **Coalesced** host-side, so fast\nwork is a few deliveries rather than one per step — and a job that\ncompletes inside one interval sends none at all. Do not wait for\none before expecting `job-finished`."
+            },
+            {
+              "name": "job-finished",
+              "type": "event-job-finished",
+              "doc": "LH.0: a host job ended. Exactly one per id a host-service returned\n— a cancelled job reports here too, as `err(\"cancelled\")` — so a\nplugin can drive a state machine off it without a timeout.\n\nOne arm for every kind of job, deliberately. A plugin keys its state\nby the id and already knows what it started; and a new arm per kind\nwould be a breaking change to this variant each time the host\nlearned to do one more long-running thing."
             }
           ],
           "examples": []

@@ -36,8 +36,8 @@ wit_bindgen::generate!({
     inline: r#"
         package lattice:language-guest@0.1.0;
         world language-guest {
-            include lattice:plugin-host/language-plugin@0.1.0;
-            include lattice:plugin-host/help-plugin@0.1.0;
+            include lattice:plugin-host/language-plugin@0.2.0;
+            include lattice:plugin-host/help-plugin@0.2.0;
         }
     "#,
     path: "../../../../lattice-wit/wit",

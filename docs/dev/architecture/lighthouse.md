@@ -76,10 +76,10 @@ Each runs **host-side with full host authority** (the host process is not
 sandboxed), so — like `walk_within_grant` — the capability grant is re-checked at
 the seam, not delegated to WASI.
 
-### 3.0 The shape every long-running seam takes: request → addressed events
+### 3.0 The shape every long-running seam takes: a host job
 
-A long-running host-service **returns an id immediately** and reports through
-**events addressed to the plugin that asked** — the `watch` → `files-changed`
+A long-running host-service starts a **job**: it **returns an id immediately**
+and reports through **events addressed to the plugin that asked** — the `watch` → `files-changed`
 shape (OR.2), not a call that blocks until the work is done. Three facts about
 the host force this, and each was verified against source rather than assumed:
 
@@ -104,19 +104,38 @@ seam) — they are separate `Store`s.
 
 A job is owned by the `PluginState` that started it and is cancelled when that
 state drops (unload, quarantine): mechanism lives where its lifetime matches,
-with no teardown wiring to forget.
+with no teardown wiring to forget. Cancel **by id** is separate and
+process-wide, scoped by plugin id — the chord that cancels runs on the grammar
+seam and the job it stops was usually started from the events seam.
+
+**One event vocabulary for every kind of job**, not a pair of arms per seam:
+
+```wit
+// arms of `event` (types.wit)
+job-progress(event-job-progress),   // { id, done, total: option<u64> }
+job-finished(event-job-finished),   // { id, outcome: result<_, string> }
+
+// host-services
+cancel-job: func(id: u64);
+```
+
+An arm added to the `event` variant is an ABI break — every guest that matches
+on it stops compiling, and the package version must move (`0.1 → 0.2` was spent
+on exactly this). Per-seam arms would spend a generation per seam. A plugin
+keys its state by id and already knows what it started, so the kind would tell
+it nothing; a seam says what its `done`/`total` units are (bytes, for a
+download). Exactly one `job-finished` per id, a cancelled job included
+(`err("cancelled")`), so a guest drives a state machine off it without a
+timeout. A job requested from inside `register-events` is held until the
+plugin's subscriptions are on the bus, for the same reason.
 
 ### 3.1 `net:http` — `http-download`
 
 ```wit
 /// Download `url` (GET) to the file `dest`, verified against `sha256` (hex).
-/// Returns a download id at once; progress and the outcome arrive as the
-/// `download-progress` / `download-finished` events, addressed to this plugin.
+/// A job: returns its id at once; `job-progress` counts bytes received.
 http-download: func(url: string, sha256: string, dest: string)
 	-> result<u64, string>;
-
-/// Stop a download. Idempotent; an unknown or finished id is `ok`.
-cancel-download: func(id: u64);
 ```
 
 Gated twice, both re-checked host-side, both refused **synchronously** so a
@@ -139,7 +158,7 @@ leaves no partial install" is therefore a property of the seam, not of each
 plugin's discipline. The host hashes; the expected value is the guest's data and
 the host never learns where it came from.
 
-Progress is **coalesced** (a quiet interval between `download-progress`
+Progress is **coalesced** (a quiet interval between `job-progress`
 deliveries), so a fast link is a handful of guest calls rather than one per
 chunk. No bytes-returning `http-fetch` is offered: nothing needs one yet, and a
 small bounded variant is additive when something does.
@@ -148,14 +167,14 @@ small bounded variant is additive when something does.
 
 The unpack is host-side for §3.0's reasons plus one more: fuel. Inflating a
 release archive in the guest is CPU-bound work inside a fuel-metered call.
-Same request → addressed-event shape, gated on `fs:write` over the destination,
+A job like any other (§3.0), gated on `fs:write` over the destination,
 with entries that escape it (`..`, absolute paths, symlinks out) refused.
 Formats are the ones the registry needs (`gz` single-file, `tar.gz`, `zip`).
 
 ### 3.3 `proc:spawn` — `spawn-process`
 
 ```wit
-/// Run `command` with `args` in `cwd`. Returns a process id at once; output
+/// Run `command` with `args` in `cwd`. A job: returns its id at once; output
 /// lines and the exit status arrive as addressed events.
 /// Capability-gated on `proc:spawn`, which is BUNDLED-PLUGINS-ONLY (arbitrary
 /// spawn ≈ full trust; `capability.rs` withholds it from user-installed plugins).

@@ -112,6 +112,8 @@ fn label(ev: &Event) -> &'static str {
         Event::PluginLoaded(_) => "plugin-loaded",
         Event::PluginUnloaded(_) => "plugin-unloaded",
         Event::FilesChanged(_) => "files-changed",
+        Event::JobProgress(_) => "job-progress",
+        Event::JobFinished(_) => "job-finished",
     }
 }
 
@@ -121,6 +123,11 @@ fn label(ev: &Event) -> &'static str {
 /// configuration too (`org.roam-directory`). Absent → no watch is armed, which
 /// is what every pre-OR.2 test gets.
 const WATCH_TARGET: &str = "/data/watch-target";
+
+/// LH.0.1. Present ⇒ download from `register-events`. Three lines: the URL,
+/// the expected SHA-256, and the host path to write to — handed in the same
+/// way `WATCH_TARGET` is, and for its reason.
+const DOWNLOAD_REQUEST: &str = "/data/download-request";
 
 /// PH7.8c: present ⇒ ring our own doorbell from `register-events`. A marker
 /// file rather than an unconditional emit, so only the test that is about this
@@ -194,6 +201,53 @@ impl Guest for Component {
             };
             record(&denied);
         }
+        // LH.0.1: download a file, if the test asked for one. Started from
+        // INSIDE `register-events` on purpose: the subscription two lines up is
+        // recorded but not on the bus yet, and a loopback transfer finishes
+        // faster than the wiring does — so this is also the test that the host
+        // holds the start until there is something to hear the outcome.
+        if let Ok(request) = std::fs::read_to_string(DOWNLOAD_REQUEST) {
+            let mut lines = request.lines();
+            let (url, sha256, dest) = (
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+            );
+            // @example host-services.http-download: Subscribe to the job events, then fetch a pinned file into a granted directory
+            events::subscribe(&kind_filter(EventKind::JobProgress), 8);
+            events::subscribe(&kind_filter(EventKind::JobFinished), 8);
+            let outcome = match host_services::http_download(url, sha256, dest) {
+                // The id is what `job-finished` will carry; a plugin running
+                // several jobs keys its state by it.
+                Ok(_id) => "download:started".to_string(),
+                Err(e) => format!("download:err({e})"),
+            };
+            record(&outcome);
+            // @end-example
+            // …and a host the plugin was NOT granted, recorded beside it so
+            // the grant check is observed rather than assumed.
+            let denied = match host_services::http_download(
+                "https://not-granted.invalid/x",
+                sha256,
+                dest,
+            ) {
+                Ok(_) => "download-denied:started".to_string(),
+                Err(e) => format!("download-denied:err({e})"),
+            };
+            record(&denied);
+            // @example host-services.cancel-job: Cancel a job by the id the function that started it returned
+            // A cancel of an id that is not ours to cancel — or not anyone's —
+            // is nothing, so a plugin need not track which are still running.
+            host_services::cancel_job(u64::MAX);
+            // @end-example
+            // Stay inside `register-events` for longer than a loopback
+            // transfer takes. Without this the request above is followed by
+            // the subscription wiring within microseconds, the race is never
+            // lost, and a host that did NOT hold the start would pass — which
+            // is what this test did the first time it was written. A real
+            // guest lingers here whenever registration has other work to do.
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
     }
 
     /// Deliver one matching event. Handler 3 traps, handler 4 is a no-op (the
@@ -225,6 +279,21 @@ impl Guest for Component {
                 if p.name == "fixture/registered" {
                     record("7:registered-event-delivered");
                 }
+            }
+            return;
+        }
+        // LH.0: a host job moved, or ended. The outcome line is the proof —
+        // it is written with no action dispatched after the request.
+        if handler == 8 {
+            match &ev {
+                Event::JobProgress(p) => {
+                    record(&format!("8:job-progress:{}", p.done));
+                }
+                Event::JobFinished(f) => match &f.outcome {
+                    Ok(()) => record("8:job-finished:ok"),
+                    Err(e) => record(&format!("8:job-finished:err({e})")),
+                },
+                _ => record("8:not-a-job-event"),
             }
             return;
         }

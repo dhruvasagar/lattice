@@ -749,6 +749,29 @@ let outcome = match host_services::watch(target) {
 record(&outcome);
 ```
 
+To fetch a file, ask the host to download it. The call returns an id at once
+and never the bytes: the host streams to disk on its own thread, verifies the
+SHA-256 you pinned, and tells you how it went with a `job-finished` event
+carrying that id. A failed download — wrong hash, refused redirect, cancelled — leaves
+nothing at the destination, so there is no cleanup to write:
+
+<!-- example: events-guest:host-services.http-download -->
+```rust
+events::subscribe(&kind_filter(EventKind::JobProgress), 8);
+events::subscribe(&kind_filter(EventKind::JobFinished), 8);
+let outcome = match host_services::http_download(url, sha256, dest) {
+    // The id is what `job-finished` will carry; a plugin running
+    // several jobs keys its state by it.
+    Ok(_id) => "download:started".to_string(),
+    Err(e) => format!("download:err({e})"),
+};
+record(&outcome);
+```
+
+It needs two grants: `net:http:<host>` for the URL's host (and for every host
+a redirect passes through — a release URL that bounces to a CDN needs both),
+and `fs:write` over the destination.
+
 ## Reading the buffer and the syntax tree
 
 Callbacks that need text get a `borrow<document>`: a snapshot, so a

@@ -8,7 +8,7 @@
 # decide about, for a crate that did not change.
 [package]
 name = "lattice-plugin-sdk"
-version = "0.1.0"
+version = "0.2.0"
 description = "Helpers for writing lattice editor plugins as WebAssembly components: typed config shapes and event payloads."
 edition.workspace = true
 rust-version.workspace = true
@@ -20,7 +20,7 @@ readme = "README.md"
 # `version` AND `path`: the path is what the workspace builds against, the
 # version is what a published release resolves to. Cargo requires the version
 # to publish at all, and drops the path when it packages.
-lattice-plugin-sdk-derive = { path = "../lattice-plugin-sdk-derive", version = "0.1.0" }
+lattice-plugin-sdk-derive = { path = "../lattice-plugin-sdk-derive", version = "0.2.0" }
 serde = { workspace = true }
 rmp-serde = { workspace = true }
 

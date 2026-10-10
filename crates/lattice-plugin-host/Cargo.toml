@@ -92,6 +92,12 @@ lattice-runtime = { path = "../lattice-runtime" }
 # rather than an async task — this crate deliberately owns no runtime, and a
 # thread blocked on `recv_timeout` needs none.
 notify = { workspace = true }
+# LH.0.1: the `host-services.http-download` seam. The same blocking client the
+# plugin loader fetches prebuilt components with (PM.6) — each download owns a
+# thread, as each watch does, so an async client would need a runtime this
+# crate deliberately does not own. `sha2` verifies the body as it streams.
+ureq = { workspace = true }
+sha2 = { workspace = true }
 # OR.3: `new-uuid`. Sixteen random bytes with six bits pinned — the same
 # minimal, vetted CSPRNG primitive `lattice-ai` uses for its MCP session token,
 # and for the same reason ("no heavier `rand`/`uuid` dep pulled for one token").

@@ -140,6 +140,28 @@ fn bump_plugin_api(version: &str) -> Result<(), String> {
         std::fs::write(&path, out).map_err(|e| format!("writing {}: {e}", path.display()))?;
     }
 
+    // WIT that lives INSIDE Rust source: the scaffold's templates (what
+    // `lattice plugin new` writes) and a fixture's inline world. Neither is a
+    // `.wit` file, so the loop above cannot see them, and the first real bump
+    // (0.1 -> 0.2) left both behind: scaffolded plugins would have declared a
+    // generation the editor no longer implements.
+    let mut inline_touched = 0usize;
+    for rel in INLINE_WIT {
+        let path = root.join(rel);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("reading {}: {e}", path.display()))?;
+        let (out, count) = rewrite_inline_wit_versions(&text, version);
+        if count == 0 {
+            return Err(format!(
+                "{} names no `lattice:plugin-host...@X.Y.Z` — did the inline WIT move? \
+                 Update INLINE_WIT in xtask.",
+                path.display()
+            ));
+        }
+        std::fs::write(&path, out).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        inline_touched += count;
+    }
+
     // The SDK's dependency on the derive crate carries the version too, and a
     // stale one there fails `cargo publish`, not the build -- late, and after
     // the ABI files are already committed.
@@ -176,6 +198,7 @@ fn bump_plugin_api(version: &str) -> Result<(), String> {
 
     println!("plugin API -> {version}");
     println!("  {wit_touched} .wit package declarations");
+    println!("  {inline_touched} inline WIT references in Rust source");
     println!(
         "  {} crate versions, and Cargo.lock",
         PUBLISHED_CRATES.len()
@@ -184,6 +207,47 @@ fn bump_plugin_api(version: &str) -> Result<(), String> {
     println!("Next: cargo test -p lattice-wit   (the guard proves it landed everywhere)");
     println!("      every existing plugin must rebuild; a pinned one will not instantiate.");
     Ok(())
+}
+
+/// Rust sources that embed WIT naming the plugin-host package by version.
+const INLINE_WIT: &[&str] = &[
+    "crates/lattice-cli/src/scaffold.rs",
+    "crates/lattice-plugin-host/tests/fixtures/language-guest/src/lib.rs",
+];
+
+/// Rewrite every `lattice:plugin-host@X.Y.Z` and
+/// `lattice:plugin-host/<name>@X.Y.Z` in `text` to `version`; returns the new
+/// text and how many were rewritten.
+fn rewrite_inline_wit_versions(text: &str, version: &str) -> (String, usize) {
+    const PACKAGE: &str = "lattice:plugin-host";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut count = 0;
+    while let Some(at) = rest.find(PACKAGE) {
+        let (before, tail) = rest.split_at(at + PACKAGE.len());
+        out.push_str(before);
+        // An optional `/<interface-or-world>` path, then `@`.
+        let path_len = tail.strip_prefix('/').map_or(0, |t| {
+            1 + t
+                .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+                .unwrap_or(t.len())
+        });
+        let (path, after_path) = tail.split_at(path_len);
+        out.push_str(path);
+        if let Some(old) = after_path.strip_prefix('@') {
+            let ver_len = old
+                .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+                .unwrap_or(old.len());
+            out.push('@');
+            out.push_str(version);
+            rest = &old[ver_len..];
+            count += 1;
+        } else {
+            rest = after_path;
+        }
+    }
+    out.push_str(rest);
+    (out, count)
 }
 
 /// The workspace root — the `xtask` crate lives at `<workspace>/xtask`.

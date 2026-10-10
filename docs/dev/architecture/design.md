@@ -3036,7 +3036,7 @@ variance.
 > *drives*, plus a grammar callback trampoline. `ui.wit` and `command.wit` are
 > empty stubs; `host-services` is minimal. The real shape:
 
-The package is **`lattice:plugin-host@0.1.0`** (14 `wit/` files:
+The package is **`lattice:plugin-host@0.2.0`** (14 `wit/` files:
 `types`, `plugin`, `buffer`, `grammar`, `picker-source`, `completion-source`,
 `decorations`, `events`, `config`, `modes`, `host-services`, plus `ui` /
 `command` stubs and a test fixture).
@@ -3047,7 +3047,7 @@ plugin *exports* its source world; the host instantiates it and drives it
 `register-picker(...)` and get an id back; the host owns the registry and pulls.
 
 > **Illustrative sketch, not the canonical package.** The built WIT is
-> `wit/*.wit` (`lattice:plugin-host@0.1.0`) — the exercised seams
+> `wit/*.wit` (`lattice:plugin-host@0.2.0`) — the exercised seams
 > (picker-source / completion-source / grammar / events / decorations / config /
 > modes / keymap / host-services / logging), see
 > [`plugin-host.md`](plugin-host.md) + [`plugin-observability.md`](plugin-observability.md).
@@ -3058,7 +3058,7 @@ plugin *exports* its source world; the host instantiates it and drives it
 > is kept for the shape of the contract.
 
 ```wit
-package lattice:plugin-host@0.1.0;
+package lattice:plugin-host@0.2.0;
 
 // buffer.wit — a READ-ONLY document resource (no apply-edits from a source world)
 interface buffer {
@@ -3269,7 +3269,7 @@ lattice/
 |   #    `wit/` lives INSIDE lattice-wit (below), not at the workspace root:
 |   #    the crate that publishes the ABI owns the files, so the published
 |   #    tarball contains them and there is exactly one copy.
-|-- crates/lattice-wit/wit/            # canonical WIT interface definitions (package lattice:plugin-host@0.1.0)
+|-- crates/lattice-wit/wit/            # canonical WIT interface definitions (package lattice:plugin-host@0.2.0)
 |   |-- types.wit                      # shared record/variant types
 |   |-- plugin.wit                     # top-level plugin world
 |   |-- buffer.wit                     # read-only `document` resource

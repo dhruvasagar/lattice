@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0.1 in progress.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0.1 ✅; LH.0.2 next.** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -38,21 +38,42 @@ General host capabilities, capability re-checked host-side at each (the
 `walk_within_grant` precedent). Every long-running one returns an id and reports
 through events addressed to the requesting plugin (design §3.0).
 
-#### LH.0.1 — `http-download` / `cancel-download` (net:http)  🚧
-`http-download(url, sha256, dest) -> result<u64, string>` +
-`cancel-download(id)` in `host-services.wit`; `download-progress` /
-`download-finished` event kinds + arms in `types.wit`, mirrored as
-`lattice_protocol::Event::{DownloadProgress, DownloadFinished}` and addressed in
-`event_task.rs` exactly as `FilesChanged` is. The host streams to `<dest>.part`
-on its own thread, hashing as it goes; only a SHA match renames into place.
-Gates: URL host (and every redirect hop) ∈ `net:http:<host>`; `dest` within
-`fs:write`. Policy: https (http to loopback only), bounded redirects / size /
-timeouts. **Exit:** a plugin with both grants downloads a file and hears
-`download-finished` **without a keypress**; a wrong SHA, a cancel and a size
-overrun each leave no file; an ungranted host, an ungranted redirect hop and an
-ungranted `dest` are each refused by name; another plugin subscribed to the same
-kinds hears nothing. Test: unit tests against a loopback server + a fixture
-guest through the events seam. No bench (I/O); `perf_ratchet` stays green.
+#### LH.0.1 — host jobs + `http-download` (net:http)  ✅
+The job substrate (`job.rs`): `PendingJob` → `JobGuard`, a process-wide table
+for cancel-by-id, coalesced progress; `Event::{JobProgress, JobFinished}`
+mirrored as the `job-progress` / `job-finished` arms in `types.wit` and
+addressed in `event_task.rs` exactly as `FilesChanged` is; `cancel-job(id)`.
+On it, `http-download(url, sha256, dest) -> result<u64, string>`: the host
+streams to `<dest>.part` on the job's thread, hashing as it goes; only a SHA
+match renames into place. Gates: URL host (and every redirect hop) ∈
+`net:http:<host>`; `dest` within `fs:write`. Policy: https (http to loopback
+only), bounded redirects / size / time. **Exit:** a plugin with both grants
+downloads a file and hears `job-finished` **without a keypress**; a wrong SHA, a
+cancel and a size overrun each leave no file; an ungranted host, an ungranted
+redirect hop and an ungranted `dest` are each refused by name; another plugin
+subscribed to the same kinds hears nothing.
+
+**Landed.** `job.rs` (7 unit tests), `download_host.rs` (22, against a loopback
+server), `tests/download_seam.rs` (5, through the events fixture guest). What
+the plan did not have:
+
+- **Generic job events, not `download-*` arms.** Written per-seam first, then
+  changed before commit: every arm added to `event` is an ABI break, so
+  per-seam arms would cost a generation per seam. LH.0.2 / LH.0.3 now add no
+  arms for progress or completion.
+- **The plugin API moved to `0.2.0`** — adding arms to `event` breaks every
+  guest that matches on it. `cargo xtask bump-plugin-api` had missed the WIT
+  embedded in Rust source (the scaffold templates, one fixture) and now covers
+  it. **Still to do, outward-facing, not done here:** publish the three crates
+  and bump `lattice-org-plugin`'s pin, per `releasing.md`.
+- **Cancel-by-id is process-wide, scoped by plugin id** — the instance that
+  cancels is not the one that started the job.
+- **A job requested inside `register-events` is held** until the subscriptions
+  are wired. It has a test only because the fixture lingers in
+  `register-events`; without that the race is never lost and a host with no
+  hold passes (it did, the first time).
+- Not done: a stall timeout (the client offers only a total, set at 30 min), so
+  a cancel cannot interrupt a connection that has gone silent mid-read.
 
 #### LH.0.2 — `extract-archive`  📝
 Host-side unpack of a downloaded archive into an `fs:write`-granted directory,

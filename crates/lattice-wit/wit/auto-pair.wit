@@ -1,4 +1,4 @@
-package lattice:plugin-host@0.1.0;
+package lattice:plugin-host@0.2.0;
 
 /// The `auto-pair` bundled plugin's world (AP.1). ONE component providing three
 /// seams — the multi-seam shape proven by the AP.1.0 spike:

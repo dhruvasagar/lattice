@@ -177,6 +177,10 @@ gix = "0.86"
 # lock file transitively, so this widens the dep graph less than the
 # version number suggests.
 ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+# LH.0.1: the `http-download` host-service verifies a plugin's download against
+# a pinned SHA-256 before it is renamed into place. Already in the lock file
+# (transitively, at this version), so no new supply-chain surface.
+sha2 = "0.10"
 
 # 5.8.AF.5 Slice 2: `.gitignore` / `.ignore` aware matching for
 # the LSP file-watcher's source-side filter. Built by ripgrep's

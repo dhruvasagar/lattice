@@ -441,6 +441,47 @@ pub enum Event {
         /// exist.
         paths: Vec<std::path::PathBuf>,
     },
+    /// LH.0: a long-running host job a plugin started has made progress.
+    ///
+    /// A *job* is what a host-service returns an id for when its work outlasts
+    /// the call: a download (`host-services.http-download`) today. The event
+    /// is the same for every kind — see `lattice-plugin-host`'s `job` module
+    /// for why adding a kind must not add a variant here.
+    ///
+    /// **Addressed**, exactly as [`Self::FilesChanged`] is and for its reason:
+    /// the bus is a broadcast, and what a plugin is fetching or running is
+    /// nobody else's business. The delivery actor drops any delivery whose
+    /// `plugin` is not its own, and the id never crosses to a guest.
+    ///
+    /// **Coalesced.** At most one per quiet interval per job, so fast work is
+    /// a handful of guest calls. A job that finishes inside one interval
+    /// publishes none — a consumer must not wait for progress before expecting
+    /// [`Self::JobFinished`].
+    JobProgress {
+        /// The host-issued numeric plugin id that started the job.
+        plugin: u32,
+        /// The id the host-service returned.
+        id: u64,
+        /// Units done so far. The seam that started the job says what a unit
+        /// is — bytes, for a download.
+        done: u64,
+        /// The total in the same units, when it is known.
+        total: Option<u64>,
+    },
+    /// LH.0: a host job ended. Exactly one per job, always, including a
+    /// cancelled one: a consumer drives a state machine off this and a job
+    /// that could end silently would strand it.
+    ///
+    /// Addressed like [`Self::JobProgress`].
+    JobFinished {
+        /// The host-issued numeric plugin id that started the job.
+        plugin: u32,
+        /// The id the host-service returned.
+        id: u64,
+        /// `Ok` once the job did what it was asked; otherwise why not, in
+        /// words a user can act on.
+        result: Result<(), String>,
+    },
 }
 
 /// MG.41g: how a [`Event::BackgroundTaskFinished`] ended.
@@ -507,6 +548,8 @@ impl Event {
             Event::BufferOptionOverrideRequested { .. } => EventKind::BufferOptionOverrideRequested,
             Event::BackgroundTaskFinished { .. } => EventKind::BackgroundTaskFinished,
             Event::FilesChanged { .. } => EventKind::FilesChanged,
+            Event::JobProgress { .. } => EventKind::JobProgress,
+            Event::JobFinished { .. } => EventKind::JobFinished,
         }
     }
 }
@@ -572,6 +615,11 @@ pub enum EventKind {
     /// actor, not the filter, is what scopes a batch to the plugin that armed
     /// it (see the variant's doc).
     FilesChanged,
+    /// Discriminator for [`Event::JobProgress`] (LH.0). Addressed by the
+    /// delivery actor, like [`Self::FilesChanged`].
+    JobProgress,
+    /// Discriminator for [`Event::JobFinished`] (LH.0).
+    JobFinished,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

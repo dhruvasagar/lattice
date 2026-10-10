@@ -175,7 +175,7 @@ fn parse_catalog(wit_dir: &Path) -> String {
     writeln!(
         out,
         "/// The WIT package the catalog was derived from, e.g. \
-         `lattice:plugin-host@0.1.0` — the name a guest's `wit_bindgen` \
+         `lattice:plugin-host@0.2.0` — the name a guest's `wit_bindgen` \
          world path resolves under.\npub const PACKAGE: &str = {};\n",
         lit(&package.name.to_string())
     )

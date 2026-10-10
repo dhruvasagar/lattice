@@ -129,6 +129,10 @@ const WATCH_TARGET: &str = "/data/watch-target";
 /// way `WATCH_TARGET` is, and for its reason.
 const DOWNLOAD_REQUEST: &str = "/data/download-request";
 
+/// LH.0.2. Present ⇒ unpack from `register-events`. Three lines: the archive,
+/// the destination, and `gz` or `tar-gz`.
+const EXTRACT_REQUEST: &str = "/data/extract-request";
+
 /// PH7.8c: present ⇒ ring our own doorbell from `register-events`. A marker
 /// file rather than an unconditional emit, so only the test that is about this
 /// behaviour pays for it.
@@ -248,6 +252,29 @@ impl Guest for Component {
             // guest lingers here whenever registration has other work to do.
             std::thread::sleep(std::time::Duration::from_millis(400));
         }
+        // LH.0.2: unpack an archive, if the test asked for one. The same two
+        // job events as a download — that is the point of their being generic.
+        if let Ok(request) = std::fs::read_to_string(EXTRACT_REQUEST) {
+            let mut lines = request.lines();
+            let (src, dest, format) = (
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+            );
+            let format = if format == "tar-gz" {
+                host_services::ArchiveFormat::TarGz
+            } else {
+                host_services::ArchiveFormat::Gz
+            };
+            // @example host-services.extract-archive: Unpack a downloaded archive into a granted directory and wait for `job-finished`
+            events::subscribe(&kind_filter(EventKind::JobFinished), 9);
+            let outcome = match host_services::extract_archive(src, dest, format) {
+                Ok(_id) => "extract:started".to_string(),
+                Err(e) => format!("extract:err({e})"),
+            };
+            record(&outcome);
+            // @end-example
+        }
     }
 
     /// Deliver one matching event. Handler 3 traps, handler 4 is a no-op (the
@@ -294,6 +321,29 @@ impl Guest for Component {
                     Err(e) => record(&format!("8:job-finished:err({e})")),
                 },
                 _ => record("8:not-a-job-event"),
+            }
+            return;
+        }
+        // LH.0.2: the unpack ended. A bare `.gz` carries no mode, so the file
+        // it produced is not runnable until the host is asked to make it so.
+        if handler == 9 {
+            let Event::JobFinished(f) = &ev else {
+                record("9:not-a-job-event");
+                return;
+            };
+            match &f.outcome {
+                Ok(()) => record("9:extract-finished:ok"),
+                Err(e) => record(&format!("9:extract-finished:err({e})")),
+            }
+            if let (Ok(()), Ok(request)) = (&f.outcome, std::fs::read_to_string(EXTRACT_REQUEST)) {
+                let dest = request.lines().nth(1).unwrap_or_default();
+                // @example host-services.set-executable: Make an unpacked binary runnable once its job reports success
+                let outcome = match host_services::set_executable(dest) {
+                    Ok(()) => "set-executable:ok".to_string(),
+                    Err(e) => format!("set-executable:err({e})"),
+                };
+                record(&outcome);
+                // @end-example
             }
             return;
         }

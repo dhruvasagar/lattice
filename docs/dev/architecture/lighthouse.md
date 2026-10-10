@@ -163,13 +163,49 @@ deliveries), so a fast link is a handful of guest calls rather than one per
 chunk. No bytes-returning `http-fetch` is offered: nothing needs one yet, and a
 small bounded variant is additive when something does.
 
-### 3.2 `extract-archive`
+### 3.2 `extract-archive` and `set-executable`
+
+```wit
+enum archive-format { gz, tar-gz }
+
+/// Unpack the archive file `src` to `dest`. A job; `job-progress` counts bytes
+/// of `src` consumed.
+extract-archive: func(src: string, dest: string, format: archive-format)
+	-> result<u64, string>;
+
+/// Mark the file `path` executable. Immediate.
+set-executable: func(path: string) -> result<_, string>;
+```
 
 The unpack is host-side for §3.0's reasons plus one more: fuel. Inflating a
 release archive in the guest is CPU-bound work inside a fuel-metered call.
-A job like any other (§3.0), gated on `fs:write` over the destination,
-with entries that escape it (`..`, absolute paths, symlinks out) refused.
-Formats are the ones the registry needs (`gz` single-file, `tar.gz`, `zip`).
+A job like any other (§3.0), gated on `fs:read` over the source and `fs:write`
+over the destination.
+
+**An archive is untrusted input.** The SHA a registry pins says the bytes are
+the ones somebody reviewed, not that they are benign. Every entry is confined
+to the destination three ways, because each alone has a known way round it: the
+path must be relative with no `..`; nothing is written *through* a symlink (an
+archive can ship `a -> /etc` and then the lexically innocent `a/passwd`); and a
+symlink's own target must stay inside. Hard links, devices and FIFOs fail the
+job by name rather than being skipped — a silently dropped entry is a
+half-installed server. Output size and entry count are bounded, on what comes
+*out*: a few kilobytes of gzip can describe gigabytes.
+
+**All or nothing**, the download's rule again: work in a sibling `<dest>.part`,
+rename only when the whole archive has been read, remove the part on any
+failure. A `tar-gz` destination must not already exist — an update unpacks
+beside the old version and switches (§2), it does not merge into it.
+
+A file comes out executable or not, as the archive says; no other mode bit is
+honoured. A bare `gz` carries no mode at all, and a guest cannot `chmod` (WASI
+has none), hence `set-executable` — also what a directly downloaded binary
+needs.
+
+**Formats: `gz` and `tar-gz`.** `zip` is deferred: it is a second, heavier
+dependency, and on the platforms lattice builds for the first registry's
+pre-built servers ship as one of the other two. It becomes necessary with a
+Windows registry entry or a zip-only server (clangd).
 
 ### 3.3 `proc:spawn` — `spawn-process`
 

@@ -772,6 +772,31 @@ It needs two grants: `net:http:<host>` for the URL's host (and for every host
 a redirect passes through — a release URL that bounces to a CDN needs both),
 and `fs:write` over the destination.
 
+Unpacking is a job too, reported by the same `job-finished` event — the host
+confines every entry to the destination and leaves nothing behind on failure:
+
+<!-- example: events-guest:host-services.extract-archive -->
+```rust
+events::subscribe(&kind_filter(EventKind::JobFinished), 9);
+let outcome = match host_services::extract_archive(src, dest, format) {
+    Ok(_id) => "extract:started".to_string(),
+    Err(e) => format!("extract:err({e})"),
+};
+record(&outcome);
+```
+
+A bare `.gz`, or a binary downloaded as-is, arrives with no executable bit and
+a plugin cannot set one itself. Ask the host once the job has succeeded:
+
+<!-- example: events-guest:host-services.set-executable -->
+```rust
+let outcome = match host_services::set_executable(dest) {
+    Ok(()) => "set-executable:ok".to_string(),
+    Err(e) => format!("set-executable:err({e})"),
+};
+record(&outcome);
+```
+
 ## Reading the buffer and the syntax tree
 
 Callbacks that need text get a `borrow<document>`: a snapshot, so a

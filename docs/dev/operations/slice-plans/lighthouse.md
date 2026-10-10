@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0.1 ✅; LH.0.2 next.** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0.1–LH.0.2 ✅; LH.0.3 next.** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -75,14 +75,28 @@ the plan did not have:
 - Not done: a stall timeout (the client offers only a total, set at 30 min), so
   a cancel cannot interrupt a connection that has gone silent mid-read.
 
-#### LH.0.2 — `extract-archive`  📝
-Host-side unpack of a downloaded archive into an `fs:write`-granted directory,
-same id + addressed-event shape. `gz` (single file), `tar.gz`, `zip`. Entries
-escaping the destination (`..`, absolute, symlink out) are refused; the
-executable bit is preserved. **Exit:** each format unpacks; a traversal entry
-aborts with nothing written outside the destination. Decide at slice start
-whether extraction is its own call or a `dest` mode of `http-download` — a
-separate call keeps "downloaded and verified" observable on its own.
+#### LH.0.2 — `extract-archive` + `set-executable`  ✅
+Host-side unpack of a downloaded archive into an `fs:write`-granted
+destination, as a host job: `gz` (single file) and `tar.gz`. Entries escaping
+the destination (`..`, absolute, symlink out, written through a symlink) fail
+the job; the executable bit is preserved and no other mode bit is. **Exit:**
+each format unpacks; a traversal entry aborts with nothing written outside the
+destination and nothing partial inside it.
+
+**Landed.** `extract_host.rs` (21 unit tests, archives built in-test including
+hand-written hostile headers) + `tests/extract_seam.rs` (3, through the fixture
+guest). Decided at slice start, as planned: extraction is its **own call**, not
+a mode of `http-download`, so "downloaded and verified" stays observable alone.
+Added beyond the plan: **`set-executable`** — a guest has no `chmod`, and a bare
+`.gz` (rust-analyzer's format) or a raw binary carries no mode. New dependency:
+`tar` (default features off); `flate2` was already in the lock file.
+
+#### LH.0.2b — `zip`  ⛔
+Deferred until a registry entry needs it: a Windows build of any server, or a
+zip-only one (clangd). A second, heavier dependency for no server in the first
+registry on the platforms lattice builds for. Additive when it lands — a new
+case on `archive-format`, which **is** an ABI change to that enum, so batch it
+with the next generation.
 
 #### LH.0.3 — `spawn-process` (proc:spawn)  📝
 `spawn-process(command, args, cwd) -> result<u64, string>` gated on `proc:spawn`

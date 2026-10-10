@@ -1904,6 +1904,39 @@
           ]
         },
         {
+          "name": "extract-archive",
+          "display_name": "extract-archive",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "src",
+              "type": "string"
+            },
+            {
+              "name": "dest",
+              "type": "string"
+            },
+            {
+              "name": "format",
+              "type": "archive-format"
+            }
+          ],
+          "result": "result<u64, string>",
+          "signature": "extract-archive: func(src: string, dest: string, format: archive-format) -> result<u64, string>",
+          "doc": "Unpack the archive file `src` to `dest`. **A job** (see `cancel-job`):\nreturns its id; `job-progress` counts bytes of `src` consumed.\n\nHost-side because unpacking is CPU-bound work a guest would do inside a\nfuel-metered call, and because a guest cannot write files from every\nseam (see `read-file`).\n\n`src` must lie within a granted `fs:read` (or `fs:write`) prefix and\n`dest` within a granted `fs:write` one; both are refused here, as an\nimmediate `err`, by name.\n\n**An archive is untrusted input** — a pinned hash says the bytes are the\nones somebody reviewed, not that they are benign — so every entry is\nconfined to `dest`. An entry whose path is absolute or climbs with\n`..`, a symlink whose target leaves `dest`, and an entry that would be\nwritten *through* a symlink each fail the whole job. So do hard links,\ndevices and FIFOs, by name rather than by being skipped: a silently\ndropped entry is a half-installed tool.\n\n**All or nothing.** The work happens in a sibling `<dest>.part` and is\nrenamed into place only once the whole archive has been read. Any\nfailure — a bad entry, a truncated stream, a cancel, a size limit —\nleaves no `dest` and no part, so \"is it there\" is a sound test for \"is\nit complete\".\n\nFor `tar-gz`, **`dest` must not already exist**: an update unpacks\nbeside the old version and switches, it does not merge into it. For\n`gz`, an existing file is replaced, by the rename, only on success.\n\nA file is written executable or not, as the archive says; no other mode\nbit (setuid, world-writable) is honoured. A bare `gz` carries no mode at\nall — follow it with `set-executable`.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.extract-archive",
+              "caption": "Unpack a downloaded archive into a granted directory and wait for `job-finished`",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "events::subscribe(&kind_filter(EventKind::JobFinished), 9);\nlet outcome = match host_services::extract_archive(src, dest, format) {\n    Ok(_id) => \"extract:started\".to_string(),\n    Err(e) => format!(\"extract:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
+        },
+        {
           "name": "http-download",
           "display_name": "http-download",
           "kind": "freestanding",
@@ -2031,6 +2064,31 @@
               "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
               "language": "rust",
               "code": "// PH7.8b.2/3: declare a plugin-defined event via the `register-event`\n// host-service, using the SDK-derived `NAME` + `DOC` (the doc-comment).\n// It self-registers into the host's runtime event registry under this\n// plugin's provenance; `on-event` handler 1 emits it on save.\nhost_services::register_event(SavedEcho::NAME, SavedEcho::DOC);"
+            }
+          ]
+        },
+        {
+          "name": "set-executable",
+          "display_name": "set-executable",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "path",
+              "type": "string"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "set-executable: func(path: string) -> result<_, string>",
+          "doc": "Mark the file `path` executable.\n\nFor a binary that arrived with no mode — downloaded directly, or\nunpacked from a bare `gz`. A guest cannot do this itself: WASI has no\n`chmod`. Immediate, not a job.\n\nGated on `fs:write` over `path`, re-checked host-side. `err` for a\ndenied path, a path with nothing there, or a directory — each named. On\na platform with no executable bit it is `ok` and does nothing.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.set-executable",
+              "caption": "Make an unpacked binary runnable once its job reports success",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let outcome = match host_services::set_executable(dest) {\n    Ok(()) => \"set-executable:ok\".to_string(),\n    Err(e) => format!(\"set-executable:err({e})\"),\n};\nrecord(&outcome);"
             }
           ]
         },
@@ -2265,6 +2323,25 @@
         }
       ],
       "types": [
+        {
+          "name": "archive-format",
+          "kind": "enum",
+          "doc": "LH.0.2: the archive kinds `extract-archive` unpacks.",
+          "definition": "enum archive-format {\n    gz,\n    tar-gz,\n}",
+          "members": [
+            {
+              "name": "gz",
+              "type": null,
+              "doc": "One gzip-compressed file (`rust-analyzer-…-linux-gnu.gz`). The\ndestination is the FILE to write."
+            },
+            {
+              "name": "tar-gz",
+              "type": null,
+              "doc": "A gzip-compressed tar. The destination is the DIRECTORY to create."
+            }
+          ],
+          "examples": []
+        },
         {
           "name": "source-location",
           "kind": "record",

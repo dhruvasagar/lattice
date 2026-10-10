@@ -98,6 +98,10 @@ notify = { workspace = true }
 # crate deliberately does not own. `sha2` verifies the body as it streams.
 ureq = { workspace = true }
 sha2 = { workspace = true }
+# LH.0.2: `host-services.extract-archive`. Host-side because inflating a
+# release archive in a guest is CPU-bound work inside a fuel-metered call.
+flate2 = { workspace = true }
+tar = { workspace = true }
 # OR.3: `new-uuid`. Sixteen random bytes with six bits pinned — the same
 # minimal, vetted CSPRNG primitive `lattice-ai` uses for its MCP session token,
 # and for the same reason ("no heavier `rand`/`uuid` dep pulled for one token").

@@ -64,7 +64,7 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`grammar`](plugin-api/grammar.md) | imports | - | 5 | 0 | The grammar-**extension** API (plugin-host.md §4.1, PH7.7). |
 | [`grammar-callbacks`](plugin-api/grammar-callbacks.md) | exports | - | 6 | 0 | The behavior callbacks a grammar plugin **exports**; the host calls one by `callback` id on dispatch (the PH7.3d callback-id trampoline). |
 | [`help`](plugin-api/help.md) | imports | - | 1 | 0 | CR.3: plugin-contributed `:help` pages. |
-| [`host-services`](plugin-api/host-services.md) | imports | fs | 22 | 1 | Guest→host services (plugin-host.md §5). |
+| [`host-services`](plugin-api/host-services.md) | imports | fs | 24 | 2 | Guest→host services (plugin-host.md §5). |
 | [`keymap`](plugin-api/keymap.md) | imports | - | 1 | 1 | The `keymap` guest→host binding-registration seam (PL8.D.1). |
 | [`language`](plugin-api/language.md) | imports | - | 1 | 2 | LG.3c: plugin-contributed languages. |
 | [`logging`](plugin-api/logging.md) | imports | - | 1 | 1 | Guest→host structured logging (plugin observability Layer 2, design `docs/dev/architecture/plugin-observability.md` §8). |

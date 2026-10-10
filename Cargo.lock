@@ -5763,6 +5763,7 @@ dependencies = [
  "chrono",
  "criterion",
  "dirs 5.0.1",
+ "flate2",
  "futures",
  "getrandom 0.2.17",
  "lattice-cells",
@@ -5789,6 +5790,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "streaming-iterator",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -9206,6 +9208,16 @@ dependencies = [
  "core-foundation-sys",
  "libc",
  "objc",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
 ]
 
 [[package]]

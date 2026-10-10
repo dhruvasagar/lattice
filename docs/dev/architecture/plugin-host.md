@@ -635,6 +635,19 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   **The part file is the integrity mechanism.** The body streams to `<dest>.part` while being
   hashed and is renamed into place only on a matching SHA-256; every other exit removes it. A
   plugin cannot forget to verify, and "the file exists" is a sound test for "it was verified".
+- **Unpack (✅ LH.0.2)**: `host-services.extract-archive(src, dest, format) -> result<u64, string>`
+  (`gz`, `tar-gz`), a host job, and `set-executable(path)`, immediate
+  ([`lighthouse.md`](lighthouse.md) §3.2). Host-side because inflating is CPU-bound work a guest
+  would do inside a fuel-metered call.
+
+  **An archive is untrusted input, confined three ways** — a relative path with no `..`; nothing
+  written *through* a symlink an earlier entry made; a symlink's own target inside the tree. The
+  second is the one lexical checks cannot see, and it has its own test, seen red. Anything that is
+  not a file, directory or symlink fails the job by name instead of being skipped.
+
+  **All or nothing**: a sibling `<dest>.part`, renamed only when the whole archive has been read.
+  Only "executable or not" survives from an archive's mode bits. `set-executable` exists because
+  WASI has no `chmod` and a bare `.gz` or a direct download carries no mode.
 - **Host-minted ids (✅ OR.3)**: `host-services.new-uuid() -> result<string, string>`, a random
   (v4) UUID, uppercase, canonical `8-4-4-4-12`.
 

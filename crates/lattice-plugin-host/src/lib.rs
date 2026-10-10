@@ -128,6 +128,7 @@ pub mod tree_resource;
 // OR.2: the `host-services.watch` / `unwatch` seam — a debounced directory
 // watch whose batches are addressed to the plugin that armed them.
 mod download_host;
+mod extract_host;
 mod job;
 pub mod ui_host;
 pub mod wake;
@@ -1491,6 +1492,45 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
             &dest,
         )?;
         Ok(self.launch_job(pending))
+    }
+
+    /// LH.0.2 `extract-archive`. A job, like `http-download`, and refused
+    /// without an event bus for the same reason.
+    fn extract_archive(
+        &mut self,
+        src: String,
+        dest: String,
+        format: crate::lattice::plugin_host::host_services::ArchiveFormat,
+    ) -> Result<u64, String> {
+        use crate::lattice::plugin_host::host_services::ArchiveFormat;
+        let Some(ctx) = &self.event_emit else {
+            tracing::warn!(
+                src = %src,
+                "extract-archive refused: plugin has no event bus wired on this seam"
+            );
+            return Err(format!(
+                "extract denied: '{src}' — this seam has no event bus, so the outcome \
+                 could never be delivered"
+            ));
+        };
+        let format = match format {
+            ArchiveFormat::Gz => extract_host::Format::Gz,
+            ArchiveFormat::TarGz => extract_host::Format::TarGz,
+        };
+        let pending = extract_host::prepare(
+            &self.grant,
+            Arc::clone(&ctx.bus),
+            ctx.plugin_id.0,
+            &src,
+            &dest,
+            format,
+        )?;
+        Ok(self.launch_job(pending))
+    }
+
+    /// LH.0.2 `set-executable`. Immediate; gated on `fs:write`.
+    fn set_executable(&mut self, path: String) -> Result<(), String> {
+        extract_host::set_executable(&self.grant, &path)
     }
 
     /// LH.0 `cancel-job`. Scoped to this plugin's own jobs by the host-issued

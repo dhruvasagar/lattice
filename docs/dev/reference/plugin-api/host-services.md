@@ -28,7 +28,7 @@ does — a bounded `walk` covers the fuzzy-finder.
 
 - [`position`](types.md#record-position) from [`types`](types.md)
 
-## Functions (22)
+## Functions (24)
 
 ### `can-write-file`
 
@@ -232,6 +232,56 @@ Ok(vec![Effect::Echo(EchoPayload {
         ctx.buffer_id, ctx.cursor.line
     ),
 })])
+```
+
+### `extract-archive`
+
+```wit
+extract-archive: func(src: string, dest: string, format: archive-format) -> result<u64, string>
+```
+
+Unpack the archive file `src` to `dest`. **A job** (see `cancel-job`):
+returns its id; `job-progress` counts bytes of `src` consumed.
+
+Host-side because unpacking is CPU-bound work a guest would do inside a
+fuel-metered call, and because a guest cannot write files from every
+seam (see `read-file`).
+
+`src` must lie within a granted `fs:read` (or `fs:write`) prefix and
+`dest` within a granted `fs:write` one; both are refused here, as an
+immediate `err`, by name.
+
+**An archive is untrusted input** — a pinned hash says the bytes are the
+ones somebody reviewed, not that they are benign — so every entry is
+confined to `dest`. An entry whose path is absolute or climbs with
+`..`, a symlink whose target leaves `dest`, and an entry that would be
+written *through* a symlink each fail the whole job. So do hard links,
+devices and FIFOs, by name rather than by being skipped: a silently
+dropped entry is a half-installed tool.
+
+**All or nothing.** The work happens in a sibling `<dest>.part` and is
+renamed into place only once the whole archive has been read. Any
+failure — a bad entry, a truncated stream, a cancel, a size limit —
+leaves no `dest` and no part, so "is it there" is a sound test for "is
+it complete".
+
+For `tar-gz`, **`dest` must not already exist**: an update unpacks
+beside the old version and switches, it does not merge into it. For
+`gz`, an existing file is replaced, by the rename, only on success.
+
+A file is written executable or not, as the archive says; no other mode
+bit (setuid, world-writable) is honoured. A bare `gz` carries no mode at
+all — follow it with `set-executable`.
+
+**Example — Unpack a downloaded archive into a granted directory and wait for `job-finished`** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+events::subscribe(&kind_filter(EventKind::JobFinished), 9);
+let outcome = match host_services::extract_archive(src, dest, format) {
+    Ok(_id) => "extract:started".to_string(),
+    Err(e) => format!("extract:err({e})"),
+};
+record(&outcome);
 ```
 
 ### `http-download`
@@ -458,6 +508,32 @@ by name: a re-register refreshes the doc (a plugin reload).
 // It self-registers into the host's runtime event registry under this
 // plugin's provenance; `on-event` handler 1 emits it on save.
 host_services::register_event(SavedEcho::NAME, SavedEcho::DOC);
+```
+
+### `set-executable`
+
+```wit
+set-executable: func(path: string) -> result<_, string>
+```
+
+Mark the file `path` executable.
+
+For a binary that arrived with no mode — downloaded directly, or
+unpacked from a bare `gz`. A guest cannot do this itself: WASI has no
+`chmod`. Immediate, not a job.
+
+Gated on `fs:write` over `path`, re-checked host-side. `err` for a
+denied path, a path with nothing there, or a directory — each named. On
+a platform with no executable bit it is `ok` and does nothing.
+
+**Example — Make an unpacked binary runnable once its job reports success** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let outcome = match host_services::set_executable(dest) {
+    Ok(()) => "set-executable:ok".to_string(),
+    Err(e) => format!("set-executable:err({e})"),
+};
+record(&outcome);
 ```
 
 ### `source-line`
@@ -698,7 +774,24 @@ let outcome = match host_services::watch(target) {
 record(&outcome);
 ```
 
-## Types (1)
+## Types (2)
+
+### enum `archive-format`
+
+```wit
+enum archive-format {
+    gz,
+    tar-gz,
+}
+```
+
+LH.0.2: the archive kinds `extract-archive` unpacks.
+
+**Cases**
+
+- `gz` — One gzip-compressed file (`rust-analyzer-…-linux-gnu.gz`). The
+  destination is the FILE to write.
+- `tar-gz` — A gzip-compressed tar. The destination is the DIRECTORY to create.
 
 ### record `source-location`
 

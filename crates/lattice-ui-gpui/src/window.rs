@@ -1241,6 +1241,8 @@ pub(crate) struct EditorView {
     /// which locks) and `render` only hands a changed one to the platform.
     shown_title: String,
     pending_title: Option<String>,
+    /// The window's width in text columns, as last sent to the host.
+    last_window_columns: Option<u16>,
     /// Perf plan A.3: per-frame ensure-work delta cache.
     /// S4.final.b (2026-05-27): per-window glyph-id cache
     /// (cached `char → ResolvedGlyph` map keyed by FontId).
@@ -1344,6 +1346,7 @@ impl EditorView {
                     // published flag says there are any), and a quit raised
                     // by something other than a key.
                     view.app.drain_idle_renderer_effects();
+                    view.app.acknowledge_redraw_if_pending();
                     view.quit_if_requested(cx);
                     view.refresh_title();
                     cx.notify();
@@ -1357,6 +1360,7 @@ impl EditorView {
         let title = app.window_title();
         Self {
             shown_title: String::new(),
+            last_window_columns: None,
             pending_title: Some(title),
             media_pixels: Default::default(),
             last_cell_metrics: None,
@@ -1385,8 +1389,8 @@ impl EditorView {
         // substate (`render_state.popup.is_open()`).
         // Slice 3c.final.E.5j: read RS via `App::render_state` (App
         // owns the same Arc, cloned at construction time).
-        if self.app.render_state.load().popup.is_open()
-            && (ks.key.eq_ignore_ascii_case("escape") || ks.key.eq_ignore_ascii_case("esc"))
+        if (ks.key.eq_ignore_ascii_case("escape") || ks.key.eq_ignore_ascii_case("esc"))
+            && self.app.esc_dismisses_popup()
         {
             tracing::debug!("lattice-gpui: dismissing popup overlay (Esc)");
             self.app.dismiss_popup();
@@ -3918,6 +3922,16 @@ impl Render for EditorView {
         // The TUI publishes nothing here and is meant not to — it draws alt
         // text, so the host keeps the provisional reservation and reads no
         // image header at all.
+        // The window's width in text columns, for the host's pane geometry.
+        // Sent when it changes — a resize, or a font-size change — not per
+        // frame.
+        let window_columns = (f32::from(viewport_px.width) / glyph_advance_px.max(1.0))
+            .floor()
+            .clamp(1.0, f32::from(u16::MAX)) as u16;
+        if self.last_window_columns != Some(window_columns) {
+            self.app.set_window_columns(window_columns);
+            self.last_window_columns = Some(window_columns);
+        }
         let cell_metrics = (estimated_row_px, glyph_advance_px);
         if self.last_cell_metrics != Some(cell_metrics) {
             self.app

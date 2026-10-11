@@ -15,6 +15,9 @@
   which is most noticeable with a key held down.
 
 ### Fixed
+- **GUI: `<Esc>` inside a focused popup cancels a search there first**
+  instead of closing the popup with the search half-typed. Moving between
+  splits with `<C-w>` also uses the window's real width now.
 - **GUI: terminal panes show bold, italic, dim and strikethrough text**, and
   search hits are underlined instead of looking like the current match.
 - **GUI: `:set relativenumber` works.** The window's gutter always showed

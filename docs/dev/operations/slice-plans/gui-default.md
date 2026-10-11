@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.7a ✅; GD.4, GD.5, GD.6b, GD.6c, GD.7b, GD.7c, GD.8, GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.7a ✅, GD.8a ✅; GD.4, GD.5, GD.6b, GD.6c, GD.7b, GD.7c, GD.8b, GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -282,14 +282,26 @@ is the option to rule out — it is the copy this plan exists to remove.
 **GD.7c 📝 — heading-scaled rows.** Honour `leftcol`; make viewport capacity
 account for variable row height (theme-system F.1, deferred there).
 
-### GD.8 📝 — small behaviours
+### GD.8 — small behaviours
 
-- `<Esc>` in a focused popup cancels the popup's own sub-mode (search) before
-  it dismisses the popup.
-- `ui.mouse` is honoured.
-- `<C-l>` redraw is acknowledged.
-- Pane geometry uses the window's real column count (the host falls back to
-  120 when `SetTerminalWidth` is never sent).
+**GD.8a ✅** (2026-10-11):
+
+- `<Esc>` dismisses a popup only while the document has focus. With focus
+  inside the popup it takes the keymap path, so a search in there is cancelled
+  before the popup is. Same gate as the TUI.
+- `<C-l>` is acknowledged, on the repaint wake and only when one is pending.
+- The window sends its width in columns when it changes, so pane geometry
+  stops assuming 120.
+
+**❌ `ui.mouse` in the GUI — dropped.** The audit listed it as ignored. It is
+ignored on purpose, and the option's own documentation says so: `ui.mouse`
+exists because a terminal loses its native click-drag selection while Lattice
+reads the mouse, and a window that owns its input takes nothing away by
+listening. Decided by `core_options.rs` and `docs/user/mouse.md`, not by this
+plan.
+
+**GD.8b 📝:**
+
 - Hard-coded popup colours go through the theme (light themes).
 - An Edit menu on macOS (cut, copy, paste, undo) wired to the editor.
 - The decline-and-fall-through walk behind an entry the conformance suite can

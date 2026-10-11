@@ -819,6 +819,42 @@ impl GpuiApp {
         }
     }
 
+    /// Whether `<Esc>` should dismiss the open popup instead of going to the
+    /// keymap.
+    ///
+    /// Only while the DOCUMENT has focus and a popup floats over it (hover,
+    /// signature help, `:describe-*`). Once focus is inside the popup, `<Esc>`
+    /// takes the ordinary path, so a sub-mode in there — a `/` search — is
+    /// cancelled first and the popup closes on the next one. This peer used
+    /// to dismiss whenever any popup was open, which threw the popup away
+    /// with the search still half-typed. Same gate as the TUI's `apply_event`.
+    pub fn esc_dismisses_popup(&self) -> bool {
+        let rs = self.render_state.load();
+        rs.popup.is_open() && !rs.active_document.load().popup_focused
+    }
+
+    /// Clear a pending `<C-l>` redraw request.
+    ///
+    /// The window repaints in full whenever it is notified, so there is
+    /// nothing extra to draw — but the request has to be acknowledged, or
+    /// `pending_redraw` stays set for the rest of the session. A published
+    /// read; the actor is crossed only when a redraw is actually pending.
+    pub fn acknowledge_redraw_if_pending(&mut self) {
+        if self.render_state.load().lifecycle.pending_redraw {
+            self.dispatch_action(Action::AcknowledgeRedraw);
+        }
+    }
+
+    /// Tell the host how many text columns the window is wide.
+    ///
+    /// Pane geometry (`<C-w>` navigation between splits, `buffer_area_rect`)
+    /// is computed from it, and the host assumes 120 when it has never been
+    /// told. The TUI sends this on every terminal resize; this peer never
+    /// did. The window calls it when the column count changes.
+    pub fn set_window_columns(&mut self, columns: u16) {
+        self.dispatch_action(Action::SetTerminalWidth(columns.max(1)));
+    }
+
     /// Whether the editor has asked to quit.
     ///
     /// A published read. The window checks it wherever control returns to
@@ -2104,6 +2140,56 @@ mod tests {
             app.editor.document_buffer_id, before,
             "the tutor's lesson buffer is the active one"
         );
+    }
+
+    /// GD.8a — `<Esc>` leaves a FOCUSED popup's keys alone.
+    #[test]
+    fn esc_dismisses_a_popup_only_while_the_document_has_focus() {
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        assert!(!app.esc_dismisses_popup(), "no popup, nothing to dismiss");
+
+        app.handle_renderer_signal(RendererSignal::DisplayBuffer(Box::new(
+            lattice_host::dispatch::DisplayBufferRequest {
+                content: lattice_help::HelpContent::from_lines("hover", vec!["text".to_string()]),
+                category: lattice_core::ui::display::BufferDisplayCategory::Hover,
+            },
+        )));
+        assert!(app.render_state.load().popup.is_open(), "test premise");
+        assert!(
+            app.esc_dismisses_popup(),
+            "a popup over a focused document: Esc dismisses it"
+        );
+
+        app.editor.popup_focused = true;
+        app.editor.publish_render_state();
+        assert!(
+            !app.esc_dismisses_popup(),
+            "focus inside the popup: Esc goes to the keymap, so a search in \
+             there is cancelled before the popup is"
+        );
+    }
+
+    /// GD.8a — the host learns the window's width, and a redraw request is
+    /// cleared.
+    #[test]
+    fn the_window_reports_its_width_and_acknowledges_a_redraw() {
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        app.set_window_columns(203);
+        assert_eq!(app.editor.terminal_width, Some(203));
+        assert_eq!(
+            app.render_state.load().lifecycle.terminal_width,
+            Some(203),
+            "published, which is where pane geometry reads it"
+        );
+
+        app.editor.pending_redraw = true;
+        app.editor.publish_render_state();
+        app.acknowledge_redraw_if_pending();
+        assert!(!app.editor.pending_redraw, "`<C-l>` is acknowledged");
+
+        let before = actor_calls::snapshot();
+        app.acknowledge_redraw_if_pending();
+        assert_eq!(actor_calls::snapshot() - before, 0, "and free when idle");
     }
 
     /// GD.1 — a repaint wake with nothing queued costs no actor crossing.

@@ -511,7 +511,7 @@ fn rich_cell_to_text_run(cell: &Cell, rich: &RichAttrs, len: usize, font_base: &
 /// on underflow (the `f32 → u32` `as` cast already clamps
 /// negatives to 0 and overflow is impossible because every
 /// channel is at most 255 and the multiplier is < 1).
-fn dim_channel(packed: u32) -> u32 {
+pub(crate) fn dim_channel(packed: u32) -> u32 {
     let r = ((packed >> 16) & 0xff) as f32;
     let g = ((packed >> 8) & 0xff) as f32;
     let b = (packed & 0xff) as f32;

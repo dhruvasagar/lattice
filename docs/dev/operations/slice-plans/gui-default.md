@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅; GD.4, GD.5, GD.6b, GD.6c, GD.7–GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.7a ✅; GD.4, GD.5, GD.6b, GD.6c, GD.7b, GD.7c, GD.8, GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -255,13 +255,32 @@ read / write / text need the host's overlay worker to carry the kind
 the current match's foreground need a per-run text attribute on an overlay that
 is currently a background quad.
 
-### GD.7 📝 — terminal, modeline, scaled rows
+### GD.7 — terminal, modeline, scaled rows
 
-- Terminal cells: bold, italic, dim, strikethrough; distinct search, current
-  match and selection styles.
-- Modeline provider labels for help, file-tree and oil panes.
-- Heading-scaled rows honour `leftcol`; viewport capacity accounts for
-  variable row height (theme-system F.1, deferred there).
+Split when the slice started, for the same reason as GD.6.
+
+**GD.7a ✅ — terminal cell attributes** (2026-10-11). Bold, italic, dim and
+strikethrough are painted (only reverse and underline were); underline is a
+text decoration and no longer a bottom border. Search hits are underlined and
+keep their colours; the current match and the Visual selection invert — the
+TUI's three styles, where this peer had one. The paint decision is a pure
+function (`terminal_run_paint`) and is what the tests cover. Not seen in a
+window; in particular that a bold run keeps the cell grid aligned depends on
+the terminal font's bold face having the regular face's advance.
+
+**GD.7b 📝 — modeline labels for help, file-tree and oil panes.** The TUI gets
+`[help] <title>`, `[tree] <root>`, `[oil] <dir> [+]` from a renderer-typed
+provider registry (`build_pane_render_registry`); the GUI passes `None` and
+shows the path segment. All three labels read only published state.
+**Design decision before starting:** the label is content, so it should be
+produced once. Either the owning mode contributes it as a modeline element
+(the ML-series direction, and what "modes own their status-line contributions"
+asks for), or the three functions move into the host's modeline resolver
+(quicker, and puts three mode names in the host). A second registry in the GUI
+is the option to rule out — it is the copy this plan exists to remove.
+
+**GD.7c 📝 — heading-scaled rows.** Honour `leftcol`; make viewport capacity
+account for variable row height (theme-system F.1, deferred there).
 
 ### GD.8 📝 — small behaviours
 

@@ -15,6 +15,8 @@
   which is most noticeable with a key held down.
 
 ### Fixed
+- **GUI: terminal panes show bold, italic, dim and strikethrough text**, and
+  search hits are underlined instead of looking like the current match.
 - **GUI: `:set relativenumber` works.** The window's gutter always showed
   absolute line numbers.
 - **GUI: closing the window no longer discards unsaved work.** The close

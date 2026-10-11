@@ -438,6 +438,78 @@ fn bottom_row_content(
     }
 }
 
+/// What lies over a terminal cell besides its own SGR attributes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TermHighlight {
+    None,
+    /// A search hit that is not the current one: underlined, colours kept.
+    Search,
+    /// The current search match, or a Visual-selected cell: fg and bg swap.
+    Inverted,
+}
+
+/// Which highlight a terminal cell shows. The current match and the Visual
+/// selection outrank an ordinary search hit, as in the TUI
+/// (`terminal_row_spans`): all three used to collapse into one fg/bg swap
+/// here, so every hit on screen looked like the one `n` would go to.
+fn terminal_highlight(current_match: bool, visual: bool, search_hit: bool) -> TermHighlight {
+    if current_match || visual {
+        TermHighlight::Inverted
+    } else if search_hit {
+        TermHighlight::Search
+    } else {
+        TermHighlight::None
+    }
+}
+
+/// How one run of terminal cells is painted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct TermRunPaint {
+    fg: u32,
+    /// `None` leaves the pane's own background showing.
+    bg: Option<u32>,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strikethrough: bool,
+}
+
+/// Resolve a terminal run's paint from its colours (already swapped for SGR
+/// reverse), its SGR attributes and what is highlighted over it.
+///
+/// Before GD.7 this peer honoured two attributes — reverse, and underline
+/// drawn as a bottom border. Bold, italic, dim and strikethrough were
+/// dropped, so a prompt's bold segment, a dimmed `ls` hint and `git log`'s
+/// italics all came out plain.
+///
+/// Dim attenuates the foreground the way the document painter does
+/// (`cells_paint::dim_channel`), so "dim" is one shade across the window.
+fn terminal_run_paint(
+    fg: u32,
+    bg: u32,
+    default_bg: u32,
+    attrs: lattice_terminal::CellAttrs,
+    highlight: TermHighlight,
+) -> TermRunPaint {
+    let fg = if attrs.dim {
+        crate::cells_paint::dim_channel(fg)
+    } else {
+        fg
+    };
+    let (fg, bg) = match highlight {
+        TermHighlight::Inverted => (bg, Some(fg)),
+        TermHighlight::None | TermHighlight::Search => (fg, (bg != default_bg).then_some(bg)),
+    };
+    TermRunPaint {
+        fg,
+        bg,
+        bold: attrs.bold,
+        italic: attrs.italic,
+        underline: attrs.underline || highlight == TermHighlight::Search,
+        strikethrough: attrs.strikethrough,
+    }
+}
+
 /// First grid row to paint for a terminal of `snap_rows` shown in a pane that
 /// can hold `pane_rows` rows (`0` = not yet published ⇒ no cap). Returns the
 /// START row so the BOTTOM `min(snap_rows, pane_rows)` rows render — recent
@@ -3337,8 +3409,8 @@ impl EditorView {
             fg: u32,
             bg: u32,
             attrs: CellAttrs,
-            cursor: bool,    // true = cursor cell (forces its own run)
-            highlight: bool, // T3.b.3: search-match cell
+            cursor: bool, // true = cursor cell (forces its own run)
+            highlight: TermHighlight,
         }
         // T3.b.3: translate the current_match's alacritty grid
         // line into the visible-window row coords. Same shape
@@ -3392,17 +3464,13 @@ impl EditorView {
                         bg: default_bg,
                         attrs: CellAttrs::default(),
                         cursor: false,
-                        highlight: false,
+                        highlight: TermHighlight::None,
                     });
                     // Build the styled run div. Cursor cells get
-                    // shape-specific treatment (block vs beam);
-                    // every other run honours fg/bg/attrs. Match
-                    // highlights paint a fg/bg swap (same as the
-                    // block-cursor look) — vim's match colour
-                    // would be cleaner once the host theme grows
-                    // a `match_background` slot.
+                    // shape-specific treatment (block vs beam); every other
+                    // run paints what `terminal_run_paint` resolves — the
+                    // cell's SGR attributes and any highlight over it.
                     let mut span = div();
-                    let attrs = style.attrs;
                     if style.cursor && insert_active {
                         // Beam cursor: vertical bar on the left edge
                         // of the cell.
@@ -3410,20 +3478,30 @@ impl EditorView {
                     } else if style.cursor {
                         // Block cursor: swap fg/bg.
                         span = span.bg(rgb(style.fg)).text_color(rgb(style.bg));
-                    } else if style.highlight {
-                        // T3.b.3: search match — invert fg/bg.
-                        span = span.bg(rgb(style.fg)).text_color(rgb(style.bg));
                     } else {
-                        span = span.text_color(rgb(style.fg));
-                        if style.bg != default_bg {
-                            span = span.bg(rgb(style.bg));
+                        let paint = terminal_run_paint(
+                            style.fg,
+                            style.bg,
+                            default_bg,
+                            style.attrs,
+                            style.highlight,
+                        );
+                        span = span.text_color(rgb(paint.fg));
+                        if let Some(bg) = paint.bg {
+                            span = span.bg(rgb(bg));
                         }
-                    }
-                    // Attribute-style approximations. GPUI's
-                    // div doesn't expose every text decoration
-                    // yet; map what's there.
-                    if attrs.underline {
-                        span = span.border_b_1().border_color(rgb(style.fg));
+                        if paint.bold {
+                            span = span.font_weight(gpui::FontWeight::BOLD);
+                        }
+                        if paint.italic {
+                            span = span.italic();
+                        }
+                        if paint.underline {
+                            span = span.underline();
+                        }
+                        if paint.strikethrough {
+                            span = span.line_through();
+                        }
                     }
                     let final_div = span.child(SharedString::from(std::mem::take(text)));
                     row_div.child(final_div)
@@ -3494,7 +3572,8 @@ impl EditorView {
                         }
                     })
                     .unwrap_or(false);
-                let highlight = highlight_match || highlight_visual || highlight_hlsearch;
+                let highlight =
+                    terminal_highlight(highlight_match, highlight_visual, highlight_hlsearch);
                 let style = CellStyle {
                     fg: fg_color,
                     bg: bg_color,
@@ -6746,6 +6825,101 @@ mod modeline_tests {
         assert!(super::global_bottom_row_visible(true, false));
         // No picker at all → keep.
         assert!(super::global_bottom_row_visible(false, false));
+    }
+
+    /// GD.7a — every SGR attribute a terminal cell carries is painted.
+    ///
+    /// This peer honoured reverse and underline and dropped the rest, so a
+    /// prompt's bold segment and `git log`'s italics came out plain.
+    #[test]
+    fn a_terminal_run_paints_every_attribute_it_carries() {
+        use super::{TermHighlight, TermRunPaint, terminal_run_paint};
+        use lattice_terminal::CellAttrs;
+        const FG: u32 = 0x00ff_ffff;
+        const BG: u32 = 0x0010_2030;
+        const DEFAULT_BG: u32 = 0x0000_0000;
+
+        let plain = terminal_run_paint(
+            FG,
+            DEFAULT_BG,
+            DEFAULT_BG,
+            CellAttrs::default(),
+            TermHighlight::None,
+        );
+        assert_eq!(
+            plain,
+            TermRunPaint {
+                fg: FG,
+                bg: None,
+                bold: false,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+            },
+            "a default cell leaves the pane's background showing"
+        );
+
+        let attrs = CellAttrs {
+            bold: true,
+            italic: true,
+            underline: true,
+            strikethrough: true,
+            ..CellAttrs::default()
+        };
+        let styled = terminal_run_paint(FG, BG, DEFAULT_BG, attrs, TermHighlight::None);
+        assert!(styled.bold && styled.italic && styled.underline && styled.strikethrough);
+        assert_eq!(styled.bg, Some(BG), "an explicit background is painted");
+
+        let dim = CellAttrs {
+            dim: true,
+            ..CellAttrs::default()
+        };
+        assert_eq!(
+            terminal_run_paint(FG, DEFAULT_BG, DEFAULT_BG, dim, TermHighlight::None).fg,
+            crate::cells_paint::dim_channel(FG),
+            "dim is the document painter's shade, not a second one"
+        );
+    }
+
+    /// GD.7a — a search hit, the current match and a selection are told
+    /// apart.
+    ///
+    /// All three were one fg/bg swap, so with `hlsearch` on every hit looked
+    /// like the one `n` would jump to. As in the TUI: hits are underlined,
+    /// and the current match and the Visual selection invert.
+    #[test]
+    fn terminal_search_hits_differ_from_the_current_match_and_selection() {
+        use super::{TermHighlight, terminal_highlight, terminal_run_paint};
+        use lattice_terminal::CellAttrs;
+        const FG: u32 = 0x00ff_ffff;
+        const BG: u32 = 0x0000_0000;
+
+        assert_eq!(terminal_highlight(false, false, false), TermHighlight::None);
+        assert_eq!(
+            terminal_highlight(false, false, true),
+            TermHighlight::Search
+        );
+        assert_eq!(
+            terminal_highlight(true, false, true),
+            TermHighlight::Inverted,
+            "the current match outranks being a hit"
+        );
+        assert_eq!(
+            terminal_highlight(false, true, true),
+            TermHighlight::Inverted
+        );
+
+        let hit = terminal_run_paint(FG, BG, BG, CellAttrs::default(), TermHighlight::Search);
+        assert!(hit.underline, "a hit is underlined");
+        assert_eq!((hit.fg, hit.bg), (FG, None), "and keeps its colours");
+
+        let current = terminal_run_paint(FG, BG, BG, CellAttrs::default(), TermHighlight::Inverted);
+        assert_eq!(
+            (current.fg, current.bg),
+            (BG, Some(FG)),
+            "the current match inverts"
+        );
+        assert!(!current.underline);
     }
 
     /// `icon_color_to_rgb` maps the renderer-neutral named `IconColor`s

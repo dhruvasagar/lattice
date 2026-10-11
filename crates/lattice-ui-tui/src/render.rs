@@ -101,13 +101,10 @@ pub struct FrameView<'a> {
     /// Slice 3c.extension.fold-rs: per-frame LSP-mode gates,
     /// cached once at `FrameView::from_app` so the compose loop's
     /// per-line decoration checks don't pay actor-RPC cost. Each
-    /// is one `read_editor` at frame entry; a 120-row paint that
-    /// previously triggered 120× per-line RPC for
-    /// `app.lsp_semantic_tokens_mode_enabled_for(...)` now reads
-    /// `view.lsp_semantic_tokens_enabled` directly.
+    /// is one `read_editor` at frame entry, so a 120-row paint does
+    /// not pay a per-line RPC for each gate.
     pub lsp_mode_enabled: bool,
     pub lsp_diagnostics_enabled: bool,
-    pub lsp_semantic_tokens_enabled: bool,
     pub lsp_document_highlight_enabled: bool,
     /// Slice A.2b.2: inlay-hint mode gate moved to publish-time
     /// (`Editor::build_active_inlay_hints` returns an empty list
@@ -188,7 +185,6 @@ impl<'a> FrameView<'a> {
             fold_index,
             lsp_mode_enabled: app.lsp_mode_enabled_for(doc_id),
             lsp_diagnostics_enabled: app.lsp_diagnostics_mode_enabled_for(doc_id),
-            lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(doc_id),
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(doc_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
             wrap_lines: ad.option_cache.wrap_lines,
@@ -244,7 +240,6 @@ impl<'a> FrameView<'a> {
             fold_index,
             lsp_mode_enabled: app.lsp_mode_enabled_for(buffer_id),
             lsp_diagnostics_enabled: app.lsp_diagnostics_mode_enabled_for(buffer_id),
-            lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(buffer_id),
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(buffer_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(buffer_id),
             // PU.1b-1a: wrap + signcolumn resolve per-buffer (the
@@ -5381,54 +5376,10 @@ pub(crate) fn compose_pane_lines(
             // user just collapsed.
             closed_fold_display_span(view, snap, f)
         });
-        // 4.4.h: LSP semantic-tokens overlay. Replaces the
-        // foreground color (folding in modifier bits) for
-        // each token's byte range. Painted BEFORE visual /
-        // hlsearch / diagnostic passes so those still layer
-        // their bg / underline on top of the LSP-driven fg
-        // -- the user's selection and search highlight stay
-        // visible over semantic-colored text.
-        // 5.8.AF.5 / Slice 3b.2: read semantic-tokens through
-        // `RenderState.lsp.semantic_tokens`. The spawned request
-        // task writes via `insert_for` into the same underlying
-        // `PerBufferCache` -- this read sees fresh data without
-        // any UI-thread drain.
-        // DR.3: semantic tokens are a buffer-intrinsic decoration —
-        // source from THIS pane's per-buffer cache (`ctx.buffer_id`)
-        // and the per-pane `view` gate, so they paint on inactive
-        // panes too (dimmed). For the active pane `ctx.buffer_id` IS
-        // the active doc → byte-identical.
-        use lattice_host::per_buffer_cache::PerBufferCacheExt;
-        let rs_st = app.render_state.load();
-        if let Some(cache) = rs_st.lsp.semantic_tokens.get_for(ctx.buffer_id)
-            && view.lsp_semantic_tokens_enabled
-        {
-            for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
-                let start =
-                    lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, tok.start_char)
-                        as usize;
-                let end = lattice_lsp::position::utf16_column_to_utf8_byte(
-                    &line_text,
-                    tok.start_char + tok.length,
-                ) as usize;
-                let start = start.min(line_len);
-                let end = end.min(line_len);
-                if start >= end {
-                    continue;
-                }
-                let mut mods = Modifier::empty();
-                let style_with_mods =
-                    apply_semantic_token_modifiers(TuiStyle::default(), &tok.modifiers);
-                mods.insert(style_with_mods.add_modifier);
-                body = apply_semantic_token_overlay(
-                    body,
-                    map_ob(start),
-                    map_ob(end),
-                    semantic_token_color(&tok.token_type),
-                    mods,
-                );
-            }
-        }
+        // GD.6b: LSP semantic tokens are no longer merged here. The host's
+        // cell worker layers them over the grammar spans when it builds
+        // the row, so `body` already carries them — as it does in the
+        // GPUI window, which has no merge point of its own.
         // Blockwise visual: per-line column band [min_col, max_col].
         // Charwise / Linewise visual go through `visual_range` instead.
         if let Some(b) = block
@@ -6323,96 +6274,6 @@ fn diagnostic_summary_style(severity_rank: u8, view: &FrameView<'_>) -> TuiStyle
         _ => theme.diagnostic_hint_style,
     };
     base.add_modifier(Modifier::ITALIC)
-}
-
-/// 4.4.h: apply LSP semantic styling to the spans intersecting
-/// `[overlay_start, overlay_end)`. Replaces fg + folds in
-/// modifiers WITHOUT clobbering existing bg / underline /
-/// reverse from earlier passes (tree-sitter set bg = None
-/// commonly; visual / hlsearch / diagnostics overlays may
-/// have set bg). Same span-splitting machinery as
-/// `apply_match_overlay`.
-///
-/// S3.c.2 (2026-05-26): visibility bumped to `pub(crate)` so
-/// `cells_render::tests` can validate the overlay's behaviour
-/// against cell-derived bodies. Matches the existing precedent
-/// set by `apply_whitespace_decoration`.
-pub(crate) fn apply_semantic_token_overlay(
-    spans: Vec<Span<'static>>,
-    overlay_start: usize,
-    overlay_end: usize,
-    fg: Color,
-    modifiers: Modifier,
-) -> Vec<Span<'static>> {
-    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
-    let mut cursor = 0usize;
-    for span in spans {
-        let s = span.content.as_ref().to_string();
-        let span_start = cursor;
-        let span_end = cursor + s.len();
-        let overlap_start = span_start.max(overlay_start);
-        let overlap_end = span_end.min(overlay_end);
-        if overlap_start >= overlap_end {
-            out.push(Span::styled(s, span.style));
-        } else {
-            if overlap_start > span_start {
-                let pre = s[..overlap_start - span_start].to_string();
-                out.push(Span::styled(pre, span.style));
-            }
-            let mid = s[overlap_start - span_start..overlap_end - span_start].to_string();
-            // Merge: keep prior bg / underline / reverse;
-            // override fg + add modifier bits.
-            let merged = span.style.fg(fg).add_modifier(modifiers);
-            out.push(Span::styled(mid, merged));
-            if overlap_end < span_end {
-                let post = s[overlap_end - span_start..].to_string();
-                out.push(Span::styled(post, span.style));
-            }
-        }
-        cursor = span_end;
-    }
-    out
-}
-
-/// 4.4.h: pick a foreground color for a semantic-token kind.
-/// Names are the LSP-standard token-type strings (see
-/// `SemanticTokenType` consts in `lsp-types`). Servers may
-/// declare custom token types beyond the standard set; those
-/// fall through to the default magenta so they're at least
-/// distinguishable from un-styled text.
-///
-/// Modifiers are folded into the style via
-/// `apply_semantic_token_modifiers` (italic / bold / etc.);
-/// this fn only chooses the hue.
-fn semantic_token_color(kind: &str) -> Color {
-    match kind {
-        "keyword" | "controlKeyword" => Color::Magenta,
-        "type" | "class" | "struct" | "interface" | "enum" | "typeParameter" => Color::Cyan,
-        "function" | "method" | "macro" => Color::Yellow,
-        "string" => Color::Green,
-        "number" => Color::LightYellow,
-        "comment" => Color::DarkGray,
-        "operator" => Color::LightCyan,
-        "variable" | "parameter" | "property" | "enumMember" => Color::White,
-        "namespace" | "modifier" => Color::LightMagenta,
-        _ => Color::Magenta,
-    }
-}
-
-/// 4.4.h: apply LSP modifier bits to a base style. `static`,
-/// `readonly`, `deprecated` etc. carry visual cues
-/// (italic / strike-through). Idempotent; missing modifiers
-/// leave the style untouched.
-fn apply_semantic_token_modifiers(mut style: TuiStyle, modifiers: &[String]) -> TuiStyle {
-    for m in modifiers {
-        match m.as_str() {
-            "deprecated" => style = style.add_modifier(Modifier::CROSSED_OUT),
-            "readonly" | "static" => style = style.add_modifier(Modifier::ITALIC),
-            "defaultLibrary" => style = style.add_modifier(Modifier::DIM),
-            _ => {}
-        }
-    }
-    style
 }
 
 // Slice A.2b.2: `inlay_hint_label_text` is no longer imported here
@@ -12882,120 +12743,70 @@ mod tests {
         );
     }
 
-    /// 4.4.h: a seeded semantic-tokens cache repaints the
-    /// foreground color within each token's byte range.
+    /// GD.6b: semantic tokens reach the terminal through the host's
+    /// rows, not a render-time merge — and only while
+    /// `lsp-semantic-tokens-mode` is on for the buffer.
     #[test]
-    fn semantic_tokens_overlay_repaints_fg_within_token_range() {
+    fn semantic_tokens_colour_the_composed_row_while_the_mode_is_on() {
         use std::str::FromStr;
         let mut app = app_with("fn main() {}\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         let doc_id = app.ad().document_buffer_id;
         app.editor.buffer_uris.insert(doc_id, uri);
-        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
+        if !app.lsp_mode_enabled_for(doc_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
-        if !app.lsp_semantic_tokens_mode_enabled_for(app.ad().document_buffer_id) {
+        if !app.lsp_semantic_tokens_mode_enabled_for(doc_id) {
             app.toggle_mode_by_name("lsp-semantic-tokens-mode");
         }
-        // Seed: "fn" as keyword (chars 0..=1), "main" as function
-        // (chars 3..=6).
-        // 5.8.AF.5 / Slice 3b.2: `lsp_semantic_tokens_cache` is
-        // now a `PerBufferCache<...>`; use `insert_for` + publish.
-        {
-            use lattice_host::per_buffer_cache::PerBufferCacheExt;
-            app.editor.lsp_semantic_tokens_cache.insert_for(
-                app.ad().document_buffer_id,
-                crate::app::LspSemanticTokensCache {
-                    document_version: app.editor.document.snapshot().version,
-                    result_id: None,
-                    raw_data: Vec::new(),
-                    tokens: vec![
-                        crate::app::DecodedSemanticToken {
-                            line: 0,
-                            start_char: 0,
-                            length: 2,
-                            token_type: "keyword".into(),
-                            modifiers: Vec::new(),
-                        },
-                        crate::app::DecodedSemanticToken {
-                            line: 0,
-                            start_char: 3,
-                            length: 4,
-                            token_type: "function".into(),
-                            modifiers: Vec::new(),
-                        },
-                    ],
-                },
-            );
-        }
-        app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
-        let row0 = &lines[0];
-        // Magenta = keyword, Yellow = function. Find at least
-        // one span of each in the row.
-        let mut saw_keyword = false;
-        let mut saw_function = false;
-        for span in &row0.spans {
-            match span.style.fg {
-                Some(Color::Magenta) if span.content.as_ref().contains("fn") => {
-                    saw_keyword = true;
-                }
-                Some(Color::Yellow) if span.content.as_ref().contains("main") => {
-                    saw_function = true;
-                }
-                _ => {}
-            }
-        }
-        assert!(saw_keyword, "expected keyword fg on `fn`; got {row0:?}");
-        assert!(saw_function, "expected function fg on `main`; got {row0:?}");
-    }
+        let fg_of_main = |app: &App| -> Option<Color> {
+            let lines = compose_visible_lines(app, &app.ad().snapshot.clone(), 5, 80);
+            lines[0]
+                .spans
+                .iter()
+                .find(|s| s.content.as_ref().contains("main"))
+                .and_then(|s| s.style.fg)
+        };
+        // The cell worker is its own task in the running editor; here it
+        // is run by hand after each publish.
+        let rebuild = |app: &mut App| {
+            app.editor.publish_render_state();
+            lattice_host::cells_worker::recompute(&app.editor.render_state);
+        };
+        rebuild(&mut app);
+        let without_tokens = fg_of_main(&app);
 
-    /// 4.4.h: with the mode off, the cache is ignored.
-    #[test]
-    fn semantic_tokens_overlay_suppressed_when_mode_off() {
-        use std::str::FromStr;
-        let mut app = app_with("fn main() {}\n", 5);
-        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        let doc_id = app.ad().document_buffer_id;
-        app.editor.buffer_uris.insert(doc_id, uri);
-        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
-            app.toggle_mode_by_name("lsp-mode");
-        }
-        if app.lsp_semantic_tokens_mode_enabled_for(app.ad().document_buffer_id) {
-            app.toggle_mode_by_name("lsp-semantic-tokens-mode");
-        }
-        // 5.8.AF.5 / Slice 3b.2: see seed pattern note above.
+        // The server says `main` is a string. No grammar would, so a
+        // colour change on it can only have come from the token.
         {
             use lattice_host::per_buffer_cache::PerBufferCacheExt;
             app.editor.lsp_semantic_tokens_cache.insert_for(
-                app.ad().document_buffer_id,
+                doc_id,
                 crate::app::LspSemanticTokensCache {
                     document_version: app.editor.document.snapshot().version,
                     result_id: None,
                     raw_data: Vec::new(),
                     tokens: vec![crate::app::DecodedSemanticToken {
                         line: 0,
-                        start_char: 0,
-                        length: 2,
-                        token_type: "keyword".into(),
+                        start_char: 3,
+                        length: 4,
+                        token_type: "string".into(),
                         modifiers: Vec::new(),
                     }],
                 },
             );
         }
-        app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
-        let row0 = &lines[0];
-        // No magenta fg should appear on the "fn" span.
-        for span in &row0.spans {
-            if span.content.as_ref().contains("fn") {
-                assert_ne!(
-                    span.style.fg,
-                    Some(Color::Magenta),
-                    "mode-off should suppress semantic-tokens overlay; got {span:?}"
-                );
-            }
-        }
+        rebuild(&mut app);
+        let with_tokens = fg_of_main(&app);
+        assert_ne!(
+            with_tokens, without_tokens,
+            "a token on `main` must change its colour"
+        );
+
+        // Mode off: the cache is still there and is ignored.
+        app.toggle_mode_by_name("lsp-semantic-tokens-mode");
+        rebuild(&mut app);
+        assert_eq!(fg_of_main(&app), without_tokens);
     }
 
     /// 4.4.g: with the mode off, the cache content is ignored

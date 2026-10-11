@@ -169,6 +169,7 @@ fn rs_for_with_strip(
         excerpt_syntax: Arc::from(Vec::new()),
         extra_spans: Arc::from(Vec::new()),
         extra_refine: std::sync::Arc::from(Vec::new().into_boxed_slice()),
+        semantic_tokens: None,
         inlay_hints: inlay_hints.clone(),
         folds: folds.clone(),
         viewport_height: VIEWPORT_HEIGHT,

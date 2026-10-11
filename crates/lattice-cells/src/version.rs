@@ -81,6 +81,16 @@ pub struct MatrixVersion {
     /// That is what keeps `i` in a Rust file from costing a viewport
     /// rebuild: the axis cannot move if there is nothing to conceal.
     pub conceal: u64,
+    /// GD.6b: which LSP semantic-token set the rows were coloured from,
+    /// or `0` when the buffer has none (no server, the mode is off).
+    /// A stamp, not a hash: it moves when the buffer's token cache is
+    /// replaced and says nothing about what is in it.
+    ///
+    /// **Rebuild-class, like `syntax`.** Tokens change a cell's colour
+    /// and never its character, so a renderer keeps painting the rows it
+    /// has while the worker rebuilds — a stale stamp must not drop the
+    /// viewport to raw text.
+    pub semantic_tokens: u64,
 }
 
 impl MatrixVersion {
@@ -94,6 +104,7 @@ impl MatrixVersion {
         whitespace: 0,
         indent: 0,
         conceal: 0,
+        semantic_tokens: 0,
     };
 
     /// `true` when any component differs from `other`. Used by the
@@ -121,6 +132,11 @@ impl MatrixVersion {
             ("folds", self.folds, other.folds),
             ("theme", self.theme, other.theme),
             ("whitespace", self.whitespace, other.whitespace),
+            (
+                "semantic_tokens",
+                self.semantic_tokens,
+                other.semantic_tokens,
+            ),
         ] {
             if a != b {
                 out.push(name);
@@ -154,6 +170,10 @@ mod tests {
             MatrixVersion { theme: 1, ..base },
             MatrixVersion { indent: 1, ..base },
             MatrixVersion { conceal: 1, ..base },
+            MatrixVersion {
+                semantic_tokens: 1,
+                ..base
+            },
         ];
         for v in bumps {
             assert!(v.differs_from(&base), "expected differs: {v:?}");
@@ -172,6 +192,7 @@ mod tests {
             whitespace: 0,
             indent: 0,
             conceal: 0,
+            semantic_tokens: 0,
         };
         assert!(!v.differs_from(&v));
     }

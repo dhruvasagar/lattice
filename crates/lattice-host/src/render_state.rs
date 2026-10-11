@@ -1639,6 +1639,11 @@ pub struct PaneCellsInputs {
     /// `[]` for every buffer without it, so ordinary panes render
     /// byte-identically.
     pub extra_refine: Arc<[Vec<lattice_cells::RefineSpan>]>,
+    /// GD.6b: this buffer's LSP semantic tokens, or `None` when it has
+    /// none or `lsp-semantic-tokens-mode` is off for it. The worker
+    /// turns the ones covering the window it builds into spans layered
+    /// over the grammar's; `version.semantic_tokens` is this set's stamp.
+    pub semantic_tokens: Option<Arc<lattice_lsp::cache::LspSemanticTokensCache>>,
 }
 
 impl Default for CellsRenderState {

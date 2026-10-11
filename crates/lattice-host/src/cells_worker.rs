@@ -841,6 +841,10 @@ pub fn recompute_pane(
                 &pane.excerpt_syntax,
                 &pane.extra_spans,
                 &pane.extra_refine,
+                pane.semantic_tokens
+                    .as_deref()
+                    .map(|c| c.tokens.as_slice())
+                    .unwrap_or(&[]),
                 ct,
                 &pane.inlay_hints,
                 &pane.folds,
@@ -2480,6 +2484,9 @@ fn build_display_matrix(
     // DR.3: per-line intra-line refinement; empty for every buffer
     // that publishes none.
     extra_refine: &[Vec<lattice_cells::RefineSpan>],
+    // GD.6b: the buffer's LSP semantic tokens, layered over the grammar
+    // spans; empty for a buffer with none.
+    semantic_tokens: &[lattice_lsp::cache::DecodedSemanticToken],
     ct: CellTheme<'_>,
     inlay_hints: &[crate::render_state::InlayHintRow],
     folds: &[lattice_core::Fold],
@@ -2538,18 +2545,29 @@ fn build_display_matrix(
             }
             snap.highlight_lines(lo, hi).ok()
         });
+        // GD.6b: semantic tokens go over the grammar and under the
+        // static extra spans (a help link's label still wins).
+        let semantic = (!semantic_tokens.is_empty()).then(|| {
+            crate::semantic_spans::spans_for_lines(semantic_tokens, lo, hi, |l| {
+                snapshot.buffer.line(l)
+            })
+        });
         match grammar {
             Some(mut spans) => {
+                if let Some(semantic) = semantic {
+                    crate::semantic_spans::merge_semantic_spans(&mut spans, semantic);
+                }
                 merge_extra_spans(&mut spans, extra_spans, lo);
                 Some(spans)
             }
-            // No (or stale) grammar but static extra spans exist (e.g. a
-            // plain-text buffer carrying link styling): synthesise an
-            // empty per-line window and merge the extra spans in, so the
-            // static styling still reaches the matrix. Plain buffers with
-            // no extra spans keep the historical `None` (all-default).
-            None if !extra_spans.is_empty() => {
-                let mut spans = vec![Vec::new(); (hi - lo) as usize];
+            // No (or stale) grammar but static extra spans or semantic
+            // tokens exist (e.g. a plain-text buffer carrying link
+            // styling, or a language with a server and no grammar):
+            // synthesise an empty per-line window and merge them in, so
+            // the styling still reaches the matrix. Plain buffers with
+            // neither keep the historical `None` (all-default).
+            None if !extra_spans.is_empty() || semantic.is_some() => {
+                let mut spans = semantic.unwrap_or_else(|| vec![Vec::new(); (hi - lo) as usize]);
                 merge_extra_spans(&mut spans, extra_spans, lo);
                 Some(spans)
             }
@@ -2779,6 +2797,9 @@ fn try_incremental_display_build(
     if new_version.inlay_hints != pub_v.inlay_hints
         || new_version.folds != pub_v.folds
         || new_version.theme != pub_v.theme
+        // GD.6b: a new token set recolours rows this path would reuse
+        // verbatim, so it takes the full build.
+        || new_version.semantic_tokens != pub_v.semantic_tokens
     {
         return None;
     }
@@ -2870,13 +2891,37 @@ fn try_incremental_display_build(
         if hi <= lo {
             return Some(Vec::new());
         }
-        pane.syntax_handle.as_deref().and_then(|h| {
+        let grammar = pane.syntax_handle.as_deref().and_then(|h| {
             let snap = h.snapshot();
             if snap.text_version() < snapshot.text_version {
                 return None;
             }
             snap.highlight_lines(lo, hi).ok()
-        })
+        });
+        // GD.6b: the tokens here were computed for the text BEFORE this
+        // edit; the server's answer for the new text is still on its way.
+        // On an edit that kept the line count they are still on the right
+        // lines, so the rebuilt line keeps its token colours up to the
+        // edit point instead of flashing to grammar-only colours and back
+        // when the answer lands. On an edit that added or removed lines
+        // they are on the wrong ones, so the rebuilt lines take grammar
+        // colours until it does.
+        let semantic = pane
+            .semantic_tokens
+            .as_deref()
+            .filter(|_| edit.net_delta() == 0)
+            .map(|cache| {
+                crate::semantic_spans::spans_for_lines(&cache.tokens, lo, hi, |l| {
+                    snapshot.buffer.line(l)
+                })
+            });
+        match (grammar, semantic) {
+            (Some(mut spans), Some(semantic)) => {
+                crate::semantic_spans::merge_semantic_spans(&mut spans, semantic);
+                Some(spans)
+            }
+            (grammar, semantic) => grammar.or(semantic),
+        }
     };
 
     if new_chunk_size == CHUNK_SIZE_WHOLE_DOC {
@@ -3608,6 +3653,7 @@ mod tests {
             excerpt_syntax: Arc::from([]),
             extra_spans: Arc::from([]),
             extra_refine: Arc::from(Vec::new().into_boxed_slice()),
+            semantic_tokens: None,
         };
         let pane_matrices = {
             let mut m = std::collections::HashMap::new();
@@ -3662,6 +3708,7 @@ mod tests {
             whitespace: 0,
             indent: 0,
             conceal: 0,
+            semantic_tokens: 0,
         }
     }
 
@@ -4112,6 +4159,7 @@ mod tests {
             whitespace: 0,
             indent: 0,
             conceal: 0,
+            semantic_tokens: 0,
         };
         let v_b = MatrixVersion {
             inlay_hints: 1,
@@ -5252,6 +5300,7 @@ mod tests {
             &[],
             &extra,
             &[],
+            &[],
             ct,
             &[],
             &[],
@@ -5276,6 +5325,214 @@ mod tests {
                 .iter()
                 .all(|r| r.style != lattice_syntax::Style::Link),
             "line 1 carries no extra span, so it must have no Link styling"
+        );
+    }
+
+    // ── GD.6b: semantic tokens ride the matrix ───────────────────────
+
+    fn sem_tok(
+        line: u32,
+        start: u32,
+        len: u32,
+        kind: &str,
+    ) -> lattice_lsp::cache::DecodedSemanticToken {
+        lattice_lsp::cache::DecodedSemanticToken {
+            line,
+            start_char: start,
+            length: len,
+            token_type: kind.into(),
+            modifiers: Vec::new(),
+        }
+    }
+
+    fn sem_cache(
+        tokens: Vec<lattice_lsp::cache::DecodedSemanticToken>,
+    ) -> Option<Arc<lattice_lsp::cache::LspSemanticTokensCache>> {
+        Some(Arc::new(lattice_lsp::cache::LspSemanticTokensCache {
+            document_version: 1,
+            result_id: None,
+            raw_data: Vec::new(),
+            tokens,
+        }))
+    }
+
+    fn sem_version(text: u64, semantic_tokens: u64) -> MatrixVersion {
+        MatrixVersion {
+            semantic_tokens,
+            ..v(text)
+        }
+    }
+
+    fn styles_on(
+        cell: &Arc<ArcSwap<crate::display_matrix::DisplayMatrix>>,
+        line: u32,
+    ) -> Vec<(u32, lattice_syntax::Style)> {
+        cell.load()
+            .row_at_source_line(line)
+            .expect("row")
+            .runs
+            .iter()
+            .map(|r| (r.len, r.style))
+            .collect()
+    }
+
+    /// The point of the slice: a token's colour is in the rows both
+    /// renderers paint, so neither has to merge it at render time.
+    #[test]
+    fn semantic_tokens_colour_the_rows_they_cover() {
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+        let snap = snap_of_versioned("fn main\nplain", 1);
+        let mut p = pane_inputs(Arc::default(), Some(snap), sem_version(1, 1), 10);
+        p.semantic_tokens = sem_cache(vec![
+            sem_tok(0, 0, 2, "keyword"),
+            sem_tok(0, 3, 4, "function"),
+        ]);
+        let _ = recompute_pane(&p, ct, &ws);
+
+        assert_eq!(
+            styles_on(&p.display_matrix, 0),
+            vec![
+                (2, lattice_syntax::Style::Keyword),
+                (1, lattice_syntax::Style::Default),
+                (4, lattice_syntax::Style::Function),
+            ]
+        );
+        assert_eq!(
+            styles_on(&p.display_matrix, 1),
+            vec![(5, lattice_syntax::Style::Default)],
+            "a line with no token is untouched"
+        );
+    }
+
+    /// The UX risk named when this was chosen: tokens arriving must not
+    /// disturb a line they did not change. The server answers some time
+    /// after the edit, so this rebuild happens with nothing typed — any
+    /// difference on an untouched line would be a visible recolour.
+    #[test]
+    fn a_new_token_set_recolours_only_the_lines_whose_tokens_changed() {
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+        let snap = snap_of_versioned("alpha\nbeta", 1);
+        let mut p = pane_inputs(Arc::default(), Some(snap), sem_version(1, 1), 10);
+        p.semantic_tokens = sem_cache(vec![sem_tok(0, 0, 5, "type"), sem_tok(1, 0, 4, "variable")]);
+        assert_eq!(recompute_pane(&p, ct, &ws), WorkerDecision::Recomputed);
+        let line0_before = styles_on(&p.display_matrix, 0);
+
+        // Same stamp: nothing to do.
+        assert_eq!(recompute_pane(&p, ct, &ws), WorkerDecision::CacheHit);
+
+        // A new set that differs only on line 1.
+        p.version = sem_version(1, 2);
+        p.semantic_tokens = sem_cache(vec![sem_tok(0, 0, 5, "type"), sem_tok(1, 0, 4, "function")]);
+        assert_eq!(
+            recompute_pane(&p, ct, &ws),
+            WorkerDecision::Recomputed,
+            "a new token set must rebuild even though the text did not move"
+        );
+        assert_eq!(styles_on(&p.display_matrix, 0), line0_before);
+        assert_eq!(
+            styles_on(&p.display_matrix, 1),
+            vec![(4, lattice_syntax::Style::Function)]
+        );
+
+        // Tokens gone (mode off, server detached): back to no token colour.
+        p.version = sem_version(1, 0);
+        p.semantic_tokens = None;
+        assert_eq!(recompute_pane(&p, ct, &ws), WorkerDecision::Recomputed);
+        assert_eq!(
+            styles_on(&p.display_matrix, 0),
+            vec![(5, lattice_syntax::Style::Default)]
+        );
+    }
+
+    /// Typing inside a line: the tokens are one edit stale, but still on
+    /// the right line, so the line being typed in keeps them rather than
+    /// dropping to grammar colours on every keystroke and getting them
+    /// back when the server answers.
+    #[test]
+    fn typing_in_a_line_keeps_that_lines_token_colours() {
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+        let mut p = pane_inputs(
+            Arc::default(),
+            Some(snap_of_versioned("name x\nrest", 1)),
+            sem_version(1, 1),
+            10,
+        );
+        p.semantic_tokens = sem_cache(vec![sem_tok(0, 0, 4, "function")]);
+        let _ = recompute_pane(&p, ct, &ws);
+
+        // Type a character at the end of line 0. Same token set: the
+        // server has not answered for the new text yet.
+        p.snapshot = Some(snap_of_versioned("name xy\nrest", 2));
+        p.version = sem_version(2, 1);
+        p.last_edit = Some(edit_delta(0, 0, 0));
+        assert_eq!(
+            recompute_pane(&p, ct, &ws),
+            WorkerDecision::RecomputedIncremental
+        );
+        assert_eq!(
+            styles_on(&p.display_matrix, 0),
+            vec![
+                (4, lattice_syntax::Style::Function),
+                (3, lattice_syntax::Style::Default),
+            ]
+        );
+    }
+
+    /// Opening a line moves every later line down by one, and the stale
+    /// tokens with it would land on the wrong text. The rebuilt lines go
+    /// without until the server answers; the lines below are reused, so
+    /// they keep the colours they had.
+    #[test]
+    fn an_edit_that_adds_a_line_does_not_put_stale_tokens_on_the_new_one() {
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+        let mut p = pane_inputs(
+            Arc::default(),
+            Some(snap_of_versioned("first\nsecond", 1)),
+            sem_version(1, 1),
+            10,
+        );
+        p.semantic_tokens = sem_cache(vec![sem_tok(1, 0, 6, "type")]);
+        let _ = recompute_pane(&p, ct, &ws);
+
+        // `o` on line 0: a blank line appears at index 1, "second" moves
+        // to index 2. The token set still says line 1.
+        p.snapshot = Some(snap_of_versioned("first\n\nsecond", 2));
+        p.version = sem_version(2, 1);
+        p.last_edit = Some(edit_delta(0, 0, 1));
+        assert_eq!(
+            recompute_pane(&p, ct, &ws),
+            WorkerDecision::RecomputedIncremental
+        );
+        assert!(
+            styles_on(&p.display_matrix, 1)
+                .iter()
+                .all(|(_, s)| *s == lattice_syntax::Style::Default),
+            "the new blank line must not inherit line 1's old token"
+        );
+        assert_eq!(
+            styles_on(&p.display_matrix, 2),
+            vec![(6, lattice_syntax::Style::Type)],
+            "the line that moved down keeps its colour"
         );
     }
 
@@ -5332,6 +5589,7 @@ mod tests {
         let dm = build_display_matrix(
             snap.as_ref(),
             None,
+            &[],
             &[],
             &[],
             &[],
@@ -5509,6 +5767,7 @@ mod tests {
             whitespace: 0,
             indent: 0,
             conceal: 0,
+            semantic_tokens: 0,
         };
         let v_b = MatrixVersion { theme: 0xbb, ..v_a };
 
@@ -7109,6 +7368,7 @@ mod tests {
                     excerpt_syntax: Arc::from([]),
                     extra_spans: Arc::from([]),
                     extra_refine: Arc::from(Vec::new().into_boxed_slice()),
+                    semantic_tokens: None,
                 };
                 let cells = CellsRenderState {
                     pane_indent_guides: Arc::new(std::collections::HashMap::new()),
@@ -7275,6 +7535,7 @@ mod tests {
                 excerpt_syntax: Arc::from([]),
                 extra_spans: Arc::from([]),
                 extra_refine: Arc::from(Vec::new().into_boxed_slice()),
+                semantic_tokens: None,
             };
             let cells = CellsRenderState {
                 pane_indent_guides: Arc::new(std::collections::HashMap::new()),
@@ -7380,6 +7641,7 @@ mod tests {
             excerpt_syntax: Arc::from([]),
             extra_spans: Arc::from([]),
             extra_refine: Arc::from(Vec::new().into_boxed_slice()),
+            semantic_tokens: None,
         }
     }
 

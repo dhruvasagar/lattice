@@ -208,6 +208,7 @@ No conditional branches on buffer state, no version checks, no shape calls. Ever
 | Diagnostic update | overlays.diagnostics swap | none — overlay layer only |
 | Doc highlight | overlays.doc_highlights swap | none — overlay layer only |
 | Inlay hint arrival | inlay_hints version bump + range | rebuild chunks intersecting range (changes layout) |
+| Semantic tokens arrive (or the mode toggles) | semantic_tokens stamp moves | rebuild the window in place; colour only, so the renderer keeps painting the rows it has meanwhile |
 | Fold change | folds version bump | rebuild chunks intersecting fold range |
 | Theme change | theme version bump | rebuild all chunks (rare event) |
 | Cursor / selection / visual range | overlays.cursor swap | none — overlay layer only |

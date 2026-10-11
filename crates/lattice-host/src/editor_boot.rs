@@ -2616,6 +2616,7 @@ impl Editor {
             pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
             inlay_refresh_pending: std::collections::HashSet::new(),
             semantic_tokens_refresh_pending: std::collections::HashSet::new(),
+            semantic_token_stamps: Default::default(),
             pending_semantic_tokens_refresh_rx: Some(lsp_semantic_tokens_refresh_rx),
             pending_code_lens_refresh_rx: Some(lsp_code_lens_refresh_rx),
             pending_diagnostic_refresh_rx: Some(lsp_diagnostic_refresh_rx),

@@ -15,6 +15,12 @@
   which is most noticeable with a key held down.
 
 ### Fixed
+- **GUI: LSP semantic highlighting works.** The window showed only
+  tree-sitter colours; a language server's semantic tokens were painted in
+  the terminal alone. Both now show them, and in the theme's colours rather
+  than fixed terminal ones. One thing is not carried over yet: the terminal
+  used to strike through deprecated symbols and italicise `static` ones, and
+  that is missing in both until a follow-up.
 - **GUI: the completion popup opens at the text you are completing**
   instead of in the window's top-right corner, with its documentation panel
   beside it.

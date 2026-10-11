@@ -1725,6 +1725,8 @@ impl Editor {
                     // when it declares none, which is every language
                     // but org — so this axis cannot move for them.
                     conceal: crate::cells_worker::conceal_version_for(self.syntax.as_ref()),
+                    // GD.6b: same stamp the per-pane entry carries.
+                    semantic_tokens: self.semantic_tokens_input(self.document_buffer_id).1,
                 },
                 snapshot: Some(self.document.snapshot()),
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
@@ -17968,6 +17970,9 @@ impl Editor {
         let extra_spans: Arc<[Vec<lattice_syntax::StyledSpan>]> =
             Arc::from(extra_spans_vec.into_boxed_slice());
 
+        // GD.6b: this buffer's semantic tokens and their stamp.
+        let (semantic_tokens, semantic_tokens_stamp) = self.semantic_tokens_input(buffer_id);
+
         // DR.3: intra-line refinement, from the same drain that set the
         // spans above. Empty for every buffer without it, so the row
         // build is byte-identical.
@@ -18068,6 +18073,7 @@ impl Editor {
             whitespace: whitespace_hash,
             indent: guides.version,
             conceal: crate::cells_worker::conceal_version_for(syntax_handle.as_deref()),
+            semantic_tokens: semantic_tokens_stamp,
         };
 
         // G-clip: gutter columns to hold out of the soft-wrap width so
@@ -18154,7 +18160,32 @@ impl Editor {
             excerpt_syntax,
             extra_spans,
             extra_refine,
+            semantic_tokens,
         }
+    }
+
+    /// GD.6b: the semantic tokens the cell worker should colour
+    /// `buffer_id`'s rows with, and the stamp that says which set they
+    /// are. `(None, 0)` when the buffer has no tokens or
+    /// `lsp-semantic-tokens-mode` is off for it — turning the mode off
+    /// moves the stamp to 0, so the rows are rebuilt without them.
+    ///
+    /// One `Arc` clone and a pointer comparison: this runs on every
+    /// publish, and the tokens themselves are only read in the worker.
+    pub(crate) fn semantic_tokens_input(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> (Option<Arc<lattice_lsp::cache::LspSemanticTokensCache>>, u64) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
+        let tokens = if self.lsp_semantic_tokens_mode_enabled_for(buffer_id) {
+            self.lsp_semantic_tokens_cache
+                .get_for(buffer_id)
+                .filter(|c| !c.tokens.is_empty())
+        } else {
+            None
+        };
+        let stamp = self.semantic_token_stamps.stamp(buffer_id, tokens.as_ref());
+        (tokens, stamp)
     }
 
     /// D.4.d.1.a (2026-05-29): per-buffer variant of

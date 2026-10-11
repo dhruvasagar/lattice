@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.5a ✅, GD.7a ✅, GD.8a ✅; GD.4, GD.5b, GD.6b, GD.6c, GD.7b, GD.7c, GD.8b, GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.8a ✅; GD.4, GD.5b, GD.6c, GD.6d, GD.7b, GD.7c, GD.8b, GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -257,14 +257,36 @@ pane's, not the focused one's), blank on the cursor's line and off on a
 multibuffer, as in the TUI. Tested at the formatter: the distance is printed in
 the same cells the number was. Not seen in a window.
 
-**GD.6b 📝 — LSP semantic tokens**, including the `deprecated` strikethrough.
-The TUI merges semantic tokens into its spans at render time
-(`compose_pane_lines`). The GUI paints text from the host-built cell matrix and
-has no equivalent merge point. **Design decision before starting:** bake the
-tokens into the matrix host-side (one implementation, both peers, and the TUI's
-render-time merge is retired) or add a GUI-side merge. The first is the shared
-content layer the parity rule asks for; it also puts semantic tokens into the
-matrix's cache key, which is the part to get right.
+**GD.6b ✅ — LSP semantic tokens** (2026-10-11). Decided: baked into the
+display matrix host-side, not merged per renderer (paramount #1 — no merge on
+either paint path — and the parity rule). `semantic_spans.rs` turns the tokens
+covering the window being built into spans layered over the grammar's and under
+a buffer's static extra spans; `MatrixVersion` gained a `semantic_tokens` axis,
+rebuild-class like `syntax`, stamped by `TokenStamps` (an O(1) "is this the same
+`Arc`" check on the actor — the tokens themselves are read only in the worker).
+The TUI's render-time merge and its fixed terminal colours are gone; token
+colours now come from the theme's syntax elements in both peers.
+
+Two behaviours worth knowing. A new token set takes the full window build, never
+the incremental one, and an untouched line comes out equal — tested, because a
+recolour of unedited text was the risk named when this was chosen. And an edit
+rebuilds its line with the *stale* tokens when the line count did not change
+(typing inside a line keeps its colours) and without them when it did (stale
+tokens would be on the wrong lines).
+
+Gate: targeted — `lattice-cells` whole, the host's `cells_worker` /
+`semantic_spans` / `render_state` / `display_matrix` modules and the multibuffer
+integration test, the TUI's `render::` and `cells_render::` modules. The whole
+`lattice-host` and `lattice-ui-tui` suites were not run. Not seen in a window.
+
+**GD.6d 📝 — semantic-token modifiers.** `deprecated` (strikethrough),
+`readonly` / `static` (italic) and `defaultLibrary` (dim) were painted by the
+TUI's merge and are **not** carried by GD.6b: a display run holds one `Style`,
+a modifier is a second one layered on it, and the cell flags have no
+strikethrough bit. This is a small regression in the terminal that GD.6b
+accepted to get the tokens shared. Needs: modifier bits on `DisplayRun` (or
+layered resolution in the row build), a `STRIKETHROUGH` cell flag, and both
+peers' paint. Shares that flag with GD.6c.
 
 **GD.6c 📝 — highlight kinds and strikethrough.** Document-highlight
 read / write / text need the host's overlay worker to carry the kind

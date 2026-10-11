@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.7 — 2026-10-11
 
 ### Added
 - **Lattice can install language servers.** `:lsp-install rust-analyzer`

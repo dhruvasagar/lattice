@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **The keys in `:plugins` work on a plugin that failed.** `b`, `r`, `u` and
+  `<CR>` did nothing on an entry under *Failed to load* or *Build failed* —
+  the plugins you most want to rebuild were the ones no key reached, and
+  getting one back took `:plugin-load <path>` or a restart. The cursor on a
+  plugin's name there, or anywhere in the error under it, is now that plugin:
+  `b` rebuilds and loads it, `r` tries the load again, `u` fetches first. A
+  plugin `init.rs` requires that has never built can be rebuilt this way too.
+
 ## 0.9.7 — 2026-10-11
 
 ### Added
@@ -26,15 +37,6 @@
   `host-platform` and `data-dir`. A plugin's own data directory no longer
   needs an `fs:` capability to be used by these calls. Existing plugins need
   rebuilding against 0.2.0.
-
-### Fixed
-- **The keys in `:plugins` work on a plugin that failed.** `b`, `r`, `u` and
-  `<CR>` did nothing on an entry under *Failed to load* or *Build failed* —
-  the plugins you most want to rebuild were the ones no key reached, and
-  getting one back took `:plugin-load <path>` or a restart. The cursor on a
-  plugin's name there, or anywhere in the error under it, is now that plugin:
-  `b` rebuilds and loads it, `r` tries the load again, `u` fetches first. A
-  plugin `init.rs` requires that has never built can be rebuilt this way too.
 
 ## 0.9.6 — 2026-10-10
 

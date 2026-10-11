@@ -90,6 +90,13 @@ pub(crate) enum ActorMsg {
         selections: SelectionSet,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
+    /// GD.7d: declare the current text the clean baseline without
+    /// writing it (see `lattice_core::Document::mark_clean`). Replies,
+    /// so a caller that just replaced the text can wait for the
+    /// snapshot's `dirty` to be true to it before the next publish.
+    MarkClean {
+        reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
     /// Open / close an undo-coalescing group on the owned document
     /// (vim's insert session = one undo unit). Fire-and-forget: no
     /// reply and no snapshot mutation -- opening a group changes no
@@ -221,6 +228,11 @@ impl DocumentActor {
             }
             ActorMsg::SetSelections { selections, reply } => {
                 self.document.set_selections(selections);
+                self.publish();
+                let _ = reply.send(Ok(()));
+            }
+            ActorMsg::MarkClean { reply } => {
+                self.document.mark_clean();
                 self.publish();
                 let _ = reply.send(Ok(()));
             }

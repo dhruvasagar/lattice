@@ -221,9 +221,21 @@ pub fn buffer_label(rs: &RenderState, buffer: lattice_core::BufferId) -> Option<
 ///
 /// PI.3: the label is the pane's COMMITTED buffer's, not a previewed
 /// one — the modeline shows what you would switch back to.
+///
+/// GD.7d: a mode-labelled buffer carries the same ` [+]` a file does
+/// when it has been modified. Its owner's writes are the baseline
+/// (`replace_owned_buffer` marks them clean), so for an oil listing the
+/// marker means "edits not yet applied", and a tree or a help page —
+/// which the user cannot edit — never shows it.
 pub fn pane_path_segment(pane: &PaneState, rs: &RenderState) -> String {
-    if let Some(label) = buffer_label(rs, pane.committed_id()) {
-        return label;
+    let labelled = pane.committed_id();
+    if let Some(label) = buffer_label(rs, labelled) {
+        let dirty = if rs.buffers.registry.document_dirty(labelled) {
+            " [+]"
+        } else {
+            ""
+        };
+        return format!("{label}{dirty}");
     }
     let reg = &rs.buffers.registry;
     // Non-document panes (Terminal, …) without a provider: name slot.

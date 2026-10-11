@@ -257,6 +257,22 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
 
     fn set_selections(&self, selections: SelectionSet) -> Pending<()>;
 
+    /// GD.7d: declare the current text the clean baseline without
+    /// writing it anywhere, so [`Self::dirty`] reads `false` until the
+    /// next edit (and again after undoing back to this point).
+    ///
+    /// For a buffer whose text its owner produces — a listing, a tree,
+    /// a help page. The host calls it after an owner replaces the text,
+    /// which is what makes the modified flag mean "the user changed
+    /// this" for those buffers.
+    ///
+    /// Default: nothing to do, already resolved. A kind with no clean
+    /// position of its own (the multibuffer derives `dirty` from its
+    /// sources) has no baseline to move.
+    fn mark_clean(&self) -> Pending<()> {
+        Pending::ready(Ok(()))
+    }
+
     /// Open an undo-coalescing group so a run of edits (a vim insert
     /// session: `i`/`a`/`o`/`cw` .. `<Esc>`) collapses into a single
     /// undo unit until [`Self::end_undo_group`]. Fire-and-forget:

@@ -33,8 +33,7 @@
   of the terminal's own background down the right-hand side.
 - **GUI: file-tree, oil and help panes are labelled in the modeline**
   (`[tree] <root>`, `[oil] <dir>`, `[help] <title>`), as they are in the
-  terminal. The oil label no longer ends in `[+]` when the listing has
-  unapplied edits, in either; that returns in a follow-up.
+  terminal, and an oil listing with unapplied edits is marked `[+]` in both.
 - **GUI: the completion popup opens at the text you are completing**
   instead of in the window's top-right corner, with its documentation panel
   beside it.

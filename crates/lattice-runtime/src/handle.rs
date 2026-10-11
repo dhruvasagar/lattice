@@ -221,6 +221,13 @@ impl RopeDocumentHandle {
         self.send(|reply| ActorMsg::Save { reply })
     }
 
+    /// GD.7d: make the current text the clean baseline without writing
+    /// it. For owner-written buffers; see
+    /// [`lattice_core::Document::mark_clean`].
+    pub fn mark_clean(&self) -> Pending<()> {
+        self.send(|reply| ActorMsg::MarkClean { reply })
+    }
+
     pub fn save_as(&self, path: PathBuf) -> Pending<()> {
         self.send(|reply| ActorMsg::SaveAs { path, reply })
     }
@@ -410,6 +417,10 @@ impl crate::document::Document for RopeDocumentHandle {
 
     fn set_selections(&self, selections: SelectionSet) -> Pending<()> {
         RopeDocumentHandle::set_selections(self, selections)
+    }
+
+    fn mark_clean(&self) -> Pending<()> {
+        RopeDocumentHandle::mark_clean(self)
     }
 
     fn begin_undo_group(&self) {

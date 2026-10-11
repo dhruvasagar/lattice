@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.9a ✅; GD.4, GD.5b, GD.6c, GD.6d, GD.7d, GD.7c, GD.8b, GD.9b 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.7d ✅, GD.9a ✅; GD.4, GD.5b, GD.6c, GD.6d, GD.7c, GD.8b 📝; GD.9b ❌.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -327,16 +327,31 @@ them; it put the label text with the mode and the write next to the state.
 Gate: targeted — the host's `modeline::` module, the TUI's status / modeline /
 tree / oil / help tests, `cargo check` on the GPUI crate. Not seen in a window.
 
-**GD.7d 📝 — oil's pending-changes marker.** The TUI's oil label ended in
-` [+]` when the listing had unapplied edits, computed per frame by rendering
-the whole buffer to a string and comparing it to the snapshot — on the paint
-path. GD.7b **drops it in both peers** rather than carry that. The right source
-is the buffer's ordinary modified flag, which is wrong for these buffers today:
-an owner write (`replace_owned_buffer`) leaves the document dirty and nothing
-marks it clean. Needs a mark-clean primitive on the document handle, called by
-owner writes; then the generic dirty marker covers oil and every other
-owner-written buffer, and `:q`'s guard means something for them. A regression
-in the terminal until it lands, so it blocks the flip.
+**GD.7d ✅ — oil's pending-changes marker** (2026-10-11). The TUI's oil label
+ended in ` [+]` when the listing had unapplied edits, computed per frame by
+rendering the whole buffer to a string and comparing it to the snapshot — on
+the paint path. GD.7b dropped that. It is back, from the buffer's ordinary
+modified flag, which first had to be made true for these buffers: an owner
+write left the document dirty and nothing marked it clean, so an oil listing
+read as modified from the moment it was filled.
+
+`Document::mark_clean` (core) declares the current text the clean baseline
+without writing it; `ActorMsg::MarkClean` and a defaulted
+`lattice_runtime::Document::mark_clean` carry it (the default is a resolved
+no-op — a multibuffer derives `dirty` from its sources and has no baseline to
+move). `replace_owned_buffer` and `replace_owned_document_text` call it, awaited,
+so the flag is right by the time the dispatch publishes. `pane_path_segment`
+then appends ` [+]` to a mode-given label when the buffer is modified. Undoing
+back to the listing clears it, as undoing back to a save does.
+
+A behaviour change beyond the label: every buffer filled by an owner *replace*
+(listings, trees, help, exports) now reads clean until the user edits it.
+Append-written streams (`*messages*`, logs) are untouched — they are named
+synthetics, which the path segment already exempts from the marker.
+
+Gate: targeted — `lattice-runtime` whole, the new
+`oil_modeline_marks_pending_changes` test, the host and TUI tests around dirty
+state, listings, help, quit and owner writes. Not seen in a window.
 
 **GD.7c 📝 — heading-scaled rows.** Honour `leftcol`; make viewport capacity
 account for variable row height (theme-system F.1, deferred there).
@@ -394,14 +409,10 @@ Not verified: the fallback on a real SSH session or a Linux console, and
 whether a GPUI launch with a *wrong* "yes" fails cleanly or hangs. Only the
 decision function is tested.
 
-**GD.9b 📝 — release archive names.** Today `lattice-*` is the terminal-only
-build and `lattice-gui-*` the window build. With the window the default, the
-unqualified name arguably belongs to the window build, with a `lattice-tui-*`
-(or `-cli`) archive for servers and the two arm targets where the GUI build is
-best-effort. That renames release assets, the `.deb` / AppImage, `install.sh`'s
-flavour list and the manifest check, and breaks anything that fetches an asset
-by name. **Needs a decision** (rename, or keep the names and let `install.sh`
-keep choosing), and cannot be tested without cutting a release.
+**GD.9b ❌ — release archive names.** Dropped for 0.9.8 (Dhruva, 2026-10-11):
+the names stay — `lattice-*` terminal-only, `lattice-gui-*` the window build.
+`install.sh` already installs the window build where one is published, so the
+default reaches users without renaming assets that other things fetch by name.
 
 ## Verification that needs a person
 

@@ -31,7 +31,7 @@ fn zoom_element_text(editor: &mut Editor) -> String {
     let rs = editor.render_state.load();
     let idx = rs.panes.tree.active_index();
     let pane = rs.panes.tree.leaves()[idx];
-    resolve_builtin_content(CORE_ZOOM, &pane, true, &rs, None).plain()
+    resolve_builtin_content(CORE_ZOOM, &pane, true, &rs).plain()
 }
 
 fn tabline_texts(editor: &mut Editor) -> Vec<String> {

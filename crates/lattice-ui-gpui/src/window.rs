@@ -1711,10 +1711,9 @@ impl EditorView {
     /// per-role fg over the `modeline.active` bar bg; inactive panes use
     /// the uniform muted `modeline.inactive` bar.
     ///
-    /// `provider_label` is `None`: the GPUI peer has no M.4 pane-render
-    /// provider registry yet (Document → path, Terminal → registry name
-    /// slot, both via the resolver). A GPUI provider registry mirrors the
-    /// TUI's M.4 later; until then file-tree/oil aren't GPUI pane-rendered.
+    /// GD.7b: a file-tree / oil / help pane's label (`[tree] <root>`, …)
+    /// comes from the same resolver as the path — the buffer's mode put
+    /// it in the modeline store, so there is nothing peer-side to look up.
     fn modeline_row(
         pane: &PaneState,
         is_active: bool,
@@ -1772,7 +1771,7 @@ impl EditorView {
                 }
                 let id = el.id.as_str();
                 let content = if id.starts_with("core.") {
-                    lattice_host::modeline::resolve_builtin_content(id, pane, is_active, rs, None)
+                    lattice_host::modeline::resolve_builtin_content(id, pane, is_active, rs)
                 } else {
                     // Pushed elements (modes / plugins, ML.3): resolved
                     // per the descriptor's scope against this pane's

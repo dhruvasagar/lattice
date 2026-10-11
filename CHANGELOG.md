@@ -21,6 +21,10 @@
   than fixed terminal ones. One thing is not carried over yet: the terminal
   used to strike through deprecated symbols and italicise `static` ones, and
   that is missing in both until a follow-up.
+- **GUI: file-tree, oil and help panes are labelled in the modeline**
+  (`[tree] <root>`, `[oil] <dir>`, `[help] <title>`), as they are in the
+  terminal. The oil label no longer ends in `[+]` when the listing has
+  unapplied edits, in either; that returns in a follow-up.
 - **GUI: the completion popup opens at the text you are completing**
   instead of in the window's top-right corner, with its documentation panel
   beside it.

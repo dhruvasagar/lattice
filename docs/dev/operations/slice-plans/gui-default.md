@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.8a ✅; GD.4, GD.5b, GD.6c, GD.6d, GD.7b, GD.7c, GD.8b, GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅; GD.4, GD.5b, GD.6c, GD.6d, GD.7d, GD.7c, GD.8b, GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -307,16 +307,36 @@ function (`terminal_run_paint`) and is what the tests cover. Not seen in a
 window; in particular that a bold run keeps the cell grid aligned depends on
 the terminal font's bold face having the regular face's advance.
 
-**GD.7b 📝 — modeline labels for help, file-tree and oil panes.** The TUI gets
-`[help] <title>`, `[tree] <root>`, `[oil] <dir> [+]` from a renderer-typed
-provider registry (`build_pane_render_registry`); the GUI passes `None` and
-shows the path segment. All three labels read only published state.
-**Design decision before starting:** the label is content, so it should be
-produced once. Either the owning mode contributes it as a modeline element
-(the ML-series direction, and what "modes own their status-line contributions"
-asks for), or the three functions move into the host's modeline resolver
-(quicker, and puts three mode names in the host). A second registry in the GUI
-is the option to rule out — it is the copy this plan exists to remove.
+**GD.7b ✅ — modeline labels for help, file-tree and oil panes** (2026-10-11).
+Decided: the owning mode contributes the label as modeline content (mode
+ownership; paramount #2 — a plugin reaches the same slot with a
+`ModelineElementUpdate`). The label is `core.path`'s content for that buffer in
+the modeline store; `modeline::pane_path_segment` prefers it over the path, for
+the pane's committed buffer. The text is each mode crate's
+(`lattice_listing::{file_tree,oil}::modeline_label`,
+`lattice_help::modeline_label`), written through the generic
+`Editor::set_buffer_label` at the one place each mode's state is already
+written (`set_file_tree_root`, `set_oil_dir`, `seed_help_metadata_locals`). The
+TUI's `PaneStatusFn` table and its three functions are gone, and with them the
+`provider_label` parameter both peers threaded into the resolver.
+
+One thing this is not: those three chokepoints are `Editor` methods. The
+listing and help lifecycles are host-driven today, and this slice did not move
+them; it put the label text with the mode and the write next to the state.
+
+Gate: targeted — the host's `modeline::` module, the TUI's status / modeline /
+tree / oil / help tests, `cargo check` on the GPUI crate. Not seen in a window.
+
+**GD.7d 📝 — oil's pending-changes marker.** The TUI's oil label ended in
+` [+]` when the listing had unapplied edits, computed per frame by rendering
+the whole buffer to a string and comparing it to the snapshot — on the paint
+path. GD.7b **drops it in both peers** rather than carry that. The right source
+is the buffer's ordinary modified flag, which is wrong for these buffers today:
+an owner write (`replace_owned_buffer`) leaves the document dirty and nothing
+marks it clean. Needs a mark-clean primitive on the document handle, called by
+owner writes; then the generic dirty marker covers oil and every other
+owner-written buffer, and `:q`'s guard means something for them. A regression
+in the terminal until it lands, so it blocks the flip.
 
 **GD.7c 📝 — heading-scaled rows.** Honour `leftcol`; make viewport capacity
 account for variable row height (theme-system F.1, deferred there).

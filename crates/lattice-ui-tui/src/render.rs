@@ -3622,54 +3622,6 @@ fn help_pane_render(
     draw_pane_document(frame, area, app, snap, pane, is_active);
 }
 
-fn help_pane_status(app: &App, _pane: &crate::pane::PaneState) -> String {
-    app.popup_help()
-        .map(|h| format!("[help] {}", h.title))
-        .unwrap_or_else(|| "[help]".to_string())
-}
-
-fn file_tree_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
-    // Slice 3c.final.B.9: buffer_locals via published map.
-    let locals_map = app.buffer_locals();
-    let root = locals_map
-        .map
-        .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
-        .map(|r| r.0.clone());
-    root.map(|p| format!("[tree] {}", p.display()))
-        .unwrap_or_else(|| "[tree]".to_string())
-}
-
-fn oil_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
-    // Slice 3c.final.E.5j: `with_oil` via published `buffers()` sub-
-    // state; OilDir buffer-local via `read_editor`.
-    let dirty_opt = app
-        .buffers()
-        .registry
-        .document_handle(pane.buffer_id)
-        .map(|h| h.snapshot().buffer.as_string())
-        .and_then(|text| {
-            app.buffer_locals()
-                .map
-                .get(&pane.buffer_id)
-                .and_then(|l| l.get::<lattice_listing::oil::modes::OilSnapshotLocal>())
-                .map(|s| s.0.is_dirty(&text))
-        });
-    let Some(is_dirty) = dirty_opt else {
-        return "[oil]".to_string();
-    };
-    let dirty = if is_dirty { " [+]" } else { "" };
-    // Slice 3c.final.B.9: OilDir via published map.
-    let locals_map = app.buffer_locals();
-    let dir: String = locals_map
-        .map
-        .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::OilDir>())
-        .map(|d| d.0.display().to_string())
-        .unwrap_or_default();
-    format!("[oil] {dir}{dirty}")
-}
-
 /// Boot-time registration of the renderer-side providers for the
 /// built-in modes. Plugin-installed modes (post-1.0) extend this
 /// registry through the same interface.
@@ -3685,20 +3637,12 @@ pub fn build_pane_render_registry() -> crate::pane_render::PaneRenderRegistry {
         lattice_mode::modes::HelpMode.id(),
         PaneRenderProvider {
             render: Some(help_pane_render),
-            status: help_pane_status,
         },
     );
-    // DL.4: the file tree has NO `render` provider — it is a Document
-    // now and paints through the shared compose path like every other
-    // buffer. Only the status label stays mode-owned.
-    registry.register_status_only(
-        lattice_listing::file_tree::FileTreeMode.id(),
-        file_tree_pane_status,
-    );
-    // DL.5: oil has NO `render` provider either — the last bespoke
-    // listing painter is gone, so both listing kinds paint through the
-    // shared compose path. Only the status label is mode-owned.
-    registry.register_status_only(lattice_listing::oil::OilMode.id(), oil_pane_status);
+    // DL.4 / DL.5: the file tree and oil have no provider at all. They
+    // are Documents and paint through the shared compose path, and
+    // (GD.7b) their status labels are modeline content their modes set
+    // host-side, not functions registered here.
     registry
 }
 
@@ -3864,20 +3808,9 @@ fn modeline_segments(
 ) -> Vec<ModelineSeg> {
     let rs = app.render_state.load();
     let snap = &rs.modeline_elements;
-    // The file-tree / oil / help custom label (M.4 provider mechanism) is
-    // the one renderer-resolved content input; it overrides `core.path`.
-    // Resolved once and threaded into the shared host resolver so the
-    // assembly stays common across peers.
-    // PI.3: the per-pane status line reports the pane's COMMITTED buffer,
-    // not the previewed one (design §5) — the modeline shows what you'd
-    // save / switch back to. `core.path` already comes from the active
-    // document's `modeline_elements`; the provider label resolves against
-    // the committed buffer too.
-    let provider_label = app
-        .pane_render_provider(pane.committed_id())
-        .map(|p| (p.status)(app, pane));
-    let provider_ref = provider_label.as_deref();
-
+    // GD.7b: the file-tree / oil / help label is `core.path` content the
+    // buffer's mode set host-side; the shared resolver reads it, for the
+    // pane's committed buffer (PI.3), so nothing is resolved here.
     // ML.5: the `ui.modeline.{left,center,right}` config drives zone
     // membership + order; `resolve_layout` returns the per-zone
     // descriptor lists (Auto = descriptor placement) + the configured
@@ -3895,13 +3828,7 @@ fn modeline_segments(
             }
             let id = el.id.as_str();
             let content = if id.starts_with("core.") {
-                lattice_host::modeline::resolve_builtin_content(
-                    id,
-                    pane,
-                    is_active,
-                    &rs,
-                    provider_ref,
-                )
+                lattice_host::modeline::resolve_builtin_content(id, pane, is_active, &rs)
             } else {
                 // Pushed elements (modes / plugins, ML.3): content from
                 // the published store, resolved per the descriptor's

@@ -25031,10 +25031,37 @@ impl Editor {
     /// chokepoint writes both, which is what stops them drifting apart.
     pub fn set_oil_dir(&mut self, buffer_id: BufferId, dir: std::path::PathBuf) {
         self.set_buffer_scope_dir(buffer_id, dir.clone());
+        self.set_buffer_label(buffer_id, Some(lattice_listing::oil::modeline_label(&dir)));
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
             .insert(lattice_listing::oil::modes::OilDir(dir));
+    }
+
+    /// GD.7b: name `buffer_id` in its panes' modelines, in place of a
+    /// path — or `None` to go back to the path.
+    ///
+    /// For the modes whose buffers are not files. The text is the
+    /// mode's (`lattice_listing::oil::modeline_label` and its peers);
+    /// this is the generic slot it goes in: `core.path`'s content for
+    /// that buffer, which `modeline::pane_path_segment` prefers over the
+    /// path. A plugin reaches the same slot with a
+    /// `ModelineElementUpdate`. Call it where the state the label is
+    /// derived from is written, so the two cannot drift.
+    pub fn set_buffer_label(&mut self, buffer_id: BufferId, label: Option<String>) {
+        let key = lattice_mode::ModelineKey::Buffer(buffer_id);
+        let id = lattice_mode::ElementId::new(crate::modeline::CORE_PATH);
+        match label {
+            Some(text) => self.modeline.update(
+                key,
+                id,
+                lattice_mode::ElementContent::text(
+                    text,
+                    lattice_mode::ModelineRole::new(crate::modeline::ROLE_PATH),
+                ),
+            ),
+            None => self.modeline.clear(key, &id),
+        }
     }
 
     /// XF.2: resolve `path` to a buffer, opening it in the background if it
@@ -25720,6 +25747,10 @@ impl Editor {
     /// looking at.
     pub fn set_file_tree_root(&mut self, buffer_id: BufferId, root: std::path::PathBuf) {
         self.set_buffer_scope_dir(buffer_id, root.clone());
+        self.set_buffer_label(
+            buffer_id,
+            Some(lattice_listing::file_tree::modeline_label(&root)),
+        );
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
@@ -28974,6 +29005,11 @@ impl Editor {
         metadata: lattice_help::HelpMetadata,
     ) {
         let lattice_help::HelpMetadata { links, anchors } = metadata;
+        // GD.7b: this is the one point every help open and swap passes
+        // through, so it is where the buffer is named for its panes'
+        // modelines. The title is the registry's name slot.
+        let title = self.buffers.name_of(buffer_id).unwrap_or_default();
+        self.set_buffer_label(buffer_id, Some(lattice_help::modeline_label(&title)));
         // PU.1b-2b: the link-only spans the cells worker merges into the
         // help `DisplayMatrix` (the grammar can't derive them — the link
         // markup is stripped before it parses). Computed before `links`

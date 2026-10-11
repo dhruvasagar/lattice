@@ -46,6 +46,12 @@ weight = 13
 description = "Toggle line comments with `gc` — an operator, so it takes any motion or text object."
 
 [[plugin]]
+id = "lighthouse"
+kind = "bundled"
+weight = 14
+description = "Installs language servers for you — `:lsp-install rust-analyzer` downloads, verifies and wires one up, with no `PATH` entry."
+
+[[plugin]]
 id = "org"
 kind = "external"
 weight = 20

@@ -373,7 +373,16 @@ impl Editor {
                 if path.is_dir() {
                     walk(&path, root, out);
                 } else {
-                    out.push(path.strip_prefix(root).unwrap().display().to_string());
+                    // `/`-joined whatever the platform: these are compared
+                    // against literals, and `display()` gives `\` on Windows.
+                    let relative = path.strip_prefix(root).unwrap();
+                    out.push(
+                        relative
+                            .components()
+                            .map(|c| c.as_os_str().to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                    );
                 }
             }
         }
@@ -768,6 +777,23 @@ async fn starting_up_removes_the_scratch_files_of_an_interrupted_install() {
     assert_eq!(editor.tree(), vec!["fake-ls/0.9/fake-ls"]);
 }
 
+/// What the list says about the BUNDLED rust-analyzer on this machine before
+/// anything is installed. The registry has builds for Linux and macOS only,
+/// so elsewhere the honest status is that there is none — which is what a
+/// Windows runner showed, and what a test written on Linux had not allowed
+/// for.
+fn bundled_rust_analyzer_status() -> String {
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
+        "not installed".to_string()
+    } else {
+        format!(
+            "no build for {}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    }
+}
+
 /// The line number of `server`'s row in a rendered list.
 fn row_of(list: &OutputSnapshot, server: &str) -> u32 {
     list.lines
@@ -816,7 +842,10 @@ async fn lsp_servers_lists_the_registry_in_a_buffer_with_its_own_mode() {
         vec![
             "  Server         Version     Status",
             "  fake-ls        1.0         not installed",
-            "  rust-analyzer  2026-10-05  not installed",
+            &format!(
+                "  rust-analyzer  2026-10-05  {}",
+                bundled_rust_analyzer_status()
+            ),
             "",
             "i install   u update   x uninstall   <CR> show log   gr refresh",
         ],

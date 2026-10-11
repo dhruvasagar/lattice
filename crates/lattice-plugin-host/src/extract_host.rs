@@ -658,13 +658,20 @@ mod tests {
 
     #[test]
     fn a_tar_gz_unpacks_its_tree() {
-        let r = run_tar(&[
+        let mut entries = vec![
             Entry::Dir("server/"),
             Entry::File("server/bin/ls", b"binary", 0o755),
             Entry::File("server/README", b"read me", 0o644),
-            Entry::Symlink("server/bin/current", "ls"),
-            Entry::Symlink("server/docs", "../server/README"),
-        ]);
+        ];
+        // Symlinks are unpacked on unix only; elsewhere an archive holding
+        // one is refused by name (the test below this one). This test first
+        // ran on Windows in CI with the links in, and failed on that refusal
+        // rather than on anything it was written to check.
+        if cfg!(unix) {
+            entries.push(Entry::Symlink("server/bin/current", "ls"));
+            entries.push(Entry::Symlink("server/docs", "../server/README"));
+        }
+        let r = run_tar(&entries);
         assert_eq!(r.result, Ok(()));
         assert_eq!(
             std::fs::read(r.dest.join("server/bin/ls")).unwrap(),
@@ -693,6 +700,21 @@ mod tests {
             );
         }
         assert!(!part_path(&r.dest).exists(), "the part was renamed away");
+    }
+
+    /// Where a symlink cannot be made, an archive holding one is refused
+    /// whole — by name, and leaving nothing — rather than unpacked without it.
+    /// A tree missing the link its launcher resolves through is a broken
+    /// install that looks like a finished one.
+    #[cfg(not(unix))]
+    #[test]
+    fn an_archive_with_a_symlink_is_refused_where_links_cannot_be_made() {
+        let r = run_tar(&[
+            Entry::File("server/bin/ls", b"binary", 0o755),
+            Entry::Symlink("server/bin/current", "ls"),
+        ]);
+        assert_refused(&r, "symlinks are not unpacked on this platform");
+        assert!(!r.dest.exists(), "nothing was left at the destination");
     }
 
     /// Mode bits beyond "executable or not" do not come out of an archive.

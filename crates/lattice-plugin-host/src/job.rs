@@ -443,13 +443,27 @@ mod tests {
             Ok(())
         });
         let id = pending.id();
+        let started = std::time::Instant::now();
         let _guard = pending.start();
         let outcome = outcome_of(&mut rx, id);
+        let elapsed = started.elapsed();
         let p = &outcome.progress;
         assert!(!p.is_empty(), "~600 ms of work reported progress");
+        // The claim is "at most one delivery per interval", so the bound is
+        // the number of intervals that actually passed — NOT a constant. This
+        // asserted `< 30`, which holds when 300 two-millisecond sleeps take
+        // the ~600 ms they ask for and fails on a loaded runner where they
+        // take seconds: CI saw 42 deliveries, correctly coalesced, over a run
+        // several times longer than the constant assumed.
+        let intervals = (elapsed.as_millis() / 100) as usize + 2;
         assert!(
-            p.len() < 30,
-            "coalesced: {} deliveries for 300 calls",
+            p.len() <= intervals,
+            "coalesced to one per 100 ms: {} deliveries in {elapsed:?} ({intervals} intervals)",
+            p.len()
+        );
+        assert!(
+            p.len() < 300,
+            "and never one per call: {} deliveries for 300 calls",
             p.len()
         );
         assert!(p.iter().all(|(_, total)| *total == Some(300)));

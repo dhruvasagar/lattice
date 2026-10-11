@@ -225,8 +225,19 @@ async fn lsp_servers_opens_a_drawn_list_with_its_mode_active() {
     let lines = open_list(&mut editor).await;
 
     assert_eq!(lines[0], "  Server         Version     Status");
+    // The bundled registry has rust-analyzer builds for Linux and macOS;
+    // anywhere else the row says there is none, and that is the row working.
+    let status = if cfg!(any(target_os = "linux", target_os = "macos")) {
+        "not installed".to_string()
+    } else {
+        format!(
+            "no build for {}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    };
     assert!(
-        lines[1].starts_with("  rust-analyzer  ") && lines[1].ends_with("not installed"),
+        lines[1].starts_with("  rust-analyzer  ") && lines[1].ends_with(&status),
         "{lines:?}"
     );
     assert!(

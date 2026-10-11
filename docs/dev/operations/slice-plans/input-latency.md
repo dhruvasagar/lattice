@@ -290,16 +290,12 @@ items 1 and 3–6 are gone. Cap test `apply_noop_action_makes_bounded_actor_call
 (`render.rs`) tightened 6 → 2 (baseline 1, one slot headroom); it would read 5
 pre-I.7, so passing at ≤ 2 proves the fuse fired. host-lib 691 + tui-lib 1467 green.
 
-**GPUI parity — deferred (documented).** GPUI's `dispatch_action` is pre-parity
-(5.7.B.4+): it does **not** run the `ensure_cursor_visible`/`maybe_reparse_syntax`/
-`sync_keymap_overlays` tail at all (none appear in the GPUI crate) — its plain-key
-path is 2 mutate RPCs (`dispatch` + `run_tick_pending`), not TUI's 6. `dispatch_fused`
-*bundles* that tail, so adopting it on GPUI would conflate the round-trip collapse
-with bringing GPUI's tail to parity. GPUI adopts `dispatch_fused` when its apply tail
-reaches TUI parity; until then it pays 2 mutate RPCs/keystroke, which the primitive
-will collapse to 1 at that point. (The shared host primitive is the parity vehicle —
-the lockstep rule's trigger categories (effect classifier / renderer match arms /
-theme / virtual rows / diff-sign) are not touched by this host-internal change.)
+**GPUI parity — done (GD.0, 2026-10-11).** GPUI's `dispatch_action` calls
+`dispatch_fused` and runs the same non-fused tail; a typed character is one
+crossing there too. See [`gui-default.md`](gui-default.md) § GD.0. The same
+slice found that the fuse fires less often than this section says: a motion
+leaves `Effect::CursorMove` in the outcome, so it declines the fuse in both
+peers (GD.0b).
 
 - Target met for the TUI peer: the keystroke entry path is 1 actor crossing.
   Driving the single publish **sub-ms** (toward the imperceptibility bar) still needs

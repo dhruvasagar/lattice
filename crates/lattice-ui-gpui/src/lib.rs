@@ -591,6 +591,7 @@ impl GpuiApp {
         }
         #[cfg(test)]
         {
+            actor_calls::bump();
             f(&mut self.editor);
             self.editor.publish_render_state();
         }
@@ -608,6 +609,7 @@ impl GpuiApp {
         }
         #[cfg(test)]
         {
+            actor_calls::bump();
             let r = f(&mut self.editor);
             self.editor.publish_render_state();
             r
@@ -628,6 +630,7 @@ impl GpuiApp {
         }
         #[cfg(test)]
         {
+            actor_calls::bump();
             f(&self.editor)
         }
     }
@@ -731,23 +734,6 @@ impl GpuiApp {
     // span cell that was itself deleted) and had no callers. Syntax
     // colour flows through the cells / `DisplayMatrix` substrate;
     // overlay backgrounds through `lattice_host::overlay_worker`.
-
-    /// Auto-scroll the active pane so the cursor stays in the
-    /// visible viewport (`[scroll, scroll + viewport_height)`).
-    /// Mirrors the TUI peer's per-tick scroll-clamp; both renderer
-    /// peers funnel through the host's `editor.scroll` so any
-    /// host-side cursor jump (a motion, a `:N`, a search bounce)
-    /// is reflected here on the next paint.
-    ///
-    /// Phase 5.8.O: foundational for cursorline / visual selection
-    /// (5.8.P, 5.8.Q) — those features paint *within* the viewport
-    /// and would mis-render if the cursor sat outside it.
-    pub fn ensure_cursor_in_viewport(&mut self) {
-        // Slice 3c.final.C: route through `Action::EnsureCursorVisible`
-        // so the per-frame mutation goes via dispatch. Tail
-        // publishes RS — no manual publish needed.
-        self.dispatch_action(lattice_host::action::Action::EnsureCursorVisible);
-    }
 
     // Slice 3c.final.E.swap: `finalize_boot` retired. Its body
     // (rebuild_option_cache / activate_major_for_buffer_kind /
@@ -1139,221 +1125,110 @@ impl GpuiApp {
         }
     }
 
-    /// Dispatch a single [`Action`] through `editor.dispatch` and
-    /// drain the deferred-action queue iteratively.
+    /// Dispatch one [`Action`] and everything that follows from it.
     ///
-    /// `editor.dispatch` runs ONE action and returns the outcome;
-    /// for many actions (`Action::Invoke` resolving to an
-    /// `AppEffect::EnterMode` / `EnterVisual` / etc.) the host
-    /// emits a follow-up [`Action`] in
-    /// `outcome.next_actions` rather than mutating directly --
-    /// see `Editor::apply_app_effect` in `lattice_host::dispatch`.
-    /// The TUI peer's `App::apply` drains the queue with a
-    /// recursive call; this method does the same shape with an
-    /// explicit FIFO loop so basic state transitions land without
-    /// needing the renderer's full effect / signal fan-out yet
-    /// (5.7.B.4+ work).
+    /// This is the GPUI peer's half of the peer contract
+    /// (`docs/dev/architecture/gui-default.md` §2), and it is the same shape
+    /// as the TUI's `App::apply` on purpose. The host owns the post-dispatch
+    /// tail; a peer owns only the renderer-coupled effects and signals in
+    /// between.
     ///
-    /// `outcome.effects` are aggregated across the chain but NOT
-    /// re-applied -- the host has already called
-    /// `editor.handle_effect(effect.clone())` on each one during
-    /// the inner dispatch (the renderer-coupled match arms remain
-    /// a 5.7.B.4+ follow-up). `renderer_signals` accumulate the
-    /// same way; callers can inspect them once the GPUI peer
-    /// gains a signal handler.
+    /// **Fused path.** [`Editor::dispatch_fused`] runs the dispatch AND the
+    /// tail (`ensure_cursor_visible`, `maybe_reparse_syntax`,
+    /// `sync_keymap_overlays`, `run_tick_pending`) inside one actor crossing
+    /// whenever the dispatch produced nothing for the renderer to do — every
+    /// plain insert, motion and operator. One round-trip per key.
+    ///
+    /// **Non-fused path.** The dispatch left effects, signals or follow-up
+    /// actions, or a popup is up. Their handlers must run BEFORE the tail (an
+    /// `OpenBufferAt` switches the active document, and the cursor is then
+    /// clamped against the new one), so the order is: effects, signals, each
+    /// follow-up action through this same function, then the tail in a single
+    /// crossing.
+    ///
+    /// Before GD.0 this function called bare `Editor::dispatch` and re-created
+    /// part of the tail by hand. Every tail step the host gained afterwards
+    /// reached the TUI and not this peer: `maybe_reparse_syntax` (syntax
+    /// colour vanished on the first edit), then `sync_keymap_overlays` (the
+    /// completion popup's and the active snippet's keymap layers never
+    /// activated, so their keys were dead). Calling the host's tail is what
+    /// makes the next such step impossible to miss.
     pub fn dispatch_action(&mut self, action: Action) -> DispatchOutcome {
-        // Phase 5.8.AC.1: GPUI-side intercepts for App-only Action
-        // arms. The host's `handle_action` doesn't dispatch these
-        // (the TUI App's `apply` catches them with renderer-coupled
-        // bodies). Until the full set migrates, the GPUI peer
-        // intercepts the most-common ones here. The host's matching
-        // `do_*` helpers cover the simple Buffer / Path routings;
-        // exotic routings (mark / register / command / snippet /
-        // LSP code-action / completion) still warn until they
-        // migrate.
-        match &action {
-            Action::PickerAccept => {
-                // Route through the transient-aware accept, NOT `do_picker_accept`
-                // directly: in transient mode `<CR>` must fire whatever
-                // `<C-n>`/`<C-p>` selected. Calling `do_picker_accept` here is a
-                // no-op for a transient, which is why a scrolled-to transient
-                // action ran in the TUI but did nothing in GPUI.
-                let mut outcome = self.mutate_editor_with(|e| {
-                    let mut out = DispatchOutcome::default();
-                    e.do_picker_or_transient_accept(&mut out);
-                    out
-                });
-                outcome.consumed = true;
-                // Drain the accept's follow-up effects. A picker accept can
-                // invoke a command that returns one — magit branch-delete picks
-                // a branch and returns `Effect::Confirm` — and Confirm (like the
-                // other renderer-owned effects) is left in `outcome.effects` for
-                // the renderer to apply; the host does not. This early-return arm
-                // drained only `renderer_signals`, skipping the generic
-                // effect-drain further down (`for effect in outcome.effects ...
-                // apply_effect_gpui`), so the confirm prompt never opened in
-                // GPUI and the flow "ended abruptly" after the pick. The TUI has
-                // always drained these (`App::apply_effect_app_arms`). Effects
-                // before signals, matching the generic path.
-                for effect in outcome.effects.iter().cloned() {
-                    self.apply_effect_gpui(effect);
-                }
-                for s in std::mem::take(&mut outcome.renderer_signals) {
-                    self.handle_renderer_signal(s);
-                }
-                return outcome;
+        let (pre_active, pre_popup_focused) = {
+            let ad = self.ad();
+            (ad.buffer_kind, ad.popup_focused)
+        };
+        // A published read, no actor crossing. With a popup shown the fuse is
+        // declined so the popup-dismiss skip below sees the post-effect state.
+        let popup_up = self.render_state.load().popup.buffer_id.is_some();
+        let fused = self.mutate_editor_with(move |e| {
+            e.dispatch_fused(action, pre_active, pre_popup_focused, popup_up)
+        });
+        let mut outcome = fused.outcome;
+        if let Some(tail_signals) = fused.tail_signals {
+            for signal in tail_signals.iter().cloned() {
+                self.handle_renderer_signal(signal);
             }
-            // MG.29 lockstep: `<Esc>` routes here now, and this peer
-            // intercepts the dismiss family rather than letting it reach
-            // the generic path — so without this arm the unwind would
-            // work in the TUI and do nothing in GPUI.
-            Action::TransientDismiss => {
-                let signals = self.mutate_editor_with(|e| {
-                    let popped = e
-                        .picker
-                        .as_mut()
-                        .map(|p| p.transient_unwind())
-                        .unwrap_or(false);
-                    if popped {
-                        Vec::new()
-                    } else {
-                        e.do_picker_dismiss()
-                    }
-                });
-                let outcome = DispatchOutcome {
-                    consumed: true,
-                    renderer_signals: signals.clone(),
-                    ..Default::default()
-                };
-                for s in signals {
-                    self.handle_renderer_signal(s);
-                }
-                return outcome;
-            }
-            Action::PickerDismiss => {
-                let signals = self.mutate_editor_with(|e| e.do_picker_dismiss());
-                let outcome = DispatchOutcome {
-                    consumed: true,
-                    renderer_signals: signals.clone(),
-                    ..Default::default()
-                };
-                for s in signals {
-                    self.handle_renderer_signal(s);
-                }
-                return outcome;
-            }
-            _ => {}
+            // Handed back handled, as the non-fused path does.
+            outcome.renderer_signals = tail_signals;
+            return outcome;
         }
-        let mut outcome = self.mutate_editor_with(move |e| e.dispatch(action));
-        let mut pending: std::collections::VecDeque<Action> =
-            outcome.next_actions.drain(..).collect();
-        while let Some(follow_up) = pending.pop_front() {
-            let mut next_out = self.mutate_editor_with(move |e| e.dispatch(follow_up));
-            pending.extend(next_out.next_actions.drain(..));
-            outcome.effects.append(&mut next_out.effects);
-            outcome
-                .renderer_signals
-                .append(&mut next_out.renderer_signals);
-            outcome.consumed |= next_out.consumed;
-            if self.render_state.load().lifecycle.should_quit {
-                // Mirrors `App::apply`'s mid-macro-quit semantic:
-                // a recorded `:q` short-circuits the rest of the
-                // chain so we don't keep firing actions against
-                // an editor that's tearing down.
-                break;
-            }
-        }
-        // Phase 5.8.AC.1: drain renderer-coupled effects. The
-        // host's `editor.dispatch` already called
-        // `editor.handle_effect` for every Effect, but the
-        // renderer-coupled tail (`OpenBuffer` → `do_edit`,
-        // `OpenBufferPicker` → `do_open_buffer_picker`,
-        // `QuitEditor` → `do_quit`, ...) doesn't run inside the
-        // host's `handle_effect`. The TUI peer drains these in
-        // `App::apply_effect_app_arms`; the GPUI peer mirrors
-        // those arms here for the variants whose handlers are
-        // host-resident today. Variants whose handlers are still
-        // App-only (file-tree / oil / hover / LSP-request /
-        // diagnostics navigation / picker accept) log a one-line
-        // trace; they'll light up as the matching host methods
-        // land in subsequent slices.
+
+        // The host already ran `handle_effect` on each of these; what is left
+        // is the renderer-coupled half (`OpenBuffer` → `do_edit`,
+        // `QuitEditor` → `do_quit`, …). Effects before signals, so a signal
+        // handler (a theme rebuild) observes the final state.
         for effect in outcome.effects.iter().cloned() {
             self.apply_effect_gpui(effect);
         }
-        // Action arms App handles that the host's `handle_action`
-        // doesn't yet route through: `PickerAccept` / `PickerDismiss`
-        // — these need a renderer-coupled close path. Until the
-        // accept body migrates host-side, GPUI catches the action
-        // by inspecting `outcome.consumed` and falling back to a
-        // minimal close + activate-restore for the dismiss arm.
-        // 5.7.B.7: drain renderer signals through the GPUI
-        // handler. Drained BEFORE returning so callers see a
-        // post-signal-handling editor state; the returned
-        // outcome still carries the (now-handled) signal list
-        // for callers that want to inspect or re-route them.
         // Signals queued on the editor rather than returned — the
-        // `ModeActivator` trait surface and `Editor::activate_buffer`,
-        // both of which complete work whose signature cannot hand the
-        // cascade back. Folded in beside the outcome's own so neither
-        // producer depends on a caller remembering it. TUI parity:
-        // `app/dispatch.rs` drains at the same point.
+        // `ModeActivator` trait surface and `Editor::activate_buffer`, whose
+        // signatures cannot hand a cascade back — folded in beside the
+        // outcome's own so neither producer depends on a caller remembering.
         let mut signals = self.mutate_editor_with(|e| e.drain_pending_renderer_signals());
         signals.append(&mut std::mem::take(&mut outcome.renderer_signals));
         for signal in signals.iter().cloned() {
             self.handle_renderer_signal(signal);
         }
-        // Restore the list on the outcome so the returned value
-        // matches the historical TUI shape (App::apply also
-        // hands these to the caller after fan-out).
+        // Follow-up actions (macro replay, dot-repeat, the LSP autopilots)
+        // each go through the WHOLE of this function, so one action's effects
+        // have landed before the next runs. Dispatching them bare and applying
+        // every effect at the end — what this did before — replays a recorded
+        // "open, then move" as "move, then open".
+        for follow_up in std::mem::take(&mut outcome.next_actions) {
+            let mut next = self.dispatch_action(follow_up);
+            outcome.effects.append(&mut next.effects);
+            signals.append(&mut next.renderer_signals);
+            outcome.consumed |= next.consumed;
+            if self.render_state.load().lifecycle.should_quit {
+                // A recorded `:q` ends the replay: nothing more is fired at an
+                // editor that is tearing down.
+                break;
+            }
+        }
         outcome.renderer_signals = signals;
-        // Phase 5.8.AF.5 / Slice X1: drain pending LSP / event /
-        // mode-lifecycle results here at the keystroke-driven
-        // dispatch tail rather than in the per-frame body
-        // (`crates/lattice-ui-gpui/src/window.rs::Render::render`).
-        // Paramount goal #1 forbids I/O / event drain on the UI
-        // thread; the renderer body is the UI thread.
-        // `run_tick_pending` is the host aggregator that polls
-        // ~30 channels for async results -- on a busy frame
-        // (file open) it can take 49ms, which is 6x over the
-        // one-frame ceiling (8.3 ms at 120Hz). Running it
-        // here makes that cost happen during the keystroke that
-        // caused the work (the open) instead of on the next
-        // paint after open. The post-X1 perf trace expects
-        // `tick_us` in `lattice_gpui::perf` to drop to ~0 once
-        // dispatch tails take over the drain.
-        //
-        // Idle LSP arrivals (response with no keystroke in
-        // flight) are NOT drained until the next keystroke:
-        // see slice X1b (`docs/dev/operations/render-thread-
-        // discipline-remediation.md` §X1b) for the wake-bridge
-        // that closes that gap.
-        // Parity with the TUI keystroke tail (`Editor::dispatch_fused`, which
-        // TUI reaches via `App::apply`): reparse the buffer's syntax BEFORE
-        // draining ticks. This peer dispatches via bare `Editor::dispatch`,
-        // which does NOT run the post-dispatch tail, so `maybe_reparse_syntax`
-        // was never called on a GPUI edit. The consequence was subtle and
-        // permanent: the syntax tree stayed at the pre-edit text, so
-        // `SyntaxSnapshot::tree_reflects(new_text)` was false and the cells
-        // worker's rebuild skipped highlighting; and because the syntax
-        // `render_version` never advanced, the worker then CACHE-HIT that
-        // uncoloured matrix on every later wake — syntax colour "disappeared"
-        // on the first edit and never came back (recoverable only by `:e!`).
-        // Especially visible on async-parsed / plugin-grammar buffers (e.g.
-        // `.org`). `maybe_reparse_syntax` no-ops when the text did not change
-        // (motions), so it is cheap on the hot path, and it also drives
-        // `recompute_folds`, matching TUI. Folded into the same actor crossing
-        // as `run_tick_pending` to keep the keystroke a single round-trip.
-        let tick_signals = self.mutate_editor_with(|e| {
+
+        // The tail, in one crossing, in the order `dispatch_fused` runs it.
+        // `ensure_cursor_visible` is skipped when this action dismissed a
+        // focused popup: the viewport height is still the popup's inner
+        // height until the next layout pass corrects it.
+        let (tick_signals, queued) = self.mutate_editor_with(move |e| {
+            let popup_dismissed =
+                pre_popup_focused && matches!(e.active_buffer, BufferKind::Document);
+            if !popup_dismissed {
+                e.ensure_cursor_visible();
+            }
             e.maybe_reparse_syntax();
-            e.run_tick_pending()
+            e.sync_keymap_overlays();
+            let tick_signals = e.run_tick_pending();
+            // OR.16: effects an off-renderer path (the async picker accept,
+            // the fill target, the picker's delete verb) had no renderer to
+            // hand to.
+            (tick_signals, e.drain_pending_renderer_effects())
         });
         for signal in tick_signals {
             self.handle_renderer_signal(signal);
         }
-        // OR.16: the renderer-owned effects an off-renderer path (the async
-        // picker accept, the fill target, the picker's delete verb) had no
-        // renderer to hand over. The TUI drains these in the same place.
-        let queued = self.mutate_editor_with(|e| e.drain_pending_renderer_effects());
         for effect in queued {
             self.apply_effect_gpui(effect);
         }
@@ -1921,11 +1796,200 @@ impl GpuiApp {
     }
 }
 
+/// Counts crossings of the editor-actor seam (`mutate_editor`,
+/// `mutate_editor_with`, `read_editor`) on the calling thread.
+///
+/// In production each is a blocking mailbox round-trip; under `cfg(test)`
+/// the editor is in-process and they are plain calls, so nothing would
+/// otherwise show a test how many there were. The TUI peer has the same
+/// counter (`lattice_ui_tui::actor_call_counter`) for the same assertion.
+#[cfg(test)]
+mod actor_calls {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn bump() {
+        COUNT.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(crate) fn snapshot() -> u64 {
+        COUNT.with(|c| c.get())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use lattice_grammar::ModalState;
+
+    /// Press a vim-notation key sequence through the peer's chord entry.
+    fn press(app: &mut GpuiApp, keys: &str) {
+        let seq = lattice_core::protocol::parse_chord_sequence(keys).expect("key sequence parses");
+        for chord in seq {
+            app.dispatch_chord(chord);
+        }
+    }
+
+    /// GD.0 — a typed character is ONE crossing of the actor seam.
+    ///
+    /// Before this peer adopted `Editor::dispatch_fused` it was four: the
+    /// dispatch, a drain of queued signals, the tail, and a drain of queued
+    /// effects. Each is a blocking mailbox round-trip in production (~0.5 ms
+    /// apiece on WSL2), and the TUI's own count going from six to one was the
+    /// whole of its felt typing lag (input-latency.md § I.7).
+    ///
+    /// Exactly one, not "at most a few": a second crossing appearing here is
+    /// a tail step that was added beside the fused call instead of inside it.
+    #[test]
+    fn a_typed_character_is_one_actor_crossing() {
+        let mut app = GpuiApp::new(Document::from_text("one\ntwo\n"));
+        press(&mut app, "i");
+
+        let before = actor_calls::snapshot();
+        press(&mut app, "x");
+        let after = actor_calls::snapshot();
+
+        assert_eq!(
+            app.editor.document.snapshot().buffer.as_string(),
+            "xone\ntwo\n",
+            "the insert ran"
+        );
+        assert_eq!(after - before, 1, "a typed character is one actor crossing");
+    }
+
+    /// GD.0 — a key that does NOT fuse is bounded at three crossings.
+    ///
+    /// The host declines the fuse whenever the dispatch leaves anything in
+    /// `outcome.effects`, and a motion leaves its `Effect::CursorMove` there
+    /// even though the host has already applied it. So `j` takes the
+    /// non-fused path in BOTH peers: the dispatch, the queued-signal drain,
+    /// and the tail. That is a host property, recorded in the slice plan as
+    /// GD.0b; this pins the peer's side of it so the count cannot grow
+    /// unnoticed, and so that fixing the host shows up here as a 3 → 1.
+    #[test]
+    fn a_motion_is_at_most_three_actor_crossings() {
+        let mut app = GpuiApp::new(Document::from_text("one\ntwo\nthree\n"));
+
+        let before = actor_calls::snapshot();
+        press(&mut app, "j");
+        let after = actor_calls::snapshot();
+
+        assert_eq!(app.ad().cursor.line, 1, "the motion ran");
+        let crossings = after - before;
+        assert!(
+            crossings <= 3,
+            "a motion made {crossings} actor crossings; the non-fused path is \
+             dispatch + signal drain + tail. Fold a new step into the tail's \
+             crossing rather than adding one."
+        );
+    }
+
+    /// GD.0 — a follow-up action runs after the effects of the one before it.
+    ///
+    /// A macro replays as a list of follow-up actions. This peer used to
+    /// dispatch them all bare and apply every renderer-coupled effect at the
+    /// end, so a recorded "open a file, then type" replayed as "type, then
+    /// open": the text landed in the buffer the macro was started from.
+    #[test]
+    fn a_replayed_macro_types_into_the_buffer_it_opened() {
+        let path = std::env::temp_dir().join(format!(
+            "lattice-gd0-macro-order-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, "target\n").expect("temp file writes");
+
+        let mut app = GpuiApp::new(Document::from_text("origin\n"));
+        let origin = app.editor.document_buffer_id;
+        // Record: open the file, type at its start.
+        press(&mut app, &format!("qa:e {}<CR>ihi <Esc>q", path.display()));
+        let target = app.editor.document_buffer_id;
+        assert_ne!(target, origin, "test premise: `:e` switched buffers");
+        assert_eq!(
+            app.editor.document.snapshot().buffer.as_string(),
+            "hi target\n",
+            "test premise: recording typed into the opened file"
+        );
+
+        // Back to where we started, cursor at the top, and replay.
+        app.mutate_editor(move |e| {
+            e.activate_buffer(origin);
+        });
+        assert_eq!(app.editor.document_buffer_id, origin);
+        press(&mut app, "gg0@a");
+
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            app.editor.document_buffer_id, target,
+            "the replay opened it"
+        );
+        assert_eq!(
+            app.editor.document.snapshot().buffer.as_string(),
+            "hi hi target\n",
+            "the replayed typing landed in the opened file"
+        );
+        let origin_text = app.mutate_editor_with(move |e| {
+            e.activate_buffer(origin);
+            e.document.snapshot().buffer.as_string()
+        });
+        assert_eq!(origin_text, "origin\n", "and not in the buffer it began in");
+    }
+
+    /// GD.0 — the completion popup's keymap layer follows the popup.
+    ///
+    /// `completion-popup-mode` carries the popup's keys (`<C-n>`, `<C-p>`,
+    /// `<C-y>`, the filter chords). Nothing activates it except
+    /// `Editor::sync_keymap_overlays`, which this peer never called — so in
+    /// the GUI the popup could open and none of its keys reached it. The
+    /// same call reconciles session-backed minors (`active-snippet-mode`),
+    /// so snippet tabstop keys were dead the same way.
+    ///
+    /// Both directions, because a layer left on after its popup closed steals
+    /// `<C-n>` from everything else.
+    #[test]
+    fn the_completion_popups_keymap_layer_follows_the_popup() {
+        use lattice_completion::{CompletionTrigger, InsertCompletionState};
+        use lattice_core::protocol::position::Position;
+
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        let buffer = app.editor.document_buffer_id;
+        let popup_mode = lattice_host::keymap_insert::completion_popup_mode_id();
+        assert!(
+            !app.editor.minor_mode_enabled_for(buffer, popup_mode),
+            "precondition: no popup, no layer"
+        );
+
+        app.editor.insert_completion = Some(InsertCompletionState::open(
+            CompletionTrigger::Manual,
+            Position::new(0, 0),
+            Position::new(0, 1),
+            "x".to_string(),
+        ));
+        app.dispatch_action(Action::None);
+        assert!(
+            app.editor.minor_mode_enabled_for(buffer, popup_mode),
+            "the dispatch tail activates the popup's mode once a popup is open"
+        );
+        assert!(
+            app.render_state
+                .load()
+                .translator
+                .active_minor_modes
+                .contains(&popup_mode),
+            "and the published layer set, which the NEXT key is translated \
+             against, has it"
+        );
+
+        app.editor.insert_completion = None;
+        app.dispatch_action(Action::None);
+        assert!(
+            !app.editor.minor_mode_enabled_for(buffer, popup_mode),
+            "and deactivates it when the popup is gone"
+        );
+    }
 
     /// The 5.7 scaffold's core claim: a GPUI-side composition root
     /// constructs from the host substrate alone. If this builds, the

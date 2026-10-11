@@ -2,14 +2,14 @@
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
 > Design contract: [`../../architecture/gui-default.md`](../../architecture/gui-default.md)
-> (lands with GD.0 — the peer contract — and is extended by GD.9, the flip).
+> (the peer contract; GD.9 extends it with the flip).
 > Closes the ledger's `5.last` row in [`../implementation.md`](../implementation.md).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 in progress; GD.1–GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅; GD.0b, GD.1–GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -61,7 +61,7 @@ order given is by user-visible severity. GD.9 depends on all of them.
 
 ## Slices
 
-### GD.0 🚧 — one dispatch tail, shared
+### GD.0 ✅ — one dispatch tail, shared
 
 GPUI's `dispatch_action` adopts `Editor::dispatch_fused`.
 
@@ -82,10 +82,35 @@ GPUI's `dispatch_action` adopts `Editor::dispatch_fused`.
 - The `PickerAccept` / `PickerDismiss` / `TransientDismiss` early-return arms
   stop skipping the tail.
 
-Tests: the fused path costs one actor call (the TUI's
-`apply_noop_action_makes_bounded_actor_calls` shape); the completion popup's
-keymap layer is active after the keystroke that opens it; a follow-up action
-sees the effect of the one before it; a picker accept is followed by a reparse.
+Landed 2026-10-11. Four tests in `lattice-ui-gpui`, each run against the
+pre-GD.0 dispatch and seen to fail there: a typed character is one actor
+crossing (was four); a motion is at most three; the completion popup's mode
+follows the popup; a replayed macro types into the buffer it opened. The
+picker early-return arms are gone outright — the host already handled all
+three actions, so the generic path covers them.
+
+Not seen: the GUI itself. `Render::render` no longer clamps the cursor, on the
+argument that the tail and the viewport setters cover every way the cursor or
+viewport moves. That argument is by reading; scroll-follows-cursor needs eyes.
+
+Left in `render`, deliberately: `set_viewport_height` and `SetCellMetrics`
+still dispatch. Both are gated on the value changing, so they fire on a resize,
+not per frame, and `SetViewportHeight`'s action arm carries the vim `scroll`
+reset that the actor's typed command does not.
+
+### GD.0b 📝 — fuse on host-complete effects
+
+Found by GD.0's own test. `dispatch_fused` declines the fuse whenever
+`outcome.effects` is non-empty, and a motion leaves `Effect::CursorMove` there
+though the host has applied it. So only typed characters fuse; `j`, `w`, every
+motion and most operators take the multi-crossing path in BOTH peers, which is
+not what `input-latency.md` § I.7 says. Held-key motion is where latency is
+most felt.
+
+Host change, both peers. The question to settle first: which effects are
+host-complete (no renderer-coupled arm in either peer) — as a property the
+`Effect` type states, not a list in `dispatch_fused` that drifts.
+`a_motion_is_at_most_three_actor_crossings` goes 3 → 1 when it lands.
 
 ### GD.1 📝 — idle drain, quit, and dropped signals
 

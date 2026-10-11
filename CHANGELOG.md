@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Fixed
+- **GUI: the completion popup's keys work, and so do snippet tabstops.** In
+  the window (`--gui`) the insert-completion popup opened and `<C-n>`, `<C-p>`
+  and `<C-y>` went to the buffer underneath; `<Tab>` did not move between a
+  snippet's placeholders. The terminal was unaffected.
+- **GUI: a macro that opens a file and then edits it replays in order.** It
+  replayed as "edit, then open", so the text landed in the buffer the macro
+  was started from.
+- **GUI: typing is one round-trip to the editor core per character**, down
+  from four, and the window no longer does editor work while painting a frame.
 - **The keys in `:plugins` work on a plugin that failed.** `b`, `r`, `u` and
   `<CR>` did nothing on an entry under *Failed to load* or *Build failed* —
   the plugins you most want to rebuild were the ones no key reached, and

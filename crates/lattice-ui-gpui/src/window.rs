@@ -1073,41 +1073,6 @@ impl DiagnosticGlyphs {
 // peers map the host shape to their native cursor primitive.
 // Re-imported via `use` at the top of the file.
 
-/// Per-frame ensure-work gate keys (perf plan A.3).
-///
-/// `EditorView::render` used to fire `ensure_cursor_in_viewport()`
-/// and `dispatch_action(RefreshPaneHighlights)` unconditionally every
-/// frame. Both dispatches walk the full `publish_render_state` tail
-/// (rebuilding every sub-state `Arc`, notifying the background
-/// workers, nudging `paint_request`) regardless of whether the underlying
-/// inputs changed — the dominant slice of `ensure_us` in the trace
-/// data the perf plan opens with.
-///
-/// Each key captures the inputs that would actually change the
-/// dispatch's effect. When the current frame's key matches the stored
-/// one, the dispatch is skipped — paramount goal #1 (sub-frame input
-/// latency).
-///
-/// `cursor_snap_key` is stored as the POST-dispatch key so the cache
-/// settles in one frame after a snap (the dispatch mutates `scroll`,
-/// which is part of the key; storing the pre-dispatch key would
-/// re-fire on the next frame for a guaranteed no-op).
-///
-/// DR.2 (decoration-retention) removed the `pane_refresh_key` gate
-/// along with the per-frame `RefreshPaneHighlights` dispatch it
-/// guarded: inactive panes now read their own retained per-pane
-/// `DisplayMatrix`, so there is no per-frame pane-highlight refresh
-/// left to gate.
-#[derive(Default)]
-struct EnsureGateCache {
-    cursor_snap_key: Option<(
-        lattice_core::protocol::position::Position,
-        u32,
-        u32,
-        lattice_core::BufferKind,
-    )>,
-}
-
 /// The renderer-side composition root rendered as a GPUI
 /// `Entity`. Holds the [`GpuiApp`] + a [`FocusHandle`] so the
 /// window's key events actually route to our dispatcher.
@@ -1154,7 +1119,6 @@ pub(crate) struct EditorView {
     pub(crate) app: GpuiApp,
     focus_handle: FocusHandle,
     /// Perf plan A.3: per-frame ensure-work delta cache.
-    ensure_gate: EnsureGateCache,
     /// S4.final.b (2026-05-27): per-window glyph-id cache
     /// (cached `char → ResolvedGlyph` map keyed by FontId).
     /// Shared across panes within this window — paint_cells
@@ -1232,7 +1196,6 @@ impl EditorView {
             last_cell_metrics: None,
             app,
             focus_handle: cx.focus_handle(),
-            ensure_gate: EnsureGateCache::default(),
             glyph_resolver: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::glyph_resolver::GlyphResolver::new(),
             )),
@@ -1882,7 +1845,7 @@ impl EditorView {
         // 5.8.O: clip the visible window to `[scroll, scroll +
         // viewport_height)` so large docs don't render every line
         // every frame. Active pane reads scroll from `editor.scroll`
-        // (ensure_cursor_in_viewport keeps it sane); inactive
+        // (the dispatch tail keeps it sane); inactive
         // panes read their stashed `PaneState::scroll`. The
         // gutter, status, and cursor maths still work in terms of
         // absolute line indices — only the iter range tightens.
@@ -3745,7 +3708,7 @@ impl Render for EditorView {
         // rows — anything past that is invisible, so `j` would walk
         // the cursor off the popup without bumping scroll. Override
         // to the popup's inner height while focused so
-        // `ensure_cursor_in_viewport` (next call) scrolls correctly.
+        // the next dispatch tail's clamp scrolls correctly.
         //
         // On the way back (popup dismissed): the diff-then-send loop
         // skips `set_pane_viewport` when the pane's leaf rows are
@@ -3841,38 +3804,15 @@ impl Render for EditorView {
             }
             self.last_completion_docs_dims = completion_docs_dims;
         }
-        // 5.8.O: keep the cursor inside the viewport before any
-        // paint reads `editor.scroll`. Auto-scrolls if the cursor
-        // moved past the visible window since the last frame.
-        // `set_viewport_height` above already ran one round of
-        // `ensure_cursor_visible`, but this also covers the case
-        // where the viewport size didn't change but the cursor
-        // moved past the existing window.
-        //
-        // Perf plan A.3 cursor_snap gate: skip the dispatch when
-        // the inputs (cursor, scroll, viewport_height, active
-        // buffer kind) haven't changed since the post-dispatch
-        // state we last cached. The stored key is the POST-
-        // dispatch value so the cache settles in one frame
-        // after a snap mutates `scroll`. First frame always runs
-        // (cache starts at `None`).
-        let pre_ad = self.app.render_state.load().active_document.load_full();
-        let cursor_key = (
-            pre_ad.cursor,
-            pre_ad.scroll,
-            pre_ad.viewport_height,
-            pre_ad.buffer_kind,
-        );
-        if self.ensure_gate.cursor_snap_key != Some(cursor_key) {
-            self.app.ensure_cursor_in_viewport();
-            let post_ad = self.app.render_state.load().active_document.load_full();
-            self.ensure_gate.cursor_snap_key = Some((
-                post_ad.cursor,
-                post_ad.scroll,
-                post_ad.viewport_height,
-                post_ad.buffer_kind,
-            ));
-        }
+        // No cursor-visibility work here. `render` used to dispatch
+        // `EnsureCursorVisible` whenever the cursor, scroll or viewport had
+        // changed since the last frame — which is every frame after a motion —
+        // and a dispatch is a blocking actor round-trip with the tick drain on
+        // its tail, on the UI thread. The dispatch tail keeps the cursor in
+        // view now (`GpuiApp::dispatch_action`), and a resize does through
+        // `set_viewport_height` / `set_pane_viewport` above; between them
+        // every way the cursor or the viewport moves is covered, as in the
+        // TUI, which has never had a per-frame clamp.
         // 2026-05-27 viewport-invariant probe. Opt-in via
         //   RUST_LOG=lattice_gpui::viewport=debug
         // Fires every frame, logging the chrome math + the

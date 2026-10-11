@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0 ✅, LH.1 ✅, LH.2 ✅. Open: LH.3 📝 (publish 0.2.0 — needs Dhruva), LH.0.2b ⛔ (`zip`), LH.1.2b ⛔ (recipes).** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅, LH.1 ✅, LH.2 ✅, LH.3 ✅. Open: LH.0.2b ⛔ (`zip`), LH.1.2b ⛔ (recipes).** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -383,16 +383,21 @@ could have been wired and inert:
 produced `runtime/plugins/lighthouse/`; the release workflow's layout checks
 are what would catch a staging regression, at release time.
 
-### LH.3 — publish plugin API 0.2.0  📝
-Publish `lattice-wit`, `lattice-plugin-sdk` and `lattice-plugin-sdk-derive` at
-0.2.0 and bump `lattice-org-plugin`'s pin, per `releasing.md` —
-`scripts/publish-plugin-api.sh --publish`, from `main`, after the merge. (The
-script was written for this slice; it refuses on any other branch.) **Last, and only
-once LH.1 and LH.2 are done** (decided 2026-10-10): 0.2.0 is unpublished, so
-every WIT change lighthouse turns out to need lands inside it for free — LH.0.5
-already did — where each one after publication is another version. Outward-facing
-and irreversible; done with Dhruva, not by an agent alone. Until it lands,
-`lattice-org-plugin` does not instantiate against this branch.
+### LH.3 — publish plugin API 0.2.0  ✅
+`lattice-plugin-sdk-derive`, `lattice-plugin-sdk` and `lattice-wit` are on
+crates.io at 0.2.0, published 2026-10-11 from `main` at `b01230b4` — the merge
+of this plan's branch — in that order, per `releasing.md`.
+`scripts/publish-plugin-api.sh` was written for this slice and its checks ran
+against that commit (on `main`, clean, in sync with origin; the version guard;
+each crate building from its package alone).
+
+It went **last, and only once LH.1 and LH.2 were done** (decided 2026-10-10):
+while 0.2.0 was unpublished, every WIT change lighthouse turned out to need
+landed inside it for free — LH.0.5 did — where each one after publication is
+another version. From here a changed signature is 0.3.0.
+
+`lattice-org-plugin` builds against the published crates with its pins and its
+`@0.1.0` world references moved to 0.2.
 
 ## Notes
 

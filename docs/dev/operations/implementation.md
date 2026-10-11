@@ -114,8 +114,8 @@ plugin. `:lsp-install` / `:lsp-update` / `:lsp-uninstall` / `:lsp-servers`,
 with rust-analyzer in the registry. It forced seven host slices — jobs with
 addressed events, `http-download` (the first enforcement of `net:http`),
 `extract-archive`, `spawn-process`, `register-server`, plugin output buffers,
-and `host-platform` / `data-dir` — and plugin API 0.2.0. **Not yet published:**
-the 0.2.0 crates (LH.3). Deferred: `zip` archives and package-manager installs.
+and `host-platform` / `data-dir` — and plugin API 0.2.0, on crates.io since
+2026-10-11 (LH.3). Deferred: `zip` archives and package-manager installs.
 See [`slice-plans/lighthouse.md`](slice-plans/lighthouse.md).
 
 **Gutter signs (2026-09-08, SG.1–SG.4b landed).** A generic sign mechanism —

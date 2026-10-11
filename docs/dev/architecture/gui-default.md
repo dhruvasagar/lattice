@@ -72,6 +72,14 @@ How it reads input, how it paints, and the renderer-coupled arm of each effect
 a new variant fails to compile in the peer that forgot it; the tail had no such
 guard, which is why it is now a host function and not a convention.
 
+### How it is checked
+
+`lattice_host::peer_conformance` holds one set of scenarios, and each peer
+runs all of them through its own key and dispatch entry points. The host's own
+tests cannot do this: they drive `Editor` directly, which goes around the code
+that keeps the contract. A scenario asserts editor state after a key sequence
+and the number of actor crossings taken to reach it; it never asserts paint.
+
 ## 3. What the fuse does not cover
 
 `dispatch_fused` declines whenever `outcome.effects` is non-empty, and a motion

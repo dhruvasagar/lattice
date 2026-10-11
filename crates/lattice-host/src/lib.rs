@@ -184,6 +184,10 @@ pub mod pane;
 // docs/dev/architecture/pane-buffer-history.md
 pub mod pane_history;
 pub mod pane_render;
+/// Scenarios every renderer peer runs through its own entry points. Test
+/// support: compiled only for this crate's tests and for a peer's.
+#[cfg(any(test, feature = "peer-conformance"))]
+pub mod peer_conformance;
 pub mod popup;
 pub mod preview;
 // Phase 5.8.AF.5 / Slice 3b: per-buffer cache primitive for the

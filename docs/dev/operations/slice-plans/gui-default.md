@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.1 ✅; GD.0b, GD.2–GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.1 ✅, GD.2 ✅; GD.0b, GD.3–GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -146,17 +146,32 @@ Not tested: the quit-on-wake path and the three signal cascades (`:toggle-mode`,
 needs a mode whose activation raises a signal to observe. Not seen: any of it in
 a window.
 
-### GD.2 📝 — peer conformance suite
+### GD.2 ✅ — peer conformance suite
 
-One set of scenarios, driven through each peer's dispatch entry, asserting the
-same editor state. Lives where both peers can be reached without either
-depending on the other. This is the slice that stops GD.0's drift recurring; it
-is also where "GPUI has no frame-level test harness" gets its answer for the
-non-paint half. Scope is behaviour (state after a key sequence), not pixels.
+One set of scenarios, driven through each peer's own key and dispatch entry,
+asserting the same editor state. Scope is behaviour (state after a key
+sequence, actor crossings), not pixels.
 
-Open design question, to settle when the slice starts: a shared `trait Peer`
-harness in a dev-only test-support module vs. a macro instantiating one test
-body per peer. Map both against heuristic #6 before choosing.
+Landed 2026-10-11 as `lattice_host::peer_conformance`, behind the
+`peer-conformance` feature that each peer enables from `[dev-dependencies]`.
+A peer implements `PeerUnderTest` and writes
+`lattice_host::peer_conformance_tests!(Peer)`; the scenario list is in the
+host's macro, so a new scenario reaches both peers without either being
+touched. Decided on heuristic #1 over a separate crate depending on both peers:
+a peer exposes an in-process editor only under its own `cfg(test)`, and a
+second crate would need an actor-backed, async-settling harness for every
+scenario.
+
+Seven scenarios, green in both peers: keys edit the buffer; a typed character
+is one actor crossing; the cursor stays in view; the completion popup's layer
+follows the popup; a replayed macro types into the buffer it opened; a queued
+effect is applied on an idle wake; quitting is published. GD.0's and GD.1's
+GUI-only copies of four of these were removed in favour of the shared ones.
+
+Not covered, by construction: the decline-and-fall-through walk. It lives in
+each peer's input loop above the chord entry the suite drives (the TUI's is
+inline in `runtime.rs`), so the scenarios cannot reach it. Hoisting it behind a
+shared entry is the precondition for a scenario; noted for GD.8.
 
 ### GD.3 📝 — window lifecycle
 
@@ -206,6 +221,8 @@ macOS option-as-meta.
 - Pane geometry uses the window's real column count (the host falls back to
   120 when `SetTerminalWidth` is never sent).
 - Hard-coded popup colours go through the theme (light themes).
+- The decline-and-fall-through walk behind an entry the conformance suite can
+  drive, and a scenario for it (see GD.2).
 
 ### GD.9 📝 — the flip
 

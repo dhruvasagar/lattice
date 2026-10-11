@@ -491,3 +491,77 @@ pub(super) fn fresh_path_workspace(name: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&path).unwrap();
     path
 }
+
+/// GD.2 — this peer, as the host's conformance scenarios drive it.
+///
+/// `press_chord` is the input loop's own path from a normalised chord:
+/// `lattice_host::input::translate` against published state, then
+/// [`App::apply`]. `idle_wake` is what `Wake::Repaint` runs when the batch
+/// held no input.
+impl lattice_host::peer_conformance::PeerUnderTest for App {
+    fn boot(text: &str) -> Self {
+        app_with(text, 30)
+    }
+    fn press_chord(&mut self, chord: lattice_host::chord::KeyChord) {
+        // Every input is a PUBLISHED read, as in `runtime.rs` — not the
+        // `press` helper above, which reads the live editor. Two reasons:
+        // it is what the input loop does, and `completion_popup_active`'s
+        // `cfg(test)` branch crosses the actor seam, which would make a
+        // typed character look like two crossings when production pays one.
+        let ad = self.ad();
+        let rs = self.render_state.load();
+        let translator = rs.translator.clone();
+        let insert_completion_open = rs
+            .modes
+            .map
+            .get(&self.document_buffer_id())
+            .map(|m| m.has_minor(lattice_mode::CompletionPopupMode::mode_id()))
+            .unwrap_or(false);
+        let ctx = crate::input::TranslateContext {
+            modal: ad.modal,
+            builtins: &translator.builtins,
+            pending_count: ad.pending_count,
+            op_count: ad.op_count,
+            recording_macro: ad.macro_recording,
+            active_buffer: ad.buffer_kind,
+            completion_open: ad.completion_open,
+            chord_capture: ad.chord_capture,
+            picker_open: ad.picker_open,
+            insert_completion_open,
+            snippet_active: ad.snippet_active,
+            terminal_insert_active: ad.terminal_insert_active,
+            terminal_esc_exits: ad.terminal_esc_exits,
+            terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
+            terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
+            terminal_visual_active: ad.terminal_visual_active,
+            keymap: &translator.keymap,
+            partial_chord: &translator.partial_chord,
+            active_minor_modes: &translator.active_minor_modes,
+        };
+        let action = lattice_host::input::translate(ctx, chord);
+        self.apply(action);
+    }
+    fn apply(&mut self, action: Action) {
+        App::apply(self, action);
+    }
+    fn idle_wake(&mut self) {
+        self.drain_async_pending();
+    }
+    fn set_viewport_height(&mut self, rows: u32) {
+        App::set_viewport_height(self, rows);
+    }
+    fn editor(&self) -> &lattice_host::editor::Editor {
+        &self.editor
+    }
+    fn editor_mut(&mut self) -> &mut lattice_host::editor::Editor {
+        &mut self.editor
+    }
+    fn actor_crossings(&self) -> u64 {
+        crate::actor_call_counter::snapshot()
+    }
+}
+
+/// The scenarios themselves — `lattice_host::peer_conformance`.
+mod conformance {
+    lattice_host::peer_conformance_tests!(crate::app::App);
+}

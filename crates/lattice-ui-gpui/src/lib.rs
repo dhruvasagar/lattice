@@ -1905,31 +1905,42 @@ mod tests {
         }
     }
 
-    /// GD.0 — a typed character is ONE crossing of the actor seam.
+    /// GD.2 — this peer, as the host's conformance scenarios drive it.
     ///
-    /// Before this peer adopted `Editor::dispatch_fused` it was four: the
-    /// dispatch, a drain of queued signals, the tail, and a drain of queued
-    /// effects. Each is a blocking mailbox round-trip in production (~0.5 ms
-    /// apiece on WSL2), and the TUI's own count going from six to one was the
-    /// whole of its felt typing lag (input-latency.md § I.7).
-    ///
-    /// Exactly one, not "at most a few": a second crossing appearing here is
-    /// a tail step that was added beside the fused call instead of inside it.
-    #[test]
-    fn a_typed_character_is_one_actor_crossing() {
-        let mut app = GpuiApp::new(Document::from_text("one\ntwo\n"));
-        press(&mut app, "i");
+    /// Every method is the production path: `dispatch_chord` is what
+    /// `on_key_down` calls once the keystroke is normalised,
+    /// `dispatch_action` is the dispatch entry, and
+    /// `drain_idle_renderer_effects` is what the window's repaint wake runs.
+    impl lattice_host::peer_conformance::PeerUnderTest for GpuiApp {
+        fn boot(text: &str) -> Self {
+            GpuiApp::new(Document::from_text(text))
+        }
+        fn press_chord(&mut self, chord: lattice_host::chord::KeyChord) {
+            self.dispatch_chord(chord);
+        }
+        fn apply(&mut self, action: Action) {
+            self.dispatch_action(action);
+        }
+        fn idle_wake(&mut self) {
+            self.drain_idle_renderer_effects();
+        }
+        fn set_viewport_height(&mut self, rows: u32) {
+            GpuiApp::set_viewport_height(self, rows);
+        }
+        fn editor(&self) -> &Editor {
+            &self.editor
+        }
+        fn editor_mut(&mut self) -> &mut Editor {
+            &mut self.editor
+        }
+        fn actor_crossings(&self) -> u64 {
+            actor_calls::snapshot()
+        }
+    }
 
-        let before = actor_calls::snapshot();
-        press(&mut app, "x");
-        let after = actor_calls::snapshot();
-
-        assert_eq!(
-            app.editor.document.snapshot().buffer.as_string(),
-            "xone\ntwo\n",
-            "the insert ran"
-        );
-        assert_eq!(after - before, 1, "a typed character is one actor crossing");
+    /// The scenarios themselves — `lattice_host::peer_conformance`.
+    mod conformance {
+        lattice_host::peer_conformance_tests!(super::super::GpuiApp);
     }
 
     /// GD.0 — a key that does NOT fuse is bounded at three crossings.
@@ -1959,102 +1970,19 @@ mod tests {
         );
     }
 
-    /// GD.0 — a follow-up action runs after the effects of the one before it.
+    /// GD.1 — a repaint wake with nothing queued costs no actor crossing.
     ///
-    /// A macro replays as a list of follow-up actions. This peer used to
-    /// dispatch them all bare and apply every renderer-coupled effect at the
-    /// end, so a recorded "open a file, then type" replayed as "type, then
-    /// open": the text landed in the buffer the macro was started from.
+    /// The window drains queued renderer effects from EVERY repaint wake,
+    /// including the ones a keystroke causes, so the empty case has to be a
+    /// published read and nothing more. (That a queued effect IS applied is
+    /// the conformance scenario
+    /// `a_queued_renderer_effect_is_applied_on_an_idle_wake`.)
     #[test]
-    fn a_replayed_macro_types_into_the_buffer_it_opened() {
-        let path = std::env::temp_dir().join(format!(
-            "lattice-gd0-macro-order-{}.txt",
-            std::process::id()
-        ));
-        std::fs::write(&path, "target\n").expect("temp file writes");
-
+    fn an_idle_wake_with_nothing_queued_is_free() {
         let mut app = GpuiApp::new(Document::from_text("origin\n"));
-        let origin = app.editor.document_buffer_id;
-        // Record: open the file, type at its start.
-        press(&mut app, &format!("qa:e {}<CR>ihi <Esc>q", path.display()));
-        let target = app.editor.document_buffer_id;
-        assert_ne!(target, origin, "test premise: `:e` switched buffers");
-        assert_eq!(
-            app.editor.document.snapshot().buffer.as_string(),
-            "hi target\n",
-            "test premise: recording typed into the opened file"
-        );
 
-        // Back to where we started, cursor at the top, and replay.
-        app.mutate_editor(move |e| {
-            e.activate_buffer(origin);
-        });
-        assert_eq!(app.editor.document_buffer_id, origin);
-        press(&mut app, "gg0@a");
-
-        let _ = std::fs::remove_file(&path);
-        assert_eq!(
-            app.editor.document_buffer_id, target,
-            "the replay opened it"
-        );
-        assert_eq!(
-            app.editor.document.snapshot().buffer.as_string(),
-            "hi hi target\n",
-            "the replayed typing landed in the opened file"
-        );
-        let origin_text = app.mutate_editor_with(move |e| {
-            e.activate_buffer(origin);
-            e.document.snapshot().buffer.as_string()
-        });
-        assert_eq!(origin_text, "origin\n", "and not in the buffer it began in");
-    }
-
-    /// GD.1 — an effect that landed with no keystroke is applied with none.
-    ///
-    /// The async picker accept and its peers queue what they cannot apply
-    /// off the renderer. This peer drained that queue only in a keystroke's
-    /// dispatch tail, so a buffer opened by an async accept appeared when the
-    /// user next pressed a key. The window now drains it from its repaint
-    /// wake, through this method.
-    ///
-    /// Tested the way it fails: nothing is dispatched between the effect
-    /// being queued and the assertion.
-    #[test]
-    fn a_queued_renderer_effect_is_applied_without_a_keypress() {
-        let path = std::env::temp_dir().join(format!(
-            "lattice-gd1-idle-effect-{}.txt",
-            std::process::id()
-        ));
-        std::fs::write(&path, "opened while idle\n").expect("temp file writes");
-
-        let mut app = GpuiApp::new(Document::from_text("origin\n"));
-        assert!(
-            !app.drain_idle_renderer_effects(),
-            "precondition: nothing queued, nothing to do"
-        );
-
-        // What an off-renderer path does: queue, then publish.
-        app.editor
-            .pending_renderer_effects
-            .push(lattice_grammar::Effect::OpenBuffer {
-                path: Some(path.clone()),
-                force: false,
-            });
-        app.editor.publish_render_state();
-
-        let applied = app.drain_idle_renderer_effects();
-        let _ = std::fs::remove_file(&path);
-        assert!(applied, "the published flag said there was work");
-        assert_eq!(
-            app.editor.document.snapshot().buffer.as_string(),
-            "opened while idle\n",
-            "the queued open ran, with no action dispatched"
-        );
-
-        // And once drained, a repaint wake costs no actor crossing at all —
-        // this runs on every wake, including the ones a keystroke causes.
         let before = actor_calls::snapshot();
-        assert!(!app.drain_idle_renderer_effects());
+        assert!(!app.drain_idle_renderer_effects(), "nothing queued");
         assert_eq!(
             actor_calls::snapshot() - before,
             0,
@@ -2105,59 +2033,6 @@ mod tests {
             palette(&app),
             Some(want),
             "the tree's palette follows the option (was {before:?})"
-        );
-    }
-
-    /// GD.0 — the completion popup's keymap layer follows the popup.
-    ///
-    /// `completion-popup-mode` carries the popup's keys (`<C-n>`, `<C-p>`,
-    /// `<C-y>`, the filter chords). Nothing activates it except
-    /// `Editor::sync_keymap_overlays`, which this peer never called — so in
-    /// the GUI the popup could open and none of its keys reached it. The
-    /// same call reconciles session-backed minors (`active-snippet-mode`),
-    /// so snippet tabstop keys were dead the same way.
-    ///
-    /// Both directions, because a layer left on after its popup closed steals
-    /// `<C-n>` from everything else.
-    #[test]
-    fn the_completion_popups_keymap_layer_follows_the_popup() {
-        use lattice_completion::{CompletionTrigger, InsertCompletionState};
-        use lattice_core::protocol::position::Position;
-
-        let mut app = GpuiApp::new(Document::from_text("x\n"));
-        let buffer = app.editor.document_buffer_id;
-        let popup_mode = lattice_host::keymap_insert::completion_popup_mode_id();
-        assert!(
-            !app.editor.minor_mode_enabled_for(buffer, popup_mode),
-            "precondition: no popup, no layer"
-        );
-
-        app.editor.insert_completion = Some(InsertCompletionState::open(
-            CompletionTrigger::Manual,
-            Position::new(0, 0),
-            Position::new(0, 1),
-            "x".to_string(),
-        ));
-        app.dispatch_action(Action::None);
-        assert!(
-            app.editor.minor_mode_enabled_for(buffer, popup_mode),
-            "the dispatch tail activates the popup's mode once a popup is open"
-        );
-        assert!(
-            app.render_state
-                .load()
-                .translator
-                .active_minor_modes
-                .contains(&popup_mode),
-            "and the published layer set, which the NEXT key is translated \
-             against, has it"
-        );
-
-        app.editor.insert_completion = None;
-        app.dispatch_action(Action::None);
-        assert!(
-            !app.editor.minor_mode_enabled_for(buffer, popup_mode),
-            "and deactivates it when the popup is gone"
         );
     }
 

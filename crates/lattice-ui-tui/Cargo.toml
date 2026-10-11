@@ -82,6 +82,9 @@ notify = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
+# The peer conformance scenarios live in the host and run here, through this
+# peer's own key and dispatch entry points (`lattice_host::peer_conformance`).
+lattice-host = { path = "../lattice-host", features = ["peer-conformance"] }
 # The shipped `comment` plugin's keystroke test (`app/comment_plugin.rs`)
 # loads the real component; both are already in the graph via lattice-host.
 lattice-plugin-host = { path = "../lattice-plugin-host" }

@@ -2155,6 +2155,12 @@ impl EditorView {
         // `snapshot`. None for regular Documents (gutter shows
         // composed-row identity); Some(arr) for Multibuffer.
         let display_line_numbers_for_meta = pane_display_line_numbers.clone();
+        // `relativenumber`, per pane: measured from THIS pane's cursor (an
+        // inactive pane's own, not the focused one's). Off on a multibuffer,
+        // as in the TUI — a distance across non-contiguous source rows is not
+        // a count `5j` could use.
+        let relative_numbers =
+            pane_options.relative_line_numbers && pane_display_line_numbers.is_none();
         // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
         // pane's buffer once; accumulate GutterDecoration contributions into
         // per-line maps. Replaces per-line render_state reads inside gutter_meta.
@@ -2398,6 +2404,9 @@ impl EditorView {
                     severity,
                     diff_sign,
                     is_virtual: false,
+                    relative: relative_numbers
+                        .then(|| (line_idx as u32).abs_diff(cursor.line))
+                        .filter(|distance| *distance != 0),
                 }
             })
             .collect();

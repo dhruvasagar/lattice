@@ -171,6 +171,13 @@ pub(crate) struct GutterLineMeta {
     /// row's red backdrop quad + content text are the visible
     /// surface.
     pub(crate) is_virtual: bool,
+    /// `relativenumber`: the distance from this pane's cursor line, shown
+    /// in place of the line number. `None` shows the absolute number — the
+    /// option is off, this IS the cursor's line (vim shows its real number
+    /// there), or the pane is a multibuffer, where distance across
+    /// non-contiguous source rows means nothing. The caller decides; this is
+    /// only what to print.
+    pub(crate) relative: Option<u32>,
 }
 
 /// Active-pane cursor state. `None` on inactive panes.
@@ -4226,7 +4233,10 @@ fn format_gutter_text(
     // digit slot is blank (gutter_width is 0 in that case anyway). Matches the
     // TUI `show_line_numbers` gate.
     let num: String = if show_line_numbers {
-        (meta.display_line as usize + 1).to_string()
+        match meta.relative {
+            Some(distance) => distance.to_string(),
+            None => (meta.display_line as usize + 1).to_string(),
+        }
     } else {
         String::new()
     };
@@ -4562,6 +4572,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         let virt = GutterLineMeta {
             line_idx: 41,
@@ -4571,6 +4582,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: true,
+            relative: None,
         };
         let gutter_width = 3usize;
         for &sign in &[false, true] {
@@ -4756,6 +4768,42 @@ mod tests {
         assert!(offsets.is_empty());
     }
 
+    /// GD.6a — `relativenumber` prints the distance, in the same cells.
+    ///
+    /// The gutter always printed `display_line + 1`; `:set relativenumber`
+    /// did nothing in this peer. The distance replaces the number and
+    /// nothing else moves — the column is as wide as it was, so toggling the
+    /// option cannot shift the text beside it.
+    #[test]
+    fn a_relative_gutter_row_prints_its_distance_in_the_same_width() {
+        let row = |relative| GutterLineMeta {
+            line_idx: 41,
+            display_line: 41,
+            fold_marker: None,
+            fold_summary: None,
+            severity: None,
+            diff_sign: None,
+            is_virtual: false,
+            relative,
+        };
+        assert_eq!(format_gutter_text(&row(None), 3, true, true), "    42   ");
+        assert_eq!(
+            format_gutter_text(&row(Some(7)), 3, true, true),
+            "     7   "
+        );
+        for relative in [None, Some(7), Some(120)] {
+            assert_eq!(
+                format_gutter_text(&row(relative), 3, true, true)
+                    .chars()
+                    .count(),
+                gutter_cells(3, true),
+                "{relative:?}"
+            );
+        }
+        // `number` off blanks the digits whatever `relativenumber` says.
+        assert_eq!(format_gutter_text(&row(Some(7)), 0, true, false).trim(), "");
+    }
+
     #[test]
     fn gutter_text_format_renders_padding_and_default_chars() {
         let meta = GutterLineMeta {
@@ -4766,6 +4814,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         // {sev}{diff}{pad}{num:>3} {fold} = "  " + " " + "  1" + " "
         // + " " + " " = "     1   " (9 chars): the leading pad is
@@ -4787,6 +4836,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         // {sev}{diff}{pad}{num:>3} {fold} = "  " + " " + " 42" + " "
         // + "▸" + " " = "    42 ▸ " (9 chars): the glyph sits AFTER the
@@ -4810,6 +4860,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         let with_summary = GutterLineMeta {
             fold_summary: Some((lattice_host::folds::fold_summary_text(4), 0x6c7086)),
@@ -4832,6 +4883,7 @@ mod tests {
             severity: Some(('E', 0xff0000)),
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         // 'E' + ' ' (diff) + ' ' (pad) + "10" + ' ' + ' ' (fold) + ' '
         // = "E  10   ".
@@ -4848,6 +4900,7 @@ mod tests {
             severity: None,
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
+            relative: None,
         };
         // D.3.d.2: ' ' (sev) + '+' (diff) + ' ' (pad) + "10" + ' '
         // + ' ' (fold) + ' ' = " + 10   ".
@@ -4868,6 +4921,7 @@ mod tests {
             severity: Some(('E', 0xff0000)),
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
+            relative: None,
         };
         assert_eq!(format_gutter_text(&meta, 2, false, true), " 10   ");
         // The reserved (default) form keeps both sign cells.
@@ -4893,6 +4947,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         let text = format_gutter_text(&meta, 3, true, true); // "   42 ▸ "
         let runs = build_gutter_runs(&text, &meta, gpui::font("monospace"), true);

@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅; GD.4–GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅; GD.4, GD.5, GD.6b, GD.6c, GD.7–GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -229,12 +229,31 @@ macOS option-as-meta.
 - Expanded command band: syntax spans, caret in place.
 - Command-line hints: `press a chord`, `(chord)`, `(n/m)`.
 
-### GD.6 📝 — buffer text paint
+### GD.6 — buffer text paint
 
-- LSP semantic tokens, including the `deprecated` strikethrough.
-- `relativenumber`.
-- Document-highlight read / write / text kinds.
-- Substitute-preview strikethrough; current-match foreground.
+Split when the slice started: the four items turned out to live in three
+different places.
+
+**GD.6a ✅ — `relativenumber`** (2026-10-11). Renderer-only. The gutter row
+carries an optional distance, measured from the pane's own cursor (an inactive
+pane's, not the focused one's), blank on the cursor's line and off on a
+multibuffer, as in the TUI. Tested at the formatter: the distance is printed in
+the same cells the number was. Not seen in a window.
+
+**GD.6b 📝 — LSP semantic tokens**, including the `deprecated` strikethrough.
+The TUI merges semantic tokens into its spans at render time
+(`compose_pane_lines`). The GUI paints text from the host-built cell matrix and
+has no equivalent merge point. **Design decision before starting:** bake the
+tokens into the matrix host-side (one implementation, both peers, and the TUI's
+render-time merge is retired) or add a GUI-side merge. The first is the shared
+content layer the parity rule asks for; it also puts semantic tokens into the
+matrix's cache key, which is the part to get right.
+
+**GD.6c 📝 — highlight kinds and strikethrough.** Document-highlight
+read / write / text need the host's overlay worker to carry the kind
+(`OverlayLayer::DocHighlight` has none). Substitute-preview strikethrough and
+the current match's foreground need a per-run text attribute on an overlay that
+is currently a background quad.
 
 ### GD.7 📝 — terminal, modeline, scaled rows
 

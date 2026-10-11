@@ -15,6 +15,8 @@
   which is most noticeable with a key held down.
 
 ### Fixed
+- **GUI: `:set relativenumber` works.** The window's gutter always showed
+  absolute line numbers.
 - **GUI: closing the window no longer discards unsaved work.** The close
   button and Cmd+Q closed the window without asking the editor. They now
   behave like `:qa`: with an unsaved buffer the window stays open and the

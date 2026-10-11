@@ -36,6 +36,9 @@ use lattice_host::render_state::RenderState;
 pub struct PaneOptions {
     /// `:set number` — whether to reserve line-number digits in the gutter.
     pub show_line_numbers: bool,
+    /// `:set relativenumber` — show distance from the cursor line instead of
+    /// the line number, except on the cursor's own line.
+    pub relative_line_numbers: bool,
     /// `:set cursorline` / `current-line-highlight-mode`.
     pub cursorline: bool,
     /// `:set signcolumn` — whether the two sign cells are reserved.
@@ -54,6 +57,8 @@ impl PaneOptions {
     pub fn for_pane(rs: &RenderState, buffer_id: BufferId) -> Self {
         Self {
             show_line_numbers: *rs.resolved_option_for::<lattice_config::Number>(buffer_id),
+            relative_line_numbers: *rs
+                .resolved_option_for::<lattice_config::RelativeNumber>(buffer_id),
             cursorline: rs.current_line_highlight_for(buffer_id),
             sign_column: rs
                 .resolved_option_for::<lattice_config::SignColumnOption>(buffer_id)
@@ -91,11 +96,13 @@ mod tests {
         // fallback.
         let mut off = ResolvedOptions::new();
         off.insert::<lattice_config::Number>(false);
+        off.insert::<lattice_config::RelativeNumber>(false);
         off.insert::<lattice_config::CursorLine>(false);
         off.insert::<lattice_config::SignColumnOption>(lattice_config::SignColumn::No);
         off.insert::<lattice_config::core_options::IndentGuidesActive>(false);
         let mut on = ResolvedOptions::new();
         on.insert::<lattice_config::Number>(true);
+        on.insert::<lattice_config::RelativeNumber>(true);
         on.insert::<lattice_config::CursorLine>(true);
         on.insert::<lattice_config::SignColumnOption>(lattice_config::SignColumn::Yes);
         on.insert::<lattice_config::core_options::IndentGuidesActive>(true);
@@ -126,6 +133,10 @@ mod tests {
             "signcolumn is per-pane too"
         );
         assert!(!a.indent_guides_active && b.indent_guides_active);
+        assert!(
+            !a.relative_line_numbers && b.relative_line_numbers,
+            "and so is relativenumber"
+        );
         assert_ne!(a, b, "two buffers, two answers — the whole point");
     }
 }

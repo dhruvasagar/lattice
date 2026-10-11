@@ -496,13 +496,11 @@ impl GpuiApp {
         let _ = editor.activate_major_for_buffer_kind(doc_id, BufferKind::Document);
         editor.publish_document_opened_for_active();
         editor.ensure_subsystem_buffers();
-        let workspace_root = lattice_core::project::root_from_cwd();
-        let _ = editor.load_persistent_config(workspace_root.as_deref());
-        editor.apply_per_language_toml_overrides();
-        // built-ins 2026-06-13: load embedded + user snippet packs
-        // once at startup (parity with the TUI runtime). Quiet —
-        // logs, no echo.
-        editor.load_snippets_at_startup();
+        // The user's environment — persistent config, per-language
+        // overrides, snippet packs — is NOT loaded here. `window::run` does
+        // that through `load_user_environment`, so a `GpuiApp` built by a
+        // test never reads the developer's `~/.config/lattice`. Same split as
+        // the TUI's `App::new` / `runtime::run`.
         // Initial RS publish so `app.ad()` returns boot state.
         editor.publish_render_state();
 
@@ -746,6 +744,68 @@ impl GpuiApp {
     // `rebuild_gpui_theme` runs post-actor against the published
     // RS theme.
 
+    /// Load what belongs to the user rather than to the editor: persistent
+    /// config (TOML), per-language overrides, and the snippet packs.
+    ///
+    /// Called once by `window::run`, before the first frame. Kept out of
+    /// [`Self::new`] for the reason the TUI keeps it out of `App::new`: a
+    /// test that builds an app must get the editor's defaults, not whatever
+    /// the developer has in `~/.config/lattice` — a colour scheme there was
+    /// enough to change what a theme assertion saw.
+    ///
+    /// The signals the config load raises (a `ThemeChanged` from a
+    /// `colorscheme` line, an `LspConfigChanged`) are handled. Before GD.1
+    /// they were dropped, and only the theme was recovered, by an
+    /// unconditional rebuild afterwards.
+    pub fn load_user_environment(&mut self) {
+        let workspace_root = lattice_core::project::root_from_cwd();
+        let signals = self.mutate_editor_with(move |e| {
+            let signals = e.load_persistent_config(workspace_root.as_deref());
+            e.apply_per_language_toml_overrides();
+            // After config, so `snippet_dirs` overrides apply. Quiet: logs,
+            // no echo.
+            e.load_snippets_at_startup();
+            signals
+        });
+        for signal in signals {
+            self.handle_renderer_signal(signal);
+        }
+    }
+
+    /// Whether the editor has asked to quit.
+    ///
+    /// A published read. The window checks it wherever control returns to
+    /// it — after a key, after a mouse event, and on every repaint wake —
+    /// because a quit can be raised by any of them (a click on a `:q` link,
+    /// an async path), not only by a keystroke.
+    pub fn should_quit(&self) -> bool {
+        self.render_state.load().lifecycle.should_quit
+    }
+
+    /// Apply renderer-owned effects that landed with no keystroke in flight.
+    ///
+    /// An async picker accept, the fill target and the picker's delete verb
+    /// run off the renderer; what they cannot apply themselves they queue on
+    /// the editor. A keystroke's dispatch tail drains that queue — but an
+    /// async result has no keystroke, and waiting for the next one is the
+    /// "it works once I press something" bug. The window calls this from its
+    /// repaint wake.
+    ///
+    /// Costs nothing when the queue is empty: the check is a published
+    /// read, and the actor is crossed only when it says there is work.
+    /// Returns whether anything was applied.
+    pub fn drain_idle_renderer_effects(&mut self) -> bool {
+        if !self.render_state.load().lifecycle.renderer_effects_pending {
+            return false;
+        }
+        let queued = self.mutate_editor_with(|e| e.drain_pending_renderer_effects());
+        let any = !queued.is_empty();
+        for effect in queued {
+            self.apply_effect_gpui(effect);
+        }
+        any
+    }
+
     /// Renderer-side handler for the [`RendererSignal`] stream
     /// the host emits from option cascades + mode lifecycle
     /// helpers. Phase 5.7.B.7 wiring -- mirrors the TUI peer's
@@ -770,9 +830,7 @@ impl GpuiApp {
             // visibly recolor the window on the next frame.
             RendererSignal::ThemeChanged => {
                 self.rebuild_gpui_theme();
-                tracing::debug!(
-                    "ThemeChanged signal: rebuild_gpui_theme called (host_theme→GpuiTheme mapping is a stub for now)"
-                );
+                tracing::debug!("ThemeChanged signal: GPUI theme cache rebuilt");
             }
             // `editor.should_quit` was set alongside the signal
             // emission (see `Action::Quit` in `Editor::dispatch`).
@@ -783,19 +841,24 @@ impl GpuiApp {
             RendererSignal::Quit => {
                 tracing::debug!("Quit signal: editor.should_quit set; binary polls per-event");
             }
-            // The TUI peer's file-tree buffers embed nerd-font
-            // glyphs in their rendered rope, so a palette flip
-            // needs a rope refresh. The GPUI peer doesn't have
-            // file-tree buffers (or rope-side icon embedding)
-            // yet; the toggle is read live from
-            // `editor.host_theme.nerd_fonts` when those views
-            // exist. No-op for now -- the host emits this
-            // alongside `ThemeChanged` so renderers that don't
-            // track file-tree state can drop it.
+            // File-tree buffers embed their icons in the rendered rope, so a
+            // palette flip needs each tree re-rendered — otherwise the tree
+            // keeps the old glyphs until something else redraws it, and with
+            // `ui.nerd_fonts` turned off on an unpatched font those are `?`
+            // boxes (the icon-degradation rule). The two palettes are the
+            // same cell width, so nothing else moves. One crossing for all
+            // trees; the option is read in the actor, where it was just set.
             RendererSignal::NerdFontsToggled => {
-                tracing::debug!(
-                    "NerdFontsToggled signal: no file-tree buffers in GPUI peer; no-op"
-                );
+                self.mutate_editor(|e| {
+                    let nerd_fonts = e
+                        .config
+                        .get_typed::<lattice_host::ui::theme_options::UiNerdFonts>()
+                        .map(|v| *v)
+                        .unwrap_or(false);
+                    for id in e.buffers.file_tree_ids() {
+                        e.set_file_tree_nerd_fonts(id, nerd_fonts);
+                    }
+                });
             }
             // The fan-out body migrated to
             // `Editor::fan_out_did_change_configuration` in
@@ -830,12 +893,12 @@ impl GpuiApp {
                 );
                 let (_id, mode_signals) =
                     self.mutate_editor_with(move |e| e.display_buffer(content, category));
-                // Mode-activate signals don't recurse meaningfully
-                // for the popup paths (no further DisplayBuffer);
-                // drain through the handler so any ThemeChanged
-                // etc. still propagates.
-                for s in mode_signals {
-                    tracing::debug!(signal = ?s, "popup mode-activate cascade signal");
+                // The cascade from activating the displayed buffer's
+                // modes. These were logged and dropped; a mode whose
+                // activation changes the theme or an LSP setting then
+                // took effect in the TUI and not here.
+                for signal in mode_signals {
+                    self.handle_renderer_signal(signal);
                 }
             }
         }
@@ -1598,11 +1661,14 @@ impl GpuiApp {
             Effect::PrevDiagnostic => self.mutate_editor(|e| e.do_prev_diagnostic()),
             // Phase 5.8.AF.3: `:reload-snippets` host-side.
             Effect::ReloadSnippets => self.mutate_editor(|e| e.do_reload_snippets()),
-            // Phase 5.8.AF.3: `:toggle-mode` host-side. Returned
-            // bool flags an unknown-mode-name miss (the host has
-            // already echoed); GPUI has no further fan-out.
+            // `:toggle-mode`, host-side. What comes back is the mode's
+            // activation cascade (an unknown name has already been echoed
+            // by the host and returns none).
             Effect::ToggleMode { mode_name } => {
-                let _ = self.mutate_editor_with(move |e| e.toggle_mode_by_name(&mode_name));
+                let signals = self.mutate_editor_with(move |e| e.toggle_mode_by_name(&mode_name));
+                for signal in signals {
+                    self.handle_renderer_signal(signal);
+                }
             }
             // Phase 5.8.AF.3: `:g` / `:v` host-side. Body effects
             // are drained through `apply_effect_gpui` so any
@@ -1624,6 +1690,11 @@ impl GpuiApp {
                 });
                 for eff in std::mem::take(&mut out.effects) {
                     self.apply_effect_gpui(eff);
+                }
+                // The body ran once per matching line; whatever signals
+                // those runs raised are this command's.
+                for signal in std::mem::take(&mut out.renderer_signals) {
+                    self.handle_renderer_signal(signal);
                 }
             }
             // Phase 5.8.AF.3: `:picker <source>` host-side.
@@ -1936,6 +2007,105 @@ mod tests {
             e.document.snapshot().buffer.as_string()
         });
         assert_eq!(origin_text, "origin\n", "and not in the buffer it began in");
+    }
+
+    /// GD.1 — an effect that landed with no keystroke is applied with none.
+    ///
+    /// The async picker accept and its peers queue what they cannot apply
+    /// off the renderer. This peer drained that queue only in a keystroke's
+    /// dispatch tail, so a buffer opened by an async accept appeared when the
+    /// user next pressed a key. The window now drains it from its repaint
+    /// wake, through this method.
+    ///
+    /// Tested the way it fails: nothing is dispatched between the effect
+    /// being queued and the assertion.
+    #[test]
+    fn a_queued_renderer_effect_is_applied_without_a_keypress() {
+        let path = std::env::temp_dir().join(format!(
+            "lattice-gd1-idle-effect-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, "opened while idle\n").expect("temp file writes");
+
+        let mut app = GpuiApp::new(Document::from_text("origin\n"));
+        assert!(
+            !app.drain_idle_renderer_effects(),
+            "precondition: nothing queued, nothing to do"
+        );
+
+        // What an off-renderer path does: queue, then publish.
+        app.editor
+            .pending_renderer_effects
+            .push(lattice_grammar::Effect::OpenBuffer {
+                path: Some(path.clone()),
+                force: false,
+            });
+        app.editor.publish_render_state();
+
+        let applied = app.drain_idle_renderer_effects();
+        let _ = std::fs::remove_file(&path);
+        assert!(applied, "the published flag said there was work");
+        assert_eq!(
+            app.editor.document.snapshot().buffer.as_string(),
+            "opened while idle\n",
+            "the queued open ran, with no action dispatched"
+        );
+
+        // And once drained, a repaint wake costs no actor crossing at all —
+        // this runs on every wake, including the ones a keystroke causes.
+        let before = actor_calls::snapshot();
+        assert!(!app.drain_idle_renderer_effects());
+        assert_eq!(
+            actor_calls::snapshot() - before,
+            0,
+            "an empty queue is free"
+        );
+    }
+
+    /// GD.1 — toggling `ui.nerd_fonts` re-renders every file tree.
+    ///
+    /// A tree publishes its icons from a per-buffer palette flag. This peer's
+    /// `NerdFontsToggled` arm was a no-op with a comment saying it had no
+    /// file-tree buffers, which stopped being true long ago: the tree kept
+    /// its old glyphs after the toggle, and turning nerd fonts OFF on an
+    /// unpatched font is exactly when those glyphs are unreadable boxes.
+    #[test]
+    fn toggling_nerd_fonts_reaches_every_file_tree() {
+        use lattice_listing::file_tree::modes::FileTreeNerdFonts;
+
+        let dir = std::env::temp_dir().join(format!("lattice-gd1-tree-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("a.txt"), "a\n").expect("temp file");
+
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        let root = dir.clone();
+        let _ = app.mutate_editor_with(move |e| e.do_open_file_tree(Some(root)));
+        let trees = app.editor.buffers.file_tree_ids();
+        assert_eq!(trees.len(), 1, "test premise: one file tree is open");
+        let tree = trees[0];
+        let palette = |app: &GpuiApp| {
+            app.editor
+                .buffer_locals
+                .get(&tree)
+                .and_then(|l| l.get::<FileTreeNerdFonts>())
+                .map(|v| v.0)
+        };
+        let before = palette(&app);
+
+        let want = !before.unwrap_or(false);
+        let setting = format!("ui.nerd_fonts={}", if want { "on" } else { "off" });
+        app.editor
+            .config
+            .parse_and_set_command(&setting)
+            .expect("option sets");
+        app.handle_renderer_signal(RendererSignal::NerdFontsToggled);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            palette(&app),
+            Some(want),
+            "the tree's palette follows the option (was {before:?})"
+        );
     }
 
     /// GD.0 — the completion popup's keymap layer follows the popup.

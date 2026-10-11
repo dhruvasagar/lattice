@@ -1320,6 +1320,7 @@ impl Editor {
                 should_quit: self.should_quit,
                 pending_redraw: self.pending_redraw,
                 terminal_width: self.terminal_width,
+                renderer_effects_pending: !self.pending_renderer_effects.is_empty(),
             }),
             // T.4 (theme-system): snapshot the resolved read table +
             // builtin ids so renderers read `resolved.get(ids.x)`.

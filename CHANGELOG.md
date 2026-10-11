@@ -12,6 +12,12 @@
   was started from.
 - **GUI: typing is one round-trip to the editor core per character**, down
   from four, and the window no longer does editor work while painting a frame.
+- **GUI: results that arrive on their own no longer wait for a keypress.** A
+  file opened by a picker whose accept finished in the background appeared
+  only when you next pressed a key, and so did a quit raised by a mouse
+  click.
+- **GUI: toggling `ui.nerd_fonts` redraws the file tree's icons** instead of
+  leaving the old glyphs in place.
 - **The keys in `:plugins` work on a plugin that failed.** `b`, `r`, `u` and
   `<CR>` did nothing on an entry under *Failed to load* or *Build failed* —
   the plugins you most want to rebuild were the ones no key reached, and

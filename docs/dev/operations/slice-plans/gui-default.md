@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅; GD.0b, GD.1–GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.1 ✅; GD.0b, GD.2–GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -112,7 +112,7 @@ host-complete (no renderer-coupled arm in either peer) — as a property the
 `Effect` type states, not a list in `dispatch_fused` that drifts.
 `a_motion_is_at_most_three_actor_crossings` goes 3 → 1 when it lands.
 
-### GD.1 📝 — idle drain, quit, and dropped signals
+### GD.1 ✅ — idle drain, quit, and dropped signals
 
 - Idle wake drains `pending_renderer_effects` (TUI: `drain_async_pending`). Off
   the render path: the bridge task does it, not `render`.
@@ -126,6 +126,25 @@ host-complete (no renderer-coupled arm in either peer) — as a property the
 
 Test it the way it fails: the async result is visible with NO further action
 dispatched.
+
+Landed 2026-10-11.
+
+- The host publishes `lifecycle.renderer_effects_pending`. The window's repaint
+  wake reads it and crosses the actor only when it is set, so the drain is free
+  on the wakes a keystroke causes. The TUI still crosses on every idle repaint
+  (`drain_async_pending`); it can adopt the flag, and GD.2 is where both peers
+  get one test for it.
+- Quit is checked on every repaint wake as well as after a key.
+- `GpuiApp::new` no longer loads the user's config or snippets;
+  `window::run` calls `load_user_environment`, which applies the load's
+  signals.
+- Tests: a queued effect is applied with nothing dispatched; a nerd-font toggle
+  reaches the open file tree.
+
+Not tested: the quit-on-wake path and the three signal cascades (`:toggle-mode`,
+`:g`, `DisplayBuffer`) — each is now a call to the existing signal handler, and
+needs a mode whose activation raises a signal to observe. Not seen: any of it in
+a window.
 
 ### GD.2 📝 — peer conformance suite
 

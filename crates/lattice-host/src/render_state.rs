@@ -2435,6 +2435,13 @@ pub struct LifecycleRenderState {
     pub should_quit: bool,
     pub pending_redraw: bool,
     pub terminal_width: Option<u16>,
+    /// Renderer-owned effects are queued on the editor
+    /// (`Editor::pending_renderer_effects`) waiting for a peer to drain
+    /// them. Published so a peer woken by an idle repaint can tell, with a
+    /// wait-free read, whether there is anything to cross the actor seam
+    /// for — an async picker accept or a buffer open that landed with no
+    /// keystroke in flight has no dispatch tail to ride.
+    pub renderer_effects_pending: bool,
 }
 
 /// Translator inputs for the renderer's input loop.

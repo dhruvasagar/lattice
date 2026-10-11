@@ -1144,7 +1144,9 @@ pub(crate) struct EditorView {
 
 impl EditorView {
     fn new(document: Document, cx: &mut Context<Self>) -> Self {
-        let app = GpuiApp::new(document);
+        let mut app = GpuiApp::new(document);
+        // Before the first frame, so it already reflects the user's config.
+        app.load_user_environment();
         // X1b: spawn the worker-paint-request bridge. The background
         // workers (cells / display-matrix, overlay) fire
         // `editor.paint_request.notify_one()` after every
@@ -1185,7 +1187,17 @@ impl EditorView {
         cx.spawn(async move |this, cx| {
             loop {
                 paint_request.notified().await;
-                if this.update(cx, |_view, cx| cx.notify()).is_err() {
+                let alive = this.update(cx, |view, cx| {
+                    // Two things a repaint wake can carry that a paint alone
+                    // does not finish: renderer-owned effects an async path
+                    // queued (applied here, off `render`, and only when the
+                    // published flag says there are any), and a quit raised
+                    // by something other than a key.
+                    view.app.drain_idle_renderer_effects();
+                    view.quit_if_requested(cx);
+                    cx.notify();
+                });
+                if alive.is_err() {
                     break;
                 }
             }
@@ -1277,15 +1289,25 @@ impl EditorView {
         );
         cx.stop_propagation();
         cx.notify();
-        // Slice 3c.final.B (group 6): lifecycle read via published
-        // substate.
-        if self.app.render_state.load().lifecycle.should_quit {
-            tracing::info!("lattice-gpui: editor.should_quit set; closing application");
-            // Before `quit`: on macOS it may end the process without
-            // returning to `main`, which is where the TUI's flush runs.
-            lattice_host::flush_plugin_stores();
-            cx.quit();
+        self.quit_if_requested(cx);
+    }
+
+    /// Close the application if the editor has asked to quit.
+    ///
+    /// Called wherever control returns to the window: after a key, and on
+    /// every repaint wake — which covers a quit raised by a mouse click or
+    /// an async path, since both end in a publish. It used to be checked
+    /// only at the end of `on_key_down`, so such a quit sat until the user
+    /// pressed something.
+    fn quit_if_requested(&mut self, cx: &mut Context<Self>) {
+        if !self.app.should_quit() {
+            return;
         }
+        tracing::info!("lattice-gpui: editor.should_quit set; closing application");
+        // Before `quit`: on macOS it may end the process without
+        // returning to `main`, which is where the TUI's flush runs.
+        lattice_host::flush_plugin_stores();
+        cx.quit();
     }
 }
 

@@ -21,6 +21,10 @@
   than fixed terminal ones. One thing is not carried over yet: the terminal
   used to strike through deprecated symbols and italicise `static` ones, and
   that is missing in both until a follow-up.
+- **Terminal: a code block or cursor line holding non-ASCII text is tinted
+  to the pane's edge.** The fill was measured in bytes, so a row of
+  box-drawing characters (a diagram in a fenced block) left a ragged strip
+  of the terminal's own background down the right-hand side.
 - **GUI: file-tree, oil and help panes are labelled in the modeline**
   (`[tree] <root>`, `[oil] <dir>`, `[help] <title>`), as they are in the
   terminal. The oil label no longer ends in `[+]` when the listing has

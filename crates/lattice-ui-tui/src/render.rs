@@ -3924,6 +3924,28 @@ fn truncate_to(s: &str, max: usize) -> String {
     }
 }
 
+/// Extend a row's background to `width` columns with trailing spaces,
+/// so a full-row tint (the cursor line, a code block) reaches the pane
+/// edge rather than stopping where the text does.
+///
+/// Measured in terminal COLUMNS. This counted bytes, which agree with
+/// columns only for ASCII: a box-drawing character is three bytes and
+/// one column, so a row of `─` got two columns too little padding per
+/// character and the terminal's own background showed through the
+/// tail — a ragged hole down the right of any code block holding a
+/// diagram. A wide character has the opposite sign and is handled by
+/// the same measure.
+fn pad_row_background(body: &mut Vec<Span<'static>>, width: usize, bg: Color) {
+    let used: usize = body.iter().map(|s| s.width()).sum();
+    let pad_width = width.saturating_sub(used);
+    if pad_width > 0 {
+        body.push(Span::styled(
+            " ".repeat(pad_width),
+            TuiStyle::default().bg(bg),
+        ));
+    }
+}
+
 /// Total display width (char count) of a run list.
 fn runs_width(runs: &[ModelineSeg]) -> usize {
     runs.iter().map(|s| s.width()).sum()
@@ -5682,14 +5704,7 @@ pub(crate) fn compose_pane_lines(
                     span.style = span.style.bg(bg);
                 }
             }
-            let used: usize = body.iter().map(|s| s.content.len()).sum();
-            let pad_width = (buffer_w as usize).saturating_sub(used);
-            if pad_width > 0 {
-                body.push(Span::styled(
-                    " ".repeat(pad_width),
-                    TuiStyle::default().bg(bg),
-                ));
-            }
+            pad_row_background(&mut body, buffer_w as usize, bg);
         }
         // LSP severity cell (Phase 4.1.d.iii). One cell pre-
         // pended to the gutter; severity glyph + colour when a
@@ -5749,14 +5764,7 @@ pub(crate) fn compose_pane_lines(
         let body = match code_block_tint_bg(view, ctx.buffer_id, line_idx) {
             Some(bg) => {
                 let mut body = apply_diff_tint(body, bg);
-                let used: usize = body.iter().map(|s| s.content.len()).sum();
-                let pad_width = (buffer_w as usize).saturating_sub(used);
-                if pad_width > 0 {
-                    body.push(Span::styled(
-                        " ".repeat(pad_width),
-                        TuiStyle::default().bg(bg),
-                    ));
-                }
+                pad_row_background(&mut body, buffer_w as usize, bg);
                 body
             }
             None => body,
@@ -12668,6 +12676,36 @@ mod tests {
             before, after,
             "preview syntax color tracks the active theme on TUI"
         );
+    }
+
+    /// A tinted row is padded to the pane edge in columns. The rows that
+    /// showed the bug are a diagram's: box-drawing characters, three
+    /// bytes and one column each.
+    #[test]
+    fn a_tinted_row_is_padded_to_the_edge_in_columns_not_bytes() {
+        let width_of = |body: &[Span<'static>]| -> usize { body.iter().map(|s| s.width()).sum() };
+
+        let mut ascii = vec![Span::raw("abc")];
+        pad_row_background(&mut ascii, 10, Color::Blue);
+        assert_eq!(width_of(&ascii), 10);
+
+        // 6 columns, 18 bytes. Counted in bytes this row is already
+        // "past" a 10-column edge and gets no padding at all.
+        let mut rule = vec![Span::raw("┌────┐")];
+        pad_row_background(&mut rule, 10, Color::Blue);
+        assert_eq!(width_of(&rule), 10);
+        assert_eq!(rule.last().unwrap().content.as_ref(), "    ");
+        assert_eq!(rule.last().unwrap().style.bg, Some(Color::Blue));
+
+        // A wide character is two columns: no over-padding either.
+        let mut wide = vec![Span::raw("日本")];
+        pad_row_background(&mut wide, 10, Color::Blue);
+        assert_eq!(width_of(&wide), 10);
+
+        // Already at or past the edge: left alone.
+        let mut full = vec![Span::raw("0123456789ab")];
+        pad_row_background(&mut full, 10, Color::Blue);
+        assert_eq!(full.len(), 1);
     }
 
     /// GD.6b: semantic tokens reach the terminal through the host's

@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.7a ✅, GD.8a ✅; GD.4, GD.5, GD.6b, GD.6c, GD.7b, GD.7c, GD.8b, GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.5a ✅, GD.7a ✅, GD.8a ✅; GD.4, GD.5b, GD.6b, GD.6c, GD.7b, GD.7c, GD.8b, GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -221,13 +221,30 @@ character typed. Needs a GPUI `InputHandler`. Establish first (by running it)
 what `Keystroke.key` delivers for shifted symbols and non-US layouts, and
 macOS option-as-meta.
 
-### GD.5 📝 — completion and command-line paint
+### GD.5 — completion and command-line paint
 
-- Insert-completion popup anchored at the cursor; docs panel beside it.
+**GD.5a ✅ — the completion popup at the cursor** (2026-10-11). The
+insert-completion popup was pinned to the window's top-right corner. It is
+anchored to the completion's anchor (where the replaced text starts, so it does
+not slide as you type), below the row or above it when it does not fit, and
+kept inside the window. The docs panel sits beside it, right if there is room
+and left otherwise. The placement is one pure function shared with the hover
+popup, which is what the tests cover.
+
+Not seen in a window, and two things about it are approximate by construction:
+the popup's size is estimated before layout (candidate rows + footer), and the
+horizontal origin is `pane padding + byte × cell width` — it does not add the
+gutter's width or a split pane's offset. The hover popup has always had that
+second limitation; sharing the function means fixing it once fixes both, and it
+needs eyes.
+
+**GD.5b 📝:**
+
 - Ghost text for the focused candidate.
 - `:` line caret at the cursor's byte, not appended to the row.
 - Expanded command band: syntax spans, caret in place.
 - Command-line hints: `press a chord`, `(chord)`, `(n/m)`.
+- Popup origin accounts for the gutter and the pane's position.
 
 ### GD.6 — buffer text paint
 

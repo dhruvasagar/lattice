@@ -15,6 +15,9 @@
   which is most noticeable with a key held down.
 
 ### Fixed
+- **GUI: the completion popup opens at the text you are completing**
+  instead of in the window's top-right corner, with its documentation panel
+  beside it.
 - **GUI: `<Esc>` inside a focused popup cancels a search there first**
   instead of closing the popup with the search half-typed. Moving between
   splits with `<C-w>` also uses the window's real width now.

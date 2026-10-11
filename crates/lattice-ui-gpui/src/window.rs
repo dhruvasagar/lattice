@@ -103,6 +103,62 @@ use crate::{GpuiApp, GpuiTheme};
 /// left of GPUI's top-right candidate popup. Width matches the candidate
 /// popup (`max_w(px(360.0))`); height grows to the doc body, capped.
 pub(crate) const COMPLETION_DOCS_W_PX: f32 = 360.0;
+
+/// The insert-completion popup's maximum width, and how many candidates it
+/// shows at once. Both feed its placement estimate as well as its layout.
+const COMPLETION_W_PX: f32 = 360.0;
+const COMPLETION_MAX_VISIBLE: usize = 10;
+
+/// Where a popup anchored to a text cell goes: `(top, left)` in window
+/// pixels.
+///
+/// Directly below the cell's row when the popup fits there; above the row
+/// when it does not; and when neither side has room, pinned to whichever has
+/// more, so it clips against the window rather than covering the row it
+/// belongs to more than it must. Horizontally it starts at the cell and is
+/// pulled left only as far as needed to stay inside the window.
+///
+/// Shared by the hover popup and the insert-completion popup, which is what
+/// makes them agree about which side of the cursor a popup appears on.
+fn anchored_popup_origin(
+    cell_top_px: f32,
+    row_px: f32,
+    cell_left_px: f32,
+    (popup_w_px, popup_h_px): (f32, f32),
+    (viewport_w_px, viewport_h_px): (f32, f32),
+) -> (f32, f32) {
+    let below_top = cell_top_px + row_px;
+    let above_top = cell_top_px - popup_h_px;
+    let top = if below_top + popup_h_px <= viewport_h_px {
+        below_top
+    } else if above_top >= 0.0 {
+        above_top
+    } else if viewport_h_px - below_top >= cell_top_px {
+        (viewport_h_px - popup_h_px).max(0.0)
+    } else {
+        0.0
+    };
+    let left = cell_left_px.min((viewport_w_px - popup_w_px).max(0.0));
+    (top, left)
+}
+
+/// The left edge of a panel shown beside a box: to the box's right when it
+/// fits in the window, otherwise to its left, otherwise against the window's
+/// left edge.
+fn side_panel_left(
+    box_left_px: f32,
+    box_w_px: f32,
+    panel_w_px: f32,
+    gap_px: f32,
+    viewport_w_px: f32,
+) -> f32 {
+    let right_of = box_left_px + box_w_px + gap_px;
+    if right_of + panel_w_px <= viewport_w_px {
+        right_of
+    } else {
+        (box_left_px - gap_px - panel_w_px).max(0.0)
+    }
+}
 pub(crate) const COMPLETION_DOCS_MAX_ROWS: u32 = 16;
 
 pub(crate) const POPUP_MAX_W_PX: f32 = 900.0;
@@ -4225,7 +4281,7 @@ impl Render for EditorView {
             .as_deref()
             .filter(|ic| !ic.rendered.is_empty())
             .map(|ic| {
-                let max_visible = 10usize;
+                let max_visible = COMPLETION_MAX_VISIBLE;
                 let total = ic.rendered.len();
                 let window_start = ic
                     .selected
@@ -4303,7 +4359,7 @@ impl Render for EditorView {
                 div()
                     .flex()
                     .flex_col()
-                    .max_w(px(360.0))
+                    .max_w(px(COMPLETION_W_PX))
                     .p_2()
                     .bg(rgb(theme.popup_background))
                     .text_color(rgb(theme.foreground))
@@ -5511,8 +5567,44 @@ impl Render for EditorView {
                     .child(overlay),
             );
         }
-        if let Some(overlay) = completion_overlay {
-            root = root.child(div().absolute().top_8().right_4().child(overlay));
+        // GD.5a: the candidate popup sits at the text it completes, not in a
+        // corner of the window. Anchored to the completion's ANCHOR (where the
+        // replaced text starts), not the live cursor, so the box does not
+        // slide right with every character typed. Same placement rule as the
+        // hover popup: below the row, above when it does not fit, kept inside
+        // the window.
+        //
+        // The popup's size is not known until layout, so it is estimated:
+        // the candidate rows it shows plus its two footer lines and padding,
+        // at its maximum width. An over-estimate only flips it above a row or
+        // pulls it left a little early.
+        let completion_origin: Option<(f32, f32)> = insert_completion
+            .as_deref()
+            .filter(|ic| !ic.rendered.is_empty())
+            .map(|ic| {
+                let ad = self.app.ad();
+                let pane_pad = rem * 0.75;
+                let row_top = tabline_h_px
+                    + pane_pad
+                    + ic.anchor.line.saturating_sub(ad.scroll) as f32 * estimated_row_px;
+                let rows = ic.rendered.len().min(COMPLETION_MAX_VISIBLE) as f32;
+                let height = (rows + 2.0) * estimated_row_px + rem * 1.5;
+                anchored_popup_origin(
+                    row_top,
+                    estimated_row_px,
+                    pane_pad + ic.anchor.byte as f32 * glyph_advance_px,
+                    (COMPLETION_W_PX, height),
+                    (f32::from(viewport_px.width), f32::from(viewport_px.height)),
+                )
+            });
+        if let (Some(overlay), Some((top_px, left_px))) = (completion_overlay, completion_origin) {
+            root = root.child(
+                div()
+                    .absolute()
+                    .top(px(top_px))
+                    .left(px(left_px))
+                    .child(overlay),
+            );
         }
         // NOTIF.1c: the notification stack, bottom-right, attached LAST
         // so nothing can cover it — a notification hidden exactly when
@@ -5525,11 +5617,25 @@ impl Render for EditorView {
             // occluded.
             root = root.child(div().absolute().bottom_8().right_4().child(stack));
         }
-        // PU.5d: docs popup to the LEFT of the candidate popup. The
-        // candidate box is `.right_4()` (16px) wide up to 360px, so the docs
-        // box sits at right = 16 + 360 + 8(gap) = 384px, same `.top_8()`.
-        if let Some(overlay) = completion_docs_overlay {
-            root = root.child(div().absolute().top_8().right(px(384.0)).child(overlay));
+        // PU.5d / GD.5a: the docs popup beside the candidate popup, level
+        // with it — to its right when there is room, otherwise to its left.
+        if let (Some(overlay), Some((top_px, left_px))) =
+            (completion_docs_overlay, completion_origin)
+        {
+            let docs_left = side_panel_left(
+                left_px,
+                COMPLETION_W_PX,
+                COMPLETION_DOCS_W_PX,
+                8.0,
+                f32::from(viewport_px.width),
+            );
+            root = root.child(
+                div()
+                    .absolute()
+                    .top(px(top_px))
+                    .left(px(docs_left))
+                    .child(overlay),
+            );
         }
         // WK.13: the band first, so a popup the user is reading is painted
         // OVER the hint rather than under it. It is bottom-anchored and
@@ -5617,36 +5723,13 @@ impl Render for EditorView {
                     let pane_pad_h = rem * 0.75;
                     let top_origin_px = tabline_h_px + pane_pad_v;
                     let cursor_row_top = top_origin_px + cursor_screen_row * estimated_row_px;
-                    // Prefer placing the popup right below the
-                    // cursor row; flip above when the locked popup
-                    // height wouldn't fit below; if neither side
-                    // fits cleanly, pin to whichever has more room
-                    // and let the popup clip against the window
-                    // (the lock means we can't shrink).
-                    let viewport_h = f32::from(viewport_px.height);
-                    let below_top = cursor_row_top + estimated_row_px;
-                    let above_top = cursor_row_top - popup_h_px;
-                    let fits_below = below_top + popup_h_px <= viewport_h;
-                    let fits_above = above_top >= 0.0;
-                    let top_px = if fits_below {
-                        below_top
-                    } else if fits_above {
-                        above_top
-                    } else {
-                        // Neither side fits — pin to the side with
-                        // more room, clamped to the viewport.
-                        let room_below = viewport_h - below_top;
-                        let room_above = cursor_row_top;
-                        if room_below >= room_above {
-                            (viewport_h - popup_h_px).max(0.0)
-                        } else {
-                            0.0
-                        }
-                    };
-                    let left_px = pane_pad_h + cursor_byte_col * glyph_advance_px;
-                    // Keep the popup within the window's right edge.
-                    let viewport_w = f32::from(viewport_px.width);
-                    let left_px = left_px.min((viewport_w - popup_w_px).max(0.0));
+                    let (top_px, left_px) = anchored_popup_origin(
+                        cursor_row_top,
+                        estimated_row_px,
+                        pane_pad_h + cursor_byte_col * glyph_advance_px,
+                        (popup_w_px, popup_h_px),
+                        (f32::from(viewport_px.width), f32::from(viewport_px.height)),
+                    );
                     root.child(
                         div()
                             .absolute()
@@ -6839,6 +6922,69 @@ mod modeline_tests {
         assert!(super::global_bottom_row_visible(true, false));
         // No picker at all → keep.
         assert!(super::global_bottom_row_visible(false, false));
+    }
+
+    /// GD.5a — a cursor-anchored popup goes below its row, above when it
+    /// must, and stays inside the window.
+    ///
+    /// The insert-completion popup used to sit in the window's top-right
+    /// corner whatever was being completed. It shares this placement with
+    /// the hover popup now.
+    #[test]
+    fn an_anchored_popup_goes_below_then_above_and_stays_in_the_window() {
+        use super::anchored_popup_origin;
+        const ROW: f32 = 20.0;
+        let popup = (300.0, 200.0);
+        let viewport = (1000.0, 600.0);
+
+        assert_eq!(
+            anchored_popup_origin(100.0, ROW, 50.0, popup, viewport),
+            (120.0, 50.0),
+            "room below: directly under the row, at the cell"
+        );
+        assert_eq!(
+            anchored_popup_origin(500.0, ROW, 50.0, popup, viewport),
+            (300.0, 50.0),
+            "no room below: its bottom edge on the row's top"
+        );
+        assert_eq!(
+            anchored_popup_origin(100.0, ROW, 900.0, popup, viewport),
+            (120.0, 700.0),
+            "near the right edge: pulled left to fit"
+        );
+        // Taller than either side: pinned to the roomier one, never off-window.
+        let tall = (300.0, 550.0);
+        assert_eq!(
+            anchored_popup_origin(100.0, ROW, 50.0, tall, viewport).0,
+            50.0
+        );
+        assert_eq!(
+            anchored_popup_origin(500.0, ROW, 50.0, tall, viewport).0,
+            0.0
+        );
+        // A popup wider than the window starts at its left edge.
+        assert_eq!(
+            anchored_popup_origin(100.0, ROW, 50.0, (1200.0, 100.0), viewport).1,
+            0.0
+        );
+    }
+
+    /// GD.5a — the docs panel sits beside the candidate box, on whichever
+    /// side has room.
+    #[test]
+    fn the_docs_panel_sits_beside_the_candidates_where_there_is_room() {
+        use super::side_panel_left;
+        assert_eq!(side_panel_left(100.0, 360.0, 360.0, 8.0, 1000.0), 468.0);
+        assert_eq!(
+            side_panel_left(600.0, 360.0, 360.0, 8.0, 1000.0),
+            232.0,
+            "no room on the right: to the left"
+        );
+        assert_eq!(
+            side_panel_left(200.0, 360.0, 360.0, 8.0, 700.0),
+            0.0,
+            "no room on either side: against the left edge"
+        );
     }
 
     /// GD.7a — every SGR attribute a terminal cell carries is painted.

@@ -850,7 +850,7 @@ Anchor: ../architecture/design.md §5.6 (renderer trait + layered architecture),
 | ~~old 5.5~~ (trait-objected `PaneRenderer` in host) | dropped | Superseded by the Option-E pivot. The registry is correctly renderer-specific; only the lookup is host. The revised 5.6 captures the actual remaining work. |
 | ~~old 5.6~~ (`lattice-render` crate) | dropped | ratatui's pull-based draw and GPUI's retained-mode element tree are structurally different; a common `Frame` / `InputEvent` / `LayoutConstraints` surface buys nothing and constrains both renderers. Revisit only if a real shared primitive emerges (likely §5.6.7's `DocumentRenderer` — would live in `lattice-host::ui`, not a separate crate). |
 | 5.9+           | ⛔     | **Real GPUI**: text rendering, atlas, panes, input, popups. Multiple sub-slices. |
-| 5.last         | ⛔     | **Flip default to GPUI.** Separately scheduled, after parity + a release cycle as opt-in. |
+| 5.last         | 🚧     | **Flip default to GPUI.** Scheduled for 0.9.8 (decided 2026-10-11): parity and the flip in one release, the flip last. Plan: [`slice-plans/gui-default.md`](slice-plans/gui-default.md) (GD.0–GD.9). |
 
 **Decision-making heuristics applied (../architecture/CLAUDE.md):** Best long-term fit beats easy implementation -- extracting the host is months of work; the alternative (drop GPUI on top of the current entangled lattice-ui-tui) would compound the coupling that already needs unwinding. Confirm the plan before non-trivial work -- the 5.0 audit doc IS that confirmation step.
 

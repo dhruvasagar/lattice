@@ -470,7 +470,12 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                         // error it leads to ("no component in this directory")
                         // is what `load_path` deliberately does not record.
                         let detail = build_error.unwrap_or_else(|| crate::error_chain(&err));
-                        loader.record_failure(crate::INIT_PLUGIN_ID, &init_dir, &detail);
+                        loader.record_failure(
+                            crate::INIT_PLUGIN_ID,
+                            &init_dir,
+                            TrustTier::Bundled,
+                            &detail,
+                        );
                     }
                     Err(err) => tracing::debug!(
                         dir = %init_dir.display(),
@@ -695,7 +700,12 @@ async fn install_required_plugins(loader: &std::sync::Arc<crate::PluginLoader>) 
                 );
                 // Same gap as init: a plugin that never produced an artifact
                 // never reaches `load_path`, so nothing recorded it.
-                loader.record_failure(&name, &user_root.join(&name), &error);
+                loader.record_failure(
+                    &name,
+                    &user_root.join(&name),
+                    TrustTier::UserInstalled,
+                    &error,
+                );
             }
         }
     }

@@ -778,6 +778,15 @@ pub struct PluginLoader {
     /// a second return value through every arm to serve one of them would put
     /// the cost on all of them.
     required: Mutex<Vec<pipeline::RequiredSpec>>,
+    /// Where each `require`d plugin was declared to come from, by name — kept
+    /// after `required` is drained.
+    ///
+    /// The `.source` marker is written beside an ARTIFACT, so a plugin whose
+    /// first build failed has none: nothing was staged. Without this, the one
+    /// plugin a user most needs to rebuild from `:plugins` — the one that has
+    /// never built — would answer "no buildable source", its source having
+    /// been named in `init.rs` a minute earlier.
+    declared: Mutex<std::collections::HashMap<String, SourceRecord>>,
     /// WT.4: plugins that tried to load and could not, for `:plugins`.
     ///
     /// In memory, not on disk. A load failure is a fact about *this* boot
@@ -964,6 +973,7 @@ impl PluginLoader {
             building: Mutex::new(std::collections::HashMap::new()),
             building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
+            declared: Mutex::new(std::collections::HashMap::new()),
             failed: Mutex::new(Vec::new()),
         }
     }
@@ -990,6 +1000,7 @@ impl PluginLoader {
             building: Mutex::new(std::collections::HashMap::new()),
             building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
+            declared: Mutex::new(std::collections::HashMap::new()),
             failed: Mutex::new(Vec::new()),
         }
     }
@@ -1113,7 +1124,7 @@ impl PluginLoader {
             // The build error is the cause; "no component in this directory"
             // is only what it led to.
             let detail = build_errors.remove(&plugin_dir).unwrap_or(reason);
-            self.record_failure(&name, &plugin_dir, &detail);
+            self.record_failure(&name, &plugin_dir, tier, &detail);
         }
 
         let mut loaded = 0;
@@ -1158,7 +1169,7 @@ impl PluginLoader {
                         error = %detail,
                         "plugin failed to load; skipped"
                     );
-                    self.record_failure(&plugin.manifest.id, &plugin.dir, &detail);
+                    self.record_failure(&plugin.manifest.id, &plugin.dir, tier, &detail);
                 }
             }
         }
@@ -1653,6 +1664,33 @@ impl PluginLoader {
         rows
     }
 
+    /// `name`'s failure record, if it tried to load this session and could
+    /// not — what lets [`reload`](Self::reload), [`rebuild`](Self::rebuild)
+    /// and [`update`](Self::update) act on a plugin that is not loaded.
+    ///
+    /// Those three used to look in the loaded set alone and answer "not
+    /// loaded" otherwise, which is true and is the whole problem: the plugin
+    /// whose build needs re-running is by definition the one that is not
+    /// there. The record has what a retry needs — where it lives, and the
+    /// tier it loads at.
+    fn failed_load(&self, name: &str) -> Option<FailedLoad> {
+        let failed = self.failed.lock().ok()?;
+        failed.iter().find(|f| f.name == name).cloned()
+    }
+
+    /// Replace the reason on `name`'s failure record, keeping the rest.
+    ///
+    /// A retry that fails in the BUILD never reaches `load_path`, so nothing
+    /// would otherwise update the entry — it would go on showing the error
+    /// from before the user's fix, under a build that had just failed for a
+    /// different reason. A no-op for a plugin with no record: one that is
+    /// loaded and running reports a failed build on its row instead.
+    fn refresh_failure(&self, name: &str, error: &str) {
+        if let Some(f) = self.failed_load(name) {
+            self.record_failure(name, &f.dir, f.tier, error);
+        }
+    }
+
     /// Record (or replace) `name`'s load failure.
     ///
     /// Replaces rather than appends: a `:plugin-reload` that fails again should
@@ -1660,7 +1698,13 @@ impl PluginLoader {
     /// The view is a description of the current state, not a history.
     ///
     /// Pass [`error_chain`]'s output, not `err.to_string()` — see its doc.
-    pub(crate) fn record_failure(&self, name: &str, dir: &std::path::Path, error: &str) {
+    pub(crate) fn record_failure(
+        &self,
+        name: &str,
+        dir: &std::path::Path,
+        tier: TrustTier,
+        error: &str,
+    ) {
         let Ok(mut failed) = self.failed.lock() else {
             // A poisoned mutex here would mean losing a diagnostic, and losing a
             // diagnostic is not worth taking the editor down over — this whole
@@ -1673,6 +1717,7 @@ impl PluginLoader {
         failed.push(FailedLoad {
             name: name.to_string(),
             dir: dir.to_path_buf(),
+            tier,
             error: error.to_string(),
         });
         // Released before publishing: a subscriber's first move is to call
@@ -1854,7 +1899,12 @@ impl PluginLoader {
                     // records nothing — but the build that should have
                     // produced one failed, and that is worth showing.
                     if let Some(error) = build_error {
-                        this.record_failure(&plugin_name(&dir), &dir, &error);
+                        this.record_failure(
+                            &plugin_name(&dir),
+                            &dir,
+                            TrustTier::UserInstalled,
+                            &error,
+                        );
                     }
                 }
             }
@@ -2104,7 +2154,7 @@ impl PluginLoader {
         let outcome = self.load_discovered(&plugin, tier).await;
         match &outcome {
             Ok(_) => self.clear_failure(&plugin.manifest.id),
-            Err(err) => self.record_failure(&plugin.manifest.id, dir, &error_chain(err)),
+            Err(err) => self.record_failure(&plugin.manifest.id, dir, tier, &error_chain(err)),
         }
         outcome
     }
@@ -2156,16 +2206,41 @@ impl PluginLoader {
 
     /// The directory `name` is built in place from, when it is loaded from a
     /// cargo project with no other recorded source.
+    ///
+    /// A plugin that failed to load answers from its failure record: the
+    /// directory is the same one, and "it did not load" is the usual reason
+    /// to be rebuilding it.
     fn in_place_dir(&self, name: &str) -> Option<std::path::PathBuf> {
-        let loaded = self.loaded.lock().ok()?;
-        let record = loaded.iter().find(|r| r.name == name)?;
-        if record.source.is_buildable() {
+        let (source, dir) = self.source_of(name)?;
+        if source.is_buildable() {
             return None;
         }
-        record
-            .source_dir
-            .clone()
-            .filter(|dir| discovery::is_in_place_project(dir))
+        dir.filter(|dir| discovery::is_in_place_project(dir))
+    }
+
+    /// Where `name` came from and where it sits on disk — for a loaded plugin
+    /// from its record, for one that failed to load from the `.source` marker
+    /// beside whatever was staged. `None` when it is neither.
+    fn source_of(&self, name: &str) -> Option<(SourceRecord, Option<std::path::PathBuf>)> {
+        if let Ok(loaded) = self.loaded.lock()
+            && let Some(record) = loaded.iter().find(|r| r.name == name)
+        {
+            return Some((record.source.clone(), record.source_dir.clone()));
+        }
+        let failed = self.failed_load(name)?;
+        // The marker first — it describes what is actually staged. With none
+        // (a first build that never produced an artifact), what `init.rs`
+        // declared this session.
+        let source = match source_record::read(&failed.dir) {
+            SourceRecord::Unknown => self
+                .declared
+                .lock()
+                .ok()
+                .and_then(|d| d.get(name).cloned())
+                .unwrap_or(SourceRecord::Unknown),
+            marked => marked,
+        };
+        Some((source, Some(failed.dir)))
     }
 
     /// Record that `name`'s build failed, with its diagnostics.
@@ -2236,6 +2311,7 @@ impl PluginLoader {
                 .ensure_built_in_place(Arc::new(build::CargoComponentBuilder), &dir, true)
                 .await
             {
+                self.refresh_failure(name, &error);
                 return Err(error);
             }
             return self
@@ -2288,18 +2364,9 @@ impl PluginLoader {
     /// are different outcomes and a user who pinned a plugin and then pressed
     /// update is owed the reason nothing moved.
     pub async fn update(&self, name: &str) -> Result<(), String> {
-        let source = {
-            let loaded = self
-                .loaded
-                .lock()
-                .map_err(|_| "plugin registry unavailable".to_string())?;
-            loaded
-                .iter()
-                .find(|r| r.name == name)
-                .ok_or_else(|| format!("`{name}` is not loaded"))?
-                .source
-                .clone()
-        };
+        let (source, _) = self
+            .source_of(name)
+            .ok_or_else(|| format!("`{name}` is not loaded"))?;
         if let Some(reason) = update_refusal(name, source.as_plugin_source().as_ref()) {
             return Err(reason);
         }
@@ -2317,17 +2384,9 @@ impl PluginLoader {
         policy: resolve::RefreshPolicy,
         verb: &str,
     ) -> Result<(), String> {
-        let (source, dir) = {
-            let loaded = self
-                .loaded
-                .lock()
-                .map_err(|_| "plugin registry unavailable".to_string())?;
-            let record = loaded
-                .iter()
-                .find(|r| r.name == name)
-                .ok_or_else(|| format!("`{name}` is not loaded"))?;
-            (record.source.clone(), record.source_dir.clone())
-        };
+        let (source, dir) = self
+            .source_of(name)
+            .ok_or_else(|| format!("`{name}` is not loaded"))?;
         if !source.is_buildable() {
             // Bundled ships prebuilt and Unknown has nowhere to build from.
             // Saying so beats running a build that cannot work.
@@ -2375,10 +2434,12 @@ impl PluginLoader {
                 stale: Some(err), ..
             } => {
                 self.note_build_failure(name, &err);
+                self.refresh_failure(name, &err);
                 Err(err)
             }
             pipeline::Install::Skipped { error, .. } => {
                 self.note_build_failure(name, &error);
+                self.refresh_failure(name, &error);
                 Err(error)
             }
             pipeline::Install::Ready { .. } => {
@@ -2465,7 +2526,9 @@ impl PluginLoader {
     /// Reload the plugin named `target`: [`unload`](Self::unload) it, then
     /// re-[`load_path`](Self::load_path) from its recorded source directory —
     /// minting a fresh `Store` with a fresh, untripped `Quarantine` (the reload
-    /// contract, teardown.rs §"Why no reload method"). Errors if `target` names
+    /// contract, teardown.rs §"Why no reload method"). A plugin that is not
+    /// loaded because its load FAILED is tried again, from where it failed and
+    /// at the tier it failed at. Errors if `target` names
     /// no loaded plugin ([`NotLoaded`](PluginLoaderError::NotLoaded)) or it has
     /// no on-disk source ([`NotReloadable`](PluginLoaderError::NotReloadable)).
     pub async fn reload(
@@ -2479,14 +2542,25 @@ impl PluginLoader {
                 .loaded
                 .lock()
                 .expect("plugin-loader loaded-set mutex poisoned");
-            let record = loaded
-                .iter()
-                .find(|r| record_matches(r, target))
+            match loaded.iter().find(|r| record_matches(r, target)) {
+                Some(record) => Some(
+                    record
+                        .source_dir
+                        .clone()
+                        .ok_or_else(|| PluginLoaderError::NotReloadable(record.name.clone()))?,
+                ),
+                None => None,
+            }
+        };
+        let Some(dir) = dir else {
+            // Not loaded — but if it TRIED to load, reloading it means trying
+            // again: there is nothing to unload, and the record knows where it
+            // lives and the tier it loads at (the caller's `tier` describes a
+            // plugin that was running, which this one never was).
+            let failed = self
+                .failed_load(target)
                 .ok_or_else(|| PluginLoaderError::NotLoaded(target.to_string()))?;
-            record
-                .source_dir
-                .clone()
-                .ok_or_else(|| PluginLoaderError::NotReloadable(record.name.clone()))?
+            return self.load_path(&failed.dir, failed.tier).await;
         };
         self.unload(target);
         self.load_path(&dir, tier).await
@@ -2604,7 +2678,7 @@ impl PluginLoader {
                     _ => error_chain(&err),
                 };
                 self.note_build_failure(INIT_PLUGIN_ID, &detail);
-                self.record_failure(INIT_PLUGIN_ID, &init_dir, &detail);
+                self.record_failure(INIT_PLUGIN_ID, &init_dir, TrustTier::Bundled, &detail);
                 Err(err)
             }
         }
@@ -3815,10 +3889,19 @@ impl PluginLoader {
             count = specs.len(),
             "config guest declared plugins via require"
         );
-        if !specs.is_empty()
-            && let Ok(mut queue) = self.required.lock()
-        {
-            queue.extend(specs.into_iter().map(pipeline::to_required_spec));
+        if !specs.is_empty() {
+            let specs: Vec<_> = specs.into_iter().map(pipeline::to_required_spec).collect();
+            if let Ok(mut declared) = self.declared.lock() {
+                for spec in &specs {
+                    declared.insert(
+                        spec.name.clone(),
+                        SourceRecord::from_plugin_source(&spec.source),
+                    );
+                }
+            }
+            if let Ok(mut queue) = self.required.lock() {
+                queue.extend(specs);
+            }
         }
         // The seam contributes no registry entries, so there is nothing for
         // teardown to reverse — unloading the guest cannot un-install the

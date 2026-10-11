@@ -141,7 +141,7 @@ pub(crate) fn set_bulk_progress(note: Option<String>) {
 }
 
 /// The view as it should read right now.
-fn render_now(loader: &PluginLoaderHandle) -> crate::render::RenderedStatus {
+pub(crate) fn render_now(loader: &PluginLoaderHandle) -> crate::render::RenderedStatus {
     let note = BULK_PROGRESS.read().ok().and_then(|n| n.clone());
     crate::render::render_status_styled(
         &loader.plugin_status(),

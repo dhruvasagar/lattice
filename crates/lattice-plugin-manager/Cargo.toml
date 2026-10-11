@@ -71,3 +71,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+# A real plugin directory for the loader to fail on: the chords are tested
+# against the loader's own failure record, not a hand-built one.
+tempfile = { workspace = true }

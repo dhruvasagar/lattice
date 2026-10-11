@@ -12,10 +12,14 @@ pub const PLUGINS_BUFFER_NAME: &str = "*plugins*";
 pub const PLUGINS_MODE_ID: &str = "plugins-mode";
 
 /// Buffer lines the header occupies before the first plugin row: the title
-/// (`# Plugins (N loaded)`), a blank line, and the column header. The
-/// interactivity layer (PL8.H.3) maps `cursor.line - HEADER_LINES` → the plugin
-/// at that index (render order == `plugin_status()` order), so this MUST match
-/// the header `render_status` emits — pinned by `header_occupies_exactly_three_lines`.
+/// (`# Plugins (N loaded)`), a blank line, and the column header — pinned by
+/// `header_occupies_exactly_three_lines`.
+///
+/// Test-only now. The chords used to map `cursor.line - HEADER_LINES` into
+/// the loaded list; they ask [`RenderedStatus::target_at`] instead, which
+/// also knows the entries below the table, and the tests keep this to say
+/// where the table starts.
+#[cfg(test)]
 pub const HEADER_LINES: usize = 3;
 
 /// Short health label for the status column. Kept terse; the crash provenance
@@ -77,12 +81,12 @@ pub fn render_status(plugins: &[PluginStatus]) -> String {
 /// WT.4: [`render_status`] plus a trailing section for plugins that tried to
 /// load and could not.
 ///
-/// **Trailing, and deliberately so.** The interactivity layer maps
-/// `cursor.line - HEADER_LINES` into the loaded-plugin list, so anything
-/// inserted above or between the rows would put chords on the wrong plugin.
-/// Failed entries have no host id to unload or reload anyway — they are a
-/// report, not a row you can act on — so appending them costs the mapping
-/// nothing.
+/// **Trailing**, so the table — the part read most — keeps its place whatever
+/// has failed. The entries are acted on like rows all the same: `b` and `r`
+/// on one rebuild it or try its load again ([`RenderedStatus::targets`]). They
+/// were once "a report, not a row you can act on", which left the user
+/// looking at the plugin that needed rebuilding, in the view that has a
+/// rebuild key, with no way to press it.
 ///
 /// Why it exists at all: a plugin that failed to load is otherwise
 /// indistinguishable from one that was never installed. That is precisely what
@@ -123,10 +127,35 @@ pub fn render_status_full(
 ///
 /// `spans[i]` styles line `i`. Lines with nothing to style carry an empty vec
 /// rather than being absent, because the consumer indexes by line.
+///
+/// `targets[i]` names the plugin line `i` is about, for the lines that are
+/// about one: its row in the table, and its entry — name line and every line
+/// of the error under it — in either trailing section. It is the third view
+/// of the same construction for the same reason the spans are the second: the
+/// chords act on "the plugin on this line", and an answer worked out
+/// separately from the text is one that drifts from it. It used to be
+/// `cursor.line - HEADER_LINES` into the loaded list, which is right for the
+/// table and reaches nothing below it — so the plugins that most needed `b`
+/// and `r`, the ones that had failed to load, were the ones no key acted on.
 pub struct RenderedStatus {
     pub text: String,
     pub spans: Vec<Vec<lattice_cells::StyledSpan>>,
+    pub targets: Vec<Option<String>>,
 }
+
+impl RenderedStatus {
+    /// The plugin line `line` is about, if it is about one.
+    pub fn target_at(&self, line: usize) -> Option<&str> {
+        self.targets.get(line)?.as_deref()
+    }
+}
+
+/// One trailing section: its text, and the spans and targets of its lines.
+type Section = (
+    String,
+    Vec<Vec<lattice_cells::StyledSpan>>,
+    Vec<Option<String>>,
+);
 
 /// A cell written into a line, with the span covering its **content** and not
 /// the padding that follows it — a span over trailing blanks would paint
@@ -193,10 +222,16 @@ pub fn render_status_styled(
     if plugins.is_empty() {
         out.push_str("No plugins are loaded. Load one with `:plugin-load <path>`.\n");
         spans.push(Vec::new());
-        let (text, fail_spans) = failures_section(failed);
+        let mut targets = vec![None; spans.len()];
+        let (text, fail_spans, fail_targets) = failures_section(failed);
         out.push_str(&text);
         spans.extend(fail_spans);
-        return RenderedStatus { text: out, spans };
+        targets.extend(fail_targets);
+        return RenderedStatus {
+            text: out,
+            spans,
+            targets,
+        };
     }
 
     // Column widths: adapt name + tier to their content (health is fixed-vocab).
@@ -243,6 +278,7 @@ pub fn render_status_styled(
     out.push_str(&head);
     out.push('\n');
     spans.push(head_spans);
+    let mut targets: Vec<Option<String>> = vec![None; spans.len()];
 
     for p in plugins {
         let mut line = String::from("  ");
@@ -302,17 +338,24 @@ pub fn render_status_styled(
         out.push_str(&line);
         out.push('\n');
         spans.push(row_spans);
+        targets.push(Some(p.name.clone()));
     }
 
     // Both sections build their own spans, index-aligned with their own
     // lines, and both trail the table — see `render_status_with_failures`.
-    let (build_failures, build_spans) = build_failures_section(plugins);
+    let (build_failures, build_spans, build_targets) = build_failures_section(plugins);
     out.push_str(&build_failures);
     spans.extend(build_spans);
-    let (failures, fail_spans) = failures_section(failed);
+    targets.extend(build_targets);
+    let (failures, fail_spans, fail_targets) = failures_section(failed);
     out.push_str(&failures);
     spans.extend(fail_spans);
-    RenderedStatus { text: out, spans }
+    targets.extend(fail_targets);
+    RenderedStatus {
+        text: out,
+        spans,
+        targets,
+    }
 }
 
 /// How far a reason is indented under the entry it explains.
@@ -388,15 +431,13 @@ fn push_diagnostics(
 /// take. The row's `build-failed` cell says that much; this says why, so the
 /// answer is on the same screen as the verdict instead of in `*messages*`,
 /// behind whatever has been logged since.
-fn build_failures_section(
-    plugins: &[PluginStatus],
-) -> (String, Vec<Vec<lattice_cells::StyledSpan>>) {
+fn build_failures_section(plugins: &[PluginStatus]) -> Section {
     let broken: Vec<(&str, &str)> = plugins
         .iter()
         .filter_map(|p| Some((p.name.as_str(), p.build_error.as_deref()?)))
         .collect();
     if broken.is_empty() {
-        return (String::new(), Vec::new());
+        return (String::new(), Vec::new(), Vec::new());
     }
     let warn = lattice_cells::Style::DiagnosticWarning;
     let dim = lattice_cells::Style::Comment;
@@ -416,6 +457,7 @@ fn build_failures_section(
     out.push('\n');
     spans.push(Vec::new());
 
+    let mut targets: Vec<Option<String>> = vec![None; spans.len()];
     for (name, error) in broken {
         // Warning, not error: the plugin works. The colour separates "your
         // edit did not take" from "this plugin is gone" at a glance.
@@ -439,6 +481,9 @@ fn build_failures_section(
         out.push('\n');
         spans.push(row);
         push_diagnostics(&mut out, &mut spans, error);
+        // The name line and the whole report under it: a cursor anywhere in
+        // a twenty-line compiler error is still on that plugin.
+        targets.resize(spans.len(), Some(name.to_string()));
     }
 
     let hint =
@@ -452,7 +497,8 @@ fn build_failures_section(
         end: hint.len(),
         style: dim,
     }]);
-    (out, spans)
+    targets.resize(spans.len(), None);
+    (out, spans, targets)
 }
 
 /// The trailing "failed to load" block, empty when nothing failed.
@@ -461,9 +507,9 @@ fn build_failures_section(
 /// under it — rather than a table column. A load error is a sentence (a wasm
 /// trap, a missing import, a manifest complaint), and squeezing sentences into a
 /// fixed-width cell is how the useful half gets truncated away.
-fn failures_section(failed: &[FailedLoad]) -> (String, Vec<Vec<lattice_cells::StyledSpan>>) {
+fn failures_section(failed: &[FailedLoad]) -> Section {
     if failed.is_empty() {
-        return (String::new(), Vec::new());
+        return (String::new(), Vec::new(), Vec::new());
     }
     let err = lattice_cells::Style::DiagnosticError;
     let dim = lattice_cells::Style::Comment;
@@ -483,6 +529,7 @@ fn failures_section(failed: &[FailedLoad]) -> (String, Vec<Vec<lattice_cells::St
     out.push('\n');
     spans.push(Vec::new());
 
+    let mut targets: Vec<Option<String>> = vec![None; spans.len()];
     for f in failed {
         // The NAME carries the error colour: these plugins have no row in the
         // table above, so this line is the only place they exist, and the
@@ -510,9 +557,11 @@ fn failures_section(failed: &[FailedLoad]) -> (String, Vec<Vec<lattice_cells::St
         spans.push(row);
 
         push_diagnostics(&mut out, &mut spans, &f.error);
+        targets.resize(spans.len(), Some(f.name.clone()));
     }
 
-    let hint = "If the plugin API changed, run `lattice --wit-sync` and restart to rebuild.";
+    let hint = "On an entry: `b` rebuilds it and loads it, `r` tries the load again. \
+                If the plugin API changed, run `lattice --wit-sync` first.";
     out.push('\n');
     spans.push(Vec::new());
     out.push_str(hint);
@@ -522,7 +571,8 @@ fn failures_section(failed: &[FailedLoad]) -> (String, Vec<Vec<lattice_cells::St
         end: hint.len(),
         style: dim,
     }]);
-    (out, spans)
+    targets.resize(spans.len(), None);
+    (out, spans, targets)
 }
 
 #[cfg(test)]
@@ -799,6 +849,7 @@ mod tests {
         FailedLoad {
             name: name.to_string(),
             dir: std::path::PathBuf::from(format!("/plugins/{name}")),
+            tier: TrustTier::UserInstalled,
             error: error.to_string(),
         }
     }
@@ -851,6 +902,99 @@ mod tests {
             r.text.lines().count(),
             "one span vec per line, failures included"
         );
+    }
+
+    /// What the chords act on. Every line of an entry — the name and the whole
+    /// report under it — is that plugin, in either trailing section; a line
+    /// that is about no plugin is about none. Indexing the loaded list by
+    /// cursor line, which is what this replaced, got the first of those right
+    /// and silently no-op'd on the rest.
+    #[test]
+    fn every_line_of_an_entry_targets_its_plugin_and_no_other_line_targets_one() {
+        let stale = PluginStatus {
+            build: BuildState::Failed,
+            build_error: Some("error[E0432]: unresolved import\n --> src/lib.rs:3:5".to_string()),
+            ..status("init", TrustTier::Bundled, PluginHealth::Healthy)
+        };
+        let r = render_status_styled(
+            &[
+                stale,
+                status("zed", TrustTier::Bundled, PluginHealth::Healthy),
+            ],
+            &[
+                failure(
+                    "org",
+                    "cargo build failed\n\nerror: could not compile `org`",
+                ),
+                failure("other", "manifest missing `id`"),
+            ],
+            None,
+        );
+        let lines: Vec<&str> = r.text.lines().collect();
+        assert_eq!(r.targets.len(), lines.len(), "one target slot per line");
+
+        let mut section = "table";
+        let mut seen: Vec<(&str, &str)> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if line.starts_with("## Build failed") {
+                section = "build";
+            } else if line.starts_with("## Failed to load") {
+                section = "load";
+            }
+            let target = r.target_at(i);
+            // Headings, blanks between sections, the column header, the hints:
+            // nothing at column 0 or 2-with-a-capital is a plugin's line.
+            if i < HEADER_LINES
+                || line.starts_with('#')
+                || line.starts_with(|c: char| c.is_alphabetic())
+            {
+                assert_eq!(target, None, "line {i} `{line}` is about no plugin");
+            }
+            if let Some(name) = target {
+                seen.push((section, name));
+            }
+        }
+        seen.dedup();
+        assert_eq!(
+            seen,
+            vec![
+                ("table", "init"),
+                ("table", "zed"),
+                ("build", "init"),
+                ("load", "org"),
+                ("load", "other"),
+            ],
+            "{}",
+            r.text
+        );
+
+        // The report under a failed plugin, including the blank line inside
+        // it: a cursor parked on the compiler error is still on `org`.
+        let org_at = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("org  ("))
+            .unwrap();
+        for (i, line) in lines.iter().enumerate().skip(org_at).take(4) {
+            assert_eq!(r.target_at(i), Some("org"), "line {i} `{line}`");
+        }
+        assert_eq!(r.target_at(org_at + 4), Some("other"));
+        assert_eq!(r.target_at(lines.len() + 10), None, "past the end");
+    }
+
+    /// With nothing loaded there is no table, and the entries are all there
+    /// is — the state a broken `init.rs` leaves the view in.
+    #[test]
+    fn a_failed_plugin_is_targetable_when_nothing_at_all_loaded() {
+        let r = render_status_styled(&[], &[failure("init", "one line")], None);
+        assert_eq!(r.targets.len(), r.text.lines().count());
+        let at = r
+            .text
+            .lines()
+            .position(|l| l.trim_start().starts_with("init  ("))
+            .unwrap();
+        assert_eq!(r.target_at(at), Some("init"));
+        assert_eq!(r.target_at(at + 1), Some("init"), "its reason");
+        assert_eq!(r.target_at(0), None);
     }
 
     /// WT.4: the whole point. A plugin that failed to load must be visibly

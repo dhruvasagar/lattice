@@ -1,12 +1,13 @@
 //! The `*plugins*` view's information headerline — two sticky virtual rows
 //! above the buffer: what the plugin set looks like, and what you can do to it.
 //!
-//! **Why virtual rows rather than buffer text.** The interactivity layer maps
-//! `cursor.line - render::HEADER_LINES` into the loaded-plugin list, and
-//! `render.rs` warns that an extra header row "would silently put every chord
-//! on the wrong plugin". Virtual rows paint outside the buffer's text, so this
-//! header cannot shift that mapping — the invariant holds by construction
-//! rather than by remembering.
+//! **Why virtual rows rather than buffer text.** They stay put while the
+//! table scrolls, and they are not lines: the cursor cannot land on a count
+//! or a key hint, and nothing in the buffer moves when one changes. (The
+//! chords once indexed the loaded list by cursor line, and a header row in
+//! the text would have shifted every one of them. They ask the render which
+//! plugin a line is about now — `RenderedStatus::target_at` — but a header
+//! that is not text is still the one that cannot be in the way.)
 //!
 //! **Why a second provider.** `BuildHeaderline` (PM.8b) already occupies a
 //! headerline row, but it is transient: it reports builds in flight and hides

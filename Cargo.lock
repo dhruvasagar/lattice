@@ -5853,6 +5853,7 @@ dependencies = [
  "lattice-plugin-trace",
  "lattice-protocol",
  "lattice-runtime",
+ "tempfile",
  "tokio",
  "tracing",
 ]

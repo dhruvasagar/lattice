@@ -672,7 +672,11 @@ impl Editor {
     /// dispatch produced no renderer-coupled work (the overwhelmingly
     /// common case — every plain `Insert`, motion, and operator that
     /// doesn't open a buffer / fire an LSP request) and no popup was up.
-    /// When the dispatch carries effects / signals / next_actions (whose
+    /// "No renderer-coupled work" is decided per effect by
+    /// [`effect_is_host_complete`](crate::effect_completeness::effect_is_host_complete):
+    /// until GD.0b it was `effects.is_empty()`, which the sentence above
+    /// never matched — a motion always returns its `CursorMove`.
+    /// When the dispatch carries renderer-coupled effects / signals / next_actions (whose
     /// App-side `do_*` handlers must run BEFORE the tail so effect
     /// ordering holds — e.g. `OpenBufferAt` switches the active doc, then
     /// `ensure_cursor_visible` must clamp against the *new* doc), or
@@ -720,8 +724,15 @@ impl Editor {
         // the result.
         self.maybe_adopt_owner_write();
         let outcome = self.dispatch(action);
+        // GD.0b: "nothing for the renderer to do first", not "no effects". A
+        // motion's `CursorMove` and an operator's `Edits` + `Yank` are
+        // finished once the host has applied them; declining the fuse for
+        // them made every motion and operator a multi-crossing keystroke.
         let can_fuse = !outcome.consumed
-            && outcome.effects.is_empty()
+            && outcome
+                .effects
+                .iter()
+                .all(crate::effect_completeness::effect_is_host_complete)
             && outcome.renderer_signals.is_empty()
             && outcome.next_actions.is_empty()
             && !popup_up;

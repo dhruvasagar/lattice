@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.1 ✅, GD.2 ✅; GD.0b, GD.3–GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅; GD.3–GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -98,19 +98,31 @@ still dispatch. Both are gated on the value changing, so they fire on a resize,
 not per frame, and `SetViewportHeight`'s action arm carries the vim `scroll`
 reset that the actor's typed command does not.
 
-### GD.0b 📝 — fuse on host-complete effects
+### GD.0b ✅ — fuse on host-complete effects
 
-Found by GD.0's own test. `dispatch_fused` declines the fuse whenever
-`outcome.effects` is non-empty, and a motion leaves `Effect::CursorMove` there
-though the host has applied it. So only typed characters fuse; `j`, `w`, every
-motion and most operators take the multi-crossing path in BOTH peers, which is
-not what `input-latency.md` § I.7 says. Held-key motion is where latency is
-most felt.
+Found by GD.0's own test. `dispatch_fused` declined the fuse whenever
+`outcome.effects` was non-empty, and a motion leaves `Effect::CursorMove` there
+though the host has applied it. So only typed characters fused; every motion
+and operator took the multi-crossing path in BOTH peers, which is not what
+`input-latency.md` § I.7 said.
 
-Host change, both peers. The question to settle first: which effects are
-host-complete (no renderer-coupled arm in either peer) — as a property the
-`Effect` type states, not a list in `dispatch_fused` that drifts.
-`a_motion_is_at_most_three_actor_crossings` goes 3 → 1 when it lands.
+Landed 2026-10-11, after GD.2 so the conformance suite could hold it.
+`lattice_host::effect_completeness::effect_is_host_complete` is an exhaustive
+match over `Effect` with no wildcard; `dispatch_fused` fuses when every
+returned effect answers `true`. Eleven variants do — the ones the editing hot
+path produces and for which both peers' arm is a no-op (`CursorMove`,
+`CursorMoveIn`, `SelectionChange`, `EnterMode`, `Edits`, `Yank`, `Echo`,
+`ClearSearchHighlight`, `RecordJump`, `None`, `Declined`). The other 128 answer
+`false`, including many that would qualify: `false` is always safe, and nobody
+holds a key down on `:describe-option`.
+
+Both peers still run every returned effect through their arms on the fused
+path. For a host-complete effect that is a no-op, and it means a variant
+wrongly answered `true` runs late rather than never.
+
+Conformance scenario `a_motion_and_an_operator_are_one_actor_crossing_each`:
+`j` and `x` are one crossing each in both peers (the GUI was three, and the
+TUI's non-fused path makes more than that).
 
 ### GD.1 ✅ — idle drain, quit, and dropped signals
 

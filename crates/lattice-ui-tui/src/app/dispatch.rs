@@ -198,6 +198,15 @@ impl App {
             // handled) action, and State-A hover-dismiss is impossible
             // here (the fuse requires no popup), so the only work left is
             // surfacing the tick signals (e.g. `ThemeChanged`) UI-side.
+            //
+            // GD.0b: a fused dispatch can now carry effects — the ones the
+            // host says it has finished (`effect_is_host_complete`), whose
+            // arms here are no-ops. They are run anyway: if a variant is
+            // ever classified host-complete while this peer still has work
+            // for it, that work happens late instead of not at all.
+            for effect in std::mem::take(&mut outcome.effects) {
+                self.apply_effect_app_arms(effect);
+            }
             for signal in tail_signals {
                 self.handle_renderer_signal(signal);
             }

@@ -1229,6 +1229,14 @@ impl GpuiApp {
         });
         let mut outcome = fused.outcome;
         if let Some(tail_signals) = fused.tail_signals {
+            // The host fused, so every effect here is one it says it has
+            // finished (`effect_is_host_complete`) and each arm below is a
+            // no-op. They are run anyway: if a variant is ever classified
+            // host-complete while this peer still has work for it, that work
+            // happens late instead of not at all.
+            for effect in outcome.effects.iter().cloned() {
+                self.apply_effect_gpui(effect);
+            }
             for signal in tail_signals.iter().cloned() {
                 self.handle_renderer_signal(signal);
             }
@@ -1897,14 +1905,6 @@ mod tests {
 
     use lattice_grammar::ModalState;
 
-    /// Press a vim-notation key sequence through the peer's chord entry.
-    fn press(app: &mut GpuiApp, keys: &str) {
-        let seq = lattice_core::protocol::parse_chord_sequence(keys).expect("key sequence parses");
-        for chord in seq {
-            app.dispatch_chord(chord);
-        }
-    }
-
     /// GD.2 — this peer, as the host's conformance scenarios drive it.
     ///
     /// Every method is the production path: `dispatch_chord` is what
@@ -1941,33 +1941,6 @@ mod tests {
     /// The scenarios themselves — `lattice_host::peer_conformance`.
     mod conformance {
         lattice_host::peer_conformance_tests!(super::super::GpuiApp);
-    }
-
-    /// GD.0 — a key that does NOT fuse is bounded at three crossings.
-    ///
-    /// The host declines the fuse whenever the dispatch leaves anything in
-    /// `outcome.effects`, and a motion leaves its `Effect::CursorMove` there
-    /// even though the host has already applied it. So `j` takes the
-    /// non-fused path in BOTH peers: the dispatch, the queued-signal drain,
-    /// and the tail. That is a host property, recorded in the slice plan as
-    /// GD.0b; this pins the peer's side of it so the count cannot grow
-    /// unnoticed, and so that fixing the host shows up here as a 3 → 1.
-    #[test]
-    fn a_motion_is_at_most_three_actor_crossings() {
-        let mut app = GpuiApp::new(Document::from_text("one\ntwo\nthree\n"));
-
-        let before = actor_calls::snapshot();
-        press(&mut app, "j");
-        let after = actor_calls::snapshot();
-
-        assert_eq!(app.ad().cursor.line, 1, "the motion ran");
-        let crossings = after - before;
-        assert!(
-            crossings <= 3,
-            "a motion made {crossings} actor crossings; the non-fused path is \
-             dispatch + signal drain + tail. Fold a new step into the tail's \
-             crossing rather than adding one."
-        );
     }
 
     /// GD.1 — a repaint wake with nothing queued costs no actor crossing.

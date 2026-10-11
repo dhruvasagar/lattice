@@ -80,14 +80,27 @@ tests cannot do this: they drive `Editor` directly, which goes around the code
 that keeps the contract. A scenario asserts editor state after a key sequence
 and the number of actor crossings taken to reach it; it never asserts paint.
 
-## 3. What the fuse does not cover
+## 3. When the host fuses
 
-`dispatch_fused` declines whenever `outcome.effects` is non-empty, and a motion
-leaves its `Effect::CursorMove` there although the host has applied it. So a
-typed character is one actor crossing and `j` is three, in both peers. The
-contract above is unaffected — the non-fused path is correct, only slower — but
-the claim in `input-latency.md` § I.7 that motions fuse does not hold. Whether
-to fuse on host-complete effects is slice GD.0b.
+The fuse is taken when the peer has nothing to do before the tail: no signals,
+no follow-up actions, no popup up, and every returned effect is one the host
+has finished. That last test is
+`effect_completeness::effect_is_host_complete`, an exhaustive match over
+`Effect` with no wildcard arm — a new variant does not compile until it is
+placed, and `false` is always safe.
+
+It was `effects.is_empty()` until GD.0b. That is true for a typed character
+and false for every motion and operator, whose effects (`CursorMove`, `Edits`,
+`Yank`) are finished the moment the host applies them. So `j` cost several
+blocking round-trips in both peers where a typed character cost one.
+
+The classification is a claim about both peers at once — "neither has an arm
+that does anything for this variant" — and nothing in the type system ties it
+to their matches. Two things bound the damage of getting it wrong. The list of
+`true` answers is short and limited to the editing hot path. And a peer runs
+every returned effect through its arms on the fused path too, so a variant
+wrongly called host-complete has its renderer half run after the tail instead
+of being skipped.
 
 ## 4. Rejected alternatives
 

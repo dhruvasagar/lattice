@@ -149,6 +149,31 @@ pub fn a_typed_character_is_one_actor_crossing<P: PeerUnderTest>() {
     assert_eq!(crossings, 1, "a typed character is one actor crossing");
 }
 
+/// A motion and an operator are one crossing each, like a typed character.
+///
+/// Their effects — a `CursorMove`, an `Edits`, a `Yank` — are finished by
+/// the host, so nothing stands between the dispatch and its tail
+/// (`effect_completeness`). Before GD.0b the fuse was declined for any
+/// non-empty effect list, and these were several round-trips each in both
+/// peers. Held-key `j` is the keystroke whose latency is felt most.
+pub fn a_motion_and_an_operator_are_one_actor_crossing_each<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("one\ntwo\nthree\nfour\n");
+    // Warm-up, and leaves the cursor on line 1.
+    press(&mut peer, "j");
+
+    let before = peer.actor_crossings();
+    press(&mut peer, "j");
+    let crossings = peer.actor_crossings() - before;
+    assert_eq!(peer.editor().cursor.line, 2, "the motion ran");
+    assert_eq!(crossings, 1, "a motion is one actor crossing");
+
+    let before = peer.actor_crossings();
+    press(&mut peer, "x");
+    let crossings = peer.actor_crossings() - before;
+    assert_eq!(text(&peer), "one\ntwo\nhree\nfour\n", "the operator ran");
+    assert_eq!(crossings, 1, "a one-key operator is one actor crossing");
+}
+
 /// The cursor is kept in view by the dispatch tail.
 ///
 /// No peer may rely on its paint path to do this: `ensure_cursor_visible` is
@@ -310,6 +335,7 @@ macro_rules! peer_conformance_tests {
         $crate::peer_conformance_tests!(@each $peer;
             keys_edit_the_buffer,
             a_typed_character_is_one_actor_crossing,
+            a_motion_and_an_operator_are_one_actor_crossing_each,
             the_cursor_stays_in_view,
             the_completion_popups_keymap_layer_follows_the_popup,
             a_replayed_macro_types_into_the_buffer_it_opened,

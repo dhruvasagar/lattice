@@ -182,6 +182,7 @@ pub mod oil;
 pub mod pane;
 // PBH.1: per-pane buffer history (`<C-6>` / `<C-7>`). Design:
 // docs/dev/architecture/pane-buffer-history.md
+pub mod effect_completeness;
 pub mod pane_history;
 pub mod pane_render;
 /// Scenarios every renderer peer runs through its own entry points. Test

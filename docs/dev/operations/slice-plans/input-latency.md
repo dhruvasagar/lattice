@@ -293,9 +293,10 @@ pre-I.7, so passing at ≤ 2 proves the fuse fired. host-lib 691 + tui-lib 1467 
 **GPUI parity — done (GD.0, 2026-10-11).** GPUI's `dispatch_action` calls
 `dispatch_fused` and runs the same non-fused tail; a typed character is one
 crossing there too. See [`gui-default.md`](gui-default.md) § GD.0. The same
-slice found that the fuse fires less often than this section says: a motion
-leaves `Effect::CursorMove` in the outcome, so it declines the fuse in both
-peers (GD.0b).
+slice found that the fuse fired less often than this section says: a motion
+leaves `Effect::CursorMove` in the outcome, so it declined the fuse in both
+peers. GD.0b fixed that — the fuse is now taken whenever every returned effect
+is host-complete, so motions and operators are one crossing as well.
 
 - Target met for the TUI peer: the keystroke entry path is 1 actor crossing.
   Driving the single publish **sub-ms** (toward the imperceptibility bar) still needs

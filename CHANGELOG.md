@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+- **Motions and operators are one round-trip to the editor core**, in both
+  the terminal and the window. Only typed characters took the fast path
+  before; `j`, `w`, `x`, `dd` and the rest each made several round-trips,
+  which is most noticeable with a key held down.
+
 ### Fixed
 - **GUI: the completion popup's keys work, and so do snippet tabstops.** In
   the window (`--gui`) the insert-completion popup opened and `<C-n>`, `<C-p>`

@@ -772,6 +772,53 @@ impl GpuiApp {
         }
     }
 
+    /// Ask the editor to quit the way `:qa` does, and report whether it will.
+    ///
+    /// This is what the window's close button, Cmd+Q and the Quit menu item
+    /// call. They used to bypass the editor entirely — the window simply
+    /// went away, unsaved buffers with it. Going through `do_quit` gives
+    /// them `:qa`'s guard: with an unsaved buffer the answer is `false`, the
+    /// reason is in the echo area, and the caller must leave the window open.
+    pub fn request_close(&mut self) -> bool {
+        self.mutate_editor(|e| e.do_quit(false, lattice_grammar::QuitScope::All));
+        self.should_quit()
+    }
+
+    /// Open a file the operating system handed over — a Finder "Open With",
+    /// `open -a`, a file dropped on the window. Same path as `:e <path>`.
+    pub fn open_path(&mut self, path: std::path::PathBuf) {
+        self.apply_open_buffer(Some(path), false);
+    }
+
+    /// Open the tutor at `lesson` (`lattice --tutor [N]`). Called by the
+    /// window after [`Self::load_user_environment`], so the user's config
+    /// lands first.
+    pub fn open_tutor(&mut self, lesson: u32) {
+        let signals = self.mutate_editor_with(move |e| e.do_tutor(Some(lesson)));
+        for signal in signals {
+            self.handle_renderer_signal(signal);
+        }
+    }
+
+    /// The window's title: the active buffer's file name, or its buffer name
+    /// when it has no file.
+    ///
+    /// Reads the published registry, which takes a lock per call — so the
+    /// window computes this on its repaint wake and not inside `render`.
+    pub fn window_title(&self) -> String {
+        let rs = self.render_state.load();
+        let id = rs.panes.tree.active().buffer_id;
+        let registry = &rs.buffers.registry;
+        let name = registry
+            .document_path(id)
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .or_else(|| registry.name_of(id));
+        match name {
+            Some(name) => format!("{name} — Lattice"),
+            None => "Lattice".to_string(),
+        }
+    }
+
     /// Whether the editor has asked to quit.
     ///
     /// A published read. The window checks it wherever control returns to
@@ -1875,6 +1922,38 @@ impl GpuiApp {
     }
 }
 
+/// The path in a URL the operating system asked the application to open.
+///
+/// macOS delivers "open this file" as `file://` URLs, percent-encoded. A
+/// bare absolute path is accepted too. Anything else — another scheme, a
+/// relative path, a malformed escape — is `None`: the caller logs and skips
+/// it rather than opening a buffer named after a URL.
+pub fn path_from_open_url(url: &str) -> Option<std::path::PathBuf> {
+    let raw = match url.strip_prefix("file://") {
+        // `file://localhost/…` and `file:///…` both name a local path.
+        Some(rest) => rest.strip_prefix("localhost").unwrap_or(rest),
+        None if url.starts_with('/') => return Some(std::path::PathBuf::from(url)),
+        None => return None,
+    };
+    if !raw.starts_with('/') {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(raw.len());
+    let mut rest = raw.as_bytes();
+    while let Some((&b, tail)) = rest.split_first() {
+        if b == b'%' {
+            let hex = tail.get(..2)?;
+            let hex = std::str::from_utf8(hex).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            rest = &tail[2..];
+        } else {
+            bytes.push(b);
+            rest = tail;
+        }
+    }
+    Some(std::path::PathBuf::from(String::from_utf8(bytes).ok()?))
+}
+
 /// Counts crossings of the editor-actor seam (`mutate_editor`,
 /// `mutate_editor_with`, `read_editor`) on the calling thread.
 ///
@@ -1941,6 +2020,90 @@ mod tests {
     /// The scenarios themselves — `lattice_host::peer_conformance`.
     mod conformance {
         lattice_host::peer_conformance_tests!(super::super::GpuiApp);
+    }
+
+    /// GD.3 — closing the window is `:qa`, guard included.
+    ///
+    /// The close button and Cmd+Q had no connection to the editor: the
+    /// window went away and unsaved work went with it. They ask first now,
+    /// and an unsaved buffer says no and says why.
+    #[test]
+    fn closing_the_window_is_refused_while_a_buffer_is_unsaved() {
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        app.dispatch_action(Action::Insert("unsaved ".to_string()));
+        assert!(
+            !app.request_close(),
+            "an edited, unsaved buffer keeps the window open"
+        );
+        assert!(!app.should_quit());
+        let echo = app.messages().last.as_ref().map(|m| m.text.to_string());
+        assert!(
+            echo.as_deref()
+                .is_some_and(|t| t.contains("no write since last change")),
+            "and the reason is on screen: {echo:?}"
+        );
+
+        let mut clean = GpuiApp::new(Document::from_text("x\n"));
+        assert!(clean.request_close(), "a clean editor closes");
+        assert!(clean.should_quit());
+    }
+
+    /// GD.3 — a file the OS hands over is opened like `:e`.
+    #[test]
+    fn a_file_handed_over_by_the_os_is_opened() {
+        let path =
+            std::env::temp_dir().join(format!("lattice-gd3-os-open-{}.txt", std::process::id()));
+        std::fs::write(&path, "from the finder\n").expect("temp file writes");
+
+        let mut app = GpuiApp::new(Document::from_text("origin\n"));
+        app.open_path(path.clone());
+
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            app.editor.document.snapshot().buffer.as_string(),
+            "from the finder\n"
+        );
+        let title = app.window_title();
+        assert!(
+            title.starts_with("lattice-gd3-os-open-") && title.ends_with(" — Lattice"),
+            "and the title names it: {title:?}"
+        );
+    }
+
+    /// GD.3 — the URLs macOS sends for "open this file" become paths, and
+    /// nothing else does.
+    #[test]
+    fn open_urls_become_paths() {
+        use std::path::PathBuf;
+        assert_eq!(
+            path_from_open_url("file:///Users/me/a%20b/caf%C3%A9.rs"),
+            Some(PathBuf::from("/Users/me/a b/café.rs"))
+        );
+        assert_eq!(
+            path_from_open_url("file://localhost/tmp/x.rs"),
+            Some(PathBuf::from("/tmp/x.rs"))
+        );
+        assert_eq!(
+            path_from_open_url("/tmp/plain.rs"),
+            Some(PathBuf::from("/tmp/plain.rs"))
+        );
+        assert_eq!(path_from_open_url("https://example.com/x.rs"), None);
+        assert_eq!(path_from_open_url("file://otherhost/tmp/x.rs"), None);
+        assert_eq!(path_from_open_url("file:///tmp/bad%2"), None);
+        assert_eq!(path_from_open_url("file:///tmp/bad%zz"), None);
+        assert_eq!(path_from_open_url("relative/x.rs"), None);
+    }
+
+    /// GD.3 — `--tutor N` opens the tutor in this peer too.
+    #[test]
+    fn the_tutor_flag_opens_the_tutor() {
+        let mut app = GpuiApp::new(Document::empty());
+        let before = app.editor.document_buffer_id;
+        app.open_tutor(1);
+        assert_ne!(
+            app.editor.document_buffer_id, before,
+            "the tutor's lesson buffer is the active one"
+        );
     }
 
     /// GD.1 — a repaint wake with nothing queued costs no actor crossing.

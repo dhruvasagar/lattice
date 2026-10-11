@@ -292,7 +292,7 @@ async fn main() -> Result<()> {
     lattice_plugin_loader::enable_autoload();
 
     let result = if use_gui {
-        run_gui(document)
+        run_gui(document, cli.tutor)
     } else {
         lattice_ui_tui::run(document, cli.tutor)
     };
@@ -307,12 +307,12 @@ async fn main() -> Result<()> {
 /// exposes the real entry. Without the feature, `--gui` produces a
 /// helpful error so users know to rebuild with `--features gui`.
 #[cfg(feature = "gui")]
-fn run_gui(document: Document) -> Result<()> {
-    lattice_ui_gpui::run(document)
+fn run_gui(document: Document, startup_lesson: Option<u32>) -> Result<()> {
+    lattice_ui_gpui::run(document, startup_lesson)
 }
 
 #[cfg(not(feature = "gui"))]
-fn run_gui(_document: Document) -> Result<()> {
+fn run_gui(_document: Document, _startup_lesson: Option<u32>) -> Result<()> {
     anyhow::bail!(
         "GUI renderer not compiled in. Rebuild with `cargo build --features gui` \
          (Linux: requires `libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev`)."

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- **GUI: open files from the operating system.** Drop a file on the window,
+  or open one with Lattice from Finder or `open -a`, and it opens as `:e`
+  would. The window title shows the active file's name, and macOS has a
+  Lattice menu with Quit.
+
 ### Changed
 - **Motions and operators are one round-trip to the editor core**, in both
   the terminal and the window. Only typed characters took the fast path
@@ -9,6 +15,12 @@
   which is most noticeable with a key held down.
 
 ### Fixed
+- **GUI: closing the window no longer discards unsaved work.** The close
+  button and Cmd+Q closed the window without asking the editor. They now
+  behave like `:qa`: with an unsaved buffer the window stays open and the
+  message line says which buffer.
+- **GUI: `lattice --gui --tutor` opens the tutor.** The flag was ignored in
+  the window.
 - **GUI: the completion popup's keys work, and so do snippet tabstops.** In
   the window (`--gui`) the insert-completion popup opened and `<C-n>`, `<C-p>`
   and `<C-y>` went to the buffer underneath; `<Tab>` did not move between a

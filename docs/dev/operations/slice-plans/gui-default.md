@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅; GD.3–GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅; GD.4–GD.9 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -185,14 +185,34 @@ each peer's input loop above the chord entry the suite drives (the TUI's is
 inline in `runtime.rs`), so the scenarios cannot reach it. Hoisting it behind a
 shared entry is the precondition for a scenario; noted for GD.8.
 
-### GD.3 📝 — window lifecycle
+### GD.3 ✅ — window lifecycle
 
-- Close button and Cmd+Q route through the same dirty-buffer guard as `:qa`,
-  and flush plugin stores.
-- An application menu on macOS (quit, close, the standard edit items).
-- Files opened by the OS (Finder, `open -a`, drag-drop) reach the editor.
-- `--tutor [N]` reaches `lattice_ui_gpui::run`.
-- Window title follows the active buffer.
+Landed 2026-10-11.
+
+- **Close button, Cmd+Q, the Quit menu item** all go through
+  `GpuiApp::request_close`, which is `:qa`: an unsaved buffer refuses, the
+  reason is echoed, and the window stays. Plugin stores are flushed before the
+  window goes. When the last window closes the application quits.
+- **Files from the OS.** `Application::on_open_urls` queues the path and wakes
+  the window (the callback has no app context and can fire before the window
+  exists); a file dropped on the window opens directly. Both are `:e <path>`.
+- **`--tutor [N]`** reaches `lattice_ui_gpui::run`.
+- **Window title** is the active buffer's file name, computed on the repaint
+  wake and handed to the platform from `render` only when it changed.
+
+Tests cover the logic: the close guard both ways, an OS-opened file and its
+title, URL-to-path parsing including the malformed cases, and the tutor flag.
+
+**None of the GPUI wiring has been seen running.** It compiles against gpui
+0.2.2; that is all. Specifically unverified: that `on_window_should_close`
+returning `false` keeps the window on each platform; that `cmd-q` reaches the
+action before `on_key_down` sees it; that `on_open_urls` fires for a `.app`
+launch; that a drop on the root element delivers `ExternalPaths`.
+
+Left out: the menu is the application menu with Quit only. Edit items (cut,
+copy, paste, undo) need actions that route into the editor's registers and
+undo, which is its own piece of work — noted under GD.8. File associations in
+the bundle's `Info.plist` are a packaging change — GD.9.
 
 ### GD.4 📝 — text input
 
@@ -233,6 +253,7 @@ macOS option-as-meta.
 - Pane geometry uses the window's real column count (the host falls back to
   120 when `SetTerminalWidth` is never sent).
 - Hard-coded popup colours go through the theme (light themes).
+- An Edit menu on macOS (cut, copy, paste, undo) wired to the editor.
 - The decline-and-fall-through walk behind an entry the conformance suite can
   drive, and a scenario for it (see GD.2).
 

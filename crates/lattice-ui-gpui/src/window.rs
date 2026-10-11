@@ -61,10 +61,10 @@
 
 use anyhow::{Context as _, Result};
 use gpui::{
-    AnyElement, App, AppContext, Application, Bounds, Context, FocusHandle, Focusable,
-    FontFeatures, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, TextRun, Window, WindowBounds, WindowOptions,
-    div, font, px, rgb, size,
+    AnyElement, App, AppContext, Application, Bounds, Context, ExternalPaths, FocusHandle,
+    Focusable, FontFeatures, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, Menu,
+    MenuItem, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, TextRun,
+    Window, WindowBounds, WindowOptions, div, font, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
@@ -1104,6 +1104,52 @@ impl Render for ModelineTooltip {
     }
 }
 
+// Application-level actions: the ones the OS, not a keystroke in a buffer,
+// asks for. `Quit` is Cmd+Q and the menu item.
+gpui::actions!(lattice, [Quit]);
+
+/// Files the operating system asked the application to open, on their way to
+/// the editor.
+///
+/// macOS delivers "open this file" (Finder, `open -a Lattice file`) through a
+/// callback registered on the `Application` before it runs. That callback has
+/// no app context and can fire before the window exists, so it cannot open a
+/// buffer itself: it queues the path here and wakes the window, which drains
+/// the queue. `Notify::notify_one` stores a permit, so a path queued before
+/// the window is listening is not lost.
+#[derive(Default)]
+struct OpenRequests {
+    paths: std::sync::Mutex<Vec<std::path::PathBuf>>,
+    wake: tokio::sync::Notify,
+}
+
+impl OpenRequests {
+    fn push_urls(&self, urls: Vec<String>) {
+        let mut queued = false;
+        for url in urls {
+            match crate::path_from_open_url(&url) {
+                Some(path) => {
+                    if let Ok(mut paths) = self.paths.lock() {
+                        paths.push(path);
+                        queued = true;
+                    }
+                }
+                None => tracing::warn!(%url, "lattice-gpui: not a file to open; skipped"),
+            }
+        }
+        if queued {
+            self.wake.notify_one();
+        }
+    }
+
+    fn take(&self) -> Vec<std::path::PathBuf> {
+        self.paths
+            .lock()
+            .map(|mut paths| std::mem::take(&mut *paths))
+            .unwrap_or_default()
+    }
+}
+
 pub(crate) struct EditorView {
     /// IM.5: decoded pixels for the media blocks in view, shared with every
     /// pane's `EditorElement`. Written only by the media landing (off the UI
@@ -1118,6 +1164,11 @@ pub(crate) struct EditorView {
     last_cell_metrics: Option<(f32, f32)>,
     pub(crate) app: GpuiApp,
     focus_handle: FocusHandle,
+    /// The title the window currently shows, and one waiting to be shown.
+    /// The repaint wake computes the title (it reads the buffer registry,
+    /// which locks) and `render` only hands a changed one to the platform.
+    shown_title: String,
+    pending_title: Option<String>,
     /// Perf plan A.3: per-frame ensure-work delta cache.
     /// S4.final.b (2026-05-27): per-window glyph-id cache
     /// (cached `char → ResolvedGlyph` map keyed by FontId).
@@ -1143,10 +1194,37 @@ pub(crate) struct EditorView {
 }
 
 impl EditorView {
-    fn new(document: Document, cx: &mut Context<Self>) -> Self {
+    fn new(
+        document: Document,
+        startup_lesson: Option<u32>,
+        open_requests: std::sync::Arc<OpenRequests>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut app = GpuiApp::new(document);
         // Before the first frame, so it already reflects the user's config.
         app.load_user_environment();
+        // `--tutor [N]`, after the config so the user's settings land first.
+        if let Some(lesson) = startup_lesson {
+            app.open_tutor(lesson);
+        }
+        // Files the OS asked for. The first wait returns at once if any
+        // were queued before this window existed.
+        cx.spawn(async move |this, cx| {
+            loop {
+                open_requests.wake.notified().await;
+                let paths = open_requests.take();
+                let alive = this.update(cx, |view, cx| {
+                    for path in paths {
+                        view.app.open_path(path);
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         // X1b: spawn the worker-paint-request bridge. The background
         // workers (cells / display-matrix, overlay) fire
         // `editor.paint_request.notify_one()` after every
@@ -1195,6 +1273,7 @@ impl EditorView {
                     // by something other than a key.
                     view.app.drain_idle_renderer_effects();
                     view.quit_if_requested(cx);
+                    view.refresh_title();
                     cx.notify();
                 });
                 if alive.is_err() {
@@ -1203,7 +1282,10 @@ impl EditorView {
             }
         })
         .detach();
+        let title = app.window_title();
         Self {
+            shown_title: String::new(),
+            pending_title: Some(title),
             media_pixels: Default::default(),
             last_cell_metrics: None,
             app,
@@ -1290,6 +1372,44 @@ impl EditorView {
         cx.stop_propagation();
         cx.notify();
         self.quit_if_requested(cx);
+    }
+
+    /// Note a changed window title for `render` to apply.
+    fn refresh_title(&mut self) {
+        let title = self.app.window_title();
+        if title != self.shown_title && self.pending_title.as_deref() != Some(title.as_str()) {
+            self.pending_title = Some(title);
+        }
+    }
+
+    /// The close button, Cmd+Q, the Quit menu item: ask the editor, and
+    /// report whether the window may go.
+    ///
+    /// `false` means an unsaved buffer refused; the echo area says which,
+    /// and the window stays.
+    fn request_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.app.request_close() {
+            // The process may end without returning to `main`, which is
+            // where the TUI's flush runs.
+            lattice_host::flush_plugin_stores();
+            true
+        } else {
+            cx.notify();
+            false
+        }
+    }
+
+    /// Open files dropped on the window.
+    fn on_files_dropped(
+        &mut self,
+        paths: &ExternalPaths,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for path in paths.paths() {
+            self.app.open_path(path.clone());
+        }
+        cx.notify();
     }
 
     /// Close the application if the editor has asked to quit.
@@ -3406,6 +3526,12 @@ impl EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A title the repaint wake found changed. One platform call, and only
+        // when the active buffer's name actually changed.
+        if let Some(title) = self.pending_title.take() {
+            window.set_window_title(&title);
+            self.shown_title = title;
+        }
         // Phase 5.8.AF.5 / Slice 3c.atomic.L: per-frame budget
         // breakdown on the `lattice_gpui::perf` tracing target.
         // Enable with `RUST_LOG=lattice_gpui::perf=info`. Emits
@@ -5066,6 +5192,7 @@ impl Render for EditorView {
         let mut root = div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_drop(cx.listener(Self::on_files_dropped))
             .flex()
             .flex_col()
             .size_full()
@@ -5467,8 +5594,16 @@ impl Render for EditorView {
 /// binary, lifted into the lib so `lattice-cli` can route
 /// `lattice --gpu <file>` through this single entry. The
 /// `lattice-gpui` binary keeps a thin shim that calls this.
-pub fn run(document: Document) -> Result<()> {
-    Application::new().run(move |cx| {
+pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
+    let open_requests = std::sync::Arc::new(OpenRequests::default());
+    let application = Application::new();
+    // Must be registered before `run`: macOS delivers the file a launch was
+    // for ("Open With", `open -a Lattice notes.md`) during startup.
+    {
+        let open_requests = open_requests.clone();
+        application.on_open_urls(move |urls| open_requests.push_urls(urls));
+    }
+    application.run(move |cx| {
         // Resolve `ui.window.*` before open_window. The editor boots inside the
         // builder closure below (too late for WindowOptions), so parse the default
         // config paths into a throwaway registry now. Both are registered scalar
@@ -5528,7 +5663,9 @@ pub fn run(document: Document) -> Result<()> {
                 window_decorations,
                 ..Default::default()
             },
-            move |_window, cx| cx.new(|cx| EditorView::new(document, cx)),
+            move |_window, cx| {
+                cx.new(|cx| EditorView::new(document, startup_lesson, open_requests, cx))
+            },
         );
         let window = match window {
             Ok(w) => w,
@@ -5545,7 +5682,36 @@ pub fn run(document: Document) -> Result<()> {
         // back a real window context where focus actually sticks
         // (this is the pattern gpui's own `examples/input.rs`
         // uses).
+        // Quit, from the keyboard and the menu. Both go through the editor's
+        // own guard; neither closes anything if a buffer is unsaved.
+        cx.on_action(move |_: &Quit, cx| {
+            let may_quit = window
+                .update(cx, |view, _window, cx| view.request_close(cx))
+                .unwrap_or(true);
+            if may_quit {
+                cx.quit();
+            }
+        });
+        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.set_menus(vec![Menu {
+            name: "Lattice".into(),
+            items: vec![MenuItem::action("Quit Lattice", Quit)],
+        }]);
+        // One window: when it is gone, so is the application. Without this
+        // macOS keeps a windowless process alive in the Dock.
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         let focus_result = window.update(cx, |view, window, cx| {
+            // The close button asks the editor first.
+            let this = cx.entity().downgrade();
+            window.on_window_should_close(cx, move |_window, cx| {
+                this.update(cx, |view, cx| view.request_close(cx))
+                    .unwrap_or(true)
+            });
             window.focus(&view.focus_handle.clone());
             cx.activate(true);
             // ui.window.decorations = transparent: hide the traffic-light buttons

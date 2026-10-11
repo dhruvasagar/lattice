@@ -12,6 +12,26 @@
 first-class: the TUI is what runs over SSH and on a machine with no display,
 and that does not change.
 
+The choice is made once, before either peer boots, by
+`lattice-cli`'s `renderer::choose`:
+
+| | renderer |
+|---|---|
+| `--tui` | terminal |
+| `--gui` | window, or an error — never downgraded |
+| a build without the `gui` feature | terminal |
+| inside a macOS `.app` bundle | window |
+| a display is reachable | window |
+| otherwise | terminal |
+
+"A display is reachable" is read from the environment: on Linux and the BSDs
+`WAYLAND_DISPLAY` or `DISPLAY` is set; on macOS and Windows the session is not
+an SSH one. With no display the terminal opens without a flag, because the
+alternative is an editor that fails to start on exactly the machines the
+terminal renderer exists for. An explicit `--gui` is a request, so it gets a
+window or an error. The guess errs toward the terminal: a wrong "no" costs
+typing `--gui`, a wrong "yes" costs a failed launch.
+
 What changes is which peer a gap is allowed to sit in. While the TUI was the
 default, a GPUI gap was a known limitation of an opt-in renderer. As the
 default, the same gap is a broken editor. This document is the contract that

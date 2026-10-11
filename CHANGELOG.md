@@ -9,6 +9,12 @@
   Lattice menu with Quit.
 
 ### Changed
+- **`lattice` opens a window.** The GPU renderer is the default; `lattice
+  --tui` opens the terminal renderer, which stays first-class. With no
+  display reachable (an SSH session, a server, a Linux console) a bare
+  `lattice` opens in the terminal on its own. `lattice --gui` insists on a
+  window and reports an error if it cannot have one. The terminal-only
+  build is unchanged: it has no window, so it opens the terminal.
 - **Motions and operators are one round-trip to the editor core**, in both
   the terminal and the window. Only typed characters took the fast path
   before; `j`, `w`, `x`, `dd` and the rest each made several round-trips,

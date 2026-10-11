@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅; GD.4, GD.5b, GD.6c, GD.6d, GD.7d, GD.7c, GD.8b, GD.9 📝.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.9a ✅; GD.4, GD.5b, GD.6c, GD.6d, GD.7d, GD.7c, GD.8b, GD.9b 📝.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -366,22 +366,42 @@ plan.
 - The decline-and-fall-through walk behind an entry the conformance suite can
   drive, and a scenario for it (see GD.2).
 
-### GD.9 📝 — the flip
+### GD.9 — the flip
 
-- `main.rs`: GUI unless `--tui`.
-- **No display reachable** (SSH, headless Linux, a server): to settle when this
-  slice starts. Either fall back to the terminal, or stop with a message that
-  names `--tui`. The first never leaves the user without an editor; the second
-  never surprises them with a renderer they did not ask for.
-- A binary built without the `gui` feature keeps working as a terminal editor.
-- Release: the main `lattice-*` archive is the GUI build; a terminal-only
-  archive stays for servers and for the two arm targets where the GUI build is
-  best-effort. `install.sh`, the `.deb` / AppImage names and the manifest check
-  follow.
-- Cargo's default feature set stays headless, so CI and `cargo test` need no
-  display libraries.
-- User docs (install, display, troubleshooting), `--help`, the README, and the
-  ledger's `5.last` row.
+**GD.9a ✅ — `lattice` opens the window** (2026-10-11). `lattice-cli`'s
+`renderer::choose` is the whole decision, a pure function with a test per row:
+`--tui` → terminal; `--gui` → window or an error; a build without the `gui`
+feature → terminal; a macOS `.app` bundle → window; a reachable display →
+window; otherwise terminal. Decided: with no display a bare `lattice` falls
+back to the terminal on its own (the convention — it is what `emacs` does — on a
+surface where convention leads), and `--gui` is never downgraded. The table and
+how "reachable" is judged are in the design fragment §1.
+
+Cargo's default feature set is unchanged (headless), so CI and `cargo test`
+need no display libraries, and a source build without `--features gui` is still
+a terminal editor. `install.sh` already installs the GUI build where one is
+published, so most installs get the new default without a packaging change.
+`--help`, the README, the install and troubleshooting pages, the site's landing
+page and FAQ, and the installer's messages say so.
+
+**This landed ahead of the open parity slices at Dhruva's direction; it does
+not close them.** GD.4, GD.5b, GD.6c, GD.6d, GD.7c, GD.7d and GD.8b each
+describe something the window does not do that the terminal does (or, for
+GD.6d and GD.7d, something both lost on the way to sharing it). They block the
+0.9.8 release, not this commit.
+
+Not verified: the fallback on a real SSH session or a Linux console, and
+whether a GPUI launch with a *wrong* "yes" fails cleanly or hangs. Only the
+decision function is tested.
+
+**GD.9b 📝 — release archive names.** Today `lattice-*` is the terminal-only
+build and `lattice-gui-*` the window build. With the window the default, the
+unqualified name arguably belongs to the window build, with a `lattice-tui-*`
+(or `-cli`) archive for servers and the two arm targets where the GUI build is
+best-effort. That renames release assets, the `.deb` / AppImage, `install.sh`'s
+flavour list and the manifest check, and breaks anything that fetches an asset
+by name. **Needs a decision** (rename, or keep the names and let `install.sh`
+keep choosing), and cannot be tested without cutting a release.
 
 ## Verification that needs a person
 

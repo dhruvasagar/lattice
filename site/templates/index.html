@@ -127,11 +127,11 @@
       <pre><code class="language-sh"># Install (macOS, Linux)
 curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh | sh
 
-# Open a file
+# Open a file (in a window)
 lattice README.md
 
-# Or with the GPU renderer
-lattice --gui README.md</code></pre>
+# Or in the terminal
+lattice --tui README.md</code></pre>
     </div>
     <p class="quickstart-note">Installs into <code>~/.local</code>, plus the bundled core plugins. Building from source instead? <code>cargo build --release</code> alone starts an editor with <strong>no bundled plugins and no error</strong> — you also need <code>cargo xtask build-core-plugins</code>. See the <a href="{{ get_url(path='/install/') }}">install guide</a> for the full from-source steps, release archives, and Windows.</p>
   </div>

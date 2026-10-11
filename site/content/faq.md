@@ -19,7 +19,7 @@ builds are best-effort and may be absent from a given release.
 
 ### Is there a GUI?
 
-Yes — Lattice has two renderer backends: a TUI renderer (terminal) and a GPUI renderer (native GPU window). The TUI renderer is more mature. Use `--gui` to launch the GPU mode — it ships for macOS, Linux (AppImage/`.deb`), and Windows x86_64.
+Yes — Lattice has two renderer backends: a TUI renderer (terminal) and a GPUI renderer (native GPU window). From 0.9.8 `lattice` opens the GPU window and `lattice --tui` opens the terminal; with no display reachable (SSH, a server) it opens the terminal on its own. The window ships for macOS, Linux (AppImage/`.deb`), and Windows x86_64.
 
 ### Does it work over SSH?
 

@@ -91,18 +91,36 @@ They exist for one consumer: a plugin built outside this tree. Before they were
 published, the only way to name lattice's ABI was a path into a checkout, which
 is why the org plugin built on exactly one machine.
 
-Publish in dependency order — `lattice-plugin-sdk` will not resolve until the
-derive crate is on the index:
+Publish with the script, not by hand:
 
 ```bash
-cargo publish -p lattice-plugin-sdk-derive
-cargo publish -p lattice-plugin-sdk        # after the index updates
-cargo publish -p lattice-wit               # independent of the other two
+scripts/publish-plugin-api.sh             # what is local, what is on crates.io
+scripts/publish-plugin-api.sh --dry-run   # every check, publish nothing
+scripts/publish-plugin-api.sh --publish   # do it
 ```
 
-Dry-run each first (`--dry-run`); it catches a missing `description`, a path
-dep without a `version`, and — the one that actually bit — a build script
-reading files that are not inside the package.
+It publishes the version already in the tree (it does not bump — that is
+`cargo xtask bump-plugin-api`), and it exists because the one step it performs
+cannot be undone: a published version can be yanked, never replaced. So it
+refuses unless every "not yet" has been ruled out first —
+
+- **on `main`, clean, identical to `origin/main`.** A published crate records
+  its source commit, which should be one anybody can look at; and `main` is
+  what CI has seen. Merge the work first, then publish.
+- **the three crates agree on a version**, and the guard test confirms it
+  matches the WIT package's.
+- **each crate packages and builds from its package alone** — a `--dry-run`
+  immediately before its upload. That catches a missing `description`, a path
+  dep without a `version`, and — the one that actually bit — a build script
+  reading files that are not inside the package.
+
+It publishes in dependency order — the derive crate, then the SDK (which will
+not resolve until the derive crate is on the index), then `lattice-wit` — and
+it is **safe to re-run**: a crate whose version is already on crates.io is
+skipped, so a run that died half way is finished by running it again.
+
+It needs crates.io credentials (`cargo login`), and nothing else about it is
+automated: no CI job publishes these crates.
 
 Two things to know:
 

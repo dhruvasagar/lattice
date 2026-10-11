@@ -385,7 +385,9 @@ are what would catch a staging regression, at release time.
 
 ### LH.3 — publish plugin API 0.2.0  📝
 Publish `lattice-wit`, `lattice-plugin-sdk` and `lattice-plugin-sdk-derive` at
-0.2.0 and bump `lattice-org-plugin`'s pin, per `releasing.md`. **Last, and only
+0.2.0 and bump `lattice-org-plugin`'s pin, per `releasing.md` —
+`scripts/publish-plugin-api.sh --publish`, from `main`, after the merge. (The
+script was written for this slice; it refuses on any other branch.) **Last, and only
 once LH.1 and LH.2 are done** (decided 2026-10-10): 0.2.0 is unpublished, so
 every WIT change lighthouse turns out to need lands inside it for free — LH.0.5
 already did — where each one after publication is another version. Outward-facing

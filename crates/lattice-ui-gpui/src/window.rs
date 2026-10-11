@@ -1435,6 +1435,10 @@ impl EditorView {
         let ks = &event.keystroke;
         tracing::debug!(
             key = %ks.key,
+            // What the platform says the key types, after layout, dead
+            // keys and composition. `None` for a key that types nothing.
+            key_char = ?ks.key_char,
+            held = event.is_held,
             ctrl = ks.modifiers.control,
             alt = ks.modifiers.alt,
             shift = ks.modifiers.shift,

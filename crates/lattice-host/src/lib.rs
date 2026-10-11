@@ -55,6 +55,7 @@ pub mod search_line_mode;
 // libs); host's default build stays headless-friendly.
 #[cfg(feature = "system-clipboard")]
 pub mod clipboard;
+pub mod cmdline_row;
 pub mod cursor_shape;
 pub mod dashboard;
 // AP.0.2: the layer peel behind `Effect::Declined`. One walk, called by the

@@ -4309,31 +4309,13 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         // cursor (byte offset into the single line) so mid-line editing
         // shows where the user is typing — not pinned to the end.
         let line = app.command_line();
-        let caret_byte = (app.ad().cursor.byte as usize).min(line.len());
+        // GD.5b: in columns, from the shared helper — a byte count put
+        // the caret one cell right per multi-byte character before it.
+        let caret_cols =
+            lattice_host::cmdline_row::caret_cols(&line, app.ad().cursor.byte as usize);
         let cursor_col = area
             .x
-            .saturating_add((1 + caret_byte).min(area.width as usize) as u16);
-
-        // Visual hints. Two non-mutually-exclusive layers show
-        // after the cursor in a dim style:
-        //   1. `auto_submit_after_chord` (missing-arg prompt
-        //      armed by `:describe-key<CR>`): show a clear
-        //      "press a chord" cue so the user knows the next
-        //      keypress runs the lookup.
-        //   2. Otherwise, if chord-capture is just active
-        //      (cursor in a `Chord` arg slot), show a softer
-        //      `(chord)` tag so the user knows the cmdline is
-        //      consuming raw key events as chord tokens.
-        // Slice 3c.final.B.7: auto_submit hint via published
-        // `modeline()` sub-state (wait-free Arc clone, no actor
-        // round-trip).
-        let hint: Option<&'static str> = if app.modeline().auto_submit_hint {
-            Some("press a chord")
-        } else if app.chord_capture_active() {
-            Some("(chord)")
-        } else {
-            None
-        };
+            .saturating_add((1 + caret_cols).min(area.width as usize) as u16);
 
         // MB.4: draw the `:` prompt then the line, coloured per the
         // published decoration spans (syntax highlight). The spans are
@@ -4376,61 +4358,38 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             }
             _ => spans.push(Span::raw(line.clone())),
         }
-        if let Some(text) = hint {
-            spans.push(Span::styled(
-                text,
-                TuiStyle::default()
-                    .fg(Color::DarkGray)
+        // GD.5b: the trailing hints — the chord cue, the completion
+        // count, a live error or the parameter hint — are content the
+        // host decides (`cmdline_row::trailing_hints`), so the window
+        // shows the same ones. Only how each kind looks is decided here.
+        let completion = app.completion();
+        let hints = lattice_host::cmdline_row::trailing_hints(
+            modeline.auto_submit_hint,
+            app.chord_capture_active(),
+            completion
+                .state
+                .as_deref()
+                .map(|s| (s.selected, s.candidates.len())),
+            deco,
+        );
+        for hint in hints {
+            use lattice_host::cmdline_row::HintKind;
+            let dim = TuiStyle::default().fg(Color::DarkGray);
+            let style = match hint.kind {
+                HintKind::Count => dim,
+                HintKind::Cue | HintKind::Param => dim.add_modifier(Modifier::ITALIC),
+                HintKind::Error => TuiStyle::default()
+                    .fg(lattice_host::ui::theme::resolve_syntax_style(
+                        resolved,
+                        ids,
+                        lattice_cells::style::Style::DiagnosticError,
+                    )
+                    .fg
+                    .map(crate::theme::host_color_to_ratatui)
+                    .unwrap_or(Color::Red))
                     .add_modifier(Modifier::ITALIC),
-            ));
-        }
-        // Vertico-style count hint when the completion popup is
-        // open: `(selected/total)` faintly trailing the cmdline.
-        // Mirrors the picker prompt's `(n/m)` so both surfaces
-        // read the same.
-        if let Some(state) = app.completion().state.as_deref()
-            && !state.candidates.is_empty()
-        {
-            spans.push(Span::styled(
-                format!("  ({}/{})", state.selected + 1, state.candidates.len()),
-                TuiStyle::default().fg(Color::DarkGray),
-            ));
-        }
-        // MB.4: a live error indicator (unknown command / bad args) wins
-        // the trailing slot; otherwise a dim parameter hint from the
-        // command's ArgSpec — suppressed while the completion popup is up
-        // to avoid clutter.
-        if let Some(d) = deco {
-            if let Some(err) = &d.error {
-                let err_color = lattice_host::ui::theme::resolve_syntax_style(
-                    resolved,
-                    ids,
-                    lattice_cells::style::Style::DiagnosticError,
-                )
-                .fg
-                .map(crate::theme::host_color_to_ratatui)
-                .unwrap_or(Color::Red);
-                spans.push(Span::styled(
-                    format!("  {err}"),
-                    TuiStyle::default()
-                        .fg(err_color)
-                        .add_modifier(Modifier::ITALIC),
-                ));
-            } else if let Some(ph) = &d.param_hint {
-                let popup_open = app
-                    .completion()
-                    .state
-                    .as_deref()
-                    .is_some_and(|s| !s.candidates.is_empty());
-                if !popup_open {
-                    spans.push(Span::styled(
-                        format!("  {ph}"),
-                        TuiStyle::default()
-                            .fg(Color::DarkGray)
-                            .add_modifier(Modifier::ITALIC),
-                    ));
-                }
-            }
+            };
+            spans.push(Span::styled(hint.text, style));
         }
         let para = Paragraph::new(Line::from(spans));
         frame.render_widget(para, area);

@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅; GD.4, GD.5b, GD.6c, GD.7c, GD.8b 📝; GD.9b ❌.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅; GD.4, GD.5c, GD.6c, GD.7c, GD.8b 📝; GD.9b ❌.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -238,13 +238,33 @@ gutter's width or a split pane's offset. The hover popup has always had that
 second limitation; sharing the function means fixing it once fixes both, and it
 needs eyes.
 
-**GD.5b 📝:**
+**GD.5b ✅ — the `:` line's caret and hints** (2026-10-11). The window's
+command line showed the typed text and **no caret at all** (the audit had it as
+"pinned to the end"; there was none). It now draws a bar at the cursor's byte in
+the `:` line, the search line, a prompt, and on the cursor's row of the expanded
+band — the focused editing buffer's cursor, which was already published.
 
-- Ghost text for the focused candidate.
-- `:` line caret at the cursor's byte, not appended to the row.
-- Expanded command band: syntax spans, caret in place.
-- Command-line hints: `press a chord`, `(chord)`, `(n/m)`.
-- Popup origin accounts for the gutter and the pane's position.
+The hints that trail the line — `press a chord`, `(chord)`, the completion
+`(n/m)`, a live error, the parameter hint — were inline in the terminal's draw
+function and absent from the window. They are content, so they moved to
+`lattice_host::cmdline_row::trailing_hints`, which both peers call; each peer
+only decides how a `HintKind` looks. The window's hint colours come from the
+theme (`comment` for the dim ones) instead of a fixed grey.
+
+The terminal's caret column was a byte count; it is `cmdline_row::caret_cols`
+now, which fixes it sitting one cell right per multi-byte character before it.
+
+Gate: targeted — the host's `cmdline_row::` module, the GPUI bottom-row tests,
+the TUI's command-line tests. **The caret element has not been seen**: it is a
+zero-width box holding an absolutely positioned bar, and whether it lines up
+with the text is exactly what a screenshot would tell.
+
+**GD.5c 📝:**
+
+- Ghost text for the focused completion candidate.
+- Syntax spans in the expanded command band (the caret is done).
+- Completion / hover popup origin accounts for the gutter and the pane's
+  position.
 
 ### GD.6 — buffer text paint
 

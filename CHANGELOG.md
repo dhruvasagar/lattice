@@ -30,6 +30,13 @@
   to the pane's edge.** The fill was measured in bytes, so a row of
   box-drawing characters (a diagram in a fenced block) left a ragged strip
   of the terminal's own background down the right-hand side.
+- **GUI: the command line shows a caret.** The `:` line, the search line
+  and prompts drew the text you typed and nothing to say where you were in
+  it. They now draw a caret at the cursor, and the `:` line shows the same
+  trailing hints as the terminal: `press a chord`, the completion count, a
+  live error, the command's parameter hint.
+- **Terminal: the `:` line's caret is in the right column after a
+  multi-byte character.** It was placed by byte count.
 - **GUI: file-tree, oil and help panes are labelled in the modeline**
   (`[tree] <root>`, `[oil] <dir>`, `[help] <title>`), as they are in the
   terminal, and an oil listing with unapplied edits is marked `[+]` in both.

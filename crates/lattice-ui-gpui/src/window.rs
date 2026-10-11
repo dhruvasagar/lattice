@@ -422,6 +422,119 @@ fn global_bottom_row_visible(picker_use_minibuffer: bool, picker_has_state: bool
     !(picker_use_minibuffer && picker_has_state)
 }
 
+/// GD.5b: one piece of the text being typed in the bottom row, with
+/// the colour it takes (`None` = the row's own foreground).
+type TypedSeg = (String, Option<u32>);
+
+/// Split typed-text segments at the caret: everything before byte
+/// `caret` of their concatenation, and everything from it on. A segment
+/// the caret falls inside is cut in two and both halves keep its
+/// colour. `caret` is expected on a character boundary
+/// (`cmdline_row::caret_byte`); one that is not is moved back to one,
+/// so this never panics on a slice.
+fn split_segments_at_caret(segs: Vec<TypedSeg>, caret: usize) -> (Vec<TypedSeg>, Vec<TypedSeg>) {
+    let mut before = Vec::new();
+    let mut after = Vec::new();
+    let mut pos = 0usize;
+    for (text, color) in segs {
+        let end = pos + text.len();
+        if end <= caret {
+            before.push((text, color));
+        } else if pos >= caret {
+            after.push((text, color));
+        } else {
+            let cut = lattice_host::cmdline_row::caret_byte(&text, caret - pos);
+            let (l, r) = text.split_at(cut);
+            if !l.is_empty() {
+                before.push((l.to_string(), color));
+            }
+            if !r.is_empty() {
+                after.push((r.to_string(), color));
+            }
+        }
+        pos = end;
+    }
+    (before, after)
+}
+
+/// The `:` line's typed text as coloured segments: the published
+/// decoration spans over `line`, with the gaps between them uncoloured.
+/// A span that overlaps the previous one or does not sit on character
+/// boundaries is skipped, as the terminal renderer skips it.
+fn decorated_segments(line: &str, spans: &[(std::ops::Range<usize>, u32)]) -> Vec<TypedSeg> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    for (range, color) in spans {
+        let s = range.start.min(line.len());
+        let e = range.end.min(line.len());
+        if s < pos || e < s || !line.is_char_boundary(s) || !line.is_char_boundary(e) {
+            continue;
+        }
+        if s > pos {
+            out.push((line[pos..s].to_string(), None));
+        }
+        if e > s {
+            out.push((line[s..e].to_string(), Some(*color)));
+        }
+        pos = e;
+    }
+    if pos < line.len() {
+        out.push((line[pos..].to_string(), None));
+    }
+    out
+}
+
+/// A text caret for a flex row of text: a thin bar that takes no
+/// width of its own, so the text after it does not shift as it moves.
+fn inline_caret(color: u32) -> gpui::Div {
+    div().relative().w(px(0.)).child(
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .w(px(1.5))
+            .bg(rgb(color)),
+    )
+}
+
+/// One row of a minibuffer: `prefix` (the `:` / `/` prompt or a
+/// prompt's label), the typed segments, and the caret before byte
+/// `caret` of the typed text when this row holds it.
+fn typed_row(
+    prefix: String,
+    segs: Vec<TypedSeg>,
+    caret: Option<usize>,
+    caret_color: u32,
+) -> gpui::Div {
+    let seg_div = |(text, color): TypedSeg| match color {
+        Some(c) => div().text_color(rgb(c)).child(text),
+        None => div().child(text),
+    };
+    let mut row = div().flex().flex_row();
+    if !prefix.is_empty() {
+        row = row.child(prefix);
+    }
+    match caret {
+        Some(caret) => {
+            let (before, after) = split_segments_at_caret(segs, caret);
+            for seg in before {
+                row = row.child(seg_div(seg));
+            }
+            row = row.child(inline_caret(caret_color));
+            for seg in after {
+                row = row.child(seg_div(seg));
+            }
+        }
+        None => {
+            for seg in segs {
+                row = row.child(seg_div(seg));
+            }
+        }
+    }
+    row
+}
+
 /// Select the global bottom-row content (vim's shared cmdline / echo
 /// line) plus the echo level for colouring. While typing `:` / `/` it's
 /// the in-progress minibuffer; otherwise it's the last echo message — a
@@ -5374,69 +5487,129 @@ impl Render for EditorView {
                 // Level-coloured echo (errors red + bold, warnings
                 // yellow) to match the TUI echo line; cmdline / search /
                 // Info fall through to the default status foreground.
+                // GD.5b: a minibuffer row shows WHERE you are typing. The
+                // caret is the focused editing buffer's cursor (`ad.cursor`,
+                // the `*command-line*` / `*prompt-line*` buffer), drawn as a
+                // bar between the text before and after it. The window drew
+                // the text and no caret at all.
+                let ad_row = self.app.ad();
+                let caret_color = theme.status_foreground;
+                let dim_fg = lattice_host::ui::theme::resolve_syntax_style(
+                    &resolved_theme,
+                    &theme_ids,
+                    lattice_cells::style::Style::Comment,
+                )
+                .fg
+                .map(|c| c.to_rgb_u32(0x006c_7086))
+                .unwrap_or(0x006c_7086);
+                let error_fg = lattice_host::ui::theme::resolve_syntax_style(
+                    &resolved_theme,
+                    &theme_ids,
+                    lattice_cells::style::Style::DiagnosticError,
+                )
+                .fg
+                .map(|c| c.to_rgb_u32(0x00f3_8ba8))
+                .unwrap_or(0x00f3_8ba8);
                 let mut msg = if modeline.cmdline_expanded {
+                    // MB.2 band: one row per line; the prompt character is
+                    // on the first, and the caret on the cursor's line.
                     let mut col = div().flex().flex_col();
-                    for line in bottom_row.split('\n') {
-                        col = col.child(div().child(line.to_string()));
+                    for (i, line) in bottom_row.split('\n').enumerate() {
+                        let (prefix, typed) = if i == 0 {
+                            let mut chars = line.chars();
+                            let p = chars.next().map(String::from).unwrap_or_default();
+                            (p, chars.as_str().to_string())
+                        } else {
+                            (String::new(), line.to_string())
+                        };
+                        let caret = (ad_row.cursor.line as usize == i).then(|| {
+                            lattice_host::cmdline_row::caret_byte(
+                                &typed,
+                                ad_row.cursor.byte as usize,
+                            )
+                        });
+                        col = col.child(typed_row(prefix, vec![(typed, None)], caret, caret_color));
                     }
                     col
-                } else if matches!(modal, lattice_grammar::ModalState::Command)
-                    && modeline
-                        .cmdline_decorations
-                        .as_ref()
-                        .is_some_and(|d| !d.spans.is_empty())
-                {
+                } else if matches!(modal, lattice_grammar::ModalState::Command) {
                     // MB.4: colour the `:` line per the published decoration
-                    // spans, then the live error / parameter hint (peer of
-                    // the TUI `draw_command_or_echo` path). Spans are byte
-                    // ranges into `cmdline_text` (the `:` prompt is separate).
-                    let d = modeline.cmdline_decorations.as_ref().unwrap();
-                    let line = modeline.cmdline_text.as_ref();
+                    // spans (byte ranges into `cmdline_text`; the `:` prompt
+                    // is separate), then the trailing hints the host decides
+                    // (`cmdline_row::trailing_hints`) — the same ones the
+                    // terminal shows.
+                    let line: &str = modeline.cmdline_text.as_ref();
+                    let deco = modeline.cmdline_decorations.as_ref();
                     let default_fg = theme.status_foreground;
-                    let mut row = div().flex().flex_row().child(":".to_string());
-                    let mut pos = 0usize;
-                    for sp in &d.spans {
-                        let s = sp.range.start.min(line.len());
-                        let e = sp.range.end.min(line.len());
-                        if s < pos
-                            || e < s
-                            || !line.is_char_boundary(s)
-                            || !line.is_char_boundary(e)
-                        {
-                            continue;
-                        }
-                        if s > pos {
-                            row = row.child(line[pos..s].to_string());
-                        }
-                        let fg = lattice_host::ui::theme::resolve_syntax_style(
-                            &resolved_theme,
-                            &theme_ids,
-                            sp.style,
-                        )
-                        .fg
-                        .map(|c| c.to_rgb_u32(default_fg))
-                        .unwrap_or(default_fg);
-                        row = row.child(div().text_color(rgb(fg)).child(line[s..e].to_string()));
-                        pos = e;
-                    }
-                    if pos < line.len() {
-                        row = row.child(line[pos..].to_string());
-                    }
-                    if let Some(err) = &d.error {
-                        let ec = lattice_host::ui::theme::resolve_syntax_style(
-                            &resolved_theme,
-                            &theme_ids,
-                            lattice_cells::style::Style::DiagnosticError,
-                        )
-                        .fg
-                        .map(|c| c.to_rgb_u32(0x00f3_8ba8))
-                        .unwrap_or(0x00f3_8ba8);
-                        row = row.child(div().text_color(rgb(ec)).child(format!("  {err}")));
-                    } else if let Some(ph) = &d.param_hint {
-                        row =
-                            row.child(div().text_color(rgb(0x006c_7086)).child(format!("  {ph}")));
+                    let spans: Vec<(std::ops::Range<usize>, u32)> = deco
+                        .map(|d| {
+                            d.spans
+                                .iter()
+                                .map(|sp| {
+                                    let fg = lattice_host::ui::theme::resolve_syntax_style(
+                                        &resolved_theme,
+                                        &theme_ids,
+                                        sp.style,
+                                    )
+                                    .fg
+                                    .map(|c| c.to_rgb_u32(default_fg))
+                                    .unwrap_or(default_fg);
+                                    (sp.range.clone(), fg)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let caret =
+                        lattice_host::cmdline_row::caret_byte(line, ad_row.cursor.byte as usize);
+                    let mut row = typed_row(
+                        ":".to_string(),
+                        decorated_segments(line, &spans),
+                        Some(caret),
+                        caret_color,
+                    );
+                    let completion = self.app.render_state.load().completion.clone();
+                    for hint in lattice_host::cmdline_row::trailing_hints(
+                        modeline.auto_submit_hint,
+                        ad_row.chord_capture,
+                        completion
+                            .state
+                            .as_deref()
+                            .map(|s| (s.selected, s.candidates.len())),
+                        deco,
+                    ) {
+                        use lattice_host::cmdline_row::HintKind;
+                        let fg = match hint.kind {
+                            HintKind::Error => error_fg,
+                            HintKind::Cue | HintKind::Count | HintKind::Param => dim_fg,
+                        };
+                        row = row.child(div().text_color(rgb(fg)).child(hint.text));
                     }
                     row
+                } else if let lattice_grammar::ModalState::Search(dir) = modal {
+                    // The search line is typed at its end.
+                    let prefix = match dir {
+                        lattice_grammar::SearchDirection::Forward => "/",
+                        lattice_grammar::SearchDirection::Backward => "?",
+                    };
+                    let pattern = modeline.search_pattern.as_deref().unwrap_or("").to_string();
+                    let caret = pattern.len();
+                    typed_row(
+                        prefix.to_string(),
+                        vec![(pattern, None)],
+                        Some(caret),
+                        caret_color,
+                    )
+                } else if matches!(modal, lattice_grammar::ModalState::Prompt) {
+                    // MG.51: the label is the echo, the typed text the
+                    // `*prompt-line*` buffer.
+                    let label = messages
+                        .last
+                        .as_deref()
+                        .map(|m| m.text.clone())
+                        .unwrap_or_default();
+                    let typed = modeline.prompt_text.to_string();
+                    let caret =
+                        lattice_host::cmdline_row::caret_byte(&typed, ad_row.cursor.byte as usize);
+                    typed_row(label, vec![(typed, None)], Some(caret), caret_color)
                 } else {
                     div().child(bottom_row)
                 };
@@ -6906,6 +7079,68 @@ mod modeline_tests {
         let (row, level) = super::bottom_row_content(ModalState::Insert, &expanded, &echo);
         assert_eq!(row, ":e foo\nbar baz");
         assert!(level.is_none());
+    }
+
+    /// GD.5b: the caret splits the typed text where it is, and a
+    /// coloured token it falls inside keeps its colour on both sides.
+    #[test]
+    fn the_typed_text_splits_at_the_caret() {
+        use super::{TypedSeg, split_segments_at_caret};
+        let segs = || {
+            vec![
+                ("set".to_string(), Some(0xff0000)),
+                (" ".to_string(), None),
+                ("wrap".to_string(), Some(0x00ff00)),
+            ]
+        };
+        let text = |v: &[TypedSeg]| v.iter().map(|(t, _)| t.as_str()).collect::<String>();
+
+        let (b, a) = split_segments_at_caret(segs(), 0);
+        assert!(b.is_empty());
+        assert_eq!(text(&a), "set wrap");
+
+        let (b, a) = split_segments_at_caret(segs(), 3);
+        assert_eq!((text(&b).as_str(), text(&a).as_str()), ("set", " wrap"));
+
+        // Inside `wrap`: both halves are still that token's colour.
+        let (b, a) = split_segments_at_caret(segs(), 6);
+        assert_eq!((text(&b).as_str(), text(&a).as_str()), ("set wr", "ap"));
+        assert_eq!(b.last().unwrap().1, Some(0x00ff00));
+        assert_eq!(a.first().unwrap().1, Some(0x00ff00));
+
+        let (b, a) = split_segments_at_caret(segs(), 99);
+        assert_eq!(text(&b), "set wrap");
+        assert!(a.is_empty());
+
+        // Never inside a character.
+        let (b, a) = split_segments_at_caret(vec![("café".to_string(), None)], 4);
+        assert_eq!((text(&b).as_str(), text(&a).as_str()), ("caf", "é"));
+    }
+
+    /// GD.5b: decoration spans colour their tokens; the text between
+    /// them is left to the row. A span that overlaps the one before it,
+    /// or runs past the line, is not allowed to corrupt the text.
+    #[test]
+    fn decoration_spans_become_coloured_segments() {
+        use super::{TypedSeg, decorated_segments};
+        let segs = decorated_segments("set wrap", &[(0..3, 1), (4..8, 2)]);
+        assert_eq!(
+            segs,
+            vec![
+                ("set".to_string(), Some(1)),
+                (" ".to_string(), None),
+                ("wrap".to_string(), Some(2)),
+            ]
+        );
+        let text = |v: &[TypedSeg]| v.iter().map(|(t, _)| t.as_str()).collect::<String>();
+        assert_eq!(text(&decorated_segments("set wrap", &[])), "set wrap");
+        assert_eq!(
+            text(&decorated_segments(
+                "set wrap",
+                &[(0..3, 1), (2..5, 2), (6..99, 3)]
+            )),
+            "set wrap"
+        );
     }
 
     /// The global cmdline/echo row is painted in every state EXCEPT a

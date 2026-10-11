@@ -3,7 +3,7 @@
 
 # `help`
 
-**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `help-plugin` (imports), `project-plugin` (imports), `treesitter-context-plugin` (imports)
+**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `help-plugin` (imports), `lighthouse-plugin` (imports), `project-plugin` (imports), `treesitter-context-plugin` (imports)
 
 CR.3: plugin-contributed `:help` pages.
 

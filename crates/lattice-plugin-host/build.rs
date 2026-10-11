@@ -235,6 +235,18 @@ fn main() {
         "project",
         "PROJECT_PLUGIN_WASM",
     );
+    // LH.1: the language-server manager. Grammar + events from one
+    // component. Built here so `tests/lighthouse_install.rs` can drive a real
+    // install through it without a prior `cargo xtask build-core-plugins`.
+    build_guest(
+        &manifest_dir
+            .join("..")
+            .join("..")
+            .join("plugins")
+            .join("lighthouse"),
+        "lighthouse",
+        "LIGHTHOUSE_PLUGIN_WASM",
+    );
     // AD.3: the fourth bundled plugin, `gc` comment toggling. No test loads it
     // yet; it is built here so CI COMPILES it. Before this it was compiled
     // only by the release workflow (`cargo xtask build-core-plugins`), so a
@@ -296,6 +308,17 @@ fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
     let doc_dir = guest_dir.join("doc");
     if doc_dir.is_dir() {
         println!("cargo:rerun-if-changed={}", doc_dir.display());
+    }
+    // LH.1: the same hole, for data baked in from the guest's top level —
+    // lighthouse `include_str!`s `registry.toml`, and a registry edit is
+    // exactly the change that should re-run its tests. Only when present: a
+    // declared path that does not exist re-runs this script on every build
+    // (see the guard at the top of this function).
+    for baked in ["registry.toml", "plugin.toml"] {
+        let path = guest_dir.join(baked);
+        if path.is_file() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
     }
 
     // The guest builds into its own workspace `target/`, pinned explicitly so a

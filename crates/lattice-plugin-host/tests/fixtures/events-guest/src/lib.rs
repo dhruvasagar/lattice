@@ -112,6 +112,9 @@ fn label(ev: &Event) -> &'static str {
         Event::PluginLoaded(_) => "plugin-loaded",
         Event::PluginUnloaded(_) => "plugin-unloaded",
         Event::FilesChanged(_) => "files-changed",
+        Event::JobProgress(_) => "job-progress",
+        Event::JobOutput(_) => "job-output",
+        Event::JobFinished(_) => "job-finished",
     }
 }
 
@@ -121,6 +124,34 @@ fn label(ev: &Event) -> &'static str {
 /// configuration too (`org.roam-directory`). Absent → no watch is armed, which
 /// is what every pre-OR.2 test gets.
 const WATCH_TARGET: &str = "/data/watch-target";
+
+/// LH.0.1. Present ⇒ download from `register-events`. Three lines: the URL,
+/// the expected SHA-256, and the host path to write to — handed in the same
+/// way `WATCH_TARGET` is, and for its reason.
+const DOWNLOAD_REQUEST: &str = "/data/download-request";
+
+/// LH.0.2. Present ⇒ unpack from `register-events`. Three lines: the archive,
+/// the destination, and `gz` or `tar-gz`.
+const EXTRACT_REQUEST: &str = "/data/extract-request";
+
+/// LH.0.3. Present ⇒ run a process from `register-events`. First line the
+/// program, each further line one argument.
+const SPAWN_REQUEST: &str = "/data/spawn-request";
+
+/// LH.0.4. Present ⇒ register a language server from `register-events`. Three
+/// lines: the server id, the command, and one file pattern.
+const SERVER_REQUEST: &str = "/data/server-request";
+
+/// LH.0.4. Present as well ⇒ withdraw that registration straight away.
+const SERVER_WITHDRAW: &str = "/data/server-withdraw";
+
+/// LH.0.5. Present ⇒ write to the output buffer it names (one line: the
+/// buffer name) from `register-events`.
+const OUTPUT_REQUEST: &str = "/data/output-request";
+
+/// LH.0.6. Present ⇒ report the host platform and data dir, and mark a file
+/// in the data dir executable through its HOST path.
+const HOST_INFO_REQUEST: &str = "/data/host-info-request";
 
 /// PH7.8c: present ⇒ ring our own doorbell from `register-events`. A marker
 /// file rather than an unconditional emit, so only the test that is about this
@@ -194,6 +225,183 @@ impl Guest for Component {
             };
             record(&denied);
         }
+        // LH.0.1: download a file, if the test asked for one. Started from
+        // INSIDE `register-events` on purpose: the subscription two lines up is
+        // recorded but not on the bus yet, and a loopback transfer finishes
+        // faster than the wiring does — so this is also the test that the host
+        // holds the start until there is something to hear the outcome.
+        if let Ok(request) = std::fs::read_to_string(DOWNLOAD_REQUEST) {
+            let mut lines = request.lines();
+            let (url, sha256, dest) = (
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+            );
+            // @example host-services.http-download: Subscribe to the job events, then fetch a pinned file into a granted directory
+            events::subscribe(&kind_filter(EventKind::JobProgress), 8);
+            events::subscribe(&kind_filter(EventKind::JobFinished), 8);
+            let outcome = match host_services::http_download(url, sha256, dest) {
+                // The id is what `job-finished` will carry; a plugin running
+                // several jobs keys its state by it.
+                Ok(_id) => "download:started".to_string(),
+                Err(e) => format!("download:err({e})"),
+            };
+            record(&outcome);
+            // @end-example
+            // …and a host the plugin was NOT granted, recorded beside it so
+            // the grant check is observed rather than assumed.
+            let denied = match host_services::http_download(
+                "https://not-granted.invalid/x",
+                sha256,
+                dest,
+            ) {
+                Ok(_) => "download-denied:started".to_string(),
+                Err(e) => format!("download-denied:err({e})"),
+            };
+            record(&denied);
+            // @example host-services.cancel-job: Cancel a job by the id the function that started it returned
+            // A cancel of an id that is not ours to cancel — or not anyone's —
+            // is nothing, so a plugin need not track which are still running.
+            host_services::cancel_job(u64::MAX);
+            // @end-example
+            // Stay inside `register-events` for longer than a loopback
+            // transfer takes. Without this the request above is followed by
+            // the subscription wiring within microseconds, the race is never
+            // lost, and a host that did NOT hold the start would pass — which
+            // is what this test did the first time it was written. A real
+            // guest lingers here whenever registration has other work to do.
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+        // LH.0.2: unpack an archive, if the test asked for one. The same two
+        // job events as a download — that is the point of their being generic.
+        if let Ok(request) = std::fs::read_to_string(EXTRACT_REQUEST) {
+            let mut lines = request.lines();
+            let (src, dest, format) = (
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+            );
+            let format = if format == "tar-gz" {
+                host_services::ArchiveFormat::TarGz
+            } else {
+                host_services::ArchiveFormat::Gz
+            };
+            // @example host-services.extract-archive: Unpack a downloaded archive into a granted directory and wait for `job-finished`
+            events::subscribe(&kind_filter(EventKind::JobFinished), 9);
+            let outcome = match host_services::extract_archive(src, dest, format) {
+                Ok(_id) => "extract:started".to_string(),
+                Err(e) => format!("extract:err({e})"),
+            };
+            record(&outcome);
+            // @end-example
+        }
+        // LH.0.3: run a process, if the test asked for one.
+        if let Ok(request) = std::fs::read_to_string(SPAWN_REQUEST) {
+            let mut lines = request.lines();
+            let command = lines.next().unwrap_or_default();
+            let args: Vec<String> = lines.map(str::to_string).collect();
+            // @example host-services.spawn-process: Run a program with explicit arguments and subscribe to its output and exit
+            events::subscribe(&kind_filter(EventKind::JobOutput), 10);
+            events::subscribe(&kind_filter(EventKind::JobFinished), 10);
+            // No shell: each element of `args` is one argument, whatever it
+            // contains. `""` runs it in the editor's working directory.
+            let outcome = match host_services::spawn_process(command, &args, "") {
+                Ok(_id) => "spawn:started".to_string(),
+                Err(e) => format!("spawn:err({e})"),
+            };
+            record(&outcome);
+            // @end-example
+        }
+        // LH.0.4: register a language server, if the test asked for one.
+        if let Ok(request) = std::fs::read_to_string(SERVER_REQUEST) {
+            let mut lines = request.lines();
+            let (id, command, pattern) = (
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+                lines.next().unwrap_or_default(),
+            );
+            // @example host-services.register-server: Register an installed language server so matching buffers start it
+            let config = host_services::ServerConfig {
+                id: id.to_string(),
+                // An absolute path into the install tree — no `PATH` entry
+                // needed, which is the point of managing the install.
+                command: command.to_string(),
+                args: vec!["--stdio".to_string()],
+                env: Vec::new(),
+                root_markers: vec![".git".to_string()],
+                file_patterns: vec![pattern.to_string()],
+                language_id: id.to_string(),
+                initialization_options: None,
+            };
+            let registered = host_services::register_server(&config);
+            // @end-example
+            match &registered {
+                Ok(_token) => record("register:ok"),
+                Err(e) => record(&format!("register:err({e})")),
+            }
+            if let (Ok(token), true) = (registered, std::fs::metadata(SERVER_WITHDRAW).is_ok()) {
+                // @example host-services.unregister-server: Withdraw a server registration by its token, restoring what it shadowed
+                host_services::unregister_server(token);
+                // @end-example
+                record("unregister:done");
+            }
+        }
+        if std::fs::metadata(HOST_INFO_REQUEST).is_ok() {
+            // @example host-services.host-platform: Pick the native build to download for the machine the editor is running on
+            let platform = host_services::host_platform();
+            let build = format!("{}-{}", platform.os, platform.arch);
+            // @end-example
+            record(&format!("platform:{build}"));
+            // Written through WASI, at the guest's `/data`…
+            let _ = std::fs::write("/data/tool", "#!/bin/sh\n");
+            // @example host-services.data-dir: Name a file in the plugin's own data directory to a host-side call
+            // …and named to the host by its real path. No `fs:` capability
+            // is needed for anything under this directory.
+            let outcome = match host_services::data_dir() {
+                Some(dir) => host_services::set_executable(&format!("{dir}/tool"))
+                    .map(|()| dir),
+                None => Err("no data dir".to_string()),
+            };
+            // @end-example
+            match outcome {
+                Ok(dir) => record(&format!("data-dir:{dir}")),
+                Err(e) => record(&format!("data-dir:err({e})")),
+            }
+            // One level up is the plugin's home, not its data: out of reach.
+            if let Some(dir) = host_services::data_dir() {
+                match host_services::set_executable(&format!("{dir}/../plugin.toml")) {
+                    Ok(()) => record("escape:ok"),
+                    Err(_) => record("escape:denied"),
+                }
+            }
+        }
+        if let Ok(request) = std::fs::read_to_string(OUTPUT_REQUEST) {
+            let name = request.lines().next().unwrap_or_default();
+            // @example host-services.output-reset: Empty an output buffer before a new run so it does not land under the last one
+            let reset = host_services::output_reset(name);
+            // @end-example
+            // @example host-services.output-status: Set an output buffer's headerline to say what the work is doing
+            let status = host_services::output_status(
+                name,
+                host_services::OutputState::Running,
+                "downloading\u{2026} 43%",
+            );
+            // @end-example
+            // @example host-services.output-append: Append lines to a plugin-owned output buffer, from any export
+            let appended = host_services::output_append(
+                name,
+                &[
+                    "resolving rust-analyzer".to_string(),
+                    // One string, two lines: the host splits on newlines.
+                    "downloading\nverifying".to_string(),
+                ],
+            );
+            // @end-example
+            match reset.and(status).and(appended) {
+                Ok(()) => record("output:ok"),
+                Err(e) => record(&format!("output:err({e})")),
+            }
+        }
     }
 
     /// Deliver one matching event. Handler 3 traps, handler 4 is a no-op (the
@@ -225,6 +433,60 @@ impl Guest for Component {
                 if p.name == "fixture/registered" {
                     record("7:registered-event-delivered");
                 }
+            }
+            return;
+        }
+        // LH.0: a host job moved, or ended. The outcome line is the proof —
+        // it is written with no action dispatched after the request.
+        if handler == 8 {
+            match &ev {
+                Event::JobProgress(p) => {
+                    record(&format!("8:job-progress:{}", p.done));
+                }
+                Event::JobFinished(f) => match &f.outcome {
+                    Ok(()) => record("8:job-finished:ok"),
+                    Err(e) => record(&format!("8:job-finished:err({e})")),
+                },
+                _ => record("8:not-a-job-event"),
+            }
+            return;
+        }
+        // LH.0.3: a process wrote something, or exited.
+        if handler == 10 {
+            match &ev {
+                Event::JobOutput(o) => {
+                    for line in &o.lines {
+                        record(&format!("10:out:{line}"));
+                    }
+                }
+                Event::JobFinished(f) => match &f.outcome {
+                    Ok(()) => record("10:exit:ok"),
+                    Err(e) => record(&format!("10:exit:err({e})")),
+                },
+                _ => record("10:not-a-job-event"),
+            }
+            return;
+        }
+        // LH.0.2: the unpack ended. A bare `.gz` carries no mode, so the file
+        // it produced is not runnable until the host is asked to make it so.
+        if handler == 9 {
+            let Event::JobFinished(f) = &ev else {
+                record("9:not-a-job-event");
+                return;
+            };
+            match &f.outcome {
+                Ok(()) => record("9:extract-finished:ok"),
+                Err(e) => record(&format!("9:extract-finished:err({e})")),
+            }
+            if let (Ok(()), Ok(request)) = (&f.outcome, std::fs::read_to_string(EXTRACT_REQUEST)) {
+                let dest = request.lines().nth(1).unwrap_or_default();
+                // @example host-services.set-executable: Make an unpacked binary runnable once its job reports success
+                let outcome = match host_services::set_executable(dest) {
+                    Ok(()) => "set-executable:ok".to_string(),
+                    Err(e) => format!("set-executable:err({e})"),
+                };
+                record(&outcome);
+                // @end-example
             }
             return;
         }

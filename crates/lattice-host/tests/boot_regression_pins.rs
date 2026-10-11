@@ -119,6 +119,14 @@ fn plugin_trace_mode_registered_at_boot() {
     assert_mode(&boot(), "plugin-trace-mode");
 }
 
+#[test]
+fn plugin_output_mode_registered_at_boot() {
+    // LH.0.5: the mode a plugin names when it opens its output buffer. A
+    // plugin cannot register it, so if this is missing every plugin's
+    // progress buffer opens with no mode and stays empty.
+    assert_mode(&boot(), "plugin-output-mode");
+}
+
 // ── Subsystem-wired ex-commands ────────────────────────────────────────────
 
 #[test]

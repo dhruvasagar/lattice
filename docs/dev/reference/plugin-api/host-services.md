@@ -3,7 +3,7 @@
 
 # `host-services`
 
-**Direction:** guest calls into the host through it · **Capability:** filesystem · **Worlds:** `completion-source-plugin` (imports), `context-plugin` (imports), `decorations-plugin` (imports), `events-plugin` (imports), `media-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `project-plugin` (imports)
+**Direction:** guest calls into the host through it · **Capability:** filesystem · **Worlds:** `completion-source-plugin` (imports), `context-plugin` (imports), `decorations-plugin` (imports), `events-plugin` (imports), `lighthouse-plugin` (imports), `media-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `project-plugin` (imports)
 
 Guest→host services (plugin-host.md §5). Capability-gated calls a plugin
 makes INTO the host, checked against its `CapabilityGrant` (PH7.2). Unlike
@@ -28,7 +28,7 @@ does — a bounded `walk` covers the fuzzy-finder.
 
 - [`position`](types.md#record-position) from [`types`](types.md)
 
-## Functions (20)
+## Functions (32)
 
 ### `can-write-file`
 
@@ -63,6 +63,32 @@ Ok(vec![Effect::Echo(EchoPayload {
 })])
 ```
 
+### `cancel-job`
+
+```wit
+cancel-job: func(id: u64)
+```
+
+Cancel a job this plugin started. It still reports `job-finished`, as
+`err("cancelled")`.
+
+Any instance of the same plugin may cancel — the chord that cancels an
+install runs on the grammar seam, and the job it stops may have been
+started from the events seam. Another plugin's id, an id that has
+already finished and an id that never existed are all silently nothing:
+a cancel is idempotent, because the alternative is a guest that must
+track host state to avoid an error.
+
+Cooperative: the job stops at its next step, not mid-step.
+
+**Example — Cancel a job by the id the function that started it returned** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+// A cancel of an id that is not ours to cancel — or not anyone's —
+// is nothing, so a plugin need not track which are still running.
+host_services::cancel_job(u64::MAX);
+```
+
 ### `clamp-position`
 
 ```wit
@@ -94,6 +120,36 @@ Ok(vec![Effect::Echo(EchoPayload {
     level: EchoLevel::Info,
     text,
 })])
+```
+
+### `data-dir`
+
+```wit
+data-dir: func() -> option<string>
+```
+
+LH.0.6: this plugin's private data directory, as an absolute path **on
+the host** — the directory the guest sees as `/data`.
+
+The calls that act on the host's behalf (`http-download`,
+`extract-archive`, `set-executable`, `register-server`, `read-file`,
+`walk`) take host paths, and `/data` means nothing to them. This is the
+path to give them. Every one of those calls accepts a path under it
+with no `fs:` capability in the manifest: the directory is the
+plugin's own.
+
+`none` when the plugin has no data directory, or its path is not UTF-8.
+
+**Example — Name a file in the plugin's own data directory to a host-side call** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+// …and named to the host by its real path. No `fs:` capability
+// is needed for anything under this directory.
+let outcome = match host_services::data_dir() {
+    Some(dir) => host_services::set_executable(&format!("{dir}/tool"))
+        .map(|()| dir),
+    None => Err("no data dir".to_string()),
+};
 ```
 
 ### `delete-file`
@@ -208,6 +264,131 @@ Ok(vec![Effect::Echo(EchoPayload {
 })])
 ```
 
+### `extract-archive`
+
+```wit
+extract-archive: func(src: string, dest: string, format: archive-format) -> result<u64, string>
+```
+
+Unpack the archive file `src` to `dest`. **A job** (see `cancel-job`):
+returns its id; `job-progress` counts bytes of `src` consumed.
+
+Host-side because unpacking is CPU-bound work a guest would do inside a
+fuel-metered call, and because a guest cannot write files from every
+seam (see `read-file`).
+
+`src` must lie within a granted `fs:read` (or `fs:write`) prefix and
+`dest` within a granted `fs:write` one; both are refused here, as an
+immediate `err`, by name.
+
+**An archive is untrusted input** — a pinned hash says the bytes are the
+ones somebody reviewed, not that they are benign — so every entry is
+confined to `dest`. An entry whose path is absolute or climbs with
+`..`, a symlink whose target leaves `dest`, and an entry that would be
+written *through* a symlink each fail the whole job. So do hard links,
+devices and FIFOs, by name rather than by being skipped: a silently
+dropped entry is a half-installed tool.
+
+**All or nothing.** The work happens in a sibling `<dest>.part` and is
+renamed into place only once the whole archive has been read. Any
+failure — a bad entry, a truncated stream, a cancel, a size limit —
+leaves no `dest` and no part, so "is it there" is a sound test for "is
+it complete".
+
+For `tar-gz`, **`dest` must not already exist**: an update unpacks
+beside the old version and switches, it does not merge into it. For
+`gz`, an existing file is replaced, by the rename, only on success.
+
+A file is written executable or not, as the archive says; no other mode
+bit (setuid, world-writable) is honoured. A bare `gz` carries no mode at
+all — follow it with `set-executable`.
+
+**Example — Unpack a downloaded archive into a granted directory and wait for `job-finished`** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+events::subscribe(&kind_filter(EventKind::JobFinished), 9);
+let outcome = match host_services::extract_archive(src, dest, format) {
+    Ok(_id) => "extract:started".to_string(),
+    Err(e) => format!("extract:err({e})"),
+};
+record(&outcome);
+```
+
+### `host-platform`
+
+```wit
+host-platform: func() -> platform
+```
+
+LH.0.6: the platform the editor is running on.
+
+A guest is `wasm32` wherever it runs and cannot tell. A plugin that
+fetches a native program needs to know which build to fetch.
+
+**Example — Pick the native build to download for the machine the editor is running on** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let platform = host_services::host_platform();
+let build = format!("{}-{}", platform.os, platform.arch);
+```
+
+### `http-download`
+
+```wit
+http-download: func(url: string, sha256: string, dest: string) -> result<u64, string>
+```
+
+Download `url` (GET) to the file `dest`, accepting it only if its
+SHA-256 equals `sha256` (64 hex digits, either case). **A job** (see
+above): returns its id; `job-progress` counts bytes received.
+
+The bytes go from the socket to the disk without visiting the guest —
+which matters beyond speed, because a guest cannot write files from
+every seam (see `read-file`).
+
+**Two grants, both re-checked host-side**, and both refused here, as an
+immediate `err`, so a manifest problem shows up at the call rather than
+as an event some time later:
+
+- the URL's host must be a granted `net:http:<host>`. A grant entry
+  carrying a port (`net:http:localhost:8080`) matches that port only;
+  one without matches any. The match is exact: a subdomain is a
+  different host.
+- `dest` must lie within a granted `fs:write` prefix.
+
+**Every redirect hop is checked against the same grant.** The host
+follows redirects itself, and a hop to an ungranted host fails the job
+with a message naming that host. A release URL that bounces to a CDN
+therefore needs the CDN granted by name — otherwise one granted host
+would be a door to any host a server cared to point at.
+
+`https` only; plain `http` is accepted solely for a loopback address.
+Redirects, size and time are bounded by the host.
+
+**The hash check is not the guest's to remember.** The body is written
+to a sibling `<dest>.part` and renamed into place only on a match. A
+mismatch, a cancel, a dropped connection and an oversized body all leave
+`dest` untouched and no part file behind, so "is the file there" is a
+sound test for "was it verified". An existing `dest` is replaced, by the
+rename, only on success. Missing parent directories are created.
+
+`err` for a malformed URL or digest, either refusal above, or a seam
+with no event bus to report on — each named.
+
+**Example — Subscribe to the job events, then fetch a pinned file into a granted directory** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+events::subscribe(&kind_filter(EventKind::JobProgress), 8);
+events::subscribe(&kind_filter(EventKind::JobFinished), 8);
+let outcome = match host_services::http_download(url, sha256, dest) {
+    // The id is what `job-finished` will carry; a plugin running
+    // several jobs keys its state by it.
+    Ok(_id) => "download:started".to_string(),
+    Err(e) => format!("download:err({e})"),
+};
+record(&outcome);
+```
+
 ### `local-utc-offset-seconds`
 
 ```wit
@@ -299,6 +480,89 @@ Ok(vec![Effect::Echo(EchoPayload {
 })])
 ```
 
+### `output-append`
+
+```wit
+output-append: func(name: string, lines: list<string>) -> result<_, string>
+```
+
+LH.0.5: append `lines` to one of this plugin's **output buffers** —
+a read-only, live-tailing buffer the plugin fills and the editor shows.
+
+This is how a plugin shows the progress of work it started. A job's
+events arrive in `on-event`, which returns nothing and so cannot open
+a buffer or write to one; this can be called from there, or from any
+other export.
+
+`name` is the buffer's name, in the `*name*` form every editor-made
+buffer has (`*lsp-install:rust-analyzer*`). Writing does not open
+anything: the lines are kept, and a buffer of that name in
+`plugin-output-mode` shows them — both those written before it was
+opened and those that arrive after, without a keypress. To put it in
+front of the user, return `effect::open-synthetic-buffer` naming the
+same `name` and `mode-id: "plugin-output-mode"` from a command.
+
+A string containing newlines becomes that many lines. The buffer keeps
+the most recent 10 000 lines; one call adds at most 1024, and a line is
+cut at 4096 characters.
+
+`err` for a `name` not in the `*name*` form, one another plugin already
+writes to, or a 33rd buffer for this plugin — each named.
+
+**Example — Append lines to a plugin-owned output buffer, from any export** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let appended = host_services::output_append(
+    name,
+    &[
+        "resolving rust-analyzer".to_string(),
+        // One string, two lines: the host splits on newlines.
+        "downloading\nverifying".to_string(),
+    ],
+);
+```
+
+### `output-reset`
+
+```wit
+output-reset: func(name: string) -> result<_, string>
+```
+
+LH.0.5: empty an output buffer and clear its headerline, so a second
+run starts on a clean page instead of under the first.
+
+`err` as `output-append`.
+
+**Example — Empty an output buffer before a new run so it does not land under the last one** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let reset = host_services::output_reset(name);
+```
+
+### `output-status`
+
+```wit
+output-status: func(name: string, state: output-state, text: string) -> result<_, string>
+```
+
+LH.0.5: set the **headerline** of an output buffer — the one row that
+stays at the top while the lines scroll: an icon for `state`, then
+`text`. Each call replaces the last. Use it for where the work is
+(`downloading… 43%`) and how it ended; use `output-append` for what
+should stay on the page.
+
+`err` as `output-append`.
+
+**Example — Set an output buffer's headerline to say what the work is doing** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let status = host_services::output_status(
+    name,
+    host_services::OutputState::Running,
+    "downloading\u{2026} 43%",
+);
+```
+
 ### `read-file`
 
 ```wit
@@ -377,6 +641,82 @@ by name: a re-register refreshes the doc (a plugin reload).
 host_services::register_event(SavedEcho::NAME, SavedEcho::DOC);
 ```
 
+### `register-server`
+
+```wit
+register-server: func(config: server-config) -> result<u64, string>
+```
+
+Tell the editor about a language server, so buffers it handles get one.
+Returns a token for `unregister-server`.
+
+**Gated on `proc:spawn`** — bundled plugins only — because that is what
+this is: `command` is a program the editor will run, unsandboxed, the
+next time a matching buffer opens. A plugin that could register a
+server could run anything.
+
+While registered, the config **shadows** any server the editor already
+had under the same `id`: a managed install replaces the `PATH` lookup
+for its language instead of running beside it. Registering the same
+`id` again shadows the earlier registration, which is how an update
+switches versions.
+
+**Nothing is started or restarted here.** The server is spawned on the
+next buffer open its patterns match; one already running for those
+buffers keeps the program it was started with until it is restarted.
+
+The registration lasts as long as the plugin instance that made it and
+is withdrawn when the plugin unloads, so a plugin that is gone leaves
+no server pointing into its install tree.
+
+`err` for a plugin without the grant, an empty `id` / `command` /
+`language-id`, no `file-patterns`, initialization options that are not
+JSON, or an editor with no language-server support wired — each named.
+
+**Example — Register an installed language server so matching buffers start it** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let config = host_services::ServerConfig {
+    id: id.to_string(),
+    // An absolute path into the install tree — no `PATH` entry
+    // needed, which is the point of managing the install.
+    command: command.to_string(),
+    args: vec!["--stdio".to_string()],
+    env: Vec::new(),
+    root_markers: vec![".git".to_string()],
+    file_patterns: vec![pattern.to_string()],
+    language_id: id.to_string(),
+    initialization_options: None,
+};
+let registered = host_services::register_server(&config);
+```
+
+### `set-executable`
+
+```wit
+set-executable: func(path: string) -> result<_, string>
+```
+
+Mark the file `path` executable.
+
+For a binary that arrived with no mode — downloaded directly, or
+unpacked from a bare `gz`. A guest cannot do this itself: WASI has no
+`chmod`. Immediate, not a job.
+
+Gated on `fs:write` over `path`, re-checked host-side. `err` for a
+denied path, a path with nothing there, or a directory — each named. On
+a platform with no executable bit it is `ok` and does nothing.
+
+**Example — Make an unpacked binary runnable once its job reports success** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let outcome = match host_services::set_executable(dest) {
+    Ok(()) => "set-executable:ok".to_string(),
+    Err(e) => format!("set-executable:err({e})"),
+};
+record(&outcome);
+```
+
 ### `source-line`
 
 ```wit
@@ -397,6 +737,51 @@ duplicate. It also reads a file the guest may not be editing at all,
 per `source-location.buffer` above. The `document` resource is no help
 either: it is the guest's OWN buffer, and the line in question is one
 the view does not compose.
+
+### `spawn-process`
+
+```wit
+spawn-process: func(command: string, args: list<string>, cwd: string) -> result<u64, string>
+```
+
+Run the program `command` with `args`, in `cwd` (`""` for the editor's
+own). **A job** (see `cancel-job`): returns its id; what the process
+writes arrives as `job-output`, and its exit as `job-finished`.
+
+**Gated on `proc:spawn`, which only a bundled plugin is ever granted.**
+The process is not sandboxed — it runs as the user, with the user's
+environment and reach — so this is full trust, and a user-installed
+plugin is refused here whatever its manifest asks for.
+
+`command` is a program, found on `PATH` or named by path; `args` are
+passed to it as given. **No shell is involved**: nothing is split,
+expanded or interpolated, so an argument containing spaces or `;` is one
+argument. A caller that wants a shell runs `sh` and says so.
+
+The process has no stdin. `job-finished` is `ok` for exit status 0 and
+otherwise an `err` naming the status — an ordinary outcome, with the
+output that explains it already delivered. A program that cannot be
+started at all (not found, not executable) is reported the same way, as
+the job's outcome.
+
+Cancelling kills the process and everything it started.
+
+`err` here for a plugin without the grant, an empty `command`, a `cwd`
+that is not a directory, or a seam with no event bus to report on.
+
+**Example — Run a program with explicit arguments and subscribe to its output and exit** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+events::subscribe(&kind_filter(EventKind::JobOutput), 10);
+events::subscribe(&kind_filter(EventKind::JobFinished), 10);
+// No shell: each element of `args` is one argument, whatever it
+// contains. `""` runs it in the editor's working directory.
+let outcome = match host_services::spawn_process(command, &args, "") {
+    Ok(_id) => "spawn:started".to_string(),
+    Err(e) => format!("spawn:err({e})"),
+};
+record(&outcome);
+```
 
 ### `store-delete`
 
@@ -501,6 +886,22 @@ a value larger than the whole store may hold, or a write that failed.
 fn save(list: &[String]) -> Result<(), String> {
     host_services::store_put(STORE_KEY, &projects::encode(list))
 }
+```
+
+### `unregister-server`
+
+```wit
+unregister-server: func(token: u64)
+```
+
+Withdraw a registration. Whatever it shadowed applies again. A token
+that names nothing — or one another instance of this plugin made — is
+silently nothing.
+
+**Example — Withdraw a server registration by its token, restoring what it shadowed** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+host_services::unregister_server(token);
 ```
 
 ### `unwatch`
@@ -615,7 +1016,92 @@ let outcome = match host_services::watch(target) {
 record(&outcome);
 ```
 
-## Types (1)
+## Types (5)
+
+### record `server-config`
+
+```wit
+record server-config {
+    id: string,
+    command: string,
+    args: list<string>,
+    env: list<tuple<string, string>>,
+    root-markers: list<string>,
+    file-patterns: list<string>,
+    language-id: string,
+    initialization-options: option<string>,
+}
+```
+
+LH.0.4: one language server, as `register-server` takes it.
+
+**Fields**
+
+- `id`: `string` — Stable identifier — by convention the language id (`rust`). While
+  registered, this config **replaces** every server the editor
+  already knew under the same id.
+- `command`: `string` — The program to run. An absolute path into the plugin's managed
+  install tree, typically; a bare name is looked up on `PATH`.
+- `args`: `list<string>` — Arguments, passed verbatim (`--stdio`).
+- `env`: `list<tuple<string, string>>` — Extra environment variables for the server process.
+- `root-markers`: `list<string>` — Workspace-root markers (`Cargo.toml`, `.git`), searched upwards
+  from the buffer's path. Empty: the buffer's own directory.
+- `file-patterns`: `list<string>` — Globs for the files this server handles (`*.rs`). At least one.
+- `language-id`: `string` — The LSP `languageId` sent when a buffer is opened.
+- `initialization-options`: `option<string>` — The server's `initializationOptions`, as JSON text; `none` sends
+  none. JSON as a string because the options are the server's own
+  vocabulary and the host only forwards them.
+
+### enum `archive-format`
+
+```wit
+enum archive-format {
+    gz,
+    tar-gz,
+}
+```
+
+LH.0.2: the archive kinds `extract-archive` unpacks.
+
+**Cases**
+
+- `gz` — One gzip-compressed file (`rust-analyzer-…-linux-gnu.gz`). The
+  destination is the FILE to write.
+- `tar-gz` — A gzip-compressed tar. The destination is the DIRECTORY to create.
+
+### record `platform`
+
+```wit
+record platform {
+    os: string,
+    arch: string,
+}
+```
+
+LH.0.6: the platform the editor is running on.
+
+**Fields**
+
+- `os`: `string` — `linux`, `macos`, `windows`, … — Rust's `std::env::consts::OS`.
+- `arch`: `string` — `x86_64`, `aarch64`, … — Rust's `std::env::consts::ARCH`.
+
+### enum `output-state`
+
+```wit
+enum output-state {
+    running,
+    succeeded,
+    failed,
+}
+```
+
+LH.0.5: what an output buffer's headerline says its work is doing.
+
+**Cases**
+
+- `running` — In flight.
+- `succeeded` — Finished, and worked.
+- `failed` — Finished, and did not.
 
 ### record `source-location`
 

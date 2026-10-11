@@ -75,9 +75,16 @@ lives in [`../dev/notes/lsp-features.md`](../dev/notes/lsp-features.md).
 
 ### Installing servers
 
-lattice does not bundle servers; install the one(s) you need
-through your language's standard channel. The defaults expect
-the canonical binary on `PATH`:
+**The quick way, where there is one:** `:lsp-install rust-analyzer`.
+Lattice downloads the server, checks it against a pinned SHA-256,
+unpacks it into a directory it manages, and uses it from then on —
+no `PATH` entry, no toolchain. `:lsp-servers` lists what can be
+installed this way and what already is; `:help lighthouse` has the
+rest. Today that list is `rust-analyzer`.
+
+For everything else, install the server through your language's
+standard channel. The defaults expect the canonical binary on
+`PATH`:
 
 | Language                | Binary                       | Install                                                |
 |-------------------------|------------------------------|--------------------------------------------------------|
@@ -439,9 +446,12 @@ the same events whether or not buffer views are open.
 
 ### "rust-analyzer: command not found" in the modeline
 
-The server binary isn't on `PATH`. Install it through your
-language's normal channel, or symlink it onto your `PATH` under
-the name lattice looks for (see
+The server binary isn't on `PATH`. For rust-analyzer,
+`:lsp-install rust-analyzer` installs a copy lattice manages and
+needs no `PATH` entry (`:help lighthouse`); reopen the file
+afterwards. Otherwise install it through your language's
+normal channel, or symlink it onto your `PATH` under the name
+lattice looks for (see
 [which servers lattice starts](#which-servers-lattice-starts)).
 A custom binary path cannot be configured yet.
 

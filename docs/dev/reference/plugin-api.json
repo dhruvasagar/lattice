@@ -1,5 +1,5 @@
 {
-  "package": "lattice:plugin-host@0.1.0",
+  "package": "lattice:plugin-host@0.2.0",
   "interfaces": [
     {
       "name": "buffer",
@@ -1767,6 +1767,31 @@
           ]
         },
         {
+          "name": "cancel-job",
+          "display_name": "cancel-job",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "id",
+              "type": "u64"
+            }
+          ],
+          "result": null,
+          "signature": "cancel-job: func(id: u64)",
+          "doc": "Cancel a job this plugin started. It still reports `job-finished`, as\n`err(\"cancelled\")`.\n\nAny instance of the same plugin may cancel — the chord that cancels an\ninstall runs on the grammar seam, and the job it stops may have been\nstarted from the events seam. Another plugin's id, an id that has\nalready finished and an id that never existed are all silently nothing:\na cancel is idempotent, because the alternative is a guest that must\ntrack host state to avoid an error.\n\nCooperative: the job stops at its next step, not mid-step.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.cancel-job",
+              "caption": "Cancel a job by the id the function that started it returned",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// A cancel of an id that is not ours to cancel — or not anyone's —\n// is nothing, so a plugin need not track which are still running.\nhost_services::cancel_job(u64::MAX);"
+            }
+          ]
+        },
+        {
           "name": "clamp-position",
           "display_name": "clamp-position",
           "kind": "freestanding",
@@ -1792,6 +1817,26 @@
               "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
               "language": "rust",
               "code": "let text = match host_services::clamp_position(buffer, Position { line, byte }) {\n    Some(p) => format!(\"{}:{}\", p.line, p.byte),\n    None => \"none\".to_string(),\n};\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text,\n})])"
+            }
+          ]
+        },
+        {
+          "name": "data-dir",
+          "display_name": "data-dir",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": "option<string>",
+          "signature": "data-dir: func() -> option<string>",
+          "doc": "LH.0.6: this plugin's private data directory, as an absolute path **on\nthe host** — the directory the guest sees as `/data`.\n\nThe calls that act on the host's behalf (`http-download`,\n`extract-archive`, `set-executable`, `register-server`, `read-file`,\n`walk`) take host paths, and `/data` means nothing to them. This is the\npath to give them. Every one of those calls accepts a path under it\nwith no `fs:` capability in the manifest: the directory is the\nplugin's own.\n\n`none` when the plugin has no data directory, or its path is not UTF-8.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.data-dir",
+              "caption": "Name a file in the plugin's own data directory to a host-side call",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// …and named to the host by its real path. No `fs:` capability\n// is needed for anything under this directory.\nlet outcome = match host_services::data_dir() {\n    Some(dir) => host_services::set_executable(&format!(\"{dir}/tool\"))\n        .map(|()| dir),\n    None => Err(\"no data dir\".to_string()),\n};"
             }
           ]
         },
@@ -1879,6 +1924,92 @@
           ]
         },
         {
+          "name": "extract-archive",
+          "display_name": "extract-archive",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "src",
+              "type": "string"
+            },
+            {
+              "name": "dest",
+              "type": "string"
+            },
+            {
+              "name": "format",
+              "type": "archive-format"
+            }
+          ],
+          "result": "result<u64, string>",
+          "signature": "extract-archive: func(src: string, dest: string, format: archive-format) -> result<u64, string>",
+          "doc": "Unpack the archive file `src` to `dest`. **A job** (see `cancel-job`):\nreturns its id; `job-progress` counts bytes of `src` consumed.\n\nHost-side because unpacking is CPU-bound work a guest would do inside a\nfuel-metered call, and because a guest cannot write files from every\nseam (see `read-file`).\n\n`src` must lie within a granted `fs:read` (or `fs:write`) prefix and\n`dest` within a granted `fs:write` one; both are refused here, as an\nimmediate `err`, by name.\n\n**An archive is untrusted input** — a pinned hash says the bytes are the\nones somebody reviewed, not that they are benign — so every entry is\nconfined to `dest`. An entry whose path is absolute or climbs with\n`..`, a symlink whose target leaves `dest`, and an entry that would be\nwritten *through* a symlink each fail the whole job. So do hard links,\ndevices and FIFOs, by name rather than by being skipped: a silently\ndropped entry is a half-installed tool.\n\n**All or nothing.** The work happens in a sibling `<dest>.part` and is\nrenamed into place only once the whole archive has been read. Any\nfailure — a bad entry, a truncated stream, a cancel, a size limit —\nleaves no `dest` and no part, so \"is it there\" is a sound test for \"is\nit complete\".\n\nFor `tar-gz`, **`dest` must not already exist**: an update unpacks\nbeside the old version and switches, it does not merge into it. For\n`gz`, an existing file is replaced, by the rename, only on success.\n\nA file is written executable or not, as the archive says; no other mode\nbit (setuid, world-writable) is honoured. A bare `gz` carries no mode at\nall — follow it with `set-executable`.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.extract-archive",
+              "caption": "Unpack a downloaded archive into a granted directory and wait for `job-finished`",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "events::subscribe(&kind_filter(EventKind::JobFinished), 9);\nlet outcome = match host_services::extract_archive(src, dest, format) {\n    Ok(_id) => \"extract:started\".to_string(),\n    Err(e) => format!(\"extract:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
+        },
+        {
+          "name": "host-platform",
+          "display_name": "host-platform",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": "platform",
+          "signature": "host-platform: func() -> platform",
+          "doc": "LH.0.6: the platform the editor is running on.\n\nA guest is `wasm32` wherever it runs and cannot tell. A plugin that\nfetches a native program needs to know which build to fetch.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.host-platform",
+              "caption": "Pick the native build to download for the machine the editor is running on",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let platform = host_services::host_platform();\nlet build = format!(\"{}-{}\", platform.os, platform.arch);"
+            }
+          ]
+        },
+        {
+          "name": "http-download",
+          "display_name": "http-download",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "url",
+              "type": "string"
+            },
+            {
+              "name": "sha256",
+              "type": "string"
+            },
+            {
+              "name": "dest",
+              "type": "string"
+            }
+          ],
+          "result": "result<u64, string>",
+          "signature": "http-download: func(url: string, sha256: string, dest: string) -> result<u64, string>",
+          "doc": "Download `url` (GET) to the file `dest`, accepting it only if its\nSHA-256 equals `sha256` (64 hex digits, either case). **A job** (see\nabove): returns its id; `job-progress` counts bytes received.\n\nThe bytes go from the socket to the disk without visiting the guest —\nwhich matters beyond speed, because a guest cannot write files from\nevery seam (see `read-file`).\n\n**Two grants, both re-checked host-side**, and both refused here, as an\nimmediate `err`, so a manifest problem shows up at the call rather than\nas an event some time later:\n\n- the URL's host must be a granted `net:http:<host>`. A grant entry\n  carrying a port (`net:http:localhost:8080`) matches that port only;\n  one without matches any. The match is exact: a subdomain is a\n  different host.\n- `dest` must lie within a granted `fs:write` prefix.\n\n**Every redirect hop is checked against the same grant.** The host\nfollows redirects itself, and a hop to an ungranted host fails the job\nwith a message naming that host. A release URL that bounces to a CDN\ntherefore needs the CDN granted by name — otherwise one granted host\nwould be a door to any host a server cared to point at.\n\n`https` only; plain `http` is accepted solely for a loopback address.\nRedirects, size and time are bounded by the host.\n\n**The hash check is not the guest's to remember.** The body is written\nto a sibling `<dest>.part` and renamed into place only on a match. A\nmismatch, a cancel, a dropped connection and an oversized body all leave\n`dest` untouched and no part file behind, so \"is the file there\" is a\nsound test for \"was it verified\". An existing `dest` is replaced, by the\nrename, only on success. Missing parent directories are created.\n\n`err` for a malformed URL or digest, either refusal above, or a seam\nwith no event bus to report on — each named.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.http-download",
+              "caption": "Subscribe to the job events, then fetch a pinned file into a granted directory",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "events::subscribe(&kind_filter(EventKind::JobProgress), 8);\nevents::subscribe(&kind_filter(EventKind::JobFinished), 8);\nlet outcome = match host_services::http_download(url, sha256, dest) {\n    // The id is what `job-finished` will carry; a plugin running\n    // several jobs keys its state by it.\n    Ok(_id) => \"download:started\".to_string(),\n    Err(e) => format!(\"download:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
+        },
+        {
           "name": "local-utc-offset-seconds",
           "display_name": "local-utc-offset-seconds",
           "kind": "freestanding",
@@ -1915,6 +2046,93 @@
               "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
               "language": "rust",
               "code": "let a = host_services::new_uuid()?;\nlet b = host_services::new_uuid()?;\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text: format!(\"{a}|{b}\"),\n})])"
+            }
+          ]
+        },
+        {
+          "name": "output-append",
+          "display_name": "output-append",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "lines",
+              "type": "list<string>"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "output-append: func(name: string, lines: list<string>) -> result<_, string>",
+          "doc": "LH.0.5: append `lines` to one of this plugin's **output buffers** —\na read-only, live-tailing buffer the plugin fills and the editor shows.\n\nThis is how a plugin shows the progress of work it started. A job's\nevents arrive in `on-event`, which returns nothing and so cannot open\na buffer or write to one; this can be called from there, or from any\nother export.\n\n`name` is the buffer's name, in the `*name*` form every editor-made\nbuffer has (`*lsp-install:rust-analyzer*`). Writing does not open\nanything: the lines are kept, and a buffer of that name in\n`plugin-output-mode` shows them — both those written before it was\nopened and those that arrive after, without a keypress. To put it in\nfront of the user, return `effect::open-synthetic-buffer` naming the\nsame `name` and `mode-id: \"plugin-output-mode\"` from a command.\n\nA string containing newlines becomes that many lines. The buffer keeps\nthe most recent 10 000 lines; one call adds at most 1024, and a line is\ncut at 4096 characters.\n\n`err` for a `name` not in the `*name*` form, one another plugin already\nwrites to, or a 33rd buffer for this plugin — each named.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.output-append",
+              "caption": "Append lines to a plugin-owned output buffer, from any export",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let appended = host_services::output_append(\n    name,\n    &[\n        \"resolving rust-analyzer\".to_string(),\n        // One string, two lines: the host splits on newlines.\n        \"downloading\\nverifying\".to_string(),\n    ],\n);"
+            }
+          ]
+        },
+        {
+          "name": "output-reset",
+          "display_name": "output-reset",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "name",
+              "type": "string"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "output-reset: func(name: string) -> result<_, string>",
+          "doc": "LH.0.5: empty an output buffer and clear its headerline, so a second\nrun starts on a clean page instead of under the first.\n\n`err` as `output-append`.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.output-reset",
+              "caption": "Empty an output buffer before a new run so it does not land under the last one",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let reset = host_services::output_reset(name);"
+            }
+          ]
+        },
+        {
+          "name": "output-status",
+          "display_name": "output-status",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "state",
+              "type": "output-state"
+            },
+            {
+              "name": "text",
+              "type": "string"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "output-status: func(name: string, state: output-state, text: string) -> result<_, string>",
+          "doc": "LH.0.5: set the **headerline** of an output buffer — the one row that\nstays at the top while the lines scroll: an icon for `state`, then\n`text`. Each call replaces the last. Use it for where the work is\n(`downloading… 43%`) and how it ended; use `output-append` for what\nshould stay on the page.\n\n`err` as `output-append`.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.output-status",
+              "caption": "Set an output buffer's headerline to say what the work is doing",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let status = host_services::output_status(\n    name,\n    host_services::OutputState::Running,\n    \"downloading\\u{2026} 43%\",\n);"
             }
           ]
         },
@@ -1977,6 +2195,56 @@
           ]
         },
         {
+          "name": "register-server",
+          "display_name": "register-server",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "config",
+              "type": "server-config"
+            }
+          ],
+          "result": "result<u64, string>",
+          "signature": "register-server: func(config: server-config) -> result<u64, string>",
+          "doc": "Tell the editor about a language server, so buffers it handles get one.\nReturns a token for `unregister-server`.\n\n**Gated on `proc:spawn`** — bundled plugins only — because that is what\nthis is: `command` is a program the editor will run, unsandboxed, the\nnext time a matching buffer opens. A plugin that could register a\nserver could run anything.\n\nWhile registered, the config **shadows** any server the editor already\nhad under the same `id`: a managed install replaces the `PATH` lookup\nfor its language instead of running beside it. Registering the same\n`id` again shadows the earlier registration, which is how an update\nswitches versions.\n\n**Nothing is started or restarted here.** The server is spawned on the\nnext buffer open its patterns match; one already running for those\nbuffers keeps the program it was started with until it is restarted.\n\nThe registration lasts as long as the plugin instance that made it and\nis withdrawn when the plugin unloads, so a plugin that is gone leaves\nno server pointing into its install tree.\n\n`err` for a plugin without the grant, an empty `id` / `command` /\n`language-id`, no `file-patterns`, initialization options that are not\nJSON, or an editor with no language-server support wired — each named.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.register-server",
+              "caption": "Register an installed language server so matching buffers start it",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let config = host_services::ServerConfig {\n    id: id.to_string(),\n    // An absolute path into the install tree — no `PATH` entry\n    // needed, which is the point of managing the install.\n    command: command.to_string(),\n    args: vec![\"--stdio\".to_string()],\n    env: Vec::new(),\n    root_markers: vec![\".git\".to_string()],\n    file_patterns: vec![pattern.to_string()],\n    language_id: id.to_string(),\n    initialization_options: None,\n};\nlet registered = host_services::register_server(&config);"
+            }
+          ]
+        },
+        {
+          "name": "set-executable",
+          "display_name": "set-executable",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "path",
+              "type": "string"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "set-executable: func(path: string) -> result<_, string>",
+          "doc": "Mark the file `path` executable.\n\nFor a binary that arrived with no mode — downloaded directly, or\nunpacked from a bare `gz`. A guest cannot do this itself: WASI has no\n`chmod`. Immediate, not a job.\n\nGated on `fs:write` over `path`, re-checked host-side. `err` for a\ndenied path, a path with nothing there, or a directory — each named. On\na platform with no executable bit it is `ok` and does nothing.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.set-executable",
+              "caption": "Make an unpacked binary runnable once its job reports success",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let outcome = match host_services::set_executable(dest) {\n    Ok(()) => \"set-executable:ok\".to_string(),\n    Err(e) => format!(\"set-executable:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
+        },
+        {
           "name": "source-line",
           "display_name": "source-line",
           "kind": "freestanding",
@@ -1996,6 +2264,39 @@
           "signature": "source-line: func(buffer: u32, line: u32) -> option<string>",
           "doc": "OA.23b: one line of a source document, without its trailing newline.\n\nThe read half of acting on an excerpt's source, and it takes a\n`source-location.buffer` — not an arbitrary buffer id, which a guest\nhas no way to come by. `none` for anything no view owns, and for a\nline past the source's last.\n\n**The alternative is wrong twice.** `read-file` reads DISK, so it\nmisses edits the view has made and not yet saved — press the agenda's\n`s` twice and the second read sees no `SCHEDULED:` line and stacks a\nduplicate. It also reads a file the guest may not be editing at all,\nper `source-location.buffer` above. The `document` resource is no help\neither: it is the guest's OWN buffer, and the line in question is one\nthe view does not compose.",
           "examples": []
+        },
+        {
+          "name": "spawn-process",
+          "display_name": "spawn-process",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "command",
+              "type": "string"
+            },
+            {
+              "name": "args",
+              "type": "list<string>"
+            },
+            {
+              "name": "cwd",
+              "type": "string"
+            }
+          ],
+          "result": "result<u64, string>",
+          "signature": "spawn-process: func(command: string, args: list<string>, cwd: string) -> result<u64, string>",
+          "doc": "Run the program `command` with `args`, in `cwd` (`\"\"` for the editor's\nown). **A job** (see `cancel-job`): returns its id; what the process\nwrites arrives as `job-output`, and its exit as `job-finished`.\n\n**Gated on `proc:spawn`, which only a bundled plugin is ever granted.**\nThe process is not sandboxed — it runs as the user, with the user's\nenvironment and reach — so this is full trust, and a user-installed\nplugin is refused here whatever its manifest asks for.\n\n`command` is a program, found on `PATH` or named by path; `args` are\npassed to it as given. **No shell is involved**: nothing is split,\nexpanded or interpolated, so an argument containing spaces or `;` is one\nargument. A caller that wants a shell runs `sh` and says so.\n\nThe process has no stdin. `job-finished` is `ok` for exit status 0 and\notherwise an `err` naming the status — an ordinary outcome, with the\noutput that explains it already delivered. A program that cannot be\nstarted at all (not found, not executable) is reported the same way, as\nthe job's outcome.\n\nCancelling kills the process and everything it started.\n\n`err` here for a plugin without the grant, an empty `command`, a `cwd`\nthat is not a directory, or a seam with no event bus to report on.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.spawn-process",
+              "caption": "Run a program with explicit arguments and subscribe to its output and exit",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "events::subscribe(&kind_filter(EventKind::JobOutput), 10);\nevents::subscribe(&kind_filter(EventKind::JobFinished), 10);\n// No shell: each element of `args` is one argument, whatever it\n// contains. `\"\"` runs it in the editor's working directory.\nlet outcome = match host_services::spawn_process(command, &args, \"\") {\n    Ok(_id) => \"spawn:started\".to_string(),\n    Err(e) => format!(\"spawn:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
         },
         {
           "name": "store-delete",
@@ -2114,6 +2415,31 @@
           ]
         },
         {
+          "name": "unregister-server",
+          "display_name": "unregister-server",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "token",
+              "type": "u64"
+            }
+          ],
+          "result": null,
+          "signature": "unregister-server: func(token: u64)",
+          "doc": "Withdraw a registration. Whatever it shadowed applies again. A token\nthat names nothing — or one another instance of this plugin made — is\nsilently nothing.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.unregister-server",
+              "caption": "Withdraw a server registration by its token, restoring what it shadowed",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "host_services::unregister_server(token);"
+            }
+          ]
+        },
+        {
           "name": "unwatch",
           "display_name": "unwatch",
           "kind": "freestanding",
@@ -2207,6 +2533,117 @@
         }
       ],
       "types": [
+        {
+          "name": "server-config",
+          "kind": "record",
+          "doc": "LH.0.4: one language server, as `register-server` takes it.",
+          "definition": "record server-config {\n    id: string,\n    command: string,\n    args: list<string>,\n    env: list<tuple<string, string>>,\n    root-markers: list<string>,\n    file-patterns: list<string>,\n    language-id: string,\n    initialization-options: option<string>,\n}",
+          "members": [
+            {
+              "name": "id",
+              "type": "string",
+              "doc": "Stable identifier — by convention the language id (`rust`). While\nregistered, this config **replaces** every server the editor\nalready knew under the same id."
+            },
+            {
+              "name": "command",
+              "type": "string",
+              "doc": "The program to run. An absolute path into the plugin's managed\ninstall tree, typically; a bare name is looked up on `PATH`."
+            },
+            {
+              "name": "args",
+              "type": "list<string>",
+              "doc": "Arguments, passed verbatim (`--stdio`)."
+            },
+            {
+              "name": "env",
+              "type": "list<tuple<string, string>>",
+              "doc": "Extra environment variables for the server process."
+            },
+            {
+              "name": "root-markers",
+              "type": "list<string>",
+              "doc": "Workspace-root markers (`Cargo.toml`, `.git`), searched upwards\nfrom the buffer's path. Empty: the buffer's own directory."
+            },
+            {
+              "name": "file-patterns",
+              "type": "list<string>",
+              "doc": "Globs for the files this server handles (`*.rs`). At least one."
+            },
+            {
+              "name": "language-id",
+              "type": "string",
+              "doc": "The LSP `languageId` sent when a buffer is opened."
+            },
+            {
+              "name": "initialization-options",
+              "type": "option<string>",
+              "doc": "The server's `initializationOptions`, as JSON text; `none` sends\nnone. JSON as a string because the options are the server's own\nvocabulary and the host only forwards them."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "archive-format",
+          "kind": "enum",
+          "doc": "LH.0.2: the archive kinds `extract-archive` unpacks.",
+          "definition": "enum archive-format {\n    gz,\n    tar-gz,\n}",
+          "members": [
+            {
+              "name": "gz",
+              "type": null,
+              "doc": "One gzip-compressed file (`rust-analyzer-…-linux-gnu.gz`). The\ndestination is the FILE to write."
+            },
+            {
+              "name": "tar-gz",
+              "type": null,
+              "doc": "A gzip-compressed tar. The destination is the DIRECTORY to create."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "platform",
+          "kind": "record",
+          "doc": "LH.0.6: the platform the editor is running on.",
+          "definition": "record platform {\n    os: string,\n    arch: string,\n}",
+          "members": [
+            {
+              "name": "os",
+              "type": "string",
+              "doc": "`linux`, `macos`, `windows`, … — Rust's `std::env::consts::OS`."
+            },
+            {
+              "name": "arch",
+              "type": "string",
+              "doc": "`x86_64`, `aarch64`, … — Rust's `std::env::consts::ARCH`."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "output-state",
+          "kind": "enum",
+          "doc": "LH.0.5: what an output buffer's headerline says its work is doing.",
+          "definition": "enum output-state {\n    running,\n    succeeded,\n    failed,\n}",
+          "members": [
+            {
+              "name": "running",
+              "type": null,
+              "doc": "In flight."
+            },
+            {
+              "name": "succeeded",
+              "type": null,
+              "doc": "Finished, and worked."
+            },
+            {
+              "name": "failed",
+              "type": null,
+              "doc": "Finished, and did not."
+            }
+          ],
+          "examples": []
+        },
         {
           "name": "source-location",
           "kind": "record",
@@ -9255,7 +9692,7 @@
           "name": "event-kind",
           "kind": "enum",
           "doc": "Mirrors `lattice_protocol::EventKind` — the discriminator a subscription\nfilters on. Each arm pairs 1:1 with an `event` variant arm.",
-          "definition": "enum event-kind {\n    document-opened,\n    document-closed,\n    before-save,\n    document-saved,\n    document-changed,\n    selections-changed,\n    modal-mode-changed,\n    before-quit,\n    option-changed,\n    major-entered,\n    major-exiting,\n    minor-activated,\n    minor-deactivated,\n    plugin,\n    pre-plugin-loaded,\n    plugin-loaded,\n    plugin-unloaded,\n    files-changed,\n}",
+          "definition": "enum event-kind {\n    document-opened,\n    document-closed,\n    before-save,\n    document-saved,\n    document-changed,\n    selections-changed,\n    modal-mode-changed,\n    before-quit,\n    option-changed,\n    major-entered,\n    major-exiting,\n    minor-activated,\n    minor-deactivated,\n    plugin,\n    pre-plugin-loaded,\n    plugin-loaded,\n    plugin-unloaded,\n    files-changed,\n    job-progress,\n    job-output,\n    job-finished,\n}",
           "members": [
             {
               "name": "document-opened",
@@ -9346,6 +9783,21 @@
               "name": "files-changed",
               "type": null,
               "doc": "OR.2: a directory this plugin asked the host to watch changed. One\nkind for every watch; the host addresses each batch to the plugin\nthat armed it, so subscribing to this kind never surfaces another\nplugin's watch."
+            },
+            {
+              "name": "job-progress",
+              "type": null,
+              "doc": "LH.0: a long-running host job this plugin started — a download,\nsay — has made progress. Addressed the same way: a plugin only ever\nhears about its own jobs."
+            },
+            {
+              "name": "job-output",
+              "type": null,
+              "doc": "LH.0.3: a host job this plugin started wrote output — a\nsubprocess's lines."
+            },
+            {
+              "name": "job-finished",
+              "type": null,
+              "doc": "LH.0: a host job this plugin started has ended, one way or the\nother."
             }
           ],
           "examples": []
@@ -9375,6 +9827,68 @@
               "name": "minor-modes",
               "type": "option<list<string>>",
               "doc": "Restrict minor-mode lifecycle events to ones naming these minors —\nthe peer of `major-modes`, and NOT the same field.\n\n`minor-activated` / `minor-deactivated` carry the MINOR's name, so\na `major-modes` constraint rejects every one of them. Without this\na subscriber wanting one specific minor had to subscribe\nunfiltered and compare names in its handler — which wakes the\nplugin's task for every minor activation in every buffer, to do\nnothing.\n\nSeparate rather than merged into one `modes` list because there\nare far more minors than majors and the two ask different\nquestions: `major-modes` means *the buffer is entering one of\nthese majors*, this means *this specific minor turned on*. A\nmerged field would answer both at once and let a subscription fire\non a name collision across the two namespaces.\n\nConstraining both matches NOTHING, since no event carries both\nnames — the honest reading of \"a major event AND a minor event\"."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "event-job-progress",
+          "kind": "record",
+          "doc": "`event.job-progress` payload (LH.0).",
+          "definition": "record event-job-progress {\n    id: u64,\n    done: u64,\n    total: option<u64>,\n}",
+          "members": [
+            {
+              "name": "id",
+              "type": "u64",
+              "doc": "The id the host-service returned."
+            },
+            {
+              "name": "done",
+              "type": "u64",
+              "doc": "Units done so far. The function that started the job says what a\nunit is — bytes received, for `http-download`."
+            },
+            {
+              "name": "total",
+              "type": "option<u64>",
+              "doc": "The total in the same units; `none` when it is not known, in which\ncase there is no percentage to show, only a running count."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "event-job-output",
+          "kind": "record",
+          "doc": "`event.job-output` payload (LH.0.3).",
+          "definition": "record event-job-output {\n    id: u64,\n    lines: list<string>,\n}",
+          "members": [
+            {
+              "name": "id",
+              "type": "u64",
+              "doc": "The id the host-service returned."
+            },
+            {
+              "name": "lines",
+              "type": "list<string>",
+              "doc": "Whole lines without their terminators, in arrival order — stdout\nand stderr interleaved, not told apart. Bytes that are not UTF-8\nare replaced, and a line longer than the host's bound is cut short\nand marked with `…`."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "event-job-finished",
+          "kind": "record",
+          "doc": "`event.job-finished` payload (LH.0).",
+          "definition": "record event-job-finished {\n    id: u64,\n    outcome: result<_, string>,\n}",
+          "members": [
+            {
+              "name": "id",
+              "type": "u64",
+              "doc": "The id the host-service returned."
+            },
+            {
+              "name": "outcome",
+              "type": "result<_, string>",
+              "doc": "`ok`: the job did what it was asked. `err`: it did not, the message\nsays why, and the function that started it says what is left\nbehind — for `http-download`, nothing."
             }
           ],
           "examples": []
@@ -9584,7 +10098,7 @@
           "name": "event",
           "kind": "variant",
           "doc": "Mirrors `lattice_protocol::Event` (owned; delivered to `on-event`). Each\nmulti-field arm carries an explicit payload record (the `effect` mirror\nprecedent); ids cross as `u64`, paths as `string` (a non-UTF-8 path is a\ntyped boundary error, never lossy). Text-bearing arms (`document-opened`)\ncarry the initial content the native event already clones for observers.",
-          "definition": "variant event {\n    document-opened(event-document-opened),\n    document-closed(u64),\n    before-save(event-document-path),\n    document-saved(event-document-path),\n    document-changed(event-document-changed),\n    selections-changed(event-selections-changed),\n    modal-mode-changed(event-modal-mode-changed),\n    before-quit,\n    option-changed(event-option-changed),\n    major-entered(event-mode-lifecycle),\n    major-exiting(event-mode-lifecycle),\n    minor-activated(event-mode-lifecycle),\n    minor-deactivated(event-mode-lifecycle),\n    plugin(event-plugin),\n    pre-plugin-loaded(string),\n    plugin-loaded(event-plugin-lifecycle),\n    plugin-unloaded(event-plugin-lifecycle),\n    files-changed(list<string>),\n}",
+          "definition": "variant event {\n    document-opened(event-document-opened),\n    document-closed(u64),\n    before-save(event-document-path),\n    document-saved(event-document-path),\n    document-changed(event-document-changed),\n    selections-changed(event-selections-changed),\n    modal-mode-changed(event-modal-mode-changed),\n    before-quit,\n    option-changed(event-option-changed),\n    major-entered(event-mode-lifecycle),\n    major-exiting(event-mode-lifecycle),\n    minor-activated(event-mode-lifecycle),\n    minor-deactivated(event-mode-lifecycle),\n    plugin(event-plugin),\n    pre-plugin-loaded(string),\n    plugin-loaded(event-plugin-lifecycle),\n    plugin-unloaded(event-plugin-lifecycle),\n    files-changed(list<string>),\n    job-progress(event-job-progress),\n    job-output(event-job-output),\n    job-finished(event-job-finished),\n}",
           "members": [
             {
               "name": "document-opened",
@@ -9675,6 +10189,21 @@
               "name": "files-changed",
               "type": "list<string>",
               "doc": "OR.2: absolute paths that changed under a directory this plugin\nwatches, coalesced — a `git pull` rewriting two hundred files\narrives as ONE delivery carrying two hundred paths. Deduplicated and\nsorted; a removal is reported as a change (the consumer stats it),\nbecause an index that cannot see deletions offers destinations that\nno longer exist. A non-UTF-8 path is skipped rather than failing the\nbatch — `walk`'s rule, for `walk`'s reason.\n\nNo plugin id crosses: a guest only ever receives its own watch."
+            },
+            {
+              "name": "job-progress",
+              "type": "event-job-progress",
+              "doc": "LH.0: how far a host job has got. **Coalesced** host-side, so fast\nwork is a few deliveries rather than one per step — and a job that\ncompletes inside one interval sends none at all. Do not wait for\none before expecting `job-finished`."
+            },
+            {
+              "name": "job-output",
+              "type": "event-job-output",
+              "doc": "LH.0.3: output from a host job — what a process started with\n`spawn-process` wrote. **Batched**: a quiet interval's lines arrive\ntogether, so a chatty tool is a few deliveries a second, and none\nis dropped. All of a job's output is delivered before its\n`job-finished`."
+            },
+            {
+              "name": "job-finished",
+              "type": "event-job-finished",
+              "doc": "LH.0: a host job ended. Exactly one per id a host-service returned\n— a cancelled job reports here too, as `err(\"cancelled\")` — so a\nplugin can drive a state machine off it without a timeout.\n\nOne arm for every kind of job, deliberately. A plugin keys its state\nby the id and already knows what it started; and a new arm per kind\nwould be a breaking change to this variant each time the host\nlearned to do one more long-running thing."
             }
           ],
           "examples": []
@@ -10542,6 +11071,112 @@
           "params": [],
           "result": null,
           "signature": "register-languages: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
+    },
+    {
+      "name": "lighthouse-plugin",
+      "doc": "The `lighthouse` bundled plugin's world (LH.1) — the language-server\nmanager. Design: `docs/dev/architecture/lighthouse.md`.\n\nThe seams, and why each is here:\n  - **grammar** — the `:lsp-install` family of ex-commands.\n    `apply-ex-command`'s signature takes a `borrow<document>` and an\n    optional `borrow<tree-snapshot>`, so `buffer` and `tree-sitter` are\n    imported for the SIGNATURE; this plugin reads neither.\n  - **host-services** — everything it does: `host-platform` and `data-dir`\n    to decide what to fetch and where, `http-download` /\n    `extract-archive` / `set-executable` to fetch it, `register-server` to\n    hand it to the editor, `output-*` to show the work, `store-*` to\n    remember it.\n  - **events** — a job's outcome arrives as `job-finished`, and that is\n    the only place it arrives. The install is a state machine stepped from\n    `on-event`.\n  - **modes** — `lighthouse-servers-mode`, a manual minor that rides the\n    host's `plugin-output-mode` on the `*lsp-servers*` buffer and owns the\n    chords that act on the row under the cursor. The chords are bound in\n    that mode's own layer, so they exist in that buffer and nowhere else.\n  - **help** — the `:help lighthouse` page, shipped with the plugin.\n\nThe component is instantiated once per seam, and the instances share\nnothing but the store and the data directory — not memory. So the commands\ndo no work: one validates, publishes a plugin-defined request event, and\nopens the buffer; the events instance hears the request, runs the install\nand draws the result.\n\n`logging` is intentionally NOT imported, the `auto-pair` rule: keeping it\nout of the combined world keeps `log` off the sync grammar linker.",
+      "imports": [
+        "buffer",
+        "events",
+        "grammar",
+        "help",
+        "host-services",
+        "modes",
+        "tree-sitter",
+        "types"
+      ],
+      "exports": [
+        "grammar-callbacks"
+      ],
+      "export_functions": [
+        {
+          "name": "register-grammar",
+          "display_name": "register-grammar",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-grammar: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-modes",
+          "display_name": "register-modes",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-modes: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-help-topics",
+          "display_name": "register-help-topics",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-help-topics: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-events",
+          "display_name": "register-events",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-events: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "on-event",
+          "display_name": "on-event",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "handler",
+              "type": "u32"
+            },
+            {
+              "name": "ev",
+              "type": "event"
+            }
+          ],
+          "result": null,
+          "signature": "on-event: func(handler: u32, ev: event)",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "on-wake",
+          "display_name": "on-wake",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "id",
+              "type": "wake-id"
+            }
+          ],
+          "result": null,
+          "signature": "on-wake: func(id: wake-id)",
           "doc": null,
           "examples": []
         }

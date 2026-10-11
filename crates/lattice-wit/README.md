@@ -16,7 +16,7 @@ compile against its API.
 
 ```toml
 [build-dependencies]
-lattice-wit = "0.1"
+lattice-wit = "0.2"
 ```
 
 ```rust

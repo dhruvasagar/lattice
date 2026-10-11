@@ -5763,6 +5763,7 @@ dependencies = [
  "chrono",
  "criterion",
  "dirs 5.0.1",
+ "flate2",
  "futures",
  "getrandom 0.2.17",
  "lattice-cells",
@@ -5787,13 +5788,16 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "streaming-iterator",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
  "tracing",
  "tree-sitter",
+ "ureq",
  "wasmtime 46.0.1",
  "wasmtime-wasi",
  "wat",
@@ -5855,7 +5859,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lattice-plugin-sdk-derive",
  "rmp-serde",
@@ -5864,7 +5868,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-sdk-derive"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5875,6 +5879,7 @@ dependencies = [
 name = "lattice-plugin-trace"
 version = "0.9.6"
 dependencies = [
+ "lattice-cells",
  "lattice-config",
  "lattice-core",
  "lattice-grammar",
@@ -5883,6 +5888,7 @@ dependencies = [
  "lattice-plugin-loader",
  "lattice-protocol",
  "lattice-runtime",
+ "lattice-theme",
  "tokio",
  "tracing",
 ]
@@ -6097,7 +6103,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-wit"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "lazy_static"
@@ -9204,6 +9210,16 @@ dependencies = [
  "core-foundation-sys",
  "libc",
  "objc",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
 ]
 
 [[package]]

@@ -2,115 +2,405 @@
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
 > Design contract: [`../../architecture/lighthouse.md`](../../architecture/lighthouse.md).
-> Follows Phase 8b (bundled reference plugins); sequenced AFTER the trivial-first
-> bundled plugin (`auto-pair`) that de-risks the packaging/load pipeline.
+> Follows Phase 8b (core plugins); sequenced AFTER the trivial-first core plugin
+> (`auto-pair`) that de-risked the packaging/load pipeline.
 
-Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial slice ships
-the four artefacts (doc + bench-where-perf-relevant + test incl. failure modes +
-graceful error handling).
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
+Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
++ test incl. failure modes + graceful error handling).
 
-**Status: 📝 all planned.** Not started; captured alongside the design fragment.
+**Status: 🚧 LH.0 ✅, LH.1 ✅, LH.2 ✅. Open: LH.3 📝 (publish 0.2.0 — needs Dhruva), LH.0.2b ⛔ (`zip`), LH.1.2b ⛔ (recipes).** Re-planned 2026-10-10 against the current
+host: the seams are request → addressed-event (design §3.0), the progress buffer
+is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
 ## Sequencing
 
 **LH.0 → LH.1 → LH.2.** The host-services extension (LH.0) is the blocker — the
-plugin (LH.1) cannot fetch, spawn, stream, or register a server without it. LH.0
-is **general** plugin-host surface (every future networked/subprocess plugin uses
-it), so it lives in `lattice-plugin-host`, not the lighthouse crate; the design
-detail is [`lighthouse.md`](../../architecture/lighthouse.md) §3 +
-[`plugin-host.md`](../../architecture/plugin-host.md). LH.1 is the plugin; LH.2
-bundles it.
+plugin (LH.1) cannot download, unpack, spawn, or register a server without it.
+LH.0 is **general** plugin-host surface (every future networked/subprocess plugin
+uses it), so it lives in `lattice-plugin-host`, not the lighthouse crate.
 
 ```
-LH.0 host-services ──► LH.1 lighthouse plugin ──► LH.2 bundling
- (net / proc / task /       (registry + install +      (ship pre-granted)
-  register-server)           :lsp-servers view)
+LH.0 host seams ───────► LH.1 lighthouse plugin ──► LH.2 core-plugin staging
+ (download / extract /      (registry + install +      (ships out of the box)
+  spawn / register-server)   *lsp-install:* buffer +
+                             :lsp-servers view)
 ```
+
+Within LH.0 the four seams are independent of each other; the order below is the
+order lighthouse's install path needs them.
 
 ## Slices
 
-### LH.0 — host-services extension (the prerequisite)  📝
-The four unbuilt seams lighthouse forces (design fragment §3). General host
-capabilities; capability re-checked host-side at each (the `walk_within_grant`
-precedent). Async-linker imports (off the keystroke path).
+### LH.0 — host-services extension (the prerequisite)
 
-#### LH.0.1 — `http-fetch` (net:http)  📝
-`http-fetch: func(url) -> result<list<u8>, string>` in `wit/host-services.wit`;
-host impl fetches GET (host owns the client — TLS/redirect/timeout policy), gated
-so the URL host must be in a granted `net:http:<host>` prefix, else `err`. Bounded
-response size; streaming variant deferred. **Exit:** a bundled plugin with a
-`net:http:<host>` grant fetches bytes from that host; a plugin without the grant,
-or for a different host, gets `err`; a non-bundled/user plugin's grant is honored
-identically. Test: fixture guest fetch (gated allow + gated deny); no bench (I/O).
+General host capabilities, capability re-checked host-side at each (the
+`walk_within_grant` precedent). Every long-running one returns an id and reports
+through events addressed to the requesting plugin (design §3.0).
 
-#### LH.0.2 — `spawn-process` + the long-running-task surface  📝
-`spawn-process: func(command, args, cwd) -> result<process-exit, string>` gated on
-`proc:spawn` (**bundled-only** — `capability.rs` denies it to `UserInstalled`);
-output streams through `start-task` / `push-output` / `finalize`. The host owns
-the `*…*` streaming buffer + its headerline progress (async-buffer-status rule),
-reusing the LSP-log / plugin-trace synthetic-buffer substrate. **Exit:** a bundled
-plugin spawns a subprocess and its stdout streams into a buffer live; a
-user-installed plugin's `spawn-process` is denied; a non-zero exit surfaces, never
-a panic. Test: fixture spawns `echo`, asserts streamed output + exit; the deny
-path. No hot-path bench (off-thread); the drain follows the LspLogPushed shape.
+#### LH.0.1 — host jobs + `http-download` (net:http)  ✅
+The job substrate (`job.rs`): `PendingJob` → `JobGuard`, a process-wide table
+for cancel-by-id, coalesced progress; `Event::{JobProgress, JobFinished}`
+mirrored as the `job-progress` / `job-finished` arms in `types.wit` and
+addressed in `event_task.rs` exactly as `FilesChanged` is; `cancel-job(id)`.
+On it, `http-download(url, sha256, dest) -> result<u64, string>`: the host
+streams to `<dest>.part` on the job's thread, hashing as it goes; only a SHA
+match renames into place. Gates: URL host (and every redirect hop) ∈
+`net:http:<host>`; `dest` within `fs:write`. Policy: https (http to loopback
+only), bounded redirects / size / time. **Exit:** a plugin with both grants
+downloads a file and hears `job-finished` **without a keypress**; a wrong SHA, a
+cancel and a size overrun each leave no file; an ungranted host, an ungranted
+redirect hop and an ungranted `dest` are each refused by name; another plugin
+subscribed to the same kinds hears nothing.
 
-#### LH.0.3 — `register-server` / `unregister-server`  📝
-A `server-config` WIT record mirroring `lattice_lsp::config::ServerConfig` (name /
-command / args / env / root-markers / file-patterns / language-id / init-options);
-`register-server: func(server-config) -> result<server-token, string>` mutates the
-native `LspSupervisor`'s config map (capability-gated, the grammar/config
-registry-mutation precedent); `unregister-server(token)` reverses it (the
-teardown-token pattern). **Exit:** a plugin registers a `ServerConfig` pointing at
-an arbitrary path; opening a matching buffer spawns that server; unregister (or
-plugin unload) removes it so no later buffer spawns it. Test: register → the
-supervisor spawns on a matching open → unregister → it doesn't. This is the WIT
-type design.md §5.5.6 #1 calls the first blocker.
+**Landed.** `job.rs` (7 unit tests), `download_host.rs` (22, against a loopback
+server), `tests/download_seam.rs` (5, through the events fixture guest). What
+the plan did not have:
 
-### LH.1 — the lighthouse plugin  📝
-The bundled WASM Component plugin consuming LH.0. Crate `plugins/lighthouse/`.
+- **Generic job events, not `download-*` arms.** Written per-seam first, then
+  changed before commit: every arm added to `event` is an ABI break, so
+  per-seam arms would cost a generation per seam. LH.0.2 / LH.0.3 now add no
+  arms for progress or completion.
+- **The plugin API moved to `0.2.0`** — adding arms to `event` breaks every
+  guest that matches on it. `cargo xtask bump-plugin-api` had missed the WIT
+  embedded in Rust source (the scaffold templates, one fixture) and now covers
+  it. Publishing the three crates and bumping `lattice-org-plugin`'s pin is
+  **LH.3**, held to the end on purpose.
+- **Cancel-by-id is process-wide, scoped to the plugin** — the instance that
+  cancels is not the one that started the job. (Scoped by the wrong number
+  until LH.0.7.)
+- **A job requested inside `register-events` is held** until the subscriptions
+  are wired. It has a test only because the fixture lingers in
+  `register-events`; without that the race is never lost and a host with no
+  hold passes (it did, the first time).
+- Not done: a stall timeout (the client offers only a total, set at 30 min), so
+  a cancel cannot interrupt a connection that has gone silent mid-read.
 
-#### LH.1.1 — crate scaffold + registry + fetch/verify/install core  📝
-The `plugins/lighthouse/` guest crate (`wasm32-wasip2`, `manifest.toml` requesting
-`net:http:<registry-hosts>` + `proc:spawn` + `fs:write:<managed-tree>`); a
-compiled-in `registry.toml` (per server × platform: pinned version, download URL,
-SHA-256, `binary`-in-archive or package-manager `recipe`); the
-fetch (LH.0.1) → **SHA-verify** → unpack/install into
-`${XDG_DATA_HOME}/lattice/lsp/<name>/<version>/`. A SHA mismatch aborts before any
-fs write. **Exit:** given a registry entry, the core downloads + verifies + lays
-down a versioned install tree; a tampered SHA aborts with no partial install.
-Test: a local fixture URL + known SHA (allow) + a mismatched SHA (abort).
+#### LH.0.2 — `extract-archive` + `set-executable`  ✅
+Host-side unpack of a downloaded archive into an `fs:write`-granted
+destination, as a host job: `gz` (single file) and `tar.gz`. Entries escaping
+the destination (`..`, absolute, symlink out, written through a symlink) fail
+the job; the executable bit is preserved and no other mode bit is. **Exit:**
+each format unpacks; a traversal entry aborts with nothing written outside the
+destination and nothing partial inside it.
 
-#### LH.1.2 — install/update/uninstall commands + ServerConfig registration  📝
-`:lsp-install <server>` / `:lsp-update <server>` / `:lsp-update-all` /
-`:lsp-uninstall <server>`, each a `register-ex-command` (grammar seam) driving the
-LH.1.1 core off-thread with progress via the LH.0.2 task surface; on install,
-`register-server` (LH.0.3) a `ServerConfig` whose `command` is the managed binary;
-on uninstall, `unregister-server` + GC the tree. Update is install-new →
-verify → flip registration → GC old (atomic; rollback on verify fail). **Exit:**
-`:lsp-install rust-analyzer` on a machine without it → the server installs and a
-`.rs` buffer gets diagnostics/hover with no `PATH` entry; `:lsp-uninstall` reverses
-it. Test: the command → registration → (mocked) supervisor-spawn path.
+**Landed.** `extract_host.rs` (21 unit tests, archives built in-test including
+hand-written hostile headers) + `tests/extract_seam.rs` (3, through the fixture
+guest). Decided at slice start, as planned: extraction is its **own call**, not
+a mode of `http-download`, so "downloaded and verified" stays observable alone.
+Added beyond the plan: **`set-executable`** — a guest has no `chmod`, and a bare
+`.gz` (rust-analyzer's format) or a raw binary carries no mode. New dependency:
+`tar` (default features off); `flate2` was already in the lock file.
 
-#### LH.1.3 — the `:lsp-servers` manager view  📝
-A read-only buffer (everything-is-a-buffer, the `:plugins` view precedent) listing
-every registry server, its installed version (if any), and health; in-view chords
-(install / update / uninstall the row). Mode owns its chords + handlers
-(mode-ownership rule). **Exit:** `:lsp-servers` lists the registry with
-installed/available state and live-updates as an install completes.
+#### LH.0.2b — `zip`  ⛔
+Deferred until a registry entry needs it: a Windows build of any server, or a
+zip-only one (clangd). A second, heavier dependency for no server in the first
+registry on the platforms lattice builds for. Additive when it lands — a new
+case on `archive-format`, which **is** an ABI change to that enum, so batch it
+with the next generation.
 
-### LH.2 — bundling  📝
-Ship `lighthouse.wasm` compiled-in (`include_bytes!`) or in `core-plugins/` next
-to the binary, instantiated at boot with its pre-granted capabilities
-(`net:http:<registry-hosts>`, `proc:spawn`, `fs:write:<managed-tree>`) — the
-bundled-plugin bootstrap (design.md §5.5.6). **Exit:** a fresh editor has
-lighthouse loaded at boot (`:plugins` shows it, `:lsp-servers` works) with no user
-install step.
+#### LH.0.3 — `spawn-process` (proc:spawn)  ✅
+`spawn-process(command, args, cwd) -> result<u64, string>` gated on `proc:spawn`
+(**bundled-only** — `capability.rs` already withholds it from `UserInstalled`);
+a host job whose output arrives as the `job-output` arm (batched lines, stdout
+and stderr interleaved) and whose exit is `job-finished`. **Exit:** a bundled
+plugin spawns a subprocess and hears its output and exit; a user-installed
+plugin is denied; a non-zero exit is an ordinary outcome, never a panic.
+
+**Landed.** `process_host.rs` (10 unit tests) + `tests/spawn_seam.rs` (3,
+through the fixture guest at both trust tiers). `job-output` is the one new
+`event` arm — inside the unpublished 0.2.0, so no further bump. No shell: argv
+is passed as given. A cancel signals the child's **process group**; the first
+version of that test passed with the group kill removed (the job ends promptly
+either way), so it now asserts the grandchild is gone. `lattice-compilation`'s
+runner was checked and not reused: it is `:compile`'s own (shell cmdline,
+error parsing, `unsafe` libc), not a plain "run argv, stream lines".
+
+#### LH.0.4 — `register-server` / `unregister-server`  ✅
+A `server-config` WIT record mirroring `lattice_lsp::config::ServerConfig`;
+`register-server` adds it to the running `LspSupervisor`, `unregister-server`
+reverses it, and so does the plugin instance going away. **Exit:** register → a
+matching buffer open runs that server → unregister → it does not.
+
+**Landed.** Three layers, each tested where it lives:
+
+- `lattice-lsp`: the supervisor could only be configured **before** it was
+  spawned — the handle exposed no way to add a config. It now keeps boot-time
+  configs and runtime registrations apart (`RegisterConfig` / `UnregisterConfig`
+  commands, fire-and-forget). 7 tests, one of which runs a marker script as the
+  "server" to prove the registered binary is the one reached for.
+- `lattice-mode`: `LanguageServerRegistrar` + `LanguageServerSpec`, the answer
+  to the question this slice opened with. `lattice-lsp` implements and registers
+  it from its own `install`; **`lattice-host` is untouched**.
+- `lattice-plugin-host`: the seam, gated on **`proc:spawn`** (not an LSP
+  capability — registering a command is spawning it one buffer-open later).
+  `tests/register_server_seam.rs`, 4 tests against a recording registrar, both
+  trust tiers. `WiredSeams::language_servers` pins the boot order.
+
+Semantics settled here: a registration **shadows** same-`id` configs rather than
+adding beside them; the newest registration for an id wins; nothing is started
+or restarted by registering.
+
+#### LH.0.5 — plugin output buffers (`output-append` / `-status` / `-reset`)  ✅
+Carved at the start of LH.1, when its "verify at slice start" check failed: an
+events handler returns nothing, so a plugin could open a synthetic buffer and
+never write to it. Design §3.5. **Exit:** a line a plugin writes shows in a
+`plugin-output-mode` buffer of that name with no keypress, whether written
+before or after the buffer was opened.
+
+**Landed.** The native streaming-buffer shape (`*compilation*`, `*messages*`,
+the LSP logs), with the plugin given the producer's end:
+
+- `lattice-plugin-host::output` — the store (per-name ring + status), the typed
+  `PluginOutputPushed` event, and `Tail`, the seed/tail join. 16 unit tests,
+  including the bounds and the reload case.
+- `host-services` — three functions and one enum, additive inside 0.2.0. No
+  capability. `tests/output_seam.rs`: 4 tests with a real guest (lines, status
+  and reset cross in order; another plugin's buffer, a malformed name and an
+  unwired host are each a named `err`).
+- `lattice-plugin-trace` — `plugin-output-mode` beside the trace view: drain,
+  headerline, read-only. 6 unit tests on the headerline and the batch fold.
+- `lattice-plugin-loader` — builds the store, binds its publisher to the bus,
+  drops a plugin's buffers on unload; `WiredSeams::plugin_output` pins the
+  wiring.
+- `lattice-host/tests/plugin_output_view.rs` — 7 tests on a booted editor, none
+  of which presses a key before asserting. **Seen red:** with the wake removed,
+  the append and status-only tests fail; with `read-only-mode` un-implied, `x`
+  edits the log.
+
+No bench: the write path is a ring push and a channel send per call, off the
+keystroke path, and the per-call WASM overhead is already ratcheted.
+
+#### LH.0.6 — `host-platform` + `data-dir`  ✅
+Carved at the start of LH.1.1: a guest cannot tell what machine it is on, and
+cannot name its own data directory to a host-side seam. Design §3.6, which
+also **moves the install tree** into the plugin's data directory and records
+why. **Exit:** a guest with no `fs:` capability marks a file in its data dir
+executable by host path; one directory up is refused.
+
+**Landed.** Two functions and a record, additive inside 0.2.0.
+`CapabilityGrant` gains `data_dir`, set by the host where it mounts the
+directory (never by a manifest, and not for an unsafe plugin id);
+`grant_permits_walk` / `_write` accept paths under it, so every seam built on
+them — download, extract, set-executable, read, walk, watch — follows without
+a line of its own. 4 unit tests on the reach (inside; outside, sibling and
+`..`; symlink out; a read-only `fs` grant stays read-only) and
+`tests/host_info_seam.rs` with a real guest.
+
+#### LH.0.7 — jobs report to the plugin, not the seam instance  ✅
+A defect in LH.0.1–LH.0.3, found reading the loader before writing LH.1: job
+events were addressed to the *instance* id of the store that started the job,
+and each seam instance has its own. A job started from an ex-command (grammar
+instance) was addressed to an id the events instance does not have — `ok(id)`,
+then silence. `cancel-job` from the other instance missed the same way.
+
+**Landed.** `PluginHost::job_owner(name)` — one number per plugin name —
+stamped on both stores' emit context; jobs carry it, `cancel-job` is scoped by
+it, and the event actor filters on it. `tests/job_addressing.rs`: 4 tests that
+first hand two other plugins their owner numbers so this plugin's differs from
+its instance id. **Seen red:** with the old comparison restored, three of the
+four fail — including the fixture's own job, which had only ever passed because
+the two numbers were both `0`.
+
+### LH.1 — the lighthouse plugin  ✅ (LH.1.2b ⛔)
+The core WASM Component plugin consuming LH.0. Crate `plugins/lighthouse/`.
+
+#### LH.1.1 — the crate, the registry, and `:lsp-install`  ✅
+Re-carved when it started: the July carving ended this slice at "the core
+produces a tree" with no command to run it, which could only have been tested
+against a fake. `:lsp-install` and its output buffer moved here from LH.1.2 so
+the slice ends at something the real host can be made to do. **Exit:**
+`:lsp-install <server>` produces a versioned install tree and reports each step
+in `*lsp-install:<server>*`; a download that fails its SHA-256 ends in a
+reported failure with no partial tree.
+
+**Landed.** `plugins/lighthouse/` and the `lighthouse-plugin` world (grammar +
+events).
+
+- `registry.rs` — `registry.toml`, compiled in, with **rust-analyzer
+  2026-10-05** for linux and macOS on x86_64 and aarch64 (digests as GitHub
+  publishes them; linux-x86_64 downloaded and hashed when pinned). Everything
+  is validated on parse, by server and field: names and versions are one path
+  component, `binary` stays inside the tree, the digest is mandatory, URLs are
+  https. A user's `registry.toml` in the data directory is laid over it — add
+  a server, or replace a bundled one by name; a broken overlay costs only
+  itself. 13 tests, one of which pins that every bundled download host has its
+  `net:http:` line in `plugin.toml`.
+- `install.rs` — the state machine, written against a `Host` trait so every
+  failure branch runs under `cargo test`. Work happens under
+  `<version>.partial/` and `<version>.download` and one rename puts the tree
+  in place, so an installed directory existing *means* the install finished.
+  Scratch names left by an editor exit are swept at startup. 17 tests.
+- `lib.rs` — the adapter, and one decision: **the command does no work.** It
+  validates, publishes a `lighthouse.request` event and opens the buffer; the
+  events instance installs. So a job is started and stepped by one instance
+  (its in-flight table is plain memory), and its `job-finished` is queued
+  behind the call that started it. It also keeps WASI file calls off the
+  grammar instance, where they cannot be driven — found by the first run of
+  the end-to-end test, which panicked on exactly that.
+- `tests/lighthouse_install.rs` (in `lattice-plugin-host`) — 5 tests through
+  the shipped component as the loader stands it up, installing a script served
+  from loopback: the happy path down to running the installed binary; a digest
+  mismatch; an unreachable server and a successful retry; an unknown name; the
+  startup sweep.
+
+**Not done here, on purpose:** package-manager `recipe` installs (no registry
+entry needs one yet — `spawn-process` is ready for it; LH.1.2b below), and a
+server-name completion for the argument.
+
+**Gap, pre-existing and now larger:** a plugin's own unit tests (30 here) run
+with `cargo test` in the plugin's directory and are **not run by CI or by
+`scripts/precommit.sh`** — true of `project`'s too. CI compiles the plugin and
+runs the end-to-end test; the fake-host suite is by hand.
+
+#### LH.1.2 — registration, `:lsp-uninstall`, `:lsp-update`  ✅
+What makes an installed server *used*. **Exit:** an installed server is
+registered with the editor by its managed path, with no `PATH` entry, and still
+is after a restart; `:lsp-uninstall` reverses it; `:lsp-update` moves to a new
+pin without a moment with no server.
+
+**Landed.**
+
+- **One routine keeps the editor in step with the records**
+  (`Installer::reconcile`): register every installed server not yet
+  registered, withdraw every registration whose server is no longer
+  installed. It runs at startup, after an install and after an uninstall —
+  three callers, so there is no path that leaves the two disagreeing. Startup
+  is what makes an install outlive its session: a registration lasts only as
+  long as the plugin instance that made it.
+- **Update is install.** `:lsp-update <server>` / `:lsp-update-all` request an
+  install of the registry's pin when it differs from what is installed. The
+  new version is fetched and verified beside the old; `reconcile` registers
+  the new one *before* withdrawing the old (the editor takes the newest
+  registration for an id); the old tree is deleted last. A failed update
+  leaves the old version installed and registered.
+- **`:lsp-uninstall`** deletes the record, reconciles (which withdraws), then
+  removes the files — the editor is never pointed at a tree being deleted.
+- **Refusals that would otherwise be silent.** A record whose files are gone
+  is not registered (it would shadow a working `PATH` server with one that
+  cannot start) and says so. An install the editor refuses to register ends
+  `installed, but not registered`, not `installed`. An installed server the
+  registry no longer lists is left installed and unregistered.
+- The command side reads the store through `host-services` and answers on the
+  spot when there is nothing to do (`not installed`, `up to date`).
+
+Tests: 8 more in the plugin (38 total), 3 more end-to-end (8 total) —
+registration with the spec as the registry wrote it and the command as an
+absolute host path; a restart, which registers with no command run; uninstall
+down to the directory being gone and staying gone across a restart; update,
+asserting the order register-new → withdraw-old and that only the new tree
+remains.
+
+**What this does not test:** that a `.rs` buffer then *runs* the managed
+binary. That is the supervisor's behaviour given a registration, and its test
+is LH.0.4's (a marker script standing in for the server). No test crosses
+both; the join is the `LanguageServerRegistrar` trait.
+
+#### LH.1.2b — package-manager `recipe` installs  ⛔
+A registry entry that names a command to run (`npm install --prefix …`)
+instead of a URL, through `spawn-process`, its output streamed into the same
+buffer. Deferred until a server that needs it is added to the registry: the
+seam exists and is tested (LH.0.3), and an install path with no entry that
+exercises it is untested code that looks finished.
+
+#### LH.1.3 — the `:lsp-servers` manager view  ✅
+A read-only buffer listing every registry server, its version and state, with
+chords on the row. **Exit:** `:lsp-servers` lists the registry and the row
+changes by itself as an install completes.
+
+**Landed, with no new host seam.** Everything it needed existed:
+
+- **The buffer** is a plugin output buffer (LH.0.5), `*lsp-servers*`. The
+  events instance redraws it — reset, then a line per server — after every
+  request and every finished job. Nothing is cached: a row is worked out from
+  the registry, the installed records and the in-flight table each time, so
+  the list cannot disagree with the state it is drawn from.
+- **The chords** belong to `lighthouse-servers-mode`, a *manual* minor the
+  plugin declares through the `modes` seam and names as `activate-minor` in
+  the effect that opens the buffer. `i` install, `u` update, `x` uninstall,
+  `<CR>` open that server's log, `gr` redraw — each an action the plugin
+  registers, which reads the server off the cursor's line. One table holds
+  chord, action and callback, so a chord cannot be bound to an action that was
+  never registered.
+- **A row chord stays in the list.** The ex-commands open the log; the row
+  chords answer in the echo area and let the row show the result, because
+  being thrown out of the view on every keypress is not managing a list.
+- `list.rs` — rows, rendering and the read-back (`server_on_line`, the
+  inverse of `render`, held to it by a test). Seven states are told apart,
+  including a record whose files are gone and an installed server the registry
+  no longer lists.
+
+Tests: 7 more in the plugin (45 total); 2 more end-to-end in `lattice-plugin-host`
+(10 total) — the list as drawn, and the manager loop: `i` on a row installs
+that server and the row becomes `installed` with no redraw requested, `<CR>`
+opens its log, `x` puts the row back. And
+`lattice-plugin-loader/tests/lighthouse_plugin.rs`, 3 tests through the real
+loader with the **shipped manifest**: the plugin loads whole, all five
+commands register, and the five chords are bound in the mode's own layer and
+nowhere else (`i`, `u` and `x` in `Builtin` would break vim everywhere).
+
+**Not tested in this slice:** a keypress in a real `*lsp-servers*` buffer —
+the join between "bound in the right layer" and "right given a cursor line".
+LH.2 added that test.
+
+### LH.2 — core-plugin staging  ✅
+Lighthouse ships with the editor. **Exit:** a fresh editor has lighthouse
+loaded with no user install step.
+
+**Landed.**
+
+- **Staging**, everywhere the set of core plugins is written down: `xtask`'s
+  `CORE_PLUGINS`, the four loops in `release.yml` that check a staged layout
+  and each archive, and the `.deb` asset list (`the_deb_carries_every_core_plugin`
+  holds that list to `CORE_PLUGINS`). The registry is compiled into the
+  component, so the staged plugin is still two files and a marker.
+- **`:help lighthouse`** — `doc/lighthouse.md`, shipped inside the component
+  through the `help` seam like every other core plugin's page
+  (`core_plugin_help.rs` now loads it too).
+- **A registry file that was ignored now says so.** Writing the help page's
+  "if your file has a mistake" paragraph showed it was false: a rejected
+  overlay was reported only if you then asked for a server it would have
+  added. One that meant to *replace* a bundled server failed silently and the
+  bundled one was used. `:lsp-servers` now carries the reason under the list.
+- User docs: the core-plugins table, the LSP page's *Installing servers* and
+  its `command not found` troubleshooting entry, and a changelog entry under
+  `## Unreleased`.
+
+**The test that was missing** — `lattice-host/tests/lighthouse_servers_view.rs`,
+4 tests in a booted editor with the shipped component and manifest, pressing
+keys. It closes the join LH.1.3 left open, on the three points where this
+could have been wired and inert:
+
+- `activate-minor` does activate a *plugin's* manual minor (one with no
+  `default_modes` gate) on the list;
+- `x` reaches the plugin's action although the buffer is read-only and
+  `read-only-mode` exists to refuse that key — and in an ordinary buffer `x`
+  still deletes;
+- the action reads the server off a row the host drew asynchronously.
+
+**What staging itself is not tested by:** nothing boots an editor from
+`runtime/plugins/` in CI. `cargo xtask build-core-plugins` was run by hand and
+produced `runtime/plugins/lighthouse/`; the release workflow's layout checks
+are what would catch a staging regression, at release time.
+
+### LH.3 — publish plugin API 0.2.0  📝
+Publish `lattice-wit`, `lattice-plugin-sdk` and `lattice-plugin-sdk-derive` at
+0.2.0 and bump `lattice-org-plugin`'s pin, per `releasing.md` —
+`scripts/publish-plugin-api.sh --publish`, from `main`, after the merge. (The
+script was written for this slice; it refuses on any other branch.) **Last, and only
+once LH.1 and LH.2 are done** (decided 2026-10-10): 0.2.0 is unpublished, so
+every WIT change lighthouse turns out to need lands inside it for free — LH.0.5
+already did — where each one after publication is another version. Outward-facing
+and irreversible; done with Dhruva, not by an agent alone. Until it lands,
+`lattice-org-plugin` does not instantiate against this branch.
 
 ## Notes
 
-- **Deferred:** a general `:plugin-install` (third-party plugin manager) reuses the
-  LH.0.1 `http-fetch` + SHA + managed-tree machinery — lighthouse proves the shape,
-  so the plugin-manager slice is a thin follow-on, not a fresh design.
-- **Cross-renderer:** LH.0.2's streaming buffer + LH.1.3's manager view are
-  Documents (renderer-agnostic); no per-renderer work beyond what the buffer
-  substrate already provides.
+- **Dropped from the July plan:** ❌ the `start-task` / `push-output` /
+  `finalize` task surface — superseded by event-delivered output into a
+  plugin-owned buffer (design §3.3). ❌ blocking `http-fetch -> list<u8>` —
+  superseded by `http-download` (design §3.0).
+- **Deferred:** a general `:plugin-install` reuses LH.0.1 + LH.0.2 — lighthouse
+  proves the shape, so the plugin-manager slice is a thin follow-on.
+- **Cross-renderer:** the progress buffer and the manager view are Documents
+  (renderer-agnostic); no per-renderer work beyond the buffer substrate.

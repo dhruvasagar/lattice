@@ -3,7 +3,7 @@
 
 # `grammar-callbacks`
 
-**Direction:** guest implements this interface · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (exports), `comment-plugin` (exports), `grammar-plugin` (exports), `project-plugin` (exports), `treesitter-context-plugin` (exports)
+**Direction:** guest implements this interface · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (exports), `comment-plugin` (exports), `grammar-plugin` (exports), `lighthouse-plugin` (exports), `project-plugin` (exports), `treesitter-context-plugin` (exports)
 
 The behavior callbacks a grammar plugin **exports**; the host calls one by
 `callback` id on dispatch (the PH7.3d callback-id trampoline). **Synchronous**

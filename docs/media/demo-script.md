@@ -22,8 +22,8 @@ section.
 - `lattice --version` prints the **released** version — `0.9.1` or later,
   never `cargo run`. The viewer should be watching the thing they can
   download.
-- `:plugins` lists **four** bundled plugins: `auto-pair`,
-  `treesitter-context`, `project` and `comment`. Fewer means the build is
+- `:plugins` lists **five** bundled plugins: `auto-pair`,
+  `treesitter-context`, `project`, `comment` and `lighthouse`. Fewer means the build is
   wrong, and section 3's auto-pair beat will silently do nothing. The
   authoritative list is `CORE_PLUGINS` in `xtask/src/main.rs`; a test
   (`lattice-cli`'s `the_demo_script_names_every_bundled_plugin`) fails if

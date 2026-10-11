@@ -104,6 +104,7 @@ pub mod manifest;
 pub mod mode_host;
 pub mod multibuffer_view_host;
 pub mod multibuffer_view_task;
+pub mod output;
 pub mod picker_host;
 pub mod picker_source;
 pub mod picker_task;
@@ -127,6 +128,10 @@ pub mod trampoline;
 pub mod tree_resource;
 // OR.2: the `host-services.watch` / `unwatch` seam — a debounced directory
 // watch whose batches are addressed to the plugin that armed them.
+mod download_host;
+mod extract_host;
+mod job;
+mod process_host;
 pub mod ui_host;
 pub mod wake;
 mod watch_host;
@@ -1191,6 +1196,30 @@ struct PluginState {
     /// channel closing — stops every watch with no bookkeeping anyone can
     /// forget to write. `unwatch` is then a `remove` on this map.
     watches: std::collections::HashMap<PathBuf, watch_host::Watch>,
+    /// LH.0.4: the editor's language-server registrar, stamped per store.
+    /// `None` on a host nothing wired one into — `register-server` then
+    /// refuses, by name.
+    language_servers: Option<lattice_mode::LanguageServerRegistrarHandle>,
+    /// LH.0.5: the editor's plugin-output store, stamped per store. `None` on
+    /// a host nothing wired one into — the `output-*` calls then refuse.
+    output: Option<crate::output::PluginOutputHandle>,
+    /// LH.0.4: the servers this guest registered.
+    ///
+    /// On the `Store`, as `watches` are: dropping a registration withdraws it,
+    /// so a plugin that is unloaded or quarantined leaves no server pointing
+    /// into an install tree nobody manages any more.
+    server_registrations: Vec<ServerRegistration>,
+    /// LH.0: the host jobs this guest started that may still be running.
+    ///
+    /// On the `Store` for `watches`' reason — dropping a guard cancels its
+    /// job, so unload and quarantine stop a download with nothing to remember.
+    /// Finished guards are pruned as new ones are added.
+    jobs: Vec<job::JobGuard>,
+    /// LH.0: jobs requested while `register-events` is still running, held
+    /// unstarted until this plugin's subscriptions are on the bus —
+    /// `deferred_events`' window, for what a guest can START. A transfer from
+    /// a local mirror can finish in less time than the wiring takes.
+    deferred_jobs: Vec<job::PendingJob>,
     /// PM.7: plugins this guest declared via `plugin-manager.require` during
     /// `register-plugins`. Recorded here, drained by
     /// [`PluginHost::spawn_plugin_manager_plugin`] after the export returns —
@@ -1210,6 +1239,15 @@ struct EventEmitCtx {
     plugin_id: PluginId,
     /// The bus `emit-event` publishes `Event::Plugin` onto.
     bus: Arc<EventBus>,
+    /// LH.0.7: who a host job started here reports to — one number per
+    /// PLUGIN, shared by every seam instance of it
+    /// ([`PluginHost::job_owner`]).
+    ///
+    /// Not `plugin_id`, which is per *instance*: a plugin with a grammar seam
+    /// and an events seam is two stores with two ids. A job started from an
+    /// ex-command runs on the grammar store, and its outcome has to reach
+    /// `on-event`, which is the other one.
+    job_owner: u32,
 }
 
 /// PO.5: what the guest `logging` seam needs to route a `log` call — the plugin's
@@ -1239,6 +1277,53 @@ impl WasiView for PluginState {
 /// omits the outer `wasmtime::Result`. Walk logic + the capability gate live in
 /// [`host_services::walk_within_grant`]; the impl just forwards with the Store's
 /// grant.
+/// LH.0.4: one registered language server. Dropping it withdraws the
+/// registration.
+struct ServerRegistration {
+    token: u64,
+    registrar: lattice_mode::LanguageServerRegistrarHandle,
+}
+
+impl Drop for ServerRegistration {
+    fn drop(&mut self) {
+        self.registrar.unregister(self.token);
+    }
+}
+
+impl PluginState {
+    /// LH.0.5: the output store and the name this plugin writes under, for the
+    /// `output-*` call `func`. A buffer is owned by plugin NAME, which a
+    /// reload keeps, so a store with no name stamped cannot own one.
+    fn output_target(
+        &self,
+        func: &str,
+    ) -> Result<(crate::output::PluginOutputHandle, String), String> {
+        let Some(output) = self.output.clone() else {
+            return Err(format!(
+                "{func} failed: this editor has no plugin-output store wired"
+            ));
+        };
+        let Some(plugin) = self.plugin_name.clone() else {
+            return Err(format!("{func} failed: this plugin instance has no name"));
+        };
+        Ok((output, plugin))
+    }
+
+    /// LH.0: start a validated host job and return its id — or, inside
+    /// `register-events`, hold it until the subscriptions that will hear its
+    /// outcome are on the bus (the spawn starts it; see `deferred_jobs`).
+    fn launch_job(&mut self, pending: job::PendingJob) -> u64 {
+        let id = pending.id();
+        if self.deferred_events.is_some() {
+            self.deferred_jobs.push(pending);
+        } else {
+            self.jobs.retain(|j| !j.is_done());
+            self.jobs.push(pending.start());
+        }
+        id
+    }
+}
+
 impl crate::lattice::plugin_host::host_services::Host for PluginState {
     /// OA.23: where a line of a multibuffer came from.
     ///
@@ -1433,6 +1518,238 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
     fn unwatch(&mut self, path: String) -> Result<(), String> {
         self.watches.remove(&PathBuf::from(&path));
         Ok(())
+    }
+
+    /// LH.0.1 `http-download`. Validates against the grant and returns a job
+    /// id; the transfer runs on its own thread and reports through
+    /// `job-progress` / `job-finished`, addressed to this plugin.
+    ///
+    /// Refused without an event bus for `watch`'s reason: the outcome could
+    /// never be delivered, and a download nobody hears about is a file that
+    /// appears on disk with no way to know it is complete.
+    fn http_download(&mut self, url: String, sha256: String, dest: String) -> Result<u64, String> {
+        let Some(ctx) = &self.event_emit else {
+            tracing::warn!(
+                url = %url,
+                "http-download refused: plugin has no event bus wired on this seam"
+            );
+            return Err(format!(
+                "http download denied: '{url}' — this seam has no event bus, so the \
+                 outcome could never be delivered"
+            ));
+        };
+        let pending = download_host::prepare(
+            &self.grant,
+            Arc::clone(&ctx.bus),
+            ctx.job_owner,
+            &url,
+            &sha256,
+            &dest,
+        )?;
+        Ok(self.launch_job(pending))
+    }
+
+    /// LH.0.2 `extract-archive`. A job, like `http-download`, and refused
+    /// without an event bus for the same reason.
+    fn extract_archive(
+        &mut self,
+        src: String,
+        dest: String,
+        format: crate::lattice::plugin_host::host_services::ArchiveFormat,
+    ) -> Result<u64, String> {
+        use crate::lattice::plugin_host::host_services::ArchiveFormat;
+        let Some(ctx) = &self.event_emit else {
+            tracing::warn!(
+                src = %src,
+                "extract-archive refused: plugin has no event bus wired on this seam"
+            );
+            return Err(format!(
+                "extract denied: '{src}' — this seam has no event bus, so the outcome \
+                 could never be delivered"
+            ));
+        };
+        let format = match format {
+            ArchiveFormat::Gz => extract_host::Format::Gz,
+            ArchiveFormat::TarGz => extract_host::Format::TarGz,
+        };
+        let pending = extract_host::prepare(
+            &self.grant,
+            Arc::clone(&ctx.bus),
+            ctx.job_owner,
+            &src,
+            &dest,
+            format,
+        )?;
+        Ok(self.launch_job(pending))
+    }
+
+    /// LH.0.3 `spawn-process`. A job; gated on `proc:spawn`, which only the
+    /// bundled tier is ever granted.
+    fn spawn_process(
+        &mut self,
+        command: String,
+        args: Vec<String>,
+        cwd: String,
+    ) -> Result<u64, String> {
+        let Some(ctx) = &self.event_emit else {
+            tracing::warn!(
+                command = %command,
+                "spawn-process refused: plugin has no event bus wired on this seam"
+            );
+            return Err(format!(
+                "spawn denied: '{command}' — this seam has no event bus, so the outcome \
+                 could never be delivered"
+            ));
+        };
+        let pending = process_host::prepare(
+            &self.grant,
+            Arc::clone(&ctx.bus),
+            ctx.job_owner,
+            &command,
+            args,
+            &cwd,
+        )?;
+        Ok(self.launch_job(pending))
+    }
+
+    /// LH.0.4 `register-server`. Gated on `proc:spawn`: registering a command
+    /// the editor will run IS spawning it, one buffer-open later.
+    fn register_server(
+        &mut self,
+        config: crate::lattice::plugin_host::host_services::ServerConfig,
+    ) -> Result<u64, String> {
+        if !self.grant.proc_spawn {
+            // info!: user-actionable (a plugin was denied a capability).
+            tracing::info!(
+                server = %config.id,
+                "host-services register-server denied: plugin has no proc:spawn grant"
+            );
+            return Err(format!(
+                "register-server denied: '{}' — registering a server makes the editor run \
+                 its command, which needs the `proc:spawn` grant (bundled plugins only)",
+                config.id
+            ));
+        }
+        for (field, value) in [
+            ("id", &config.id),
+            ("command", &config.command),
+            ("language-id", &config.language_id),
+        ] {
+            if value.is_empty() {
+                return Err(format!("register-server failed: `{field}` is empty"));
+            }
+        }
+        if config.file_patterns.is_empty() {
+            return Err(format!(
+                "register-server failed: '{}' has no file patterns, so no buffer would \
+                 ever start it",
+                config.id
+            ));
+        }
+        let Some(registrar) = self.language_servers.clone() else {
+            return Err(format!(
+                "register-server failed: '{}' — this editor has no language-server \
+                 support wired",
+                config.id
+            ));
+        };
+        let token = registrar
+            .register(lattice_mode::LanguageServerSpec {
+                id: config.id,
+                command: PathBuf::from(config.command),
+                args: config.args,
+                env: config.env,
+                root_markers: config.root_markers,
+                file_patterns: config.file_patterns,
+                language_id: config.language_id,
+                initialization_options: config.initialization_options,
+            })
+            .map_err(|e| format!("register-server failed: {e}"))?;
+        self.server_registrations
+            .push(ServerRegistration { token, registrar });
+        Ok(token)
+    }
+
+    /// LH.0.4 `unregister-server`. Only a registration THIS instance made: the
+    /// token is looked up in this store, so one plugin cannot withdraw
+    /// another's server by guessing a number.
+    fn unregister_server(&mut self, token: u64) {
+        // The drop is the unregister.
+        self.server_registrations.retain(|r| r.token != token);
+    }
+
+    /// LH.0.6 `host-platform`. `std::env::consts`, so it names the platform
+    /// the editor was BUILT for — which is the one a downloaded binary has to
+    /// run on.
+    fn host_platform(&mut self) -> crate::lattice::plugin_host::host_services::Platform {
+        crate::lattice::plugin_host::host_services::Platform {
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+        }
+    }
+
+    /// LH.0.6 `data-dir`. `None` for a path that is not UTF-8 — it cannot
+    /// cross as a `string`.
+    fn data_dir(&mut self) -> Option<String> {
+        self.grant
+            .data_dir
+            .as_deref()
+            .and_then(Path::to_str)
+            .map(str::to_string)
+    }
+
+    /// LH.0.5 `output-append`.
+    fn output_append(&mut self, name: String, lines: Vec<String>) -> Result<(), String> {
+        let (output, plugin) = self.output_target("output-append")?;
+        output
+            .append(&plugin, &name, lines)
+            .map_err(|e| format!("output-append failed: {e}"))
+    }
+
+    /// LH.0.5 `output-status`.
+    fn output_status(
+        &mut self,
+        name: String,
+        state: crate::lattice::plugin_host::host_services::OutputState,
+        text: String,
+    ) -> Result<(), String> {
+        use crate::lattice::plugin_host::host_services::OutputState;
+        let (output, plugin) = self.output_target("output-status")?;
+        let state = match state {
+            OutputState::Running => crate::output::OutputState::Running,
+            OutputState::Succeeded => crate::output::OutputState::Succeeded,
+            OutputState::Failed => crate::output::OutputState::Failed,
+        };
+        output
+            .set_status(&plugin, &name, crate::output::OutputStatus { state, text })
+            .map_err(|e| format!("output-status failed: {e}"))
+    }
+
+    /// LH.0.5 `output-reset`.
+    fn output_reset(&mut self, name: String) -> Result<(), String> {
+        let (output, plugin) = self.output_target("output-reset")?;
+        output
+            .reset(&plugin, &name)
+            .map_err(|e| format!("output-reset failed: {e}"))
+    }
+
+    /// LH.0.2 `set-executable`. Immediate; gated on `fs:write`.
+    fn set_executable(&mut self, path: String) -> Result<(), String> {
+        extract_host::set_executable(&self.grant, &path)
+    }
+
+    /// LH.0 `cancel-job`. Scoped to this plugin's own jobs by the host-issued
+    /// id, so a guessed id cannot stop another plugin's work.
+    fn cancel_job(&mut self, id: u64) {
+        // Still held for the registration window: it never started, but the
+        // guest holds its id and is owed exactly one outcome.
+        if let Some(at) = self.deferred_jobs.iter().position(|j| j.id() == id) {
+            self.deferred_jobs.swap_remove(at).cancel_unstarted();
+            return;
+        }
+        if let Some(ctx) = &self.event_emit {
+            job::cancel(ctx.job_owner, id);
+        }
     }
 
     /// OR.1 `store-put`. Gated on `state:write`; `err` names which of the three
@@ -3299,6 +3616,8 @@ pub struct PluginHost {
     // Monotonic source of host-issued `PluginId`s. `&self` methods allocate,
     // so this is atomic.
     next_id: AtomicU32,
+    // LH.0.7: one job-owner number per plugin NAME. See `job_owner`.
+    job_owners: Mutex<std::collections::HashMap<String, u32>>,
     // PO.5: the boundary tracer, so each instantiate/spawn path can stamp a
     // plugin's `PluginState.log_ctx` (the guest `logging` seam routes into it).
     // Set once by the loader (`set_tracer`) after it builds the tracer — the host
@@ -3349,6 +3668,11 @@ pub struct PluginHost {
     decoration_epoch: std::sync::OnceLock<lattice_mode::DecorationEpochHandle>,
     /// CD.6b: the buffer store, for `clamp-position`.
     buffers: std::sync::OnceLock<lattice_mode::BufferStoreHandle>,
+    // LH.0.4: the editor's language-server registrar, when it has one. Set-once
+    // through the shared `Arc`, like its neighbours.
+    language_servers: std::sync::OnceLock<lattice_mode::LanguageServerRegistrarHandle>,
+    // LH.0.5: the plugin-output store the `output-*` calls write into.
+    output: std::sync::OnceLock<crate::output::PluginOutputHandle>,
     // OC.3 / ML.6: what the `ui` seam acts on — the modeline element registry
     // and the bus content updates publish onto. Both halves are required (a
     // registry with no bus registers descriptors nothing ever repaints), so
@@ -3813,6 +4137,7 @@ impl PluginHost {
             cache,
             data_dir_base: data_dir_base.into(),
             next_id: AtomicU32::new(0),
+            job_owners: Mutex::new(std::collections::HashMap::new()),
             tracer: std::sync::OnceLock::new(),
             project: std::sync::OnceLock::new(),
             cancel: std::sync::OnceLock::new(),
@@ -3822,6 +4147,8 @@ impl PluginHost {
             view_args: std::sync::OnceLock::new(),
             decoration_epoch: std::sync::OnceLock::new(),
             buffers: std::sync::OnceLock::new(),
+            language_servers: std::sync::OnceLock::new(),
+            output: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
             stores: Mutex::new(std::collections::HashMap::new()),
             _epoch_ticker: epoch_ticker,
@@ -3996,6 +4323,50 @@ impl PluginHost {
         let _ = self.buffers.set(buffers);
     }
 
+    /// LH.0.4: hand the host the editor's language-server registrar, which
+    /// `register-server` forwards to.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_language_server_registrar(
+        &self,
+        registrar: lattice_mode::LanguageServerRegistrarHandle,
+    ) {
+        let _ = self.language_servers.set(registrar);
+    }
+
+    /// LH.0.4: whether a registrar was ever wired.
+    ///
+    /// Pinned at boot for `view_args_wired`'s reason: unwired,
+    /// `register-server` refuses every call, and a server manager would
+    /// install servers the editor then never starts.
+    pub fn language_server_registrar_wired(&self) -> bool {
+        self.language_servers.get().is_some()
+    }
+
+    /// LH.0.5: hand the host the plugin-output store the `output-*` calls
+    /// write into.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_plugin_output(&self, output: crate::output::PluginOutputHandle) {
+        let _ = self.output.set(output);
+    }
+
+    /// LH.0.5: drop the output buffers plugin `name` holds — the loader calls
+    /// this on unload, as it reclaims the plugin's trace ring.
+    pub fn forget_plugin_output(&self, name: &str) {
+        if let Some(output) = self.output.get() {
+            output.forget_plugin(name);
+        }
+    }
+
+    /// LH.0.5: whether an output store was ever wired.
+    ///
+    /// Pinned at boot for `view_args_wired`'s reason: unwired, every
+    /// `output-*` call refuses, and a plugin's progress buffer stays empty.
+    pub fn plugin_output_wired(&self) -> bool {
+        self.output.get().is_some()
+    }
+
     /// CD.6b: whether a buffer store was ever wired.
     ///
     /// Pinned at boot for `view_args_wired`'s reason: unwired, `clamp-position`
@@ -4034,6 +4405,21 @@ impl PluginHost {
     /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
     pub fn set_modeline(&self, modeline: lattice_mode::ModelineServiceHandle, bus: Arc<EventBus>) {
         let _ = self.ui.set(ui_host::UiCtx { modeline, bus });
+    }
+
+    /// LH.0.7: the number host jobs started by plugin `name` are addressed
+    /// to. The same for every seam instance of that plugin, and for a reload
+    /// of it; never shared between two names.
+    ///
+    /// A separate number space from [`PluginId`]: a job event's `plugin` field
+    /// is only ever compared with another job owner.
+    pub fn job_owner(&self, name: &str) -> u32 {
+        let mut owners = self
+            .job_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next = owners.len() as u32;
+        *owners.entry(name.to_string()).or_insert(next)
     }
 
     /// Allocate the next host-issued [`PluginId`]. Monotonic and unique for the
@@ -4241,6 +4627,9 @@ impl PluginHost {
             // GRAMMAR store is the one that needs it: a capture commits from a
             // chord, and that is where the caller's extent is asked.
             buffers: self.buffers.get().cloned(),
+            language_servers: self.language_servers.get().cloned(),
+            output: self.output.get().cloned(),
+            server_registrations: Vec::new(),
             // PH7.8c: opened by `spawn_event_plugin` around `register-events`
             // and closed by its flush. Every other seam publishes straight
             // through, which is what `None` means.
@@ -4271,6 +4660,8 @@ impl PluginHost {
                 multibuffer_view_host::MultibufferViewContributions::default(),
             // OR.2: empty until the guest arms one; dropped with this `Store`.
             watches: std::collections::HashMap::new(),
+            jobs: Vec::new(),
+            deferred_jobs: Vec::new(),
             require_contributions: Default::default(),
         };
         let mut store = Store::new(&self.engine, state);
@@ -4294,7 +4685,7 @@ impl PluginHost {
         manifest: &PluginManifest,
         tier: TrustTier,
     ) -> (WasiCtx, GrantOutcome, PathBuf) {
-        let outcome = grant(manifest, tier);
+        let mut outcome = grant(manifest, tier);
         // SECURITY (isolation, defense-in-depth): the id is validated at parse
         // (`from_toml_str` rejects a path-escaping id), but a programmatic
         // `PluginManifest::new` bypasses that. Re-check HERE — the true security
@@ -4311,6 +4702,9 @@ impl PluginHost {
                     "plugin data dir create failed; the data mount is degraded"
                 );
             }
+            // LH.0.6: only on this arm. An unsafe id gets no mount, so it
+            // gets no host-side reach either.
+            outcome.grant.data_dir = Some(dir.clone());
             dir
         } else {
             tracing::error!(

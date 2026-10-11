@@ -245,8 +245,10 @@ its breaking stop being silent and manual* — which is §4.
 
 What changes at 1.0 is worth writing down while the reasoning is fresh:
 
-- **The package version becomes meaningful.** `lattice:plugin-host@0.1.0` has
-  never been bumped through any of the changes that broke components. Post-1.0
+- **The package version becomes meaningful.** `lattice:plugin-host@0.1.0` was
+  not bumped through any of the changes that broke components before
+  2026-10-10, when lighthouse's download events moved it to `0.2.0` — the
+  first bump spent, on a change that added arms to the `event` variant. Post-1.0
   a breaking change bumps it, and `lattice-wit = "1.2"` is how a plugin says
   what it targets.
 - **The host can offer more than one.** The Component Model allows a host to

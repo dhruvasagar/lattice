@@ -1,4 +1,4 @@
-package lattice:plugin-host@0.1.0;
+package lattice:plugin-host@0.2.0;
 
 /// AP.1 spike world: proves ONE component can `provide` the SYNC grammar seam
 /// AND the async `modes` + `config` seams simultaneously — the `auto-pair` shape

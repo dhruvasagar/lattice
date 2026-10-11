@@ -89,7 +89,7 @@ older API. The user upgrades lattice. What happens?**
 
 | | What it is | Where it lives |
 |---|---|---|
-| **The WIT package version** | The ABI identity. `package lattice:plugin-host@0.1.0` at the top of every `.wit` file. Component Model bakes it into the interface names your component imports, so the host either provides `lattice:plugin-host/buffer@0.1.0` or your component does not instantiate. | `crates/lattice-wit/wit/*.wit` |
+| **The WIT package version** | The ABI identity. `package lattice:plugin-host@0.2.0` at the top of every `.wit` file. Component Model bakes it into the interface names your component imports, so the host either provides `lattice:plugin-host/buffer@0.1.0` or your component does not instantiate. | `crates/lattice-wit/wit/*.wit` |
 | **The `lattice-wit` crate version** | The delivery vehicle — the crate that carries those files to you. Versioned independently of the editor, because the ABI does not change every time the editor does. | `crates/lattice-wit/Cargo.toml` |
 | **The editor version** | `lattice --version`. Says nothing directly about the ABI. | `[workspace.package]` |
 
@@ -146,7 +146,7 @@ ABI you get, including when the editor has moved on.
 
 ```toml
 [build-dependencies]
-lattice-wit = "0.1"      # this pin IS your ABI generation
+lattice-wit = "0.2"      # this pin IS your ABI generation
 ```
 
 ```rust

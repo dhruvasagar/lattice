@@ -1,0 +1,33 @@
+# LH.1 — the `lighthouse` bundled plugin: the language-server manager.
+# Design: docs/dev/architecture/lighthouse.md.
+#
+# Standalone workspace (`[workspace]` below), the `auto-pair` shape: it targets
+# wasm32-wasip2, must not inherit the host toolchain's lints/target, and must
+# not be built by a plain `cargo build --workspace`. Staged into the dev
+# runtime root by `cargo xtask build-core-plugins`; also built to a component
+# by `crates/lattice-plugin-host/build.rs` so host-side tests have a path.
+#
+# `toml` + `serde` are here for one job: the server registry is a TOML file
+# (`registry.toml`, compiled in). `project` hand-rolls its one-path-per-line
+# list rather than take a dependency; a registry is nested, typed, and edited
+# by people adding servers, which is what a real parser with real error
+# messages is for.
+[package]
+name = "lighthouse"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

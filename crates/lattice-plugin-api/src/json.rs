@@ -12,7 +12,7 @@
 //! consumer can rely on the keys):
 //!
 //! ```text
-//! { "package": "lattice:plugin-host@0.1.0",
+//! { "package": "lattice:plugin-host@0.2.0",
 //!   "interfaces": [ { "name", "doc", "direction", "capability",
 //!       "examples": [ EXAMPLE ],
 //!       "functions": [ { "name", "display_name", "kind", "resource",

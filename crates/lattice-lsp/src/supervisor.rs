@@ -135,7 +135,18 @@ pub struct LspSupervisor {
     /// multiple configs match a path, all of them attach (we
     /// don't disambiguate by priority at attachment time --
     /// priority resolves *feature-dispatch* ties only).
+    ///
+    /// LH.0.4: this is the EFFECTIVE list — `registered` first, then every
+    /// `base_configs` entry no registration shadows. Rebuilt by
+    /// `rebuild_configs` whenever either changes; nothing else writes it.
     configs: Vec<Arc<ServerConfig>>,
+    /// The boot-time configs (`add_config` / `set_configs`), kept apart from
+    /// runtime registrations so that removing a registration restores exactly
+    /// what it shadowed.
+    base_configs: Vec<Arc<ServerConfig>>,
+    /// LH.0.4: configs registered while running, by token, in registration
+    /// order. One shadows every base config with the same `id`.
+    registered: Vec<(u64, Arc<ServerConfig>)>,
     /// Per-(workspace, server-id) actors, lazily spawned.
     /// `ServerHandle` is itself `Arc`-wrapped internally so
     /// cloning is cheap; no need to wrap it again.
@@ -238,6 +249,8 @@ impl LspSupervisor {
         let diagnostics = DiagnosticsLayer::new(logger.clone());
         Self {
             configs: Vec::new(),
+            base_configs: Vec::new(),
+            registered: Vec::new(),
             actors: HashMap::new(),
             attachments: HashMap::new(),
             logger,
@@ -331,13 +344,63 @@ impl LspSupervisor {
     /// Add a server config to the registry. The App calls this
     /// for every builtin + user-override config at startup.
     pub fn add_config(&mut self, config: ServerConfig) {
-        self.configs.push(Arc::new(config));
+        self.base_configs.push(Arc::new(config));
+        self.rebuild_configs();
     }
 
     /// Set the registry from an iterator (e.g. the curated
     /// builtins). Replaces any prior contents.
     pub fn set_configs<I: IntoIterator<Item = ServerConfig>>(&mut self, configs: I) {
-        self.configs = configs.into_iter().map(Arc::new).collect();
+        self.base_configs = configs.into_iter().map(Arc::new).collect();
+        self.rebuild_configs();
+    }
+
+    /// LH.0.4: register a config at runtime under `token`.
+    ///
+    /// It **shadows** every boot-time config with the same `id` — a server
+    /// installed into a managed tree replaces the `PATH` lookup for its
+    /// language rather than running beside it — and a later registration with
+    /// the same `id` shadows an earlier one. Registering a `token` again
+    /// replaces what it named.
+    ///
+    /// Nothing is spawned or restarted here: the config applies from the next
+    /// buffer open that matches it. An actor already running for that id keeps
+    /// the binary it was started with until it is restarted.
+    pub fn register_config(&mut self, token: u64, config: ServerConfig) {
+        self.registered.retain(|(t, _)| *t != token);
+        self.registered.push((token, Arc::new(config)));
+        self.rebuild_configs();
+    }
+
+    /// LH.0.4: remove the registration `token` names. Whatever it shadowed
+    /// applies again. An unknown token is nothing.
+    pub fn unregister_config(&mut self, token: u64) {
+        let before = self.registered.len();
+        self.registered.retain(|(t, _)| *t != token);
+        if self.registered.len() != before {
+            self.rebuild_configs();
+        }
+    }
+
+    /// Recompute the effective list: registrations, newest first among those
+    /// sharing an id, then the base configs none of them shadows.
+    fn rebuild_configs(&mut self) {
+        let mut effective: Vec<Arc<ServerConfig>> = Vec::new();
+        for (_, config) in self.registered.iter().rev() {
+            if !effective.iter().any(|c| c.id == config.id) {
+                effective.push(config.clone());
+            }
+        }
+        // Registration order, not reverse: it is the preference order.
+        effective.reverse();
+        let shadowed = |id: &str| self.registered.iter().any(|(_, c)| c.id == id);
+        effective.extend(
+            self.base_configs
+                .iter()
+                .filter(|c| !shadowed(&c.id))
+                .cloned(),
+        );
+        self.configs = effective;
     }
 
     /// All registered configs (read-only; for `:lsp-status`).
@@ -1082,12 +1145,54 @@ enum SupervisorCmd {
         server_id: String,
         reply: oneshot::Sender<LspResult<RestartReport>>,
     },
+    /// LH.0.4: add a config at runtime. Fire-and-forget; observable on the
+    /// next snapshot.
+    RegisterConfig { token: u64, config: ServerConfig },
+    /// LH.0.4: remove a runtime config.
+    UnregisterConfig { token: u64 },
     /// Editor exit: close every buffer, drop fan-ins, shut down
     /// every actor. Reply resolves after the supervisor task
     /// itself is exiting (next iteration drops `cmd_rx`).
     Shutdown {
         reply: oneshot::Sender<LspResult<()>>,
     },
+}
+
+/// Tokens for runtime registrations. Process-wide rather than per-handle: a
+/// handle is cloned freely, and two clones must not hand out the same token.
+static NEXT_REGISTRATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// LH.0.4: the supervisor as the editor's language-server registrar — the
+/// service a plugin's `register-server` reaches, without the plugin host
+/// depending on this crate.
+impl lattice_mode::LanguageServerRegistrar for LspSupervisorHandle {
+    fn register(&self, spec: lattice_mode::LanguageServerSpec) -> Result<u64, String> {
+        let initialization_options = match &spec.initialization_options {
+            Some(json) => Some(serde_json::from_str(json).map_err(|e| {
+                format!(
+                    "language server '{}': initialization options are not JSON: {e}",
+                    spec.id
+                )
+            })?),
+            None => None,
+        };
+        let config = ServerConfig {
+            id: spec.id,
+            binary: spec.command,
+            args: spec.args.into_iter().map(Into::into).collect(),
+            env: spec.env.into_iter().collect(),
+            root_markers: spec.root_markers,
+            initialization_options,
+            file_patterns: spec.file_patterns,
+            language_id: spec.language_id,
+        };
+        self.register_config(config)
+            .map_err(|e| format!("the LSP subsystem is not running: {e}"))
+    }
+
+    fn unregister(&self, token: u64) {
+        self.unregister_config(token);
+    }
 }
 
 /// Editor-facing handle to the LSP subsystem. Cheap to clone
@@ -1329,6 +1434,27 @@ impl LspSupervisorHandle {
         rx.await.map_err(|_| LspError::ActorGone)?
     }
 
+    /// LH.0.4: register a server config while running. Returns the token
+    /// [`Self::unregister_config`] takes.
+    ///
+    /// Fire-and-forget, like [`Self::close_buffer`]: it can be called from a
+    /// thread that must not block, and the config is visible on the next
+    /// snapshot. See [`LspSupervisor::register_config`] for what registering
+    /// does and does not do.
+    pub fn register_config(&self, config: ServerConfig) -> LspResult<u64> {
+        let token = NEXT_REGISTRATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.cmd_tx
+            .send(SupervisorCmd::RegisterConfig { token, config })
+            .map_err(|_| LspError::ActorGone)?;
+        Ok(token)
+    }
+
+    /// LH.0.4: remove a registration. A token that names nothing, and a
+    /// supervisor that has already gone, are both silently nothing.
+    pub fn unregister_config(&self, token: u64) {
+        let _ = self.cmd_tx.send(SupervisorCmd::UnregisterConfig { token });
+    }
+
     /// Editor exit: close every buffer, drop fan-ins, shut down
     /// every actor. Awaits the supervisor task's final ack.
     pub async fn shutdown(&self) -> LspResult<()> {
@@ -1427,6 +1553,14 @@ async fn supervisor_main(
                 let result = state.restart_server(&server_id).await;
                 snapshot.store(Arc::new(state.build_snapshot()));
                 let _ = reply.send(result);
+            }
+            SupervisorCmd::RegisterConfig { token, config } => {
+                state.register_config(token, config);
+                snapshot.store(Arc::new(state.build_snapshot()));
+            }
+            SupervisorCmd::UnregisterConfig { token } => {
+                state.unregister_config(token);
+                snapshot.store(Arc::new(state.build_snapshot()));
             }
             SupervisorCmd::Shutdown { reply } => {
                 let result = state.shutdown().await;
@@ -1734,5 +1868,212 @@ mod tests {
         sup.set_configs([ServerConfig::new("go", "gopls", "go")]);
         assert_eq!(sup.configs().len(), 1);
         assert_eq!(sup.configs()[0].id, "go");
+    }
+
+    // ---- LH.0.4: runtime registration ----------------------------------
+
+    fn ids_and_binaries(sup: &LspSupervisor) -> Vec<(String, String)> {
+        sup.configs()
+            .iter()
+            .map(|c| (c.id.clone(), c.binary.display().to_string()))
+            .collect()
+    }
+
+    fn managed(id: &str, binary: &str, pattern: &str) -> ServerConfig {
+        ServerConfig::new(id, binary, id).with_file_patterns([pattern])
+    }
+
+    /// A managed install replaces the `PATH` lookup for its language; it does
+    /// not run beside it.
+    #[test]
+    fn a_registered_config_shadows_the_base_one_with_its_id() {
+        let mut sup = LspSupervisor::new(LspLogger::with_defaults());
+        sup.add_config(managed("rust", "rust-analyzer", "*.rs"));
+        sup.add_config(managed("python", "pyright", "*.py"));
+
+        sup.register_config(1, managed("rust", "/managed/rust-analyzer", "*.rs"));
+
+        assert_eq!(
+            ids_and_binaries(&sup),
+            vec![
+                ("rust".to_string(), "/managed/rust-analyzer".to_string()),
+                ("python".to_string(), "pyright".to_string()),
+            ],
+            "one rust entry, the managed one; python untouched"
+        );
+    }
+
+    /// Uninstalling must put back exactly what was there.
+    #[test]
+    fn unregistering_restores_what_was_shadowed() {
+        let mut sup = LspSupervisor::new(LspLogger::with_defaults());
+        sup.add_config(managed("rust", "rust-analyzer", "*.rs"));
+        let before = ids_and_binaries(&sup);
+
+        sup.register_config(1, managed("rust", "/managed/rust-analyzer", "*.rs"));
+        sup.unregister_config(1);
+
+        assert_eq!(ids_and_binaries(&sup), before);
+        // …and an unknown token is nothing.
+        sup.unregister_config(99);
+        assert_eq!(ids_and_binaries(&sup), before);
+    }
+
+    /// A server lattice ships no config for at all becomes available.
+    #[test]
+    fn a_registered_config_for_a_new_language_is_added() {
+        let mut sup = LspSupervisor::new(LspLogger::with_defaults());
+        let zig = Path::new("/p/main.zig");
+        assert!(!sup.has_server_for_path(zig));
+
+        sup.register_config(1, managed("zig", "/managed/zls", "*.zig"));
+        assert!(sup.has_server_for_path(zig));
+
+        sup.unregister_config(1);
+        assert!(!sup.has_server_for_path(zig));
+    }
+
+    /// An update: the new version registers before the old is removed.
+    #[test]
+    fn the_newest_registration_for_an_id_wins_and_the_older_survives_its_removal() {
+        let mut sup = LspSupervisor::new(LspLogger::with_defaults());
+        sup.add_config(managed("rust", "rust-analyzer", "*.rs"));
+        sup.register_config(1, managed("rust", "/managed/v1/ra", "*.rs"));
+        sup.register_config(2, managed("rust", "/managed/v2/ra", "*.rs"));
+        assert_eq!(
+            ids_and_binaries(&sup),
+            vec![("rust".to_string(), "/managed/v2/ra".to_string())]
+        );
+
+        // A failed update rolls back by removing the new one.
+        sup.unregister_config(2);
+        assert_eq!(
+            ids_and_binaries(&sup),
+            vec![("rust".to_string(), "/managed/v1/ra".to_string())]
+        );
+    }
+
+    /// Boot-time configuration after a registration does not undo it.
+    #[test]
+    fn set_configs_keeps_registrations() {
+        let mut sup = LspSupervisor::new(LspLogger::with_defaults());
+        sup.register_config(1, managed("rust", "/managed/ra", "*.rs"));
+        sup.set_configs([managed("rust", "rust-analyzer", "*.rs")]);
+        assert_eq!(
+            ids_and_binaries(&sup),
+            vec![("rust".to_string(), "/managed/ra".to_string())]
+        );
+    }
+
+    /// **The seam's exit criterion**: register, and the next matching buffer
+    /// open runs THAT binary; unregister, and it does not.
+    ///
+    /// The "server" is a script that records having been started and exits. It
+    /// never speaks LSP, so the handshake fails and nothing attaches — which is
+    /// fine: the claim under test is which program the supervisor reaches for.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_matching_open_runs_the_registered_binary_and_stops_after_unregister() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // The crate takes no `tempfile` dependency; a pid-suffixed dir under
+        // the system temp is unique per test process and removed below.
+        let dir = std::env::temp_dir().join(format!("lattice-lsp-lh04-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ran = dir.join("ran");
+        let server = dir.join("server");
+        std::fs::write(
+            &server,
+            format!("#!/bin/sh\necho started >> '{}'\n", ran.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut sup = LspSupervisor::new(LspLogger::with_defaults());
+        sup.register_config(1, managed("zig", server.to_str().unwrap(), "*.zig"));
+
+        let _ = sup.open_buffer(dir.join("main.zig"), "x".into()).await;
+        let started = || {
+            std::fs::read_to_string(&ran)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        for _ in 0..200 {
+            if started() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(started(), 1, "the registered binary was run");
+
+        sup.unregister_config(1);
+        let attached = sup
+            .open_buffer(dir.join("other.zig"), "x".into())
+            .await
+            .expect("no server cares any more, which is not an error");
+        assert!(attached.is_empty());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(started(), 1, "and not run again once unregistered");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Through the trait a plugin's call arrives on, and the running task.
+    #[tokio::test]
+    async fn the_registrar_reaches_the_running_supervisor() {
+        use lattice_mode::{LanguageServerRegistrar as _, LanguageServerSpec};
+
+        let mut sup = LspSupervisor::new(LspLogger::with_defaults());
+        sup.add_config(managed("rust", "rust-analyzer", "*.rs"));
+        let handle = sup.spawn(&tokio::runtime::Handle::current());
+        let spec = |options: Option<&str>| LanguageServerSpec {
+            id: "rust".into(),
+            command: "/managed/ra".into(),
+            args: vec!["--stdio".into()],
+            env: vec![("RA_LOG".into(), "info".into())],
+            root_markers: vec!["Cargo.toml".into()],
+            file_patterns: vec!["*.rs".into()],
+            language_id: "rust".into(),
+            initialization_options: options.map(str::to_string),
+        };
+
+        let token = handle
+            .register(spec(Some(r#"{"checkOnSave": true}"#)))
+            .expect("registers");
+        // Fire-and-forget: visible once the task has processed it.
+        let binary = |h: &LspSupervisorHandle| {
+            h.configs()
+                .iter()
+                .find(|c| c.id == "rust")
+                .map(|c| c.binary.display().to_string())
+        };
+        for _ in 0..200 {
+            if binary(&handle).as_deref() == Some("/managed/ra") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let configs = handle.configs();
+        let rust = configs.iter().find(|c| c.id == "rust").expect("present");
+        assert_eq!(rust.binary, PathBuf::from("/managed/ra"));
+        assert_eq!(rust.args, vec![std::ffi::OsString::from("--stdio")]);
+        assert_eq!(rust.env.get("RA_LOG").map(String::as_str), Some("info"));
+        assert_eq!(
+            rust.initialization_options,
+            Some(serde_json::json!({"checkOnSave": true}))
+        );
+
+        handle.unregister(token);
+        for _ in 0..200 {
+            if binary(&handle).as_deref() == Some("rust-analyzer") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(binary(&handle).as_deref(), Some("rust-analyzer"));
+
+        // Options that are not JSON are refused before anything is sent.
+        let err = handle.register(spec(Some("{not json"))).expect_err("bad");
+        assert!(err.contains("not JSON"), "{err}");
     }
 }

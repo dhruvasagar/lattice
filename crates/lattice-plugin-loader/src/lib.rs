@@ -695,6 +695,17 @@ pub struct WiredSeams {
     /// Unwired, every buffer reads as closed, so a capture's write-back into
     /// its caller is skipped with a message blaming a buffer that is open.
     pub buffer_store: bool,
+    /// LH.0.4: whether the HOST carries the editor's language-server
+    /// registrar, which `register-server` forwards to.
+    ///
+    /// Unwired, every registration is refused — a server manager would install
+    /// servers the editor then never starts. The LSP subsystem publishes the
+    /// registrar from its own `install`, so this is a boot-ORDER pin: it goes
+    /// `false` if the loader is ever installed ahead of it.
+    pub language_servers: bool,
+    /// LH.0.5: `output-*` refuses every call on a host with no output store,
+    /// and a plugin's progress buffer then never gains a line.
+    pub plugin_output: bool,
 }
 
 impl WiredSeams {
@@ -724,6 +735,8 @@ impl WiredSeams {
             && self.view_args
             && self.view_decoration_epoch
             && self.buffer_store
+            && self.language_servers
+            && self.plugin_output
     }
 }
 
@@ -1021,6 +1034,8 @@ impl PluginLoader {
             view_args: self.host.view_args_wired(),
             view_decoration_epoch: self.host.decoration_epoch_wired(),
             buffer_store: self.host.buffer_store_wired(),
+            language_servers: self.host.language_server_registrar_wired(),
+            plugin_output: self.host.plugin_output_wired(),
         }
     }
 
@@ -2426,6 +2441,9 @@ impl PluginLoader {
         if let Some(tracer) = &self.env.tracer {
             tracer.forget_plugin(record.id.0);
         }
+        // LH.0.5: and its output buffers, which are owned by NAME — a plugin
+        // that is gone must not keep a name another could use.
+        self.host.forget_plugin_output(&record.name);
         // CI.1: announce the unload AFTER teardown reversed every contribution, so
         // a handler tears down its own dependent setup against a plugin that's
         // already gone from the registries.

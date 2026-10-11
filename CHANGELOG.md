@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Lattice can install language servers.** `:lsp-install rust-analyzer`
+  downloads the server, checks it against a pinned SHA-256, unpacks it into
+  a directory lattice manages, and uses it from then on — no `PATH` entry
+  and no toolchain. It runs in the background and reports each step live in
+  `*lsp-install:<server>*`; a download that fails its check installs nothing
+  and leaves nothing behind. `:lsp-servers` lists the servers with their
+  state and has keys on each row (`i` install, `u` update, `x` uninstall,
+  `<CR>` its log). `:lsp-update` and `:lsp-update-all` move to a newer
+  pinned version without a moment with no server, and `:lsp-uninstall`
+  removes one. Installed servers are used for files opened afterwards and
+  survive restarts. rust-analyzer ships in the list, for Linux and macOS on
+  x86_64 and aarch64; add your own, or pin a different version, with a
+  `registry.toml` in the plugin's data directory. This is a new bundled
+  plugin, `lighthouse` — `:help lighthouse`.
+- **Plugins can download, unpack and run things, and show their progress.**
+  Plugin API 0.2.0 adds `http-download` (to hosts the manifest names, with a
+  mandatory SHA-256), `extract-archive`, `set-executable`, `spawn-process`
+  (bundled plugins only) and `register-server`, all of which return at once
+  and report through events; `output-append` / `output-status` /
+  `output-reset`, for a read-only buffer a plugin fills while it works; and
+  `host-platform` and `data-dir`. A plugin's own data directory no longer
+  needs an `fs:` capability to be used by these calls. Existing plugins need
+  rebuilding against 0.2.0.
+
 ## 0.9.6 — 2026-10-10
 
 ### Added

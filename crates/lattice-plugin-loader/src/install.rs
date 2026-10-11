@@ -155,6 +155,25 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // owns no runtime by design, so it cannot make one — this crate, which spawns
     // every actor, is where an executor is actually in scope.
     host.set_sleeper(Arc::new(TokioSleeper));
+    // LH.0.5: the store plugins write output lines into, its publisher bound
+    // to the runtime bus (the tracer's wiring, above). Registered as a service
+    // so `plugin-output-mode` can seed from it at activation.
+    let output: lattice_plugin_host::output::PluginOutputHandle =
+        Arc::new(lattice_plugin_host::output::PluginOutput::new());
+    let output_bus = boot.event_bus().clone();
+    output.set_event_publisher(Box::new(move |pushed| {
+        output_bus.publish_typed(pushed);
+    }));
+    host.set_plugin_output(output.clone());
+    boot.register_service::<lattice_plugin_host::output::PluginOutputHandle>(output);
+    // LH.0.4: the LSP subsystem publishes itself as the language-server
+    // registrar (`lattice_lsp::install`, which runs before this). Looked up
+    // under the alias it was registered under.
+    if let Some(registrar) = boot.service::<lattice_mode::LanguageServerRegistrarHandle>() {
+        host.set_language_server_registrar((*registrar).clone());
+    } else {
+        tracing::debug!("language-server registrar unwired: `register-server` will refuse");
+    }
     if let Some(cancel) = boot.service::<lattice_mode::ForegroundCancelHandle>() {
         host.set_foreground_cancel((*cancel).clone());
     } else {

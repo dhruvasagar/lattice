@@ -88,9 +88,9 @@ checkout of this repo:
 
 ```toml
 [build-dependencies]
-lattice-wit = "0.1"          # this pin IS the ABI generation you target
+lattice-wit = "0.2"          # this pin IS the ABI generation you target
 [dependencies]
-lattice-plugin-sdk = "0.1"   # optional: typed config shapes
+lattice-plugin-sdk = "0.2"   # optional: typed config shapes
 ```
 
 Plugins ship as **source** and are compiled on the machine that runs them, so
@@ -186,7 +186,7 @@ command. The same pages are the editor's own `:help`.
 | [Plugin authoring guide](docs/dev/guides/plugin-authoring.md)                                                            | Toolchain, ABI and versions, the `plugin.toml` manifest, sync vs async seams, the runtime contract. Read first.                                                                            |
 | [Plugin patterns](docs/dev/guides/plugin-patterns.md)                                                                    | Recipes: an operator, an action, a motion, an ex-command, a mode with options, a picker, events, reading the buffer and syntax tree, persistent state. Code quoted from plugins CI builds. |
 | [Plugin-API reference](docs/dev/reference/plugin-api.md) ([site](https://dhruvasagar.github.io/lattice/dev/plugin-api/)) | Generated from the WIT: every world and its entry points, every seam, function signature, type and field, with examples. As JSON: [`plugin-api.json`](docs/dev/reference/plugin-api.json). |
-| [Bundled plugins](plugins/)                                                                                              | `comment`, `auto-pair`, `project`, `treesitter-context` — small, complete templates.                                                                                                       |
+| [Bundled plugins](plugins/)                                                                                              | `comment`, `auto-pair`, `project`, `treesitter-context`, `lighthouse` — small, complete templates.                                                                                                       |
 
 **Contributing to the editor**
 

@@ -209,6 +209,7 @@ same surface).
 | Plugins                    | [`plugins`](help:plugins)                | ✅      |
 |   — the manager buffer     | [`plugins-mode`](help:plugins-mode) | ✅      |
 |   — the boundary trace     | [`plugin-trace-mode`](help:plugin-trace-mode) | ✅      |
+|   — a plugin's progress log | [`plugin-output-mode`](help:plugin-output-mode) | ✅      |
 | Core plugins               | [`core-plugins`](help:core-plugins)      | ✅      |
 | Configuring with `init.rs` | [`init`](help:init)                      | ✅      |
 | Performance posture        | _planned_                                | ⛔      |

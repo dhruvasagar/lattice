@@ -3,7 +3,7 @@
 
 # `events`
 
-**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `events-plugin` (imports), `project-plugin` (imports)
+**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `events-plugin` (imports), `lighthouse-plugin` (imports), `project-plugin` (imports)
 
 The event/hook **subscription** API (plugin-host.md §5 `events`, PH7.8). The
 surface a plugin calls to *observe* editor state transitions — mirroring

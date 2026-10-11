@@ -749,6 +749,160 @@ let outcome = match host_services::watch(target) {
 record(&outcome);
 ```
 
+To fetch a file, ask the host to download it. The call returns an id at once
+and never the bytes: the host streams to disk on its own thread, verifies the
+SHA-256 you pinned, and tells you how it went with a `job-finished` event
+carrying that id. A failed download — wrong hash, refused redirect, cancelled — leaves
+nothing at the destination, so there is no cleanup to write:
+
+<!-- example: events-guest:host-services.http-download -->
+```rust
+events::subscribe(&kind_filter(EventKind::JobProgress), 8);
+events::subscribe(&kind_filter(EventKind::JobFinished), 8);
+let outcome = match host_services::http_download(url, sha256, dest) {
+    // The id is what `job-finished` will carry; a plugin running
+    // several jobs keys its state by it.
+    Ok(_id) => "download:started".to_string(),
+    Err(e) => format!("download:err({e})"),
+};
+record(&outcome);
+```
+
+It needs two grants: `net:http:<host>` for the URL's host (and for every host
+a redirect passes through — a release URL that bounces to a CDN needs both),
+and `fs:write` over the destination.
+
+Unpacking is a job too, reported by the same `job-finished` event — the host
+confines every entry to the destination and leaves nothing behind on failure:
+
+<!-- example: events-guest:host-services.extract-archive -->
+```rust
+events::subscribe(&kind_filter(EventKind::JobFinished), 9);
+let outcome = match host_services::extract_archive(src, dest, format) {
+    Ok(_id) => "extract:started".to_string(),
+    Err(e) => format!("extract:err({e})"),
+};
+record(&outcome);
+```
+
+A bare `.gz`, or a binary downloaded as-is, arrives with no executable bit and
+a plugin cannot set one itself. Ask the host once the job has succeeded:
+
+<!-- example: events-guest:host-services.set-executable -->
+```rust
+let outcome = match host_services::set_executable(dest) {
+    Ok(()) => "set-executable:ok".to_string(),
+    Err(e) => format!("set-executable:err({e})"),
+};
+record(&outcome);
+```
+
+A bundled plugin can also run a program — a package manager, for a tool with
+no pre-built binary. Its output arrives as `job-output` events, a batch of
+lines at a time, and its exit as `job-finished`. User-installed plugins are
+refused: a subprocess is not sandboxed.
+
+<!-- example: events-guest:host-services.spawn-process -->
+```rust
+events::subscribe(&kind_filter(EventKind::JobOutput), 10);
+events::subscribe(&kind_filter(EventKind::JobFinished), 10);
+// No shell: each element of `args` is one argument, whatever it
+// contains. `""` runs it in the editor's working directory.
+let outcome = match host_services::spawn_process(command, &args, "") {
+    Ok(_id) => "spawn:started".to_string(),
+    Err(e) => format!("spawn:err({e})"),
+};
+record(&outcome);
+```
+
+Having installed a language server, a bundled plugin tells the editor to use
+it. The registration replaces any server the editor already knew under the same
+id, starts nothing by itself — the next matching buffer does — and is withdrawn
+automatically when the plugin unloads:
+
+<!-- example: events-guest:host-services.register-server -->
+```rust
+let config = host_services::ServerConfig {
+    id: id.to_string(),
+    // An absolute path into the install tree — no `PATH` entry
+    // needed, which is the point of managing the install.
+    command: command.to_string(),
+    args: vec!["--stdio".to_string()],
+    env: Vec::new(),
+    root_markers: vec![".git".to_string()],
+    file_patterns: vec![pattern.to_string()],
+    language_id: id.to_string(),
+    initialization_options: None,
+};
+let registered = host_services::register_server(&config);
+```
+
+A downloaded program has to match the machine. Your plugin is `wasm32`
+wherever it runs, so ask:
+
+<!-- example: events-guest:host-services.host-platform -->
+```rust
+let platform = host_services::host_platform();
+let build = format!("{}-{}", platform.os, platform.arch);
+```
+
+And it has to go somewhere. The calls above take paths on the host, where your
+`/data` means nothing; `data-dir` is that directory's real path, and everything
+under it is yours to use with no `fs:` capability in the manifest:
+
+<!-- example: events-guest:host-services.data-dir -->
+```rust
+// …and named to the host by its real path. No `fs:` capability
+// is needed for anything under this directory.
+let outcome = match host_services::data_dir() {
+    Some(dir) => host_services::set_executable(&format!("{dir}/tool"))
+        .map(|()| dir),
+    None => Err("no data dir".to_string()),
+};
+```
+
+To show any of this to the user, write to an **output buffer**: a read-only
+buffer that follows its last line, which your plugin fills and the editor
+displays. It works from any export, including `on-event`, which cannot return
+an effect. Name the buffer in the `*name*` form; the lines are kept whether or
+not anyone has it open:
+
+<!-- example: events-guest:host-services.output-append -->
+```rust
+let appended = host_services::output_append(
+    name,
+    &[
+        "resolving rust-analyzer".to_string(),
+        // One string, two lines: the host splits on newlines.
+        "downloading\nverifying".to_string(),
+    ],
+);
+```
+
+To put the buffer on screen, return `Effect::OpenSyntheticBuffer` from a
+command, with the same `name` and `mode_id: "plugin-output-mode"`. Opening and
+writing can happen in either order.
+
+The row pinned at the top is the headerline. Use it for where the work is, and
+how it ended — each call replaces the last:
+
+<!-- example: events-guest:host-services.output-status -->
+```rust
+let status = host_services::output_status(
+    name,
+    host_services::OutputState::Running,
+    "downloading\u{2026} 43%",
+);
+```
+
+Before a second run, empty the buffer so the new output does not land under
+the old:
+
+<!-- example: events-guest:host-services.output-reset -->
+```rust
+let reset = host_services::output_reset(name);
+```
+
 ## Reading the buffer and the syntax tree
 
 Callbacks that need text get a `borrow<document>`: a snapshot, so a

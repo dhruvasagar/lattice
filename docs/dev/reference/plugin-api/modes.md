@@ -3,7 +3,7 @@
 
 # `modes`
 
-**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `modes-plugin` (imports), `project-plugin` (imports), `treesitter-context-plugin` (imports)
+**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `lighthouse-plugin` (imports), `modes-plugin` (imports), `project-plugin` (imports), `treesitter-context-plugin` (imports)
 
 Mirrors the `Mode` trait declaration surface + `ModeRegistry` (lattice-mode).
 The guest declares a minor mode as DATA (id + kind + activation policy +

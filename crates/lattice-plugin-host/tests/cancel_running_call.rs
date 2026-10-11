@@ -48,6 +48,18 @@ async fn a_running_guest_call_is_cancelled_mid_flight() {
     // call starts.
     let _token = cancel.arm();
 
+    // Instantiate FIRST, then start the clock on the cancel. The 50 ms used
+    // to start before instantiation, and on a busy machine instantiation
+    // alone can outlast it: the cancel then fired — and cleared the armed
+    // token — before `activate` began, the call started with nothing armed,
+    // and by design ran to its budget. That is ~16 minutes of one core, a
+    // failed assertion, and (cargo stops at the first failing binary) every
+    // later test binary unrun. Seen three times in one day under load.
+    let mut plugin = host
+        .instantiate_with_budget(&spin, unbounded_ish())
+        .await
+        .expect("spin instantiates");
+
     let firing = {
         let cancel = cancel.clone();
         std::thread::spawn(move || {
@@ -57,10 +69,6 @@ async fn a_running_guest_call_is_cancelled_mid_flight() {
     };
 
     let started = Instant::now();
-    let mut plugin = host
-        .instantiate_with_budget(&spin, unbounded_ish())
-        .await
-        .expect("spin instantiates");
     let err = plugin
         .activate()
         .await

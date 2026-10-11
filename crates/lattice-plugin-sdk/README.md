@@ -12,7 +12,7 @@ without this crate; you will just hand-build the value trees that
 
 ```toml
 [dependencies]
-lattice-plugin-sdk = "0.1"
+lattice-plugin-sdk = "0.2"
 ```
 
 ```rust

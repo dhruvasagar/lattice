@@ -595,6 +595,111 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   the grant, no event bus on this seam, a missing path, or a watcher the platform refused — and
   never fatal: the plugin falls back to indexing on boot plus an explicit resync, which is degraded
   and honest rather than appearing to work and going stale.
+- **Host jobs (✅ LH.0)** — the shape of every host-service whose work outlasts the call, in
+  `job.rs`. Full rationale in [`lighthouse.md`](lighthouse.md) §3.0.
+
+  **A request, not a call.** The function returns an id and the host works on its own thread; the
+  outcome is the `job-finished` arm of `event` (with coalesced `job-progress`), addressed to the
+  requesting plugin exactly as a watch batch is. Not a preference: `host-services` is on the
+  grammar seam's sync linker too, so a call that lasted as long as a download would run on the
+  dispatch thread, and from any seam it would outlive the per-call wall-clock budget.
+
+  **One event vocabulary for every kind of job.** An arm added to the `event` variant breaks every
+  guest that matches on it and moves the package version; per-seam arms (`download-finished`,
+  `extract-finished`, …) would spend an ABI generation each. A guest keys its state by id and knows
+  what it started. Exactly one `job-finished` per id, a cancelled job included.
+
+  **Two lifetimes, on purpose.** The guard that cancels on drop lives on the starting
+  `PluginState` (unload and quarantine stop a job, as they stop a watch). `cancel-job(id)` goes
+  through a process-wide table scoped by the plugin's **job owner** (one number per plugin name,
+  shared by its seam instances — LH.0.7; not the per-instance plugin id, which is also what job
+  events are addressed by), because the instance that cancels — a chord, on
+  the grammar seam — is routinely not the instance that started it, and ids are sequential, so the
+  ownership check is all that keeps one plugin off another's job. Cancellation is cooperative: a
+  job stops at its next step.
+
+  **Started from `register-events`, a job is held** until the subscriptions it will report to are
+  on the bus (PH7.8c's window, for what a guest can *start*). A lost `job-finished` strands the
+  state machine waiting on it.
+- **Download (✅ LH.0.1)**: `host-services.http-download(url, sha256, dest) -> result<u64, string>`,
+  a host job, and the first enforcement of the `net:http:<host>` grant that has ridden the manifest
+  as metadata since PH7.2 ([`lighthouse.md`](lighthouse.md) §3.1).
+
+  **Refusals a manifest can fix are synchronous** — an ungranted host, a destination outside
+  `fs:write`, a malformed digest — so they surface at the call. What only the network knows (a
+  status, a redirect, a hash) arrives as the event.
+
+  **Redirects are followed by the host, one grant-checked hop at a time.** The client follows none
+  itself; a hop to an ungranted host fails the download naming that host. Otherwise a grant for one
+  host is a grant for whichever host it chooses to point at. The match is exact — a subdomain is a
+  different host — and `https`-only, bar loopback.
+
+  **The part file is the integrity mechanism.** The body streams to `<dest>.part` while being
+  hashed and is renamed into place only on a matching SHA-256; every other exit removes it. A
+  plugin cannot forget to verify, and "the file exists" is a sound test for "it was verified".
+- **Unpack (✅ LH.0.2)**: `host-services.extract-archive(src, dest, format) -> result<u64, string>`
+  (`gz`, `tar-gz`), a host job, and `set-executable(path)`, immediate
+  ([`lighthouse.md`](lighthouse.md) §3.2). Host-side because inflating is CPU-bound work a guest
+  would do inside a fuel-metered call.
+
+  **An archive is untrusted input, confined three ways** — a relative path with no `..`; nothing
+  written *through* a symlink an earlier entry made; a symlink's own target inside the tree. The
+  second is the one lexical checks cannot see, and it has its own test, seen red. Anything that is
+  not a file, directory or symlink fails the job by name instead of being skipped.
+
+  **All or nothing**: a sibling `<dest>.part`, renamed only when the whole archive has been read.
+  Only "executable or not" survives from an archive's mode bits. `set-executable` exists because
+  WASI has no `chmod` and a bare `.gz` or a direct download carries no mode.
+- **Subprocess (✅ LH.0.3)**: `host-services.spawn-process(command, args, cwd) -> result<u64, string>`,
+  a host job, and the first enforcement of `proc:spawn` ([`lighthouse.md`](lighthouse.md) §3.3).
+  The grant is bundled-only and that is decided in `capability::grant`, not at the seam — the
+  seam only reads `grant.proc_spawn` — so the test that matters runs one component with one
+  manifest at both tiers and watches the user-installed one be refused.
+
+  **No shell**: argv is passed as given, so nothing a registry carries can become a second
+  command. Output is the `job-output` arm — batched lines, stdout and stderr interleaved, all
+  delivered before `job-finished`. A non-zero exit is an `err` naming the status, not a host
+  failure.
+
+  **A cancel signals the process group.** Killing only the direct child ends the job just as
+  promptly and orphans whatever it started, which is why the test asserts the *grandchild* is
+  gone rather than that the job ended. The group is signalled through `kill(1)`, not
+  `libc::kill`: the crate denies `unsafe`, and one short-lived process on a cancel is the price.
+- **Host facts (✅ LH.0.6)**: `host-services.host-platform() -> platform` (`os`, `arch` — a guest is
+  `wasm32` everywhere and cannot tell) and `data-dir() -> option<string>`, the host path of the
+  guest's `/data` ([`lighthouse.md`](lighthouse.md) §3.6). With the second comes a rule: the
+  host-side path checks accept anything under the plugin's own data directory with no `fs:`
+  capability. `CapabilityGrant::data_dir` carries it, set where the host mounts the directory.
+  It is no new reach — WASI already mounts that directory writable — it lets host-side seams act
+  where the guest already can.
+- **Output buffers (✅ LH.0.5)**: `host-services.output-append(name, lines)` /
+  `output-status(name, state, text)` / `output-reset(name)` ([`lighthouse.md`](lighthouse.md) §3.5)
+  — how a plugin shows work in flight. An events handler returns nothing, so it cannot open a
+  buffer or write to one; these are the producer's end of the shape every native streaming buffer
+  has. The lines go into a bounded per-name ring (`output.rs`) that publishes a typed
+  `PluginOutputPushed`; `plugin-output-mode` (`lattice-plugin-trace`), activated on a buffer of that
+  name, seeds from the ring and tails the event off-thread. The plugin opens the buffer itself with
+  `open-synthetic-buffer`. Writing and opening are independent and in either order.
+
+  No capability. A buffer is owned by plugin **name** — stable across a reload — and another
+  plugin's write is an `err`. Bounded per plugin, per call and per line.
+- **Language servers (✅ LH.0.4)**: `host-services.register-server(server-config) -> result<u64, string>`
+  / `unregister-server(token)` ([`lighthouse.md`](lighthouse.md) §3.4) — how a plugin that installed
+  a server tells the editor to use it.
+
+  **Gated on `proc:spawn`**, deliberately not on the `LSP` editor capability: the config's
+  `command` is a program the editor runs on the next matching buffer open, so registering is
+  spawning at one remove.
+
+  **The host does not depend on `lattice-lsp`.** The seam forwards to a
+  `lattice_mode::LanguageServerRegistrar` service; the LSP subsystem implements and registers it
+  from its own `install`, the loader hands it to the host (pinned in `WiredSeams::language_servers`,
+  a boot-order pin). A registration shadows same-`id` boot-time configs and restores them when
+  withdrawn; nothing is started or restarted by registering.
+
+  **Withdrawn with the instance.** The registration is a guard on the guest's `Store`, as a watch
+  is — and `unregister-server` only finds tokens that store made, so a guessed token cannot
+  withdraw another plugin's server.
 - **Host-minted ids (✅ OR.3)**: `host-services.new-uuid() -> result<string, string>`, a random
   (v4) UUID, uppercase, canonical `8-4-4-4-12`.
 

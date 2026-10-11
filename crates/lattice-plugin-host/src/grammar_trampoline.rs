@@ -835,6 +835,7 @@ impl PluginHost {
         store.data_mut().event_emit = Some(crate::EventEmitCtx {
             plugin_id: id,
             bus: Arc::clone(bus),
+            job_owner: self.job_owner(&manifest.id),
         });
         // SYNC instantiate against the sync grammar linker — no async import to
         // drive, so a plain `instantiate` is correct (the PH7.7 fork).

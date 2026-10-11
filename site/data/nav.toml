@@ -349,6 +349,7 @@ docs = [
   "plugins-mode",
   "problems-minor-mode",
   "plugin-trace-mode",
+  "plugin-output-mode",
 ]
 
 [[section.group]]
@@ -373,6 +374,7 @@ docs = [
 "lsp-references-mode"  = "References view"
 "magit-project-diff-mode" = "Project diff"
 "plugin-trace-mode"    = "Plugin boundary trace"
+"plugin-output-mode"   = "Plugin output buffer"
 "refreshable-view-mode" = "gr — refresh a view"
 "foldable-view-mode"   = "Tab — fold a block"
 "directory-listing-mode" = "Listing presentation"

@@ -1,4 +1,4 @@
-package lattice:plugin-host@0.1.0;
+package lattice:plugin-host@0.2.0;
 
 /// Test-only world (PH7.3d) exercising the two boundary mechanisms that need a
 /// real guest↔host call: the §4.1 trampoline (context-in → effect-out) and the

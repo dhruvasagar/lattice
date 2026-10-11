@@ -327,6 +327,18 @@ impl EventActor {
         {
             return;
         }
+        // LH.0: a host job is addressed too, for the same reason — what a
+        // plugin is fetching or running is its own business. But to the
+        // PLUGIN, not to this instance (LH.0.7): the job may have been
+        // started by the plugin's grammar instance, from an ex-command, and
+        // this is the instance that has an `on-event` to hear about it.
+        if let NativeEvent::JobProgress { plugin, .. }
+        | NativeEvent::JobOutput { plugin, .. }
+        | NativeEvent::JobFinished { plugin, .. } = &event
+            && Some(*plugin) != self.store.data().event_emit.as_ref().map(|c| c.job_owner)
+        {
+            return;
+        }
         let wit = match event.to_wit() {
             Ok(w) => w,
             Err(error) => {
@@ -471,6 +483,7 @@ impl PluginHost {
         store.data_mut().event_emit = Some(EventEmitCtx {
             plugin_id: id,
             bus: Arc::clone(bus),
+            job_owner: self.job_owner(&manifest.id),
         });
         // PO.5: route this plugin's `logging` calls into the tracer (Layer 2),
         // also before `register-events` — a guest may narrate from there.
@@ -598,6 +611,13 @@ impl PluginHost {
             for (name, payload) in deferred {
                 crate::host_services::emit_plugin_event(bus, name, payload);
             }
+        }
+        // LH.0: and start the jobs it asked for from there, for the same
+        // reason and at the same point — now there is something to hear the
+        // outcome.
+        let state = store.data_mut();
+        for pending in std::mem::take(&mut state.deferred_jobs) {
+            state.jobs.push(pending.start());
         }
 
         let actor = EventActor {

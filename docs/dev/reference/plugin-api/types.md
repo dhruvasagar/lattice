@@ -3,7 +3,7 @@
 
 # `types`
 
-**Direction:** shared types only (not called directly) · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `completion-source-plugin` (imports), `context-plugin` (imports), `decorations-plugin` (imports), `events-plugin` (imports), `grammar-plugin` (imports), `media-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `project-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `transient-source-plugin` (imports), `treesitter-context-plugin` (imports)
+**Direction:** shared types only (not called directly) · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `completion-source-plugin` (imports), `context-plugin` (imports), `decorations-plugin` (imports), `events-plugin` (imports), `grammar-plugin` (imports), `lighthouse-plugin` (imports), `media-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `project-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `transient-source-plugin` (imports), `treesitter-context-plugin` (imports)
 
 Shared boundary records/variants — the owned, WIT-serializable mirrors of
 the native grammar + picker/completion types (plugin-host.md §4). Every
@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (147)
+## Types (150)
 
 ### variant `arg-value`
 
@@ -3124,6 +3124,9 @@ enum event-kind {
     plugin-loaded,
     plugin-unloaded,
     files-changed,
+    job-progress,
+    job-output,
+    job-finished,
 }
 ```
 
@@ -3161,6 +3164,13 @@ filters on. Each arm pairs 1:1 with an `event` variant arm.
   kind for every watch; the host addresses each batch to the plugin
   that armed it, so subscribing to this kind never surfaces another
   plugin's watch.
+- `job-progress` — LH.0: a long-running host job this plugin started — a download,
+  say — has made progress. Addressed the same way: a plugin only ever
+  hears about its own jobs.
+- `job-output` — LH.0.3: a host job this plugin started wrote output — a
+  subprocess's lines.
+- `job-finished` — LH.0: a host job this plugin started has ended, one way or the
+  other.
 
 ### record `event-filter`
 
@@ -3205,6 +3215,63 @@ typed-error-defer precedent).
 
   Constraining both matches NOTHING, since no event carries both
   names — the honest reading of "a major event AND a minor event".
+
+### record `event-job-progress`
+
+```wit
+record event-job-progress {
+    id: u64,
+    done: u64,
+    total: option<u64>,
+}
+```
+
+`event.job-progress` payload (LH.0).
+
+**Fields**
+
+- `id`: `u64` — The id the host-service returned.
+- `done`: `u64` — Units done so far. The function that started the job says what a
+  unit is — bytes received, for `http-download`.
+- `total`: `option<u64>` — The total in the same units; `none` when it is not known, in which
+  case there is no percentage to show, only a running count.
+
+### record `event-job-output`
+
+```wit
+record event-job-output {
+    id: u64,
+    lines: list<string>,
+}
+```
+
+`event.job-output` payload (LH.0.3).
+
+**Fields**
+
+- `id`: `u64` — The id the host-service returned.
+- `lines`: `list<string>` — Whole lines without their terminators, in arrival order — stdout
+  and stderr interleaved, not told apart. Bytes that are not UTF-8
+  are replaced, and a line longer than the host's bound is cut short
+  and marked with `…`.
+
+### record `event-job-finished`
+
+```wit
+record event-job-finished {
+    id: u64,
+    outcome: result<_, string>,
+}
+```
+
+`event.job-finished` payload (LH.0).
+
+**Fields**
+
+- `id`: `u64` — The id the host-service returned.
+- `outcome`: `result<_, string>` — `ok`: the job did what it was asked. `err`: it did not, the message
+  says why, and the function that started it says what is left
+  behind — for `http-download`, nothing.
 
 ### record `event-plugin-lifecycle`
 
@@ -3351,6 +3418,9 @@ variant event {
     plugin-loaded(event-plugin-lifecycle),
     plugin-unloaded(event-plugin-lifecycle),
     files-changed(list<string>),
+    job-progress(event-job-progress),
+    job-output(event-job-output),
+    job-finished(event-job-finished),
 }
 ```
 
@@ -3391,6 +3461,23 @@ carry the initial content the native event already clones for observers.
   batch — `walk`'s rule, for `walk`'s reason.
 
   No plugin id crosses: a guest only ever receives its own watch.
+- `job-progress`: [`event-job-progress`](#record-event-job-progress) — LH.0: how far a host job has got. **Coalesced** host-side, so fast
+  work is a few deliveries rather than one per step — and a job that
+  completes inside one interval sends none at all. Do not wait for
+  one before expecting `job-finished`.
+- `job-output`: [`event-job-output`](#record-event-job-output) — LH.0.3: output from a host job — what a process started with
+  `spawn-process` wrote. **Batched**: a quiet interval's lines arrive
+  together, so a chatty tool is a few deliveries a second, and none
+  is dropped. All of a job's output is delivered before its
+  `job-finished`.
+- `job-finished`: [`event-job-finished`](#record-event-job-finished) — LH.0: a host job ended. Exactly one per id a host-service returned
+  — a cancelled job reports here too, as `err("cancelled")` — so a
+  plugin can drive a state machine off it without a timeout.
+
+  One arm for every kind of job, deliberately. A plugin keys its state
+  by the id and already knows what it started; and a new arm per kind
+  would be a breaking change to this variant each time the host
+  learned to do one more long-running thing.
 
 ### enum `gutter-diff-kind`
 

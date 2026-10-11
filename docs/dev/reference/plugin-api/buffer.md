@@ -3,7 +3,7 @@
 
 # `buffer`
 
-**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `grammar-plugin` (imports), `plugin` (imports), `project-plugin` (imports), `treesitter-context-plugin` (imports)
+**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `grammar-plugin` (imports), `lighthouse-plugin` (imports), `plugin` (imports), `project-plugin` (imports), `treesitter-context-plugin` (imports)
 
 Mirrors the native `Document` / `Buffer` read seam (plugin-host.md §4.2,
 §9.6). The host owns the buffer; the guest gets a `document` **resource

@@ -163,6 +163,23 @@ fn display_run_to_style(
     if m.reverse {
         mods |= Modifier::REVERSED;
     }
+    // GD.6d: plus the style bits the run itself carries — a
+    // semantic-token modifier layered on already-styled text. Inlays
+    // and whitespace markers are not that text and take none.
+    if run.flags & (cell_flags::INLAY | cell_flags::WS_MARKER) == 0 {
+        for (bit, modifier) in [
+            (cell_flags::BOLD, Modifier::BOLD),
+            (cell_flags::ITALIC, Modifier::ITALIC),
+            (cell_flags::UNDERLINE, Modifier::UNDERLINED),
+            (cell_flags::DIM, Modifier::DIM),
+            (cell_flags::REVERSE, Modifier::REVERSED),
+            (cell_flags::STRIKETHROUGH, Modifier::CROSSED_OUT),
+        ] {
+            if run.flags & bit != 0 {
+                mods |= modifier;
+            }
+        }
+    }
     if !mods.is_empty() {
         style = style.add_modifier(mods);
     }
@@ -360,6 +377,36 @@ mod tests {
 
     /// Inlay runs are dropped from the source-span output (overlays
     /// position by source byte, so inlay text must not appear here).
+    /// GD.6d: style bits a run carries itself (a semantic-token
+    /// modifier) are added to what its style resolves to. An inlay's
+    /// flags are about what kind of text it is, and add nothing.
+    #[test]
+    fn a_runs_own_style_bits_reach_the_terminal_style() {
+        let (resolved, ids) = defaults();
+        let line = dline(&[
+            (
+                "old",
+                lattice_syntax::Style::Function,
+                cell_flags::STRIKETHROUGH,
+            ),
+            (" ", lattice_syntax::Style::Default, 0),
+            (
+                "lib",
+                lattice_syntax::Style::Function,
+                cell_flags::ITALIC | cell_flags::DIM,
+            ),
+        ]);
+        let spans = display_line_to_source_spans(&line, &resolved, &ids);
+        let mods = |i: usize| spans[i].style.add_modifier;
+        assert!(mods(0).contains(Modifier::CROSSED_OUT));
+        assert!(!mods(1).contains(Modifier::CROSSED_OUT));
+        assert!(mods(2).contains(Modifier::ITALIC | Modifier::DIM));
+        assert_eq!(
+            spans[0].style.fg, spans[2].style.fg,
+            "the modifier adds to the colour, it does not replace it"
+        );
+    }
+
     #[test]
     fn display_source_spans_drop_inlay_runs() {
         let (resolved, ids) = defaults();

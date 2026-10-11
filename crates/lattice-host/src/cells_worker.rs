@@ -1134,6 +1134,7 @@ fn try_incremental_build(
                 // and builds via `build_chunk_rows`, which never reads these.
                 conceal_rules: &[],
                 excerpt_conceal: &[],
+                semantic_tokens: &[],
             };
             let rows = build_chunk_rows(&inputs, 0, new_line_count);
             let chunk = Arc::new(CellChunk::new(0, rows, new_version));
@@ -1177,6 +1178,7 @@ fn try_incremental_build(
             conceal_rules: &[],
             excerpt_conceal: &[], // legacy cell path; build_chunk_rows ignores these
             conceal_reveal_line: None,
+            semantic_tokens: &[],
         };
         rows.extend(build_chunk_rows(&inputs, edit_lo, affected_hi));
         // Suffix: lines past the edit — reuse with shifted source line.
@@ -1275,6 +1277,7 @@ fn try_incremental_build(
         conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
         excerpt_conceal: &[],
         conceal_reveal_line: None,
+        semantic_tokens: &[],
     };
     let mut cur = rebuild_lo;
     while cur < rebuild_hi {
@@ -1397,6 +1400,7 @@ fn build_matrix(
                 conceal_rules: &[],
                 excerpt_conceal: &[], // legacy cell path; build_chunk_rows ignores these
                 conceal_reveal_line: None,
+                semantic_tokens: &[],
             };
             let rows = build_chunk_rows(&inputs, 0, line_count);
             let chunk = Arc::new(CellChunk::new(0, rows, version));
@@ -1434,6 +1438,7 @@ fn build_matrix(
                 conceal_rules: &[],
                 excerpt_conceal: &[], // legacy cell path; build_chunk_rows ignores these
                 conceal_reveal_line: None,
+                semantic_tokens: &[],
             };
             let mut chunks: Vec<Arc<CellChunk>> =
                 Vec::with_capacity(((win_hi - win_lo) / chunk_size + 1) as usize);
@@ -1723,6 +1728,11 @@ struct ChunkInputs<'a> {
     excerpt_conceal: &'a [ExcerptConceal],
     /// CL.1: the one line whose conceals are suppressed, or `None`.
     conceal_reveal_line: Option<u32>,
+    /// GD.6d: the buffer's semantic tokens, read per row for the
+    /// modifiers they carry (`deprecated` → strikethrough, …). Absolute
+    /// lines, so no window base to keep in step. Empty for a buffer
+    /// with none, and for an edit that moved lines under stale tokens.
+    semantic_tokens: &'a [lattice_lsp::cache::DecodedSemanticToken],
 }
 
 /// Build the row vector for one chunk covering source lines
@@ -1989,7 +1999,37 @@ fn refine_at_byte(
         .map(|r| r.kind)
 }
 
+#[allow(clippy::type_complexity)]
 fn build_display_row(
+    text: &str,
+    line_spans: &[lattice_syntax::StyledSpan],
+    line_inlays: &[(u32, &str, lattice_syntax::Style)],
+    ws: &WhitespaceConfig,
+    line_refine: &[lattice_cells::RefineSpan],
+    conceal_rules: &[lattice_syntax::conceal::ConcealRule],
+) -> (
+    Box<str>,
+    Vec<crate::display_matrix::DisplayRun>,
+    Vec<(u32, u32)>,
+    Vec<lattice_cells::ConcealRange>,
+    u32,
+) {
+    build_display_row_with_mods(
+        text,
+        line_spans,
+        line_inlays,
+        ws,
+        line_refine,
+        conceal_rules,
+        &[],
+    )
+}
+
+/// [`build_display_row`] plus `line_mods`: byte ranges whose text takes
+/// extra style bits on top of its style (GD.6d — semantic-token
+/// modifiers). Only ordinary text takes them; inlays, whitespace
+/// markers and tab fill are not the token's text.
+fn build_display_row_with_mods(
     text: &str,
     line_spans: &[lattice_syntax::StyledSpan],
     line_inlays: &[(u32, &str, lattice_syntax::Style)],
@@ -2003,6 +2043,7 @@ fn build_display_row(
     // the emptiness is checked before any matching, so those buffers
     // pay nothing at all.
     conceal_rules: &[lattice_syntax::conceal::ConcealRule],
+    line_mods: &[(usize, usize, u16)],
 ) -> (
     Box<str>,
     Vec<crate::display_matrix::DisplayRun>,
@@ -2214,7 +2255,12 @@ fn build_display_row(
                 &mut runs,
                 ch.encode_utf8(&mut tmp),
                 style,
-                0,
+                // GD.6d: the style bits a semantic-token modifier adds
+                // to this byte; 0 for all but a handful of tokens.
+                line_mods
+                    .iter()
+                    .filter(|(s, e, _)| byte >= *s && byte < *e)
+                    .fold(0, |acc, (_, _, f)| acc | f),
                 refine_at_byte(line_refine, byte),
             );
             col += 1;
@@ -2277,7 +2323,12 @@ fn build_display_rows(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let (text, runs, col_map, conceals, col_count) = build_display_row(
+        let line_mods = if inputs.semantic_tokens.is_empty() {
+            Vec::new()
+        } else {
+            crate::semantic_spans::modifier_spans_for_line(inputs.semantic_tokens, line_idx, &text)
+        };
+        let (text, runs, col_map, conceals, col_count) = build_display_row_with_mods(
             &text,
             line_spans,
             line_inlays,
@@ -2300,6 +2351,7 @@ fn build_display_rows(
                 // ordinary buffer, where `excerpt_conceal` is empty.
                 rules_for_row(inputs.excerpt_conceal, line_idx).unwrap_or(inputs.conceal_rules)
             },
+            &line_mods,
         );
         rows.push(DisplayLine {
             source_line: line_idx,
@@ -2592,6 +2644,7 @@ fn build_display_matrix(
                 conceal_rules: &conceal_rules,
                 excerpt_conceal: &excerpt_conceal,
                 conceal_reveal_line: reveal_line,
+                semantic_tokens,
             };
             let rows = build_display_rows(&inputs, 0, line_count);
             let chunk = Arc::new(DisplayChunk::new(0, rows, version));
@@ -2621,6 +2674,7 @@ fn build_display_matrix(
                 conceal_rules: &conceal_rules,
                 excerpt_conceal: &excerpt_conceal,
                 conceal_reveal_line: reveal_line,
+                semantic_tokens,
             };
             let mut chunks: Vec<Arc<DisplayChunk>> =
                 Vec::with_capacity(((win_hi - win_lo) / chunk_size + 1) as usize);
@@ -2675,6 +2729,12 @@ fn try_incremental_reveal_build(
         let mut dm = published.clone();
         dm.reveal_line = pane.conceal_reveal_line;
         return Some(dm);
+    }
+    // GD.6b/6d: the two-row rebuild below colours from the grammar
+    // alone. A buffer that also has semantic tokens takes the full
+    // build, so those rows do not lose their token colours.
+    if pane.semantic_tokens.is_some() {
+        return None;
     }
 
     let touched: Vec<u32> = [published.reveal_line, pane.conceal_reveal_line]
@@ -2878,6 +2938,14 @@ fn try_incremental_display_build(
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let inlays_by_line = bucket_inlays_by_line(&pane.inlay_hints, new_line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(&pane.folds, pane.foldenable);
+    // GD.6d: token modifiers follow the same rule as token colours
+    // below — stale tokens are used only while they are still on the
+    // right lines, and never on the uncoloured sync path.
+    let mod_tokens: &[lattice_lsp::cache::DecodedSemanticToken] =
+        match pane.semantic_tokens.as_deref() {
+            Some(cache) if allow_highlight && edit.net_delta() == 0 => &cache.tokens,
+            _ => &[],
+        };
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
         // B2.3: sync edit path forces highlight off — no `highlight_lines`
         // call ever lands on the edit-critical actor thread.
@@ -2941,6 +3009,7 @@ fn try_incremental_display_build(
                 conceal_rules: &conceal_rules,
                 excerpt_conceal: &excerpt_conceal,
                 conceal_reveal_line: pane.conceal_reveal_line,
+                semantic_tokens: mod_tokens,
             };
             let rows = build_display_rows(&inputs, 0, new_line_count);
             let chunk = Arc::new(DisplayChunk::new(0, rows, new_version));
@@ -2977,6 +3046,7 @@ fn try_incremental_display_build(
             excerpt_conceal: &excerpt_conceal,
             // CL.1: a sticky-context header is never the cursor line.
             conceal_reveal_line: None,
+            semantic_tokens: mod_tokens,
         };
         rows.extend(build_display_rows(&inputs, edit_lo, affected_hi));
         rows.extend(
@@ -3087,6 +3157,7 @@ fn try_incremental_display_build(
         refine_by_line: &[],
         conceal_rules: &conceal_rules,
         excerpt_conceal: &excerpt_conceal,
+        semantic_tokens: mod_tokens,
     };
 
     // Assemble the zone rows in source-line order:
@@ -3184,7 +3255,8 @@ fn display_line_to_cell_row(
             let f = if is_trailing { trailing_fg } else { style_fg };
             (f, mods | cell_flags::WS_MARKER)
         } else {
-            (style_fg, mods)
+            // GD.6d: plus the style bits the run itself carries.
+            (style_fg, mods | (run.flags & cell_flags::STYLE_MODS))
         };
         for ch in slice.chars() {
             cells.push(Cell::new(ch as u32, fg, 0, flags));
@@ -5452,6 +5524,53 @@ mod tests {
             styles_on(&p.display_matrix, 0),
             vec![(5, lattice_syntax::Style::Default)]
         );
+    }
+
+    /// GD.6d: a modifier is a second layer on the token's text. It rides
+    /// the run's flags and reaches the cell both renderers paint, on top
+    /// of the colour the token's type gave it.
+    #[test]
+    fn a_deprecated_token_is_struck_through_and_keeps_its_colour() {
+        use lattice_cells::cell_flags;
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let mut p = pane_inputs(
+            matrix_cell.clone(),
+            Some(snap_of_versioned("call old now", 1)),
+            sem_version(1, 1),
+            10,
+        );
+        let mut deprecated = sem_tok(0, 5, 3, "function");
+        deprecated.modifiers = vec!["deprecated".into()];
+        p.semantic_tokens = sem_cache(vec![sem_tok(0, 0, 4, "function"), deprecated]);
+        let _ = recompute_pane(&p, ct, &ws);
+
+        let dm = p.display_matrix.load();
+        let runs = &dm.row_at_source_line(0).expect("row").runs;
+        let struck: Vec<_> = runs
+            .iter()
+            .filter(|r| r.flags & cell_flags::STRIKETHROUGH != 0)
+            .collect();
+        assert_eq!(
+            struck.len(),
+            1,
+            "exactly the deprecated token; got {runs:?}"
+        );
+        assert_eq!(struck[0].len, 3);
+        assert_eq!(struck[0].style, lattice_syntax::Style::Function);
+
+        // And in the projected cells: `old` struck, `call` not, same fg.
+        let cells = matrix_cell.load();
+        let row = cells.row_at_source_line(0).expect("cell row");
+        assert!(!row.cells[0].is_strikethrough());
+        assert!(row.cells[5].is_strikethrough() && row.cells[7].is_strikethrough());
+        assert!(!row.cells[8].is_strikethrough());
+        assert_eq!(row.cells[0].fg, row.cells[5].fg);
     }
 
     /// Typing inside a line: the tokens are one edit stale, but still on

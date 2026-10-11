@@ -16,9 +16,11 @@
 //!   token set the published rows were coloured from?", which is the
 //!   `semantic_tokens` axis of `MatrixVersion`.
 //!
-//! Token *modifiers* (`deprecated`, `readonly`, …) are not carried: a
-//! display run holds one style, and a modifier is a second one layered
-//! on it. See the GD.6b notes in the slice plan.
+//! Token *modifiers* (`deprecated`, `readonly`, …) are a second layer:
+//! a display run holds one style, and a modifier says something more
+//! about text that already has one. They ride the run's `flags`
+//! ([`modifier_spans_for_line`]) and every consumer ORs them onto the
+//! style's own (GD.6d).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -51,6 +53,62 @@ pub(crate) fn style_for_token_type(kind: &str) -> Option<Style> {
         "decorator" => Style::Attribute,
         _ => return None,
     })
+}
+
+/// How a token's modifiers change the look of its text, as cell style
+/// bits. `deprecated` is struck through; `readonly` and `static` are
+/// italic; `defaultLibrary` is dimmed. The rest say nothing visible.
+pub(crate) fn modifier_flags(modifiers: &[String]) -> u16 {
+    use lattice_cells::cell_flags;
+    let mut flags = 0;
+    for m in modifiers {
+        flags |= match m.as_str() {
+            "deprecated" => cell_flags::STRIKETHROUGH,
+            "readonly" | "static" => cell_flags::ITALIC,
+            "defaultLibrary" => cell_flags::DIM,
+            _ => 0,
+        };
+    }
+    flags
+}
+
+/// The byte ranges of `text` (source line `line`) whose tokens carry a
+/// visible modifier, with the style bits each adds.
+///
+/// Per line, and separate from [`spans_for_lines`], because it is
+/// independent of the token's type: a `deprecated` token of a type with
+/// no style of its own is still struck through. Empty — and
+/// allocation-free — for a line with no such token, which is nearly
+/// all of them.
+pub(crate) fn modifier_spans_for_line(
+    tokens: &[DecodedSemanticToken],
+    line: u32,
+    text: &str,
+) -> Vec<(usize, usize, u16)> {
+    let first = tokens.partition_point(|t| t.line < line);
+    let mut out = Vec::new();
+    for tok in &tokens[first..] {
+        if tok.line != line {
+            break;
+        }
+        let flags = modifier_flags(&tok.modifiers);
+        if flags == 0 {
+            continue;
+        }
+        let len = text.len();
+        let start = (lattice_lsp::position::utf16_column_to_utf8_byte(text, tok.start_char)
+            as usize)
+            .min(len);
+        let end = (lattice_lsp::position::utf16_column_to_utf8_byte(
+            text,
+            tok.start_char.saturating_add(tok.length),
+        ) as usize)
+            .min(len);
+        if start < end {
+            out.push((start, end, flags));
+        }
+    }
+    out
 }
 
 /// Per-line spans for the tokens on lines `lo..hi`, indexed relative to
@@ -303,6 +361,32 @@ mod tests {
         merge_semantic_spans(&mut spans, vec![vec![semantic], Vec::new()]);
         assert_eq!(spans[0], vec![semantic, grammar]);
         assert_eq!(spans[1], vec![grammar], "a line with no token is untouched");
+    }
+
+    #[test]
+    fn modifiers_become_style_bits_on_their_tokens_bytes() {
+        use lattice_cells::cell_flags;
+        let mut dep = tok(2, 3, 3, "function");
+        dep.modifiers = vec!["deprecated".into(), "static".into()];
+        // A type with no style of its own still carries its modifier.
+        let mut odd = tok(2, 8, 1, "brace");
+        odd.modifiers = vec!["defaultLibrary".into()];
+        let plain = tok(2, 0, 2, "keyword");
+        let other_line = {
+            let mut t = tok(3, 0, 2, "keyword");
+            t.modifiers = vec!["deprecated".into()];
+            t
+        };
+        let tokens = vec![plain, dep, odd, other_line];
+        assert_eq!(
+            modifier_spans_for_line(&tokens, 2, "fn old() {}"),
+            vec![
+                (3, 6, cell_flags::STRIKETHROUGH | cell_flags::ITALIC),
+                (8, 9, cell_flags::DIM),
+            ]
+        );
+        assert!(modifier_spans_for_line(&tokens, 0, "x").is_empty());
+        assert_eq!(modifier_flags(&["async".into()]), 0);
     }
 
     #[test]

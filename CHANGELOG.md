@@ -24,9 +24,8 @@
 - **GUI: LSP semantic highlighting works.** The window showed only
   tree-sitter colours; a language server's semantic tokens were painted in
   the terminal alone. Both now show them, and in the theme's colours rather
-  than fixed terminal ones. One thing is not carried over yet: the terminal
-  used to strike through deprecated symbols and italicise `static` ones, and
-  that is missing in both until a follow-up.
+  than fixed terminal ones. Deprecated symbols are struck through, and
+  `static` / read-only ones italic, in both.
 - **Terminal: a code block or cursor line holding non-ASCII text is tinted
   to the pane's edge.** The fill was measured in bytes, so a row of
   box-drawing characters (a diagram in a fenced block) left a ragged strip

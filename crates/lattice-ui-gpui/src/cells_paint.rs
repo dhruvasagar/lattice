@@ -75,7 +75,8 @@ const STYLE_FLAGS_MASK: u16 = cell_flags::BOLD
     | cell_flags::ITALIC
     | cell_flags::UNDERLINE
     | cell_flags::DIM
-    | cell_flags::REVERSE;
+    | cell_flags::REVERSE
+    | cell_flags::STRIKETHROUGH;
 
 /// Multiplier applied to each RGB channel of fg + bg when the
 /// `DIM` flag is set. `0.6` matches the perceptual feel of
@@ -397,6 +398,9 @@ fn display_run_to_synthetic_cell(
         // Site-B path paints `rgb(0)` = pure black — the symptom was INFO log
         // lines rendering black in GPUI.
         let fg = if style_fg != 0 { style_fg } else { default_fg };
+        // GD.6d: plus the style bits the run itself carries (a
+        // semantic-token modifier), as the host's cell projection does.
+        let mods = mods | (run.flags & cell_flags::STYLE_MODS);
         (Cell::new(0, fg, refine_bg, mods), rich)
     }
 }
@@ -469,7 +473,11 @@ fn cell_to_text_run(cell: &Cell, len: usize, font_base: &Font) -> TextRun {
         color: rgb(fg).into(),
         background_color,
         underline,
-        strikethrough: None,
+        // GD.6d: a run-carried modifier (a deprecated symbol).
+        strikethrough: cell.is_strikethrough().then(|| gpui::StrikethroughStyle {
+            thickness: px(1.0),
+            color: None,
+        }),
     }
 }
 
@@ -1242,6 +1250,23 @@ mod tests {
         let underline = runs[0].underline.as_ref().expect("UNDERLINE cell run");
         assert!(!underline.wavy, "syntax-style underline is flat");
         assert!(runs[1].underline.is_none());
+    }
+
+    /// GD.6d: STRIKETHROUGH bit → `strikethrough = Some(..)`, and it
+    /// breaks the run like any other style bit.
+    #[test]
+    fn strikethrough_bit_emits_a_strikethrough_style_and_breaks_the_run() {
+        let fg = 0xcdd6f4;
+        let cells = vec![
+            Cell::new(b'a' as u32, fg, 0, cell_flags::STRIKETHROUGH),
+            Cell::new(b'b' as u32, fg, 0, cell_flags::STRIKETHROUGH),
+            Cell::new(b'c' as u32, fg, 0, 0),
+        ];
+        let r = row(cells);
+        let (_, runs, _) = cell_row_to_text_runs(&r, &font("monospace"));
+        assert_eq!(runs.len(), 2);
+        assert!(runs[0].strikethrough.is_some());
+        assert!(runs[1].strikethrough.is_none());
     }
 
     /// `cell.bg != 0` → `TextRun.background_color = Some(rgb(bg))`.

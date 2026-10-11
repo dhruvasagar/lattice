@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.7d ✅, GD.9a ✅; GD.4, GD.5b, GD.6c, GD.6d, GD.7c, GD.8b 📝; GD.9b ❌.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅; GD.4, GD.5b, GD.6c, GD.7c, GD.8b 📝; GD.9b ❌.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -279,14 +279,27 @@ Gate: targeted — `lattice-cells` whole, the host's `cells_worker` /
 integration test, the TUI's `render::` and `cells_render::` modules. The whole
 `lattice-host` and `lattice-ui-tui` suites were not run. Not seen in a window.
 
-**GD.6d 📝 — semantic-token modifiers.** `deprecated` (strikethrough),
-`readonly` / `static` (italic) and `defaultLibrary` (dim) were painted by the
-TUI's merge and are **not** carried by GD.6b: a display run holds one `Style`,
-a modifier is a second one layered on it, and the cell flags have no
-strikethrough bit. This is a small regression in the terminal that GD.6b
-accepted to get the tokens shared. Needs: modifier bits on `DisplayRun` (or
-layered resolution in the row build), a `STRIKETHROUGH` cell flag, and both
-peers' paint. Shares that flag with GD.6c.
+**GD.6d ✅ — semantic-token modifiers** (2026-10-11). `deprecated`
+(strikethrough), `readonly` / `static` (italic) and `defaultLibrary` (dim) are
+back, in both peers. A display run holds one `Style`; a modifier is a second
+layer on text that already has one, so it rides the run's `flags`, which
+already existed for the splice bits. `cell_flags` gained `STRIKETHROUGH` and a
+`STYLE_MODS` mask; `semantic_spans::modifier_spans_for_line` produces the byte
+ranges per row (independent of the token's type — a deprecated token of a type
+with no style of its own is still struck through); the three consumers of a
+run — the host's cell projection, GPUI's `display_run_to_synthetic_cell`, the
+TUI's `display_run_to_style` — OR the run's style bits onto what its style
+resolves to. GPUI paints the strike on both its text-run and per-glyph paths.
+
+Also closes a hole GD.6b left: the two-row conceal-reveal rebuild coloured from
+the grammar alone, so a buffer with both conceal rules and semantic tokens now
+takes the full build instead.
+
+Gate: targeted — `lattice-cells` whole, the host's semantic and worker tests,
+the TUI's `cells_render::`, GPUI's `cells_paint::` / `paint_cells::` (one red
+there, `a_run_with_no_foreground_inherits_default_fg_not_black`, which predates
+this branch). The strike's vertical position in the window is a guess — not
+seen.
 
 **GD.6c 📝 — highlight kinds and strikethrough.** Document-highlight
 read / write / text need the host's overlay worker to carry the kind

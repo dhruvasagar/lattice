@@ -48,6 +48,17 @@ pub mod flags {
     /// byte positions, so without this bit a `DisplayLine → CellMatrix`
     /// projection could not reproduce the cell path's trailing-red.
     pub const WS_TRAILING: u16 = 1 << 7;
+    /// GD.6d: a line through the text. Not reachable from a syntax
+    /// style's modifiers; set per run by a producer that layers a
+    /// second meaning on already-coloured text — today the LSP
+    /// `deprecated` semantic-token modifier.
+    pub const STRIKETHROUGH: u16 = 1 << 8;
+
+    /// The bits that change how text LOOKS, as opposed to what kind of
+    /// cell it is (`INLAY`, `WS_MARKER`, `WS_TRAILING`). A display run
+    /// may carry these in its own `flags`, on top of whatever its
+    /// style resolves to; every consumer ORs the two.
+    pub const STYLE_MODS: u16 = BOLD | ITALIC | UNDERLINE | DIM | REVERSE | STRIKETHROUGH;
 }
 
 /// One renderable cell. Exactly 16 bytes: codepoint (4) + fg (4) +
@@ -141,6 +152,11 @@ impl Cell {
     /// S3.a: `true` iff the underline modifier bit is set.
     pub fn is_underline(&self) -> bool {
         self.flags & flags::UNDERLINE != 0
+    }
+
+    /// GD.6d: `true` iff the strikethrough bit is set.
+    pub fn is_strikethrough(&self) -> bool {
+        self.flags & flags::STRIKETHROUGH != 0
     }
 
     /// S3.a: `true` iff the dim modifier bit is set.

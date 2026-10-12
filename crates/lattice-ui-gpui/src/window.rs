@@ -120,6 +120,25 @@ const COMPLETION_MAX_VISIBLE: usize = 10;
 ///
 /// Shared by the hover popup and the insert-completion popup, which is what
 /// makes them agree about which side of the cursor a popup appears on.
+/// The top-left of a text cell in window pixels: `(top, left)`.
+///
+/// `origin` is where the pane's text starts — its column 0, row 0 — as
+/// the pane last painted it, so it already includes the gutter, the
+/// pane's padding, the tabline and a split pane's offset. Before the
+/// pane has painted once there is none, and `fallback` (the single-pane
+/// estimate this used to be everywhere) stands in.
+fn text_cell_px(
+    origin: Option<(f32, f32)>,
+    fallback: (f32, f32),
+    col: u32,
+    row: u32,
+    cell_w_px: f32,
+    row_px: f32,
+) -> (f32, f32) {
+    let (x0, y0) = origin.unwrap_or(fallback);
+    (y0 + row as f32 * row_px, x0 + col as f32 * cell_w_px)
+}
+
 fn anchored_popup_origin(
     cell_top_px: f32,
     row_px: f32,
@@ -1397,6 +1416,9 @@ pub(crate) struct EditorView {
     /// pane's `EditorElement`. Written only by the media landing (off the UI
     /// thread's critical path); read by `paint`, which never loads.
     media_pixels: std::sync::Arc<crate::editor_element::MediaPixels>,
+    /// GD.5c: the focused pane's text origin as of its last paint, for
+    /// placing the completion and hover popups at a text cell.
+    text_origin: std::sync::Arc<crate::editor_element::TextOrigin>,
     /// IM.7a: last `(row_px, col_px)` published to the host, so the metrics
     /// are sent on CHANGE rather than every frame. Same diff-then-send
     /// discipline as `set_pane_viewport` above it, and for the same reason:
@@ -1533,6 +1555,7 @@ impl EditorView {
             last_window_columns: None,
             pending_title: Some(title),
             media_pixels: Default::default(),
+            text_origin: Default::default(),
             last_cell_metrics: None,
             app,
             focus_handle: cx.focus_handle(),
@@ -3044,6 +3067,18 @@ impl EditorView {
             .active_minor_modes
             .iter()
             .any(|m| *m == lattice_lsp::modes::LspDiagnosticsMode::mode_id());
+        // GD.5c: completion ghost text, in the fold summary's dim tone
+        // (the same "this is not your text" tone). The host publishes a
+        // suffix only when one should be shown.
+        let ghost_text: Option<(u32, String, u32)> = if is_active {
+            render_state
+                .completion
+                .ghost_suffix
+                .as_ref()
+                .map(|s| (self.app.ad().cursor.line, s.to_string(), fold_summary_color))
+        } else {
+            None
+        };
         let inline_diag_summary: Option<crate::editor_element::InlineDiagSummary> =
             if is_active && diag_mode_on {
                 render_state
@@ -3101,6 +3136,7 @@ impl EditorView {
                 view: cx.entity().downgrade(),
             }),
             media_pixels: self.media_pixels.clone(),
+            text_origin_out: render_active.then(|| self.text_origin.clone()),
             pane_idx,
             theme: theme.clone(),
             // 2026-05-26: pass the visible-window text joined so
@@ -3204,6 +3240,7 @@ impl EditorView {
             diagnostic_underlines,
             inlay_color,
             inline_diag_summary,
+            ghost_text,
             // S4.1 (2026-05-27): active pane consumes the cell
             // matrix published by the cell-builder worker;
             // inactive panes pass `None` (mirrors `visible_rows`
@@ -4566,6 +4603,7 @@ impl Render for EditorView {
                         // click target.
                         mouse: None,
                         media_pixels: self.media_pixels.clone(),
+                        text_origin_out: None,
                         // CV.4: live wrap width for this pseudo-pane; `0`
                         // when it has no published entry, which falls back
                         // to the matrix stamp exactly as before.
@@ -4619,6 +4657,7 @@ impl Render for EditorView {
                         diagnostic_underlines: Vec::new(),
                         inlay_color: 0,
                         inline_diag_summary: None,
+                        ghost_text: None,
                         cell_matrix,
                         display_matrix,
                         resolved_theme: docs_resolved.clone(),
@@ -5241,6 +5280,7 @@ impl Render for EditorView {
                 // click target.
                 mouse: None,
                 media_pixels: self.media_pixels.clone(),
+                text_origin_out: None,
                 // CV.4: live wrap width for the popup pseudo-pane; `0`
                 // when it has no published entry, which falls back to the
                 // matrix stamp exactly as before.
@@ -5294,6 +5334,7 @@ impl Render for EditorView {
                 diagnostic_underlines: Vec::new(),
                 inlay_color: 0,
                 inline_diag_summary: None,
+                ghost_text: None,
                 cell_matrix,
                 display_matrix,
                 resolved_theme: popup_resolved.clone(),
@@ -5530,37 +5571,14 @@ impl Render for EditorView {
                 .fg
                 .map(|c| c.to_rgb_u32(0x00f3_8ba8))
                 .unwrap_or(0x00f3_8ba8);
-                let mut msg = if modeline.cmdline_expanded {
-                    // MB.2 band: one row per line; the prompt character is
-                    // on the first, and the caret on the cursor's line.
-                    let mut col = div().flex().flex_col();
-                    for (i, line) in bottom_row.split('\n').enumerate() {
-                        let (prefix, typed) = if i == 0 {
-                            let mut chars = line.chars();
-                            let p = chars.next().map(String::from).unwrap_or_default();
-                            (p, chars.as_str().to_string())
-                        } else {
-                            (String::new(), line.to_string())
-                        };
-                        let caret = (ad_row.cursor.line as usize == i).then(|| {
-                            lattice_host::cmdline_row::caret_byte(
-                                &typed,
-                                ad_row.cursor.byte as usize,
-                            )
-                        });
-                        col = col.child(typed_row(prefix, vec![(typed, None)], caret, caret_color));
-                    }
-                    col
-                } else if matches!(modal, lattice_grammar::ModalState::Command) {
-                    // MB.4: colour the `:` line per the published decoration
-                    // spans (byte ranges into `cmdline_text`; the `:` prompt
-                    // is separate), then the trailing hints the host decides
-                    // (`cmdline_row::trailing_hints`) — the same ones the
-                    // terminal shows.
-                    let line: &str = modeline.cmdline_text.as_ref();
-                    let deco = modeline.cmdline_decorations.as_ref();
+                // The `:` line's decoration spans (byte ranges into its
+                // first line) in theme colours. Used by the one-row line
+                // and by the first row of the expanded band.
+                let cmdline_spans: Vec<(std::ops::Range<usize>, u32)> = {
                     let default_fg = theme.status_foreground;
-                    let spans: Vec<(std::ops::Range<usize>, u32)> = deco
+                    modeline
+                        .cmdline_decorations
+                        .as_ref()
                         .map(|d| {
                             d.spans
                                 .iter()
@@ -5577,12 +5595,50 @@ impl Render for EditorView {
                                 })
                                 .collect()
                         })
-                        .unwrap_or_default();
+                        .unwrap_or_default()
+                };
+                let mut msg = if modeline.cmdline_expanded {
+                    // MB.2 band: one row per line; the prompt character is
+                    // on the first, and the caret on the cursor's line.
+                    // GD.5c: the first line is coloured by the decoration
+                    // spans, as the terminal's band is; they describe the
+                    // command and its arguments, which are on that line.
+                    let mut col = div().flex().flex_col();
+                    for (i, line) in bottom_row.split('\n').enumerate() {
+                        let (prefix, typed) = if i == 0 {
+                            let mut chars = line.chars();
+                            let p = chars.next().map(String::from).unwrap_or_default();
+                            (p, chars.as_str().to_string())
+                        } else {
+                            (String::new(), line.to_string())
+                        };
+                        let caret = (ad_row.cursor.line as usize == i).then(|| {
+                            lattice_host::cmdline_row::caret_byte(
+                                &typed,
+                                ad_row.cursor.byte as usize,
+                            )
+                        });
+                        let segments = if i == 0 {
+                            decorated_segments(&typed, &cmdline_spans)
+                        } else {
+                            vec![(typed, None)]
+                        };
+                        col = col.child(typed_row(prefix, segments, caret, caret_color));
+                    }
+                    col
+                } else if matches!(modal, lattice_grammar::ModalState::Command) {
+                    // MB.4: colour the `:` line per the published decoration
+                    // spans (byte ranges into `cmdline_text`; the `:` prompt
+                    // is separate), then the trailing hints the host decides
+                    // (`cmdline_row::trailing_hints`) — the same ones the
+                    // terminal shows.
+                    let line: &str = modeline.cmdline_text.as_ref();
+                    let deco = modeline.cmdline_decorations.as_ref();
                     let caret =
                         lattice_host::cmdline_row::caret_byte(line, ad_row.cursor.byte as usize);
                     let mut row = typed_row(
                         ":".to_string(),
-                        decorated_segments(line, &spans),
+                        decorated_segments(line, &cmdline_spans),
                         Some(caret),
                         caret_color,
                     );
@@ -5780,15 +5836,22 @@ impl Render for EditorView {
             .map(|ic| {
                 let ad = self.app.ad();
                 let pane_pad = rem * 0.75;
-                let row_top = tabline_h_px
-                    + pane_pad
-                    + ic.anchor.line.saturating_sub(ad.scroll) as f32 * estimated_row_px;
+                // GD.5c: from where the pane's text was last painted, so
+                // the gutter and a split pane's offset are included.
+                let (row_top, cell_left) = text_cell_px(
+                    self.text_origin.get(),
+                    (pane_pad, tabline_h_px + pane_pad),
+                    ic.anchor.byte.saturating_sub(ad.leftcol),
+                    ic.anchor.line.saturating_sub(ad.scroll),
+                    glyph_advance_px,
+                    estimated_row_px,
+                );
                 let rows = ic.rendered.len().min(COMPLETION_MAX_VISIBLE) as f32;
                 let height = (rows + 2.0) * estimated_row_px + rem * 1.5;
                 anchored_popup_origin(
                     row_top,
                     estimated_row_px,
-                    pane_pad + ic.anchor.byte as f32 * glyph_advance_px,
+                    cell_left,
                     (COMPLETION_W_PX, height),
                     (f32::from(viewport_px.width), f32::from(viewport_px.height)),
                 )
@@ -5904,9 +5967,7 @@ impl Render for EditorView {
                     // POPUP's scroll, causing a frame-jump on second K.
                     let cursor_screen_row = anchor
                         .line
-                        .saturating_sub(popup_substate.doc_scroll_at_anchor)
-                        as f32;
-                    let cursor_byte_col = anchor.byte as f32;
+                        .saturating_sub(popup_substate.doc_scroll_at_anchor);
                     // 2026-05-27: the popup is positioned relative
                     // to the WINDOW (root container's top-left),
                     // not relative to the document area. Account
@@ -5917,12 +5978,21 @@ impl Render for EditorView {
                     // pane's left padding only.
                     let pane_pad_v = rem * 0.75;
                     let pane_pad_h = rem * 0.75;
-                    let top_origin_px = tabline_h_px + pane_pad_v;
-                    let cursor_row_top = top_origin_px + cursor_screen_row * estimated_row_px;
+                    // GD.5c: the pane's painted text origin when there is
+                    // one (it carries the gutter and a split's offset);
+                    // the single-pane estimate otherwise.
+                    let (cursor_row_top, cursor_left) = text_cell_px(
+                        self.text_origin.get(),
+                        (pane_pad_h, tabline_h_px + pane_pad_v),
+                        anchor.byte.saturating_sub(ad.leftcol),
+                        cursor_screen_row,
+                        glyph_advance_px,
+                        estimated_row_px,
+                    );
                     let (top_px, left_px) = anchored_popup_origin(
                         cursor_row_top,
                         estimated_row_px,
-                        pane_pad_h + cursor_byte_col * glyph_advance_px,
+                        cursor_left,
                         (popup_w_px, popup_h_px),
                         (f32::from(viewport_px.width), f32::from(viewport_px.height)),
                     );
@@ -7570,5 +7640,28 @@ mod diagnostic_glyph_tests {
             seen.push(g.for_severity(sev));
         }
         assert_eq!(seen.len(), 4);
+    }
+}
+
+#[cfg(test)]
+mod text_cell_tests {
+    use super::text_cell_px;
+
+    /// GD.5c: a popup's cell is measured from where the pane's text was
+    /// painted, so a gutter and a split's offset move it; before the first
+    /// paint the single-pane estimate stands in.
+    #[test]
+    fn a_text_cell_is_measured_from_the_panes_painted_origin() {
+        // Text starts 300px in (a split on the right, plus its gutter)
+        // and 40px down. Column 4, row 2, 10px cells, 20px rows.
+        assert_eq!(
+            text_cell_px(Some((300.0, 40.0)), (12.0, 12.0), 4, 2, 10.0, 20.0),
+            (80.0, 340.0)
+        );
+        // Nothing painted yet: the fallback origin.
+        assert_eq!(
+            text_cell_px(None, (12.0, 30.0), 4, 2, 10.0, 20.0),
+            (70.0, 52.0)
+        );
     }
 }

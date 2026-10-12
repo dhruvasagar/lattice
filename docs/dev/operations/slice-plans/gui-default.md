@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅; GD.4, GD.5c, GD.7c, GD.8c 📝; GD.9b ❌.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅, GD.5c ✅; GD.4, GD.7c, GD.8c 📝; GD.9b ❌.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -258,12 +258,29 @@ the TUI's command-line tests. **The caret element has not been seen**: it is a
 zero-width box holding an absolutely positioned bar, and whether it lines up
 with the text is exactly what a screenshot would tell.
 
-**GD.5c 📝:**
+**GD.5c ✅** (2026-10-12):
 
-- Ghost text for the focused completion candidate.
-- Syntax spans in the expanded command band (the caret is done).
-- Completion / hover popup origin accounts for the gutter and the pane's
-  position.
+- **Ghost text.** The suffix and its placement rule (cursor at the end of its
+  line) are published as `CompletionRenderState::ghost_suffix`, computed once
+  per publish by `Editor::completion_ghost_text_at_cursor`. The terminal reads
+  it; it used to call into the editor with a blocking actor round-trip from
+  its draw function on every frame the cursor sat at a line's end. The window
+  draws it as an end-of-row overlay, dim and italic, in the fold summary's
+  tone — the same mechanism as the fold summary, so it cannot widen the row.
+- **Popup origin.** The focused pane's `paint` records where its text starts
+  in window pixels (`TextOrigin`: pane bounds plus gutter width, the only
+  place both are known), and the completion and hover popups are placed from
+  it through `text_cell_px`. That includes the gutter, a split pane's offset
+  and `leftcol`. The reader sees the previous frame's origin; before the first
+  paint the old single-pane estimate stands in.
+- **The band's first line is coloured** by the `:` line's decoration spans,
+  as the terminal's band is. Later lines are plain in both.
+
+Not seen running. Known approximations: the popup's column is still the
+anchor's byte offset, not its character count, so text with multi-byte
+characters before the anchor puts the popup too far right; rows are still
+`row × estimated row height`, which is wrong below a heading-scaled row
+(GD.7c's subject).
 
 ### GD.6 — buffer text paint
 

@@ -5620,13 +5620,18 @@ pub(crate) fn compose_pane_lines(
         // ends right before it).
         // DR.3: ghost text previews the active completion at the
         // active cursor — interaction state, focused pane only.
+        //
+        // GD.5c: the suffix and its "cursor at end of line" rule are
+        // the host's, read from published state. This used to call
+        // `completion_ghost_text_suffix`, a blocking actor round-trip
+        // from the draw path on every frame the cursor sat at a line's
+        // end.
         if ctx.is_active
             && line_idx == app.ad().cursor.line
-            && (app.ad().cursor.byte as usize) == line_text.len()
-            && let Some(suffix) = app.completion_ghost_text_suffix()
+            && let Some(suffix) = app.render_state.load().completion.ghost_suffix.clone()
         {
             body.push(Span::styled(
-                suffix,
+                suffix.to_string(),
                 TuiStyle::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::ITALIC),
@@ -11025,6 +11030,8 @@ mod tests {
                 },
             ));
         app.editor.insert_completion = Some(state);
+        // The renderer reads the published suffix.
+        app.editor.publish_render_state();
 
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 1, 80);
         let composed = line_text(&lines[0]);
@@ -11077,6 +11084,8 @@ mod tests {
                 },
             ));
         app.editor.insert_completion = Some(state);
+        // The renderer reads the published suffix.
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 1, 80);
         let composed = line_text(&lines[0]);
         // `foobaz` from the buffer is fine; `foobar` (ghost)

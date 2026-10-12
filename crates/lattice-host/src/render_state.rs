@@ -2203,6 +2203,15 @@ pub struct CompletionRenderState {
     /// registry and route the content through the `PaneId::COMPLETION_DOCS`
     /// compose seam. `None` when no docs buffer exists.
     pub docs_buffer_id: Option<lattice_core::BufferId>,
+    /// GD.5c: the rest of the top completion candidate, to draw dimmed
+    /// after the cursor — `Some` only when it should be shown at all
+    /// (`Editor::completion_ghost_text_at_cursor`: the option is on,
+    /// the candidate extends what was typed, and the cursor is at the
+    /// end of its line). Published so a renderer does not ask the
+    /// editor each frame: the terminal renderer did, with a blocking
+    /// actor call from its draw function, and the GPUI window showed
+    /// no ghost text at all.
+    pub ghost_suffix: Option<std::sync::Arc<str>>,
 }
 
 /// Help / hover / signature popup's render-side projection.

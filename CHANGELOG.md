@@ -48,6 +48,13 @@
   splits with `<C-w>` also uses the window's real width now.
 - **GUI: terminal panes show bold, italic, dim and strikethrough text**, and
   search hits are underlined instead of looking like the current match.
+- **GUI: completion ghost text.** With `completion.ghost_text` on, the rest
+  of the top candidate is shown dimmed after the cursor, as in the terminal.
+- **GUI: completion and hover popups line up with the text in a split or
+  beside a gutter.** They were placed as if the pane started at the window's
+  left edge with no line numbers.
+- **GUI: the expanded command line (`<C-x><C-e>`) is syntax-coloured** on its
+  first line, as the one-row `:` line is.
 - **GUI: symbol highlights distinguish reads from writes.** With a language
   server attached, the other occurrences of the symbol under the cursor were
   all tinted as reads. Writes and plain textual occurrences now get their own

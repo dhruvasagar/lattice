@@ -277,6 +277,13 @@ pub(crate) struct EditorElement {
     /// `lattice-media` split exists to prevent. The rows keep their reserved
     /// space regardless, so pixels arriving later do not reflow anything.
     pub(crate) media_pixels: Arc<MediaPixels>,
+    /// GD.5c: where this pane's text starts, in window pixels —
+    /// written in `paint` (the only place the pane's bounds and its
+    /// gutter width are both known) and read by the window when it
+    /// places a popup at a text cell. `Some` for the focused document
+    /// pane only. The reader sees the previous frame's value, which is
+    /// the frame the popup's anchor was on screen.
+    pub(crate) text_origin_out: Option<Arc<TextOrigin>>,
     /// Pane index inside the active pane tree. Used for
     /// `ElementId` so GPUI tracks the same element across frames.
     pub(crate) pane_idx: usize,
@@ -451,6 +458,12 @@ pub(crate) struct EditorElement {
     /// cache — it is cursor-transient, like the cursor / underline
     /// overlays.
     pub(crate) inline_diag_summary: Option<InlineDiagSummary>,
+    /// GD.5c: completion ghost text — `(line, text, 0xRRGGBB)` — drawn
+    /// dimmed and italic after the end of the cursor's line. Active
+    /// pane only; the host decides whether there is any
+    /// (`CompletionRenderState::ghost_suffix`). An end-of-row overlay
+    /// like the fold summary, so it never widens the row.
+    pub(crate) ghost_text: Option<(u32, String, u32)>,
     /// S4.1 (2026-05-27): cell-grid substrate snapshot. Populated
     /// from `render_state.cells.matrix.load_full()` for the active
     /// pane; `None` for inactive panes (the cells worker publishes
@@ -2252,7 +2265,7 @@ impl Element for EditorElement {
         // Anchored to the LAST visible row of the head line so the
         // summary trails the whole heading when it wraps, matching the
         // diagnostic summary's `rposition`.
-        let fold_summary_overlays: Vec<(usize, u32, ShapedLine)> = self
+        let mut fold_summary_overlays: Vec<(usize, u32, ShapedLine)> = self
             .gutter
             .iter()
             .filter_map(|meta| {
@@ -2297,6 +2310,43 @@ impl Element for EditorElement {
                 Some((row, end_col, shaped))
             })
             .collect();
+        // GD.5c: completion ghost text rides the same list — it is the
+        // same thing, text trailing a row past its last column. A line
+        // cannot be both a closed fold's head and the line being typed
+        // on, so the two never land on one row.
+        if let Some((line, text, color)) = self.ghost_text.as_ref()
+            && let Some(row) = row_meta.iter().rposition(|(l, _)| l == line)
+        {
+            let total_cols = self
+                .cell_matrix
+                .as_ref()
+                .and_then(|m| m.row_at_source_line(*line))
+                .map(|r| r.col_count())
+                .unwrap_or(0);
+            let end_col = if wrap_width == 0 {
+                total_cols
+            } else {
+                let seg = row_segment.get(row).copied().unwrap_or(0);
+                total_cols.saturating_sub(seg.saturating_mul(wrap_width))
+            };
+            let mut italic = font.clone();
+            italic.style = gpui::FontStyle::Italic;
+            let runs = vec![TextRun {
+                len: text.len(),
+                font: italic,
+                color: rgb(*color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            let shaped = window.text_system().shape_line(
+                SharedString::from(text.clone()),
+                font_size,
+                &runs,
+                None,
+            );
+            fold_summary_overlays.push((row, end_col, shaped));
+        }
 
         EditorElementPrepaintState {
             shaped_text,
@@ -2343,6 +2393,9 @@ impl Element for EditorElement {
         let line_height = prepaint.line_height;
         let advance = prepaint.glyph_advance;
         let text_origin_x = bounds.origin.x + prepaint.gutter_width_px;
+        if let Some(out) = &self.text_origin_out {
+            out.set(f32::from(text_origin_x), f32::from(bounds.origin.y));
+        }
         // HS.1b: horizontal scroll. With wrap off, the body pans left
         // by `leftcol` display columns — `col_x` subtracts it (cursor
         // + selection/decoration quads) and the body-glyph paint
@@ -5356,5 +5409,26 @@ mod tests {
         assert_eq!(scale.x_offset(8, adv), px(16.0 + 72.0));
         // …and past the end it stops growing rather than extrapolating.
         assert_eq!(scale.x_offset(99, adv), px(16.0 + 72.0));
+    }
+}
+
+/// GD.5c: the focused pane's text origin (window pixels), handed from
+/// `paint` to the window's popup placement. A mutex and not a `Cell`
+/// because it sits beside [`MediaPixels`] in an `Arc`; it is only ever
+/// touched on the UI thread, so it is never contended.
+#[derive(Debug, Default)]
+pub(crate) struct TextOrigin(std::sync::Mutex<Option<(f32, f32)>>);
+
+impl TextOrigin {
+    fn set(&self, x: f32, y: f32) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some((x, y));
+        }
+    }
+
+    /// `(x, y)` of column 0, row 0 of the pane's text, or `None` before
+    /// the pane has painted once.
+    pub(crate) fn get(&self) -> Option<(f32, f32)> {
+        self.0.lock().ok().and_then(|slot| *slot)
     }
 }

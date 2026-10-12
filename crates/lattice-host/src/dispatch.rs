@@ -1523,6 +1523,9 @@ impl Editor {
                 insert: self.insert_completion.clone().map(std::sync::Arc::new),
                 state: self.completion_state.clone().map(std::sync::Arc::new),
                 docs_buffer_id: self.completion_docs_buffer,
+                ghost_suffix: self
+                    .completion_ghost_text_at_cursor()
+                    .map(std::sync::Arc::from),
             }),
             popup: std::sync::Arc::new(PopupRenderState {
                 buffer_id: self.popup_buffer,
@@ -33255,6 +33258,25 @@ impl Editor {
             return None;
         }
         Some(tail.to_string())
+    }
+
+    /// GD.5c: the ghost text to draw, or `None` when there is none to
+    /// draw *here*. [`Self::completion_ghost_text_suffix`] answers "what
+    /// would complete the typed prefix"; this adds the placement rule
+    /// the terminal renderer applied on its own — only with the cursor
+    /// at the end of its line, since mid-line the suffix would sit on
+    /// top of the text that follows. Runs once per publish; the line is
+    /// only read when there is a suffix.
+    pub fn completion_ghost_text_at_cursor(&self) -> Option<String> {
+        let suffix = self.completion_ghost_text_suffix()?;
+        let line = self
+            .document
+            .snapshot()
+            .buffer
+            .line(self.cursor.line)
+            .unwrap_or_default();
+        let line = line.trim_end_matches(['\n', '\r']);
+        (self.cursor.byte as usize == line.len()).then_some(suffix)
     }
 
     /// Accept the focused completion candidate. Three paths:

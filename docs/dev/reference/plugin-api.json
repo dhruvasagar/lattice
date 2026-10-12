@@ -1,5 +1,5 @@
 {
-  "package": "lattice:plugin-host@0.2.0",
+  "package": "lattice:plugin-host@0.3.0",
   "interfaces": [
     {
       "name": "buffer",
@@ -7066,10 +7066,58 @@
           "examples": []
         },
         {
+          "name": "put-spec",
+          "kind": "record",
+          "doc": "Mirrors `lattice_grammar::app_effect::PutSpec`: how a put (`p` and\nits relatives) places text and leaves the cursor. All false is plain\n`p`. `before` is `P`; `cursor-after` is `gp` / `gP` (the cursor lands\njust after the new text); `indent` is `]p` / `[p` (linewise text is\nre-indented to the current line).",
+          "definition": "record put-spec {\n    before: bool,\n    cursor-after: bool,\n    indent: bool,\n}",
+          "members": [
+            {
+              "name": "before",
+              "type": "bool",
+              "doc": null
+            },
+            {
+              "name": "cursor-after",
+              "type": "bool",
+              "doc": null
+            },
+            {
+              "name": "indent",
+              "type": "bool",
+              "doc": null
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "put-line-payload",
+          "kind": "record",
+          "doc": "Mirrors `AppEffect::PutLine` (`:[line]pu[t][!] [x]`): put `register`\n(the unnamed one when absent) as whole lines below `line` (0-based;\nthe cursor's line when absent), or above it when `before`.",
+          "definition": "record put-line-payload {\n    register: option<char>,\n    before: bool,\n    line: option<u32>,\n}",
+          "members": [
+            {
+              "name": "register",
+              "type": "option<char>",
+              "doc": null
+            },
+            {
+              "name": "before",
+              "type": "bool",
+              "doc": null
+            },
+            {
+              "name": "line",
+              "type": "option<u32>",
+              "doc": null
+            }
+          ],
+          "examples": []
+        },
+        {
           "name": "app-effect",
           "kind": "variant",
           "doc": "Mirrors `lattice_grammar::app_effect::AppEffect` (PH7.3b2). `NarrowTrigger`\nis absent by design (recursive `Range`; see the note above).",
-          "definition": "variant app-effect {\n    quit,\n    match-bracket,\n    toggle-case-at-cursor,\n    open-line-below,\n    open-line-above,\n    search-next,\n    search-previous,\n    jump-history-back,\n    jump-history-forward,\n    pane-history-back,\n    pane-history-forward,\n    walk-mark-history-back,\n    walk-mark-history-forward,\n    tag-stack-pop,\n    open-fold-at-cursor,\n    close-fold-at-cursor,\n    toggle-fold-at-cursor,\n    open-all-folds,\n    close-all-folds,\n    cycle-fold-at-cursor,\n    cycle-folds-global,\n    goto-parent-fold,\n    delete-fold-at-cursor,\n    goto-next-fold,\n    goto-prev-fold,\n    toggle-fold-enable,\n    open-folds-recursively,\n    close-folds-recursively,\n    delete-folds-recursively,\n    undo,\n    redo,\n    repeat-last-change,\n    page-down,\n    page-up,\n    half-page-down,\n    half-page-up,\n    scroll-line-up,\n    scroll-line-down,\n    redraw-screen,\n    open-command-picker,\n    enter-command-line,\n    oil-navigate-up,\n    reselect-last-visual,\n    swap-visual-ends,\n    paste-after,\n    paste-before,\n    enter-append,\n    enter-insert-first-non-blank,\n    enter-append-end-of-line,\n    display-line-down,\n    display-line-up,\n    display-line-start,\n    display-line-end,\n    create-fold-from-visual,\n    delete-char-backward,\n    completion-trigger,\n    exit-visual,\n    replace-undo-last,\n    enter-mode(modal-state),\n    enter-visual(visual-kind),\n    enter-select(visual-kind),\n    enter-search(search-direction),\n    search-word-under-cursor(search-direction),\n    jump-viewport(viewport-pos),\n    scroll-cursor-to(scroll-pos),\n    horizontal-scroll(hscroll),\n    insert-line-edit(insert-line-edit),\n    join-lines(bool),\n    find-repeat(bool),\n    insert-newline,\n    insert-tab,\n    overwrite-char(char),\n    set-mark(char),\n    jump-to-mark-line(char),\n    jump-to-mark-exact(char),\n    select-register(register),\n    start-macro-record(char),\n    play-macro(char),\n    play-last-macro,\n    absorb-operator-prefix(u64),\n    split-pane-horizontal,\n    split-pane-vertical,\n    close-pane,\n    only-pane,\n    toggle-zoom-pane,\n    navigate-pane(pane-direction),\n    next-pane,\n    prev-pane,\n    next-tab,\n    prev-tab,\n    go-to-tab(u32),\n    new-tab,\n    new-tab-at(string),\n    terminal-spawn(option<string>),\n    terminal-spawn-in-new-tab(option<string>),\n    move-pane-to-new-tab,\n    close-tab,\n    only-tab,\n    move-tab(u32),\n    picker-accept-in-split,\n    picker-accept-in-vsplit,\n    picker-accept-in-tab,\n    equalize-panes,\n    grow-pane-height,\n    shrink-pane-height,\n    grow-pane-width,\n    shrink-pane-width,\n    completion-next,\n    completion-prev,\n    completion-accept,\n    completion-cancel,\n    completion-cancel-and-exit-insert,\n    completion-toggle-docs,\n    completion-docs-scroll-down,\n    completion-docs-scroll-up,\n    completion-accept-then-insert(char),\n    snippet-next-placeholder,\n    snippet-prev-placeholder,\n    completion-filter-to-source(string),\n    completion-filter-clear,\n    diff-get,\n    diff-put,\n    tutor-advance,\n    tutor-retreat,\n    multibuffer-expand(s32),\n    narrow-widen,\n    narrow-lines(narrow-lines-payload),\n    create-fold(narrow-lines-payload),\n    format-range(format-range-payload),\n    search-trigger(string),\n    search-refresh,\n    open-provider-view(open-provider-view-payload),\n}",
+          "definition": "variant app-effect {\n    quit,\n    match-bracket,\n    toggle-case-at-cursor,\n    open-line-below,\n    open-line-above,\n    search-next,\n    search-previous,\n    jump-history-back,\n    jump-history-forward,\n    pane-history-back,\n    pane-history-forward,\n    walk-mark-history-back,\n    walk-mark-history-forward,\n    tag-stack-pop,\n    open-fold-at-cursor,\n    close-fold-at-cursor,\n    toggle-fold-at-cursor,\n    open-all-folds,\n    close-all-folds,\n    cycle-fold-at-cursor,\n    cycle-folds-global,\n    goto-parent-fold,\n    delete-fold-at-cursor,\n    goto-next-fold,\n    goto-prev-fold,\n    toggle-fold-enable,\n    open-folds-recursively,\n    close-folds-recursively,\n    delete-folds-recursively,\n    undo,\n    redo,\n    repeat-last-change,\n    page-down,\n    page-up,\n    half-page-down,\n    half-page-up,\n    scroll-line-up,\n    scroll-line-down,\n    redraw-screen,\n    open-command-picker,\n    enter-command-line,\n    oil-navigate-up,\n    reselect-last-visual,\n    swap-visual-ends,\n    paste-after,\n    paste-before,\n    put(put-spec),\n    put-over-selection(bool),\n    put-line(put-line-payload),\n    enter-append,\n    enter-insert-first-non-blank,\n    enter-append-end-of-line,\n    display-line-down,\n    display-line-up,\n    display-line-start,\n    display-line-end,\n    create-fold-from-visual,\n    delete-char-backward,\n    completion-trigger,\n    exit-visual,\n    replace-undo-last,\n    enter-mode(modal-state),\n    enter-visual(visual-kind),\n    enter-select(visual-kind),\n    enter-search(search-direction),\n    search-word-under-cursor(search-direction),\n    jump-viewport(viewport-pos),\n    scroll-cursor-to(scroll-pos),\n    horizontal-scroll(hscroll),\n    insert-line-edit(insert-line-edit),\n    join-lines(bool),\n    find-repeat(bool),\n    insert-newline,\n    insert-tab,\n    overwrite-char(char),\n    set-mark(char),\n    jump-to-mark-line(char),\n    jump-to-mark-exact(char),\n    select-register(register),\n    start-macro-record(char),\n    play-macro(char),\n    play-last-macro,\n    absorb-operator-prefix(u64),\n    split-pane-horizontal,\n    split-pane-vertical,\n    close-pane,\n    only-pane,\n    toggle-zoom-pane,\n    navigate-pane(pane-direction),\n    next-pane,\n    prev-pane,\n    next-tab,\n    prev-tab,\n    go-to-tab(u32),\n    new-tab,\n    new-tab-at(string),\n    terminal-spawn(option<string>),\n    terminal-spawn-in-new-tab(option<string>),\n    move-pane-to-new-tab,\n    close-tab,\n    only-tab,\n    move-tab(u32),\n    picker-accept-in-split,\n    picker-accept-in-vsplit,\n    picker-accept-in-tab,\n    equalize-panes,\n    grow-pane-height,\n    shrink-pane-height,\n    grow-pane-width,\n    shrink-pane-width,\n    completion-next,\n    completion-prev,\n    completion-accept,\n    completion-cancel,\n    completion-cancel-and-exit-insert,\n    completion-toggle-docs,\n    completion-docs-scroll-down,\n    completion-docs-scroll-up,\n    completion-accept-then-insert(char),\n    snippet-next-placeholder,\n    snippet-prev-placeholder,\n    completion-filter-to-source(string),\n    completion-filter-clear,\n    diff-get,\n    diff-put,\n    tutor-advance,\n    tutor-retreat,\n    multibuffer-expand(s32),\n    narrow-widen,\n    narrow-lines(narrow-lines-payload),\n    create-fold(narrow-lines-payload),\n    format-range(format-range-payload),\n    search-trigger(string),\n    search-refresh,\n    open-provider-view(open-provider-view-payload),\n}",
           "members": [
             {
               "name": "quit",
@@ -7300,6 +7348,21 @@
               "name": "paste-before",
               "type": null,
               "doc": null
+            },
+            {
+              "name": "put",
+              "type": "put-spec",
+              "doc": "`gp` / `gP` / `]p` / `[p` (and plain `p` / `P`, spelled as a spec)."
+            },
+            {
+              "name": "put-over-selection",
+              "type": "bool",
+              "doc": "Visual `p` / `P`: replace the selection with the register. The\nbool is `keep-register` — true for `P`, which discards the\nreplaced text instead of making it the unnamed register."
+            },
+            {
+              "name": "put-line",
+              "type": "put-line-payload",
+              "doc": "`:put`."
             },
             {
               "name": "enter-append",

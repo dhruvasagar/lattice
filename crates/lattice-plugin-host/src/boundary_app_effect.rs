@@ -21,7 +21,8 @@ use crate::lattice::plugin_host::types::{
     FormatRangePayload as WitFormatRangePayload, Hscroll as WitHscroll,
     InsertLineEdit as WitInsertLineEdit, NarrowLinesPayload as WitNarrowLinesPayload,
     OpenProviderViewPayload as WitOpenProviderViewPayload, PaneDirection as WitPaneDirection,
-    ScrollPos as WitScrollPos, ViewportPos as WitViewportPos,
+    PutLinePayload as WitPutLinePayload, PutSpec as WitPutSpec, ScrollPos as WitScrollPos,
+    ViewportPos as WitViewportPos,
 };
 use lattice_grammar::app_effect::{
     AppEffect as NativeAppEffect, HScroll as NativeHScroll, InsertLineEdit as NativeInsertLineEdit,
@@ -276,18 +277,23 @@ impl WitBoundary for NativeAppEffect {
             NativeAppEffect::SwapVisualEnds => WitAppEffect::SwapVisualEnds,
             NativeAppEffect::PasteAfter => WitAppEffect::PasteAfter,
             NativeAppEffect::PasteBefore => WitAppEffect::PasteBefore,
-            // The rest of the put family (`gp`, `]p`, Visual `p`, `:put`).
-            // A plugin reaches them the way a key does, by invoking the
-            // registered `action:put-*` / `ex:put` commands; the effects
-            // themselves are not on the WIT surface, and adding them is a
-            // plugin-API change. Typed error, never lossy.
-            NativeAppEffect::Put(_)
-            | NativeAppEffect::PutOverSelection { .. }
-            | NativeAppEffect::PutLine { .. } => {
-                return Err("AppEffect::Put* have no plugin (WIT) surface; invoke the \
-                     `action:put-*` or `ex:put` command instead"
-                    .to_string());
+            NativeAppEffect::Put(spec) => WitAppEffect::Put(WitPutSpec {
+                before: spec.before,
+                cursor_after: spec.cursor_after,
+                indent: spec.indent,
+            }),
+            NativeAppEffect::PutOverSelection { keep_register } => {
+                WitAppEffect::PutOverSelection(*keep_register)
             }
+            NativeAppEffect::PutLine {
+                register,
+                before,
+                line,
+            } => WitAppEffect::PutLine(WitPutLinePayload {
+                register: *register,
+                before: *before,
+                line: *line,
+            }),
             NativeAppEffect::EnterAppend => WitAppEffect::EnterAppend,
             NativeAppEffect::EnterInsertFirstNonBlank => WitAppEffect::EnterInsertFirstNonBlank,
             NativeAppEffect::EnterAppendEndOfLine => WitAppEffect::EnterAppendEndOfLine,
@@ -666,6 +672,19 @@ impl WitBoundary for NativeAppEffect {
             WitAppEffect::SwapVisualEnds => NativeAppEffect::SwapVisualEnds,
             WitAppEffect::PasteAfter => NativeAppEffect::PasteAfter,
             WitAppEffect::PasteBefore => NativeAppEffect::PasteBefore,
+            WitAppEffect::Put(spec) => NativeAppEffect::Put(lattice_grammar::PutSpec {
+                before: spec.before,
+                cursor_after: spec.cursor_after,
+                indent: spec.indent,
+            }),
+            WitAppEffect::PutOverSelection(keep_register) => {
+                NativeAppEffect::PutOverSelection { keep_register }
+            }
+            WitAppEffect::PutLine(p) => NativeAppEffect::PutLine {
+                register: p.register,
+                before: p.before,
+                line: p.line,
+            },
             WitAppEffect::EnterAppend => NativeAppEffect::EnterAppend,
             WitAppEffect::EnterInsertFirstNonBlank => NativeAppEffect::EnterInsertFirstNonBlank,
             WitAppEffect::EnterAppendEndOfLine => NativeAppEffect::EnterAppendEndOfLine,
@@ -843,6 +862,26 @@ mod tests {
             NativeAppEffect::SearchWordUnderCursor(NativeSearchDirection::Forward),
             NativeAppEffect::JumpViewport(NativeViewportPos::Middle),
             NativeAppEffect::ScrollCursorTo(NativeScrollPos::Center),
+            // Plugin API 0.3: the put family.
+            NativeAppEffect::Put(lattice_grammar::PutSpec::default()),
+            NativeAppEffect::Put(lattice_grammar::PutSpec {
+                before: true,
+                cursor_after: true,
+                indent: true,
+            }),
+            NativeAppEffect::PutOverSelection {
+                keep_register: true,
+            },
+            NativeAppEffect::PutLine {
+                register: Some('a'),
+                before: true,
+                line: Some(4),
+            },
+            NativeAppEffect::PutLine {
+                register: None,
+                before: false,
+                line: None,
+            },
             NativeAppEffect::HorizontalScroll(NativeHScroll::Columns { right: true }),
             NativeAppEffect::HorizontalScroll(NativeHScroll::HalfScreen { right: false }),
             NativeAppEffect::HorizontalScroll(NativeHScroll::CursorToEdge { end: true }),

@@ -23,6 +23,12 @@
     above a line.
 
 ### Changed
+- **Plugin API 0.3.0.** `app-effect` gains the put family: `put` (with a
+  `put-spec` for `gp` / `]p` and friends), `put-over-selection` and
+  `put-line`. Adding cases to a variant changes its shape, so this is a new
+  ABI generation: a plugin pinned to `lattice-wit = "0.2"` must move its pin
+  to `"0.3"` and rebuild, and one that matches on `app-effect` exhaustively
+  needs arms for the new cases. Plugins without a pin rebuild on their own.
 - **`lattice` opens a window.** The GPU renderer is the default; `lattice
   --tui` opens the terminal renderer, which stays first-class. With no
   display reachable (an SSH session, a server, a Linux console) a bare

@@ -1,4 +1,4 @@
-package lattice:plugin-host@0.2.0;
+package lattice:plugin-host@0.3.0;
 
 /// Shared boundary records/variants — the owned, WIT-serializable mirrors of
 /// the native grammar + picker/completion types (plugin-host.md §4). Every
@@ -1007,6 +1007,25 @@ interface types {
         scan-args: list<string>,
     }
 
+    /// Mirrors `lattice_grammar::app_effect::PutSpec`: how a put (`p` and
+    /// its relatives) places text and leaves the cursor. All false is plain
+    /// `p`. `before` is `P`; `cursor-after` is `gp` / `gP` (the cursor lands
+    /// just after the new text); `indent` is `]p` / `[p` (linewise text is
+    /// re-indented to the current line).
+    record put-spec {
+        before: bool,
+        cursor-after: bool,
+        indent: bool,
+    }
+    /// Mirrors `AppEffect::PutLine` (`:[line]pu[t][!] [x]`): put `register`
+    /// (the unnamed one when absent) as whole lines below `line` (0-based;
+    /// the cursor's line when absent), or above it when `before`.
+    record put-line-payload {
+        register: option<char>,
+        before: bool,
+        line: option<u32>,
+    }
+
     /// Mirrors `lattice_grammar::app_effect::AppEffect` (PH7.3b2). `NarrowTrigger`
     /// is absent by design (recursive `Range`; see the note above).
     variant app-effect {
@@ -1056,6 +1075,14 @@ interface types {
         swap-visual-ends,
         paste-after,
         paste-before,
+        /// `gp` / `gP` / `]p` / `[p` (and plain `p` / `P`, spelled as a spec).
+        put(put-spec),
+        /// Visual `p` / `P`: replace the selection with the register. The
+        /// bool is `keep-register` — true for `P`, which discards the
+        /// replaced text instead of making it the unnamed register.
+        put-over-selection(bool),
+        /// `:put`.
+        put-line(put-line-payload),
         enter-append,
         enter-insert-first-non-blank,
         enter-append-end-of-line,

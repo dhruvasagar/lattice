@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (150)
+## Types (152)
 
 ### variant `arg-value`
 
@@ -1460,6 +1460,36 @@ Empty `scan-args` reproduces the pre-OA.11a boundary exactly: the
 payload maps to `Args::None` / `Args::String`, so every existing trigger
 is unchanged.
 
+### record `put-spec`
+
+```wit
+record put-spec {
+    before: bool,
+    cursor-after: bool,
+    indent: bool,
+}
+```
+
+Mirrors `lattice_grammar::app_effect::PutSpec`: how a put (`p` and
+its relatives) places text and leaves the cursor. All false is plain
+`p`. `before` is `P`; `cursor-after` is `gp` / `gP` (the cursor lands
+just after the new text); `indent` is `]p` / `[p` (linewise text is
+re-indented to the current line).
+
+### record `put-line-payload`
+
+```wit
+record put-line-payload {
+    register: option<char>,
+    before: bool,
+    line: option<u32>,
+}
+```
+
+Mirrors `AppEffect::PutLine` (`:[line]pu[t][!] [x]`): put `register`
+(the unnamed one when absent) as whole lines below `line` (0-based;
+the cursor's line when absent), or above it when `before`.
+
 ### variant `app-effect`
 
 ```wit
@@ -1510,6 +1540,9 @@ variant app-effect {
     swap-visual-ends,
     paste-after,
     paste-before,
+    put(put-spec),
+    put-over-selection(bool),
+    put-line(put-line-payload),
     enter-append,
     enter-insert-first-non-blank,
     enter-append-end-of-line,
@@ -1650,6 +1683,11 @@ is absent by design (recursive `Range`; see the note above).
 - `swap-visual-ends`
 - `paste-after`
 - `paste-before`
+- `put`: [`put-spec`](#record-put-spec) — `gp` / `gP` / `]p` / `[p` (and plain `p` / `P`, spelled as a spec).
+- `put-over-selection`: `bool` — Visual `p` / `P`: replace the selection with the register. The
+  bool is `keep-register` — true for `P`, which discards the
+  replaced text instead of making it the unnamed register.
+- `put-line`: [`put-line-payload`](#record-put-line-payload) — `:put`.
 - `enter-append`
 - `enter-insert-first-non-blank`
 - `enter-append-end-of-line`

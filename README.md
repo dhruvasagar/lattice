@@ -89,9 +89,9 @@ checkout of this repo:
 
 ```toml
 [build-dependencies]
-lattice-wit = "0.2"          # this pin IS the ABI generation you target
+lattice-wit = "0.3"          # this pin IS the ABI generation you target
 [dependencies]
-lattice-plugin-sdk = "0.2"   # optional: typed config shapes
+lattice-plugin-sdk = "0.3"   # optional: typed config shapes
 ```
 
 Plugins ship as **source** and are compiled on the machine that runs them, so

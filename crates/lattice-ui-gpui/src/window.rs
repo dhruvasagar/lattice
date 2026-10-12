@@ -1367,7 +1367,12 @@ impl Render for ModelineTooltip {
 
 // Application-level actions: the ones the OS, not a keystroke in a buffer,
 // asks for. `Quit` is Cmd+Q and the menu item.
-gpui::actions!(lattice, [Quit]);
+// `Edit*`, not `Copy` / `Cut`: an action is a type, and one named `Copy`
+// would shadow the trait in this module.
+gpui::actions!(
+    lattice,
+    [Quit, EditUndo, EditRedo, EditCut, EditCopy, EditPaste]
+);
 
 /// Files the operating system asked the application to open, on their way to
 /// the editor.
@@ -6144,10 +6149,56 @@ pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
             }
         });
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        cx.set_menus(vec![Menu {
-            name: "Lattice".into(),
-            items: vec![MenuItem::action("Quit Lattice", Quit)],
-        }]);
+        // GD.8c: the Edit menu. Each item is the vim command it names
+        // (`crate::edit_menu_actions`), run through the editor's own
+        // dispatch.
+        fn on_edit<A: gpui::Action>(
+            cx: &mut App,
+            window: gpui::WindowHandle<EditorView>,
+            item: crate::EditMenuItem,
+        ) {
+            cx.on_action(move |_: &A, cx| {
+                let _ = window.update(cx, |view, _window, cx| {
+                    view.app.edit_menu(item);
+                    view.refresh_title();
+                    cx.notify();
+                });
+            });
+        }
+        on_edit::<EditUndo>(cx, window, crate::EditMenuItem::Undo);
+        on_edit::<EditRedo>(cx, window, crate::EditMenuItem::Redo);
+        on_edit::<EditCut>(cx, window, crate::EditMenuItem::Cut);
+        on_edit::<EditCopy>(cx, window, crate::EditMenuItem::Copy);
+        on_edit::<EditPaste>(cx, window, crate::EditMenuItem::Paste);
+        // The Cmd shortcuts are bound on macOS only: elsewhere the
+        // platform key is Super, there is no menu bar to advertise them,
+        // and a user's `<D-…>` bindings should reach the editor.
+        if cfg!(target_os = "macos") {
+            cx.bind_keys([
+                KeyBinding::new("cmd-z", EditUndo, None),
+                KeyBinding::new("cmd-shift-z", EditRedo, None),
+                KeyBinding::new("cmd-x", EditCut, None),
+                KeyBinding::new("cmd-c", EditCopy, None),
+                KeyBinding::new("cmd-v", EditPaste, None),
+            ]);
+        }
+        cx.set_menus(vec![
+            Menu {
+                name: "Lattice".into(),
+                items: vec![MenuItem::action("Quit Lattice", Quit)],
+            },
+            Menu {
+                name: "Edit".into(),
+                items: vec![
+                    MenuItem::action("Undo", EditUndo),
+                    MenuItem::action("Redo", EditRedo),
+                    MenuItem::separator(),
+                    MenuItem::action("Cut", EditCut),
+                    MenuItem::action("Copy", EditCopy),
+                    MenuItem::action("Paste", EditPaste),
+                ],
+            },
+        ]);
         // One window: when it is gone, so is the application. Without this
         // macOS keeps a windowless process alive in the Dock.
         cx.on_window_closed(|cx| {

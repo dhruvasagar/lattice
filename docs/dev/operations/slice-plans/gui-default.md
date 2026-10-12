@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅, GD.5c ✅; GD.4, GD.7c, GD.8c 📝; GD.9b ❌.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅, GD.5c ✅, GD.8c ✅; GD.4, GD.7c 📝; GD.9b ❌.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -460,11 +460,31 @@ plan.
 
 Not seen running: the tooltip on a light theme.
 
-**GD.8c 📝 — an Edit menu on macOS** (cut, copy, paste, undo, redo). Split
-from GD.8b because it is a decision before it is code: the window has no
-clipboard wiring of its own (no Cmd-C / Cmd-V, no use of GPUI's clipboard), so
-the menu has to settle what Cut and Copy mean outside Visual mode and which
-clipboard path they use.
+**GD.8c ✅ — an Edit menu on macOS** (2026-10-12). Undo, Redo, Cut, Copy,
+Paste, with Cmd-Z / Cmd-Shift-Z / Cmd-X / Cmd-C / Cmd-V bound on macOS only
+(elsewhere the platform key is Super and a user's `<D-…>` bindings should reach
+the editor).
+
+Decided (Dhruva): each item **is the vim command it names**, against the `+`
+register, through the editor's own dispatch — it protects paramount #3 (the
+grammar is the command API; the menu is one more front-end) and leaves one
+clipboard path. The window does not touch the OS clipboard itself.
+`edit_menu_actions` is the whole mapping, a pure function:
+
+- Undo / Redo — `u` / `<C-r>`.
+- Copy / Cut — `"+y` / `"+d` on the selection; nothing without one.
+- Paste — `"+p` in Normal, the same as vim (Dhruva: deviating offers no
+  value); `<C-r>+` where text is being typed (Insert, Replace, `:`, search).
+  **Nothing in Visual**: the editor has no Visual-mode put for it to be.
+
+That last point is a gap in the grammar, not in the window. Put today is `p` /
+`P` in Normal with a register prefix, for charwise / linewise / blockwise
+contents. Missing in both renderers: a count (`3p`), Visual `p` / `P`, `gp` /
+`gP`, `]p` / `[p`, `:put`. Raised with Dhruva; not part of this plan unless he
+says so.
+
+Not seen running: that the Cmd bindings reach the actions before
+`on_key_down` sees the keystroke, and that the menu appears.
 
 ### GD.9 — the flip
 

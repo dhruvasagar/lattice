@@ -7,6 +7,10 @@
   or open one with Lattice from Finder or `open -a`, and it opens as `:e`
   would. The window title shows the active file's name, and macOS has a
   Lattice menu with Quit.
+- **GUI: an Edit menu on macOS.** Undo, Redo, Cut, Copy and Paste, with the
+  usual Cmd shortcuts. Each is the vim command it names on the system
+  clipboard register: Copy and Cut act on the Visual selection (`"+y`,
+  `"+d`), and Paste is `"+p` in Normal mode and `<C-r>+` while typing.
 
 ### Changed
 - **`lattice` opens a window.** The GPU renderer is the default; `lattice

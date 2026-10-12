@@ -1271,6 +1271,16 @@ impl GpuiApp {
         }
     }
 
+    /// GD.8c: run an Edit-menu item. Each is the vim command it names,
+    /// dispatched through the same entry a key takes, so undo, registers
+    /// and macros see nothing new ([`edit_menu_actions`]).
+    pub fn edit_menu(&mut self, item: EditMenuItem) {
+        let builtins = self.render_state.load().translator.builtins.clone();
+        for action in edit_menu_actions(item, self.ad().modal, &builtins) {
+            self.dispatch_action(action);
+        }
+    }
+
     /// Dispatch one [`Action`] and everything that follows from it.
     ///
     /// This is the GPUI peer's half of the peer contract
@@ -1997,6 +2007,67 @@ pub fn path_from_open_url(url: &str) -> Option<std::path::PathBuf> {
 /// the editor is in-process and they are plain calls, so nothing would
 /// otherwise show a test how many there were. The TUI peer has the same
 /// counter (`lattice_ui_tui::actor_call_counter`) for the same assertion.
+/// GD.8c: an item of the macOS Edit menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditMenuItem {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+}
+
+/// What an Edit-menu item does in a modal state: the vim command it
+/// names, against the system clipboard register (`"+`).
+///
+/// - **Undo / Redo** are `u` / `<C-r>`.
+/// - **Copy / Cut** are `"+y` / `"+d` on the selection, and nothing
+///   without one — the platform's rule (the items act on the selection),
+///   and a stray Cmd-X must not delete a line.
+/// - **Paste** is `"+p`, exactly as vim's: after the cursor in Normal
+///   (below the line for a linewise yank). Where text is being typed
+///   (Insert, Replace, the `:` and search lines) it is `<C-r>+`. In
+///   Visual it does nothing until the editor has a Visual-mode put.
+///
+/// One clipboard path: the host's `+` register. The window does not
+/// touch the OS clipboard itself, so the menu, `"+y` and `"+p` cannot
+/// disagree.
+pub fn edit_menu_actions(
+    item: EditMenuItem,
+    modal: lattice_grammar::ModalState,
+    builtins: &lattice_grammar::builtins::Builtins,
+) -> Vec<Action> {
+    use lattice_grammar::{CommandInvocation, ModalState, Range, Register};
+    let selecting = matches!(modal, ModalState::Visual(_) | ModalState::Select(_));
+    let on_selection = |op: lattice_grammar::CommandId| {
+        Action::Invoke(
+            CommandInvocation::of(op)
+                .with_range(Range::Selection)
+                .with_register(Register::System),
+        )
+    };
+    match item {
+        EditMenuItem::Undo => vec![Action::Undo],
+        EditMenuItem::Redo => vec![Action::Redo],
+        EditMenuItem::Copy if selecting => vec![on_selection(builtins.yank.0)],
+        EditMenuItem::Cut if selecting => vec![on_selection(builtins.delete.0)],
+        EditMenuItem::Copy | EditMenuItem::Cut => Vec::new(),
+        EditMenuItem::Paste => match modal {
+            ModalState::Normal => {
+                vec![Action::SelectRegister(Register::System), Action::PasteAfter]
+            }
+            ModalState::Insert
+            | ModalState::Replace
+            | ModalState::Command
+            | ModalState::Search(_) => vec![Action::InsertRegister('+')],
+            // Visual: the editor has no Visual-mode put yet (`p` over a
+            // selection), so there is no vim command for the menu to be.
+            // Mid-operator there is nowhere for a paste to go.
+            _ => Vec::new(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod actor_calls {
     use std::cell::Cell;
@@ -2051,6 +2122,61 @@ mod tests {
         fn actor_crossings(&self) -> u64 {
             actor_calls::snapshot()
         }
+    }
+
+    /// GD.8c: Copy and Cut act on the selection and do nothing without
+    /// one; Paste is vim's `"+p`, and nothing in Visual yet.
+    #[test]
+    fn edit_menu_items_are_vim_commands_on_the_clipboard_register() {
+        use lattice_grammar::{Range, Register, VisualKind};
+        let app = GpuiApp::new(Document::from_text("x\n"));
+        let b = app.render_state.load().translator.builtins.clone();
+        let visual = ModalState::Visual(VisualKind::Charwise);
+
+        assert!(edit_menu_actions(EditMenuItem::Copy, ModalState::Normal, &b).is_empty());
+        assert!(edit_menu_actions(EditMenuItem::Cut, ModalState::Insert, &b).is_empty());
+
+        let copy = edit_menu_actions(EditMenuItem::Copy, visual, &b);
+        let [Action::Invoke(inv)] = copy.as_slice() else {
+            panic!("Copy in Visual is one invocation, got {copy:?}");
+        };
+        assert_eq!(inv.command, b.yank.0);
+        assert_eq!(inv.register, Some(Register::System));
+        assert!(matches!(inv.range, Some(Range::Selection)));
+
+        let cut = edit_menu_actions(EditMenuItem::Cut, visual, &b);
+        let [Action::Invoke(inv)] = cut.as_slice() else {
+            panic!("Cut in Visual is one invocation, got {cut:?}");
+        };
+        assert_eq!(inv.command, b.delete.0);
+
+        assert!(matches!(
+            edit_menu_actions(EditMenuItem::Paste, ModalState::Normal, &b).as_slice(),
+            [Action::SelectRegister(Register::System), Action::PasteAfter]
+        ));
+        assert!(matches!(
+            edit_menu_actions(EditMenuItem::Paste, ModalState::Insert, &b).as_slice(),
+            [Action::InsertRegister('+')]
+        ));
+        assert!(matches!(
+            edit_menu_actions(EditMenuItem::Paste, ModalState::Command, &b).as_slice(),
+            [Action::InsertRegister('+')]
+        ));
+        assert!(edit_menu_actions(EditMenuItem::Paste, ModalState::OperatorPending, &b).is_empty());
+        assert!(edit_menu_actions(EditMenuItem::Paste, visual, &b).is_empty());
+    }
+
+    /// The menu's Undo and Redo reach the buffer through the peer's
+    /// dispatch entry.
+    #[test]
+    fn the_edit_menus_undo_and_redo_edit_the_buffer() {
+        let mut app = GpuiApp::new(Document::from_text("one\n"));
+        lattice_host::peer_conformance::press(&mut app, "ix<Esc>");
+        assert_eq!(app.editor.document.text(), "xone\n");
+        app.edit_menu(EditMenuItem::Undo);
+        assert_eq!(app.editor.document.text(), "one\n");
+        app.edit_menu(EditMenuItem::Redo);
+        assert_eq!(app.editor.document.text(), "xone\n");
     }
 
     /// The scenarios themselves — `lattice_host::peer_conformance`.

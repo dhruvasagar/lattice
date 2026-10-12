@@ -2377,54 +2377,6 @@ mod tests {
         );
     }
 
-    /// AP.0.2 — a DECLINED chord falls through to the layer below.
-    ///
-    /// This peer had no fall-through at all, and the cost was not subtle: a
-    /// mode that binds a chord it only *sometimes* wants made that key dead.
-    /// `auto-pair` binds `( [ { ) ] } " ' \`` and `<BS>` in Insert with a
-    /// Global policy and declines whenever the situation is not a pair — so
-    /// every one of those keys did nothing in GPUI, while `<C-w>` (the one
-    /// insert key auto-pair does not bind) worked. `<Tab>` was the same bug
-    /// through `table-mode`.
-    ///
-    /// Driven here with `table-mode`, which is native — no plugin fixture
-    /// needed — and binds `<Tab>` in Insert, declining outside a table. The
-    /// fall-through is the builtin insert-tab, so the observable is a tab
-    /// character actually reaching the buffer.
-    #[test]
-    fn a_declined_chord_falls_through_to_the_layer_below() {
-        use lattice_host::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
-
-        let mut app = GpuiApp::new(Document::from_text("x\n"));
-        let buffer = app.editor.document_buffer_id;
-        let _ = app
-            .editor
-            .activate_mode_by_id(buffer, lattice_mode::TableMode::mode_id());
-        app.editor.publish_render_state();
-        assert!(
-            app.render_state
-                .load()
-                .translator
-                .active_minor_modes
-                .contains(&lattice_mode::TableMode::mode_id()),
-            "precondition: table-mode must be an active layer, or there is \
-             nothing to decline and the test proves nothing"
-        );
-
-        app.dispatch_chord(KeyChord::new(KeyKind::Char('i'), KeyMods::NONE));
-        app.dispatch_chord(KeyChord::new(
-            KeyKind::Special(SpecialKey::Tab),
-            KeyMods::NONE,
-        ));
-
-        assert!(
-            app.editor.document.text().contains('\t'),
-            "`<Tab>` outside a table must fall through to insert-tab; the \
-             buffer is {:?}",
-            app.editor.document.text()
-        );
-    }
-
     /// `dispatch_chord` is the path tests + programmatic drivers
     /// take. Sanity-check that handing it a canonical chord
     /// reaches the same state change as the keystroke entry

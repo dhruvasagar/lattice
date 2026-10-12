@@ -1325,20 +1325,21 @@ impl DiagnosticGlyphs {
 /// diverges (modeline.md §9, "graceful degradation, not a parity
 /// break").
 ///
-/// Deliberately plain: it reads its colours from the same resolved
-/// theme roles the modeline itself uses, so a retuned theme moves the
-/// tooltip with it.
+/// Deliberately plain: a popup's background and the theme's text colour,
+/// handed in by the modeline row that owns the theme. It used to carry two
+/// dark-palette literals while this comment said it read the theme — a
+/// dark box on every light theme (GD.8b).
 struct ModelineTooltip {
     text: String,
+    bg: u32,
+    fg: u32,
 }
 
 impl Render for ModelineTooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        const TIP_BG: u32 = 0x0031_3244; // palette `surface0`
-        const TIP_FG: u32 = 0x00cd_d6f4; // palette `text`
         div()
-            .bg(rgb(TIP_BG))
-            .text_color(rgb(TIP_FG))
+            .bg(rgb(self.bg))
+            .text_color(rgb(self.fg))
             .px_2()
             .py_1()
             .child(self.text.clone())
@@ -1849,6 +1850,17 @@ impl EditorView {
             .bg
             .map(|c| c.to_rgb_u32(FALLBACK_BAR))
             .unwrap_or(FALLBACK_BAR);
+        // The hover tooltip is a popup with the modeline's text colour.
+        let tip_bg = resolved
+            .get(ids.ui_popup_background)
+            .bg
+            .map(|c| c.to_rgb_u32(bar_bg))
+            .unwrap_or(bar_bg);
+        let tip_fg = resolved
+            .get(ids.modeline_path)
+            .fg
+            .map(|c| c.to_rgb_u32(FALLBACK_FG))
+            .unwrap_or(FALLBACK_FG);
 
         // ML.5: the `ui.modeline.{left,center,right}` config drives zone
         // membership + order; `resolve_layout` returns the per-zone
@@ -2004,7 +2016,12 @@ impl EditorView {
                             .id(SharedString::from(format!("modeline-{element_id}")))
                             .tooltip(move |_window, cx: &mut App| {
                                 let tip = tip.clone();
-                                cx.new(|_| ModelineTooltip { text: tip }).into()
+                                cx.new(|_| ModelineTooltip {
+                                    text: tip,
+                                    bg: tip_bg,
+                                    fg: tip_fg,
+                                })
+                                .into()
                             });
                         z = z.child(tipped);
                     }

@@ -48,6 +48,8 @@
   splits with `<C-w>` also uses the window's real width now.
 - **GUI: terminal panes show bold, italic, dim and strikethrough text**, and
   search hits are underlined instead of looking like the current match.
+- **GUI: the modeline's hover tooltip follows the theme.** It was a fixed
+  dark box, on light themes too.
 - **GUI: `:set relativenumber` works.** The window's gutter always showed
   absolute line numbers.
 - **GUI: closing the window no longer discards unsaved work.** The close

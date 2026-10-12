@@ -325,6 +325,44 @@ pub fn quitting_is_published<P: PeerUnderTest>() {
     );
 }
 
+/// A chord whose binding DECLINES falls through to the layer below.
+///
+/// A mode can bind a key it only sometimes wants: `table-mode` binds
+/// `<Tab>` in Insert and declines outside a table. The peer must then
+/// re-resolve the chord without that mode's layer
+/// ([`DeclinePeel`](crate::decline::DeclinePeel)), which here reaches the
+/// builtin insert-tab. A peer without the walk makes every such key dead —
+/// the GUI was one for a while, and lost `( [ { " '` and backspace to
+/// auto-pair the same way.
+///
+/// The walk is in each peer's key path and not in the host's dispatch,
+/// because only the peer still holds the chord when the decline is known.
+pub fn a_declined_chord_falls_through_to_the_layer_below<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("x\n");
+    let table_mode = lattice_mode::TableMode::mode_id();
+    let buffer = peer.editor().document_buffer_id;
+    let _ = peer.editor_mut().activate_mode_by_id(buffer, table_mode);
+    peer.republish();
+    assert!(
+        peer.editor()
+            .render_state
+            .load()
+            .translator
+            .active_minor_modes
+            .contains(&table_mode),
+        "precondition: table-mode is an active layer, or nothing declines \
+         and the scenario proves nothing"
+    );
+
+    press(&mut peer, "i<Tab>");
+
+    assert!(
+        text(&peer).contains('\t'),
+        "`<Tab>` outside a table falls through to insert-tab; the buffer is {:?}",
+        text(&peer)
+    );
+}
+
 /// Instantiate every conformance scenario as a `#[test]` for one peer.
 ///
 /// Call it inside a `#[cfg(test)]` module of the peer crate. The scenario
@@ -341,6 +379,7 @@ macro_rules! peer_conformance_tests {
             a_replayed_macro_types_into_the_buffer_it_opened,
             a_queued_renderer_effect_is_applied_on_an_idle_wake,
             quitting_is_published,
+            a_declined_chord_falls_through_to_the_layer_below,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

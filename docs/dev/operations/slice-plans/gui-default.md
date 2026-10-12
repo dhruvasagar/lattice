@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅; GD.4, GD.5c, GD.6c, GD.7c, GD.8b 📝; GD.9b ❌.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅; GD.4, GD.5c, GD.6c, GD.7c, GD.8c 📝; GD.9b ❌.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -180,10 +180,9 @@ follows the popup; a replayed macro types into the buffer it opened; a queued
 effect is applied on an idle wake; quitting is published. GD.0's and GD.1's
 GUI-only copies of four of these were removed in favour of the shared ones.
 
-Not covered, by construction: the decline-and-fall-through walk. It lives in
-each peer's input loop above the chord entry the suite drives (the TUI's is
-inline in `runtime.rs`), so the scenarios cannot reach it. Hoisting it behind a
-shared entry is the precondition for a scenario; noted for GD.8.
+The decline-and-fall-through walk was not covered at first: the TUI's sat
+inline in `runtime.rs`, above the chord entry the suite drives. GD.8b moved it
+and added a scenario for it, the ninth.
 
 ### GD.3 ✅ — window lifecycle
 
@@ -407,12 +406,29 @@ reads the mouse, and a window that owns its input takes nothing away by
 listening. Decided by `core_options.rs` and `docs/user/mouse.md`, not by this
 plan.
 
-**GD.8b 📝:**
+**GD.8b ✅** (2026-10-12):
 
-- Hard-coded popup colours go through the theme (light themes).
-- An Edit menu on macOS (cut, copy, paste, undo) wired to the editor.
-- The decline-and-fall-through walk behind an entry the conformance suite can
-  drive, and a scenario for it (see GD.2).
+- **The fall-through walk is behind an entry the suite drives.** The TUI's
+  translate → apply → peel loop moved out of `runtime.rs` into
+  `App::press_chord`, which the input loop and the conformance adapter both
+  call; the GUI's `dispatch_chord` already had that shape. The shared scenario
+  `a_declined_chord_falls_through_to_the_layer_below` (table-mode's `<Tab>`
+  outside a table reaches insert-tab) replaces the GUI-only copy. The TUI's
+  chord path now reads `chord_capture` and the completion layer from published
+  state, as the GUI does; both were the same computation read live.
+- **Popup colours.** The audit's entry was broader than the code: pickers,
+  popups and the completion menu already resolve through the theme, with
+  literals only as fallbacks for an unset element. The one surface that
+  bypassed it was the modeline hover tooltip (two dark-palette constants),
+  which now takes the popup background and the modeline's text colour.
+
+Not seen running: the tooltip on a light theme.
+
+**GD.8c 📝 — an Edit menu on macOS** (cut, copy, paste, undo, redo). Split
+from GD.8b because it is a decision before it is code: the window has no
+clipboard wiring of its own (no Cmd-C / Cmd-V, no use of GPUI's clipboard), so
+the menu has to settle what Cut and Copy mean outside Visual mode and which
+clipboard path they use.
 
 ### GD.9 — the flip
 
@@ -433,7 +449,7 @@ published, so most installs get the new default without a packaging change.
 page and FAQ, and the installer's messages say so.
 
 **This landed ahead of the open parity slices at Dhruva's direction; it does
-not close them.** GD.4, GD.5b, GD.6c, GD.6d, GD.7c, GD.7d and GD.8b each
+not close them.** GD.4, GD.5b, GD.6c, GD.6d, GD.7c, GD.7d, GD.8b and GD.8c each
 describe something the window does not do that the terminal does (or, for
 GD.6d and GD.7d, something both lost on the way to sharing it). They block the
 0.9.8 release, not this commit.

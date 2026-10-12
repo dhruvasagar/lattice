@@ -33621,6 +33621,11 @@ impl Editor {
     /// top of the text that follows. Runs once per publish; the line is
     /// only read when there is a suffix.
     pub fn completion_ghost_text_at_cursor(&self) -> Option<String> {
+        // This runs on every publish. With no popup open there is no
+        // suffix, so say so before reading an option — the read is wasted
+        // work there, and it panics on an editor booted without the
+        // completion options (as the bare test boots are).
+        self.insert_completion.as_ref()?;
         let suffix = self.completion_ghost_text_suffix()?;
         let line = self
             .document

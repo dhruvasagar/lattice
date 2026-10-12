@@ -23,6 +23,11 @@ use lattice_host::editor::Editor;
 /// shell history for `:terminal`, say — delete the row and wire a generator.
 const NO_CANDIDATE_SET: &[(&str, &str, &str)] = &[
     (
+        "ex:put",
+        "register",
+        "a register is one character, typed as vim types it (`:put a`)",
+    ),
+    (
         "ex:substitute",
         "flags",
         "a substitute flag string is typed as one token, not picked",

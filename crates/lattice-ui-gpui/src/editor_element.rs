@@ -87,6 +87,20 @@ use crate::glyph_resolver::GlyphResolver;
 /// loop's branch is unambiguous.
 const FULL_ROW_COL_END: u32 = u32::MAX;
 
+/// GD.6c: set on an overlay quad's colour to say "and strike the text
+/// through". Colours here are `0x00RRGGBB`, so the top byte is free.
+///
+/// A flag on the colour and not a field, because the quad is a
+/// `(start, end, colour)` tuple that the wrap splitter, the heading
+/// splitter and every push site already carry; the two places that
+/// care — the fill and the strike pass in `paint` — mask it off.
+const OVERLAY_STRIKE: u32 = 1 << 24;
+/// The colour bits of an overlay quad, without [`OVERLAY_STRIKE`].
+const OVERLAY_COLOR_MASK: u32 = 0x00ff_ffff;
+/// Where the strike line sits, as a fraction of the row's height from
+/// its top. Unverified by eye: nothing GUI has been seen running.
+const OVERLAY_STRIKE_ROW_FRACTION: f32 = 0.55;
+
 /// Adapter: host-canonical syntax style -> packed 24-bit `0xRRGGBB`.
 /// T.5.b: resolves `style` through the active theme's resolved table
 /// (`resolved` + `ids`) via `resolve_syntax_style`, the replacement
@@ -357,7 +371,7 @@ pub(crate) struct EditorElement {
     /// LSP document-highlight ranges, already converted to utf-8
     /// byte ranges by the caller (utf-16→utf-8 happens at the
     /// boundary).
-    pub(crate) doc_highlights: Vec<lattice_core::protocol::position::Range>,
+    pub(crate) doc_highlights: Vec<lattice_host::render_state::DocHighlightSpan>,
     /// Perf plan B.2 slice B.2.a: worker-produced per-row
     /// pre-bucketed static-overlay quads (doc_highlight,
     /// all_matches, substitute). `Some` for the active pane
@@ -1410,18 +1424,21 @@ impl Element for EditorElement {
             .map(|q| q.quads.as_ref());
         // T.6: overlay layer colors resolve from the registered theme
         // elements (shared with the TUI peer; closes the prior drift).
-        // `DocHighlight` maps to `doc_highlight.read`: the `OverlayLayer`
-        // enum carries no read/write/text distinction, so the worker-
-        // emitted single layer renders as read. TODO(T.6): OverlayLayer
-        // lacks doc-hl kind; renders as read — the worker-side kind
-        // split is out of scope (TUI keeps its 3-way via its own `kind`
-        // param on `document_highlight_style`).
+        // GD.6c: a document highlight carries its kind, so a write is
+        // tinted differently from a read — the terminal's three-way
+        // split. A substitute preview is also struck through
+        // ([`OVERLAY_STRIKE`]): "this is what `<CR>` replaces".
         let resolved_theme = &self.resolved_theme;
         let theme_ids = self.theme_ids;
         let color_for_layer = |layer: lattice_host::render_state::OverlayLayer| -> u32 {
             let (id, fallback) = match layer {
-                lattice_host::render_state::OverlayLayer::DocHighlight => {
-                    (theme_ids.doc_highlight_read, 0x585b70)
+                lattice_host::render_state::OverlayLayer::DocHighlight(kind) => {
+                    use lattice_host::render_state::DocHighlightKind as K;
+                    match kind {
+                        K::Read => (theme_ids.doc_highlight_read, 0x585b70),
+                        K::Write => (theme_ids.doc_highlight_write, 0x585b70),
+                        K::Text => (theme_ids.doc_highlight_text, 0x585b70),
+                    }
                 }
                 lattice_host::render_state::OverlayLayer::AllMatches => {
                     (theme_ids.search_match, 0x6c7086)
@@ -1430,11 +1447,36 @@ impl Element for EditorElement {
                     (theme_ids.substitute_preview, 0xf38ba8)
                 }
             };
-            resolved_theme
+            let color = resolved_theme
                 .get(id)
                 .bg
                 .map(|c| c.to_rgb_u32(fallback))
                 .unwrap_or(fallback)
+                & OVERLAY_COLOR_MASK;
+            if matches!(layer, lattice_host::render_state::OverlayLayer::Substitute) {
+                color | OVERLAY_STRIKE
+            } else {
+                color
+            }
+        };
+        // One range per call: each highlight has its own kind and so its
+        // own colour.
+        let push_doc_highlights = |quads: &mut Vec<(u32, u32, u32)>,
+                                   line_idx: u32,
+                                   line_text: &str,
+                                   inlay_offsets: &RowCoords| {
+            for d in doc_highlights {
+                push_range_quads(
+                    quads,
+                    std::slice::from_ref(&d.range),
+                    line_idx,
+                    line_text,
+                    inlay_offsets,
+                    color_for_layer(lattice_host::render_state::OverlayLayer::DocHighlight(
+                        d.kind,
+                    )),
+                );
+            }
         };
         // T.6: cursor-coupled overlay colors resolve from the registered
         // `search.current` / `selection` elements (shared with the TUI
@@ -1521,7 +1563,7 @@ impl Element for EditorElement {
                 {
                     for q in row {
                         match q.layer {
-                            lattice_host::render_state::OverlayLayer::DocHighlight
+                            lattice_host::render_state::OverlayLayer::DocHighlight(_)
                             | lattice_host::render_state::OverlayLayer::AllMatches => {
                                 let cs = byte_to_combined_col(
                                     line_text,
@@ -1548,14 +1590,7 @@ impl Element for EditorElement {
                     // recompute, or buffer mismatch). Fall back to
                     // the legacy per-frame walk so static overlays
                     // still paint correctly.
-                    push_range_quads(
-                        &mut quads,
-                        doc_highlights,
-                        line_idx,
-                        line_text,
-                        inlay_offsets,
-                        color_for_layer(lattice_host::render_state::OverlayLayer::DocHighlight),
-                    );
+                    push_doc_highlights(&mut quads, line_idx, line_text, inlay_offsets);
                     push_range_quads(
                         &mut quads,
                         all_matches,
@@ -1652,14 +1687,7 @@ impl Element for EditorElement {
                 // available for inactive panes; per-frame walk
                 // stays on the cheap N path (doc_highlight is
                 // capped tiny by the LSP response).
-                push_range_quads(
-                    &mut quads,
-                    doc_highlights,
-                    line_idx,
-                    line_text,
-                    inlay_offsets,
-                    color_for_layer(lattice_host::render_state::OverlayLayer::DocHighlight),
-                );
+                push_doc_highlights(&mut quads, line_idx, line_text, inlay_offsets);
             }
             quads
         };
@@ -2502,7 +2530,7 @@ impl Element for EditorElement {
                     col_x(row_idx, *col_end) - quad_x
                 };
                 let quad_bounds = Bounds::new(point(quad_x, row_y), size(quad_w, row_h(row_idx)));
-                window.paint_quad(fill(quad_bounds, rgb(*color)));
+                window.paint_quad(fill(quad_bounds, rgb(*color & OVERLAY_COLOR_MASK)));
             }
         }
 
@@ -2795,6 +2823,28 @@ impl Element for EditorElement {
                         colour,
                     ));
                 }
+            }
+        }
+
+        // GD.6c: strike through the quads that ask for it (a substitute
+        // preview). After the text body so the line crosses the glyphs,
+        // in the text colour, independent of which path painted them.
+        for (row_idx, quads) in prepaint.overlay_quads_per_row.iter().enumerate() {
+            let row_y = row_top(row_idx);
+            if row_y >= pane_bottom {
+                break;
+            }
+            for (col_start, col_end, color) in quads {
+                if color & OVERLAY_STRIKE == 0 || *col_end == FULL_ROW_COL_END {
+                    continue;
+                }
+                let x = col_x(row_idx, *col_start);
+                let w = col_x(row_idx, *col_end) - x;
+                let y = row_y + row_h(row_idx) * OVERLAY_STRIKE_ROW_FRACTION;
+                window.paint_quad(fill(
+                    Bounds::new(point(x, y), size(w, px(1.0))),
+                    rgb(self.theme.foreground),
+                ));
             }
         }
 

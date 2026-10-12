@@ -4652,9 +4652,9 @@ pub(crate) fn compose_pane_lines(
     // `substitute_preview.matches` per row × per match. Active
     // pane only — when the bucket is empty (boot before first
     // recompute or non-active pane), per-row code falls back to
-    // the legacy walk. DocHighlight stays on the per-row walk
-    // because the TUI's per-quad style is keyed off
-    // `DocumentHighlightKind` which the bucket doesn't carry.
+    // the legacy walk. DocHighlight stays on the per-row walk: it
+    // also paints on inactive panes, which have no bucket. (The
+    // bucket has carried the highlight's kind since GD.6c.)
     // DR.3: the per-row hlsearch/substitute bucket is the ACTIVE
     // pane's (published from `app.ad()`), and both layers it feeds are
     // interaction state — only loaded for the focused pane. Inactive

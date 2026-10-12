@@ -2861,7 +2861,7 @@ impl EditorView {
         // highlighted buffer (the per-buffer pump model).
         let rs_for_dh = self.app.render_state.load_full();
         let dh_guard = rs_for_dh.lsp.document_highlights.load_full();
-        let doc_highlights: Vec<lattice_core::protocol::position::Range> = dh_guard
+        let doc_highlights: Vec<lattice_host::render_state::DocHighlightSpan> = dh_guard
             .as_deref()
             .filter(|cache| cache.buffer_id == pane.buffer_id)
             .map(|cache| {
@@ -2889,15 +2889,18 @@ impl EditorView {
                             &end_text,
                             h.range.end.character,
                         );
-                        lattice_core::protocol::position::Range {
-                            start: lattice_core::protocol::position::Position {
-                                line: start_line,
-                                byte: start_byte,
+                        lattice_host::render_state::DocHighlightSpan {
+                            range: lattice_core::protocol::position::Range {
+                                start: lattice_core::protocol::position::Position {
+                                    line: start_line,
+                                    byte: start_byte,
+                                },
+                                end: lattice_core::protocol::position::Position {
+                                    line: end_line,
+                                    byte: end_byte,
+                                },
                             },
-                            end: lattice_core::protocol::position::Position {
-                                line: end_line,
-                                byte: end_byte,
-                            },
+                            kind: lattice_host::render_state::DocHighlightKind::from_lsp(h.kind),
                         }
                     })
                     .collect()

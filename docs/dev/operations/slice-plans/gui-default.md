@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅; GD.4, GD.5c, GD.6c, GD.7c, GD.8c 📝; GD.9b ❌.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅; GD.4, GD.5c, GD.7c, GD.8c 📝; GD.9b ❌.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -320,11 +320,30 @@ there, `a_run_with_no_foreground_inherits_default_fg_not_black`, which predates
 this branch). The strike's vertical position in the window is a guess — not
 seen.
 
-**GD.6c 📝 — highlight kinds and strikethrough.** Document-highlight
-read / write / text need the host's overlay worker to carry the kind
-(`OverlayLayer::DocHighlight` has none). Substitute-preview strikethrough and
-the current match's foreground need a per-run text attribute on an overlay that
-is currently a background quad.
+**GD.6c ✅ — highlight kinds and strikethrough** (2026-10-12).
+
+- **Kinds.** `OverlayLayer::DocHighlight` carries a host
+  `DocHighlightKind` (text / read / write), and the published highlight list
+  is `DocHighlightSpan { range, kind }`. The kind is folded into the overlay
+  version, so a response that changes only a kind rebuilds the bucket. The GUI
+  resolves `doc_highlight.{read,write,text}`; it drew every occurrence as a
+  read. The TUI keeps its per-row walk for this layer because it also paints
+  inactive panes, which have no bucket.
+- **Substitute preview is struck through in the GUI.** The overlay quad's
+  colour carries a flag bit (`OVERLAY_STRIKE`); `paint` fills the background
+  as before and, after the text body, draws a line across flagged quads in the
+  text colour. It works the same whichever path painted the glyphs. A flag on
+  the colour and not a field because the quad is a tuple that the wrap and
+  heading splitters and every push site already carry.
+
+❌ **The current match's foreground — dropped.** The audit listed it as a
+terminal behaviour the window lacks. It is not one: theme-system T.6 retired
+the foreground recolour, and the current match is a background tint from
+`search.current` in both renderers.
+
+Not seen running: the strike line's height (`OVERLAY_STRIKE_ROW_FRACTION`) is
+a guess, and on a heading-scaled row it follows the row's height, not the
+glyphs'.
 
 ### GD.7 — terminal, modeline, scaled rows
 
@@ -449,7 +468,7 @@ published, so most installs get the new default without a packaging change.
 page and FAQ, and the installer's messages say so.
 
 **This landed ahead of the open parity slices at Dhruva's direction; it does
-not close them.** GD.4, GD.5b, GD.6c, GD.6d, GD.7c, GD.7d, GD.8b and GD.8c each
+not close them.** GD.4, GD.5b, GD.5c, GD.6c, GD.6d, GD.7c, GD.7d, GD.8b and GD.8c each
 describe something the window does not do that the terminal does (or, for
 GD.6d and GD.7d, something both lost on the way to sharing it). They block the
 0.9.8 release, not this commit.

@@ -48,6 +48,12 @@
   splits with `<C-w>` also uses the window's real width now.
 - **GUI: terminal panes show bold, italic, dim and strikethrough text**, and
   search hits are underlined instead of looking like the current match.
+- **GUI: symbol highlights distinguish reads from writes.** With a language
+  server attached, the other occurrences of the symbol under the cursor were
+  all tinted as reads. Writes and plain textual occurrences now get their own
+  theme colours, as in the terminal.
+- **GUI: a `:s` preview strikes through the text it will replace**, as the
+  terminal does.
 - **GUI: the modeline's hover tooltip follows the theme.** It was a fixed
   dark box, on light themes too.
 - **GUI: `:set relativenumber` works.** The window's gutter always showed

@@ -1976,21 +1976,21 @@ impl Editor {
     /// LSP responses against a since-deleted line range.
     fn build_active_doc_highlights_utf8(
         &self,
-    ) -> std::sync::Arc<[lattice_protocol::position::Range]> {
+    ) -> std::sync::Arc<[crate::render_state::DocHighlightSpan]> {
         let dh_guard = self.lsp_document_highlights.load_full();
         let Some(cache) = dh_guard.as_deref() else {
             return std::sync::Arc::from(
-                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+                Vec::<crate::render_state::DocHighlightSpan>::new().into_boxed_slice(),
             );
         };
         if cache.buffer_id != self.document_buffer_id {
             return std::sync::Arc::from(
-                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+                Vec::<crate::render_state::DocHighlightSpan>::new().into_boxed_slice(),
             );
         }
         let snapshot = self.document.snapshot();
         let total_lines = snapshot.buffer.content_line_count();
-        let mut out: Vec<lattice_protocol::position::Range> =
+        let mut out: Vec<crate::render_state::DocHighlightSpan> =
             Vec::with_capacity(cache.highlights.len());
         for h in &cache.highlights {
             let start_line = h.range.start.line;
@@ -2006,15 +2006,18 @@ impl Editor {
             );
             let end_byte =
                 lattice_lsp::position::utf16_column_to_utf8_byte(&end_text, h.range.end.character);
-            out.push(lattice_protocol::position::Range {
-                start: lattice_protocol::position::Position {
-                    line: start_line,
-                    byte: start_byte,
+            out.push(crate::render_state::DocHighlightSpan {
+                range: lattice_protocol::position::Range {
+                    start: lattice_protocol::position::Position {
+                        line: start_line,
+                        byte: start_byte,
+                    },
+                    end: lattice_protocol::position::Position {
+                        line: end_line,
+                        byte: end_byte,
+                    },
                 },
-                end: lattice_protocol::position::Position {
-                    line: end_line,
-                    byte: end_byte,
-                },
+                kind: crate::render_state::DocHighlightKind::from_lsp(h.kind),
             });
         }
         std::sync::Arc::from(out.into_boxed_slice())

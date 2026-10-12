@@ -41,6 +41,11 @@
   which is most noticeable with a key held down.
 
 ### Fixed
+- **GUI: the cursor no longer slips under the bottom edge below large
+  headings.** A markdown or org heading is drawn taller than a normal row,
+  and scrolling counted it as one row, so with headings on screen the last
+  line or two could be clipped. Scrolling, paging, `zb` and `H`/`M`/`L` now
+  count a heading at the height it is drawn.
 - **Putting a line below the last line no longer leaves a blank line at the
   end of the file.** `yyGp` in a file ending with a newline added one.
 - **`p` after a multi-byte character puts after the whole character.** It

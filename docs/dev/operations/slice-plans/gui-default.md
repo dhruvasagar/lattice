@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅, GD.5c ✅, GD.8c ✅; GD.4, GD.7c 📝; GD.9b ❌.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅, GD.5c ✅, GD.8c ✅, GD.7c ✅; GD.4 📝; GD.9b ❌.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -421,8 +421,38 @@ Gate: targeted — `lattice-runtime` whole, the new
 `oil_modeline_marks_pending_changes` test, the host and TUI tests around dirty
 state, listings, help, quit and owner writes. Not seen in a window.
 
-**GD.7c 📝 — heading-scaled rows.** Honour `leftcol`; make viewport capacity
-account for variable row height (theme-system F.1, deferred there).
+**GD.7c ✅** (2026-10-12) **— heading-scaled rows.** `leftcol` was already
+honoured (HS.1b), so the slice is the height half: theme-system F.1.
+
+A title row is `title_scale` line-heights tall in the window, and the host's
+scroll walks charged it one. IM.1 had already turned those walks into a
+line-height budget (`RowWeights`); nothing told them about headings.
+
+- `heading_scale_split` moved from `lattice-ui-gpui::cells_paint` to
+  `lattice-host::display_matrix` (re-exported, so the paint is unchanged).
+  The paint and the scroll now read one answer.
+- `Editor::heading_heights` hands a walk the built display rows and the
+  resolved theme. `bottom_anchored_scroll` and `weighted_doc_line_cost` ask
+  it for any line that has no explicit weight.
+- The gate is `Editor::cell_metrics`: only a peer that draws pixels
+  publishes it. The terminal returns before loading anything, so its walks
+  cost what they did.
+
+Decided (Dhruva, 2026-10-12): the host computes it, for the lines in the
+built display window — paramount #1 (off the UI thread, on rows that are
+already built) and heuristic #1 (the scale is derivable host-side; the
+arithmetic existed). Rejected: the window reporting measured heights back
+(a layout/scroll feedback loop, and a renderer only knows its viewport);
+whole-document weights from the syntax tree (per-edit work for a gain the
+next matrix rebuild gives anyway).
+
+Known limit: a line with no built row costs one row until the matrix is
+rebuilt around it, so a jump far outside the window settles one rebuild
+later. A wrapped heading is drawn at base size and costs its rows.
+
+Gate: targeted — `a_scaled_heading_costs_its_title_scale_only_where_rows_scale`
+and the IM.1 weight tests in `lattice-host`, the heading-split tests in
+`lattice-ui-gpui`. Not seen in a window.
 
 ### GD.8 — small behaviours
 

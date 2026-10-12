@@ -234,56 +234,11 @@ pub struct RowCoords {
     pub conceals: Vec<lattice_cells::ConcealRange>,
 }
 
-/// F.2 (Thread F): split a display line into a base-size leading prefix
-/// and a scaled remainder, for the emacs heading model — only the
-/// heading *title* scales, the leading `#`/`##` markers stay base size
-/// (`markdown-header-delimiter-face`). Returns `Some((prefix_cols,
-/// title_scale))` where `prefix_cols` is the number of leading display
-/// columns (chars) before the first run carrying a rich `scale > 1.0`
-/// (the `# ` markers, resolved to `1.0`), and `title_scale` is that
-/// run's scale; returns `None` for ordinary lines (no scaled run).
-///
-/// The GPUI peer renders a scaled row in two pieces sharing one baseline
-/// — the prefix at base size, the title at `font_size * title_scale` —
-/// and grows the row height by `title_scale` (variable row height). The
-/// TUI peer has no analogue (a cell grid cannot vary font size); it
-/// degrades to the resolved bold/weight/underline.
-///
-/// O(runs). Inlay / whitespace-marker runs carry no syntax scale and are
-/// treated as base (mirrors [`display_run_to_synthetic_cell`]). Multi-
-/// scale titles (e.g. inline code inside a heading) collapse to the
-/// first scaled run's scale from `prefix_cols` onward — a deliberate
-/// simplification (the common case is `[markers][title]`).
-pub fn heading_scale_split(
-    line: &DisplayLine,
-    resolved: &lattice_host::ui::theme::ResolvedTheme,
-    ids: &lattice_host::ui::theme::BuiltinElementIds,
-) -> Option<(u32, f32)> {
-    let text = line.text.as_ref();
-    let mut byte = 0usize;
-    let mut col = 0u32;
-    for run in line.runs.iter() {
-        let run_bytes = run.len as usize;
-        let scale = if run.flags & (cell_flags::INLAY | cell_flags::WS_MARKER) != 0 {
-            1.0
-        } else {
-            lattice_host::ui::theme::resolve_syntax_style(resolved, ids, run.style)
-                .scale
-                .map(|s| s.as_ratio())
-                .unwrap_or(1.0)
-        };
-        if scale > 1.0 {
-            return Some((col, scale));
-        }
-        let end = (byte + run_bytes).min(text.len());
-        col += text
-            .get(byte..end)
-            .map(|s| s.chars().count() as u32)
-            .unwrap_or(0);
-        byte = end;
-    }
-    None
-}
+// F.2 / GD.7c: the heading split lives in the host, because the host's
+// scroll walks need the same answer the paint does — a title row is
+// `title_scale` line-heights tall, and a scroll that counts it as one
+// leaves the cursor on a row clipped below the pane.
+pub use lattice_host::display_matrix::heading_scale_split;
 
 /// T.10: the rich-vocabulary attributes a [`DisplayRun`]'s resolved
 /// host [`Style`] carries that the fg+flags [`Cell`] cannot. `weight`

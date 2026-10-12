@@ -474,6 +474,28 @@ pub(crate) enum ReformatRung {
     NativeReflow,
 }
 
+/// GD.7c: what [`Editor::heading_heights`] hands a scroll walk — the built
+/// display rows and the theme that says which of their runs are scaled.
+/// Loaded once per walk so a step is a row lookup and a scan of its runs.
+struct HeadingHeights {
+    matrix: std::sync::Arc<crate::display_matrix::DisplayMatrix>,
+    resolved: std::sync::Arc<crate::ui::theme::ResolvedTheme>,
+    ids: crate::ui::theme::BuiltinElementIds,
+}
+
+impl HeadingHeights {
+    /// Line-heights `line` draws BEYOND one row: `title_scale - 1` for a
+    /// heading, `0` for anything else, including a line with no built row.
+    fn extra(&self, line: u32) -> f32 {
+        self.matrix
+            .row_at_source_line(line)
+            .and_then(|dl| {
+                crate::display_matrix::heading_scale_split(dl, &self.resolved, &self.ids)
+            })
+            .map_or(0.0, |(_, scale)| (scale - 1.0).max(0.0))
+    }
+}
+
 impl Editor {
     /// Renderer-neutral dispatch entry point.
     ///
@@ -7741,7 +7763,12 @@ impl Editor {
         // replaces it for any line that draws taller than its rows suggest
         // (a scaled heading; an IM.3 media block). Unoverridden lines — every
         // line in a TUI buffer — get their row count back verbatim.
+        //
+        // GD.7c: a line with no override may still be a heading the window
+        // draws at its title scale. `headings` is `None` in the terminal
+        // and built once per walk, so the common path is unchanged.
         let weights = &self.row_weights;
+        let headings = self.heading_heights();
         let line_cost = |line: u32| -> f32 {
             let segments = if wrap_width == 0 {
                 1
@@ -7749,7 +7776,15 @@ impl Editor {
                 lattice_cells::wrap_segments(self.line_display_width(line), wrap_width)
             };
             let rows = segments.saturating_add(vrows.virtual_rows_in_line_range(line, line));
-            weights.cost(line, rows)
+            if let Some(w) = weights.get(line) {
+                return w;
+            }
+            // Only a single-segment heading scales; a wrapped one is drawn
+            // at base size. The title replaces one row of the line's count.
+            match headings.as_ref().filter(|_| segments <= 1) {
+                Some(h) => rows as f32 + h.extra(line),
+                None => rows as f32,
+            }
         };
         // The previous *visible* line above `line`: hop straight to a
         // closed fold's head instead of iterating its collapsed body,
@@ -7866,8 +7901,49 @@ impl Editor {
     /// `bottom_anchored_scroll` is the one walk that legitimately counts
     /// display rows — it is the display-row-space bottom clamp — and it keeps
     /// its own cost function.
+    ///
+    /// GD.7c: a heading is the second kind of tall row. It carries no
+    /// override — its height is read from the built display row — so a line
+    /// without one is asked whether the window draws it scaled.
     fn weighted_doc_line_cost(&self, line: u32) -> f32 {
-        self.row_weights.cost(line, 1)
+        if let Some(w) = self.row_weights.get(line) {
+            return w;
+        }
+        let Some(headings) = self.heading_heights() else {
+            return 1.0;
+        };
+        let wrap_width = self.scroll_wrap_width();
+        let single = wrap_width == 0
+            || lattice_cells::wrap_segments(self.line_display_width(line), wrap_width) <= 1;
+        if single {
+            1.0 + headings.extra(line)
+        } else {
+            1.0
+        }
+    }
+
+    /// GD.7c: the reader the scroll walks ask "is this line a scaled
+    /// heading, and how tall" — or `None` when no attached peer scales rows.
+    ///
+    /// The gate is [`Editor::cell_metrics`]: only a peer that draws pixels
+    /// publishes it, and only such a peer can draw a title larger than its
+    /// row. In the terminal this returns `None` before touching anything, so
+    /// every walk there costs what it did.
+    ///
+    /// The answer comes from the built display rows, which cover the window
+    /// and its margin. A line outside them costs one row until the matrix
+    /// is rebuilt around it — the same eventual answer the paint gets.
+    fn heading_heights(&self) -> Option<HeadingHeights> {
+        self.cell_metrics?;
+        let resolved = self
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .map(|r| r.resolved())?;
+        Some(HeadingHeights {
+            matrix: self.display_matrix_for(self.active_buffer_id()).load_full(),
+            resolved,
+            ids: self.builtin_element_ids,
+        })
     }
 
     /// What `:bn` / `:bp` consider the "current" buffer for stepping.
@@ -51212,6 +51288,88 @@ mod tests {
         // so lines 11..=3 cost 9 and line 2 would take it to 14 — over
         // budget. The window settles at line 3.
         assert_eq!(editor.scroll, 3, "the tall row is excluded from the window");
+    }
+
+    /// GD.7c: one `# Title` display row at `line`, as the cells worker
+    /// would build it — base-size marker, then the scaled title.
+    fn publish_heading_row(editor: &crate::editor::Editor, line: u32, total: u32) {
+        use crate::display_matrix::{DisplayChunk, DisplayLine, DisplayMatrix, DisplayRun};
+        let text = "# Title";
+        let run = |len, style| DisplayRun {
+            len,
+            style,
+            flags: 0,
+            refine: None,
+        };
+        let row = DisplayLine {
+            source_line: line,
+            text: std::sync::Arc::from(text),
+            runs: std::sync::Arc::from(
+                vec![
+                    run(2, lattice_syntax::Style::Markup),
+                    run(5, lattice_syntax::Style::Heading1),
+                ]
+                .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
+            col_count: text.chars().count() as u32,
+            fold: None,
+        };
+        let chunk = DisplayChunk::new(line, vec![row], lattice_cells::MatrixVersion::default());
+        editor
+            .display_matrix_for(editor.active_buffer_id())
+            .store(std::sync::Arc::new(DisplayMatrix::whole_doc(
+                std::sync::Arc::new(chunk),
+                total,
+            )));
+    }
+
+    /// GD.7c — a heading the window draws scaled is charged its drawn
+    /// height by the scroll, with nothing publishing a weight for it; and
+    /// the terminal, which cannot scale a row, is charged one.
+    #[test]
+    fn a_scaled_heading_costs_its_title_scale_only_where_rows_scale() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(12));
+        editor.viewport_height = 12;
+        publish_heading_row(&editor, 2, 12);
+
+        // No pixel-drawing peer: the heading is one row, like every line.
+        assert!(editor.cell_metrics.is_none(), "precondition: terminal");
+        assert_eq!(editor.weighted_doc_line_cost(2), 1.0);
+        editor.scroll = 0;
+        editor.cursor = lattice_protocol::position::Position::new(11, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(editor.scroll, 0, "twelve one-row lines fit twelve rows");
+
+        // A peer that draws pixels has reported in.
+        editor.cell_metrics = Some(crate::editor::CellMetrics {
+            row_px: 20.0,
+            col_px: 10.0,
+        });
+        let cost = editor.weighted_doc_line_cost(2);
+        assert!(cost > 1.0, "an h1 is taller than a row, got {cost}");
+        assert_eq!(editor.weighted_doc_line_cost(3), 1.0, "body text is not");
+        assert_eq!(
+            editor.weighted_doc_line_cost(7),
+            1.0,
+            "a line with no built row costs one row, never nothing"
+        );
+
+        // Twelve lines now cost more than twelve line-heights, so the last
+        // one is clipped unless the top comes down.
+        editor.scroll = 0;
+        editor.ensure_cursor_visible();
+        assert!(
+            editor.scroll > 0,
+            "the cursor's row would be clipped below the pane; scroll stayed 0"
+        );
+
+        // An explicit override still wins over the derived height.
+        let mut w = lattice_cells::RowWeights::uniform();
+        w.set(2, 4.0);
+        editor.row_weights = std::sync::Arc::new(w);
+        assert_eq!(editor.weighted_doc_line_cost(2), 4.0);
     }
 
     /// IM.1b — a tall row shortens a page, an `M` and a `zz`, because all

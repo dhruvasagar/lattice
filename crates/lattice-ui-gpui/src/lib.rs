@@ -2025,9 +2025,9 @@ pub enum EditMenuItem {
 ///   without one — the platform's rule (the items act on the selection),
 ///   and a stray Cmd-X must not delete a line.
 /// - **Paste** is `"+p`, exactly as vim's: after the cursor in Normal
-///   (below the line for a linewise yank). Where text is being typed
-///   (Insert, Replace, the `:` and search lines) it is `<C-r>+`. In
-///   Visual it does nothing until the editor has a Visual-mode put.
+///   (below the line for a linewise yank), and over the selection in
+///   Visual. Where text is being typed (Insert, Replace, the `:` and
+///   search lines) it is `<C-r>+`.
 ///
 /// One clipboard path: the host's `+` register. The window does not
 /// touch the OS clipboard itself, so the menu, `"+y` and `"+p` cannot
@@ -2056,12 +2056,17 @@ pub fn edit_menu_actions(
             ModalState::Normal => {
                 vec![Action::SelectRegister(Register::System), Action::PasteAfter]
             }
+            // `"+p` over a selection: replace it, as vim's Visual `p`.
+            ModalState::Visual(_) | ModalState::Select(_) => vec![
+                Action::SelectRegister(Register::System),
+                Action::PutOverSelection {
+                    keep_register: false,
+                },
+            ],
             ModalState::Insert
             | ModalState::Replace
             | ModalState::Command
             | ModalState::Search(_) => vec![Action::InsertRegister('+')],
-            // Visual: the editor has no Visual-mode put yet (`p` over a
-            // selection), so there is no vim command for the menu to be.
             // Mid-operator there is nowhere for a paste to go.
             _ => Vec::new(),
         },
@@ -2125,7 +2130,7 @@ mod tests {
     }
 
     /// GD.8c: Copy and Cut act on the selection and do nothing without
-    /// one; Paste is vim's `"+p`, and nothing in Visual yet.
+    /// one; Paste is vim's `"+p`, over the selection in Visual.
     #[test]
     fn edit_menu_items_are_vim_commands_on_the_clipboard_register() {
         use lattice_grammar::{Range, Register, VisualKind};
@@ -2163,7 +2168,15 @@ mod tests {
             [Action::InsertRegister('+')]
         ));
         assert!(edit_menu_actions(EditMenuItem::Paste, ModalState::OperatorPending, &b).is_empty());
-        assert!(edit_menu_actions(EditMenuItem::Paste, visual, &b).is_empty());
+        assert!(matches!(
+            edit_menu_actions(EditMenuItem::Paste, visual, &b).as_slice(),
+            [
+                Action::SelectRegister(Register::System),
+                Action::PutOverSelection {
+                    keep_register: false
+                }
+            ]
+        ));
     }
 
     /// The menu's Undo and Redo reach the buffer through the peer's

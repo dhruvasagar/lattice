@@ -2567,6 +2567,9 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::ReplaceUndoLast
             | Action::PasteAfter
             | Action::PasteBefore
+            | Action::Put(_)
+            | Action::PutOverSelection { .. }
+            | Action::PutLine { .. }
             | Action::PasteText(_)
             // SN.3d: only the Select action that WRITES is gated.
             // `SelectOvertype` replaces the selection with the typed
@@ -3206,6 +3209,15 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // 5.5.G.9: paste cluster (`p` / `P` / bracketed-paste).
         Action::PasteAfter => editor.do_paste(false),
         Action::PasteBefore => editor.do_paste(true),
+        Action::Put(spec) => editor.do_put(spec),
+        Action::PutOverSelection { keep_register } => {
+            editor.do_put_over_selection(keep_register, _out)
+        }
+        Action::PutLine {
+            register,
+            before,
+            line,
+        } => editor.do_put_line(register, before, line),
         Action::PasteText(text) => editor.do_paste_text(&text),
         // 5.5.G.10: search-state cluster.
         // MB.5a: `SearchAppend` and `SearchBackspace` are retired — typing
@@ -10966,6 +10978,19 @@ impl Editor {
             AppEffect::SwapVisualEnds => out.next_actions.push(Action::SwapVisualEnds),
             AppEffect::PasteAfter => out.next_actions.push(Action::PasteAfter),
             AppEffect::PasteBefore => out.next_actions.push(Action::PasteBefore),
+            AppEffect::Put(spec) => out.next_actions.push(Action::Put(spec)),
+            AppEffect::PutOverSelection { keep_register } => out
+                .next_actions
+                .push(Action::PutOverSelection { keep_register }),
+            AppEffect::PutLine {
+                register,
+                before,
+                line,
+            } => out.next_actions.push(Action::PutLine {
+                register,
+                before,
+                line,
+            }),
             // L7: the 6 nav `AppEffect::Lsp*Request` arms (`gd` / `gD` / `gy`
             // / `gI` / `gr` / `gx`) removed — mode-owned via
             // `Effect::Lsp(LspRequest::…)`.
@@ -28593,11 +28618,34 @@ impl Editor {
     /// at cursor; linewise inserts a fresh line; blockwise paints
     /// columns down consecutive lines.
     pub fn do_paste(&mut self, before: bool) {
+        self.do_put(lattice_grammar::PutSpec {
+            before,
+            ..Default::default()
+        });
+    }
+
+    /// The put family in Normal mode: `p` / `P`, `gp` / `gP`, `]p` /
+    /// `[p`. A count puts the text that many times (`3p`).
+    pub fn do_put(&mut self, spec: lattice_grammar::PutSpec) {
+        let count = self.pending_count.max(1) as usize;
+        self.pending_count = 0;
         let chosen = self.pending_register.take();
         let Some(reg) = self.read_register(chosen) else {
             self.set_message(EchoLevel::Error, "register empty".to_string());
             return;
         };
+        // One undo step: a put at the buffer's end is two edits (the
+        // line break, then the text).
+        self.document.begin_undo_group();
+        self.put_entry(&reg, spec, count);
+        self.document.end_undo_group();
+    }
+
+    /// Put one register entry at the cursor. Shared by the Normal put
+    /// family and `:put`.
+    fn put_entry(&mut self, reg: &UnnamedRegister, spec: lattice_grammar::PutSpec, count: usize) {
+        use lattice_protocol::position::Position;
+        let before = spec.before;
         match reg.kind {
             lattice_grammar::YankKind::Charwise => {
                 let line_len = self
@@ -28608,56 +28656,285 @@ impl Editor {
                 let insert_at = if before {
                     self.cursor
                 } else if self.cursor.byte < line_len {
-                    lattice_protocol::position::Position::new(
-                        self.cursor.line,
-                        self.cursor.byte + 1,
-                    )
+                    // After the character under the cursor, which may be
+                    // more than one byte wide.
+                    let line = self
+                        .document
+                        .snapshot()
+                        .buffer
+                        .line(self.cursor.line)
+                        .unwrap_or_default();
+                    let width = line
+                        .get(self.cursor.byte as usize..)
+                        .and_then(|rest| rest.chars().next())
+                        .map_or(1, char::len_utf8);
+                    Position::new(self.cursor.line, self.cursor.byte + width as u32)
                 } else {
                     self.cursor
                 };
-                if let Ok(applied) = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
-                    insert_at,
-                    &reg.content,
-                )) {
+                let text = reg.content.repeat(count);
+                if let Ok(applied) =
+                    self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(insert_at, &text))
+                {
                     let end = applied.inserted_range.end;
-                    self.cursor = if end.byte > 0 {
-                        lattice_protocol::position::Position::new(end.line, end.byte - 1)
-                    } else {
+                    self.cursor = if spec.cursor_after || end.byte == 0 {
+                        // `gp`: just after the new text.
                         end
+                    } else {
+                        // On the last character put, whatever its width.
+                        let line = self
+                            .document
+                            .snapshot()
+                            .buffer
+                            .line(end.line)
+                            .unwrap_or_default();
+                        let last = line
+                            .get(..end.byte as usize)
+                            .and_then(|head| head.chars().next_back())
+                            .map_or(1, char::len_utf8);
+                        Position::new(end.line, end.byte - last as u32)
                     };
                 }
             }
             lattice_grammar::YankKind::Linewise => {
-                let mut payload = reg.content.clone();
-                if !payload.ends_with('\n') {
-                    payload.push('\n');
+                let mut one = reg.content.clone();
+                if !one.ends_with('\n') {
+                    one.push('\n');
                 }
+                if spec.indent {
+                    let line = self
+                        .document
+                        .snapshot()
+                        .buffer
+                        .line(self.cursor.line)
+                        .unwrap_or_default();
+                    one = reindent_lines(&one, leading_whitespace(&line));
+                }
+                let payload = one.repeat(count);
+                let put_lines = payload.matches('\n').count() as u32;
                 let insert_at = if before {
-                    lattice_protocol::position::Position::new(self.cursor.line, 0)
+                    Position::new(self.cursor.line, 0)
                 } else {
                     let len = self
                         .document
                         .snapshot()
                         .buffer
                         .line_byte_len(self.cursor.line);
-                    if self.cursor.line + 1 < self.document.snapshot().buffer.content_line_count() {
-                        lattice_protocol::position::Position::new(self.cursor.line + 1, 0)
+                    // The ROPE's line count, not the content count: after a
+                    // file's final newline there is an empty line to put
+                    // at. Counting content lines sent the last line down
+                    // the "add a line break first" branch as well, and a
+                    // put there left a blank line at the end of the file.
+                    if self.cursor.line + 1 < self.document.snapshot().buffer.rope_line_count() {
+                        Position::new(self.cursor.line + 1, 0)
                     } else {
                         let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
-                            lattice_protocol::position::Position::new(self.cursor.line, len),
+                            Position::new(self.cursor.line, len),
                             "\n",
                         ));
-                        lattice_protocol::position::Position::new(self.cursor.line + 1, 0)
+                        Position::new(self.cursor.line + 1, 0)
                     }
                 };
                 if let Ok(applied) = self
                     .apply_edit_blocking(lattice_protocol::edit::Edit::insert(insert_at, &payload))
                 {
-                    self.cursor = applied.inserted_range.start;
+                    let start = applied.inserted_range.start;
+                    self.cursor = if spec.cursor_after {
+                        // `gp`: the line after the last one put.
+                        let last = self
+                            .document
+                            .snapshot()
+                            .buffer
+                            .content_line_count()
+                            .saturating_sub(1);
+                        Position::new((start.line + put_lines).min(last), 0)
+                    } else {
+                        start
+                    };
                 }
             }
-            lattice_grammar::YankKind::Blockwise => self.do_paste_blockwise(&reg.content, before),
+            lattice_grammar::YankKind::Blockwise => {
+                // A count widens the block: each row repeated in place.
+                let content = if count > 1 {
+                    reg.content
+                        .split('\n')
+                        .map(|row| row.repeat(count))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    reg.content.clone()
+                };
+                self.do_paste_blockwise(&content, before);
+            }
         }
+    }
+
+    /// `:[line]pu[t][!] [x]` — put a register as whole lines below
+    /// `line` (the cursor's when `None`), or above with `before`.
+    /// Linewise whatever the register holds: `:put` of a charwise yank
+    /// puts it on a line of its own.
+    pub fn do_put_line(&mut self, register: Option<char>, before: bool, line: Option<u32>) {
+        let chosen = match register {
+            Some(c) => match Register::from_input_char(c) {
+                Some(r) => Some(r),
+                None => {
+                    self.set_message(EchoLevel::Error, format!("E850: `{c}` is not a register"));
+                    return;
+                }
+            },
+            None => None,
+        };
+        let Some(mut reg) = self.read_register(chosen) else {
+            self.set_message(EchoLevel::Error, "register empty".to_string());
+            return;
+        };
+        reg.kind = lattice_grammar::YankKind::Linewise;
+        if let Some(line) = line {
+            let last = self
+                .document
+                .snapshot()
+                .buffer
+                .content_line_count()
+                .saturating_sub(1);
+            self.cursor = lattice_protocol::position::Position::new(line.min(last), 0);
+        }
+        self.document.begin_undo_group();
+        self.put_entry(
+            &reg,
+            lattice_grammar::PutSpec {
+                before,
+                ..Default::default()
+            },
+            1,
+        );
+        self.document.end_undo_group();
+    }
+
+    /// Vim's Visual `p` / `P`: replace the selection with the register.
+    ///
+    /// The selection is deleted by the delete operator itself, so every
+    /// selection shape and the register bookkeeping are the operator's:
+    /// with `p` the replaced text lands in the unnamed register, as a `d`
+    /// would leave it; with `P` (`keep_register`) it goes to the black
+    /// hole. The register to put is read BEFORE the delete, since `p`
+    /// from the unnamed register is about to overwrite it.
+    ///
+    /// The text then goes where the selection was, in the shape vim uses:
+    /// linewise text replacing a charwise selection gets lines of its own
+    /// (the line is split around it), and anything replacing whole lines
+    /// becomes whole lines.
+    pub fn do_put_over_selection(&mut self, keep_register: bool, out: &mut DispatchOutcome) {
+        use lattice_grammar::{ModalState, VisualKind, YankKind};
+        use lattice_protocol::position::Position;
+        let kind = match self.modal {
+            ModalState::Visual(k) | ModalState::Select(k) => k,
+            _ => return,
+        };
+        let count = self.pending_count.max(1) as usize;
+        self.pending_count = 0;
+        let chosen = self.pending_register.take();
+        let Some(reg) = self.read_register(chosen) else {
+            self.set_message(EchoLevel::Error, "register empty".to_string());
+            return;
+        };
+        let Some(sel) = self.visual_selection_range() else {
+            return;
+        };
+        let start = sel.start;
+
+        self.document.begin_undo_group();
+        let mut delete = lattice_grammar::CommandInvocation::of(self.builtins.delete.0)
+            .with_range(lattice_grammar::Range::Selection);
+        if keep_register {
+            delete = delete.with_register(Register::BlackHole);
+        }
+        self.dispatch_invocation(delete, out);
+
+        // The buffer as the delete left it.
+        let snapshot = self.document.snapshot();
+        let buffer = &snapshot.buffer;
+        let line_count = buffer.content_line_count();
+        match (kind, reg.kind) {
+            // Whole lines were removed: what goes back is whole lines.
+            (VisualKind::Linewise, _) => {
+                let mut one = reg.content.clone();
+                if !one.ends_with('\n') {
+                    one.push('\n');
+                }
+                let payload = one.repeat(count);
+                let emptied = line_count <= 1 && buffer.line_byte_len(0) == 0;
+                if emptied {
+                    // Every line was selected: the text replaces the
+                    // buffer, with no blank line left behind it.
+                    let text = payload.trim_end_matches('\n').to_string();
+                    let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+                        Position::new(0, 0),
+                        &text,
+                    ));
+                    self.cursor = Position::new(0, 0);
+                } else if start.line < line_count {
+                    let at = Position::new(start.line, 0);
+                    let _ = self
+                        .apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, &payload));
+                    self.cursor = at;
+                } else {
+                    // The selection ran to the last line: append.
+                    let last = line_count.saturating_sub(1);
+                    let at = Position::new(last, buffer.line_byte_len(last));
+                    let text = format!("\n{}", payload.trim_end_matches('\n'));
+                    let _ =
+                        self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, &text));
+                    self.cursor = Position::new(last + 1, 0);
+                }
+            }
+            // Linewise text into the middle of a line: split the line
+            // around it.
+            (VisualKind::Charwise, YankKind::Linewise) => {
+                let line = start.line.min(line_count.saturating_sub(1));
+                let at = Position::new(line, start.byte.min(buffer.line_byte_len(line)));
+                let body = reg.content.trim_end_matches('\n');
+                let body = std::iter::repeat_n(body, count)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let text = format!("\n{body}\n");
+                let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, &text));
+                self.cursor = Position::new(line + 1, 0);
+            }
+            (VisualKind::Blockwise, YankKind::Blockwise) => {
+                let line = start.line.min(line_count.saturating_sub(1));
+                self.cursor = Position::new(line, start.byte.min(buffer.line_byte_len(line)));
+                let content = reg
+                    .content
+                    .split('\n')
+                    .map(|row| row.repeat(count))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.do_paste_blockwise(&content, true);
+            }
+            // Text into the place the selection started.
+            _ => {
+                let line = start.line.min(line_count.saturating_sub(1));
+                let at = Position::new(line, start.byte.min(buffer.line_byte_len(line)));
+                let text = reg.content.repeat(count);
+                if let Ok(applied) =
+                    self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, &text))
+                {
+                    let end = applied.inserted_range.end;
+                    let tail = self
+                        .document
+                        .snapshot()
+                        .buffer
+                        .line(end.line)
+                        .unwrap_or_default();
+                    let last = tail
+                        .get(..end.byte as usize)
+                        .and_then(|head| head.chars().next_back())
+                        .map_or(0, char::len_utf8);
+                    self.cursor = Position::new(end.line, end.byte - last as u32);
+                }
+            }
+        }
+        self.document.end_undo_group();
     }
 
     /// Vim's blockwise paste: each `\n`-separated row inserted on
@@ -45872,6 +46149,36 @@ fn project_transient_state(
             })
             .collect(),
     )
+}
+
+/// The run of spaces and tabs a line starts with.
+fn leading_whitespace(line: &str) -> &str {
+    let end = line
+        .find(|c: char| c != ' ' && c != '\t')
+        .unwrap_or(line.len());
+    &line[..end]
+}
+
+/// `]p`: move a block of lines to a new indent. The first line's own
+/// indent is what gets replaced by `indent`; every other line keeps its
+/// offset from the first, so the block's shape survives. A line indented
+/// less than the first is set flush to `indent`; blank lines stay blank.
+fn reindent_lines(text: &str, indent: &str) -> String {
+    let base = leading_whitespace(text.lines().next().unwrap_or(""));
+    let mut out = String::with_capacity(text.len() + indent.len());
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches('\n');
+        if body.trim().is_empty() {
+            out.push_str(line);
+            continue;
+        }
+        out.push_str(indent);
+        out.push_str(body.strip_prefix(base).unwrap_or_else(|| body.trim_start()));
+        if line.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -523,6 +523,50 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         },
     );
     registry.register_ex_command(
+        "ex:put",
+        "Put a register as whole lines below a line, or above it with `!` (`:[line]pu[t][!] [x]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: true,
+            accepts_range: true,
+            parse_args: Arc::new(|rest, _bang| {
+                let rest = rest.trim();
+                let mut chars = rest.chars();
+                match (chars.next(), chars.next()) {
+                    (None, _) => Ok(Args::None),
+                    (Some(c), None) => Ok(Args::String(c.to_string())),
+                    _ => Err(CommandError::BadArgs(
+                        "E488: `:put` takes one register name".into(),
+                    )),
+                }
+            }),
+            apply: Arc::new(|ctx| {
+                let register = match &ctx.args {
+                    Args::String(s) => s.chars().next(),
+                    _ => None,
+                };
+                // `:5put` puts below line 5; a range's last line is the one
+                // that counts, as in vim.
+                let line = ctx
+                    .range
+                    .as_ref()
+                    .and_then(resolved_lines)
+                    .map(|(_, last)| last);
+                Ok(Effect::AppAction(AppEffect::PutLine {
+                    register,
+                    before: ctx.bang,
+                    line,
+                }))
+            }),
+            args_schema: vec![crate::args::ArgSpec::optional(
+                "register",
+                crate::args::ArgKind::String,
+                "register to put; the unnamed register when omitted",
+            )],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    registry.register_ex_command(
         "ex:filter",
         "Filter lines through a shell command, replacing them with its output (`:{range}!cmd`).",
         ExCommandSpec {

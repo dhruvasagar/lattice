@@ -138,6 +138,15 @@ pub struct ActionIds {
     pub reselect_last_visual: CommandId,
     pub paste_after: CommandId,
     pub paste_before: CommandId,
+    /// `gp` / `gP`: put, leaving the cursor after the new text.
+    pub put_after_cursor_end: CommandId,
+    pub put_before_cursor_end: CommandId,
+    /// `]p` / `[p`: put, re-indented to the current line.
+    pub put_after_indent: CommandId,
+    pub put_before_indent: CommandId,
+    /// Visual `p` / `P`: replace the selection with the register.
+    pub put_over_selection: CommandId,
+    pub put_over_selection_keep: CommandId,
     pub lsp_definition_request: CommandId,
     pub lsp_declaration_request: CommandId,
     pub lsp_type_definition_request: CommandId,
@@ -796,6 +805,60 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:paste-before",
             "Vim's `P`: paste the unnamed register's contents before the cursor.",
             AppEffect::PasteBefore,
+        ),
+        put_after_cursor_end: register_simple(
+            registry,
+            "action:put-after-cursor-end",
+            "Vim's `gp`: like `p`, but leave the cursor just after the new text.",
+            AppEffect::Put(lattice_grammar::PutSpec {
+                cursor_after: true,
+                ..Default::default()
+            }),
+        ),
+        put_before_cursor_end: register_simple(
+            registry,
+            "action:put-before-cursor-end",
+            "Vim's `gP`: like `P`, but leave the cursor just after the new text.",
+            AppEffect::Put(lattice_grammar::PutSpec {
+                before: true,
+                cursor_after: true,
+                ..Default::default()
+            }),
+        ),
+        put_after_indent: register_simple(
+            registry,
+            "action:put-after-indent",
+            "Vim's `]p`: like `p`, with linewise text re-indented to the current line.",
+            AppEffect::Put(lattice_grammar::PutSpec {
+                indent: true,
+                ..Default::default()
+            }),
+        ),
+        put_before_indent: register_simple(
+            registry,
+            "action:put-before-indent",
+            "Vim's `[p`: like `P`, with linewise text re-indented to the current line.",
+            AppEffect::Put(lattice_grammar::PutSpec {
+                before: true,
+                indent: true,
+                ..Default::default()
+            }),
+        ),
+        put_over_selection: register_simple(
+            registry,
+            "action:put-over-selection",
+            "Vim's Visual `p`: replace the selection with the register; the replaced text becomes the unnamed register.",
+            AppEffect::PutOverSelection {
+                keep_register: false,
+            },
+        ),
+        put_over_selection_keep: register_simple(
+            registry,
+            "action:put-over-selection-keep",
+            "Vim's Visual `P`: replace the selection with the register and leave the registers alone.",
+            AppEffect::PutOverSelection {
+                keep_register: true,
+            },
         ),
         // L7: the 6 nav chords are mode-owned. Each `CommandId` still
         // resolves (chord binding + `lsp-mode` handler registration key on
@@ -1928,6 +1991,15 @@ mod tests {
             (ids.reselect_last_visual, "action:reselect-last-visual"),
             (ids.paste_after, "action:paste-after"),
             (ids.paste_before, "action:paste-before"),
+            (ids.put_after_cursor_end, "action:put-after-cursor-end"),
+            (ids.put_before_cursor_end, "action:put-before-cursor-end"),
+            (ids.put_after_indent, "action:put-after-indent"),
+            (ids.put_before_indent, "action:put-before-indent"),
+            (ids.put_over_selection, "action:put-over-selection"),
+            (
+                ids.put_over_selection_keep,
+                "action:put-over-selection-keep",
+            ),
             (ids.lsp_definition_request, "action:lsp-definition"),
             (ids.lsp_declaration_request, "action:lsp-declaration"),
             (

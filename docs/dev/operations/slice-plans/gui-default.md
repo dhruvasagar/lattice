@@ -473,15 +473,14 @@ clipboard path. The window does not touch the OS clipboard itself.
 
 - Undo / Redo — `u` / `<C-r>`.
 - Copy / Cut — `"+y` / `"+d` on the selection; nothing without one.
-- Paste — `"+p` in Normal, the same as vim (Dhruva: deviating offers no
-  value); `<C-r>+` where text is being typed (Insert, Replace, `:`, search).
-  **Nothing in Visual**: the editor has no Visual-mode put for it to be.
+- Paste — `"+p`, the same as vim (Dhruva: deviating offers no value): after
+  the cursor in Normal, over the selection in Visual; `<C-r>+` where text is
+  being typed (Insert, Replace, `:`, search).
 
-That last point is a gap in the grammar, not in the window. Put today is `p` /
-`P` in Normal with a register prefix, for charwise / linewise / blockwise
-contents. Missing in both renderers: a count (`3p`), Visual `p` / `P`, `gp` /
-`gP`, `]p` / `[p`, `:put`. Raised with Dhruva; not part of this plan unless he
-says so.
+Building the menu showed that put itself was thin: only `p` / `P` in Normal.
+The rest of the family — a count, `gp` / `gP`, `]p` / `[p`, Visual `p` / `P`,
+`:put` — landed beside this slice as host work (see the changelog), which is
+what lets Paste replace a selection.
 
 Not seen running: that the Cmd bindings reach the actions before
 `on_key_down` sees the keystroke, and that the menu appears.

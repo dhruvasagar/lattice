@@ -597,6 +597,18 @@ pub enum Action {
     PasteAfter,
     /// Vim's `P` -- paste before cursor / above current line.
     PasteBefore,
+    /// `gp` / `gP` / `]p` / `[p` — see [`lattice_grammar::PutSpec`].
+    Put(lattice_grammar::PutSpec),
+    /// Visual `p` / `P`: replace the selection with the register.
+    PutOverSelection {
+        keep_register: bool,
+    },
+    /// `:[line]put[!] [x]`: put a register as whole lines.
+    PutLine {
+        register: Option<char>,
+        before: bool,
+        line: Option<u32>,
+    },
     /// A bracketed-paste burst from the terminal -- the user pressed
     /// their terminal's paste shortcut (Ctrl-Shift-V, Cmd-V, mouse
     /// middle-click, ...) and the terminal handed us the whole payload

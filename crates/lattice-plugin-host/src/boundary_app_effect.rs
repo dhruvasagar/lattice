@@ -276,6 +276,18 @@ impl WitBoundary for NativeAppEffect {
             NativeAppEffect::SwapVisualEnds => WitAppEffect::SwapVisualEnds,
             NativeAppEffect::PasteAfter => WitAppEffect::PasteAfter,
             NativeAppEffect::PasteBefore => WitAppEffect::PasteBefore,
+            // The rest of the put family (`gp`, `]p`, Visual `p`, `:put`).
+            // A plugin reaches them the way a key does, by invoking the
+            // registered `action:put-*` / `ex:put` commands; the effects
+            // themselves are not on the WIT surface, and adding them is a
+            // plugin-API change. Typed error, never lossy.
+            NativeAppEffect::Put(_)
+            | NativeAppEffect::PutOverSelection { .. }
+            | NativeAppEffect::PutLine { .. } => {
+                return Err("AppEffect::Put* have no plugin (WIT) surface; invoke the \
+                     `action:put-*` or `ex:put` command instead"
+                    .to_string());
+            }
             NativeAppEffect::EnterAppend => WitAppEffect::EnterAppend,
             NativeAppEffect::EnterInsertFirstNonBlank => WitAppEffect::EnterInsertFirstNonBlank,
             NativeAppEffect::EnterAppendEndOfLine => WitAppEffect::EnterAppendEndOfLine,

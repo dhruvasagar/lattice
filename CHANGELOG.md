@@ -10,7 +10,17 @@
 - **GUI: an Edit menu on macOS.** Undo, Redo, Cut, Copy and Paste, with the
   usual Cmd shortcuts. Each is the vim command it names on the system
   clipboard register: Copy and Cut act on the Visual selection (`"+y`,
-  `"+d`), and Paste is `"+p` in Normal mode and `<C-r>+` while typing.
+  `"+d`), and Paste is `"+p` (over the selection in Visual) and `<C-r>+`
+  while typing.
+- **The rest of vim's put commands.** Only `p` and `P` in Normal mode
+  existed. Now, in the terminal and the window alike:
+  - `3p` puts the text three times.
+  - `gp` / `gP` put and leave the cursor just after the new text.
+  - `]p` / `[p` put linewise text re-indented to the current line.
+  - `p` over a Visual selection replaces it, and the replaced text becomes
+    the unnamed register; `P` replaces it and leaves the registers alone.
+  - `:put`, `:put!`, `:5put a` put a register as a whole line below or
+    above a line.
 
 ### Changed
 - **`lattice` opens a window.** The GPU renderer is the default; `lattice
@@ -25,6 +35,10 @@
   which is most noticeable with a key held down.
 
 ### Fixed
+- **Putting a line below the last line no longer leaves a blank line at the
+  end of the file.** `yyGp` in a file ending with a newline added one.
+- **`p` after a multi-byte character puts after the whole character.** It
+  stepped one byte, which is not a place text can go.
 - **GUI: LSP semantic highlighting works.** The window showed only
   tree-sitter colours; a language server's semantic tokens were painted in
   the terminal alone. Both now show them, and in the theme's colours rather

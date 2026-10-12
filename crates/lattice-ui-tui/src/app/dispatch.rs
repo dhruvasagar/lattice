@@ -538,6 +538,9 @@ impl App {
             // 5.5.G.9: paste cluster arms.
             | Action::PasteAfter
             | Action::PasteBefore
+            | Action::Put(_)
+            | Action::PutOverSelection { .. }
+            | Action::PutLine { .. }
             | Action::PasteText(_)
             // 5.5.G.10: search-state arms migrated to Editor::dispatch.
             | Action::SearchAppend(_)

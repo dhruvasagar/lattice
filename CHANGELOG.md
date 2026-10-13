@@ -52,6 +52,11 @@
   which is most noticeable with a key held down.
 
 ### Fixed
+- **Backspace, `~` and Replace mode on accented letters and emoji.** These
+  acted on one byte of the character instead of the whole character.
+  Backspacing the last `é` on a line removed the line and left the cursor
+  on a row that no longer existed; `~` and `R` corrupted the character.
+  All three now work on whole characters, in the terminal and the window.
 - **GUI: the cursor no longer slips under the bottom edge below large
   headings.** A markdown or org heading is drawn taller than a normal row,
   and scrolling counted it as one row, so with headings on screen the last

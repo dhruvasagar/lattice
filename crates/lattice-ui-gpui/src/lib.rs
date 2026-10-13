@@ -2533,6 +2533,76 @@ mod tests {
         assert_eq!(app.editor.command_line(), "ñ");
     }
 
+    /// Backspace removes one CHARACTER. It used to step back one byte, so
+    /// on `é` the delete began mid-character and took the newline too:
+    /// the line vanished with the cursor still on it.
+    #[test]
+    fn backspace_removes_a_whole_multibyte_character_and_keeps_the_line() {
+        use lattice_host::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
+        let bs = KeyChord::new(KeyKind::Special(SpecialKey::Backspace), KeyMods::NONE);
+
+        let mut app = GpuiApp::new(Document::from_text("abc\n\n"));
+        app.dispatch_keystroke("j", false, false, false, false);
+        app.dispatch_keystroke("i", false, false, false, false);
+        app.commit_text("aé😀");
+        let line = |app: &GpuiApp, n| {
+            let l = app.editor.document.snapshot().buffer.line(n).unwrap();
+            l.trim_end_matches('\n').to_string()
+        };
+        assert_eq!(line(&app, 1), "aé😀");
+
+        app.dispatch_chord(bs);
+        assert_eq!(line(&app, 1), "aé", "the emoji goes, whole");
+        app.dispatch_chord(bs);
+        assert_eq!(line(&app, 1), "a", "then the accented letter, whole");
+        app.dispatch_chord(bs);
+        assert_eq!(line(&app, 1), "");
+        assert_eq!(line(&app, 0), "abc", "the line above is untouched");
+        assert_eq!(
+            (app.editor.cursor.line, app.editor.cursor.byte),
+            (1, 0),
+            "the cursor is still on its own, now empty, line"
+        );
+        assert_eq!(
+            app.editor.document.snapshot().buffer.content_line_count(),
+            2,
+            "emptying a line does not remove it"
+        );
+    }
+
+    /// The forward twins of the backspace bug: `~` and Replace mode's
+    /// overstrike (and its backspace-undo) act on the character at the
+    /// cursor, and used to take one byte of it.
+    #[test]
+    fn tilde_and_replace_mode_act_on_a_whole_multibyte_character() {
+        use lattice_host::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
+        let line0 = |app: &GpuiApp| {
+            let l = app.editor.document.snapshot().buffer.line(0).unwrap();
+            l.trim_end_matches('\n').to_string()
+        };
+
+        let mut app = GpuiApp::new(Document::from_text("éa\nnext\n"));
+        app.dispatch_keystroke("~", false, false, false, false);
+        assert_eq!(line0(&app), "Éa", "`~` toggles the accented letter's case");
+        assert_eq!(app.editor.cursor.byte, 2, "and steps past all of it");
+
+        let mut app = GpuiApp::new(Document::from_text("éa\nnext\n"));
+        app.dispatch_keystroke("r", false, false, true, false);
+        assert_eq!(app.editor.modal, ModalState::Replace);
+        app.commit_text("x");
+        assert_eq!(line0(&app), "xa", "overstrike replaces `é`, not half of it");
+        app.dispatch_chord(KeyChord::new(
+            KeyKind::Special(SpecialKey::Backspace),
+            KeyMods::NONE,
+        ));
+        assert_eq!(line0(&app), "éa", "and backspace puts it back whole");
+        assert_eq!(
+            app.editor.document.snapshot().buffer.line(1).unwrap(),
+            "next",
+            "the line below is untouched"
+        );
+    }
+
     /// GD.4: nothing binds `<M-e>` in Insert, so Option-e is the platform's
     /// to compose; outside text entry the question is not a text one.
     #[test]

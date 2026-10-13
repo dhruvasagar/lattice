@@ -23800,19 +23800,25 @@ impl Editor {
         }
         let r = lattice_protocol::position::Range::new(
             self.cursor,
-            lattice_protocol::position::Position::new(self.cursor.line, self.cursor.byte + 1),
+            next_position(&self.document.snapshot().buffer, self.cursor),
         );
         let original = match self.document.snapshot().buffer.slice(r) {
             Ok(s) => s,
             Err(_) => return,
         };
+        // By character: the range is one whole character now, and mapping
+        // its bytes would turn `é` into two wrong ones. `é` ↔ `É` toggles
+        // as vim's `~` does; a character with no case passes through.
         let toggled: String = original
-            .as_bytes()
-            .iter()
-            .map(|&b| match b {
-                b'a'..=b'z' => (b - 32) as char,
-                b'A'..=b'Z' => (b + 32) as char,
-                other => other as char,
+            .chars()
+            .flat_map(|c| -> Vec<char> {
+                if c.is_lowercase() {
+                    c.to_uppercase().collect()
+                } else if c.is_uppercase() {
+                    c.to_lowercase().collect()
+                } else {
+                    vec![c]
+                }
             })
             .collect();
         if let Ok(applied) =
@@ -24106,7 +24112,7 @@ impl Editor {
         if self.cursor.byte < len {
             let r = lattice_protocol::position::Range::new(
                 self.cursor,
-                lattice_protocol::position::Position::new(self.cursor.line, self.cursor.byte + 1),
+                next_position(&self.document.snapshot().buffer, self.cursor),
             );
             let original = self.document.snapshot().buffer.slice(r).ok();
             if let Ok(applied) =
@@ -24137,7 +24143,9 @@ impl Editor {
         let Some(entry) = self.replace_history.pop() else {
             return;
         };
-        let after = lattice_protocol::position::Position::new(entry.at.line, entry.at.byte + 1);
+        // The character typed over `entry.at` is whatever sits there now,
+        // and it may be wider than a byte.
+        let after = next_position(&self.document.snapshot().buffer, entry.at);
         let r = lattice_protocol::position::Range::new(entry.at, after);
         match entry.original {
             Some(orig) => {
@@ -24289,22 +24297,54 @@ fn word_start_before(text: &str, cursor: usize) -> usize {
     i
 }
 
-/// 5.5.G.3: unicode-aware backward step. Mirrors
-/// `lattice_ui_tui::app::previous_position`; duplicated here so
-/// the host-side `do_delete_char_backward` doesn't reach across
-/// the crate boundary.
+/// 5.5.G.3: the position one character before `p` — the previous char
+/// boundary on the line, or the end of the line above at column 0.
 fn previous_position(
     buf: &lattice_core::Buffer,
     p: lattice_protocol::position::Position,
 ) -> lattice_protocol::position::Position {
     if p.byte > 0 {
-        lattice_protocol::position::Position::new(p.line, p.byte - 1)
+        // Back one CHARACTER, not one byte. `byte - 1` lands inside `é`
+        // (two bytes) or an emoji (four), and a delete range that starts
+        // mid-character took the line's newline with it: backspacing the
+        // last accented letter on a line removed the line and left the
+        // cursor on a row that no longer existed.
+        let text = buf.line(p.line).unwrap_or_default();
+        let mut b = (p.byte as usize).min(text.len());
+        while b > 0 {
+            b -= 1;
+            if text.is_char_boundary(b) {
+                break;
+            }
+        }
+        lattice_protocol::position::Position::new(p.line, b as u32)
     } else if p.line > 0 {
         let prev_line = p.line - 1;
         lattice_protocol::position::Position::new(prev_line, buf.line_byte_len(prev_line))
     } else {
         p
     }
+}
+
+/// The position one character after `p` on its line — the next char
+/// boundary, clamped to the line's end. The forward twin of
+/// [`previous_position`], for the edits that act on "the character at
+/// the cursor" (`~`, Replace mode's overstrike and its undo), which used
+/// `byte + 1` and so split any character wider than a byte.
+fn next_position(
+    buf: &lattice_core::Buffer,
+    p: lattice_protocol::position::Position,
+) -> lattice_protocol::position::Position {
+    let text = buf.line(p.line).unwrap_or_default();
+    let text = text.trim_end_matches(['\n', '\r']);
+    let mut b = (p.byte as usize).min(text.len());
+    while b < text.len() {
+        b += 1;
+        if text.is_char_boundary(b) {
+            break;
+        }
+    }
+    lattice_protocol::position::Position::new(p.line, b as u32)
 }
 
 /// 5.5.G.23: fold-aware predicates + cursor snap. Migrated host-side

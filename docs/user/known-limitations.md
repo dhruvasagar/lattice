@@ -21,8 +21,10 @@ here.
 
 ## Editor
 
-- **`--gui` is opt-in.** The terminal renderer is the default and is a
-  first-class peer, not a fallback. The GPU renderer is not yet at parity.
+- **The window is the default from 0.9.8; `--tui` opens the terminal.** Both
+  are first-class. A few things the terminal does are not in the window yet:
+  input-method and dead-key composition, inline completion ghost text, and
+  some document-highlight styling.
 - **LSP servers must be installed by hand.** There is no server manager or
   installer; point lattice at servers already on your `PATH`.
 - **Org-mode is a separate build.** It ships as an out-of-repo WASM plugin

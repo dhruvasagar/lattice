@@ -36,10 +36,6 @@ use crate::pane::PaneState;
 /// flag, and the pane index (for inactive-pane stash lookups).
 pub type PaneRenderFn = fn(&mut Frame, Rect, &App, &DocumentSnapshot, &PaneState, bool, usize);
 
-/// Status-line label for one pane. Returned to the renderer's
-/// `draw_pane_status_line` so it can paint the bottom row.
-pub type PaneStatusFn = fn(&App, &PaneState) -> String;
-
 /// One mode's pane-render contribution. Kept paired so a mode owns
 /// both its content rendering and its status label -- the two are
 /// almost always defined together (a help pane wants `[help]` in
@@ -55,7 +51,6 @@ pub struct PaneRenderProvider {
     /// `None` when it converged to a `DocumentEntry`; oil follows in
     /// DL.5.
     pub render: Option<PaneRenderFn>,
-    pub status: PaneStatusFn,
 }
 
 /// Boot-time registry. Owned by [`App`]; keyed by [`ModeId`].
@@ -73,18 +68,6 @@ impl PaneRenderRegistry {
     /// registration for the same id.
     pub fn register(&mut self, mode: ModeId, provider: PaneRenderProvider) {
         self.map.insert(mode, provider);
-    }
-
-    /// Register a mode that owns only its status label and paints
-    /// through the shared document path (DL.4).
-    pub fn register_status_only(&mut self, mode: ModeId, status: PaneStatusFn) {
-        self.map.insert(
-            mode,
-            PaneRenderProvider {
-                render: None,
-                status,
-            },
-        );
     }
 
     /// Look up a provider by mode id. `None` if no mode has

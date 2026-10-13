@@ -491,3 +491,40 @@ pub(super) fn fresh_path_workspace(name: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&path).unwrap();
     path
 }
+
+/// GD.2 — this peer, as the host's conformance scenarios drive it.
+///
+/// `press_chord` is [`App::press_chord`], the entry the input loop calls
+/// with each normalised chord. `idle_wake` is what `Wake::Repaint` runs when the batch
+/// held no input.
+impl lattice_host::peer_conformance::PeerUnderTest for App {
+    fn boot(text: &str) -> Self {
+        app_with(text, 30)
+    }
+    fn press_chord(&mut self, chord: lattice_host::chord::KeyChord) {
+        App::press_chord(self, chord);
+    }
+    fn apply(&mut self, action: Action) {
+        App::apply(self, action);
+    }
+    fn idle_wake(&mut self) {
+        self.drain_async_pending();
+    }
+    fn set_viewport_height(&mut self, rows: u32) {
+        App::set_viewport_height(self, rows);
+    }
+    fn editor(&self) -> &lattice_host::editor::Editor {
+        &self.editor
+    }
+    fn editor_mut(&mut self) -> &mut lattice_host::editor::Editor {
+        &mut self.editor
+    }
+    fn actor_crossings(&self) -> u64 {
+        crate::actor_call_counter::snapshot()
+    }
+}
+
+/// The scenarios themselves — `lattice_host::peer_conformance`.
+mod conformance {
+    lattice_host::peer_conformance_tests!(crate::app::App);
+}

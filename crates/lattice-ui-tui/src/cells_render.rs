@@ -163,6 +163,23 @@ fn display_run_to_style(
     if m.reverse {
         mods |= Modifier::REVERSED;
     }
+    // GD.6d: plus the style bits the run itself carries — a
+    // semantic-token modifier layered on already-styled text. Inlays
+    // and whitespace markers are not that text and take none.
+    if run.flags & (cell_flags::INLAY | cell_flags::WS_MARKER) == 0 {
+        for (bit, modifier) in [
+            (cell_flags::BOLD, Modifier::BOLD),
+            (cell_flags::ITALIC, Modifier::ITALIC),
+            (cell_flags::UNDERLINE, Modifier::UNDERLINED),
+            (cell_flags::DIM, Modifier::DIM),
+            (cell_flags::REVERSE, Modifier::REVERSED),
+            (cell_flags::STRIKETHROUGH, Modifier::CROSSED_OUT),
+        ] {
+            if run.flags & bit != 0 {
+                mods |= modifier;
+            }
+        }
+    }
     if !mods.is_empty() {
         style = style.add_modifier(mods);
     }
@@ -360,6 +377,36 @@ mod tests {
 
     /// Inlay runs are dropped from the source-span output (overlays
     /// position by source byte, so inlay text must not appear here).
+    /// GD.6d: style bits a run carries itself (a semantic-token
+    /// modifier) are added to what its style resolves to. An inlay's
+    /// flags are about what kind of text it is, and add nothing.
+    #[test]
+    fn a_runs_own_style_bits_reach_the_terminal_style() {
+        let (resolved, ids) = defaults();
+        let line = dline(&[
+            (
+                "old",
+                lattice_syntax::Style::Function,
+                cell_flags::STRIKETHROUGH,
+            ),
+            (" ", lattice_syntax::Style::Default, 0),
+            (
+                "lib",
+                lattice_syntax::Style::Function,
+                cell_flags::ITALIC | cell_flags::DIM,
+            ),
+        ]);
+        let spans = display_line_to_source_spans(&line, &resolved, &ids);
+        let mods = |i: usize| spans[i].style.add_modifier;
+        assert!(mods(0).contains(Modifier::CROSSED_OUT));
+        assert!(!mods(1).contains(Modifier::CROSSED_OUT));
+        assert!(mods(2).contains(Modifier::ITALIC | Modifier::DIM));
+        assert_eq!(
+            spans[0].style.fg, spans[2].style.fg,
+            "the modifier adds to the colour, it does not replace it"
+        );
+    }
+
     #[test]
     fn display_source_spans_drop_inlay_runs() {
         let (resolved, ids) = defaults();
@@ -586,117 +633,10 @@ mod tests {
         assert_eq!(collect_text(&out), "a·b");
     }
 
-    // ---- S3.c.2 — semantic-tokens overlay on cell-derived bodies ----
-    //
-    // `apply_semantic_token_overlay(spans, overlay_start,
-    // overlay_end, fg, modifiers)` is the LSP semantic-tokens
-    // pass. It walks spans by byte position; the portion of
-    // each span intersecting `[overlay_start, overlay_end)`
-    // gets fg replaced and the supplied modifiers OR-ed in.
-    // bg, underline, reverse from earlier passes are preserved.
-    //
-    // For cell-derived bodies, the invariant is that source
-    // spans cover source-byte positions one-to-one with
-    // `line_text`, so the overlay's byte walk fires at the
-    // correct positions regardless of how cells were grouped.
-
-    use crate::render::apply_semantic_token_overlay;
-
     /// Helper: build a uniform-fg body covering one short line — one
     /// span, the shape a single-style `DisplayLine` resolves to.
     fn flat_body(text: &str, fg: u32) -> Vec<Span<'static>> {
         body(&[(text, fg)])
-    }
-
-    /// Mid-row overlay: covers bytes [2, 6) of an 8-byte line.
-    /// Result: three spans — pre (unchanged) / mid (new fg +
-    /// modifiers) / post (unchanged).
-    #[test]
-    fn s3c2_overlay_splits_span_when_partial() {
-        let body = flat_body("abcdefgh", 0xcdd6f4);
-        let overlay_fg = Color::Rgb(0xff, 0x00, 0x00);
-        let overlay_mods = Modifier::ITALIC;
-        let out = apply_semantic_token_overlay(body, 2, 6, overlay_fg, overlay_mods);
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0].content.as_ref(), "ab");
-        assert_eq!(out[1].content.as_ref(), "cdef");
-        assert_eq!(out[2].content.as_ref(), "gh");
-        // Middle span has the overlay's fg + modifier set.
-        assert_eq!(out[1].style.fg, Some(overlay_fg));
-        assert!(out[1].style.add_modifier.contains(Modifier::ITALIC));
-        // Outer spans keep the cell-derived fg.
-        assert_eq!(out[0].style.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
-        assert_eq!(out[2].style.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
-    }
-
-    /// Overlay covering the entire body: fg replaced everywhere;
-    /// no pre/post slice needed.
-    #[test]
-    fn s3c2_overlay_full_coverage() {
-        let body = flat_body("hi", 0xcdd6f4);
-        let overlay_fg = Color::Rgb(0xff, 0xa5, 0x00);
-        let out = apply_semantic_token_overlay(body, 0, 2, overlay_fg, Modifier::empty());
-        // Exactly the original cells' span(s) with new fg.
-        let combined: String = out.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(combined, "hi");
-        for s in &out {
-            assert_eq!(s.style.fg, Some(overlay_fg));
-        }
-    }
-
-    /// Overlay outside the body's byte range (start past EOL):
-    /// no-op pass-through, spans preserved.
-    #[test]
-    fn s3c2_overlay_outside_range_is_noop() {
-        let body = flat_body("abc", 0xcdd6f4);
-        let pre_text: String = body.iter().map(|s| s.content.as_ref()).collect();
-        let pre_styles: Vec<_> = body.iter().map(|s| s.style).collect();
-        let out = apply_semantic_token_overlay(body, 10, 20, Color::Red, Modifier::ITALIC);
-        let post_text: String = out.iter().map(|s| s.content.as_ref()).collect();
-        let post_styles: Vec<_> = out.iter().map(|s| s.style).collect();
-        assert_eq!(post_text, pre_text);
-        assert_eq!(post_styles, pre_styles);
-    }
-
-    /// Overlay preserves the cell's existing modifiers (bold from
-    /// syntax style) and ORs in the overlay's modifier (italic
-    /// from semantic). Captures the merge contract.
-    #[test]
-    fn s3c2_overlay_preserves_existing_modifiers() {
-        // Body span carries BOLD from syntax style.
-        let fg = 0xcba6f7;
-        let body = vec![Span::styled(
-            "kw".to_string(),
-            Style::default()
-                .fg(rgb_u32_to_color(fg))
-                .add_modifier(Modifier::BOLD),
-        )];
-        // Overlay adds ITALIC.
-        let out = apply_semantic_token_overlay(body, 0, 2, Color::Cyan, Modifier::ITALIC);
-        // One span (full coverage, same style); both modifiers
-        // present.
-        for s in &out {
-            assert!(s.style.add_modifier.contains(Modifier::BOLD));
-            assert!(s.style.add_modifier.contains(Modifier::ITALIC));
-        }
-    }
-
-    /// Overlay replaces fg only — bg from an earlier pass stays
-    /// untouched. Construct a cell with non-zero bg to seed it.
-    #[test]
-    fn s3c2_overlay_replaces_fg_keeps_bg() {
-        // Seed a body span with a bg from an earlier pass.
-        let body = vec![Span::styled(
-            "x".to_string(),
-            Style::default()
-                .fg(rgb_u32_to_color(0xcdd6f4))
-                .bg(rgb_u32_to_color(0x1e1e2e)),
-        )];
-        assert_eq!(body[0].style.bg, Some(Color::Rgb(0x1e, 0x1e, 0x2e)));
-        let out = apply_semantic_token_overlay(body, 0, 1, Color::Magenta, Modifier::empty());
-        // fg replaced, bg preserved.
-        assert_eq!(out[0].style.fg, Some(Color::Magenta));
-        assert_eq!(out[0].style.bg, Some(Color::Rgb(0x1e, 0x1e, 0x2e)));
     }
 
     // ---- S3.c.3 — bg-layer overlays on cell-derived bodies ----
@@ -1071,49 +1011,5 @@ mod tests {
         // Suffix is the LAST span; inlay is before it.
         let last = after_inlay.last().unwrap();
         assert!(last.content.as_ref().starts_with(" ┄"));
-    }
-
-    /// Overlay spanning two different-fg cell-derived spans:
-    /// each gets its overlapping portion fg-replaced. Captures
-    /// the cross-boundary walk.
-    #[test]
-    fn s3c2_overlay_spans_multi_span_body() {
-        let fg_a = 0xff0000;
-        let fg_b = 0x00ff00;
-        // 6 bytes: `aaabbb` — `aaa` (fg_a) + `bbb` (fg_b) → two spans.
-        let body = body(&[("aaa", fg_a), ("bbb", fg_b)]);
-        assert_eq!(body.len(), 2);
-        // Overlay covers bytes [2, 5) — crossing the boundary at
-        // byte 3.
-        let overlay_fg = Color::Yellow;
-        let out = apply_semantic_token_overlay(body, 2, 5, overlay_fg, Modifier::empty());
-        // Expect:
-        //  - "aa" (fg_a, unchanged)
-        //  - "a"  (overlay fg)
-        //  - "bb" (overlay fg)
-        //  - "b"  (fg_b, unchanged)
-        let combined: String = out.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(combined, "aaabbb");
-        // Walk and check the overlay-fg covers byte positions
-        // 2..5.
-        let mut cursor = 0usize;
-        for s in &out {
-            let len = s.content.len();
-            let overlap_start = cursor.max(2);
-            let overlap_end = (cursor + len).min(5);
-            if overlap_start < overlap_end {
-                // This span overlaps the overlay range; if fully
-                // inside, fg must be overlay_fg.
-                if cursor >= 2 && cursor + len <= 5 {
-                    assert_eq!(
-                        s.style.fg,
-                        Some(overlay_fg),
-                        "span '{}' at byte {cursor} must carry overlay fg",
-                        s.content.as_ref()
-                    );
-                }
-            }
-            cursor += len;
-        }
     }
 }

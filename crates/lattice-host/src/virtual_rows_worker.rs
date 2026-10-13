@@ -547,6 +547,7 @@ mod tests {
             excerpt_syntax: Arc::from([]),
             extra_spans: Arc::from([]),
             extra_refine: Arc::from(Vec::new().into_boxed_slice()),
+            semantic_tokens: None,
         }
     }
 

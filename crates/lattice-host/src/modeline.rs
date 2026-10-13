@@ -191,19 +191,51 @@ fn maybe_shorten_path(path: &std::path::Path, rs: &RenderState) -> String {
     path.display().to_string()
 }
 
-/// The buffer-label segment for `pane`: a pane provider's custom label
-/// when one is supplied (`provider_label` — the file-tree / oil / help
-/// M.4 mechanism, resolved renderer-side and passed in so the assembly
-/// stays common), else the document path + dirty marker (or the
-/// registry name slot for non-document panes). Empty only for the
-/// genuinely-nameless case, which the caller treats as hidden.
-pub fn pane_path_segment(
-    pane: &PaneState,
-    rs: &RenderState,
-    provider_label: Option<&str>,
-) -> String {
-    if let Some(label) = provider_label {
-        return label.to_string();
+/// The `core.path` element id, built once: the per-pane label lookup
+/// keys the content store by it on every modeline resolve.
+static CORE_PATH_ID: std::sync::LazyLock<ElementId> =
+    std::sync::LazyLock::new(|| ElementId::new(CORE_PATH));
+
+/// The label the mode that owns `buffer` gave it, if it gave one.
+///
+/// GD.7b: a mode whose buffers are not files names them — the file tree
+/// says `[tree] <root>`, oil `[oil] <dir>`, help `[help] <title>` — by
+/// setting `core.path`'s content for that buffer in the modeline store
+/// ([`crate::editor::Editor::set_buffer_label`], or a
+/// [`lattice_mode::ModelineElementUpdate`] from a plugin). It is content,
+/// so it is produced once and both renderers read it here; it used to be
+/// a function table in the terminal renderer, which is why the window
+/// showed these panes by their bare name.
+pub fn buffer_label(rs: &RenderState, buffer: lattice_core::BufferId) -> Option<String> {
+    rs.modeline_elements
+        .content_for(lattice_mode::ModelineKey::Buffer(buffer), &CORE_PATH_ID)
+        .filter(|c| !c.is_empty())
+        .map(|c| c.plain())
+}
+
+/// The buffer-label segment for `pane`: the label its buffer's mode
+/// gave it ([`buffer_label`]) when there is one, else the document path
+/// + dirty marker (or the registry name slot for non-document panes).
+/// Empty only for the genuinely-nameless case, which the caller treats
+/// as hidden.
+///
+/// PI.3: the label is the pane's COMMITTED buffer's, not a previewed
+/// one — the modeline shows what you would switch back to.
+///
+/// GD.7d: a mode-labelled buffer carries the same ` [+]` a file does
+/// when it has been modified. Its owner's writes are the baseline
+/// (`replace_owned_buffer` marks them clean), so for an oil listing the
+/// marker means "edits not yet applied", and a tree or a help page —
+/// which the user cannot edit — never shows it.
+pub fn pane_path_segment(pane: &PaneState, rs: &RenderState) -> String {
+    let labelled = pane.committed_id();
+    if let Some(label) = buffer_label(rs, labelled) {
+        let dirty = if rs.buffers.registry.document_dirty(labelled) {
+            " [+]"
+        } else {
+            ""
+        };
+        return format!("{label}{dirty}");
     }
     let reg = &rs.buffers.registry;
     // Non-document panes (Terminal, …) without a provider: name slot.
@@ -245,8 +277,8 @@ fn lang_label(pane: &PaneState, rs: &RenderState) -> &'static str {
 /// state: `core.mode` (the modal label is a single active-doc value —
 /// showing it on an inactive pane would be wrong, not just noisy) and
 /// `core.lang` (parity with the legacy footer, which omitted it on
-/// inactive panes). `provider_label` overrides `core.path` for
-/// provider-backed panes (file-tree / oil / help).
+/// inactive panes). `core.path` is the buffer's mode-given label when
+/// it has one ([`buffer_label`]).
 ///
 /// An empty [`ElementContent`] means "hidden this frame" — the caller
 /// skips it (the same contract [`lattice_mode::ModelineSnapshot::zone`]
@@ -256,7 +288,6 @@ pub fn resolve_builtin_content(
     pane: &PaneState,
     is_active: bool,
     rs: &RenderState,
-    provider_label: Option<&str>,
 ) -> ElementContent {
     match id {
         CORE_MODE => {
@@ -270,7 +301,7 @@ pub fn resolve_builtin_content(
             }
         }
         CORE_PATH => {
-            let text = pane_path_segment(pane, rs, provider_label);
+            let text = pane_path_segment(pane, rs);
             if text.is_empty() {
                 ElementContent::default()
             } else {
@@ -935,13 +966,13 @@ mod tests {
         let pane = *editor.pane_tree.active();
 
         // ML.5d: lean 3-letter tag, no brackets.
-        let active_mode = resolve_builtin_content(CORE_MODE, &pane, true, &rs, None);
+        let active_mode = resolve_builtin_content(CORE_MODE, &pane, true, &rs);
         assert_eq!(active_mode.plain(), "NOR");
-        let inactive_mode = resolve_builtin_content(CORE_MODE, &pane, false, &rs, None);
+        let inactive_mode = resolve_builtin_content(CORE_MODE, &pane, false, &rs);
         assert!(inactive_mode.is_empty(), "mode hidden on inactive panes");
 
         // Position renders regardless of active/inactive; row 1, col 0.
-        let pos = resolve_builtin_content(CORE_POSITION, &pane, false, &rs, None);
+        let pos = resolve_builtin_content(CORE_POSITION, &pane, false, &rs);
         assert_eq!(pos.plain(), "1:0");
     }
 
@@ -964,29 +995,63 @@ mod tests {
         assert_eq!(pane.cursor, lattice_protocol::position::Position::ZERO);
 
         // Active pane reads the live cursor: line 2 (1-based), byte 4.
-        let active = resolve_builtin_content(CORE_POSITION, &pane, true, &rs, None);
+        let active = resolve_builtin_content(CORE_POSITION, &pane, true, &rs);
         assert_eq!(active.plain(), "2:4");
 
         // Inactive panes keep their own stashed cursor.
-        let inactive = resolve_builtin_content(CORE_POSITION, &pane, false, &rs, None);
+        let inactive = resolve_builtin_content(CORE_POSITION, &pane, false, &rs);
         assert_eq!(inactive.plain(), "1:0");
     }
 
-    /// A provider label overrides `core.path`; without one, the empty
-    /// scratch document falls back to the registry name slot.
+    /// A label the buffer's mode gave it replaces the path; without
+    /// one, the empty scratch document falls back to the registry name
+    /// slot.
     #[test]
-    fn builtin_path_honours_provider_label() {
+    fn a_mode_given_label_replaces_the_path() {
         let document = lattice_core::Document::empty();
         let mut editor = crate::editor::Editor::boot(document);
-        let rs = editor.build_render_state();
         let pane = *editor.pane_tree.active();
 
-        let overridden = resolve_builtin_content(CORE_PATH, &pane, true, &rs, Some("[tree] /root"));
-        assert_eq!(overridden.plain(), "[tree] /root");
-
-        // No provider: a fresh scratch buffer has no path; the segment
-        // is non-empty (a name slot or "[no name]"), never a panic.
-        let fallback = resolve_builtin_content(CORE_PATH, &pane, true, &rs, None);
+        // No label: a fresh scratch buffer has no path; the segment is
+        // non-empty (a name slot or "[no name]"), never a panic.
+        let rs = editor.build_render_state();
+        let fallback = resolve_builtin_content(CORE_PATH, &pane, true, &rs);
         assert!(!fallback.plain().is_empty());
+
+        editor.set_buffer_label(pane.buffer_id, Some("[tree] /root".into()));
+        let rs = editor.build_render_state();
+        let labelled = resolve_builtin_content(CORE_PATH, &pane, true, &rs);
+        assert_eq!(labelled.plain(), "[tree] /root");
+
+        // And it belongs to that buffer, not to the pane.
+        let other = lattice_core::BufferId(pane.buffer_id.0 + 1000);
+        assert_eq!(buffer_label(&rs, other), None);
+
+        editor.set_buffer_label(pane.buffer_id, None);
+        let rs = editor.build_render_state();
+        assert_eq!(
+            resolve_builtin_content(CORE_PATH, &pane, true, &rs).plain(),
+            fallback.plain(),
+            "clearing the label brings the path back"
+        );
+    }
+
+    /// The modes that own non-file buffers name them at the one place
+    /// each one's state is written, so the label cannot drift from it.
+    #[test]
+    fn the_listing_and_help_buffers_are_named_by_their_modes() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let tree = lattice_core::BufferId(9001);
+        let oil = lattice_core::BufferId(9002);
+        editor.set_file_tree_root(tree, std::path::PathBuf::from("/proj"));
+        editor.set_oil_dir(oil, std::path::PathBuf::from("/proj/src"));
+        let rs = editor.build_render_state();
+        assert_eq!(buffer_label(&rs, tree).as_deref(), Some("[tree] /proj"));
+        assert_eq!(buffer_label(&rs, oil).as_deref(), Some("[oil] /proj/src"));
+
+        // Re-rooting renames it.
+        editor.set_file_tree_root(tree, std::path::PathBuf::from("/other"));
+        let rs = editor.build_render_state();
+        assert_eq!(buffer_label(&rs, tree).as_deref(), Some("[tree] /other"));
     }
 }

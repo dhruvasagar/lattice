@@ -189,6 +189,7 @@ mod tests {
             whitespace: 0,
             indent: 0,
             conceal: 0,
+            semantic_tokens: 0,
         };
         let c = CellChunk::empty(0, v);
         assert_eq!(c.version, v);
@@ -213,6 +214,7 @@ mod tests {
             whitespace: 0,
             indent: 0,
             conceal: 0,
+            semantic_tokens: 0,
         };
         let s = c.shifted_by(3, new_v);
         assert_eq!(s.start_source_line, 13);

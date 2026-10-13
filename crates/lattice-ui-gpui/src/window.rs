@@ -61,10 +61,10 @@
 
 use anyhow::{Context as _, Result};
 use gpui::{
-    AnyElement, App, AppContext, Application, Bounds, Context, FocusHandle, Focusable,
-    FontFeatures, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, TextRun, Window, WindowBounds, WindowOptions,
-    div, font, px, rgb, size,
+    AnyElement, App, AppContext, Application, Bounds, Context, ExternalPaths, FocusHandle,
+    Focusable, FontFeatures, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, Menu,
+    MenuItem, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, TextRun,
+    Window, WindowBounds, WindowOptions, div, font, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
@@ -103,6 +103,81 @@ use crate::{GpuiApp, GpuiTheme};
 /// left of GPUI's top-right candidate popup. Width matches the candidate
 /// popup (`max_w(px(360.0))`); height grows to the doc body, capped.
 pub(crate) const COMPLETION_DOCS_W_PX: f32 = 360.0;
+
+/// The insert-completion popup's maximum width, and how many candidates it
+/// shows at once. Both feed its placement estimate as well as its layout.
+const COMPLETION_W_PX: f32 = 360.0;
+const COMPLETION_MAX_VISIBLE: usize = 10;
+
+/// Where a popup anchored to a text cell goes: `(top, left)` in window
+/// pixels.
+///
+/// Directly below the cell's row when the popup fits there; above the row
+/// when it does not; and when neither side has room, pinned to whichever has
+/// more, so it clips against the window rather than covering the row it
+/// belongs to more than it must. Horizontally it starts at the cell and is
+/// pulled left only as far as needed to stay inside the window.
+///
+/// Shared by the hover popup and the insert-completion popup, which is what
+/// makes them agree about which side of the cursor a popup appears on.
+/// The top-left of a text cell in window pixels: `(top, left)`.
+///
+/// `origin` is where the pane's text starts — its column 0, row 0 — as
+/// the pane last painted it, so it already includes the gutter, the
+/// pane's padding, the tabline and a split pane's offset. Before the
+/// pane has painted once there is none, and `fallback` (the single-pane
+/// estimate this used to be everywhere) stands in.
+fn text_cell_px(
+    origin: Option<(f32, f32)>,
+    fallback: (f32, f32),
+    col: u32,
+    row: u32,
+    cell_w_px: f32,
+    row_px: f32,
+) -> (f32, f32) {
+    let (x0, y0) = origin.unwrap_or(fallback);
+    (y0 + row as f32 * row_px, x0 + col as f32 * cell_w_px)
+}
+
+fn anchored_popup_origin(
+    cell_top_px: f32,
+    row_px: f32,
+    cell_left_px: f32,
+    (popup_w_px, popup_h_px): (f32, f32),
+    (viewport_w_px, viewport_h_px): (f32, f32),
+) -> (f32, f32) {
+    let below_top = cell_top_px + row_px;
+    let above_top = cell_top_px - popup_h_px;
+    let top = if below_top + popup_h_px <= viewport_h_px {
+        below_top
+    } else if above_top >= 0.0 {
+        above_top
+    } else if viewport_h_px - below_top >= cell_top_px {
+        (viewport_h_px - popup_h_px).max(0.0)
+    } else {
+        0.0
+    };
+    let left = cell_left_px.min((viewport_w_px - popup_w_px).max(0.0));
+    (top, left)
+}
+
+/// The left edge of a panel shown beside a box: to the box's right when it
+/// fits in the window, otherwise to its left, otherwise against the window's
+/// left edge.
+fn side_panel_left(
+    box_left_px: f32,
+    box_w_px: f32,
+    panel_w_px: f32,
+    gap_px: f32,
+    viewport_w_px: f32,
+) -> f32 {
+    let right_of = box_left_px + box_w_px + gap_px;
+    if right_of + panel_w_px <= viewport_w_px {
+        right_of
+    } else {
+        (box_left_px - gap_px - panel_w_px).max(0.0)
+    }
+}
 pub(crate) const COMPLETION_DOCS_MAX_ROWS: u32 = 16;
 
 pub(crate) const POPUP_MAX_W_PX: f32 = 900.0;
@@ -366,6 +441,119 @@ fn global_bottom_row_visible(picker_use_minibuffer: bool, picker_has_state: bool
     !(picker_use_minibuffer && picker_has_state)
 }
 
+/// GD.5b: one piece of the text being typed in the bottom row, with
+/// the colour it takes (`None` = the row's own foreground).
+type TypedSeg = (String, Option<u32>);
+
+/// Split typed-text segments at the caret: everything before byte
+/// `caret` of their concatenation, and everything from it on. A segment
+/// the caret falls inside is cut in two and both halves keep its
+/// colour. `caret` is expected on a character boundary
+/// (`cmdline_row::caret_byte`); one that is not is moved back to one,
+/// so this never panics on a slice.
+fn split_segments_at_caret(segs: Vec<TypedSeg>, caret: usize) -> (Vec<TypedSeg>, Vec<TypedSeg>) {
+    let mut before = Vec::new();
+    let mut after = Vec::new();
+    let mut pos = 0usize;
+    for (text, color) in segs {
+        let end = pos + text.len();
+        if end <= caret {
+            before.push((text, color));
+        } else if pos >= caret {
+            after.push((text, color));
+        } else {
+            let cut = lattice_host::cmdline_row::caret_byte(&text, caret - pos);
+            let (l, r) = text.split_at(cut);
+            if !l.is_empty() {
+                before.push((l.to_string(), color));
+            }
+            if !r.is_empty() {
+                after.push((r.to_string(), color));
+            }
+        }
+        pos = end;
+    }
+    (before, after)
+}
+
+/// The `:` line's typed text as coloured segments: the published
+/// decoration spans over `line`, with the gaps between them uncoloured.
+/// A span that overlaps the previous one or does not sit on character
+/// boundaries is skipped, as the terminal renderer skips it.
+fn decorated_segments(line: &str, spans: &[(std::ops::Range<usize>, u32)]) -> Vec<TypedSeg> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    for (range, color) in spans {
+        let s = range.start.min(line.len());
+        let e = range.end.min(line.len());
+        if s < pos || e < s || !line.is_char_boundary(s) || !line.is_char_boundary(e) {
+            continue;
+        }
+        if s > pos {
+            out.push((line[pos..s].to_string(), None));
+        }
+        if e > s {
+            out.push((line[s..e].to_string(), Some(*color)));
+        }
+        pos = e;
+    }
+    if pos < line.len() {
+        out.push((line[pos..].to_string(), None));
+    }
+    out
+}
+
+/// A text caret for a flex row of text: a thin bar that takes no
+/// width of its own, so the text after it does not shift as it moves.
+fn inline_caret(color: u32) -> gpui::Div {
+    div().relative().w(px(0.)).child(
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .w(px(1.5))
+            .bg(rgb(color)),
+    )
+}
+
+/// One row of a minibuffer: `prefix` (the `:` / `/` prompt or a
+/// prompt's label), the typed segments, and the caret before byte
+/// `caret` of the typed text when this row holds it.
+fn typed_row(
+    prefix: String,
+    segs: Vec<TypedSeg>,
+    caret: Option<usize>,
+    caret_color: u32,
+) -> gpui::Div {
+    let seg_div = |(text, color): TypedSeg| match color {
+        Some(c) => div().text_color(rgb(c)).child(text),
+        None => div().child(text),
+    };
+    let mut row = div().flex().flex_row();
+    if !prefix.is_empty() {
+        row = row.child(prefix);
+    }
+    match caret {
+        Some(caret) => {
+            let (before, after) = split_segments_at_caret(segs, caret);
+            for seg in before {
+                row = row.child(seg_div(seg));
+            }
+            row = row.child(inline_caret(caret_color));
+            for seg in after {
+                row = row.child(seg_div(seg));
+            }
+        }
+        None => {
+            for seg in segs {
+                row = row.child(seg_div(seg));
+            }
+        }
+    }
+    row
+}
+
 /// Select the global bottom-row content (vim's shared cmdline / echo
 /// line) plus the echo level for colouring. While typing `:` / `/` it's
 /// the in-progress minibuffer; otherwise it's the last echo message — a
@@ -435,6 +623,78 @@ fn bottom_row_content(
             Some(msg) => (msg.text.clone(), Some(msg.level)),
             None => (String::new(), None),
         },
+    }
+}
+
+/// What lies over a terminal cell besides its own SGR attributes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TermHighlight {
+    None,
+    /// A search hit that is not the current one: underlined, colours kept.
+    Search,
+    /// The current search match, or a Visual-selected cell: fg and bg swap.
+    Inverted,
+}
+
+/// Which highlight a terminal cell shows. The current match and the Visual
+/// selection outrank an ordinary search hit, as in the TUI
+/// (`terminal_row_spans`): all three used to collapse into one fg/bg swap
+/// here, so every hit on screen looked like the one `n` would go to.
+fn terminal_highlight(current_match: bool, visual: bool, search_hit: bool) -> TermHighlight {
+    if current_match || visual {
+        TermHighlight::Inverted
+    } else if search_hit {
+        TermHighlight::Search
+    } else {
+        TermHighlight::None
+    }
+}
+
+/// How one run of terminal cells is painted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct TermRunPaint {
+    fg: u32,
+    /// `None` leaves the pane's own background showing.
+    bg: Option<u32>,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strikethrough: bool,
+}
+
+/// Resolve a terminal run's paint from its colours (already swapped for SGR
+/// reverse), its SGR attributes and what is highlighted over it.
+///
+/// Before GD.7 this peer honoured two attributes — reverse, and underline
+/// drawn as a bottom border. Bold, italic, dim and strikethrough were
+/// dropped, so a prompt's bold segment, a dimmed `ls` hint and `git log`'s
+/// italics all came out plain.
+///
+/// Dim attenuates the foreground the way the document painter does
+/// (`cells_paint::dim_channel`), so "dim" is one shade across the window.
+fn terminal_run_paint(
+    fg: u32,
+    bg: u32,
+    default_bg: u32,
+    attrs: lattice_terminal::CellAttrs,
+    highlight: TermHighlight,
+) -> TermRunPaint {
+    let fg = if attrs.dim {
+        crate::cells_paint::dim_channel(fg)
+    } else {
+        fg
+    };
+    let (fg, bg) = match highlight {
+        TermHighlight::Inverted => (bg, Some(fg)),
+        TermHighlight::None | TermHighlight::Search => (fg, (bg != default_bg).then_some(bg)),
+    };
+    TermRunPaint {
+        fg,
+        bg,
+        bold: attrs.bold,
+        italic: attrs.italic,
+        underline: attrs.underline || highlight == TermHighlight::Search,
+        strikethrough: attrs.strikethrough,
     }
 }
 
@@ -1073,41 +1333,6 @@ impl DiagnosticGlyphs {
 // peers map the host shape to their native cursor primitive.
 // Re-imported via `use` at the top of the file.
 
-/// Per-frame ensure-work gate keys (perf plan A.3).
-///
-/// `EditorView::render` used to fire `ensure_cursor_in_viewport()`
-/// and `dispatch_action(RefreshPaneHighlights)` unconditionally every
-/// frame. Both dispatches walk the full `publish_render_state` tail
-/// (rebuilding every sub-state `Arc`, notifying the background
-/// workers, nudging `paint_request`) regardless of whether the underlying
-/// inputs changed — the dominant slice of `ensure_us` in the trace
-/// data the perf plan opens with.
-///
-/// Each key captures the inputs that would actually change the
-/// dispatch's effect. When the current frame's key matches the stored
-/// one, the dispatch is skipped — paramount goal #1 (sub-frame input
-/// latency).
-///
-/// `cursor_snap_key` is stored as the POST-dispatch key so the cache
-/// settles in one frame after a snap (the dispatch mutates `scroll`,
-/// which is part of the key; storing the pre-dispatch key would
-/// re-fire on the next frame for a guaranteed no-op).
-///
-/// DR.2 (decoration-retention) removed the `pane_refresh_key` gate
-/// along with the per-frame `RefreshPaneHighlights` dispatch it
-/// guarded: inactive panes now read their own retained per-pane
-/// `DisplayMatrix`, so there is no per-frame pane-highlight refresh
-/// left to gate.
-#[derive(Default)]
-struct EnsureGateCache {
-    cursor_snap_key: Option<(
-        lattice_core::protocol::position::Position,
-        u32,
-        u32,
-        lattice_core::BufferKind,
-    )>,
-}
-
 /// The renderer-side composition root rendered as a GPUI
 /// `Entity`. Holds the [`GpuiApp`] + a [`FocusHandle`] so the
 /// window's key events actually route to our dispatcher.
@@ -1119,23 +1344,75 @@ struct EnsureGateCache {
 /// diverges (modeline.md §9, "graceful degradation, not a parity
 /// break").
 ///
-/// Deliberately plain: it reads its colours from the same resolved
-/// theme roles the modeline itself uses, so a retuned theme moves the
-/// tooltip with it.
+/// Deliberately plain: a popup's background and the theme's text colour,
+/// handed in by the modeline row that owns the theme. It used to carry two
+/// dark-palette literals while this comment said it read the theme — a
+/// dark box on every light theme (GD.8b).
 struct ModelineTooltip {
     text: String,
+    bg: u32,
+    fg: u32,
 }
 
 impl Render for ModelineTooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        const TIP_BG: u32 = 0x0031_3244; // palette `surface0`
-        const TIP_FG: u32 = 0x00cd_d6f4; // palette `text`
         div()
-            .bg(rgb(TIP_BG))
-            .text_color(rgb(TIP_FG))
+            .bg(rgb(self.bg))
+            .text_color(rgb(self.fg))
             .px_2()
             .py_1()
             .child(self.text.clone())
+    }
+}
+
+// Application-level actions: the ones the OS, not a keystroke in a buffer,
+// asks for. `Quit` is Cmd+Q and the menu item.
+// `Edit*`, not `Copy` / `Cut`: an action is a type, and one named `Copy`
+// would shadow the trait in this module.
+gpui::actions!(
+    lattice,
+    [Quit, EditUndo, EditRedo, EditCut, EditCopy, EditPaste]
+);
+
+/// Files the operating system asked the application to open, on their way to
+/// the editor.
+///
+/// macOS delivers "open this file" (Finder, `open -a Lattice file`) through a
+/// callback registered on the `Application` before it runs. That callback has
+/// no app context and can fire before the window exists, so it cannot open a
+/// buffer itself: it queues the path here and wakes the window, which drains
+/// the queue. `Notify::notify_one` stores a permit, so a path queued before
+/// the window is listening is not lost.
+#[derive(Default)]
+struct OpenRequests {
+    paths: std::sync::Mutex<Vec<std::path::PathBuf>>,
+    wake: tokio::sync::Notify,
+}
+
+impl OpenRequests {
+    fn push_urls(&self, urls: Vec<String>) {
+        let mut queued = false;
+        for url in urls {
+            match crate::path_from_open_url(&url) {
+                Some(path) => {
+                    if let Ok(mut paths) = self.paths.lock() {
+                        paths.push(path);
+                        queued = true;
+                    }
+                }
+                None => tracing::warn!(%url, "lattice-gpui: not a file to open; skipped"),
+            }
+        }
+        if queued {
+            self.wake.notify_one();
+        }
+    }
+
+    fn take(&self) -> Vec<std::path::PathBuf> {
+        self.paths
+            .lock()
+            .map(|mut paths| std::mem::take(&mut *paths))
+            .unwrap_or_default()
     }
 }
 
@@ -1144,6 +1421,9 @@ pub(crate) struct EditorView {
     /// pane's `EditorElement`. Written only by the media landing (off the UI
     /// thread's critical path); read by `paint`, which never loads.
     media_pixels: std::sync::Arc<crate::editor_element::MediaPixels>,
+    /// GD.5c: the focused pane's text origin as of its last paint, for
+    /// placing the completion and hover popups at a text cell.
+    text_origin: std::sync::Arc<crate::editor_element::TextOrigin>,
     /// IM.7a: last `(row_px, col_px)` published to the host, so the metrics
     /// are sent on CHANGE rather than every frame. Same diff-then-send
     /// discipline as `set_pane_viewport` above it, and for the same reason:
@@ -1153,8 +1433,21 @@ pub(crate) struct EditorView {
     last_cell_metrics: Option<(f32, f32)>,
     pub(crate) app: GpuiApp,
     focus_handle: FocusHandle,
+    /// GD.4: text the platform is still composing (a dead key's accent, an
+    /// input method's candidate). Window state only — see `text_input`.
+    composition: crate::text_input::Composition,
+    /// GD.4: the caret's cell as of the last render, `(top, left, row_px,
+    /// col_px)` in window pixels: where the in-progress text is drawn and
+    /// where the platform is told to put its candidate list.
+    caret_px: Option<(f32, f32, f32, f32)>,
+    /// The title the window currently shows, and one waiting to be shown.
+    /// The repaint wake computes the title (it reads the buffer registry,
+    /// which locks) and `render` only hands a changed one to the platform.
+    shown_title: String,
+    pending_title: Option<String>,
+    /// The window's width in text columns, as last sent to the host.
+    last_window_columns: Option<u16>,
     /// Perf plan A.3: per-frame ensure-work delta cache.
-    ensure_gate: EnsureGateCache,
     /// S4.final.b (2026-05-27): per-window glyph-id cache
     /// (cached `char → ResolvedGlyph` map keyed by FontId).
     /// Shared across panes within this window — paint_cells
@@ -1179,8 +1472,37 @@ pub(crate) struct EditorView {
 }
 
 impl EditorView {
-    fn new(document: Document, cx: &mut Context<Self>) -> Self {
-        let app = GpuiApp::new(document);
+    fn new(
+        document: Document,
+        startup_lesson: Option<u32>,
+        open_requests: std::sync::Arc<OpenRequests>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut app = GpuiApp::new(document);
+        // Before the first frame, so it already reflects the user's config.
+        app.load_user_environment();
+        // `--tutor [N]`, after the config so the user's settings land first.
+        if let Some(lesson) = startup_lesson {
+            app.open_tutor(lesson);
+        }
+        // Files the OS asked for. The first wait returns at once if any
+        // were queued before this window existed.
+        cx.spawn(async move |this, cx| {
+            loop {
+                open_requests.wake.notified().await;
+                let paths = open_requests.take();
+                let alive = this.update(cx, |view, cx| {
+                    for path in paths {
+                        view.app.open_path(path);
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         // X1b: spawn the worker-paint-request bridge. The background
         // workers (cells / display-matrix, overlay) fire
         // `editor.paint_request.notify_one()` after every
@@ -1221,18 +1543,36 @@ impl EditorView {
         cx.spawn(async move |this, cx| {
             loop {
                 paint_request.notified().await;
-                if this.update(cx, |_view, cx| cx.notify()).is_err() {
+                let alive = this.update(cx, |view, cx| {
+                    // Two things a repaint wake can carry that a paint alone
+                    // does not finish: renderer-owned effects an async path
+                    // queued (applied here, off `render`, and only when the
+                    // published flag says there are any), and a quit raised
+                    // by something other than a key.
+                    view.app.drain_idle_renderer_effects();
+                    view.app.acknowledge_redraw_if_pending();
+                    view.quit_if_requested(cx);
+                    view.refresh_title();
+                    cx.notify();
+                });
+                if alive.is_err() {
                     break;
                 }
             }
         })
         .detach();
+        let title = app.window_title();
         Self {
+            shown_title: String::new(),
+            last_window_columns: None,
+            pending_title: Some(title),
             media_pixels: Default::default(),
+            text_origin: Default::default(),
             last_cell_metrics: None,
             app,
             focus_handle: cx.focus_handle(),
-            ensure_gate: EnsureGateCache::default(),
+            composition: crate::text_input::Composition::default(),
+            caret_px: None,
             glyph_resolver: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::glyph_resolver::GlyphResolver::new(),
             )),
@@ -1242,10 +1582,14 @@ impl EditorView {
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         tracing::debug!(
             key = %ks.key,
+            // What the platform says the key types, after layout, dead
+            // keys and composition. `None` for a key that types nothing.
+            key_char = ?ks.key_char,
+            held = event.is_held,
             ctrl = ks.modifiers.control,
             alt = ks.modifiers.alt,
             shift = ks.modifiers.shift,
@@ -1256,8 +1600,8 @@ impl EditorView {
         // substate (`render_state.popup.is_open()`).
         // Slice 3c.final.E.5j: read RS via `App::render_state` (App
         // owns the same Arc, cloned at construction time).
-        if self.app.render_state.load().popup.is_open()
-            && (ks.key.eq_ignore_ascii_case("escape") || ks.key.eq_ignore_ascii_case("esc"))
+        if (ks.key.eq_ignore_ascii_case("escape") || ks.key.eq_ignore_ascii_case("esc"))
+            && self.app.esc_dismisses_popup()
         {
             tracing::debug!("lattice-gpui: dismissing popup overlay (Esc)");
             self.app.dismiss_popup();
@@ -1293,6 +1637,49 @@ impl EditorView {
             cx.notify();
             return;
         }
+        // GD.4: Ctrl-Cmd-Space is the macOS emoji and symbols panel. No
+        // menu item carries it here, so the window opens the panel itself;
+        // what the user picks arrives through the input handler like any
+        // other committed text. Only where text is entered — in Normal mode
+        // a picked character would have nowhere to go.
+        if crate::text_input::PLATFORM_COMPOSES
+            && ks.key.eq_ignore_ascii_case("space")
+            && ks.modifiers.control
+            && ks.modifiers.platform
+            && !ks.modifiers.alt
+            && !ks.modifiers.shift
+        {
+            if self.app.input_state().text_entry {
+                tracing::debug!("lattice-gpui: opening the character palette");
+                window.show_character_palette();
+            }
+            cx.stop_propagation();
+            return;
+        }
+        // GD.4: a key that types text where text is being entered is the
+        // platform's to compose. Returning WITHOUT stopping propagation is
+        // the hand-off: GPUI then offers the key to the OS text input,
+        // which calls back through `EntityInputHandler` with what it types
+        // (`é` for a dead key and a vowel, a candidate from an input
+        // method). Consuming every key here is why none of that worked.
+        let route = crate::text_input::route_key(
+            self.app.input_state(),
+            &ks.key,
+            ks.key_char.as_deref(),
+            ks.modifiers.control,
+            ks.modifiers.alt,
+            ks.modifiers.platform,
+            || self.app.option_chord_is_bound(&ks.key, ks.modifiers.shift),
+        );
+        if route == crate::text_input::KeyRoute::Platform {
+            tracing::debug!("lattice-gpui: key left to the platform's text input");
+            return;
+        }
+        // A key the window handles itself abandons an open composition:
+        // the platform declined it (it offers composing keys there first).
+        if self.composition.clear() {
+            cx.notify();
+        }
         let outcome = self.app.dispatch_keystroke(
             &ks.key,
             ks.modifiers.control,
@@ -1314,15 +1701,63 @@ impl EditorView {
         );
         cx.stop_propagation();
         cx.notify();
-        // Slice 3c.final.B (group 6): lifecycle read via published
-        // substate.
-        if self.app.render_state.load().lifecycle.should_quit {
-            tracing::info!("lattice-gpui: editor.should_quit set; closing application");
-            // Before `quit`: on macOS it may end the process without
-            // returning to `main`, which is where the TUI's flush runs.
-            lattice_host::flush_plugin_stores();
-            cx.quit();
+        self.quit_if_requested(cx);
+    }
+
+    /// Note a changed window title for `render` to apply.
+    fn refresh_title(&mut self) {
+        let title = self.app.window_title();
+        if title != self.shown_title && self.pending_title.as_deref() != Some(title.as_str()) {
+            self.pending_title = Some(title);
         }
+    }
+
+    /// The close button, Cmd+Q, the Quit menu item: ask the editor, and
+    /// report whether the window may go.
+    ///
+    /// `false` means an unsaved buffer refused; the echo area says which,
+    /// and the window stays.
+    fn request_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.app.request_close() {
+            // The process may end without returning to `main`, which is
+            // where the TUI's flush runs.
+            lattice_host::flush_plugin_stores();
+            true
+        } else {
+            cx.notify();
+            false
+        }
+    }
+
+    /// Open files dropped on the window.
+    fn on_files_dropped(
+        &mut self,
+        paths: &ExternalPaths,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for path in paths.paths() {
+            self.app.open_path(path.clone());
+        }
+        cx.notify();
+    }
+
+    /// Close the application if the editor has asked to quit.
+    ///
+    /// Called wherever control returns to the window: after a key, and on
+    /// every repaint wake — which covers a quit raised by a mouse click or
+    /// an async path, since both end in a publish. It used to be checked
+    /// only at the end of `on_key_down`, so such a quit sat until the user
+    /// pressed something.
+    fn quit_if_requested(&mut self, cx: &mut Context<Self>) {
+        if !self.app.should_quit() {
+            return;
+        }
+        tracing::info!("lattice-gpui: editor.should_quit set; closing application");
+        // Before `quit`: on macOS it may end the process without
+        // returning to `main`, which is where the TUI's flush runs.
+        lattice_host::flush_plugin_stores();
+        cx.quit();
     }
 }
 
@@ -1470,10 +1905,9 @@ impl EditorView {
     /// per-role fg over the `modeline.active` bar bg; inactive panes use
     /// the uniform muted `modeline.inactive` bar.
     ///
-    /// `provider_label` is `None`: the GPUI peer has no M.4 pane-render
-    /// provider registry yet (Document → path, Terminal → registry name
-    /// slot, both via the resolver). A GPUI provider registry mirrors the
-    /// TUI's M.4 later; until then file-tree/oil aren't GPUI pane-rendered.
+    /// GD.7b: a file-tree / oil / help pane's label (`[tree] <root>`, …)
+    /// comes from the same resolver as the path — the buffer's mode put
+    /// it in the modeline store, so there is nothing peer-side to look up.
     fn modeline_row(
         pane: &PaneState,
         is_active: bool,
@@ -1496,6 +1930,17 @@ impl EditorView {
             .bg
             .map(|c| c.to_rgb_u32(FALLBACK_BAR))
             .unwrap_or(FALLBACK_BAR);
+        // The hover tooltip is a popup with the modeline's text colour.
+        let tip_bg = resolved
+            .get(ids.ui_popup_background)
+            .bg
+            .map(|c| c.to_rgb_u32(bar_bg))
+            .unwrap_or(bar_bg);
+        let tip_fg = resolved
+            .get(ids.modeline_path)
+            .fg
+            .map(|c| c.to_rgb_u32(FALLBACK_FG))
+            .unwrap_or(FALLBACK_FG);
 
         // ML.5: the `ui.modeline.{left,center,right}` config drives zone
         // membership + order; `resolve_layout` returns the per-zone
@@ -1531,7 +1976,7 @@ impl EditorView {
                 }
                 let id = el.id.as_str();
                 let content = if id.starts_with("core.") {
-                    lattice_host::modeline::resolve_builtin_content(id, pane, is_active, rs, None)
+                    lattice_host::modeline::resolve_builtin_content(id, pane, is_active, rs)
                 } else {
                     // Pushed elements (modes / plugins, ML.3): resolved
                     // per the descriptor's scope against this pane's
@@ -1651,7 +2096,12 @@ impl EditorView {
                             .id(SharedString::from(format!("modeline-{element_id}")))
                             .tooltip(move |_window, cx: &mut App| {
                                 let tip = tip.clone();
-                                cx.new(|_| ModelineTooltip { text: tip }).into()
+                                cx.new(|_| ModelineTooltip {
+                                    text: tip,
+                                    bg: tip_bg,
+                                    fg: tip_fg,
+                                })
+                                .into()
                             });
                         z = z.child(tipped);
                     }
@@ -1882,7 +2332,7 @@ impl EditorView {
         // 5.8.O: clip the visible window to `[scroll, scroll +
         // viewport_height)` so large docs don't render every line
         // every frame. Active pane reads scroll from `editor.scroll`
-        // (ensure_cursor_in_viewport keeps it sane); inactive
+        // (the dispatch tail keeps it sane); inactive
         // panes read their stashed `PaneState::scroll`. The
         // gutter, status, and cursor maths still work in terms of
         // absolute line indices — only the iter range tightens.
@@ -2050,6 +2500,12 @@ impl EditorView {
         // `snapshot`. None for regular Documents (gutter shows
         // composed-row identity); Some(arr) for Multibuffer.
         let display_line_numbers_for_meta = pane_display_line_numbers.clone();
+        // `relativenumber`, per pane: measured from THIS pane's cursor (an
+        // inactive pane's own, not the focused one's). Off on a multibuffer,
+        // as in the TUI — a distance across non-contiguous source rows is not
+        // a count `5j` could use.
+        let relative_numbers =
+            pane_options.relative_line_numbers && pane_display_line_numbers.is_none();
         // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
         // pane's buffer once; accumulate GutterDecoration contributions into
         // per-line maps. Replaces per-line render_state reads inside gutter_meta.
@@ -2293,6 +2749,9 @@ impl EditorView {
                     severity,
                     diff_sign,
                     is_virtual: false,
+                    relative: relative_numbers
+                        .then(|| (line_idx as u32).abs_diff(cursor.line))
+                        .filter(|distance| *distance != 0),
                 }
             })
             .collect();
@@ -2482,7 +2941,7 @@ impl EditorView {
         // highlighted buffer (the per-buffer pump model).
         let rs_for_dh = self.app.render_state.load_full();
         let dh_guard = rs_for_dh.lsp.document_highlights.load_full();
-        let doc_highlights: Vec<lattice_core::protocol::position::Range> = dh_guard
+        let doc_highlights: Vec<lattice_host::render_state::DocHighlightSpan> = dh_guard
             .as_deref()
             .filter(|cache| cache.buffer_id == pane.buffer_id)
             .map(|cache| {
@@ -2510,15 +2969,18 @@ impl EditorView {
                             &end_text,
                             h.range.end.character,
                         );
-                        lattice_core::protocol::position::Range {
-                            start: lattice_core::protocol::position::Position {
-                                line: start_line,
-                                byte: start_byte,
+                        lattice_host::render_state::DocHighlightSpan {
+                            range: lattice_core::protocol::position::Range {
+                                start: lattice_core::protocol::position::Position {
+                                    line: start_line,
+                                    byte: start_byte,
+                                },
+                                end: lattice_core::protocol::position::Position {
+                                    line: end_line,
+                                    byte: end_byte,
+                                },
                             },
-                            end: lattice_core::protocol::position::Position {
-                                line: end_line,
-                                byte: end_byte,
-                            },
+                            kind: lattice_host::render_state::DocHighlightKind::from_lsp(h.kind),
                         }
                     })
                     .collect()
@@ -2662,6 +3124,18 @@ impl EditorView {
             .active_minor_modes
             .iter()
             .any(|m| *m == lattice_lsp::modes::LspDiagnosticsMode::mode_id());
+        // GD.5c: completion ghost text, in the fold summary's dim tone
+        // (the same "this is not your text" tone). The host publishes a
+        // suffix only when one should be shown.
+        let ghost_text: Option<(u32, String, u32)> = if is_active {
+            render_state
+                .completion
+                .ghost_suffix
+                .as_ref()
+                .map(|s| (self.app.ad().cursor.line, s.to_string(), fold_summary_color))
+        } else {
+            None
+        };
         let inline_diag_summary: Option<crate::editor_element::InlineDiagSummary> =
             if is_active && diag_mode_on {
                 render_state
@@ -2719,6 +3193,7 @@ impl EditorView {
                 view: cx.entity().downgrade(),
             }),
             media_pixels: self.media_pixels.clone(),
+            text_origin_out: render_active.then(|| self.text_origin.clone()),
             pane_idx,
             theme: theme.clone(),
             // 2026-05-26: pass the visible-window text joined so
@@ -2822,6 +3297,7 @@ impl EditorView {
             diagnostic_underlines,
             inlay_color,
             inline_diag_summary,
+            ghost_text,
             // S4.1 (2026-05-27): active pane consumes the cell
             // matrix published by the cell-builder worker;
             // inactive panes pass `None` (mirrors `visible_rows`
@@ -3223,8 +3699,8 @@ impl EditorView {
             fg: u32,
             bg: u32,
             attrs: CellAttrs,
-            cursor: bool,    // true = cursor cell (forces its own run)
-            highlight: bool, // T3.b.3: search-match cell
+            cursor: bool, // true = cursor cell (forces its own run)
+            highlight: TermHighlight,
         }
         // T3.b.3: translate the current_match's alacritty grid
         // line into the visible-window row coords. Same shape
@@ -3278,17 +3754,13 @@ impl EditorView {
                         bg: default_bg,
                         attrs: CellAttrs::default(),
                         cursor: false,
-                        highlight: false,
+                        highlight: TermHighlight::None,
                     });
                     // Build the styled run div. Cursor cells get
-                    // shape-specific treatment (block vs beam);
-                    // every other run honours fg/bg/attrs. Match
-                    // highlights paint a fg/bg swap (same as the
-                    // block-cursor look) — vim's match colour
-                    // would be cleaner once the host theme grows
-                    // a `match_background` slot.
+                    // shape-specific treatment (block vs beam); every other
+                    // run paints what `terminal_run_paint` resolves — the
+                    // cell's SGR attributes and any highlight over it.
                     let mut span = div();
-                    let attrs = style.attrs;
                     if style.cursor && insert_active {
                         // Beam cursor: vertical bar on the left edge
                         // of the cell.
@@ -3296,20 +3768,30 @@ impl EditorView {
                     } else if style.cursor {
                         // Block cursor: swap fg/bg.
                         span = span.bg(rgb(style.fg)).text_color(rgb(style.bg));
-                    } else if style.highlight {
-                        // T3.b.3: search match — invert fg/bg.
-                        span = span.bg(rgb(style.fg)).text_color(rgb(style.bg));
                     } else {
-                        span = span.text_color(rgb(style.fg));
-                        if style.bg != default_bg {
-                            span = span.bg(rgb(style.bg));
+                        let paint = terminal_run_paint(
+                            style.fg,
+                            style.bg,
+                            default_bg,
+                            style.attrs,
+                            style.highlight,
+                        );
+                        span = span.text_color(rgb(paint.fg));
+                        if let Some(bg) = paint.bg {
+                            span = span.bg(rgb(bg));
                         }
-                    }
-                    // Attribute-style approximations. GPUI's
-                    // div doesn't expose every text decoration
-                    // yet; map what's there.
-                    if attrs.underline {
-                        span = span.border_b_1().border_color(rgb(style.fg));
+                        if paint.bold {
+                            span = span.font_weight(gpui::FontWeight::BOLD);
+                        }
+                        if paint.italic {
+                            span = span.italic();
+                        }
+                        if paint.underline {
+                            span = span.underline();
+                        }
+                        if paint.strikethrough {
+                            span = span.line_through();
+                        }
                     }
                     let final_div = span.child(SharedString::from(std::mem::take(text)));
                     row_div.child(final_div)
@@ -3380,7 +3862,8 @@ impl EditorView {
                         }
                     })
                     .unwrap_or(false);
-                let highlight = highlight_match || highlight_visual || highlight_hlsearch;
+                let highlight =
+                    terminal_highlight(highlight_match, highlight_visual, highlight_hlsearch);
                 let style = CellStyle {
                     fg: fg_color,
                     bg: bg_color,
@@ -3419,8 +3902,132 @@ impl EditorView {
     }
 }
 
+/// GD.4: the window as the platform's text-input client.
+///
+/// The platform calls these for keys `on_key_down` left unhandled (see
+/// `text_input::route_key`). The document it thinks it is editing is just
+/// the open composition: ranges are in UTF-16 units from the start of the
+/// in-progress text, and the buffer itself is never exposed — committed
+/// text goes to the editor as typed chords.
+impl gpui::EntityInputHandler for EditorView {
+    fn text_for_range(
+        &mut self,
+        _range: std::ops::Range<usize>,
+        _adjusted_range: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        // No surrounding text is offered, so the platform's "reconvert"
+        // of already-committed text is not available.
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui::UTF16Selection> {
+        // `None` outside text entry tells the platform there is nowhere
+        // to type: no composition starts in Normal mode.
+        if !self.app.input_state().text_entry {
+            return None;
+        }
+        let at = self.composition.utf16_len();
+        Some(gpui::UTF16Selection {
+            range: at..at,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        self.composition
+            .is_active()
+            .then(|| 0..self.composition.utf16_len())
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.composition.clear() {
+            cx.notify();
+        }
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.composition.clear();
+        // Text can arrive with no key behind it (the emoji panel, a
+        // dictation). Outside text entry its characters would run as
+        // Normal-mode commands, so it is dropped there.
+        if !self.app.input_state().text_entry {
+            tracing::debug!(
+                text,
+                "lattice-gpui: platform text dropped, not in text entry"
+            );
+            cx.notify();
+            return;
+        }
+        tracing::debug!(text, "lattice-gpui: text committed by the platform");
+        self.app.commit_text(text);
+        cx.notify();
+        self.quit_if_requested(cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        tracing::debug!(text = new_text, "lattice-gpui: composing");
+        self.composition.set(new_text);
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: std::ops::Range<usize>,
+        _element_bounds: Bounds<gpui::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<gpui::Pixels>> {
+        // Where the candidate list goes: the caret's cell, moved right by
+        // the part of the composition before the asked-for range.
+        let (top, left, row_px, col_px) = self.caret_px?;
+        Some(Bounds::new(
+            gpui::point(px(left + range_utf16.start as f32 * col_px), px(top)),
+            size(px(col_px), px(row_px)),
+        ))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: gpui::Point<gpui::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A title the repaint wake found changed. One platform call, and only
+        // when the active buffer's name actually changed.
+        if let Some(title) = self.pending_title.take() {
+            window.set_window_title(&title);
+            self.shown_title = title;
+        }
         // Phase 5.8.AF.5 / Slice 3c.atomic.L: per-frame budget
         // breakdown on the `lattice_gpui::perf` tracing target.
         // Enable with `RUST_LOG=lattice_gpui::perf=info`. Emits
@@ -3719,6 +4326,16 @@ impl Render for EditorView {
         // The TUI publishes nothing here and is meant not to — it draws alt
         // text, so the host keeps the provisional reservation and reads no
         // image header at all.
+        // The window's width in text columns, for the host's pane geometry.
+        // Sent when it changes — a resize, or a font-size change — not per
+        // frame.
+        let window_columns = (f32::from(viewport_px.width) / glyph_advance_px.max(1.0))
+            .floor()
+            .clamp(1.0, f32::from(u16::MAX)) as u16;
+        if self.last_window_columns != Some(window_columns) {
+            self.app.set_window_columns(window_columns);
+            self.last_window_columns = Some(window_columns);
+        }
         let cell_metrics = (estimated_row_px, glyph_advance_px);
         if self.last_cell_metrics != Some(cell_metrics) {
             self.app
@@ -3745,7 +4362,7 @@ impl Render for EditorView {
         // rows — anything past that is invisible, so `j` would walk
         // the cursor off the popup without bumping scroll. Override
         // to the popup's inner height while focused so
-        // `ensure_cursor_in_viewport` (next call) scrolls correctly.
+        // the next dispatch tail's clamp scrolls correctly.
         //
         // On the way back (popup dismissed): the diff-then-send loop
         // skips `set_pane_viewport` when the pane's leaf rows are
@@ -3841,38 +4458,15 @@ impl Render for EditorView {
             }
             self.last_completion_docs_dims = completion_docs_dims;
         }
-        // 5.8.O: keep the cursor inside the viewport before any
-        // paint reads `editor.scroll`. Auto-scrolls if the cursor
-        // moved past the visible window since the last frame.
-        // `set_viewport_height` above already ran one round of
-        // `ensure_cursor_visible`, but this also covers the case
-        // where the viewport size didn't change but the cursor
-        // moved past the existing window.
-        //
-        // Perf plan A.3 cursor_snap gate: skip the dispatch when
-        // the inputs (cursor, scroll, viewport_height, active
-        // buffer kind) haven't changed since the post-dispatch
-        // state we last cached. The stored key is the POST-
-        // dispatch value so the cache settles in one frame
-        // after a snap mutates `scroll`. First frame always runs
-        // (cache starts at `None`).
-        let pre_ad = self.app.render_state.load().active_document.load_full();
-        let cursor_key = (
-            pre_ad.cursor,
-            pre_ad.scroll,
-            pre_ad.viewport_height,
-            pre_ad.buffer_kind,
-        );
-        if self.ensure_gate.cursor_snap_key != Some(cursor_key) {
-            self.app.ensure_cursor_in_viewport();
-            let post_ad = self.app.render_state.load().active_document.load_full();
-            self.ensure_gate.cursor_snap_key = Some((
-                post_ad.cursor,
-                post_ad.scroll,
-                post_ad.viewport_height,
-                post_ad.buffer_kind,
-            ));
-        }
+        // No cursor-visibility work here. `render` used to dispatch
+        // `EnsureCursorVisible` whenever the cursor, scroll or viewport had
+        // changed since the last frame — which is every frame after a motion —
+        // and a dispatch is a blocking actor round-trip with the tick drain on
+        // its tail, on the UI thread. The dispatch tail keeps the cursor in
+        // view now (`GpuiApp::dispatch_action`), and a resize does through
+        // `set_viewport_height` / `set_pane_viewport` above; between them
+        // every way the cursor or the viewport moves is covered, as in the
+        // TUI, which has never had a per-frame clamp.
         // 2026-05-27 viewport-invariant probe. Opt-in via
         //   RUST_LOG=lattice_gpui::viewport=debug
         // Fires every frame, logging the chrome math + the
@@ -4035,7 +4629,7 @@ impl Render for EditorView {
             .as_deref()
             .filter(|ic| !ic.rendered.is_empty())
             .map(|ic| {
-                let max_visible = 10usize;
+                let max_visible = COMPLETION_MAX_VISIBLE;
                 let total = ic.rendered.len();
                 let window_start = ic
                     .selected
@@ -4113,7 +4707,7 @@ impl Render for EditorView {
                 div()
                     .flex()
                     .flex_col()
-                    .max_w(px(360.0))
+                    .max_w(px(COMPLETION_W_PX))
                     .p_2()
                     .bg(rgb(theme.popup_background))
                     .text_color(rgb(theme.foreground))
@@ -4184,6 +4778,7 @@ impl Render for EditorView {
                         // click target.
                         mouse: None,
                         media_pixels: self.media_pixels.clone(),
+                        text_origin_out: None,
                         // CV.4: live wrap width for this pseudo-pane; `0`
                         // when it has no published entry, which falls back
                         // to the matrix stamp exactly as before.
@@ -4237,6 +4832,7 @@ impl Render for EditorView {
                         diagnostic_underlines: Vec::new(),
                         inlay_color: 0,
                         inline_diag_summary: None,
+                        ghost_text: None,
                         cell_matrix,
                         display_matrix,
                         resolved_theme: docs_resolved.clone(),
@@ -4859,6 +5455,7 @@ impl Render for EditorView {
                 // click target.
                 mouse: None,
                 media_pixels: self.media_pixels.clone(),
+                text_origin_out: None,
                 // CV.4: live wrap width for the popup pseudo-pane; `0`
                 // when it has no published entry, which falls back to the
                 // matrix stamp exactly as before.
@@ -4912,6 +5509,7 @@ impl Render for EditorView {
                 diagnostic_underlines: Vec::new(),
                 inlay_color: 0,
                 inline_diag_summary: None,
+                ghost_text: None,
                 cell_matrix,
                 display_matrix,
                 resolved_theme: popup_resolved.clone(),
@@ -5104,6 +5702,7 @@ impl Render for EditorView {
         let mut root = div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_drop(cx.listener(Self::on_files_dropped))
             .flex()
             .flex_col()
             .size_full()
@@ -5124,69 +5723,144 @@ impl Render for EditorView {
                 // Level-coloured echo (errors red + bold, warnings
                 // yellow) to match the TUI echo line; cmdline / search /
                 // Info fall through to the default status foreground.
-                let mut msg = if modeline.cmdline_expanded {
-                    let mut col = div().flex().flex_col();
-                    for line in bottom_row.split('\n') {
-                        col = col.child(div().child(line.to_string()));
-                    }
-                    col
-                } else if matches!(modal, lattice_grammar::ModalState::Command)
-                    && modeline
+                // GD.5b: a minibuffer row shows WHERE you are typing. The
+                // caret is the focused editing buffer's cursor (`ad.cursor`,
+                // the `*command-line*` / `*prompt-line*` buffer), drawn as a
+                // bar between the text before and after it. The window drew
+                // the text and no caret at all.
+                let ad_row = self.app.ad();
+                let caret_color = theme.status_foreground;
+                let dim_fg = lattice_host::ui::theme::resolve_syntax_style(
+                    &resolved_theme,
+                    &theme_ids,
+                    lattice_cells::style::Style::Comment,
+                )
+                .fg
+                .map(|c| c.to_rgb_u32(0x006c_7086))
+                .unwrap_or(0x006c_7086);
+                let error_fg = lattice_host::ui::theme::resolve_syntax_style(
+                    &resolved_theme,
+                    &theme_ids,
+                    lattice_cells::style::Style::DiagnosticError,
+                )
+                .fg
+                .map(|c| c.to_rgb_u32(0x00f3_8ba8))
+                .unwrap_or(0x00f3_8ba8);
+                // The `:` line's decoration spans (byte ranges into its
+                // first line) in theme colours. Used by the one-row line
+                // and by the first row of the expanded band.
+                let cmdline_spans: Vec<(std::ops::Range<usize>, u32)> = {
+                    let default_fg = theme.status_foreground;
+                    modeline
                         .cmdline_decorations
                         .as_ref()
-                        .is_some_and(|d| !d.spans.is_empty())
-                {
+                        .map(|d| {
+                            d.spans
+                                .iter()
+                                .map(|sp| {
+                                    let fg = lattice_host::ui::theme::resolve_syntax_style(
+                                        &resolved_theme,
+                                        &theme_ids,
+                                        sp.style,
+                                    )
+                                    .fg
+                                    .map(|c| c.to_rgb_u32(default_fg))
+                                    .unwrap_or(default_fg);
+                                    (sp.range.clone(), fg)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let mut msg = if modeline.cmdline_expanded {
+                    // MB.2 band: one row per line; the prompt character is
+                    // on the first, and the caret on the cursor's line.
+                    // GD.5c: the first line is coloured by the decoration
+                    // spans, as the terminal's band is; they describe the
+                    // command and its arguments, which are on that line.
+                    let mut col = div().flex().flex_col();
+                    for (i, line) in bottom_row.split('\n').enumerate() {
+                        let (prefix, typed) = if i == 0 {
+                            let mut chars = line.chars();
+                            let p = chars.next().map(String::from).unwrap_or_default();
+                            (p, chars.as_str().to_string())
+                        } else {
+                            (String::new(), line.to_string())
+                        };
+                        let caret = (ad_row.cursor.line as usize == i).then(|| {
+                            lattice_host::cmdline_row::caret_byte(
+                                &typed,
+                                ad_row.cursor.byte as usize,
+                            )
+                        });
+                        let segments = if i == 0 {
+                            decorated_segments(&typed, &cmdline_spans)
+                        } else {
+                            vec![(typed, None)]
+                        };
+                        col = col.child(typed_row(prefix, segments, caret, caret_color));
+                    }
+                    col
+                } else if matches!(modal, lattice_grammar::ModalState::Command) {
                     // MB.4: colour the `:` line per the published decoration
-                    // spans, then the live error / parameter hint (peer of
-                    // the TUI `draw_command_or_echo` path). Spans are byte
-                    // ranges into `cmdline_text` (the `:` prompt is separate).
-                    let d = modeline.cmdline_decorations.as_ref().unwrap();
-                    let line = modeline.cmdline_text.as_ref();
-                    let default_fg = theme.status_foreground;
-                    let mut row = div().flex().flex_row().child(":".to_string());
-                    let mut pos = 0usize;
-                    for sp in &d.spans {
-                        let s = sp.range.start.min(line.len());
-                        let e = sp.range.end.min(line.len());
-                        if s < pos
-                            || e < s
-                            || !line.is_char_boundary(s)
-                            || !line.is_char_boundary(e)
-                        {
-                            continue;
-                        }
-                        if s > pos {
-                            row = row.child(line[pos..s].to_string());
-                        }
-                        let fg = lattice_host::ui::theme::resolve_syntax_style(
-                            &resolved_theme,
-                            &theme_ids,
-                            sp.style,
-                        )
-                        .fg
-                        .map(|c| c.to_rgb_u32(default_fg))
-                        .unwrap_or(default_fg);
-                        row = row.child(div().text_color(rgb(fg)).child(line[s..e].to_string()));
-                        pos = e;
-                    }
-                    if pos < line.len() {
-                        row = row.child(line[pos..].to_string());
-                    }
-                    if let Some(err) = &d.error {
-                        let ec = lattice_host::ui::theme::resolve_syntax_style(
-                            &resolved_theme,
-                            &theme_ids,
-                            lattice_cells::style::Style::DiagnosticError,
-                        )
-                        .fg
-                        .map(|c| c.to_rgb_u32(0x00f3_8ba8))
-                        .unwrap_or(0x00f3_8ba8);
-                        row = row.child(div().text_color(rgb(ec)).child(format!("  {err}")));
-                    } else if let Some(ph) = &d.param_hint {
-                        row =
-                            row.child(div().text_color(rgb(0x006c_7086)).child(format!("  {ph}")));
+                    // spans (byte ranges into `cmdline_text`; the `:` prompt
+                    // is separate), then the trailing hints the host decides
+                    // (`cmdline_row::trailing_hints`) — the same ones the
+                    // terminal shows.
+                    let line: &str = modeline.cmdline_text.as_ref();
+                    let deco = modeline.cmdline_decorations.as_ref();
+                    let caret =
+                        lattice_host::cmdline_row::caret_byte(line, ad_row.cursor.byte as usize);
+                    let mut row = typed_row(
+                        ":".to_string(),
+                        decorated_segments(line, &cmdline_spans),
+                        Some(caret),
+                        caret_color,
+                    );
+                    let completion = self.app.render_state.load().completion.clone();
+                    for hint in lattice_host::cmdline_row::trailing_hints(
+                        modeline.auto_submit_hint,
+                        ad_row.chord_capture,
+                        completion
+                            .state
+                            .as_deref()
+                            .map(|s| (s.selected, s.candidates.len())),
+                        deco,
+                    ) {
+                        use lattice_host::cmdline_row::HintKind;
+                        let fg = match hint.kind {
+                            HintKind::Error => error_fg,
+                            HintKind::Cue | HintKind::Count | HintKind::Param => dim_fg,
+                        };
+                        row = row.child(div().text_color(rgb(fg)).child(hint.text));
                     }
                     row
+                } else if let lattice_grammar::ModalState::Search(dir) = modal {
+                    // The search line is typed at its end.
+                    let prefix = match dir {
+                        lattice_grammar::SearchDirection::Forward => "/",
+                        lattice_grammar::SearchDirection::Backward => "?",
+                    };
+                    let pattern = modeline.search_pattern.as_deref().unwrap_or("").to_string();
+                    let caret = pattern.len();
+                    typed_row(
+                        prefix.to_string(),
+                        vec![(pattern, None)],
+                        Some(caret),
+                        caret_color,
+                    )
+                } else if matches!(modal, lattice_grammar::ModalState::Prompt) {
+                    // MG.51: the label is the echo, the typed text the
+                    // `*prompt-line*` buffer.
+                    let label = messages
+                        .last
+                        .as_deref()
+                        .map(|m| m.text.clone())
+                        .unwrap_or_default();
+                    let typed = modeline.prompt_text.to_string();
+                    let caret =
+                        lattice_host::cmdline_row::caret_byte(&typed, ad_row.cursor.byte as usize);
+                    typed_row(label, vec![(typed, None)], Some(caret), caret_color)
                 } else {
                     div().child(bottom_row)
                 };
@@ -5320,8 +5994,122 @@ impl Render for EditorView {
                     .child(overlay),
             );
         }
-        if let Some(overlay) = completion_overlay {
-            root = root.child(div().absolute().top_8().right_4().child(overlay));
+        // GD.4: the caret's cell, for the composition overlay and for the
+        // platform's candidate window. On the `:` line and in a search the
+        // caret is on the bottom row, whose column this does not track;
+        // the row's left edge is close enough to place a candidate list.
+        {
+            let ad = self.app.ad();
+            let pane_pad = rem * 0.75;
+            let on_bottom_row = matches!(
+                ad.modal,
+                lattice_grammar::ModalState::Command
+                    | lattice_grammar::ModalState::Search(_)
+                    | lattice_grammar::ModalState::Prompt
+            );
+            let (top, left) = if on_bottom_row {
+                (
+                    f32::from(viewport_px.height) - estimated_row_px - pane_pad,
+                    pane_pad,
+                )
+            } else {
+                text_cell_px(
+                    self.text_origin.get(),
+                    (pane_pad, tabline_h_px + pane_pad),
+                    ad.cursor.byte.saturating_sub(ad.leftcol),
+                    ad.cursor.line.saturating_sub(ad.scroll),
+                    glyph_advance_px,
+                    estimated_row_px,
+                )
+            };
+            self.caret_px = Some((top, left, estimated_row_px, glyph_advance_px));
+            if self.composition.is_active() {
+                // Underlined, on the pane's background so it covers the
+                // text it will displace rather than tangling with it.
+                root = root.child(
+                    div()
+                        .absolute()
+                        .top(px(top))
+                        .left(px(left))
+                        .h(px(estimated_row_px))
+                        .bg(rgb(theme.background))
+                        .text_color(rgb(theme.foreground))
+                        .text_size(px(font_size_px))
+                        .underline()
+                        .child(SharedString::from(self.composition.marked().to_string())),
+                );
+            }
+        }
+        // GD.4: register this view as the window's text input for the
+        // frame. `handle_input` must be called during paint, which is what
+        // the canvas is for; it draws nothing and takes no mouse events.
+        //
+        // macOS only (`PLATFORM_COMPOSES`): elsewhere no key is routed to
+        // the platform, and a registered handler would still receive an
+        // input method's commits, which is a change no one has looked at.
+        if crate::text_input::PLATFORM_COMPOSES {
+            let focus = self.focus_handle.clone();
+            let view = cx.entity();
+            root = root.child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |bounds, (), window, cx| {
+                        window.handle_input(
+                            &focus,
+                            gpui::ElementInputHandler::new(bounds, view),
+                            cx,
+                        );
+                    },
+                )
+                .absolute()
+                .size_full(),
+            );
+        }
+        // GD.5a: the candidate popup sits at the text it completes, not in a
+        // corner of the window. Anchored to the completion's ANCHOR (where the
+        // replaced text starts), not the live cursor, so the box does not
+        // slide right with every character typed. Same placement rule as the
+        // hover popup: below the row, above when it does not fit, kept inside
+        // the window.
+        //
+        // The popup's size is not known until layout, so it is estimated:
+        // the candidate rows it shows plus its two footer lines and padding,
+        // at its maximum width. An over-estimate only flips it above a row or
+        // pulls it left a little early.
+        let completion_origin: Option<(f32, f32)> = insert_completion
+            .as_deref()
+            .filter(|ic| !ic.rendered.is_empty())
+            .map(|ic| {
+                let ad = self.app.ad();
+                let pane_pad = rem * 0.75;
+                // GD.5c: from where the pane's text was last painted, so
+                // the gutter and a split pane's offset are included.
+                let (row_top, cell_left) = text_cell_px(
+                    self.text_origin.get(),
+                    (pane_pad, tabline_h_px + pane_pad),
+                    ic.anchor.byte.saturating_sub(ad.leftcol),
+                    ic.anchor.line.saturating_sub(ad.scroll),
+                    glyph_advance_px,
+                    estimated_row_px,
+                );
+                let rows = ic.rendered.len().min(COMPLETION_MAX_VISIBLE) as f32;
+                let height = (rows + 2.0) * estimated_row_px + rem * 1.5;
+                anchored_popup_origin(
+                    row_top,
+                    estimated_row_px,
+                    cell_left,
+                    (COMPLETION_W_PX, height),
+                    (f32::from(viewport_px.width), f32::from(viewport_px.height)),
+                )
+            });
+        if let (Some(overlay), Some((top_px, left_px))) = (completion_overlay, completion_origin) {
+            root = root.child(
+                div()
+                    .absolute()
+                    .top(px(top_px))
+                    .left(px(left_px))
+                    .child(overlay),
+            );
         }
         // NOTIF.1c: the notification stack, bottom-right, attached LAST
         // so nothing can cover it — a notification hidden exactly when
@@ -5334,11 +6122,25 @@ impl Render for EditorView {
             // occluded.
             root = root.child(div().absolute().bottom_8().right_4().child(stack));
         }
-        // PU.5d: docs popup to the LEFT of the candidate popup. The
-        // candidate box is `.right_4()` (16px) wide up to 360px, so the docs
-        // box sits at right = 16 + 360 + 8(gap) = 384px, same `.top_8()`.
-        if let Some(overlay) = completion_docs_overlay {
-            root = root.child(div().absolute().top_8().right(px(384.0)).child(overlay));
+        // PU.5d / GD.5a: the docs popup beside the candidate popup, level
+        // with it — to its right when there is room, otherwise to its left.
+        if let (Some(overlay), Some((top_px, left_px))) =
+            (completion_docs_overlay, completion_origin)
+        {
+            let docs_left = side_panel_left(
+                left_px,
+                COMPLETION_W_PX,
+                COMPLETION_DOCS_W_PX,
+                8.0,
+                f32::from(viewport_px.width),
+            );
+            root = root.child(
+                div()
+                    .absolute()
+                    .top(px(top_px))
+                    .left(px(docs_left))
+                    .child(overlay),
+            );
         }
         // WK.13: the band first, so a popup the user is reading is painted
         // OVER the hint rather than under it. It is bottom-anchored and
@@ -5411,9 +6213,7 @@ impl Render for EditorView {
                     // POPUP's scroll, causing a frame-jump on second K.
                     let cursor_screen_row = anchor
                         .line
-                        .saturating_sub(popup_substate.doc_scroll_at_anchor)
-                        as f32;
-                    let cursor_byte_col = anchor.byte as f32;
+                        .saturating_sub(popup_substate.doc_scroll_at_anchor);
                     // 2026-05-27: the popup is positioned relative
                     // to the WINDOW (root container's top-left),
                     // not relative to the document area. Account
@@ -5424,38 +6224,24 @@ impl Render for EditorView {
                     // pane's left padding only.
                     let pane_pad_v = rem * 0.75;
                     let pane_pad_h = rem * 0.75;
-                    let top_origin_px = tabline_h_px + pane_pad_v;
-                    let cursor_row_top = top_origin_px + cursor_screen_row * estimated_row_px;
-                    // Prefer placing the popup right below the
-                    // cursor row; flip above when the locked popup
-                    // height wouldn't fit below; if neither side
-                    // fits cleanly, pin to whichever has more room
-                    // and let the popup clip against the window
-                    // (the lock means we can't shrink).
-                    let viewport_h = f32::from(viewport_px.height);
-                    let below_top = cursor_row_top + estimated_row_px;
-                    let above_top = cursor_row_top - popup_h_px;
-                    let fits_below = below_top + popup_h_px <= viewport_h;
-                    let fits_above = above_top >= 0.0;
-                    let top_px = if fits_below {
-                        below_top
-                    } else if fits_above {
-                        above_top
-                    } else {
-                        // Neither side fits — pin to the side with
-                        // more room, clamped to the viewport.
-                        let room_below = viewport_h - below_top;
-                        let room_above = cursor_row_top;
-                        if room_below >= room_above {
-                            (viewport_h - popup_h_px).max(0.0)
-                        } else {
-                            0.0
-                        }
-                    };
-                    let left_px = pane_pad_h + cursor_byte_col * glyph_advance_px;
-                    // Keep the popup within the window's right edge.
-                    let viewport_w = f32::from(viewport_px.width);
-                    let left_px = left_px.min((viewport_w - popup_w_px).max(0.0));
+                    // GD.5c: the pane's painted text origin when there is
+                    // one (it carries the gutter and a split's offset);
+                    // the single-pane estimate otherwise.
+                    let (cursor_row_top, cursor_left) = text_cell_px(
+                        self.text_origin.get(),
+                        (pane_pad_h, tabline_h_px + pane_pad_v),
+                        anchor.byte.saturating_sub(ad.leftcol),
+                        cursor_screen_row,
+                        glyph_advance_px,
+                        estimated_row_px,
+                    );
+                    let (top_px, left_px) = anchored_popup_origin(
+                        cursor_row_top,
+                        estimated_row_px,
+                        cursor_left,
+                        (popup_w_px, popup_h_px),
+                        (f32::from(viewport_px.width), f32::from(viewport_px.height)),
+                    );
                     root.child(
                         div()
                             .absolute()
@@ -5505,8 +6291,16 @@ impl Render for EditorView {
 /// binary, lifted into the lib so `lattice-cli` can route
 /// `lattice --gpu <file>` through this single entry. The
 /// `lattice-gpui` binary keeps a thin shim that calls this.
-pub fn run(document: Document) -> Result<()> {
-    Application::new().run(move |cx| {
+pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
+    let open_requests = std::sync::Arc::new(OpenRequests::default());
+    let application = Application::new();
+    // Must be registered before `run`: macOS delivers the file a launch was
+    // for ("Open With", `open -a Lattice notes.md`) during startup.
+    {
+        let open_requests = open_requests.clone();
+        application.on_open_urls(move |urls| open_requests.push_urls(urls));
+    }
+    application.run(move |cx| {
         // Resolve `ui.window.*` before open_window. The editor boots inside the
         // builder closure below (too late for WindowOptions), so parse the default
         // config paths into a throwaway registry now. Both are registered scalar
@@ -5566,7 +6360,9 @@ pub fn run(document: Document) -> Result<()> {
                 window_decorations,
                 ..Default::default()
             },
-            move |_window, cx| cx.new(|cx| EditorView::new(document, cx)),
+            move |_window, cx| {
+                cx.new(|cx| EditorView::new(document, startup_lesson, open_requests, cx))
+            },
         );
         let window = match window {
             Ok(w) => w,
@@ -5583,7 +6379,82 @@ pub fn run(document: Document) -> Result<()> {
         // back a real window context where focus actually sticks
         // (this is the pattern gpui's own `examples/input.rs`
         // uses).
+        // Quit, from the keyboard and the menu. Both go through the editor's
+        // own guard; neither closes anything if a buffer is unsaved.
+        cx.on_action(move |_: &Quit, cx| {
+            let may_quit = window
+                .update(cx, |view, _window, cx| view.request_close(cx))
+                .unwrap_or(true);
+            if may_quit {
+                cx.quit();
+            }
+        });
+        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        // GD.8c: the Edit menu. Each item is the vim command it names
+        // (`crate::edit_menu_actions`), run through the editor's own
+        // dispatch.
+        fn on_edit<A: gpui::Action>(
+            cx: &mut App,
+            window: gpui::WindowHandle<EditorView>,
+            item: crate::EditMenuItem,
+        ) {
+            cx.on_action(move |_: &A, cx| {
+                let _ = window.update(cx, |view, _window, cx| {
+                    view.app.edit_menu(item);
+                    view.refresh_title();
+                    cx.notify();
+                });
+            });
+        }
+        on_edit::<EditUndo>(cx, window, crate::EditMenuItem::Undo);
+        on_edit::<EditRedo>(cx, window, crate::EditMenuItem::Redo);
+        on_edit::<EditCut>(cx, window, crate::EditMenuItem::Cut);
+        on_edit::<EditCopy>(cx, window, crate::EditMenuItem::Copy);
+        on_edit::<EditPaste>(cx, window, crate::EditMenuItem::Paste);
+        // The Cmd shortcuts are bound on macOS only: elsewhere the
+        // platform key is Super, there is no menu bar to advertise them,
+        // and a user's `<D-…>` bindings should reach the editor.
+        if cfg!(target_os = "macos") {
+            cx.bind_keys([
+                KeyBinding::new("cmd-z", EditUndo, None),
+                KeyBinding::new("cmd-shift-z", EditRedo, None),
+                KeyBinding::new("cmd-x", EditCut, None),
+                KeyBinding::new("cmd-c", EditCopy, None),
+                KeyBinding::new("cmd-v", EditPaste, None),
+            ]);
+        }
+        cx.set_menus(vec![
+            Menu {
+                name: "Lattice".into(),
+                items: vec![MenuItem::action("Quit Lattice", Quit)],
+            },
+            Menu {
+                name: "Edit".into(),
+                items: vec![
+                    MenuItem::action("Undo", EditUndo),
+                    MenuItem::action("Redo", EditRedo),
+                    MenuItem::separator(),
+                    MenuItem::action("Cut", EditCut),
+                    MenuItem::action("Copy", EditCopy),
+                    MenuItem::action("Paste", EditPaste),
+                ],
+            },
+        ]);
+        // One window: when it is gone, so is the application. Without this
+        // macOS keeps a windowless process alive in the Dock.
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         let focus_result = window.update(cx, |view, window, cx| {
+            // The close button asks the editor first.
+            let this = cx.entity().downgrade();
+            window.on_window_should_close(cx, move |_window, cx| {
+                this.update(cx, |view, cx| view.request_close(cx))
+                    .unwrap_or(true)
+            });
             window.focus(&view.focus_handle.clone());
             cx.activate(true);
             // ui.window.decorations = transparent: hide the traffic-light buttons
@@ -6592,6 +7463,68 @@ mod modeline_tests {
         assert!(level.is_none());
     }
 
+    /// GD.5b: the caret splits the typed text where it is, and a
+    /// coloured token it falls inside keeps its colour on both sides.
+    #[test]
+    fn the_typed_text_splits_at_the_caret() {
+        use super::{TypedSeg, split_segments_at_caret};
+        let segs = || {
+            vec![
+                ("set".to_string(), Some(0xff0000)),
+                (" ".to_string(), None),
+                ("wrap".to_string(), Some(0x00ff00)),
+            ]
+        };
+        let text = |v: &[TypedSeg]| v.iter().map(|(t, _)| t.as_str()).collect::<String>();
+
+        let (b, a) = split_segments_at_caret(segs(), 0);
+        assert!(b.is_empty());
+        assert_eq!(text(&a), "set wrap");
+
+        let (b, a) = split_segments_at_caret(segs(), 3);
+        assert_eq!((text(&b).as_str(), text(&a).as_str()), ("set", " wrap"));
+
+        // Inside `wrap`: both halves are still that token's colour.
+        let (b, a) = split_segments_at_caret(segs(), 6);
+        assert_eq!((text(&b).as_str(), text(&a).as_str()), ("set wr", "ap"));
+        assert_eq!(b.last().unwrap().1, Some(0x00ff00));
+        assert_eq!(a.first().unwrap().1, Some(0x00ff00));
+
+        let (b, a) = split_segments_at_caret(segs(), 99);
+        assert_eq!(text(&b), "set wrap");
+        assert!(a.is_empty());
+
+        // Never inside a character.
+        let (b, a) = split_segments_at_caret(vec![("café".to_string(), None)], 4);
+        assert_eq!((text(&b).as_str(), text(&a).as_str()), ("caf", "é"));
+    }
+
+    /// GD.5b: decoration spans colour their tokens; the text between
+    /// them is left to the row. A span that overlaps the one before it,
+    /// or runs past the line, is not allowed to corrupt the text.
+    #[test]
+    fn decoration_spans_become_coloured_segments() {
+        use super::{TypedSeg, decorated_segments};
+        let segs = decorated_segments("set wrap", &[(0..3, 1), (4..8, 2)]);
+        assert_eq!(
+            segs,
+            vec![
+                ("set".to_string(), Some(1)),
+                (" ".to_string(), None),
+                ("wrap".to_string(), Some(2)),
+            ]
+        );
+        let text = |v: &[TypedSeg]| v.iter().map(|(t, _)| t.as_str()).collect::<String>();
+        assert_eq!(text(&decorated_segments("set wrap", &[])), "set wrap");
+        assert_eq!(
+            text(&decorated_segments(
+                "set wrap",
+                &[(0..3, 1), (2..5, 2), (6..99, 3)]
+            )),
+            "set wrap"
+        );
+    }
+
     /// The global cmdline/echo row is painted in every state EXCEPT a
     /// picker open in minibuffer mode — there the picker's own prompt row
     /// claims the bottom slot (like the TUI's `draw_picker_prompt`), so
@@ -6609,6 +7542,164 @@ mod modeline_tests {
         assert!(super::global_bottom_row_visible(true, false));
         // No picker at all → keep.
         assert!(super::global_bottom_row_visible(false, false));
+    }
+
+    /// GD.5a — a cursor-anchored popup goes below its row, above when it
+    /// must, and stays inside the window.
+    ///
+    /// The insert-completion popup used to sit in the window's top-right
+    /// corner whatever was being completed. It shares this placement with
+    /// the hover popup now.
+    #[test]
+    fn an_anchored_popup_goes_below_then_above_and_stays_in_the_window() {
+        use super::anchored_popup_origin;
+        const ROW: f32 = 20.0;
+        let popup = (300.0, 200.0);
+        let viewport = (1000.0, 600.0);
+
+        assert_eq!(
+            anchored_popup_origin(100.0, ROW, 50.0, popup, viewport),
+            (120.0, 50.0),
+            "room below: directly under the row, at the cell"
+        );
+        assert_eq!(
+            anchored_popup_origin(500.0, ROW, 50.0, popup, viewport),
+            (300.0, 50.0),
+            "no room below: its bottom edge on the row's top"
+        );
+        assert_eq!(
+            anchored_popup_origin(100.0, ROW, 900.0, popup, viewport),
+            (120.0, 700.0),
+            "near the right edge: pulled left to fit"
+        );
+        // Taller than either side: pinned to the roomier one, never off-window.
+        let tall = (300.0, 550.0);
+        assert_eq!(
+            anchored_popup_origin(100.0, ROW, 50.0, tall, viewport).0,
+            50.0
+        );
+        assert_eq!(
+            anchored_popup_origin(500.0, ROW, 50.0, tall, viewport).0,
+            0.0
+        );
+        // A popup wider than the window starts at its left edge.
+        assert_eq!(
+            anchored_popup_origin(100.0, ROW, 50.0, (1200.0, 100.0), viewport).1,
+            0.0
+        );
+    }
+
+    /// GD.5a — the docs panel sits beside the candidate box, on whichever
+    /// side has room.
+    #[test]
+    fn the_docs_panel_sits_beside_the_candidates_where_there_is_room() {
+        use super::side_panel_left;
+        assert_eq!(side_panel_left(100.0, 360.0, 360.0, 8.0, 1000.0), 468.0);
+        assert_eq!(
+            side_panel_left(600.0, 360.0, 360.0, 8.0, 1000.0),
+            232.0,
+            "no room on the right: to the left"
+        );
+        assert_eq!(
+            side_panel_left(200.0, 360.0, 360.0, 8.0, 700.0),
+            0.0,
+            "no room on either side: against the left edge"
+        );
+    }
+
+    /// GD.7a — every SGR attribute a terminal cell carries is painted.
+    ///
+    /// This peer honoured reverse and underline and dropped the rest, so a
+    /// prompt's bold segment and `git log`'s italics came out plain.
+    #[test]
+    fn a_terminal_run_paints_every_attribute_it_carries() {
+        use super::{TermHighlight, TermRunPaint, terminal_run_paint};
+        use lattice_terminal::CellAttrs;
+        const FG: u32 = 0x00ff_ffff;
+        const BG: u32 = 0x0010_2030;
+        const DEFAULT_BG: u32 = 0x0000_0000;
+
+        let plain = terminal_run_paint(
+            FG,
+            DEFAULT_BG,
+            DEFAULT_BG,
+            CellAttrs::default(),
+            TermHighlight::None,
+        );
+        assert_eq!(
+            plain,
+            TermRunPaint {
+                fg: FG,
+                bg: None,
+                bold: false,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+            },
+            "a default cell leaves the pane's background showing"
+        );
+
+        let attrs = CellAttrs {
+            bold: true,
+            italic: true,
+            underline: true,
+            strikethrough: true,
+            ..CellAttrs::default()
+        };
+        let styled = terminal_run_paint(FG, BG, DEFAULT_BG, attrs, TermHighlight::None);
+        assert!(styled.bold && styled.italic && styled.underline && styled.strikethrough);
+        assert_eq!(styled.bg, Some(BG), "an explicit background is painted");
+
+        let dim = CellAttrs {
+            dim: true,
+            ..CellAttrs::default()
+        };
+        assert_eq!(
+            terminal_run_paint(FG, DEFAULT_BG, DEFAULT_BG, dim, TermHighlight::None).fg,
+            crate::cells_paint::dim_channel(FG),
+            "dim is the document painter's shade, not a second one"
+        );
+    }
+
+    /// GD.7a — a search hit, the current match and a selection are told
+    /// apart.
+    ///
+    /// All three were one fg/bg swap, so with `hlsearch` on every hit looked
+    /// like the one `n` would jump to. As in the TUI: hits are underlined,
+    /// and the current match and the Visual selection invert.
+    #[test]
+    fn terminal_search_hits_differ_from_the_current_match_and_selection() {
+        use super::{TermHighlight, terminal_highlight, terminal_run_paint};
+        use lattice_terminal::CellAttrs;
+        const FG: u32 = 0x00ff_ffff;
+        const BG: u32 = 0x0000_0000;
+
+        assert_eq!(terminal_highlight(false, false, false), TermHighlight::None);
+        assert_eq!(
+            terminal_highlight(false, false, true),
+            TermHighlight::Search
+        );
+        assert_eq!(
+            terminal_highlight(true, false, true),
+            TermHighlight::Inverted,
+            "the current match outranks being a hit"
+        );
+        assert_eq!(
+            terminal_highlight(false, true, true),
+            TermHighlight::Inverted
+        );
+
+        let hit = terminal_run_paint(FG, BG, BG, CellAttrs::default(), TermHighlight::Search);
+        assert!(hit.underline, "a hit is underlined");
+        assert_eq!((hit.fg, hit.bg), (FG, None), "and keeps its colours");
+
+        let current = terminal_run_paint(FG, BG, BG, CellAttrs::default(), TermHighlight::Inverted);
+        assert_eq!(
+            (current.fg, current.bg),
+            (BG, Some(FG)),
+            "the current match inverts"
+        );
+        assert!(!current.underline);
     }
 
     /// `icon_color_to_rgb` maps the renderer-neutral named `IconColor`s
@@ -6841,5 +7932,28 @@ mod diagnostic_glyph_tests {
             seen.push(g.for_severity(sev));
         }
         assert_eq!(seen.len(), 4);
+    }
+}
+
+#[cfg(test)]
+mod text_cell_tests {
+    use super::text_cell_px;
+
+    /// GD.5c: a popup's cell is measured from where the pane's text was
+    /// painted, so a gutter and a split's offset move it; before the first
+    /// paint the single-pane estimate stands in.
+    #[test]
+    fn a_text_cell_is_measured_from_the_panes_painted_origin() {
+        // Text starts 300px in (a split on the right, plus its gutter)
+        // and 40px down. Column 4, row 2, 10px cells, 20px rows.
+        assert_eq!(
+            text_cell_px(Some((300.0, 40.0)), (12.0, 12.0), 4, 2, 10.0, 20.0),
+            (80.0, 340.0)
+        );
+        // Nothing painted yet: the fallback origin.
+        assert_eq!(
+            text_cell_px(None, (12.0, 30.0), 4, 2, 10.0, 20.0),
+            (70.0, 52.0)
+        );
     }
 }

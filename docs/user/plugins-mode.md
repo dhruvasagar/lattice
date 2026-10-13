@@ -18,8 +18,9 @@ Two sticky rows sit above the table.
 The first counts the set: how many plugins are loaded, how many are running,
 how many are quarantined, how many failed to load, and how many are running
 an older build because their latest one did not compile. The last two are the
-ones worth reading. A plugin that fails to load has no row in the table at
-all, so the header is the only place it is visible; a plugin whose **build
+ones worth reading. A plugin that fails to load has no row in the table —
+it is listed in a section under it — so the header is what tells you to look
+down; a plugin whose **build
 failed** has a row and works, which is exactly why it is easy to miss —
 nothing is broken, your edit simply did not take.
 
@@ -121,6 +122,14 @@ artifact, because the latest build did not compile. The row reads
 **Failed to load** lists plugins that are not running at all — including
 your `init.rs` when it has never built, and a plugin directory that has a
 manifest but nothing loadable in it.
+
+**The keys work on these entries too.** Put the cursor on a plugin's name in
+either section, or anywhere in the error under it, and it is that plugin's
+row: `b` rebuilds it and loads it, `r` tries the load again with what is on
+disk, `u` fetches a newer source first, `<CR>` describes it. So the loop for
+a plugin that will not load is: read the error, fix it, press `b`. A plugin
+that failed to load was never running, so `x` has nothing to unload and `T`
+no trace level to change, and they say so or do nothing.
 
 Both cover every plugin the editor builds, not only your config: `init.rs`,
 the plugins it `require`s, and any plugin project under

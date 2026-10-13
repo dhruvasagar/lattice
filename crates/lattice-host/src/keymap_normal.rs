@@ -219,6 +219,38 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.paste_before),
         source(),
     );
+    // The rest of vim's put family. `]P` and `[P` are `[p`, as in vim.
+    for (chords, action) in [
+        (
+            vec![lit_char('g'), lit_char('p')],
+            actions.put_after_cursor_end,
+        ),
+        (
+            vec![lit_char('g'), lit_char('P')],
+            actions.put_before_cursor_end,
+        ),
+        (vec![lit_char(']'), lit_char('p')], actions.put_after_indent),
+        (
+            vec![lit_char('['), lit_char('p')],
+            actions.put_before_indent,
+        ),
+        (
+            vec![lit_char(']'), lit_char('P')],
+            actions.put_before_indent,
+        ),
+        (
+            vec![lit_char('['), lit_char('P')],
+            actions.put_before_indent,
+        ),
+    ] {
+        handle.bind(
+            layer,
+            mode,
+            &chords,
+            CommandInvocation::of(action),
+            source(),
+        );
+    }
 
     // Mode entry.
     handle.bind(

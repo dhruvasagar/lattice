@@ -23,9 +23,10 @@ curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh
 Add `~/.local/bin` to your `PATH` if it isn't there already.
 
 The script installs the GPU-rendered build when a release publishes one for
-your platform, and the terminal-only build otherwise — the GPU build's binary
-runs in the terminal too, and opens the GPU window with `lattice --gui`. Pin a
-build with `--gui` (fail if it is not published) or `--cli`:
+your platform, and the terminal-only build otherwise. The GPU build opens a
+window; `lattice --tui` runs it in the terminal, which is also what it does
+with no display reachable. Pin a build with `--gui` (fail if it is not
+published) or `--cli`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh | sh -s -- --cli
@@ -43,7 +44,8 @@ Download from the [releases page](https://github.com/dhruvasagar/lattice/release
 
 The `lattice-*` archives are the terminal build — the one to use over SSH or
 on a server. The `lattice-gui-*` archives are the same editor plus the
-GPU-rendered window, opened with `--gui`. ARM Linux and ARM Windows GUI
+GPU-rendered window, which is what `lattice` then opens (`--tui` for the
+terminal). ARM Linux and ARM Windows GUI
 builds are best-effort and may be absent from a given release.
 
 Every archive unpacks to a relocatable prefix — put it anywhere:

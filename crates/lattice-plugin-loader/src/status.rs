@@ -72,7 +72,8 @@ mod build_state_tests {
 ///
 /// Held separately from [`PluginStatus`] rather than as another `PluginHealth`
 /// variant, because a failed load has none of what that type carries: no
-/// host-issued id, no granted capabilities, no trust tier that was ever applied.
+/// host-issued id, no granted capabilities, no trust tier that was ever applied
+/// (the one it carries is the tier the attempt was made under, kept for the retry).
 /// Modelling it as a degenerate `PluginStatus` would mean inventing all three,
 /// and `:plugins`' row→plugin index mapping would then point at rows with no
 /// plugin behind them.
@@ -85,6 +86,11 @@ pub struct FailedLoad {
     /// Where it was loaded from — the actionable half. The name says *what*
     /// broke; this says *which copy on disk* to go and look at.
     pub dir: std::path::PathBuf,
+    /// The trust tier the load was attempted under. Not one that was ever
+    /// *applied* — nothing loaded — but the one a retry has to use: `r` on a
+    /// bundled plugin's entry that came back at the user tier would load it
+    /// without the capabilities only its own tier grants.
+    pub tier: lattice_plugin_host::TrustTier,
     /// The rendered [`crate::PluginLoaderError`]. A string rather than the error
     /// itself: this is a snapshot for a view, outliving the load that produced
     /// it, and the view has no use for the variant.

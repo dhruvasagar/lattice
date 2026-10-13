@@ -202,6 +202,10 @@ impl Editor {
         };
         let edit = Edit::replace(whole, text);
         let _ = lattice_runtime::block_on(handle.apply_edit_batch(vec![edit]));
+        // GD.7d: what an owner writes is the baseline, not a
+        // modification. Awaited, so the snapshot's `dirty` is already
+        // right when the dispatch that did this publishes.
+        let _ = lattice_runtime::block_on(handle.mark_clean());
     }
 
     /// Find-or-create a Document buffer named `name`, register it
@@ -404,6 +408,9 @@ impl Editor {
         let _ = lattice_runtime::block_on(
             handle.apply_edit_batch(vec![Edit::replace(range, text.to_string())]),
         );
+        // GD.7d: as `replace_owned_buffer` — an owner's replace is the
+        // new baseline.
+        let _ = lattice_runtime::block_on(handle.mark_clean());
     }
 
     fn ensure_named_synthetic_doc_with_variant(

@@ -195,6 +195,22 @@ pub fn register_visual_bindings(
         );
     }
 
+    // `p` / `P` over a selection replace it with the register. Not the
+    // Normal bindings mirrored: in Normal they put beside the cursor; here
+    // the selection goes first.
+    for (key, action) in [
+        ('p', actions.put_over_selection),
+        ('P', actions.put_over_selection_keep),
+    ] {
+        handle.bind(
+            layer,
+            mode,
+            &[literal(KeyChord::char(key))],
+            CommandInvocation::of(action),
+            source(),
+        );
+    }
+
     // `r<X>` -- replace every selected char with X (vim's Visual `r`).
     // A two-key wildcard: `[r]` alone returns Partial, so `dispatch_visual`
     // absorbs it into `partial_chord`; `[r, CharLiteral]` then folds the

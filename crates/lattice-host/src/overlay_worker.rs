@@ -317,7 +317,7 @@ fn visible_row_count(source: &[u8], start: u32, end: u32) -> usize {
 /// bucket length matches the renderer's visible window. Output
 /// `quads[i]` carries every layer's ranges that intersect visible
 /// line `start + i`, in fixed precedence order
-/// `DocHighlight → AllMatches → Substitute`. The renderer
+/// `DocHighlight(kind) → AllMatches → Substitute`. The renderer
 /// interleaves the cursor-coupled layers (`visual`, `current_match`)
 /// at prepaint between `AllMatches` and `Substitute`.
 ///
@@ -341,7 +341,7 @@ fn bucket_static_overlays(
     row_count: usize,
     start: u32,
     source: &[u8],
-    doc_highlights: &[lattice_protocol::position::Range],
+    doc_highlights: &[crate::render_state::DocHighlightSpan],
     all_matches: &[lattice_protocol::position::Range],
     substitute_matches: &[lattice_protocol::position::Range],
 ) -> Vec<Vec<RowOverlayQuad>> {
@@ -373,13 +373,17 @@ fn bucket_static_overlays(
             .unwrap_or(source.len());
         let line_len = line_end - byte_off;
         let mut quads: Vec<RowOverlayQuad> = Vec::new();
-        push_layer_quads(
-            &mut quads,
-            doc_highlights,
-            OverlayLayer::DocHighlight,
-            line_idx,
-            line_len,
-        );
+        // One span at a time: each carries its own kind, and so its
+        // own layer tag.
+        for d in doc_highlights {
+            push_layer_quads(
+                &mut quads,
+                std::slice::from_ref(&d.range),
+                OverlayLayer::DocHighlight(d.kind),
+                line_idx,
+                line_len,
+            );
+        }
         push_layer_quads(
             &mut quads,
             all_matches,
@@ -471,7 +475,7 @@ mod tests {
         fold_hash: u64,
         text_version: u64,
         end_line_override: Option<u32>,
-        doc_highlights: Vec<lattice_protocol::position::Range>,
+        doc_highlights: Vec<crate::render_state::DocHighlightSpan>,
         all_matches: Vec<lattice_protocol::position::Range>,
     ) -> (
         ArcSwap<RenderState>,
@@ -518,6 +522,19 @@ mod tests {
     fn pos(line: u32, byte: u32) -> lattice_protocol::position::Position {
         lattice_protocol::position::Position { line, byte }
     }
+    /// Ranges as document highlights of no particular kind.
+    fn spans(
+        ranges: Vec<lattice_protocol::position::Range>,
+    ) -> Vec<crate::render_state::DocHighlightSpan> {
+        ranges
+            .into_iter()
+            .map(|range| crate::render_state::DocHighlightSpan {
+                range,
+                kind: crate::render_state::DocHighlightKind::Text,
+            })
+            .collect()
+    }
+
     fn rng(sl: u32, sb: u32, el: u32, eb: u32) -> lattice_protocol::position::Range {
         lattice_protocol::position::Range {
             start: pos(sl, sb),
@@ -697,7 +714,7 @@ mod tests {
     #[test]
     fn bucket_static_overlays_tags_each_layer() {
         let src = b"hello world";
-        let dh = vec![rng(0, 0, 0, 5)]; // covers "hello"
+        let dh = spans(vec![rng(0, 0, 0, 5)]); // covers "hello"
         let am = vec![rng(0, 6, 0, 11)]; // covers "world"
         let sb = vec![rng(0, 0, 0, 11)]; // covers all
         let out = bucket_static_overlays(1, 0, src, &dh, &am, &sb);
@@ -705,7 +722,7 @@ mod tests {
         let row = &out[0];
         // Three quads, one per layer, in precedence order.
         assert_eq!(row.len(), 3);
-        assert!(matches!(row[0].layer, OverlayLayer::DocHighlight));
+        assert!(matches!(row[0].layer, OverlayLayer::DocHighlight(_)));
         assert_eq!((row[0].source_byte_start, row[0].source_byte_end), (0, 5));
         assert!(matches!(row[1].layer, OverlayLayer::AllMatches));
         assert_eq!((row[1].source_byte_start, row[1].source_byte_end), (6, 11));
@@ -718,7 +735,7 @@ mod tests {
     #[test]
     fn bucket_static_overlays_skips_rows_outside_range() {
         let src = b"a\nb\nc";
-        let dh = vec![rng(1, 0, 1, 1)]; // only line 1
+        let dh = spans(vec![rng(1, 0, 1, 1)]); // only line 1
         let out = bucket_static_overlays(3, 0, src, &dh, &[], &[]);
         assert_eq!(out.len(), 3);
         assert!(out[0].is_empty());
@@ -731,7 +748,7 @@ mod tests {
     #[test]
     fn bucket_static_overlays_emits_source_bytes() {
         let src = b"hello";
-        let dh = vec![rng(0, 0, 0, 3)]; // first 3 source bytes
+        let dh = spans(vec![rng(0, 0, 0, 3)]); // first 3 source bytes
         let out = bucket_static_overlays(1, 0, src, &dh, &[], &[]);
         let row = &out[0];
         assert_eq!(row.len(), 1);
@@ -743,7 +760,7 @@ mod tests {
     #[test]
     fn bucket_static_overlays_multi_line_middle_row_full_line() {
         let src = b"first\nmiddle\nlast";
-        let dh = vec![rng(0, 2, 2, 1)];
+        let dh = spans(vec![rng(0, 2, 2, 1)]);
         let out = bucket_static_overlays(3, 0, src, &dh, &[], &[]);
         assert_eq!(out.len(), 3);
         // Row 0: from byte 2 to end → 2..5.
@@ -770,19 +787,74 @@ mod tests {
     fn static_overlay_state_version_is_stable_and_distinct() {
         use crate::render_state::static_overlay_state_version;
         let a = vec![rng(0, 0, 0, 3)];
+        let a_dh = spans(a.clone());
         let b = vec![rng(0, 0, 0, 5)];
         // All empty → 0.
         assert_eq!(static_overlay_state_version(&[], &[], &[]), 0);
         // Deterministic.
         assert_eq!(
-            static_overlay_state_version(&a, &b, &[]),
-            static_overlay_state_version(&a, &b, &[])
+            static_overlay_state_version(&a_dh, &b, &[]),
+            static_overlay_state_version(&a_dh, &b, &[])
         );
         // Layer permutation → distinct (a in dh vs a in all_matches).
         assert_ne!(
-            static_overlay_state_version(&a, &[], &[]),
+            static_overlay_state_version(&a_dh, &[], &[]),
             static_overlay_state_version(&[], &a, &[])
         );
+    }
+
+    /// GD.6c: a highlight's kind reaches its quad, and a response that
+    /// changes only a kind is a new version — otherwise the bucket would
+    /// keep the old colour.
+    #[test]
+    fn a_document_highlights_kind_is_carried_and_versioned() {
+        use crate::render_state::{
+            DocHighlightKind, DocHighlightSpan, static_overlay_state_version,
+        };
+        let span = |kind| DocHighlightSpan {
+            range: rng(0, 0, 0, 5),
+            kind,
+        };
+        let dh = vec![
+            span(DocHighlightKind::Write),
+            DocHighlightSpan {
+                range: rng(0, 6, 0, 11),
+                kind: DocHighlightKind::Read,
+            },
+        ];
+        let out = bucket_static_overlays(1, 0, b"hello world", &dh, &[], &[]);
+        assert_eq!(
+            out[0].iter().map(|q| q.layer).collect::<Vec<_>>(),
+            vec![
+                OverlayLayer::DocHighlight(DocHighlightKind::Write),
+                OverlayLayer::DocHighlight(DocHighlightKind::Read),
+            ]
+        );
+        assert_ne!(
+            static_overlay_state_version(&[span(DocHighlightKind::Read)], &[], &[]),
+            static_overlay_state_version(&[span(DocHighlightKind::Write)], &[], &[]),
+        );
+    }
+
+    /// An absent kind, `TEXT`, and a value this build does not know are
+    /// all a plain textual occurrence.
+    #[test]
+    fn an_lsp_kind_maps_to_the_hosts_three() {
+        use crate::render_state::DocHighlightKind;
+        use lattice_lsp::lsp_types::DocumentHighlightKind as K;
+        assert_eq!(
+            DocHighlightKind::from_lsp(Some(K::READ)),
+            DocHighlightKind::Read
+        );
+        assert_eq!(
+            DocHighlightKind::from_lsp(Some(K::WRITE)),
+            DocHighlightKind::Write
+        );
+        assert_eq!(
+            DocHighlightKind::from_lsp(Some(K::TEXT)),
+            DocHighlightKind::Text
+        );
+        assert_eq!(DocHighlightKind::from_lsp(None), DocHighlightKind::Text);
     }
 
     /// `visible_row_count` matches the deleted `highlight_lines`

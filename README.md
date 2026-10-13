@@ -26,9 +26,10 @@ curl -fsSL https://raw.githubusercontent.com/dhruvasagar/lattice/main/install.sh
 
 Installs `lattice` plus its bundled core plugins into `~/.local`. The
 GPU-rendered build is installed when it is published for your platform and the
-terminal-only build otherwise (its binary runs in the terminal too — launch the
-GPU window with `lattice --gui`). Force a build with `--gui` / `--cli`; install
-elsewhere with `--prefix`.
+terminal-only build otherwise. `lattice` opens a window; `lattice --tui` opens
+in the terminal, which is also what happens over SSH or anywhere with no
+display. Force a build with `--gui` / `--cli`; install elsewhere with
+`--prefix`.
 
 Or grab an archive from [releases](https://github.com/dhruvasagar/lattice/releases).
 Full instructions, including building from source (Rust 1.94+): [install guide](https://dhruvasagar.github.io/lattice/install/).
@@ -46,7 +47,7 @@ on your machine, so it needs Rust and the `wasm32-wasip2` target —
 | **Syntax**            | Tree-sitter, 20 languages, incremental and O(viewport)                                                        |
 | **Git**               | A magit port — status, stage/unstage by hunk, commit, rebase, blame, log, branches, stashes                   |
 | **Extensibility**     | WASM Component Model plugin host; config is Rust compiled to WASM                                             |
-| **Two renderers**     | Terminal (first-class, for SSH) and GPU (`--gui`)                                                             |
+| **Two renderers**     | A GPU window by default; the terminal with `--tui`, and automatically over SSH                                |
 | **AI agents**         | Claude Code over MCP; opencode's own TUI in a terminal buffer, or an ACP conversation buffer with diff review |
 
 ## See it
@@ -88,9 +89,9 @@ checkout of this repo:
 
 ```toml
 [build-dependencies]
-lattice-wit = "0.2"          # this pin IS the ABI generation you target
+lattice-wit = "0.3"          # this pin IS the ABI generation you target
 [dependencies]
-lattice-plugin-sdk = "0.2"   # optional: typed config shapes
+lattice-plugin-sdk = "0.3"   # optional: typed config shapes
 ```
 
 Plugins ship as **source** and are compiled on the machine that runs them, so

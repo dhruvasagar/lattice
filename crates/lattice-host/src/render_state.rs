@@ -1110,7 +1110,7 @@ pub struct SyntaxRenderState {
     /// active buffer has no highlights or the LSP isn't attached
     /// — matches the steady-state no-highlight path on a single
     /// cheap branch. Parallels [`Self::inlay_hints`] (A.2b.1).
-    pub doc_highlights: Arc<[lattice_protocol::position::Range]>,
+    pub doc_highlights: Arc<[DocHighlightSpan]>,
     /// Perf plan B.2: content hash of the static-overlay payload
     /// (doc_highlights + all_matches + substitute_matches).
     /// Paired with
@@ -1144,9 +1144,7 @@ impl Default for SyntaxRenderState {
             static_overlay_quads: Arc::new(arc_swap::ArcSwap::from_pointee(
                 StaticOverlayQuads::default(),
             )),
-            doc_highlights: Arc::from(
-                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
-            ),
+            doc_highlights: Arc::from(Vec::<DocHighlightSpan>::new().into_boxed_slice()),
             static_overlay_version: 0,
         }
     }
@@ -1639,6 +1637,11 @@ pub struct PaneCellsInputs {
     /// `[]` for every buffer without it, so ordinary panes render
     /// byte-identically.
     pub extra_refine: Arc<[Vec<lattice_cells::RefineSpan>]>,
+    /// GD.6b: this buffer's LSP semantic tokens, or `None` when it has
+    /// none or `lsp-semantic-tokens-mode` is off for it. The worker
+    /// turns the ones covering the window it builds into spans layered
+    /// over the grammar's; `version.semantic_tokens` is this set's stamp.
+    pub semantic_tokens: Option<Arc<lattice_lsp::cache::LspSemanticTokensCache>>,
 }
 
 impl Default for CellsRenderState {
@@ -1805,13 +1808,53 @@ pub enum OverlayLayer {
     /// occurrences under the cursor. Cursor-settle cadence (the
     /// LSP returns a new response after the cursor lands on a
     /// new symbol); we treat it as static across cursor blinks.
-    DocHighlight,
+    ///
+    /// Carries the occurrence's kind so a renderer can tint a write
+    /// differently from a read (GD.6c). Without it the GPUI peer drew
+    /// every occurrence as a read.
+    DocHighlight(DocHighlightKind),
     /// `hlsearch` matches across the active document. Bumps on
     /// `text_version` edits and search-query changes.
     AllMatches,
     /// `:s/pat/repl/` preview overlay. Bumps as the substitute
     /// command line is typed.
     Substitute,
+}
+
+/// What a document-highlight occurrence is, as the language server
+/// reported it. The host's own copy of LSP's `DocumentHighlightKind`,
+/// so the overlay types do not name an LSP crate type and a renderer
+/// matches on an enum with no "unknown integer" case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DocHighlightKind {
+    /// A textual occurrence, or a server that did not say.
+    #[default]
+    Text,
+    /// The symbol is read here.
+    Read,
+    /// The symbol is written here.
+    Write,
+}
+
+impl DocHighlightKind {
+    /// From the LSP value. Anything that is not READ or WRITE —
+    /// `TEXT`, absent, or a value a newer server invented — is `Text`,
+    /// which is what the spec says an absent kind means.
+    pub fn from_lsp(kind: Option<lattice_lsp::lsp_types::DocumentHighlightKind>) -> Self {
+        use lattice_lsp::lsp_types::DocumentHighlightKind as K;
+        match kind {
+            Some(K::READ) => Self::Read,
+            Some(K::WRITE) => Self::Write,
+            _ => Self::Text,
+        }
+    }
+}
+
+/// One document-highlight occurrence in utf-8 byte space, with its kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocHighlightSpan {
+    pub range: lattice_protocol::position::Range,
+    pub kind: DocHighlightKind,
 }
 
 /// Perf plan B.2: one pre-bucketed static-overlay quad inside a
@@ -1911,7 +1954,7 @@ pub fn inlay_hints_version(rows: &[InlayHintRow]) -> u64 {
 /// substitute lists are typically <50) this is sub-µs once per
 /// publish.
 pub fn static_overlay_state_version(
-    doc_highlights: &[lattice_protocol::position::Range],
+    doc_highlights: &[DocHighlightSpan],
     all_matches: &[lattice_protocol::position::Range],
     substitute_matches: &[lattice_protocol::position::Range],
 ) -> u64 {
@@ -1931,7 +1974,16 @@ pub fn static_overlay_state_version(
             r.end.byte.hash(h);
         }
     };
-    fold_layer(&mut h, 0, doc_highlights);
+    // Doc highlights fold their kind in too: a response that changes
+    // only a kind must still rebuild the bucket.
+    0u8.hash(&mut h);
+    for d in doc_highlights {
+        d.range.start.line.hash(&mut h);
+        d.range.start.byte.hash(&mut h);
+        d.range.end.line.hash(&mut h);
+        d.range.end.byte.hash(&mut h);
+        d.kind.hash(&mut h);
+    }
     fold_layer(&mut h, 1, all_matches);
     fold_layer(&mut h, 2, substitute_matches);
     h.finish()
@@ -2151,6 +2203,15 @@ pub struct CompletionRenderState {
     /// registry and route the content through the `PaneId::COMPLETION_DOCS`
     /// compose seam. `None` when no docs buffer exists.
     pub docs_buffer_id: Option<lattice_core::BufferId>,
+    /// GD.5c: the rest of the top completion candidate, to draw dimmed
+    /// after the cursor — `Some` only when it should be shown at all
+    /// (`Editor::completion_ghost_text_at_cursor`: the option is on,
+    /// the candidate extends what was typed, and the cursor is at the
+    /// end of its line). Published so a renderer does not ask the
+    /// editor each frame: the terminal renderer did, with a blocking
+    /// actor call from its draw function, and the GPUI window showed
+    /// no ghost text at all.
+    pub ghost_suffix: Option<std::sync::Arc<str>>,
 }
 
 /// Help / hover / signature popup's render-side projection.
@@ -2435,6 +2496,13 @@ pub struct LifecycleRenderState {
     pub should_quit: bool,
     pub pending_redraw: bool,
     pub terminal_width: Option<u16>,
+    /// Renderer-owned effects are queued on the editor
+    /// (`Editor::pending_renderer_effects`) waiting for a peer to drain
+    /// them. Published so a peer woken by an idle repaint can tell, with a
+    /// wait-free read, whether there is anything to cross the actor seam
+    /// for — an async picker accept or a buffer open that landed with no
+    /// keystroke in flight has no dispatch tail to ride.
+    pub renderer_effects_pending: bool,
 }
 
 /// Translator inputs for the renderer's input loop.

@@ -373,11 +373,8 @@ impl App {
     /// ML.3 retired the appended mode-items (LSP / diff badges) — those
     /// are registered modeline elements now, not part of this label.
     pub fn pane_status_label(&self, pane: &crate::pane::PaneState) -> String {
-        let provider = self
-            .pane_render_provider(pane.buffer_id)
-            .map(|p| (p.status)(self, pane));
         let rs = self.render_state.load();
-        lattice_host::modeline::pane_path_segment(pane, &rs, provider.as_deref())
+        lattice_host::modeline::pane_path_segment(pane, &rs)
     }
 
     /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte

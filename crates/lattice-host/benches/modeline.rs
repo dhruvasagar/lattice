@@ -68,7 +68,7 @@ fn bench_modeline_build(c: &mut Criterion) {
                     for el in els {
                         let id = el.id.as_str();
                         let content = if id.starts_with("core.") {
-                            modeline::resolve_builtin_content(id, &pane, true, &rs, None)
+                            modeline::resolve_builtin_content(id, &pane, true, &rs)
                         } else {
                             snap.resolve(el, pane.buffer_id)
                                 .cloned()

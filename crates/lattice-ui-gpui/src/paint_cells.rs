@@ -68,6 +68,11 @@ const UNDERLINE_OFFSET_FROM_BASELINE: f32 = 2.0;
 /// px(1.0)`.
 const UNDERLINE_THICKNESS_PX: f32 = 1.0;
 
+/// GD.6d: where a strikethrough sits, as a fraction of the ascent
+/// measured down from the top of the row. Two thirds of the way to the
+/// baseline lands in the middle of lowercase letters.
+const STRIKETHROUGH_ASCENT_FRACTION: f32 = 0.67;
+
 /// Multiply each RGB channel of `packed` by [`DIM_FACTOR`].
 /// Used by `apply_color_modifiers` when the cell's `DIM` flag
 /// is set. Mirrors `cells_paint::dim_channel` byte-for-byte so
@@ -287,6 +292,18 @@ pub fn paint_cells_row(
                 size(advance, px(UNDERLINE_THICKNESS_PX)),
             );
             window.paint_quad(fill(underline_bounds, rgb(underline_color)));
+        }
+        // GD.6d: strikethrough, the same way and in the same colour, at
+        // roughly x-height's middle — a third of the ascent above the
+        // baseline. This path paints glyph by glyph, so there is no
+        // text run to hang a `StrikethroughStyle` on.
+        if cell.is_strikethrough() {
+            let color = if fg_u32 != 0 { fg_u32 } else { default_fg };
+            let y = line_origin.y + ascent * STRIKETHROUGH_ASCENT_FRACTION;
+            window.paint_quad(fill(
+                Bounds::new(point(cell_x, y), size(advance, px(UNDERLINE_THICKNESS_PX))),
+                rgb(color),
+            ));
         }
     }
 

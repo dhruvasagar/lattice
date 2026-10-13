@@ -558,6 +558,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("marks", "ex:marks"),
     ("d", "ex:delete"),
     ("delete", "ex:delete"),
+    ("pu", "ex:put"),
+    ("put", "ex:put"),
     ("set", "ex:set"),
     // T.9.b (2026-06-18): `:colorscheme` + the vim short `:colo`.
     ("colorscheme", "ex:colorscheme"),

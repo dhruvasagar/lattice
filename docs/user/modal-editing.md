@@ -525,6 +525,21 @@ Use:
 - `"ap` — paste from register `a`
 - `:reg<CR>` — list every populated register
 
+### Putting text
+
+| Keys | What it does |
+|---|---|
+| `p` / `P` | Put after / before the cursor (below / above the line for a linewise yank). |
+| `3p` | A count puts the text that many times. |
+| `gp` / `gP` | Like `p` / `P`, but the cursor lands just after the new text. |
+| `]p` / `[p` | Like `p` / `P`, with linewise text re-indented to the current line. |
+| `p` in Visual | Replace the selection. The replaced text becomes the unnamed register. |
+| `P` in Visual | Replace the selection and leave the registers alone, so you can do it again. |
+| `:put` / `:put!` | Put as a whole line below / above the cursor line, whatever was yanked. |
+| `:5put a` | Put register `a` below line 5. |
+
+Any of them takes a register first: `"ap`, `"+gp`, `:put a`.
+
 ### Pasting from outside the editor
 
 `"+p` pastes the system clipboard with vim's placement (charwise or

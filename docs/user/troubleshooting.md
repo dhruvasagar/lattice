@@ -100,6 +100,21 @@ See [troubleshooting keys](help:troubleshooting-keys), and:
 Then press the chord. Note that a bound prefix consumes its longer chords --
 if `gD` is bound, `gDd` can never fire.
 
+## `lattice` opened in the terminal, not a window
+
+A bare `lattice` opens a window when it can. It opens in the terminal
+instead when:
+
+- you passed `--tui`;
+- no display is reachable — an SSH session, a server, a Linux console
+  (on Linux: neither `WAYLAND_DISPLAY` nor `DISPLAY` is set; on macOS and
+  Windows: `SSH_CONNECTION` or `SSH_TTY` is set);
+- the build has no window renderer (the terminal-only `lattice-*` archive,
+  or a source build without `--features gui`).
+
+`lattice --gui` insists on a window and reports an error if it cannot have
+one, which tells you which of these it was.
+
 ## Where the logs are
 
 `:messages` is the in-editor log. For a file, redirect stderr:
@@ -112,7 +127,7 @@ In TUI mode stderr tracing is off by default — stderr is the alternate
 screen, and writing to it would corrupt the paint — so `--stderr-logs` is
 required to turn it on. It only takes effect when stderr is redirected (as
 above); with stderr still attached to the terminal, Lattice prints a note
-and ignores the flag rather than corrupting the display. The GUI (`--gui`)
+and ignores the flag rather than corrupting the display. The window
 enables stderr logging unconditionally.
 
 Never use `println!`/`eprintln!` while the terminal UI is up — it corrupts

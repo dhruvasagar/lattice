@@ -161,6 +161,9 @@ harness = false
 required-features = ["window", "bench-internals"]
 
 [dev-dependencies]
+# The peer conformance scenarios live in the host and run here, through this
+# peer's own key and dispatch entry points (`lattice_host::peer_conformance`).
+lattice-host = { path = "../lattice-host", features = ["peer-conformance"] }
 criterion = { workspace = true }
 # X5 bench reaches into lattice_syntax::StyledSpan / Style.
 lattice-syntax = { path = "../lattice-syntax" }

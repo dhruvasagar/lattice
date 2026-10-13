@@ -190,6 +190,13 @@ fn read_dir_entries(dir: &Path) -> std::io::Result<Vec<OilEntry>> {
 /// Bare is load-bearing — `:w` diffs this against the snapshot to
 /// derive renames, so anything decorative in here would be read as a
 /// filename. Icons are virtual text for exactly this reason.
+/// The modeline label of an oil buffer listing `dir`.
+///
+/// GD.7b: oil names its own buffers; see the file tree's peer.
+pub fn modeline_label(dir: &Path) -> String {
+    format!("[oil] {}", dir.display())
+}
+
 pub fn render_to_text(entries: &[OilEntry]) -> String {
     entries
         .iter()

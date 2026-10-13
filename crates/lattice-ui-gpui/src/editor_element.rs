@@ -87,6 +87,20 @@ use crate::glyph_resolver::GlyphResolver;
 /// loop's branch is unambiguous.
 const FULL_ROW_COL_END: u32 = u32::MAX;
 
+/// GD.6c: set on an overlay quad's colour to say "and strike the text
+/// through". Colours here are `0x00RRGGBB`, so the top byte is free.
+///
+/// A flag on the colour and not a field, because the quad is a
+/// `(start, end, colour)` tuple that the wrap splitter, the heading
+/// splitter and every push site already carry; the two places that
+/// care — the fill and the strike pass in `paint` — mask it off.
+const OVERLAY_STRIKE: u32 = 1 << 24;
+/// The colour bits of an overlay quad, without [`OVERLAY_STRIKE`].
+const OVERLAY_COLOR_MASK: u32 = 0x00ff_ffff;
+/// Where the strike line sits, as a fraction of the row's height from
+/// its top. Unverified by eye: nothing GUI has been seen running.
+const OVERLAY_STRIKE_ROW_FRACTION: f32 = 0.55;
+
 /// Adapter: host-canonical syntax style -> packed 24-bit `0xRRGGBB`.
 /// T.5.b: resolves `style` through the active theme's resolved table
 /// (`resolved` + `ids`) via `resolve_syntax_style`, the replacement
@@ -171,6 +185,13 @@ pub(crate) struct GutterLineMeta {
     /// row's red backdrop quad + content text are the visible
     /// surface.
     pub(crate) is_virtual: bool,
+    /// `relativenumber`: the distance from this pane's cursor line, shown
+    /// in place of the line number. `None` shows the absolute number — the
+    /// option is off, this IS the cursor's line (vim shows its real number
+    /// there), or the pane is a multibuffer, where distance across
+    /// non-contiguous source rows means nothing. The caller decides; this is
+    /// only what to print.
+    pub(crate) relative: Option<u32>,
 }
 
 /// Active-pane cursor state. `None` on inactive panes.
@@ -256,6 +277,13 @@ pub(crate) struct EditorElement {
     /// `lattice-media` split exists to prevent. The rows keep their reserved
     /// space regardless, so pixels arriving later do not reflow anything.
     pub(crate) media_pixels: Arc<MediaPixels>,
+    /// GD.5c: where this pane's text starts, in window pixels —
+    /// written in `paint` (the only place the pane's bounds and its
+    /// gutter width are both known) and read by the window when it
+    /// places a popup at a text cell. `Some` for the focused document
+    /// pane only. The reader sees the previous frame's value, which is
+    /// the frame the popup's anchor was on screen.
+    pub(crate) text_origin_out: Option<Arc<TextOrigin>>,
     /// Pane index inside the active pane tree. Used for
     /// `ElementId` so GPUI tracks the same element across frames.
     pub(crate) pane_idx: usize,
@@ -350,7 +378,7 @@ pub(crate) struct EditorElement {
     /// LSP document-highlight ranges, already converted to utf-8
     /// byte ranges by the caller (utf-16→utf-8 happens at the
     /// boundary).
-    pub(crate) doc_highlights: Vec<lattice_core::protocol::position::Range>,
+    pub(crate) doc_highlights: Vec<lattice_host::render_state::DocHighlightSpan>,
     /// Perf plan B.2 slice B.2.a: worker-produced per-row
     /// pre-bucketed static-overlay quads (doc_highlight,
     /// all_matches, substitute). `Some` for the active pane
@@ -430,6 +458,12 @@ pub(crate) struct EditorElement {
     /// cache — it is cursor-transient, like the cursor / underline
     /// overlays.
     pub(crate) inline_diag_summary: Option<InlineDiagSummary>,
+    /// GD.5c: completion ghost text — `(line, text, 0xRRGGBB)` — drawn
+    /// dimmed and italic after the end of the cursor's line. Active
+    /// pane only; the host decides whether there is any
+    /// (`CompletionRenderState::ghost_suffix`). An end-of-row overlay
+    /// like the fold summary, so it never widens the row.
+    pub(crate) ghost_text: Option<(u32, String, u32)>,
     /// S4.1 (2026-05-27): cell-grid substrate snapshot. Populated
     /// from `render_state.cells.matrix.load_full()` for the active
     /// pane; `None` for inactive panes (the cells worker publishes
@@ -1403,18 +1437,21 @@ impl Element for EditorElement {
             .map(|q| q.quads.as_ref());
         // T.6: overlay layer colors resolve from the registered theme
         // elements (shared with the TUI peer; closes the prior drift).
-        // `DocHighlight` maps to `doc_highlight.read`: the `OverlayLayer`
-        // enum carries no read/write/text distinction, so the worker-
-        // emitted single layer renders as read. TODO(T.6): OverlayLayer
-        // lacks doc-hl kind; renders as read — the worker-side kind
-        // split is out of scope (TUI keeps its 3-way via its own `kind`
-        // param on `document_highlight_style`).
+        // GD.6c: a document highlight carries its kind, so a write is
+        // tinted differently from a read — the terminal's three-way
+        // split. A substitute preview is also struck through
+        // ([`OVERLAY_STRIKE`]): "this is what `<CR>` replaces".
         let resolved_theme = &self.resolved_theme;
         let theme_ids = self.theme_ids;
         let color_for_layer = |layer: lattice_host::render_state::OverlayLayer| -> u32 {
             let (id, fallback) = match layer {
-                lattice_host::render_state::OverlayLayer::DocHighlight => {
-                    (theme_ids.doc_highlight_read, 0x585b70)
+                lattice_host::render_state::OverlayLayer::DocHighlight(kind) => {
+                    use lattice_host::render_state::DocHighlightKind as K;
+                    match kind {
+                        K::Read => (theme_ids.doc_highlight_read, 0x585b70),
+                        K::Write => (theme_ids.doc_highlight_write, 0x585b70),
+                        K::Text => (theme_ids.doc_highlight_text, 0x585b70),
+                    }
                 }
                 lattice_host::render_state::OverlayLayer::AllMatches => {
                     (theme_ids.search_match, 0x6c7086)
@@ -1423,11 +1460,36 @@ impl Element for EditorElement {
                     (theme_ids.substitute_preview, 0xf38ba8)
                 }
             };
-            resolved_theme
+            let color = resolved_theme
                 .get(id)
                 .bg
                 .map(|c| c.to_rgb_u32(fallback))
                 .unwrap_or(fallback)
+                & OVERLAY_COLOR_MASK;
+            if matches!(layer, lattice_host::render_state::OverlayLayer::Substitute) {
+                color | OVERLAY_STRIKE
+            } else {
+                color
+            }
+        };
+        // One range per call: each highlight has its own kind and so its
+        // own colour.
+        let push_doc_highlights = |quads: &mut Vec<(u32, u32, u32)>,
+                                   line_idx: u32,
+                                   line_text: &str,
+                                   inlay_offsets: &RowCoords| {
+            for d in doc_highlights {
+                push_range_quads(
+                    quads,
+                    std::slice::from_ref(&d.range),
+                    line_idx,
+                    line_text,
+                    inlay_offsets,
+                    color_for_layer(lattice_host::render_state::OverlayLayer::DocHighlight(
+                        d.kind,
+                    )),
+                );
+            }
         };
         // T.6: cursor-coupled overlay colors resolve from the registered
         // `search.current` / `selection` elements (shared with the TUI
@@ -1514,7 +1576,7 @@ impl Element for EditorElement {
                 {
                     for q in row {
                         match q.layer {
-                            lattice_host::render_state::OverlayLayer::DocHighlight
+                            lattice_host::render_state::OverlayLayer::DocHighlight(_)
                             | lattice_host::render_state::OverlayLayer::AllMatches => {
                                 let cs = byte_to_combined_col(
                                     line_text,
@@ -1541,14 +1603,7 @@ impl Element for EditorElement {
                     // recompute, or buffer mismatch). Fall back to
                     // the legacy per-frame walk so static overlays
                     // still paint correctly.
-                    push_range_quads(
-                        &mut quads,
-                        doc_highlights,
-                        line_idx,
-                        line_text,
-                        inlay_offsets,
-                        color_for_layer(lattice_host::render_state::OverlayLayer::DocHighlight),
-                    );
+                    push_doc_highlights(&mut quads, line_idx, line_text, inlay_offsets);
                     push_range_quads(
                         &mut quads,
                         all_matches,
@@ -1645,14 +1700,7 @@ impl Element for EditorElement {
                 // available for inactive panes; per-frame walk
                 // stays on the cheap N path (doc_highlight is
                 // capped tiny by the LSP response).
-                push_range_quads(
-                    &mut quads,
-                    doc_highlights,
-                    line_idx,
-                    line_text,
-                    inlay_offsets,
-                    color_for_layer(lattice_host::render_state::OverlayLayer::DocHighlight),
-                );
+                push_doc_highlights(&mut quads, line_idx, line_text, inlay_offsets);
             }
             quads
         };
@@ -2217,7 +2265,7 @@ impl Element for EditorElement {
         // Anchored to the LAST visible row of the head line so the
         // summary trails the whole heading when it wraps, matching the
         // diagnostic summary's `rposition`.
-        let fold_summary_overlays: Vec<(usize, u32, ShapedLine)> = self
+        let mut fold_summary_overlays: Vec<(usize, u32, ShapedLine)> = self
             .gutter
             .iter()
             .filter_map(|meta| {
@@ -2262,6 +2310,43 @@ impl Element for EditorElement {
                 Some((row, end_col, shaped))
             })
             .collect();
+        // GD.5c: completion ghost text rides the same list — it is the
+        // same thing, text trailing a row past its last column. A line
+        // cannot be both a closed fold's head and the line being typed
+        // on, so the two never land on one row.
+        if let Some((line, text, color)) = self.ghost_text.as_ref()
+            && let Some(row) = row_meta.iter().rposition(|(l, _)| l == line)
+        {
+            let total_cols = self
+                .cell_matrix
+                .as_ref()
+                .and_then(|m| m.row_at_source_line(*line))
+                .map(|r| r.col_count())
+                .unwrap_or(0);
+            let end_col = if wrap_width == 0 {
+                total_cols
+            } else {
+                let seg = row_segment.get(row).copied().unwrap_or(0);
+                total_cols.saturating_sub(seg.saturating_mul(wrap_width))
+            };
+            let mut italic = font.clone();
+            italic.style = gpui::FontStyle::Italic;
+            let runs = vec![TextRun {
+                len: text.len(),
+                font: italic,
+                color: rgb(*color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            let shaped = window.text_system().shape_line(
+                SharedString::from(text.clone()),
+                font_size,
+                &runs,
+                None,
+            );
+            fold_summary_overlays.push((row, end_col, shaped));
+        }
 
         EditorElementPrepaintState {
             shaped_text,
@@ -2308,6 +2393,9 @@ impl Element for EditorElement {
         let line_height = prepaint.line_height;
         let advance = prepaint.glyph_advance;
         let text_origin_x = bounds.origin.x + prepaint.gutter_width_px;
+        if let Some(out) = &self.text_origin_out {
+            out.set(f32::from(text_origin_x), f32::from(bounds.origin.y));
+        }
         // HS.1b: horizontal scroll. With wrap off, the body pans left
         // by `leftcol` display columns — `col_x` subtracts it (cursor
         // + selection/decoration quads) and the body-glyph paint
@@ -2495,7 +2583,7 @@ impl Element for EditorElement {
                     col_x(row_idx, *col_end) - quad_x
                 };
                 let quad_bounds = Bounds::new(point(quad_x, row_y), size(quad_w, row_h(row_idx)));
-                window.paint_quad(fill(quad_bounds, rgb(*color)));
+                window.paint_quad(fill(quad_bounds, rgb(*color & OVERLAY_COLOR_MASK)));
             }
         }
 
@@ -2788,6 +2876,28 @@ impl Element for EditorElement {
                         colour,
                     ));
                 }
+            }
+        }
+
+        // GD.6c: strike through the quads that ask for it (a substitute
+        // preview). After the text body so the line crosses the glyphs,
+        // in the text colour, independent of which path painted them.
+        for (row_idx, quads) in prepaint.overlay_quads_per_row.iter().enumerate() {
+            let row_y = row_top(row_idx);
+            if row_y >= pane_bottom {
+                break;
+            }
+            for (col_start, col_end, color) in quads {
+                if color & OVERLAY_STRIKE == 0 || *col_end == FULL_ROW_COL_END {
+                    continue;
+                }
+                let x = col_x(row_idx, *col_start);
+                let w = col_x(row_idx, *col_end) - x;
+                let y = row_y + row_h(row_idx) * OVERLAY_STRIKE_ROW_FRACTION;
+                window.paint_quad(fill(
+                    Bounds::new(point(x, y), size(w, px(1.0))),
+                    rgb(self.theme.foreground),
+                ));
             }
         }
 
@@ -4226,7 +4336,10 @@ fn format_gutter_text(
     // digit slot is blank (gutter_width is 0 in that case anyway). Matches the
     // TUI `show_line_numbers` gate.
     let num: String = if show_line_numbers {
-        (meta.display_line as usize + 1).to_string()
+        match meta.relative {
+            Some(distance) => distance.to_string(),
+            None => (meta.display_line as usize + 1).to_string(),
+        }
     } else {
         String::new()
     };
@@ -4562,6 +4675,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         let virt = GutterLineMeta {
             line_idx: 41,
@@ -4571,6 +4685,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: true,
+            relative: None,
         };
         let gutter_width = 3usize;
         for &sign in &[false, true] {
@@ -4756,6 +4871,42 @@ mod tests {
         assert!(offsets.is_empty());
     }
 
+    /// GD.6a — `relativenumber` prints the distance, in the same cells.
+    ///
+    /// The gutter always printed `display_line + 1`; `:set relativenumber`
+    /// did nothing in this peer. The distance replaces the number and
+    /// nothing else moves — the column is as wide as it was, so toggling the
+    /// option cannot shift the text beside it.
+    #[test]
+    fn a_relative_gutter_row_prints_its_distance_in_the_same_width() {
+        let row = |relative| GutterLineMeta {
+            line_idx: 41,
+            display_line: 41,
+            fold_marker: None,
+            fold_summary: None,
+            severity: None,
+            diff_sign: None,
+            is_virtual: false,
+            relative,
+        };
+        assert_eq!(format_gutter_text(&row(None), 3, true, true), "    42   ");
+        assert_eq!(
+            format_gutter_text(&row(Some(7)), 3, true, true),
+            "     7   "
+        );
+        for relative in [None, Some(7), Some(120)] {
+            assert_eq!(
+                format_gutter_text(&row(relative), 3, true, true)
+                    .chars()
+                    .count(),
+                gutter_cells(3, true),
+                "{relative:?}"
+            );
+        }
+        // `number` off blanks the digits whatever `relativenumber` says.
+        assert_eq!(format_gutter_text(&row(Some(7)), 0, true, false).trim(), "");
+    }
+
     #[test]
     fn gutter_text_format_renders_padding_and_default_chars() {
         let meta = GutterLineMeta {
@@ -4766,6 +4917,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         // {sev}{diff}{pad}{num:>3} {fold} = "  " + " " + "  1" + " "
         // + " " + " " = "     1   " (9 chars): the leading pad is
@@ -4787,6 +4939,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         // {sev}{diff}{pad}{num:>3} {fold} = "  " + " " + " 42" + " "
         // + "▸" + " " = "    42 ▸ " (9 chars): the glyph sits AFTER the
@@ -4810,6 +4963,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         let with_summary = GutterLineMeta {
             fold_summary: Some((lattice_host::folds::fold_summary_text(4), 0x6c7086)),
@@ -4832,6 +4986,7 @@ mod tests {
             severity: Some(('E', 0xff0000)),
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         // 'E' + ' ' (diff) + ' ' (pad) + "10" + ' ' + ' ' (fold) + ' '
         // = "E  10   ".
@@ -4848,6 +5003,7 @@ mod tests {
             severity: None,
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
+            relative: None,
         };
         // D.3.d.2: ' ' (sev) + '+' (diff) + ' ' (pad) + "10" + ' '
         // + ' ' (fold) + ' ' = " + 10   ".
@@ -4868,6 +5024,7 @@ mod tests {
             severity: Some(('E', 0xff0000)),
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
+            relative: None,
         };
         assert_eq!(format_gutter_text(&meta, 2, false, true), " 10   ");
         // The reserved (default) form keeps both sign cells.
@@ -4893,6 +5050,7 @@ mod tests {
             severity: None,
             diff_sign: None,
             is_virtual: false,
+            relative: None,
         };
         let text = format_gutter_text(&meta, 3, true, true); // "   42 ▸ "
         let runs = build_gutter_runs(&text, &meta, gpui::font("monospace"), true);
@@ -5251,5 +5409,26 @@ mod tests {
         assert_eq!(scale.x_offset(8, adv), px(16.0 + 72.0));
         // …and past the end it stops growing rather than extrapolating.
         assert_eq!(scale.x_offset(99, adv), px(16.0 + 72.0));
+    }
+}
+
+/// GD.5c: the focused pane's text origin (window pixels), handed from
+/// `paint` to the window's popup placement. A mutex and not a `Cell`
+/// because it sits beside [`MediaPixels`] in an `Arc`; it is only ever
+/// touched on the UI thread, so it is never contended.
+#[derive(Debug, Default)]
+pub(crate) struct TextOrigin(std::sync::Mutex<Option<(f32, f32)>>);
+
+impl TextOrigin {
+    fn set(&self, x: f32, y: f32) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some((x, y));
+        }
+    }
+
+    /// `(x, y)` of column 0, row 0 of the pane's text, or `None` before
+    /// the pane has painted once.
+    pub(crate) fn get(&self) -> Option<(f32, f32)> {
+        self.0.lock().ok().and_then(|slot| *slot)
     }
 }

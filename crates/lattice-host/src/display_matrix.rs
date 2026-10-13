@@ -149,6 +149,64 @@ impl DisplayLine {
     }
 }
 
+/// F.2 (Thread F): split a display line into a base-size leading prefix
+/// and a scaled remainder, for the emacs heading model — only the
+/// heading *title* scales, the leading `#`/`##` markers stay base size
+/// (`markdown-header-delimiter-face`). Returns `Some((prefix_cols,
+/// title_scale))` where `prefix_cols` is the number of leading display
+/// columns (chars) before the first run carrying a rich `scale > 1.0`
+/// (the `# ` markers, resolved to `1.0`), and `title_scale` is that
+/// run's scale; returns `None` for ordinary lines (no scaled run).
+///
+/// The GPUI peer renders a scaled row in two pieces sharing one baseline
+/// — the prefix at base size, the title at `font_size * title_scale` —
+/// and grows the row height by `title_scale` (variable row height). The
+/// TUI peer has no analogue (a cell grid cannot vary font size); it
+/// degrades to the resolved bold/weight/underline.
+///
+/// GD.7c: host-side, not in the GPUI crate, because two readers need the
+/// one answer — the paint, and the scroll walks that must charge the row
+/// its drawn height (`Editor::heading_heights`).
+///
+/// O(runs). Inlay / whitespace-marker runs carry no syntax scale and are
+/// treated as base (as the GPUI paint treats them). Multi-
+/// scale titles (e.g. inline code inside a heading) collapse to the
+/// first scaled run's scale from `prefix_cols` onward — a deliberate
+/// simplification (the common case is `[markers][title]`).
+pub fn heading_scale_split(
+    line: &DisplayLine,
+    resolved: &crate::ui::theme::ResolvedTheme,
+    ids: &crate::ui::theme::BuiltinElementIds,
+) -> Option<(u32, f32)> {
+    let text = line.text.as_ref();
+    let mut byte = 0usize;
+    let mut col = 0u32;
+    for run in line.runs.iter() {
+        let run_bytes = run.len as usize;
+        let scale = if run.flags
+            & (lattice_cells::cell_flags::INLAY | lattice_cells::cell_flags::WS_MARKER)
+            != 0
+        {
+            1.0
+        } else {
+            crate::ui::theme::resolve_syntax_style(resolved, ids, run.style)
+                .scale
+                .map(|s| s.as_ratio())
+                .unwrap_or(1.0)
+        };
+        if scale > 1.0 {
+            return Some((col, scale));
+        }
+        let end = (byte + run_bytes).min(text.len());
+        col += text
+            .get(byte..end)
+            .map(|s| s.chars().count() as u32)
+            .unwrap_or(0);
+        byte = end;
+    }
+    None
+}
+
 /// Contiguous range of display rows covering a slice of the buffer.
 /// Same invariants as `CellChunk`: `rows` sorted ascending by
 /// `source_line`, folded lines absent (row count is post-fold),

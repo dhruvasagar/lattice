@@ -91,7 +91,7 @@ impl SourceRecord {
         }
     }
 
-    fn from_plugin_source(source: &PluginSource) -> Self {
+    pub(crate) fn from_plugin_source(source: &PluginSource) -> Self {
         match source {
             PluginSource::Local(p) => SourceRecord::Local(p.clone()),
             PluginSource::Git { url, rev } => SourceRecord::Git {

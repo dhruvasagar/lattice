@@ -93,13 +93,109 @@ impl App {
         self.read_editor(move |e| e.dispatch_blocking(invocation))
     }
 
+    /// One normalised chord, the way the input loop takes it: translate
+    /// against published state, dispatch, and — when the binding was a mode
+    /// action that declined — fall through to the layer below (AP.0.2).
+    ///
+    /// The walk used to be inline in `runtime.rs`, above anything a test
+    /// could call, so the peer conformance suite drove a path without it.
+    /// It is here so the loop and the suite share one entry (GD.8b). The
+    /// GPUI peer's `dispatch_chord` is the same shape.
+    ///
+    /// Every input is a PUBLISHED read: no actor crossing before the
+    /// dispatch's own.
+    pub fn press_chord(&mut self, chord: lattice_host::chord::KeyChord) {
+        // Captured BEFORE the dispatch, which mutates both. The prefix is
+        // the sequence this chord completes: re-resolving the trailing key
+        // alone is how a declined `<leader>oJ` ran vim's `J`.
+        let (prefix_before, layers_before) = {
+            let t = self.render_state.load().translator.clone();
+            (t.partial_chord.to_vec(), t.active_minor_modes.to_vec())
+        };
+        let modal_before = self.ad().modal;
+        if !self.press_chord_in_layers(chord, &prefix_before, &layers_before) {
+            return;
+        }
+        // The binding declined — it did nothing. Re-resolve with the
+        // DECLINING layer removed, one layer per decline, until something
+        // handles the key or only Builtin / User are left. Dropping every
+        // mode layer at once would skip a second layer that wants the chord
+        // (table-mode's `<Tab>` declining past org-mode's fold cycle).
+        let mut peel = lattice_host::decline::DeclinePeel::new(
+            modal_before,
+            prefix_before,
+            chord,
+            layers_before,
+        );
+        loop {
+            let keymap = self.render_state.load().translator.keymap.clone();
+            // `None` ⇒ the winner came from Builtin / User, which cannot
+            // decline: nothing left to peel.
+            let Some(layers) = peel.peel(&keymap).map(<[lattice_mode::ModeId]>::to_vec) else {
+                break;
+            };
+            let prefix = peel.prefix().to_vec();
+            let declined_again = self.press_chord_in_layers(chord, &prefix, &layers);
+            if !declined_again || peel.exhausted() {
+                break;
+            }
+        }
+    }
+
+    /// Resolve `chord` against an explicit prefix and layer set and apply
+    /// what it resolves to. Returns whether the binding declined. The first
+    /// resolution and every fall-through pass go through here, so only the
+    /// layer set differs between them.
+    fn press_chord_in_layers(
+        &mut self,
+        chord: lattice_host::chord::KeyChord,
+        prefix: &[lattice_host::chord::KeyChord],
+        layers: &[lattice_mode::ModeId],
+    ) -> bool {
+        let ad = self.ad();
+        let rs = self.render_state.load();
+        let translator = rs.translator.clone();
+        // The published modes map, not `completion_popup_active`: the
+        // popup mode's activation was published by the previous keystroke's
+        // `sync_keymap_overlays`, and that method's `cfg(test)` branch
+        // crosses the actor seam (slice I.7).
+        let insert_completion_open = rs
+            .modes
+            .map
+            .get(&self.document_buffer_id())
+            .map(|m| m.has_minor(lattice_mode::CompletionPopupMode::mode_id()))
+            .unwrap_or(false);
+        let ctx = crate::input::TranslateContext {
+            modal: ad.modal,
+            builtins: &translator.builtins,
+            pending_count: ad.pending_count,
+            op_count: ad.op_count,
+            recording_macro: ad.macro_recording,
+            active_buffer: ad.buffer_kind,
+            completion_open: ad.completion_open,
+            chord_capture: ad.chord_capture,
+            picker_open: ad.picker_open,
+            insert_completion_open,
+            snippet_active: ad.snippet_active,
+            terminal_insert_active: ad.terminal_insert_active,
+            terminal_esc_exits: ad.terminal_esc_exits,
+            terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
+            terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
+            terminal_visual_active: ad.terminal_visual_active,
+            keymap: &translator.keymap,
+            partial_chord: prefix,
+            active_minor_modes: layers,
+        };
+        let action = lattice_host::input::translate(ctx, chord);
+        self.apply(action)
+    }
+
     /// Returns `true` when the resolved binding was a grammar action that
-    /// **declined** (`Effect::Declined`) — it did nothing, and the caller
-    /// holding the originating `KeyChord` (the TUI live loop) should re-resolve
-    /// the chord at the next keymap layer (AP.0.2 fall-through). The host
-    /// `dispatch_chord` path (GPUI / tests) does this itself; the TUI's
-    /// translate→apply path lost the chord by the time the decline is known, so
-    /// `apply` surfaces the flag and `runtime.rs` performs the re-resolve.
+    /// **declined** (`Effect::Declined`) — it did nothing, and the chord
+    /// should be re-resolved at the next keymap layer (AP.0.2 fall-through).
+    /// [`Self::press_chord`] holds the chord and does that; `apply` only
+    /// surfaces the flag, because by the time the decline is known the
+    /// chord that produced the action is gone.
     pub fn apply(&mut self, action: Action) -> bool {
         // Phase 5.5.B–D: macro-recording capture, partial-chord
         // lifecycle, and the read-only-help guard live in
@@ -198,6 +294,15 @@ impl App {
             // handled) action, and State-A hover-dismiss is impossible
             // here (the fuse requires no popup), so the only work left is
             // surfacing the tick signals (e.g. `ThemeChanged`) UI-side.
+            //
+            // GD.0b: a fused dispatch can now carry effects — the ones the
+            // host says it has finished (`effect_is_host_complete`), whose
+            // arms here are no-ops. They are run anyway: if a variant is
+            // ever classified host-complete while this peer still has work
+            // for it, that work happens late instead of not at all.
+            for effect in std::mem::take(&mut outcome.effects) {
+                self.apply_effect_app_arms(effect);
+            }
             for signal in tail_signals {
                 self.handle_renderer_signal(signal);
             }
@@ -433,6 +538,9 @@ impl App {
             // 5.5.G.9: paste cluster arms.
             | Action::PasteAfter
             | Action::PasteBefore
+            | Action::Put(_)
+            | Action::PutOverSelection { .. }
+            | Action::PutLine { .. }
             | Action::PasteText(_)
             // 5.5.G.10: search-state arms migrated to Editor::dispatch.
             | Action::SearchAppend(_)

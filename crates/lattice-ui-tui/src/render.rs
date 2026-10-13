@@ -101,13 +101,10 @@ pub struct FrameView<'a> {
     /// Slice 3c.extension.fold-rs: per-frame LSP-mode gates,
     /// cached once at `FrameView::from_app` so the compose loop's
     /// per-line decoration checks don't pay actor-RPC cost. Each
-    /// is one `read_editor` at frame entry; a 120-row paint that
-    /// previously triggered 120× per-line RPC for
-    /// `app.lsp_semantic_tokens_mode_enabled_for(...)` now reads
-    /// `view.lsp_semantic_tokens_enabled` directly.
+    /// is one `read_editor` at frame entry, so a 120-row paint does
+    /// not pay a per-line RPC for each gate.
     pub lsp_mode_enabled: bool,
     pub lsp_diagnostics_enabled: bool,
-    pub lsp_semantic_tokens_enabled: bool,
     pub lsp_document_highlight_enabled: bool,
     /// Slice A.2b.2: inlay-hint mode gate moved to publish-time
     /// (`Editor::build_active_inlay_hints` returns an empty list
@@ -188,7 +185,6 @@ impl<'a> FrameView<'a> {
             fold_index,
             lsp_mode_enabled: app.lsp_mode_enabled_for(doc_id),
             lsp_diagnostics_enabled: app.lsp_diagnostics_mode_enabled_for(doc_id),
-            lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(doc_id),
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(doc_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
             wrap_lines: ad.option_cache.wrap_lines,
@@ -244,7 +240,6 @@ impl<'a> FrameView<'a> {
             fold_index,
             lsp_mode_enabled: app.lsp_mode_enabled_for(buffer_id),
             lsp_diagnostics_enabled: app.lsp_diagnostics_mode_enabled_for(buffer_id),
-            lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(buffer_id),
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(buffer_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(buffer_id),
             // PU.1b-1a: wrap + signcolumn resolve per-buffer (the
@@ -3627,54 +3622,6 @@ fn help_pane_render(
     draw_pane_document(frame, area, app, snap, pane, is_active);
 }
 
-fn help_pane_status(app: &App, _pane: &crate::pane::PaneState) -> String {
-    app.popup_help()
-        .map(|h| format!("[help] {}", h.title))
-        .unwrap_or_else(|| "[help]".to_string())
-}
-
-fn file_tree_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
-    // Slice 3c.final.B.9: buffer_locals via published map.
-    let locals_map = app.buffer_locals();
-    let root = locals_map
-        .map
-        .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
-        .map(|r| r.0.clone());
-    root.map(|p| format!("[tree] {}", p.display()))
-        .unwrap_or_else(|| "[tree]".to_string())
-}
-
-fn oil_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
-    // Slice 3c.final.E.5j: `with_oil` via published `buffers()` sub-
-    // state; OilDir buffer-local via `read_editor`.
-    let dirty_opt = app
-        .buffers()
-        .registry
-        .document_handle(pane.buffer_id)
-        .map(|h| h.snapshot().buffer.as_string())
-        .and_then(|text| {
-            app.buffer_locals()
-                .map
-                .get(&pane.buffer_id)
-                .and_then(|l| l.get::<lattice_listing::oil::modes::OilSnapshotLocal>())
-                .map(|s| s.0.is_dirty(&text))
-        });
-    let Some(is_dirty) = dirty_opt else {
-        return "[oil]".to_string();
-    };
-    let dirty = if is_dirty { " [+]" } else { "" };
-    // Slice 3c.final.B.9: OilDir via published map.
-    let locals_map = app.buffer_locals();
-    let dir: String = locals_map
-        .map
-        .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::OilDir>())
-        .map(|d| d.0.display().to_string())
-        .unwrap_or_default();
-    format!("[oil] {dir}{dirty}")
-}
-
 /// Boot-time registration of the renderer-side providers for the
 /// built-in modes. Plugin-installed modes (post-1.0) extend this
 /// registry through the same interface.
@@ -3690,20 +3637,12 @@ pub fn build_pane_render_registry() -> crate::pane_render::PaneRenderRegistry {
         lattice_mode::modes::HelpMode.id(),
         PaneRenderProvider {
             render: Some(help_pane_render),
-            status: help_pane_status,
         },
     );
-    // DL.4: the file tree has NO `render` provider — it is a Document
-    // now and paints through the shared compose path like every other
-    // buffer. Only the status label stays mode-owned.
-    registry.register_status_only(
-        lattice_listing::file_tree::FileTreeMode.id(),
-        file_tree_pane_status,
-    );
-    // DL.5: oil has NO `render` provider either — the last bespoke
-    // listing painter is gone, so both listing kinds paint through the
-    // shared compose path. Only the status label is mode-owned.
-    registry.register_status_only(lattice_listing::oil::OilMode.id(), oil_pane_status);
+    // DL.4 / DL.5: the file tree and oil have no provider at all. They
+    // are Documents and paint through the shared compose path, and
+    // (GD.7b) their status labels are modeline content their modes set
+    // host-side, not functions registered here.
     registry
 }
 
@@ -3869,20 +3808,9 @@ fn modeline_segments(
 ) -> Vec<ModelineSeg> {
     let rs = app.render_state.load();
     let snap = &rs.modeline_elements;
-    // The file-tree / oil / help custom label (M.4 provider mechanism) is
-    // the one renderer-resolved content input; it overrides `core.path`.
-    // Resolved once and threaded into the shared host resolver so the
-    // assembly stays common across peers.
-    // PI.3: the per-pane status line reports the pane's COMMITTED buffer,
-    // not the previewed one (design §5) — the modeline shows what you'd
-    // save / switch back to. `core.path` already comes from the active
-    // document's `modeline_elements`; the provider label resolves against
-    // the committed buffer too.
-    let provider_label = app
-        .pane_render_provider(pane.committed_id())
-        .map(|p| (p.status)(app, pane));
-    let provider_ref = provider_label.as_deref();
-
+    // GD.7b: the file-tree / oil / help label is `core.path` content the
+    // buffer's mode set host-side; the shared resolver reads it, for the
+    // pane's committed buffer (PI.3), so nothing is resolved here.
     // ML.5: the `ui.modeline.{left,center,right}` config drives zone
     // membership + order; `resolve_layout` returns the per-zone
     // descriptor lists (Auto = descriptor placement) + the configured
@@ -3900,13 +3828,7 @@ fn modeline_segments(
             }
             let id = el.id.as_str();
             let content = if id.starts_with("core.") {
-                lattice_host::modeline::resolve_builtin_content(
-                    id,
-                    pane,
-                    is_active,
-                    &rs,
-                    provider_ref,
-                )
+                lattice_host::modeline::resolve_builtin_content(id, pane, is_active, &rs)
             } else {
                 // Pushed elements (modes / plugins, ML.3): content from
                 // the published store, resolved per the descriptor's
@@ -3999,6 +3921,28 @@ fn truncate_to(s: &str, max: usize) -> String {
             out.push('…');
             out
         }
+    }
+}
+
+/// Extend a row's background to `width` columns with trailing spaces,
+/// so a full-row tint (the cursor line, a code block) reaches the pane
+/// edge rather than stopping where the text does.
+///
+/// Measured in terminal COLUMNS. This counted bytes, which agree with
+/// columns only for ASCII: a box-drawing character is three bytes and
+/// one column, so a row of `─` got two columns too little padding per
+/// character and the terminal's own background showed through the
+/// tail — a ragged hole down the right of any code block holding a
+/// diagram. A wide character has the opposite sign and is handled by
+/// the same measure.
+fn pad_row_background(body: &mut Vec<Span<'static>>, width: usize, bg: Color) {
+    let used: usize = body.iter().map(|s| s.width()).sum();
+    let pad_width = width.saturating_sub(used);
+    if pad_width > 0 {
+        body.push(Span::styled(
+            " ".repeat(pad_width),
+            TuiStyle::default().bg(bg),
+        ));
     }
 }
 
@@ -4365,31 +4309,13 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         // cursor (byte offset into the single line) so mid-line editing
         // shows where the user is typing — not pinned to the end.
         let line = app.command_line();
-        let caret_byte = (app.ad().cursor.byte as usize).min(line.len());
+        // GD.5b: in columns, from the shared helper — a byte count put
+        // the caret one cell right per multi-byte character before it.
+        let caret_cols =
+            lattice_host::cmdline_row::caret_cols(&line, app.ad().cursor.byte as usize);
         let cursor_col = area
             .x
-            .saturating_add((1 + caret_byte).min(area.width as usize) as u16);
-
-        // Visual hints. Two non-mutually-exclusive layers show
-        // after the cursor in a dim style:
-        //   1. `auto_submit_after_chord` (missing-arg prompt
-        //      armed by `:describe-key<CR>`): show a clear
-        //      "press a chord" cue so the user knows the next
-        //      keypress runs the lookup.
-        //   2. Otherwise, if chord-capture is just active
-        //      (cursor in a `Chord` arg slot), show a softer
-        //      `(chord)` tag so the user knows the cmdline is
-        //      consuming raw key events as chord tokens.
-        // Slice 3c.final.B.7: auto_submit hint via published
-        // `modeline()` sub-state (wait-free Arc clone, no actor
-        // round-trip).
-        let hint: Option<&'static str> = if app.modeline().auto_submit_hint {
-            Some("press a chord")
-        } else if app.chord_capture_active() {
-            Some("(chord)")
-        } else {
-            None
-        };
+            .saturating_add((1 + caret_cols).min(area.width as usize) as u16);
 
         // MB.4: draw the `:` prompt then the line, coloured per the
         // published decoration spans (syntax highlight). The spans are
@@ -4432,61 +4358,38 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             }
             _ => spans.push(Span::raw(line.clone())),
         }
-        if let Some(text) = hint {
-            spans.push(Span::styled(
-                text,
-                TuiStyle::default()
-                    .fg(Color::DarkGray)
+        // GD.5b: the trailing hints — the chord cue, the completion
+        // count, a live error or the parameter hint — are content the
+        // host decides (`cmdline_row::trailing_hints`), so the window
+        // shows the same ones. Only how each kind looks is decided here.
+        let completion = app.completion();
+        let hints = lattice_host::cmdline_row::trailing_hints(
+            modeline.auto_submit_hint,
+            app.chord_capture_active(),
+            completion
+                .state
+                .as_deref()
+                .map(|s| (s.selected, s.candidates.len())),
+            deco,
+        );
+        for hint in hints {
+            use lattice_host::cmdline_row::HintKind;
+            let dim = TuiStyle::default().fg(Color::DarkGray);
+            let style = match hint.kind {
+                HintKind::Count => dim,
+                HintKind::Cue | HintKind::Param => dim.add_modifier(Modifier::ITALIC),
+                HintKind::Error => TuiStyle::default()
+                    .fg(lattice_host::ui::theme::resolve_syntax_style(
+                        resolved,
+                        ids,
+                        lattice_cells::style::Style::DiagnosticError,
+                    )
+                    .fg
+                    .map(crate::theme::host_color_to_ratatui)
+                    .unwrap_or(Color::Red))
                     .add_modifier(Modifier::ITALIC),
-            ));
-        }
-        // Vertico-style count hint when the completion popup is
-        // open: `(selected/total)` faintly trailing the cmdline.
-        // Mirrors the picker prompt's `(n/m)` so both surfaces
-        // read the same.
-        if let Some(state) = app.completion().state.as_deref()
-            && !state.candidates.is_empty()
-        {
-            spans.push(Span::styled(
-                format!("  ({}/{})", state.selected + 1, state.candidates.len()),
-                TuiStyle::default().fg(Color::DarkGray),
-            ));
-        }
-        // MB.4: a live error indicator (unknown command / bad args) wins
-        // the trailing slot; otherwise a dim parameter hint from the
-        // command's ArgSpec — suppressed while the completion popup is up
-        // to avoid clutter.
-        if let Some(d) = deco {
-            if let Some(err) = &d.error {
-                let err_color = lattice_host::ui::theme::resolve_syntax_style(
-                    resolved,
-                    ids,
-                    lattice_cells::style::Style::DiagnosticError,
-                )
-                .fg
-                .map(crate::theme::host_color_to_ratatui)
-                .unwrap_or(Color::Red);
-                spans.push(Span::styled(
-                    format!("  {err}"),
-                    TuiStyle::default()
-                        .fg(err_color)
-                        .add_modifier(Modifier::ITALIC),
-                ));
-            } else if let Some(ph) = &d.param_hint {
-                let popup_open = app
-                    .completion()
-                    .state
-                    .as_deref()
-                    .is_some_and(|s| !s.candidates.is_empty());
-                if !popup_open {
-                    spans.push(Span::styled(
-                        format!("  {ph}"),
-                        TuiStyle::default()
-                            .fg(Color::DarkGray)
-                            .add_modifier(Modifier::ITALIC),
-                    ));
-                }
-            }
+            };
+            spans.push(Span::styled(hint.text, style));
         }
         let para = Paragraph::new(Line::from(spans));
         frame.render_widget(para, area);
@@ -4749,9 +4652,9 @@ pub(crate) fn compose_pane_lines(
     // `substitute_preview.matches` per row × per match. Active
     // pane only — when the bucket is empty (boot before first
     // recompute or non-active pane), per-row code falls back to
-    // the legacy walk. DocHighlight stays on the per-row walk
-    // because the TUI's per-quad style is keyed off
-    // `DocumentHighlightKind` which the bucket doesn't carry.
+    // the legacy walk. DocHighlight stays on the per-row walk: it
+    // also paints on inactive panes, which have no bucket. (The
+    // bucket has carried the highlight's kind since GD.6c.)
     // DR.3: the per-row hlsearch/substitute bucket is the ACTIVE
     // pane's (published from `app.ad()`), and both layers it feeds are
     // interaction state — only loaded for the focused pane. Inactive
@@ -5381,54 +5284,10 @@ pub(crate) fn compose_pane_lines(
             // user just collapsed.
             closed_fold_display_span(view, snap, f)
         });
-        // 4.4.h: LSP semantic-tokens overlay. Replaces the
-        // foreground color (folding in modifier bits) for
-        // each token's byte range. Painted BEFORE visual /
-        // hlsearch / diagnostic passes so those still layer
-        // their bg / underline on top of the LSP-driven fg
-        // -- the user's selection and search highlight stay
-        // visible over semantic-colored text.
-        // 5.8.AF.5 / Slice 3b.2: read semantic-tokens through
-        // `RenderState.lsp.semantic_tokens`. The spawned request
-        // task writes via `insert_for` into the same underlying
-        // `PerBufferCache` -- this read sees fresh data without
-        // any UI-thread drain.
-        // DR.3: semantic tokens are a buffer-intrinsic decoration —
-        // source from THIS pane's per-buffer cache (`ctx.buffer_id`)
-        // and the per-pane `view` gate, so they paint on inactive
-        // panes too (dimmed). For the active pane `ctx.buffer_id` IS
-        // the active doc → byte-identical.
-        use lattice_host::per_buffer_cache::PerBufferCacheExt;
-        let rs_st = app.render_state.load();
-        if let Some(cache) = rs_st.lsp.semantic_tokens.get_for(ctx.buffer_id)
-            && view.lsp_semantic_tokens_enabled
-        {
-            for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
-                let start =
-                    lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, tok.start_char)
-                        as usize;
-                let end = lattice_lsp::position::utf16_column_to_utf8_byte(
-                    &line_text,
-                    tok.start_char + tok.length,
-                ) as usize;
-                let start = start.min(line_len);
-                let end = end.min(line_len);
-                if start >= end {
-                    continue;
-                }
-                let mut mods = Modifier::empty();
-                let style_with_mods =
-                    apply_semantic_token_modifiers(TuiStyle::default(), &tok.modifiers);
-                mods.insert(style_with_mods.add_modifier);
-                body = apply_semantic_token_overlay(
-                    body,
-                    map_ob(start),
-                    map_ob(end),
-                    semantic_token_color(&tok.token_type),
-                    mods,
-                );
-            }
-        }
+        // GD.6b: LSP semantic tokens are no longer merged here. The host's
+        // cell worker layers them over the grammar spans when it builds
+        // the row, so `body` already carries them — as it does in the
+        // GPUI window, which has no merge point of its own.
         // Blockwise visual: per-line column band [min_col, max_col].
         // Charwise / Linewise visual go through `visual_range` instead.
         if let Some(b) = block
@@ -5761,13 +5620,18 @@ pub(crate) fn compose_pane_lines(
         // ends right before it).
         // DR.3: ghost text previews the active completion at the
         // active cursor — interaction state, focused pane only.
+        //
+        // GD.5c: the suffix and its "cursor at end of line" rule are
+        // the host's, read from published state. This used to call
+        // `completion_ghost_text_suffix`, a blocking actor round-trip
+        // from the draw path on every frame the cursor sat at a line's
+        // end.
         if ctx.is_active
             && line_idx == app.ad().cursor.line
-            && (app.ad().cursor.byte as usize) == line_text.len()
-            && let Some(suffix) = app.completion_ghost_text_suffix()
+            && let Some(suffix) = app.render_state.load().completion.ghost_suffix.clone()
         {
             body.push(Span::styled(
-                suffix,
+                suffix.to_string(),
                 TuiStyle::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::ITALIC),
@@ -5804,14 +5668,7 @@ pub(crate) fn compose_pane_lines(
                     span.style = span.style.bg(bg);
                 }
             }
-            let used: usize = body.iter().map(|s| s.content.len()).sum();
-            let pad_width = (buffer_w as usize).saturating_sub(used);
-            if pad_width > 0 {
-                body.push(Span::styled(
-                    " ".repeat(pad_width),
-                    TuiStyle::default().bg(bg),
-                ));
-            }
+            pad_row_background(&mut body, buffer_w as usize, bg);
         }
         // LSP severity cell (Phase 4.1.d.iii). One cell pre-
         // pended to the gutter; severity glyph + colour when a
@@ -5871,14 +5728,7 @@ pub(crate) fn compose_pane_lines(
         let body = match code_block_tint_bg(view, ctx.buffer_id, line_idx) {
             Some(bg) => {
                 let mut body = apply_diff_tint(body, bg);
-                let used: usize = body.iter().map(|s| s.content.len()).sum();
-                let pad_width = (buffer_w as usize).saturating_sub(used);
-                if pad_width > 0 {
-                    body.push(Span::styled(
-                        " ".repeat(pad_width),
-                        TuiStyle::default().bg(bg),
-                    ));
-                }
+                pad_row_background(&mut body, buffer_w as usize, bg);
                 body
             }
             None => body,
@@ -6323,96 +6173,6 @@ fn diagnostic_summary_style(severity_rank: u8, view: &FrameView<'_>) -> TuiStyle
         _ => theme.diagnostic_hint_style,
     };
     base.add_modifier(Modifier::ITALIC)
-}
-
-/// 4.4.h: apply LSP semantic styling to the spans intersecting
-/// `[overlay_start, overlay_end)`. Replaces fg + folds in
-/// modifiers WITHOUT clobbering existing bg / underline /
-/// reverse from earlier passes (tree-sitter set bg = None
-/// commonly; visual / hlsearch / diagnostics overlays may
-/// have set bg). Same span-splitting machinery as
-/// `apply_match_overlay`.
-///
-/// S3.c.2 (2026-05-26): visibility bumped to `pub(crate)` so
-/// `cells_render::tests` can validate the overlay's behaviour
-/// against cell-derived bodies. Matches the existing precedent
-/// set by `apply_whitespace_decoration`.
-pub(crate) fn apply_semantic_token_overlay(
-    spans: Vec<Span<'static>>,
-    overlay_start: usize,
-    overlay_end: usize,
-    fg: Color,
-    modifiers: Modifier,
-) -> Vec<Span<'static>> {
-    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
-    let mut cursor = 0usize;
-    for span in spans {
-        let s = span.content.as_ref().to_string();
-        let span_start = cursor;
-        let span_end = cursor + s.len();
-        let overlap_start = span_start.max(overlay_start);
-        let overlap_end = span_end.min(overlay_end);
-        if overlap_start >= overlap_end {
-            out.push(Span::styled(s, span.style));
-        } else {
-            if overlap_start > span_start {
-                let pre = s[..overlap_start - span_start].to_string();
-                out.push(Span::styled(pre, span.style));
-            }
-            let mid = s[overlap_start - span_start..overlap_end - span_start].to_string();
-            // Merge: keep prior bg / underline / reverse;
-            // override fg + add modifier bits.
-            let merged = span.style.fg(fg).add_modifier(modifiers);
-            out.push(Span::styled(mid, merged));
-            if overlap_end < span_end {
-                let post = s[overlap_end - span_start..].to_string();
-                out.push(Span::styled(post, span.style));
-            }
-        }
-        cursor = span_end;
-    }
-    out
-}
-
-/// 4.4.h: pick a foreground color for a semantic-token kind.
-/// Names are the LSP-standard token-type strings (see
-/// `SemanticTokenType` consts in `lsp-types`). Servers may
-/// declare custom token types beyond the standard set; those
-/// fall through to the default magenta so they're at least
-/// distinguishable from un-styled text.
-///
-/// Modifiers are folded into the style via
-/// `apply_semantic_token_modifiers` (italic / bold / etc.);
-/// this fn only chooses the hue.
-fn semantic_token_color(kind: &str) -> Color {
-    match kind {
-        "keyword" | "controlKeyword" => Color::Magenta,
-        "type" | "class" | "struct" | "interface" | "enum" | "typeParameter" => Color::Cyan,
-        "function" | "method" | "macro" => Color::Yellow,
-        "string" => Color::Green,
-        "number" => Color::LightYellow,
-        "comment" => Color::DarkGray,
-        "operator" => Color::LightCyan,
-        "variable" | "parameter" | "property" | "enumMember" => Color::White,
-        "namespace" | "modifier" => Color::LightMagenta,
-        _ => Color::Magenta,
-    }
-}
-
-/// 4.4.h: apply LSP modifier bits to a base style. `static`,
-/// `readonly`, `deprecated` etc. carry visual cues
-/// (italic / strike-through). Idempotent; missing modifiers
-/// leave the style untouched.
-fn apply_semantic_token_modifiers(mut style: TuiStyle, modifiers: &[String]) -> TuiStyle {
-    for m in modifiers {
-        match m.as_str() {
-            "deprecated" => style = style.add_modifier(Modifier::CROSSED_OUT),
-            "readonly" | "static" => style = style.add_modifier(Modifier::ITALIC),
-            "defaultLibrary" => style = style.add_modifier(Modifier::DIM),
-            _ => {}
-        }
-    }
-    style
 }
 
 // Slice A.2b.2: `inlay_hint_label_text` is no longer imported here
@@ -11270,6 +11030,8 @@ mod tests {
                 },
             ));
         app.editor.insert_completion = Some(state);
+        // The renderer reads the published suffix.
+        app.editor.publish_render_state();
 
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 1, 80);
         let composed = line_text(&lines[0]);
@@ -11322,6 +11084,8 @@ mod tests {
                 },
             ));
         app.editor.insert_completion = Some(state);
+        // The renderer reads the published suffix.
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 1, 80);
         let composed = line_text(&lines[0]);
         // `foobaz` from the buffer is fine; `foobar` (ghost)
@@ -12882,120 +12646,100 @@ mod tests {
         );
     }
 
-    /// 4.4.h: a seeded semantic-tokens cache repaints the
-    /// foreground color within each token's byte range.
+    /// A tinted row is padded to the pane edge in columns. The rows that
+    /// showed the bug are a diagram's: box-drawing characters, three
+    /// bytes and one column each.
     #[test]
-    fn semantic_tokens_overlay_repaints_fg_within_token_range() {
-        use std::str::FromStr;
-        let mut app = app_with("fn main() {}\n", 5);
-        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        let doc_id = app.ad().document_buffer_id;
-        app.editor.buffer_uris.insert(doc_id, uri);
-        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
-            app.toggle_mode_by_name("lsp-mode");
-        }
-        if !app.lsp_semantic_tokens_mode_enabled_for(app.ad().document_buffer_id) {
-            app.toggle_mode_by_name("lsp-semantic-tokens-mode");
-        }
-        // Seed: "fn" as keyword (chars 0..=1), "main" as function
-        // (chars 3..=6).
-        // 5.8.AF.5 / Slice 3b.2: `lsp_semantic_tokens_cache` is
-        // now a `PerBufferCache<...>`; use `insert_for` + publish.
-        {
-            use lattice_host::per_buffer_cache::PerBufferCacheExt;
-            app.editor.lsp_semantic_tokens_cache.insert_for(
-                app.ad().document_buffer_id,
-                crate::app::LspSemanticTokensCache {
-                    document_version: app.editor.document.snapshot().version,
-                    result_id: None,
-                    raw_data: Vec::new(),
-                    tokens: vec![
-                        crate::app::DecodedSemanticToken {
-                            line: 0,
-                            start_char: 0,
-                            length: 2,
-                            token_type: "keyword".into(),
-                            modifiers: Vec::new(),
-                        },
-                        crate::app::DecodedSemanticToken {
-                            line: 0,
-                            start_char: 3,
-                            length: 4,
-                            token_type: "function".into(),
-                            modifiers: Vec::new(),
-                        },
-                    ],
-                },
-            );
-        }
-        app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
-        let row0 = &lines[0];
-        // Magenta = keyword, Yellow = function. Find at least
-        // one span of each in the row.
-        let mut saw_keyword = false;
-        let mut saw_function = false;
-        for span in &row0.spans {
-            match span.style.fg {
-                Some(Color::Magenta) if span.content.as_ref().contains("fn") => {
-                    saw_keyword = true;
-                }
-                Some(Color::Yellow) if span.content.as_ref().contains("main") => {
-                    saw_function = true;
-                }
-                _ => {}
-            }
-        }
-        assert!(saw_keyword, "expected keyword fg on `fn`; got {row0:?}");
-        assert!(saw_function, "expected function fg on `main`; got {row0:?}");
+    fn a_tinted_row_is_padded_to_the_edge_in_columns_not_bytes() {
+        let width_of = |body: &[Span<'static>]| -> usize { body.iter().map(|s| s.width()).sum() };
+
+        let mut ascii = vec![Span::raw("abc")];
+        pad_row_background(&mut ascii, 10, Color::Blue);
+        assert_eq!(width_of(&ascii), 10);
+
+        // 6 columns, 18 bytes. Counted in bytes this row is already
+        // "past" a 10-column edge and gets no padding at all.
+        let mut rule = vec![Span::raw("┌────┐")];
+        pad_row_background(&mut rule, 10, Color::Blue);
+        assert_eq!(width_of(&rule), 10);
+        assert_eq!(rule.last().unwrap().content.as_ref(), "    ");
+        assert_eq!(rule.last().unwrap().style.bg, Some(Color::Blue));
+
+        // A wide character is two columns: no over-padding either.
+        let mut wide = vec![Span::raw("日本")];
+        pad_row_background(&mut wide, 10, Color::Blue);
+        assert_eq!(width_of(&wide), 10);
+
+        // Already at or past the edge: left alone.
+        let mut full = vec![Span::raw("0123456789ab")];
+        pad_row_background(&mut full, 10, Color::Blue);
+        assert_eq!(full.len(), 1);
     }
 
-    /// 4.4.h: with the mode off, the cache is ignored.
+    /// GD.6b: semantic tokens reach the terminal through the host's
+    /// rows, not a render-time merge — and only while
+    /// `lsp-semantic-tokens-mode` is on for the buffer.
     #[test]
-    fn semantic_tokens_overlay_suppressed_when_mode_off() {
+    fn semantic_tokens_colour_the_composed_row_while_the_mode_is_on() {
         use std::str::FromStr;
         let mut app = app_with("fn main() {}\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         let doc_id = app.ad().document_buffer_id;
         app.editor.buffer_uris.insert(doc_id, uri);
-        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
+        if !app.lsp_mode_enabled_for(doc_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
-        if app.lsp_semantic_tokens_mode_enabled_for(app.ad().document_buffer_id) {
+        if !app.lsp_semantic_tokens_mode_enabled_for(doc_id) {
             app.toggle_mode_by_name("lsp-semantic-tokens-mode");
         }
-        // 5.8.AF.5 / Slice 3b.2: see seed pattern note above.
+        let fg_of_main = |app: &App| -> Option<Color> {
+            let lines = compose_visible_lines(app, &app.ad().snapshot.clone(), 5, 80);
+            lines[0]
+                .spans
+                .iter()
+                .find(|s| s.content.as_ref().contains("main"))
+                .and_then(|s| s.style.fg)
+        };
+        // The cell worker is its own task in the running editor; here it
+        // is run by hand after each publish.
+        let rebuild = |app: &mut App| {
+            app.editor.publish_render_state();
+            lattice_host::cells_worker::recompute(&app.editor.render_state);
+        };
+        rebuild(&mut app);
+        let without_tokens = fg_of_main(&app);
+
+        // The server says `main` is a string. No grammar would, so a
+        // colour change on it can only have come from the token.
         {
             use lattice_host::per_buffer_cache::PerBufferCacheExt;
             app.editor.lsp_semantic_tokens_cache.insert_for(
-                app.ad().document_buffer_id,
+                doc_id,
                 crate::app::LspSemanticTokensCache {
                     document_version: app.editor.document.snapshot().version,
                     result_id: None,
                     raw_data: Vec::new(),
                     tokens: vec![crate::app::DecodedSemanticToken {
                         line: 0,
-                        start_char: 0,
-                        length: 2,
-                        token_type: "keyword".into(),
+                        start_char: 3,
+                        length: 4,
+                        token_type: "string".into(),
                         modifiers: Vec::new(),
                     }],
                 },
             );
         }
-        app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
-        let row0 = &lines[0];
-        // No magenta fg should appear on the "fn" span.
-        for span in &row0.spans {
-            if span.content.as_ref().contains("fn") {
-                assert_ne!(
-                    span.style.fg,
-                    Some(Color::Magenta),
-                    "mode-off should suppress semantic-tokens overlay; got {span:?}"
-                );
-            }
-        }
+        rebuild(&mut app);
+        let with_tokens = fg_of_main(&app);
+        assert_ne!(
+            with_tokens, without_tokens,
+            "a token on `main` must change its colour"
+        );
+
+        // Mode off: the cache is still there and is ignored.
+        app.toggle_mode_by_name("lsp-semantic-tokens-mode");
+        rebuild(&mut app);
+        assert_eq!(fg_of_main(&app), without_tokens);
     }
 
     /// 4.4.g: with the mode off, the cache content is ignored

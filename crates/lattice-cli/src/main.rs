@@ -39,6 +39,7 @@ use clap::Parser;
 
 use lattice_core::Document;
 
+mod renderer;
 mod scaffold;
 mod wit_sync;
 
@@ -48,14 +49,15 @@ struct Cli {
     /// Path to the file to open. If omitted, an empty buffer is opened.
     file: Option<PathBuf>,
 
-    /// Route to the GPUI renderer (requires the `gui` build feature).
-    /// Default until phase 5.last lands; from then on `--gui` becomes
-    /// the default and `--tui` opts in to the terminal renderer. Mutually
-    /// exclusive with `--tui`.
+    /// Open the editor in its own window. This is what a bare `lattice`
+    /// does when a display is reachable; pass it to insist on a window
+    /// (an error, not the terminal, if there is no display or this build
+    /// has no window renderer). Mutually exclusive with `--tui`.
     #[arg(long, conflicts_with = "tui")]
     gui: bool,
 
-    /// Route to the TUI renderer (terminal). Default until phase 5.last.
+    /// Open the editor in this terminal instead of a window. Also what a
+    /// bare `lattice` does over SSH or anywhere else with no display.
     /// Mutually exclusive with `--gui`.
     #[arg(long, conflicts_with = "gui")]
     tui: bool,
@@ -219,14 +221,14 @@ async fn main() -> Result<()> {
 
     // Bundle-context detection: when the binary lives inside a macOS
     // `.app` bundle (`…/Contents/MacOS/lattice`), `open Lattice.app`
-    // provides no CLI flags. Defaulting to TUI in that context renders
-    // nothing — there is no controlling terminal. Auto-select GUI
-    // whenever we detect a bundle, unless `--tui` was given explicitly.
+    // provides no CLI flags and no controlling terminal, so the window
+    // is the only renderer that can show anything — whatever the
+    // environment says about a display (GD.9: `renderer::choose`).
     //
     // The check is macOS-only and feature-gated on `gui` so the TUI-
     // only build path is unaffected. `current_exe` can fail in rare
-    // sandboxed environments; the `unwrap_or(false)` falls back to the
-    // normal TUI default in that case.
+    // sandboxed environments; the `unwrap_or(false)` then leaves the
+    // choice to the display check like any other launch.
     #[cfg(all(target_os = "macos", feature = "gui"))]
     let running_in_bundle = std::env::current_exe()
         .ok()
@@ -248,7 +250,17 @@ async fn main() -> Result<()> {
     // behind. Honor `--stderr-logs` only when stderr is REDIRECTED
     // (`!is_terminal()`). The GUI's stderr is separate from its window, so it
     // stays unconditionally enabled there.
-    let use_gui = cli.gui || (running_in_bundle && !cli.tui);
+    // GD.9: the window is the default. `--tui`, a build with no window
+    // renderer, or no reachable display each make it the terminal.
+    let use_gui = renderer::choose(renderer::Launch {
+        gui_flag: cli.gui,
+        tui_flag: cli.tui,
+        gui_compiled: cfg!(feature = "gui"),
+        in_app_bundle: running_in_bundle,
+        display_reachable: renderer::display_reachable(renderer::Platform::current(), |name| {
+            std::env::var(name).ok()
+        }),
+    }) == renderer::Renderer::Gui;
     let stderr_is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let stderr_enabled = use_gui || (cli.stderr_logs && !stderr_is_tty);
     lattice_runtime::set_boot_stderr_enabled(stderr_enabled);
@@ -273,13 +285,9 @@ async fn main() -> Result<()> {
         None => Document::empty(),
     };
 
-    // Phase 5.9 / 5.8.M: single-binary entry. `--gui` routes to the
-    // GPUI peer (feature-gated by `gui`). `--tui` (or no flag) routes
-    // to the TUI peer. After phase 5.last achieves full feature parity
-    // the default flips to GUI; until then TUI stays the default for
-    // direct invocations; `open Lattice.app` auto-selects GUI via the
-    // bundle-context guard above. `clap`'s `conflicts_with` enforces
-    // mutual exclusivity at parse time.
+    // Phase 5.9 / 5.8.M: single-binary entry, two renderer peers. Which
+    // one was settled above (`use_gui`); `clap`'s `conflicts_with`
+    // enforces that `--gui` and `--tui` are not both given.
     // Plugin auto-discovery is opt-IN, and this is the opt. It sits here
     // rather than inside `Editor::boot` because *this* is what distinguishes a
     // user running the editor from the 45 test files that boot the same
@@ -292,7 +300,7 @@ async fn main() -> Result<()> {
     lattice_plugin_loader::enable_autoload();
 
     let result = if use_gui {
-        run_gui(document)
+        run_gui(document, cli.tutor)
     } else {
         lattice_ui_tui::run(document, cli.tutor)
     };
@@ -307,14 +315,16 @@ async fn main() -> Result<()> {
 /// exposes the real entry. Without the feature, `--gui` produces a
 /// helpful error so users know to rebuild with `--features gui`.
 #[cfg(feature = "gui")]
-fn run_gui(document: Document) -> Result<()> {
-    lattice_ui_gpui::run(document)
+fn run_gui(document: Document, startup_lesson: Option<u32>) -> Result<()> {
+    lattice_ui_gpui::run(document, startup_lesson)
 }
 
 #[cfg(not(feature = "gui"))]
-fn run_gui(_document: Document) -> Result<()> {
+fn run_gui(_document: Document, _startup_lesson: Option<u32>) -> Result<()> {
     anyhow::bail!(
-        "GUI renderer not compiled in. Rebuild with `cargo build --features gui` \
+        "this build has no window renderer, so `--gui` cannot be honoured. \
+         Run `lattice` or `lattice --tui` for the terminal, install the GUI \
+         build, or rebuild with `cargo build --features gui` \
          (Linux: requires `libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev`)."
     )
 }

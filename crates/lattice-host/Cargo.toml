@@ -359,6 +359,11 @@ search = ["lattice-multibuffer/search"]
 # (`lattice-ui-tui/system-clipboard`) and GPUI peer (via its `window`
 # feature) forward to this. Pulls X11/Wayland link libs on Linux.
 system-clipboard = ["dep:arboard"]
+# The peer conformance scenarios (`crate::peer_conformance`): one set of
+# behaviour tests each renderer peer runs through its own entry points.
+# Test-only — the peers enable it from `[dev-dependencies]`, so it is never
+# in a shipped build.
+peer-conformance = []
 
 [lints]
 workspace = true

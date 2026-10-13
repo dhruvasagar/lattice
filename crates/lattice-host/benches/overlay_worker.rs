@@ -94,7 +94,7 @@ fn build_rs(
             inlay_version: 0,
             static_overlay_quads: overlay_cell.clone(),
             doc_highlights: Arc::from(
-                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+                Vec::<lattice_host::render_state::DocHighlightSpan>::new().into_boxed_slice(),
             ),
             static_overlay_version,
         }),
@@ -130,7 +130,7 @@ fn rebuild_rs(
             inlay_version: 0,
             static_overlay_quads: overlay_cell.clone(),
             doc_highlights: Arc::from(
-                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+                Vec::<lattice_host::render_state::DocHighlightSpan>::new().into_boxed_slice(),
             ),
             static_overlay_version,
         }),

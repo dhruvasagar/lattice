@@ -92,6 +92,12 @@ impl RowWeights {
         }
     }
 
+    /// `line`'s override, if it has one. For a caller with a second source
+    /// of height to fall back on (GD.7c: a heading's title scale).
+    pub fn get(&self, line: u32) -> Option<f32> {
+        self.overrides.get(&line).copied()
+    }
+
     /// How many lines carry an override. Diagnostics and tests.
     pub fn len(&self) -> usize {
         self.overrides.len()

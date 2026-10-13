@@ -492,7 +492,12 @@ Heading1/2/3 distinct. **Org/AsciiDoc reuse this directly** — same core
 elements, each grammar maps its headings to `text.title.N`.
 (lattice-syntax)
 
-### F.1 — host-side viewport-height accuracy ⏸ DEFERRED
+### F.1 — host-side viewport-height accuracy ✅
+
+Landed 2026-10-12 as gui-default **GD.7c** — the host is height-aware: its
+scroll walks read a heading's scale from the built display rows. The
+paragraph below is the deferral as it was written; its last sentence no
+longer holds (`heading_scale_split` is host-side now).
 
 First cut keeps host `viewport_height` a uniform-height estimate, so
 tall on-screen headings let GPUI fit slightly fewer rows than the host

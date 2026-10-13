@@ -45,8 +45,8 @@ usage: install.sh [--prefix DIR] [--version TAG] [--gui | --cli]
   --cli           install the terminal-only build
 
 By default the GPU-rendered build is installed when available and the
-terminal-only build otherwise. The GPU build's binary also runs in the
-terminal; pass --gui at launch to open the GPU window.
+terminal-only build otherwise. The GPU build opens a window; run
+`lattice --tui` for the terminal (automatic over SSH).
 EOF
 			exit 0 ;;
 		*) die "unknown option: $1" ;;
@@ -78,8 +78,8 @@ ver="${VERSION#v}"
 base="https://github.com/$REPO/releases/download/$VERSION"
 
 # Candidate flavours in preference order. `auto` (the default) tries the GUI
-# build first — its binary is a SUPERSET: it runs the terminal UI by default
-# and the GPU window with `--gui` — and falls back to the terminal-only build
+# build first — its binary is a SUPERSET: it opens the GPU window by default
+# and the terminal UI with `--tui` — and falls back to the terminal-only build
 # when the GUI archive was not published for this platform (the GUI build is
 # best-effort on ARM Linux). `--gui` / `--cli` pin a single flavour.
 case "$MODE" in
@@ -167,7 +167,7 @@ mv "$PREFIX/bin/lattice.new.$$" "$PREFIX/bin/lattice"
 
 if [ "$FLAVOUR" = "lattice-gui" ]; then
 	printf '\nInstalled lattice %s (GPU build) to %s/bin/lattice\n' "$ver" "$PREFIX"
-	printf 'Runs in the terminal by default; launch the GPU window with `lattice --gui`.\n'
+	printf 'Opens a window by default; run `lattice --tui` for the terminal (automatic over SSH).\n'
 else
 	printf '\nInstalled lattice %s (terminal build) to %s/bin/lattice\n' "$ver" "$PREFIX"
 fi

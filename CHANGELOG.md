@@ -1,5 +1,144 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **GUI on macOS: accented characters, emoji and input methods.** In the
+  window, dead keys now compose (`Option-e` then `e` types `é`), holding a letter
+  opens the macOS accent picker, the emoji panel inserts, and an input
+  method's in-progress text is shown underlined at the cursor. This applies
+  wherever you type text: Insert, Replace, the `:` line, search and picker
+  queries. Normal and Visual mode still take keys as pressed, so an active
+  input method never intercepts a command.
+- **GUI on macOS: `Option` types its character unless a binding claims it.**
+  `Option-3` types `£` where it used to type `3`. A chord a mode binds, such
+  as org's `<M-CR>`, still runs the binding, and a terminal pane still gets
+  `Option` as Meta.
+- **GUI: open files from the operating system.** Drop a file on the window,
+  or open one with Lattice from Finder or `open -a`, and it opens as `:e`
+  would. The window title shows the active file's name, and macOS has a
+  Lattice menu with Quit.
+- **GUI: an Edit menu on macOS.** Undo, Redo, Cut, Copy and Paste, with the
+  usual Cmd shortcuts. Each is the vim command it names on the system
+  clipboard register: Copy and Cut act on the Visual selection (`"+y`,
+  `"+d`), and Paste is `"+p` (over the selection in Visual) and `<C-r>+`
+  while typing.
+- **The rest of vim's put commands.** Only `p` and `P` in Normal mode
+  existed. Now, in the terminal and the window alike:
+  - `3p` puts the text three times.
+  - `gp` / `gP` put and leave the cursor just after the new text.
+  - `]p` / `[p` put linewise text re-indented to the current line.
+  - `p` over a Visual selection replaces it, and the replaced text becomes
+    the unnamed register; `P` replaces it and leaves the registers alone.
+  - `:put`, `:put!`, `:5put a` put a register as a whole line below or
+    above a line.
+
+### Changed
+- **Plugin API 0.3.0.** `app-effect` gains the put family: `put` (with a
+  `put-spec` for `gp` / `]p` and friends), `put-over-selection` and
+  `put-line`. Adding cases to a variant changes its shape, so this is a new
+  ABI generation: a plugin pinned to `lattice-wit = "0.2"` must move its pin
+  to `"0.3"` and rebuild, and one that matches on `app-effect` exhaustively
+  needs arms for the new cases. Plugins without a pin rebuild on their own.
+- **`lattice` opens a window.** The GPU renderer is the default; `lattice
+  --tui` opens the terminal renderer, which stays first-class. With no
+  display reachable (an SSH session, a server, a Linux console) a bare
+  `lattice` opens in the terminal on its own. `lattice --gui` insists on a
+  window and reports an error if it cannot have one. The terminal-only
+  build is unchanged: it has no window, so it opens the terminal.
+- **Motions and operators are one round-trip to the editor core**, in both
+  the terminal and the window. Only typed characters took the fast path
+  before; `j`, `w`, `x`, `dd` and the rest each made several round-trips,
+  which is most noticeable with a key held down.
+
+### Fixed
+- **Backspace, `~` and Replace mode on accented letters and emoji.** These
+  acted on one byte of the character instead of the whole character.
+  Backspacing the last `é` on a line removed the line and left the cursor
+  on a row that no longer existed; `~` and `R` corrupted the character.
+  All three now work on whole characters, in the terminal and the window.
+- **GUI: the cursor no longer slips under the bottom edge below large
+  headings.** A markdown or org heading is drawn taller than a normal row,
+  and scrolling counted it as one row, so with headings on screen the last
+  line or two could be clipped. Scrolling, paging, `zb` and `H`/`M`/`L` now
+  count a heading at the height it is drawn.
+- **Putting a line below the last line no longer leaves a blank line at the
+  end of the file.** `yyGp` in a file ending with a newline added one.
+- **`p` after a multi-byte character puts after the whole character.** It
+  stepped one byte, which is not a place text can go.
+- **GUI: LSP semantic highlighting works.** The window showed only
+  tree-sitter colours; a language server's semantic tokens were painted in
+  the terminal alone. Both now show them, and in the theme's colours rather
+  than fixed terminal ones. Deprecated symbols are struck through, and
+  `static` / read-only ones italic, in both.
+- **Terminal: a code block or cursor line holding non-ASCII text is tinted
+  to the pane's edge.** The fill was measured in bytes, so a row of
+  box-drawing characters (a diagram in a fenced block) left a ragged strip
+  of the terminal's own background down the right-hand side.
+- **GUI: the command line shows a caret.** The `:` line, the search line
+  and prompts drew the text you typed and nothing to say where you were in
+  it. They now draw a caret at the cursor, and the `:` line shows the same
+  trailing hints as the terminal: `press a chord`, the completion count, a
+  live error, the command's parameter hint.
+- **Terminal: the `:` line's caret is in the right column after a
+  multi-byte character.** It was placed by byte count.
+- **GUI: file-tree, oil and help panes are labelled in the modeline**
+  (`[tree] <root>`, `[oil] <dir>`, `[help] <title>`), as they are in the
+  terminal, and an oil listing with unapplied edits is marked `[+]` in both.
+- **GUI: the completion popup opens at the text you are completing**
+  instead of in the window's top-right corner, with its documentation panel
+  beside it.
+- **GUI: `<Esc>` inside a focused popup cancels a search there first**
+  instead of closing the popup with the search half-typed. Moving between
+  splits with `<C-w>` also uses the window's real width now.
+- **GUI: terminal panes show bold, italic, dim and strikethrough text**, and
+  search hits are underlined instead of looking like the current match.
+- **GUI: completion ghost text.** With `completion.ghost_text` on, the rest
+  of the top candidate is shown dimmed after the cursor, as in the terminal.
+- **GUI: completion and hover popups line up with the text in a split or
+  beside a gutter.** They were placed as if the pane started at the window's
+  left edge with no line numbers.
+- **GUI: the expanded command line (`<C-x><C-e>`) is syntax-coloured** on its
+  first line, as the one-row `:` line is.
+- **GUI: symbol highlights distinguish reads from writes.** With a language
+  server attached, the other occurrences of the symbol under the cursor were
+  all tinted as reads. Writes and plain textual occurrences now get their own
+  theme colours, as in the terminal.
+- **GUI: a `:s` preview strikes through the text it will replace**, as the
+  terminal does.
+- **GUI: the modeline's hover tooltip follows the theme.** It was a fixed
+  dark box, on light themes too.
+- **GUI: `:set relativenumber` works.** The window's gutter always showed
+  absolute line numbers.
+- **GUI: closing the window no longer discards unsaved work.** The close
+  button and Cmd+Q closed the window without asking the editor. They now
+  behave like `:qa`: with an unsaved buffer the window stays open and the
+  message line says which buffer.
+- **GUI: `lattice --gui --tutor` opens the tutor.** The flag was ignored in
+  the window.
+- **GUI: the completion popup's keys work, and so do snippet tabstops.** In
+  the window (`--gui`) the insert-completion popup opened and `<C-n>`, `<C-p>`
+  and `<C-y>` went to the buffer underneath; `<Tab>` did not move between a
+  snippet's placeholders. The terminal was unaffected.
+- **GUI: a macro that opens a file and then edits it replays in order.** It
+  replayed as "edit, then open", so the text landed in the buffer the macro
+  was started from.
+- **GUI: typing is one round-trip to the editor core per character**, down
+  from four, and the window no longer does editor work while painting a frame.
+- **GUI: results that arrive on their own no longer wait for a keypress.** A
+  file opened by a picker whose accept finished in the background appeared
+  only when you next pressed a key, and so did a quit raised by a mouse
+  click.
+- **GUI: toggling `ui.nerd_fonts` redraws the file tree's icons** instead of
+  leaving the old glyphs in place.
+- **The keys in `:plugins` work on a plugin that failed.** `b`, `r`, `u` and
+  `<CR>` did nothing on an entry under *Failed to load* or *Build failed* —
+  the plugins you most want to rebuild were the ones no key reached, and
+  getting one back took `:plugin-load <path>` or a restart. The cursor on a
+  plugin's name there, or anywhere in the error under it, is now that plugin:
+  `b` rebuilds and loads it, `r` tries the load again, `u` fetches first. A
+  plugin `init.rs` requires that has never built can be rebuilt this way too.
+
 ## 0.9.7 — 2026-10-11
 
 ### Added

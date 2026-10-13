@@ -141,6 +141,14 @@ impl FileTreeBuffer {
 /// Look up the entry at `line` in an entry list. The App reads
 /// `FileTreeEntries` from buffer-locals and calls this with
 /// `app.cursor.line` for `<CR>` dispatch.
+/// The modeline label of a file-tree buffer rooted at `root`.
+///
+/// GD.7b: the tree names its own buffers. The host writes this into the
+/// buffer's `core.path` slot wherever it writes the root.
+pub fn modeline_label(root: &Path) -> String {
+    format!("[tree] {}", root.display())
+}
+
 pub fn entry_at_line(entries: &[FileTreeEntry], line: u32) -> Option<&FileTreeEntry> {
     entries.get(line as usize)
 }

@@ -2257,6 +2257,9 @@ pub struct Editor {
     /// `DiagnosticsLayer` and code lenses are picker-only, so neither
     /// needs this — audited 2026-06-03.)
     pub semantic_tokens_refresh_pending: std::collections::HashSet<lattice_core::BufferId>,
+    /// GD.6b: the `MatrixVersion::semantic_tokens` stamp per buffer —
+    /// which token set each buffer's rows were last built from.
+    pub(crate) semantic_token_stamps: crate::semantic_spans::TokenStamps,
     pub pending_semantic_tokens_refresh_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspSemanticTokensRefresh>>,
     pub pending_lsp_detach_rx:

@@ -9,9 +9,10 @@
 //! keymap binding; the mode's handler closure intercepts before the grammar
 //! Action gate, so those dead bodies never run.
 //!
-//! The cursor line maps to a plugin by index (`cursor.line - HEADER_LINES`),
-//! matching the render order (`render_status` emits the header then
-//! `plugin_status()` rows in order). Every handler reads the loader + buffer
+//! The cursor line maps to a plugin through the render
+//! ([`RenderedStatus::target_at`](crate::render::RenderedStatus::target_at)):
+//! a row of the table, or an entry in the "build failed" / "failed to load"
+//! sections under it. Every handler reads the loader + buffer
 //! store from the [`ActionContext`] service registry, so nothing is captured at
 //! registration — a missing service degrades the action to a no-op, never a
 //! panic. Reload runs off the actor thread (async unload + re-instantiate);
@@ -25,8 +26,6 @@ use lattice_grammar::{CommandRegistry, EchoLevel, Effect};
 use lattice_mode::{ActionContext, ActionHandler, BufferStoreHandle};
 use lattice_plugin_host::{PluginTracerHandle, TrustTier};
 use lattice_plugin_loader::{BulkOp, PluginLoaderHandle};
-
-use crate::render::HEADER_LINES;
 
 /// The `action:plugins-*` command names. Used for the handler bindings +
 /// dead-body registration; the keymap `cmd:` literals in `mode.rs` must match
@@ -119,22 +118,35 @@ pub fn register_actions(commands: &mut CommandRegistry) {
     }
 }
 
-/// The `(host-issued id, manifest name)` of the plugin whose row the cursor is
-/// on, or `None` when the cursor is on a header line / past the last row (the
-/// action then no-ops). The id keys the tracer; the name is for display.
-fn plugin_row_at(ctx: &ActionContext<'_>) -> Option<(u32, String)> {
+/// The name of the plugin the cursor's line is about, or `None` on a line
+/// that is about none (the title, a section heading, a hint) — the action
+/// then no-ops.
+///
+/// Asked of the render, not computed from the cursor: the view is a table of
+/// loaded plugins followed by the entries for the ones whose build or load
+/// failed, and only the render knows which lines belong to which. A plugin
+/// that failed to load has no row in the table, so indexing the loaded list —
+/// what this did before — made every chord a no-op on exactly the entries a
+/// user most wants to press `b` on.
+fn plugin_name_at(ctx: &ActionContext<'_>) -> Option<String> {
     let loader = ctx.services.get::<PluginLoaderHandle>()?;
-    let idx = (ctx.cursor.line as usize).checked_sub(HEADER_LINES)?;
-    loader
-        .plugin_status()
-        .get(idx)
-        .map(|s| (s.id, s.name.clone()))
+    crate::mode::render_now(&loader)
+        .target_at(ctx.cursor.line as usize)
+        .map(str::to_string)
 }
 
-/// The manifest name of the plugin under the cursor (the row → name half of
-/// [`plugin_row_at`]).
-fn plugin_name_at(ctx: &ActionContext<'_>) -> Option<String> {
-    plugin_row_at(ctx).map(|(_, name)| name)
+/// The `(host-issued id, manifest name)` of the LOADED plugin under the
+/// cursor. `None` for a plugin that failed to load as well as for no plugin:
+/// the id keys the tracer, and a plugin that never loaded was never issued
+/// one.
+fn plugin_row_at(ctx: &ActionContext<'_>) -> Option<(u32, String)> {
+    let name = plugin_name_at(ctx)?;
+    let loader = ctx.services.get::<PluginLoaderHandle>()?;
+    loader
+        .plugin_status()
+        .into_iter()
+        .find(|s| s.name == name)
+        .map(|s| (s.id, s.name))
 }
 
 /// Re-render the manager buffer from the current status (off the actor thread).
@@ -527,6 +539,84 @@ mod tests {
             "plugin-trace-mode",
             "the drill-in targets the mode the trace crate registers"
         );
+    }
+
+    /// The reported bug, at the seam it lived in: the cursor on a plugin that
+    /// FAILED to load resolved to no plugin, so `r`, `b` and `u` did nothing
+    /// on the one entry they were wanted for.
+    ///
+    /// Through a real loader and its own failure record — a hand-built
+    /// `FailedLoad` would test the render, which has its own tests, and not
+    /// the join between the two.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_cursor_on_a_failed_plugins_entry_is_on_that_plugin() {
+        use lattice_mode::ServiceRegistry;
+        use lattice_plugin_host::PluginHost;
+        use lattice_plugin_loader::PluginLoader;
+        use lattice_protocol::ids::BufferId;
+        use lattice_protocol::position::Position;
+        use lattice_runtime::EventBus;
+
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("plugins").join("org");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.toml"), "id = \"org\"\n").unwrap();
+        std::fs::write(dir.join("component.wasm"), b"not a component").unwrap();
+
+        let host =
+            PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap();
+        let loader: PluginLoaderHandle = Arc::new(PluginLoader::new(Arc::new(host)));
+        loader
+            .discover_and_load(&base.path().join("plugins"), TrustTier::UserInstalled)
+            .await;
+        assert_eq!(loader.failed_loads().len(), 1, "org failed to load");
+
+        let mut services = ServiceRegistry::new();
+        services.register::<PluginLoaderHandle>(loader.clone());
+        let events = EventBus::new();
+        let rendered = crate::mode::render_now(&loader);
+        let lines: Vec<&str> = rendered.text.lines().collect();
+        let name_line = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("org  ("))
+            .expect("org has an entry");
+        let heading = lines
+            .iter()
+            .position(|l| l.starts_with("## Failed to load"))
+            .unwrap();
+
+        let at = |line: usize| ActionContext {
+            buffer_id: BufferId::new(0),
+            cursor: Position {
+                line: line as u32,
+                byte: 0,
+            },
+            selection: None,
+            services: &services,
+            events: &events,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+            buffer_locals: None,
+        };
+
+        assert_eq!(plugin_name_at(&at(name_line)).as_deref(), Some("org"));
+        assert_eq!(
+            plugin_name_at(&at(name_line + 1)).as_deref(),
+            Some("org"),
+            "and on the reason under it"
+        );
+        assert_eq!(plugin_name_at(&at(heading)), None, "a heading is no plugin");
+        assert_eq!(
+            plugin_row_at(&at(name_line)),
+            None,
+            "it has a name to rebuild by, but no host id: the trace chords \
+             still have nothing to act on"
+        );
+        // Describe is name-keyed, so it follows the name.
+        assert!(matches!(
+            describe_handler()(&at(name_line)),
+            Some(Effect::DescribePlugin { name }) if name == "org"
+        ));
     }
 
     #[test]

@@ -474,6 +474,28 @@ pub(crate) enum ReformatRung {
     NativeReflow,
 }
 
+/// GD.7c: what [`Editor::heading_heights`] hands a scroll walk — the built
+/// display rows and the theme that says which of their runs are scaled.
+/// Loaded once per walk so a step is a row lookup and a scan of its runs.
+struct HeadingHeights {
+    matrix: std::sync::Arc<crate::display_matrix::DisplayMatrix>,
+    resolved: std::sync::Arc<crate::ui::theme::ResolvedTheme>,
+    ids: crate::ui::theme::BuiltinElementIds,
+}
+
+impl HeadingHeights {
+    /// Line-heights `line` draws BEYOND one row: `title_scale - 1` for a
+    /// heading, `0` for anything else, including a line with no built row.
+    fn extra(&self, line: u32) -> f32 {
+        self.matrix
+            .row_at_source_line(line)
+            .and_then(|dl| {
+                crate::display_matrix::heading_scale_split(dl, &self.resolved, &self.ids)
+            })
+            .map_or(0.0, |(_, scale)| (scale - 1.0).max(0.0))
+    }
+}
+
 impl Editor {
     /// Renderer-neutral dispatch entry point.
     ///
@@ -672,7 +694,11 @@ impl Editor {
     /// dispatch produced no renderer-coupled work (the overwhelmingly
     /// common case — every plain `Insert`, motion, and operator that
     /// doesn't open a buffer / fire an LSP request) and no popup was up.
-    /// When the dispatch carries effects / signals / next_actions (whose
+    /// "No renderer-coupled work" is decided per effect by
+    /// [`effect_is_host_complete`](crate::effect_completeness::effect_is_host_complete):
+    /// until GD.0b it was `effects.is_empty()`, which the sentence above
+    /// never matched — a motion always returns its `CursorMove`.
+    /// When the dispatch carries renderer-coupled effects / signals / next_actions (whose
     /// App-side `do_*` handlers must run BEFORE the tail so effect
     /// ordering holds — e.g. `OpenBufferAt` switches the active doc, then
     /// `ensure_cursor_visible` must clamp against the *new* doc), or
@@ -720,8 +746,15 @@ impl Editor {
         // the result.
         self.maybe_adopt_owner_write();
         let outcome = self.dispatch(action);
+        // GD.0b: "nothing for the renderer to do first", not "no effects". A
+        // motion's `CursorMove` and an operator's `Edits` + `Yank` are
+        // finished once the host has applied them; declining the fuse for
+        // them made every motion and operator a multi-crossing keystroke.
         let can_fuse = !outcome.consumed
-            && outcome.effects.is_empty()
+            && outcome
+                .effects
+                .iter()
+                .all(crate::effect_completeness::effect_is_host_complete)
             && outcome.renderer_signals.is_empty()
             && outcome.next_actions.is_empty()
             && !popup_up;
@@ -1320,6 +1353,7 @@ impl Editor {
                 should_quit: self.should_quit,
                 pending_redraw: self.pending_redraw,
                 terminal_width: self.terminal_width,
+                renderer_effects_pending: !self.pending_renderer_effects.is_empty(),
             }),
             // T.4 (theme-system): snapshot the resolved read table +
             // builtin ids so renderers read `resolved.get(ids.x)`.
@@ -1511,6 +1545,9 @@ impl Editor {
                 insert: self.insert_completion.clone().map(std::sync::Arc::new),
                 state: self.completion_state.clone().map(std::sync::Arc::new),
                 docs_buffer_id: self.completion_docs_buffer,
+                ghost_suffix: self
+                    .completion_ghost_text_at_cursor()
+                    .map(std::sync::Arc::from),
             }),
             popup: std::sync::Arc::new(PopupRenderState {
                 buffer_id: self.popup_buffer,
@@ -1713,6 +1750,8 @@ impl Editor {
                     // when it declares none, which is every language
                     // but org — so this axis cannot move for them.
                     conceal: crate::cells_worker::conceal_version_for(self.syntax.as_ref()),
+                    // GD.6b: same stamp the per-pane entry carries.
+                    semantic_tokens: self.semantic_tokens_input(self.document_buffer_id).1,
                 },
                 snapshot: Some(self.document.snapshot()),
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
@@ -1962,21 +2001,21 @@ impl Editor {
     /// LSP responses against a since-deleted line range.
     fn build_active_doc_highlights_utf8(
         &self,
-    ) -> std::sync::Arc<[lattice_protocol::position::Range]> {
+    ) -> std::sync::Arc<[crate::render_state::DocHighlightSpan]> {
         let dh_guard = self.lsp_document_highlights.load_full();
         let Some(cache) = dh_guard.as_deref() else {
             return std::sync::Arc::from(
-                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+                Vec::<crate::render_state::DocHighlightSpan>::new().into_boxed_slice(),
             );
         };
         if cache.buffer_id != self.document_buffer_id {
             return std::sync::Arc::from(
-                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+                Vec::<crate::render_state::DocHighlightSpan>::new().into_boxed_slice(),
             );
         }
         let snapshot = self.document.snapshot();
         let total_lines = snapshot.buffer.content_line_count();
-        let mut out: Vec<lattice_protocol::position::Range> =
+        let mut out: Vec<crate::render_state::DocHighlightSpan> =
             Vec::with_capacity(cache.highlights.len());
         for h in &cache.highlights {
             let start_line = h.range.start.line;
@@ -1992,15 +2031,18 @@ impl Editor {
             );
             let end_byte =
                 lattice_lsp::position::utf16_column_to_utf8_byte(&end_text, h.range.end.character);
-            out.push(lattice_protocol::position::Range {
-                start: lattice_protocol::position::Position {
-                    line: start_line,
-                    byte: start_byte,
+            out.push(crate::render_state::DocHighlightSpan {
+                range: lattice_protocol::position::Range {
+                    start: lattice_protocol::position::Position {
+                        line: start_line,
+                        byte: start_byte,
+                    },
+                    end: lattice_protocol::position::Position {
+                        line: end_line,
+                        byte: end_byte,
+                    },
                 },
-                end: lattice_protocol::position::Position {
-                    line: end_line,
-                    byte: end_byte,
-                },
+                kind: crate::render_state::DocHighlightKind::from_lsp(h.kind),
             });
         }
         std::sync::Arc::from(out.into_boxed_slice())
@@ -2547,6 +2589,9 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::ReplaceUndoLast
             | Action::PasteAfter
             | Action::PasteBefore
+            | Action::Put(_)
+            | Action::PutOverSelection { .. }
+            | Action::PutLine { .. }
             | Action::PasteText(_)
             // SN.3d: only the Select action that WRITES is gated.
             // `SelectOvertype` replaces the selection with the typed
@@ -3186,6 +3231,15 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // 5.5.G.9: paste cluster (`p` / `P` / bracketed-paste).
         Action::PasteAfter => editor.do_paste(false),
         Action::PasteBefore => editor.do_paste(true),
+        Action::Put(spec) => editor.do_put(spec),
+        Action::PutOverSelection { keep_register } => {
+            editor.do_put_over_selection(keep_register, _out)
+        }
+        Action::PutLine {
+            register,
+            before,
+            line,
+        } => editor.do_put_line(register, before, line),
         Action::PasteText(text) => editor.do_paste_text(&text),
         // 5.5.G.10: search-state cluster.
         // MB.5a: `SearchAppend` and `SearchBackspace` are retired — typing
@@ -7709,7 +7763,12 @@ impl Editor {
         // replaces it for any line that draws taller than its rows suggest
         // (a scaled heading; an IM.3 media block). Unoverridden lines — every
         // line in a TUI buffer — get their row count back verbatim.
+        //
+        // GD.7c: a line with no override may still be a heading the window
+        // draws at its title scale. `headings` is `None` in the terminal
+        // and built once per walk, so the common path is unchanged.
         let weights = &self.row_weights;
+        let headings = self.heading_heights();
         let line_cost = |line: u32| -> f32 {
             let segments = if wrap_width == 0 {
                 1
@@ -7717,7 +7776,15 @@ impl Editor {
                 lattice_cells::wrap_segments(self.line_display_width(line), wrap_width)
             };
             let rows = segments.saturating_add(vrows.virtual_rows_in_line_range(line, line));
-            weights.cost(line, rows)
+            if let Some(w) = weights.get(line) {
+                return w;
+            }
+            // Only a single-segment heading scales; a wrapped one is drawn
+            // at base size. The title replaces one row of the line's count.
+            match headings.as_ref().filter(|_| segments <= 1) {
+                Some(h) => rows as f32 + h.extra(line),
+                None => rows as f32,
+            }
         };
         // The previous *visible* line above `line`: hop straight to a
         // closed fold's head instead of iterating its collapsed body,
@@ -7834,8 +7901,49 @@ impl Editor {
     /// `bottom_anchored_scroll` is the one walk that legitimately counts
     /// display rows — it is the display-row-space bottom clamp — and it keeps
     /// its own cost function.
+    ///
+    /// GD.7c: a heading is the second kind of tall row. It carries no
+    /// override — its height is read from the built display row — so a line
+    /// without one is asked whether the window draws it scaled.
     fn weighted_doc_line_cost(&self, line: u32) -> f32 {
-        self.row_weights.cost(line, 1)
+        if let Some(w) = self.row_weights.get(line) {
+            return w;
+        }
+        let Some(headings) = self.heading_heights() else {
+            return 1.0;
+        };
+        let wrap_width = self.scroll_wrap_width();
+        let single = wrap_width == 0
+            || lattice_cells::wrap_segments(self.line_display_width(line), wrap_width) <= 1;
+        if single {
+            1.0 + headings.extra(line)
+        } else {
+            1.0
+        }
+    }
+
+    /// GD.7c: the reader the scroll walks ask "is this line a scaled
+    /// heading, and how tall" — or `None` when no attached peer scales rows.
+    ///
+    /// The gate is [`Editor::cell_metrics`]: only a peer that draws pixels
+    /// publishes it, and only such a peer can draw a title larger than its
+    /// row. In the terminal this returns `None` before touching anything, so
+    /// every walk there costs what it did.
+    ///
+    /// The answer comes from the built display rows, which cover the window
+    /// and its margin. A line outside them costs one row until the matrix
+    /// is rebuilt around it — the same eventual answer the paint gets.
+    fn heading_heights(&self) -> Option<HeadingHeights> {
+        self.cell_metrics?;
+        let resolved = self
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()
+            .map(|r| r.resolved())?;
+        Some(HeadingHeights {
+            matrix: self.display_matrix_for(self.active_buffer_id()).load_full(),
+            resolved,
+            ids: self.builtin_element_ids,
+        })
     }
 
     /// What `:bn` / `:bp` consider the "current" buffer for stepping.
@@ -10946,6 +11054,19 @@ impl Editor {
             AppEffect::SwapVisualEnds => out.next_actions.push(Action::SwapVisualEnds),
             AppEffect::PasteAfter => out.next_actions.push(Action::PasteAfter),
             AppEffect::PasteBefore => out.next_actions.push(Action::PasteBefore),
+            AppEffect::Put(spec) => out.next_actions.push(Action::Put(spec)),
+            AppEffect::PutOverSelection { keep_register } => out
+                .next_actions
+                .push(Action::PutOverSelection { keep_register }),
+            AppEffect::PutLine {
+                register,
+                before,
+                line,
+            } => out.next_actions.push(Action::PutLine {
+                register,
+                before,
+                line,
+            }),
             // L7: the 6 nav `AppEffect::Lsp*Request` arms (`gd` / `gD` / `gy`
             // / `gI` / `gr` / `gx`) removed — mode-owned via
             // `Effect::Lsp(LspRequest::…)`.
@@ -17956,6 +18077,9 @@ impl Editor {
         let extra_spans: Arc<[Vec<lattice_syntax::StyledSpan>]> =
             Arc::from(extra_spans_vec.into_boxed_slice());
 
+        // GD.6b: this buffer's semantic tokens and their stamp.
+        let (semantic_tokens, semantic_tokens_stamp) = self.semantic_tokens_input(buffer_id);
+
         // DR.3: intra-line refinement, from the same drain that set the
         // spans above. Empty for every buffer without it, so the row
         // build is byte-identical.
@@ -18056,6 +18180,7 @@ impl Editor {
             whitespace: whitespace_hash,
             indent: guides.version,
             conceal: crate::cells_worker::conceal_version_for(syntax_handle.as_deref()),
+            semantic_tokens: semantic_tokens_stamp,
         };
 
         // G-clip: gutter columns to hold out of the soft-wrap width so
@@ -18142,7 +18267,32 @@ impl Editor {
             excerpt_syntax,
             extra_spans,
             extra_refine,
+            semantic_tokens,
         }
+    }
+
+    /// GD.6b: the semantic tokens the cell worker should colour
+    /// `buffer_id`'s rows with, and the stamp that says which set they
+    /// are. `(None, 0)` when the buffer has no tokens or
+    /// `lsp-semantic-tokens-mode` is off for it — turning the mode off
+    /// moves the stamp to 0, so the rows are rebuilt without them.
+    ///
+    /// One `Arc` clone and a pointer comparison: this runs on every
+    /// publish, and the tokens themselves are only read in the worker.
+    pub(crate) fn semantic_tokens_input(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> (Option<Arc<lattice_lsp::cache::LspSemanticTokensCache>>, u64) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
+        let tokens = if self.lsp_semantic_tokens_mode_enabled_for(buffer_id) {
+            self.lsp_semantic_tokens_cache
+                .get_for(buffer_id)
+                .filter(|c| !c.tokens.is_empty())
+        } else {
+            None
+        };
+        let stamp = self.semantic_token_stamps.stamp(buffer_id, tokens.as_ref());
+        (tokens, stamp)
     }
 
     /// D.4.d.1.a (2026-05-29): per-buffer variant of
@@ -23650,19 +23800,25 @@ impl Editor {
         }
         let r = lattice_protocol::position::Range::new(
             self.cursor,
-            lattice_protocol::position::Position::new(self.cursor.line, self.cursor.byte + 1),
+            next_position(&self.document.snapshot().buffer, self.cursor),
         );
         let original = match self.document.snapshot().buffer.slice(r) {
             Ok(s) => s,
             Err(_) => return,
         };
+        // By character: the range is one whole character now, and mapping
+        // its bytes would turn `é` into two wrong ones. `é` ↔ `É` toggles
+        // as vim's `~` does; a character with no case passes through.
         let toggled: String = original
-            .as_bytes()
-            .iter()
-            .map(|&b| match b {
-                b'a'..=b'z' => (b - 32) as char,
-                b'A'..=b'Z' => (b + 32) as char,
-                other => other as char,
+            .chars()
+            .flat_map(|c| -> Vec<char> {
+                if c.is_lowercase() {
+                    c.to_uppercase().collect()
+                } else if c.is_uppercase() {
+                    c.to_lowercase().collect()
+                } else {
+                    vec![c]
+                }
             })
             .collect();
         if let Ok(applied) =
@@ -23956,7 +24112,7 @@ impl Editor {
         if self.cursor.byte < len {
             let r = lattice_protocol::position::Range::new(
                 self.cursor,
-                lattice_protocol::position::Position::new(self.cursor.line, self.cursor.byte + 1),
+                next_position(&self.document.snapshot().buffer, self.cursor),
             );
             let original = self.document.snapshot().buffer.slice(r).ok();
             if let Ok(applied) =
@@ -23987,7 +24143,9 @@ impl Editor {
         let Some(entry) = self.replace_history.pop() else {
             return;
         };
-        let after = lattice_protocol::position::Position::new(entry.at.line, entry.at.byte + 1);
+        // The character typed over `entry.at` is whatever sits there now,
+        // and it may be wider than a byte.
+        let after = next_position(&self.document.snapshot().buffer, entry.at);
         let r = lattice_protocol::position::Range::new(entry.at, after);
         match entry.original {
             Some(orig) => {
@@ -24139,22 +24297,54 @@ fn word_start_before(text: &str, cursor: usize) -> usize {
     i
 }
 
-/// 5.5.G.3: unicode-aware backward step. Mirrors
-/// `lattice_ui_tui::app::previous_position`; duplicated here so
-/// the host-side `do_delete_char_backward` doesn't reach across
-/// the crate boundary.
+/// 5.5.G.3: the position one character before `p` — the previous char
+/// boundary on the line, or the end of the line above at column 0.
 fn previous_position(
     buf: &lattice_core::Buffer,
     p: lattice_protocol::position::Position,
 ) -> lattice_protocol::position::Position {
     if p.byte > 0 {
-        lattice_protocol::position::Position::new(p.line, p.byte - 1)
+        // Back one CHARACTER, not one byte. `byte - 1` lands inside `é`
+        // (two bytes) or an emoji (four), and a delete range that starts
+        // mid-character took the line's newline with it: backspacing the
+        // last accented letter on a line removed the line and left the
+        // cursor on a row that no longer existed.
+        let text = buf.line(p.line).unwrap_or_default();
+        let mut b = (p.byte as usize).min(text.len());
+        while b > 0 {
+            b -= 1;
+            if text.is_char_boundary(b) {
+                break;
+            }
+        }
+        lattice_protocol::position::Position::new(p.line, b as u32)
     } else if p.line > 0 {
         let prev_line = p.line - 1;
         lattice_protocol::position::Position::new(prev_line, buf.line_byte_len(prev_line))
     } else {
         p
     }
+}
+
+/// The position one character after `p` on its line — the next char
+/// boundary, clamped to the line's end. The forward twin of
+/// [`previous_position`], for the edits that act on "the character at
+/// the cursor" (`~`, Replace mode's overstrike and its undo), which used
+/// `byte + 1` and so split any character wider than a byte.
+fn next_position(
+    buf: &lattice_core::Buffer,
+    p: lattice_protocol::position::Position,
+) -> lattice_protocol::position::Position {
+    let text = buf.line(p.line).unwrap_or_default();
+    let text = text.trim_end_matches(['\n', '\r']);
+    let mut b = (p.byte as usize).min(text.len());
+    while b < text.len() {
+        b += 1;
+        if text.is_char_boundary(b) {
+            break;
+        }
+    }
+    lattice_protocol::position::Position::new(p.line, b as u32)
 }
 
 /// 5.5.G.23: fold-aware predicates + cursor snap. Migrated host-side
@@ -24988,10 +25178,37 @@ impl Editor {
     /// chokepoint writes both, which is what stops them drifting apart.
     pub fn set_oil_dir(&mut self, buffer_id: BufferId, dir: std::path::PathBuf) {
         self.set_buffer_scope_dir(buffer_id, dir.clone());
+        self.set_buffer_label(buffer_id, Some(lattice_listing::oil::modeline_label(&dir)));
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
             .insert(lattice_listing::oil::modes::OilDir(dir));
+    }
+
+    /// GD.7b: name `buffer_id` in its panes' modelines, in place of a
+    /// path — or `None` to go back to the path.
+    ///
+    /// For the modes whose buffers are not files. The text is the
+    /// mode's (`lattice_listing::oil::modeline_label` and its peers);
+    /// this is the generic slot it goes in: `core.path`'s content for
+    /// that buffer, which `modeline::pane_path_segment` prefers over the
+    /// path. A plugin reaches the same slot with a
+    /// `ModelineElementUpdate`. Call it where the state the label is
+    /// derived from is written, so the two cannot drift.
+    pub fn set_buffer_label(&mut self, buffer_id: BufferId, label: Option<String>) {
+        let key = lattice_mode::ModelineKey::Buffer(buffer_id);
+        let id = lattice_mode::ElementId::new(crate::modeline::CORE_PATH);
+        match label {
+            Some(text) => self.modeline.update(
+                key,
+                id,
+                lattice_mode::ElementContent::text(
+                    text,
+                    lattice_mode::ModelineRole::new(crate::modeline::ROLE_PATH),
+                ),
+            ),
+            None => self.modeline.clear(key, &id),
+        }
     }
 
     /// XF.2: resolve `path` to a buffer, opening it in the background if it
@@ -25677,6 +25894,10 @@ impl Editor {
     /// looking at.
     pub fn set_file_tree_root(&mut self, buffer_id: BufferId, root: std::path::PathBuf) {
         self.set_buffer_scope_dir(buffer_id, root.clone());
+        self.set_buffer_label(
+            buffer_id,
+            Some(lattice_listing::file_tree::modeline_label(&root)),
+        );
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
@@ -28513,11 +28734,34 @@ impl Editor {
     /// at cursor; linewise inserts a fresh line; blockwise paints
     /// columns down consecutive lines.
     pub fn do_paste(&mut self, before: bool) {
+        self.do_put(lattice_grammar::PutSpec {
+            before,
+            ..Default::default()
+        });
+    }
+
+    /// The put family in Normal mode: `p` / `P`, `gp` / `gP`, `]p` /
+    /// `[p`. A count puts the text that many times (`3p`).
+    pub fn do_put(&mut self, spec: lattice_grammar::PutSpec) {
+        let count = self.pending_count.max(1) as usize;
+        self.pending_count = 0;
         let chosen = self.pending_register.take();
         let Some(reg) = self.read_register(chosen) else {
             self.set_message(EchoLevel::Error, "register empty".to_string());
             return;
         };
+        // One undo step: a put at the buffer's end is two edits (the
+        // line break, then the text).
+        self.document.begin_undo_group();
+        self.put_entry(&reg, spec, count);
+        self.document.end_undo_group();
+    }
+
+    /// Put one register entry at the cursor. Shared by the Normal put
+    /// family and `:put`.
+    fn put_entry(&mut self, reg: &UnnamedRegister, spec: lattice_grammar::PutSpec, count: usize) {
+        use lattice_protocol::position::Position;
+        let before = spec.before;
         match reg.kind {
             lattice_grammar::YankKind::Charwise => {
                 let line_len = self
@@ -28528,56 +28772,285 @@ impl Editor {
                 let insert_at = if before {
                     self.cursor
                 } else if self.cursor.byte < line_len {
-                    lattice_protocol::position::Position::new(
-                        self.cursor.line,
-                        self.cursor.byte + 1,
-                    )
+                    // After the character under the cursor, which may be
+                    // more than one byte wide.
+                    let line = self
+                        .document
+                        .snapshot()
+                        .buffer
+                        .line(self.cursor.line)
+                        .unwrap_or_default();
+                    let width = line
+                        .get(self.cursor.byte as usize..)
+                        .and_then(|rest| rest.chars().next())
+                        .map_or(1, char::len_utf8);
+                    Position::new(self.cursor.line, self.cursor.byte + width as u32)
                 } else {
                     self.cursor
                 };
-                if let Ok(applied) = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
-                    insert_at,
-                    &reg.content,
-                )) {
+                let text = reg.content.repeat(count);
+                if let Ok(applied) =
+                    self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(insert_at, &text))
+                {
                     let end = applied.inserted_range.end;
-                    self.cursor = if end.byte > 0 {
-                        lattice_protocol::position::Position::new(end.line, end.byte - 1)
-                    } else {
+                    self.cursor = if spec.cursor_after || end.byte == 0 {
+                        // `gp`: just after the new text.
                         end
+                    } else {
+                        // On the last character put, whatever its width.
+                        let line = self
+                            .document
+                            .snapshot()
+                            .buffer
+                            .line(end.line)
+                            .unwrap_or_default();
+                        let last = line
+                            .get(..end.byte as usize)
+                            .and_then(|head| head.chars().next_back())
+                            .map_or(1, char::len_utf8);
+                        Position::new(end.line, end.byte - last as u32)
                     };
                 }
             }
             lattice_grammar::YankKind::Linewise => {
-                let mut payload = reg.content.clone();
-                if !payload.ends_with('\n') {
-                    payload.push('\n');
+                let mut one = reg.content.clone();
+                if !one.ends_with('\n') {
+                    one.push('\n');
                 }
+                if spec.indent {
+                    let line = self
+                        .document
+                        .snapshot()
+                        .buffer
+                        .line(self.cursor.line)
+                        .unwrap_or_default();
+                    one = reindent_lines(&one, leading_whitespace(&line));
+                }
+                let payload = one.repeat(count);
+                let put_lines = payload.matches('\n').count() as u32;
                 let insert_at = if before {
-                    lattice_protocol::position::Position::new(self.cursor.line, 0)
+                    Position::new(self.cursor.line, 0)
                 } else {
                     let len = self
                         .document
                         .snapshot()
                         .buffer
                         .line_byte_len(self.cursor.line);
-                    if self.cursor.line + 1 < self.document.snapshot().buffer.content_line_count() {
-                        lattice_protocol::position::Position::new(self.cursor.line + 1, 0)
+                    // The ROPE's line count, not the content count: after a
+                    // file's final newline there is an empty line to put
+                    // at. Counting content lines sent the last line down
+                    // the "add a line break first" branch as well, and a
+                    // put there left a blank line at the end of the file.
+                    if self.cursor.line + 1 < self.document.snapshot().buffer.rope_line_count() {
+                        Position::new(self.cursor.line + 1, 0)
                     } else {
                         let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
-                            lattice_protocol::position::Position::new(self.cursor.line, len),
+                            Position::new(self.cursor.line, len),
                             "\n",
                         ));
-                        lattice_protocol::position::Position::new(self.cursor.line + 1, 0)
+                        Position::new(self.cursor.line + 1, 0)
                     }
                 };
                 if let Ok(applied) = self
                     .apply_edit_blocking(lattice_protocol::edit::Edit::insert(insert_at, &payload))
                 {
-                    self.cursor = applied.inserted_range.start;
+                    let start = applied.inserted_range.start;
+                    self.cursor = if spec.cursor_after {
+                        // `gp`: the line after the last one put.
+                        let last = self
+                            .document
+                            .snapshot()
+                            .buffer
+                            .content_line_count()
+                            .saturating_sub(1);
+                        Position::new((start.line + put_lines).min(last), 0)
+                    } else {
+                        start
+                    };
                 }
             }
-            lattice_grammar::YankKind::Blockwise => self.do_paste_blockwise(&reg.content, before),
+            lattice_grammar::YankKind::Blockwise => {
+                // A count widens the block: each row repeated in place.
+                let content = if count > 1 {
+                    reg.content
+                        .split('\n')
+                        .map(|row| row.repeat(count))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    reg.content.clone()
+                };
+                self.do_paste_blockwise(&content, before);
+            }
         }
+    }
+
+    /// `:[line]pu[t][!] [x]` — put a register as whole lines below
+    /// `line` (the cursor's when `None`), or above with `before`.
+    /// Linewise whatever the register holds: `:put` of a charwise yank
+    /// puts it on a line of its own.
+    pub fn do_put_line(&mut self, register: Option<char>, before: bool, line: Option<u32>) {
+        let chosen = match register {
+            Some(c) => match Register::from_input_char(c) {
+                Some(r) => Some(r),
+                None => {
+                    self.set_message(EchoLevel::Error, format!("E850: `{c}` is not a register"));
+                    return;
+                }
+            },
+            None => None,
+        };
+        let Some(mut reg) = self.read_register(chosen) else {
+            self.set_message(EchoLevel::Error, "register empty".to_string());
+            return;
+        };
+        reg.kind = lattice_grammar::YankKind::Linewise;
+        if let Some(line) = line {
+            let last = self
+                .document
+                .snapshot()
+                .buffer
+                .content_line_count()
+                .saturating_sub(1);
+            self.cursor = lattice_protocol::position::Position::new(line.min(last), 0);
+        }
+        self.document.begin_undo_group();
+        self.put_entry(
+            &reg,
+            lattice_grammar::PutSpec {
+                before,
+                ..Default::default()
+            },
+            1,
+        );
+        self.document.end_undo_group();
+    }
+
+    /// Vim's Visual `p` / `P`: replace the selection with the register.
+    ///
+    /// The selection is deleted by the delete operator itself, so every
+    /// selection shape and the register bookkeeping are the operator's:
+    /// with `p` the replaced text lands in the unnamed register, as a `d`
+    /// would leave it; with `P` (`keep_register`) it goes to the black
+    /// hole. The register to put is read BEFORE the delete, since `p`
+    /// from the unnamed register is about to overwrite it.
+    ///
+    /// The text then goes where the selection was, in the shape vim uses:
+    /// linewise text replacing a charwise selection gets lines of its own
+    /// (the line is split around it), and anything replacing whole lines
+    /// becomes whole lines.
+    pub fn do_put_over_selection(&mut self, keep_register: bool, out: &mut DispatchOutcome) {
+        use lattice_grammar::{ModalState, VisualKind, YankKind};
+        use lattice_protocol::position::Position;
+        let kind = match self.modal {
+            ModalState::Visual(k) | ModalState::Select(k) => k,
+            _ => return,
+        };
+        let count = self.pending_count.max(1) as usize;
+        self.pending_count = 0;
+        let chosen = self.pending_register.take();
+        let Some(reg) = self.read_register(chosen) else {
+            self.set_message(EchoLevel::Error, "register empty".to_string());
+            return;
+        };
+        let Some(sel) = self.visual_selection_range() else {
+            return;
+        };
+        let start = sel.start;
+
+        self.document.begin_undo_group();
+        let mut delete = lattice_grammar::CommandInvocation::of(self.builtins.delete.0)
+            .with_range(lattice_grammar::Range::Selection);
+        if keep_register {
+            delete = delete.with_register(Register::BlackHole);
+        }
+        self.dispatch_invocation(delete, out);
+
+        // The buffer as the delete left it.
+        let snapshot = self.document.snapshot();
+        let buffer = &snapshot.buffer;
+        let line_count = buffer.content_line_count();
+        match (kind, reg.kind) {
+            // Whole lines were removed: what goes back is whole lines.
+            (VisualKind::Linewise, _) => {
+                let mut one = reg.content.clone();
+                if !one.ends_with('\n') {
+                    one.push('\n');
+                }
+                let payload = one.repeat(count);
+                let emptied = line_count <= 1 && buffer.line_byte_len(0) == 0;
+                if emptied {
+                    // Every line was selected: the text replaces the
+                    // buffer, with no blank line left behind it.
+                    let text = payload.trim_end_matches('\n').to_string();
+                    let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+                        Position::new(0, 0),
+                        &text,
+                    ));
+                    self.cursor = Position::new(0, 0);
+                } else if start.line < line_count {
+                    let at = Position::new(start.line, 0);
+                    let _ = self
+                        .apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, &payload));
+                    self.cursor = at;
+                } else {
+                    // The selection ran to the last line: append.
+                    let last = line_count.saturating_sub(1);
+                    let at = Position::new(last, buffer.line_byte_len(last));
+                    let text = format!("\n{}", payload.trim_end_matches('\n'));
+                    let _ =
+                        self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, &text));
+                    self.cursor = Position::new(last + 1, 0);
+                }
+            }
+            // Linewise text into the middle of a line: split the line
+            // around it.
+            (VisualKind::Charwise, YankKind::Linewise) => {
+                let line = start.line.min(line_count.saturating_sub(1));
+                let at = Position::new(line, start.byte.min(buffer.line_byte_len(line)));
+                let body = reg.content.trim_end_matches('\n');
+                let body = std::iter::repeat_n(body, count)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let text = format!("\n{body}\n");
+                let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, &text));
+                self.cursor = Position::new(line + 1, 0);
+            }
+            (VisualKind::Blockwise, YankKind::Blockwise) => {
+                let line = start.line.min(line_count.saturating_sub(1));
+                self.cursor = Position::new(line, start.byte.min(buffer.line_byte_len(line)));
+                let content = reg
+                    .content
+                    .split('\n')
+                    .map(|row| row.repeat(count))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.do_paste_blockwise(&content, true);
+            }
+            // Text into the place the selection started.
+            _ => {
+                let line = start.line.min(line_count.saturating_sub(1));
+                let at = Position::new(line, start.byte.min(buffer.line_byte_len(line)));
+                let text = reg.content.repeat(count);
+                if let Ok(applied) =
+                    self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, &text))
+                {
+                    let end = applied.inserted_range.end;
+                    let tail = self
+                        .document
+                        .snapshot()
+                        .buffer
+                        .line(end.line)
+                        .unwrap_or_default();
+                    let last = tail
+                        .get(..end.byte as usize)
+                        .and_then(|head| head.chars().next_back())
+                        .map_or(0, char::len_utf8);
+                    self.cursor = Position::new(end.line, end.byte - last as u32);
+                }
+            }
+        }
+        self.document.end_undo_group();
     }
 
     /// Vim's blockwise paste: each `\n`-separated row inserted on
@@ -28931,6 +29404,11 @@ impl Editor {
         metadata: lattice_help::HelpMetadata,
     ) {
         let lattice_help::HelpMetadata { links, anchors } = metadata;
+        // GD.7b: this is the one point every help open and swap passes
+        // through, so it is where the buffer is named for its panes'
+        // modelines. The title is the registry's name slot.
+        let title = self.buffers.name_of(buffer_id).unwrap_or_default();
+        self.set_buffer_label(buffer_id, Some(lattice_help::modeline_label(&title)));
         // PU.1b-2b: the link-only spans the cells worker merges into the
         // help `DisplayMatrix` (the grammar can't derive them — the link
         // markup is stripped before it parses). Computed before `links`
@@ -33173,6 +33651,30 @@ impl Editor {
             return None;
         }
         Some(tail.to_string())
+    }
+
+    /// GD.5c: the ghost text to draw, or `None` when there is none to
+    /// draw *here*. [`Self::completion_ghost_text_suffix`] answers "what
+    /// would complete the typed prefix"; this adds the placement rule
+    /// the terminal renderer applied on its own — only with the cursor
+    /// at the end of its line, since mid-line the suffix would sit on
+    /// top of the text that follows. Runs once per publish; the line is
+    /// only read when there is a suffix.
+    pub fn completion_ghost_text_at_cursor(&self) -> Option<String> {
+        // This runs on every publish. With no popup open there is no
+        // suffix, so say so before reading an option — the read is wasted
+        // work there, and it panics on an editor booted without the
+        // completion options (as the bare test boots are).
+        self.insert_completion.as_ref()?;
+        let suffix = self.completion_ghost_text_suffix()?;
+        let line = self
+            .document
+            .snapshot()
+            .buffer
+            .line(self.cursor.line)
+            .unwrap_or_default();
+        let line = line.trim_end_matches(['\n', '\r']);
+        (self.cursor.byte as usize == line.len()).then_some(suffix)
     }
 
     /// Accept the focused completion candidate. Three paths:
@@ -45770,6 +46272,36 @@ fn project_transient_state(
     )
 }
 
+/// The run of spaces and tabs a line starts with.
+fn leading_whitespace(line: &str) -> &str {
+    let end = line
+        .find(|c: char| c != ' ' && c != '\t')
+        .unwrap_or(line.len());
+    &line[..end]
+}
+
+/// `]p`: move a block of lines to a new indent. The first line's own
+/// indent is what gets replaced by `indent`; every other line keeps its
+/// offset from the first, so the block's shape survives. A line indented
+/// less than the first is set flush to `indent`; blank lines stay blank.
+fn reindent_lines(text: &str, indent: &str) -> String {
+    let base = leading_whitespace(text.lines().next().unwrap_or(""));
+    let mut out = String::with_capacity(text.len() + indent.len());
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches('\n');
+        if body.trim().is_empty() {
+            out.push_str(line);
+            continue;
+        }
+        out.push_str(indent);
+        out.push_str(body.strip_prefix(base).unwrap_or_else(|| body.trim_start()));
+        if line.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50801,6 +51333,88 @@ mod tests {
         // so lines 11..=3 cost 9 and line 2 would take it to 14 — over
         // budget. The window settles at line 3.
         assert_eq!(editor.scroll, 3, "the tall row is excluded from the window");
+    }
+
+    /// GD.7c: one `# Title` display row at `line`, as the cells worker
+    /// would build it — base-size marker, then the scaled title.
+    fn publish_heading_row(editor: &crate::editor::Editor, line: u32, total: u32) {
+        use crate::display_matrix::{DisplayChunk, DisplayLine, DisplayMatrix, DisplayRun};
+        let text = "# Title";
+        let run = |len, style| DisplayRun {
+            len,
+            style,
+            flags: 0,
+            refine: None,
+        };
+        let row = DisplayLine {
+            source_line: line,
+            text: std::sync::Arc::from(text),
+            runs: std::sync::Arc::from(
+                vec![
+                    run(2, lattice_syntax::Style::Markup),
+                    run(5, lattice_syntax::Style::Heading1),
+                ]
+                .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
+            col_count: text.chars().count() as u32,
+            fold: None,
+        };
+        let chunk = DisplayChunk::new(line, vec![row], lattice_cells::MatrixVersion::default());
+        editor
+            .display_matrix_for(editor.active_buffer_id())
+            .store(std::sync::Arc::new(DisplayMatrix::whole_doc(
+                std::sync::Arc::new(chunk),
+                total,
+            )));
+    }
+
+    /// GD.7c — a heading the window draws scaled is charged its drawn
+    /// height by the scroll, with nothing publishing a weight for it; and
+    /// the terminal, which cannot scale a row, is charged one.
+    #[test]
+    fn a_scaled_heading_costs_its_title_scale_only_where_rows_scale() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(12));
+        editor.viewport_height = 12;
+        publish_heading_row(&editor, 2, 12);
+
+        // No pixel-drawing peer: the heading is one row, like every line.
+        assert!(editor.cell_metrics.is_none(), "precondition: terminal");
+        assert_eq!(editor.weighted_doc_line_cost(2), 1.0);
+        editor.scroll = 0;
+        editor.cursor = lattice_protocol::position::Position::new(11, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(editor.scroll, 0, "twelve one-row lines fit twelve rows");
+
+        // A peer that draws pixels has reported in.
+        editor.cell_metrics = Some(crate::editor::CellMetrics {
+            row_px: 20.0,
+            col_px: 10.0,
+        });
+        let cost = editor.weighted_doc_line_cost(2);
+        assert!(cost > 1.0, "an h1 is taller than a row, got {cost}");
+        assert_eq!(editor.weighted_doc_line_cost(3), 1.0, "body text is not");
+        assert_eq!(
+            editor.weighted_doc_line_cost(7),
+            1.0,
+            "a line with no built row costs one row, never nothing"
+        );
+
+        // Twelve lines now cost more than twelve line-heights, so the last
+        // one is clipped unless the top comes down.
+        editor.scroll = 0;
+        editor.ensure_cursor_visible();
+        assert!(
+            editor.scroll > 0,
+            "the cursor's row would be clipped below the pane; scroll stayed 0"
+        );
+
+        // An explicit override still wins over the derived height.
+        let mut w = lattice_cells::RowWeights::uniform();
+        w.set(2, 4.0);
+        editor.row_weights = std::sync::Arc::new(w);
+        assert_eq!(editor.weighted_doc_line_cost(2), 4.0);
     }
 
     /// IM.1b — a tall row shortens a page, an `M` and a `zz`, because all

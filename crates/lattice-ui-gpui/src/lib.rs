@@ -79,6 +79,10 @@ use std::sync::Arc;
 
 pub mod gpui_chord;
 
+/// GD.4: which keys the platform composes into text, and the composition
+/// the window holds until it is committed.
+pub mod text_input;
+
 /// GPUI window-opening entry point ([`run`], [`document_from_path`],
 /// [`document_from_first_arg`]). Behind the `window` Cargo feature
 /// so the lib's headless build doesn't link gpui. Lifted from the
@@ -496,13 +500,11 @@ impl GpuiApp {
         let _ = editor.activate_major_for_buffer_kind(doc_id, BufferKind::Document);
         editor.publish_document_opened_for_active();
         editor.ensure_subsystem_buffers();
-        let workspace_root = lattice_core::project::root_from_cwd();
-        let _ = editor.load_persistent_config(workspace_root.as_deref());
-        editor.apply_per_language_toml_overrides();
-        // built-ins 2026-06-13: load embedded + user snippet packs
-        // once at startup (parity with the TUI runtime). Quiet —
-        // logs, no echo.
-        editor.load_snippets_at_startup();
+        // The user's environment — persistent config, per-language
+        // overrides, snippet packs — is NOT loaded here. `window::run` does
+        // that through `load_user_environment`, so a `GpuiApp` built by a
+        // test never reads the developer's `~/.config/lattice`. Same split as
+        // the TUI's `App::new` / `runtime::run`.
         // Initial RS publish so `app.ad()` returns boot state.
         editor.publish_render_state();
 
@@ -591,6 +593,7 @@ impl GpuiApp {
         }
         #[cfg(test)]
         {
+            actor_calls::bump();
             f(&mut self.editor);
             self.editor.publish_render_state();
         }
@@ -608,6 +611,7 @@ impl GpuiApp {
         }
         #[cfg(test)]
         {
+            actor_calls::bump();
             let r = f(&mut self.editor);
             self.editor.publish_render_state();
             r
@@ -628,6 +632,7 @@ impl GpuiApp {
         }
         #[cfg(test)]
         {
+            actor_calls::bump();
             f(&self.editor)
         }
     }
@@ -732,23 +737,6 @@ impl GpuiApp {
     // colour flows through the cells / `DisplayMatrix` substrate;
     // overlay backgrounds through `lattice_host::overlay_worker`.
 
-    /// Auto-scroll the active pane so the cursor stays in the
-    /// visible viewport (`[scroll, scroll + viewport_height)`).
-    /// Mirrors the TUI peer's per-tick scroll-clamp; both renderer
-    /// peers funnel through the host's `editor.scroll` so any
-    /// host-side cursor jump (a motion, a `:N`, a search bounce)
-    /// is reflected here on the next paint.
-    ///
-    /// Phase 5.8.O: foundational for cursorline / visual selection
-    /// (5.8.P, 5.8.Q) — those features paint *within* the viewport
-    /// and would mis-render if the cursor sat outside it.
-    pub fn ensure_cursor_in_viewport(&mut self) {
-        // Slice 3c.final.C: route through `Action::EnsureCursorVisible`
-        // so the per-frame mutation goes via dispatch. Tail
-        // publishes RS — no manual publish needed.
-        self.dispatch_action(lattice_host::action::Action::EnsureCursorVisible);
-    }
-
     // Slice 3c.final.E.swap: `finalize_boot` retired. Its body
     // (rebuild_option_cache / activate_major_for_buffer_kind /
     // publish_document_opened_for_active / ensure_subsystem_buffers
@@ -759,6 +747,151 @@ impl GpuiApp {
     // which doesn't exist yet at that point in construction.
     // `rebuild_gpui_theme` runs post-actor against the published
     // RS theme.
+
+    /// Load what belongs to the user rather than to the editor: persistent
+    /// config (TOML), per-language overrides, and the snippet packs.
+    ///
+    /// Called once by `window::run`, before the first frame. Kept out of
+    /// [`Self::new`] for the reason the TUI keeps it out of `App::new`: a
+    /// test that builds an app must get the editor's defaults, not whatever
+    /// the developer has in `~/.config/lattice` — a colour scheme there was
+    /// enough to change what a theme assertion saw.
+    ///
+    /// The signals the config load raises (a `ThemeChanged` from a
+    /// `colorscheme` line, an `LspConfigChanged`) are handled. Before GD.1
+    /// they were dropped, and only the theme was recovered, by an
+    /// unconditional rebuild afterwards.
+    pub fn load_user_environment(&mut self) {
+        let workspace_root = lattice_core::project::root_from_cwd();
+        let signals = self.mutate_editor_with(move |e| {
+            let signals = e.load_persistent_config(workspace_root.as_deref());
+            e.apply_per_language_toml_overrides();
+            // After config, so `snippet_dirs` overrides apply. Quiet: logs,
+            // no echo.
+            e.load_snippets_at_startup();
+            signals
+        });
+        for signal in signals {
+            self.handle_renderer_signal(signal);
+        }
+    }
+
+    /// Ask the editor to quit the way `:qa` does, and report whether it will.
+    ///
+    /// This is what the window's close button, Cmd+Q and the Quit menu item
+    /// call. They used to bypass the editor entirely — the window simply
+    /// went away, unsaved buffers with it. Going through `do_quit` gives
+    /// them `:qa`'s guard: with an unsaved buffer the answer is `false`, the
+    /// reason is in the echo area, and the caller must leave the window open.
+    pub fn request_close(&mut self) -> bool {
+        self.mutate_editor(|e| e.do_quit(false, lattice_grammar::QuitScope::All));
+        self.should_quit()
+    }
+
+    /// Open a file the operating system handed over — a Finder "Open With",
+    /// `open -a`, a file dropped on the window. Same path as `:e <path>`.
+    pub fn open_path(&mut self, path: std::path::PathBuf) {
+        self.apply_open_buffer(Some(path), false);
+    }
+
+    /// Open the tutor at `lesson` (`lattice --tutor [N]`). Called by the
+    /// window after [`Self::load_user_environment`], so the user's config
+    /// lands first.
+    pub fn open_tutor(&mut self, lesson: u32) {
+        let signals = self.mutate_editor_with(move |e| e.do_tutor(Some(lesson)));
+        for signal in signals {
+            self.handle_renderer_signal(signal);
+        }
+    }
+
+    /// The window's title: the active buffer's file name, or its buffer name
+    /// when it has no file.
+    ///
+    /// Reads the published registry, which takes a lock per call — so the
+    /// window computes this on its repaint wake and not inside `render`.
+    pub fn window_title(&self) -> String {
+        let rs = self.render_state.load();
+        let id = rs.panes.tree.active().buffer_id;
+        let registry = &rs.buffers.registry;
+        let name = registry
+            .document_path(id)
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .or_else(|| registry.name_of(id));
+        match name {
+            Some(name) => format!("{name} — Lattice"),
+            None => "Lattice".to_string(),
+        }
+    }
+
+    /// Whether `<Esc>` should dismiss the open popup instead of going to the
+    /// keymap.
+    ///
+    /// Only while the DOCUMENT has focus and a popup floats over it (hover,
+    /// signature help, `:describe-*`). Once focus is inside the popup, `<Esc>`
+    /// takes the ordinary path, so a sub-mode in there — a `/` search — is
+    /// cancelled first and the popup closes on the next one. This peer used
+    /// to dismiss whenever any popup was open, which threw the popup away
+    /// with the search still half-typed. Same gate as the TUI's `apply_event`.
+    pub fn esc_dismisses_popup(&self) -> bool {
+        let rs = self.render_state.load();
+        rs.popup.is_open() && !rs.active_document.load().popup_focused
+    }
+
+    /// Clear a pending `<C-l>` redraw request.
+    ///
+    /// The window repaints in full whenever it is notified, so there is
+    /// nothing extra to draw — but the request has to be acknowledged, or
+    /// `pending_redraw` stays set for the rest of the session. A published
+    /// read; the actor is crossed only when a redraw is actually pending.
+    pub fn acknowledge_redraw_if_pending(&mut self) {
+        if self.render_state.load().lifecycle.pending_redraw {
+            self.dispatch_action(Action::AcknowledgeRedraw);
+        }
+    }
+
+    /// Tell the host how many text columns the window is wide.
+    ///
+    /// Pane geometry (`<C-w>` navigation between splits, `buffer_area_rect`)
+    /// is computed from it, and the host assumes 120 when it has never been
+    /// told. The TUI sends this on every terminal resize; this peer never
+    /// did. The window calls it when the column count changes.
+    pub fn set_window_columns(&mut self, columns: u16) {
+        self.dispatch_action(Action::SetTerminalWidth(columns.max(1)));
+    }
+
+    /// Whether the editor has asked to quit.
+    ///
+    /// A published read. The window checks it wherever control returns to
+    /// it — after a key, after a mouse event, and on every repaint wake —
+    /// because a quit can be raised by any of them (a click on a `:q` link,
+    /// an async path), not only by a keystroke.
+    pub fn should_quit(&self) -> bool {
+        self.render_state.load().lifecycle.should_quit
+    }
+
+    /// Apply renderer-owned effects that landed with no keystroke in flight.
+    ///
+    /// An async picker accept, the fill target and the picker's delete verb
+    /// run off the renderer; what they cannot apply themselves they queue on
+    /// the editor. A keystroke's dispatch tail drains that queue — but an
+    /// async result has no keystroke, and waiting for the next one is the
+    /// "it works once I press something" bug. The window calls this from its
+    /// repaint wake.
+    ///
+    /// Costs nothing when the queue is empty: the check is a published
+    /// read, and the actor is crossed only when it says there is work.
+    /// Returns whether anything was applied.
+    pub fn drain_idle_renderer_effects(&mut self) -> bool {
+        if !self.render_state.load().lifecycle.renderer_effects_pending {
+            return false;
+        }
+        let queued = self.mutate_editor_with(|e| e.drain_pending_renderer_effects());
+        let any = !queued.is_empty();
+        for effect in queued {
+            self.apply_effect_gpui(effect);
+        }
+        any
+    }
 
     /// Renderer-side handler for the [`RendererSignal`] stream
     /// the host emits from option cascades + mode lifecycle
@@ -784,9 +917,7 @@ impl GpuiApp {
             // visibly recolor the window on the next frame.
             RendererSignal::ThemeChanged => {
                 self.rebuild_gpui_theme();
-                tracing::debug!(
-                    "ThemeChanged signal: rebuild_gpui_theme called (host_theme→GpuiTheme mapping is a stub for now)"
-                );
+                tracing::debug!("ThemeChanged signal: GPUI theme cache rebuilt");
             }
             // `editor.should_quit` was set alongside the signal
             // emission (see `Action::Quit` in `Editor::dispatch`).
@@ -797,19 +928,24 @@ impl GpuiApp {
             RendererSignal::Quit => {
                 tracing::debug!("Quit signal: editor.should_quit set; binary polls per-event");
             }
-            // The TUI peer's file-tree buffers embed nerd-font
-            // glyphs in their rendered rope, so a palette flip
-            // needs a rope refresh. The GPUI peer doesn't have
-            // file-tree buffers (or rope-side icon embedding)
-            // yet; the toggle is read live from
-            // `editor.host_theme.nerd_fonts` when those views
-            // exist. No-op for now -- the host emits this
-            // alongside `ThemeChanged` so renderers that don't
-            // track file-tree state can drop it.
+            // File-tree buffers embed their icons in the rendered rope, so a
+            // palette flip needs each tree re-rendered — otherwise the tree
+            // keeps the old glyphs until something else redraws it, and with
+            // `ui.nerd_fonts` turned off on an unpatched font those are `?`
+            // boxes (the icon-degradation rule). The two palettes are the
+            // same cell width, so nothing else moves. One crossing for all
+            // trees; the option is read in the actor, where it was just set.
             RendererSignal::NerdFontsToggled => {
-                tracing::debug!(
-                    "NerdFontsToggled signal: no file-tree buffers in GPUI peer; no-op"
-                );
+                self.mutate_editor(|e| {
+                    let nerd_fonts = e
+                        .config
+                        .get_typed::<lattice_host::ui::theme_options::UiNerdFonts>()
+                        .map(|v| *v)
+                        .unwrap_or(false);
+                    for id in e.buffers.file_tree_ids() {
+                        e.set_file_tree_nerd_fonts(id, nerd_fonts);
+                    }
+                });
             }
             // The fan-out body migrated to
             // `Editor::fan_out_did_change_configuration` in
@@ -844,12 +980,12 @@ impl GpuiApp {
                 );
                 let (_id, mode_signals) =
                     self.mutate_editor_with(move |e| e.display_buffer(content, category));
-                // Mode-activate signals don't recurse meaningfully
-                // for the popup paths (no further DisplayBuffer);
-                // drain through the handler so any ThemeChanged
-                // etc. still propagates.
-                for s in mode_signals {
-                    tracing::debug!(signal = ?s, "popup mode-activate cascade signal");
+                // The cascade from activating the displayed buffer's
+                // modes. These were logged and dropped; a mode whose
+                // activation changes the theme or an LSP setting then
+                // took effect in the TUI and not here.
+                for signal in mode_signals {
+                    self.handle_renderer_signal(signal);
                 }
             }
         }
@@ -878,6 +1014,43 @@ impl GpuiApp {
     ) -> Option<DispatchOutcome> {
         let chord = gpui_chord::from_keystroke(key, control, alt, shift, platform)?;
         Some(self.dispatch_chord(chord))
+    }
+
+    /// GD.4: what the key router needs to know right now — whether text is
+    /// being entered, and the two states that take keys as pressed.
+    pub fn input_state(&self) -> text_input::InputState {
+        let ad = self.ad();
+        text_input::InputState {
+            text_entry: text_input::accepts_text(ad.modal) || ad.picker_open,
+            terminal: ad.terminal_insert_active,
+            capture: ad.chord_capture,
+            platform_composes: text_input::PLATFORM_COMPOSES,
+        }
+    }
+
+    /// GD.4: whether the keymap claims `key` + Option **as pressed** in the
+    /// current state, so the chord stays a binding instead of becoming the
+    /// character the platform types for it.
+    pub fn option_chord_is_bound(&self, key: &str, shift: bool) -> bool {
+        let Some(chord) = gpui_chord::from_keystroke(key, false, true, shift, false) else {
+            return false;
+        };
+        let translator = self.render_state.load().translator.clone();
+        lattice_host::input::binds_as_pressed(
+            self.ad().modal,
+            &translator.keymap,
+            &translator.partial_chord,
+            chord,
+            &translator.active_minor_modes,
+        )
+    }
+
+    /// GD.4: text the platform committed — a composed `é`, an emoji, an
+    /// input method's word — arrives as the chords typing it would be.
+    pub fn commit_text(&mut self, text: &str) {
+        for chord in text_input::chords_for_text(text) {
+            self.dispatch_chord(chord);
+        }
     }
 
     /// Translate a canonical [`KeyChord`] into an [`Action`] (via
@@ -1139,221 +1312,128 @@ impl GpuiApp {
         }
     }
 
-    /// Dispatch a single [`Action`] through `editor.dispatch` and
-    /// drain the deferred-action queue iteratively.
+    /// GD.8c: run an Edit-menu item. Each is the vim command it names,
+    /// dispatched through the same entry a key takes, so undo, registers
+    /// and macros see nothing new ([`edit_menu_actions`]).
+    pub fn edit_menu(&mut self, item: EditMenuItem) {
+        let builtins = self.render_state.load().translator.builtins.clone();
+        for action in edit_menu_actions(item, self.ad().modal, &builtins) {
+            self.dispatch_action(action);
+        }
+    }
+
+    /// Dispatch one [`Action`] and everything that follows from it.
     ///
-    /// `editor.dispatch` runs ONE action and returns the outcome;
-    /// for many actions (`Action::Invoke` resolving to an
-    /// `AppEffect::EnterMode` / `EnterVisual` / etc.) the host
-    /// emits a follow-up [`Action`] in
-    /// `outcome.next_actions` rather than mutating directly --
-    /// see `Editor::apply_app_effect` in `lattice_host::dispatch`.
-    /// The TUI peer's `App::apply` drains the queue with a
-    /// recursive call; this method does the same shape with an
-    /// explicit FIFO loop so basic state transitions land without
-    /// needing the renderer's full effect / signal fan-out yet
-    /// (5.7.B.4+ work).
+    /// This is the GPUI peer's half of the peer contract
+    /// (`docs/dev/architecture/gui-default.md` §2), and it is the same shape
+    /// as the TUI's `App::apply` on purpose. The host owns the post-dispatch
+    /// tail; a peer owns only the renderer-coupled effects and signals in
+    /// between.
     ///
-    /// `outcome.effects` are aggregated across the chain but NOT
-    /// re-applied -- the host has already called
-    /// `editor.handle_effect(effect.clone())` on each one during
-    /// the inner dispatch (the renderer-coupled match arms remain
-    /// a 5.7.B.4+ follow-up). `renderer_signals` accumulate the
-    /// same way; callers can inspect them once the GPUI peer
-    /// gains a signal handler.
+    /// **Fused path.** [`Editor::dispatch_fused`] runs the dispatch AND the
+    /// tail (`ensure_cursor_visible`, `maybe_reparse_syntax`,
+    /// `sync_keymap_overlays`, `run_tick_pending`) inside one actor crossing
+    /// whenever the dispatch produced nothing for the renderer to do — every
+    /// plain insert, motion and operator. One round-trip per key.
+    ///
+    /// **Non-fused path.** The dispatch left effects, signals or follow-up
+    /// actions, or a popup is up. Their handlers must run BEFORE the tail (an
+    /// `OpenBufferAt` switches the active document, and the cursor is then
+    /// clamped against the new one), so the order is: effects, signals, each
+    /// follow-up action through this same function, then the tail in a single
+    /// crossing.
+    ///
+    /// Before GD.0 this function called bare `Editor::dispatch` and re-created
+    /// part of the tail by hand. Every tail step the host gained afterwards
+    /// reached the TUI and not this peer: `maybe_reparse_syntax` (syntax
+    /// colour vanished on the first edit), then `sync_keymap_overlays` (the
+    /// completion popup's and the active snippet's keymap layers never
+    /// activated, so their keys were dead). Calling the host's tail is what
+    /// makes the next such step impossible to miss.
     pub fn dispatch_action(&mut self, action: Action) -> DispatchOutcome {
-        // Phase 5.8.AC.1: GPUI-side intercepts for App-only Action
-        // arms. The host's `handle_action` doesn't dispatch these
-        // (the TUI App's `apply` catches them with renderer-coupled
-        // bodies). Until the full set migrates, the GPUI peer
-        // intercepts the most-common ones here. The host's matching
-        // `do_*` helpers cover the simple Buffer / Path routings;
-        // exotic routings (mark / register / command / snippet /
-        // LSP code-action / completion) still warn until they
-        // migrate.
-        match &action {
-            Action::PickerAccept => {
-                // Route through the transient-aware accept, NOT `do_picker_accept`
-                // directly: in transient mode `<CR>` must fire whatever
-                // `<C-n>`/`<C-p>` selected. Calling `do_picker_accept` here is a
-                // no-op for a transient, which is why a scrolled-to transient
-                // action ran in the TUI but did nothing in GPUI.
-                let mut outcome = self.mutate_editor_with(|e| {
-                    let mut out = DispatchOutcome::default();
-                    e.do_picker_or_transient_accept(&mut out);
-                    out
-                });
-                outcome.consumed = true;
-                // Drain the accept's follow-up effects. A picker accept can
-                // invoke a command that returns one — magit branch-delete picks
-                // a branch and returns `Effect::Confirm` — and Confirm (like the
-                // other renderer-owned effects) is left in `outcome.effects` for
-                // the renderer to apply; the host does not. This early-return arm
-                // drained only `renderer_signals`, skipping the generic
-                // effect-drain further down (`for effect in outcome.effects ...
-                // apply_effect_gpui`), so the confirm prompt never opened in
-                // GPUI and the flow "ended abruptly" after the pick. The TUI has
-                // always drained these (`App::apply_effect_app_arms`). Effects
-                // before signals, matching the generic path.
-                for effect in outcome.effects.iter().cloned() {
-                    self.apply_effect_gpui(effect);
-                }
-                for s in std::mem::take(&mut outcome.renderer_signals) {
-                    self.handle_renderer_signal(s);
-                }
-                return outcome;
+        let (pre_active, pre_popup_focused) = {
+            let ad = self.ad();
+            (ad.buffer_kind, ad.popup_focused)
+        };
+        // A published read, no actor crossing. With a popup shown the fuse is
+        // declined so the popup-dismiss skip below sees the post-effect state.
+        let popup_up = self.render_state.load().popup.buffer_id.is_some();
+        let fused = self.mutate_editor_with(move |e| {
+            e.dispatch_fused(action, pre_active, pre_popup_focused, popup_up)
+        });
+        let mut outcome = fused.outcome;
+        if let Some(tail_signals) = fused.tail_signals {
+            // The host fused, so every effect here is one it says it has
+            // finished (`effect_is_host_complete`) and each arm below is a
+            // no-op. They are run anyway: if a variant is ever classified
+            // host-complete while this peer still has work for it, that work
+            // happens late instead of not at all.
+            for effect in outcome.effects.iter().cloned() {
+                self.apply_effect_gpui(effect);
             }
-            // MG.29 lockstep: `<Esc>` routes here now, and this peer
-            // intercepts the dismiss family rather than letting it reach
-            // the generic path — so without this arm the unwind would
-            // work in the TUI and do nothing in GPUI.
-            Action::TransientDismiss => {
-                let signals = self.mutate_editor_with(|e| {
-                    let popped = e
-                        .picker
-                        .as_mut()
-                        .map(|p| p.transient_unwind())
-                        .unwrap_or(false);
-                    if popped {
-                        Vec::new()
-                    } else {
-                        e.do_picker_dismiss()
-                    }
-                });
-                let outcome = DispatchOutcome {
-                    consumed: true,
-                    renderer_signals: signals.clone(),
-                    ..Default::default()
-                };
-                for s in signals {
-                    self.handle_renderer_signal(s);
-                }
-                return outcome;
+            for signal in tail_signals.iter().cloned() {
+                self.handle_renderer_signal(signal);
             }
-            Action::PickerDismiss => {
-                let signals = self.mutate_editor_with(|e| e.do_picker_dismiss());
-                let outcome = DispatchOutcome {
-                    consumed: true,
-                    renderer_signals: signals.clone(),
-                    ..Default::default()
-                };
-                for s in signals {
-                    self.handle_renderer_signal(s);
-                }
-                return outcome;
-            }
-            _ => {}
+            // Handed back handled, as the non-fused path does.
+            outcome.renderer_signals = tail_signals;
+            return outcome;
         }
-        let mut outcome = self.mutate_editor_with(move |e| e.dispatch(action));
-        let mut pending: std::collections::VecDeque<Action> =
-            outcome.next_actions.drain(..).collect();
-        while let Some(follow_up) = pending.pop_front() {
-            let mut next_out = self.mutate_editor_with(move |e| e.dispatch(follow_up));
-            pending.extend(next_out.next_actions.drain(..));
-            outcome.effects.append(&mut next_out.effects);
-            outcome
-                .renderer_signals
-                .append(&mut next_out.renderer_signals);
-            outcome.consumed |= next_out.consumed;
-            if self.render_state.load().lifecycle.should_quit {
-                // Mirrors `App::apply`'s mid-macro-quit semantic:
-                // a recorded `:q` short-circuits the rest of the
-                // chain so we don't keep firing actions against
-                // an editor that's tearing down.
-                break;
-            }
-        }
-        // Phase 5.8.AC.1: drain renderer-coupled effects. The
-        // host's `editor.dispatch` already called
-        // `editor.handle_effect` for every Effect, but the
-        // renderer-coupled tail (`OpenBuffer` → `do_edit`,
-        // `OpenBufferPicker` → `do_open_buffer_picker`,
-        // `QuitEditor` → `do_quit`, ...) doesn't run inside the
-        // host's `handle_effect`. The TUI peer drains these in
-        // `App::apply_effect_app_arms`; the GPUI peer mirrors
-        // those arms here for the variants whose handlers are
-        // host-resident today. Variants whose handlers are still
-        // App-only (file-tree / oil / hover / LSP-request /
-        // diagnostics navigation / picker accept) log a one-line
-        // trace; they'll light up as the matching host methods
-        // land in subsequent slices.
+
+        // The host already ran `handle_effect` on each of these; what is left
+        // is the renderer-coupled half (`OpenBuffer` → `do_edit`,
+        // `QuitEditor` → `do_quit`, …). Effects before signals, so a signal
+        // handler (a theme rebuild) observes the final state.
         for effect in outcome.effects.iter().cloned() {
             self.apply_effect_gpui(effect);
         }
-        // Action arms App handles that the host's `handle_action`
-        // doesn't yet route through: `PickerAccept` / `PickerDismiss`
-        // — these need a renderer-coupled close path. Until the
-        // accept body migrates host-side, GPUI catches the action
-        // by inspecting `outcome.consumed` and falling back to a
-        // minimal close + activate-restore for the dismiss arm.
-        // 5.7.B.7: drain renderer signals through the GPUI
-        // handler. Drained BEFORE returning so callers see a
-        // post-signal-handling editor state; the returned
-        // outcome still carries the (now-handled) signal list
-        // for callers that want to inspect or re-route them.
         // Signals queued on the editor rather than returned — the
-        // `ModeActivator` trait surface and `Editor::activate_buffer`,
-        // both of which complete work whose signature cannot hand the
-        // cascade back. Folded in beside the outcome's own so neither
-        // producer depends on a caller remembering it. TUI parity:
-        // `app/dispatch.rs` drains at the same point.
+        // `ModeActivator` trait surface and `Editor::activate_buffer`, whose
+        // signatures cannot hand a cascade back — folded in beside the
+        // outcome's own so neither producer depends on a caller remembering.
         let mut signals = self.mutate_editor_with(|e| e.drain_pending_renderer_signals());
         signals.append(&mut std::mem::take(&mut outcome.renderer_signals));
         for signal in signals.iter().cloned() {
             self.handle_renderer_signal(signal);
         }
-        // Restore the list on the outcome so the returned value
-        // matches the historical TUI shape (App::apply also
-        // hands these to the caller after fan-out).
+        // Follow-up actions (macro replay, dot-repeat, the LSP autopilots)
+        // each go through the WHOLE of this function, so one action's effects
+        // have landed before the next runs. Dispatching them bare and applying
+        // every effect at the end — what this did before — replays a recorded
+        // "open, then move" as "move, then open".
+        for follow_up in std::mem::take(&mut outcome.next_actions) {
+            let mut next = self.dispatch_action(follow_up);
+            outcome.effects.append(&mut next.effects);
+            signals.append(&mut next.renderer_signals);
+            outcome.consumed |= next.consumed;
+            if self.render_state.load().lifecycle.should_quit {
+                // A recorded `:q` ends the replay: nothing more is fired at an
+                // editor that is tearing down.
+                break;
+            }
+        }
         outcome.renderer_signals = signals;
-        // Phase 5.8.AF.5 / Slice X1: drain pending LSP / event /
-        // mode-lifecycle results here at the keystroke-driven
-        // dispatch tail rather than in the per-frame body
-        // (`crates/lattice-ui-gpui/src/window.rs::Render::render`).
-        // Paramount goal #1 forbids I/O / event drain on the UI
-        // thread; the renderer body is the UI thread.
-        // `run_tick_pending` is the host aggregator that polls
-        // ~30 channels for async results -- on a busy frame
-        // (file open) it can take 49ms, which is 6x over the
-        // one-frame ceiling (8.3 ms at 120Hz). Running it
-        // here makes that cost happen during the keystroke that
-        // caused the work (the open) instead of on the next
-        // paint after open. The post-X1 perf trace expects
-        // `tick_us` in `lattice_gpui::perf` to drop to ~0 once
-        // dispatch tails take over the drain.
-        //
-        // Idle LSP arrivals (response with no keystroke in
-        // flight) are NOT drained until the next keystroke:
-        // see slice X1b (`docs/dev/operations/render-thread-
-        // discipline-remediation.md` §X1b) for the wake-bridge
-        // that closes that gap.
-        // Parity with the TUI keystroke tail (`Editor::dispatch_fused`, which
-        // TUI reaches via `App::apply`): reparse the buffer's syntax BEFORE
-        // draining ticks. This peer dispatches via bare `Editor::dispatch`,
-        // which does NOT run the post-dispatch tail, so `maybe_reparse_syntax`
-        // was never called on a GPUI edit. The consequence was subtle and
-        // permanent: the syntax tree stayed at the pre-edit text, so
-        // `SyntaxSnapshot::tree_reflects(new_text)` was false and the cells
-        // worker's rebuild skipped highlighting; and because the syntax
-        // `render_version` never advanced, the worker then CACHE-HIT that
-        // uncoloured matrix on every later wake — syntax colour "disappeared"
-        // on the first edit and never came back (recoverable only by `:e!`).
-        // Especially visible on async-parsed / plugin-grammar buffers (e.g.
-        // `.org`). `maybe_reparse_syntax` no-ops when the text did not change
-        // (motions), so it is cheap on the hot path, and it also drives
-        // `recompute_folds`, matching TUI. Folded into the same actor crossing
-        // as `run_tick_pending` to keep the keystroke a single round-trip.
-        let tick_signals = self.mutate_editor_with(|e| {
+
+        // The tail, in one crossing, in the order `dispatch_fused` runs it.
+        // `ensure_cursor_visible` is skipped when this action dismissed a
+        // focused popup: the viewport height is still the popup's inner
+        // height until the next layout pass corrects it.
+        let (tick_signals, queued) = self.mutate_editor_with(move |e| {
+            let popup_dismissed =
+                pre_popup_focused && matches!(e.active_buffer, BufferKind::Document);
+            if !popup_dismissed {
+                e.ensure_cursor_visible();
+            }
             e.maybe_reparse_syntax();
-            e.run_tick_pending()
+            e.sync_keymap_overlays();
+            let tick_signals = e.run_tick_pending();
+            // OR.16: effects an off-renderer path (the async picker accept,
+            // the fill target, the picker's delete verb) had no renderer to
+            // hand to.
+            (tick_signals, e.drain_pending_renderer_effects())
         });
         for signal in tick_signals {
             self.handle_renderer_signal(signal);
         }
-        // OR.16: the renderer-owned effects an off-renderer path (the async
-        // picker accept, the fill target, the picker's delete verb) had no
-        // renderer to hand over. The TUI drains these in the same place.
-        let queued = self.mutate_editor_with(|e| e.drain_pending_renderer_effects());
         for effect in queued {
             self.apply_effect_gpui(effect);
         }
@@ -1723,11 +1803,14 @@ impl GpuiApp {
             Effect::PrevDiagnostic => self.mutate_editor(|e| e.do_prev_diagnostic()),
             // Phase 5.8.AF.3: `:reload-snippets` host-side.
             Effect::ReloadSnippets => self.mutate_editor(|e| e.do_reload_snippets()),
-            // Phase 5.8.AF.3: `:toggle-mode` host-side. Returned
-            // bool flags an unknown-mode-name miss (the host has
-            // already echoed); GPUI has no further fan-out.
+            // `:toggle-mode`, host-side. What comes back is the mode's
+            // activation cascade (an unknown name has already been echoed
+            // by the host and returns none).
             Effect::ToggleMode { mode_name } => {
-                let _ = self.mutate_editor_with(move |e| e.toggle_mode_by_name(&mode_name));
+                let signals = self.mutate_editor_with(move |e| e.toggle_mode_by_name(&mode_name));
+                for signal in signals {
+                    self.handle_renderer_signal(signal);
+                }
             }
             // Phase 5.8.AF.3: `:g` / `:v` host-side. Body effects
             // are drained through `apply_effect_gpui` so any
@@ -1749,6 +1832,11 @@ impl GpuiApp {
                 });
                 for eff in std::mem::take(&mut out.effects) {
                     self.apply_effect_gpui(eff);
+                }
+                // The body ran once per matching line; whatever signals
+                // those runs raised are this command's.
+                for signal in std::mem::take(&mut out.renderer_signals) {
+                    self.handle_renderer_signal(signal);
                 }
             }
             // Phase 5.8.AF.3: `:picker <source>` host-side.
@@ -1921,11 +2009,434 @@ impl GpuiApp {
     }
 }
 
+/// The path in a URL the operating system asked the application to open.
+///
+/// macOS delivers "open this file" as `file://` URLs, percent-encoded. A
+/// bare absolute path is accepted too. Anything else — another scheme, a
+/// relative path, a malformed escape — is `None`: the caller logs and skips
+/// it rather than opening a buffer named after a URL.
+pub fn path_from_open_url(url: &str) -> Option<std::path::PathBuf> {
+    let raw = match url.strip_prefix("file://") {
+        // `file://localhost/…` and `file:///…` both name a local path.
+        Some(rest) => rest.strip_prefix("localhost").unwrap_or(rest),
+        None if url.starts_with('/') => return Some(std::path::PathBuf::from(url)),
+        None => return None,
+    };
+    if !raw.starts_with('/') {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(raw.len());
+    let mut rest = raw.as_bytes();
+    while let Some((&b, tail)) = rest.split_first() {
+        if b == b'%' {
+            let hex = tail.get(..2)?;
+            let hex = std::str::from_utf8(hex).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            rest = &tail[2..];
+        } else {
+            bytes.push(b);
+            rest = tail;
+        }
+    }
+    Some(std::path::PathBuf::from(String::from_utf8(bytes).ok()?))
+}
+
+/// Counts crossings of the editor-actor seam (`mutate_editor`,
+/// `mutate_editor_with`, `read_editor`) on the calling thread.
+///
+/// In production each is a blocking mailbox round-trip; under `cfg(test)`
+/// the editor is in-process and they are plain calls, so nothing would
+/// otherwise show a test how many there were. The TUI peer has the same
+/// counter (`lattice_ui_tui::actor_call_counter`) for the same assertion.
+/// GD.8c: an item of the macOS Edit menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditMenuItem {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+}
+
+/// What an Edit-menu item does in a modal state: the vim command it
+/// names, against the system clipboard register (`"+`).
+///
+/// - **Undo / Redo** are `u` / `<C-r>`.
+/// - **Copy / Cut** are `"+y` / `"+d` on the selection, and nothing
+///   without one — the platform's rule (the items act on the selection),
+///   and a stray Cmd-X must not delete a line.
+/// - **Paste** is `"+p`, exactly as vim's: after the cursor in Normal
+///   (below the line for a linewise yank), and over the selection in
+///   Visual. Where text is being typed (Insert, Replace, the `:` and
+///   search lines) it is `<C-r>+`.
+///
+/// One clipboard path: the host's `+` register. The window does not
+/// touch the OS clipboard itself, so the menu, `"+y` and `"+p` cannot
+/// disagree.
+pub fn edit_menu_actions(
+    item: EditMenuItem,
+    modal: lattice_grammar::ModalState,
+    builtins: &lattice_grammar::builtins::Builtins,
+) -> Vec<Action> {
+    use lattice_grammar::{CommandInvocation, ModalState, Range, Register};
+    let selecting = matches!(modal, ModalState::Visual(_) | ModalState::Select(_));
+    let on_selection = |op: lattice_grammar::CommandId| {
+        Action::Invoke(
+            CommandInvocation::of(op)
+                .with_range(Range::Selection)
+                .with_register(Register::System),
+        )
+    };
+    match item {
+        EditMenuItem::Undo => vec![Action::Undo],
+        EditMenuItem::Redo => vec![Action::Redo],
+        EditMenuItem::Copy if selecting => vec![on_selection(builtins.yank.0)],
+        EditMenuItem::Cut if selecting => vec![on_selection(builtins.delete.0)],
+        EditMenuItem::Copy | EditMenuItem::Cut => Vec::new(),
+        EditMenuItem::Paste => match modal {
+            ModalState::Normal => {
+                vec![Action::SelectRegister(Register::System), Action::PasteAfter]
+            }
+            // `"+p` over a selection: replace it, as vim's Visual `p`.
+            ModalState::Visual(_) | ModalState::Select(_) => vec![
+                Action::SelectRegister(Register::System),
+                Action::PutOverSelection {
+                    keep_register: false,
+                },
+            ],
+            ModalState::Insert
+            | ModalState::Replace
+            | ModalState::Command
+            | ModalState::Search(_) => vec![Action::InsertRegister('+')],
+            // Mid-operator there is nowhere for a paste to go.
+            _ => Vec::new(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod actor_calls {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn bump() {
+        COUNT.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(crate) fn snapshot() -> u64 {
+        COUNT.with(|c| c.get())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use lattice_grammar::ModalState;
+
+    /// GD.2 — this peer, as the host's conformance scenarios drive it.
+    ///
+    /// Every method is the production path: `dispatch_chord` is what
+    /// `on_key_down` calls once the keystroke is normalised,
+    /// `dispatch_action` is the dispatch entry, and
+    /// `drain_idle_renderer_effects` is what the window's repaint wake runs.
+    impl lattice_host::peer_conformance::PeerUnderTest for GpuiApp {
+        fn boot(text: &str) -> Self {
+            GpuiApp::new(Document::from_text(text))
+        }
+        fn press_chord(&mut self, chord: lattice_host::chord::KeyChord) {
+            self.dispatch_chord(chord);
+        }
+        fn apply(&mut self, action: Action) {
+            self.dispatch_action(action);
+        }
+        fn idle_wake(&mut self) {
+            self.drain_idle_renderer_effects();
+        }
+        fn set_viewport_height(&mut self, rows: u32) {
+            GpuiApp::set_viewport_height(self, rows);
+        }
+        fn editor(&self) -> &Editor {
+            &self.editor
+        }
+        fn editor_mut(&mut self) -> &mut Editor {
+            &mut self.editor
+        }
+        fn actor_crossings(&self) -> u64 {
+            actor_calls::snapshot()
+        }
+    }
+
+    /// GD.8c: Copy and Cut act on the selection and do nothing without
+    /// one; Paste is vim's `"+p`, over the selection in Visual.
+    #[test]
+    fn edit_menu_items_are_vim_commands_on_the_clipboard_register() {
+        use lattice_grammar::{Range, Register, VisualKind};
+        let app = GpuiApp::new(Document::from_text("x\n"));
+        let b = app.render_state.load().translator.builtins.clone();
+        let visual = ModalState::Visual(VisualKind::Charwise);
+
+        assert!(edit_menu_actions(EditMenuItem::Copy, ModalState::Normal, &b).is_empty());
+        assert!(edit_menu_actions(EditMenuItem::Cut, ModalState::Insert, &b).is_empty());
+
+        let copy = edit_menu_actions(EditMenuItem::Copy, visual, &b);
+        let [Action::Invoke(inv)] = copy.as_slice() else {
+            panic!("Copy in Visual is one invocation, got {copy:?}");
+        };
+        assert_eq!(inv.command, b.yank.0);
+        assert_eq!(inv.register, Some(Register::System));
+        assert!(matches!(inv.range, Some(Range::Selection)));
+
+        let cut = edit_menu_actions(EditMenuItem::Cut, visual, &b);
+        let [Action::Invoke(inv)] = cut.as_slice() else {
+            panic!("Cut in Visual is one invocation, got {cut:?}");
+        };
+        assert_eq!(inv.command, b.delete.0);
+
+        assert!(matches!(
+            edit_menu_actions(EditMenuItem::Paste, ModalState::Normal, &b).as_slice(),
+            [Action::SelectRegister(Register::System), Action::PasteAfter]
+        ));
+        assert!(matches!(
+            edit_menu_actions(EditMenuItem::Paste, ModalState::Insert, &b).as_slice(),
+            [Action::InsertRegister('+')]
+        ));
+        assert!(matches!(
+            edit_menu_actions(EditMenuItem::Paste, ModalState::Command, &b).as_slice(),
+            [Action::InsertRegister('+')]
+        ));
+        assert!(edit_menu_actions(EditMenuItem::Paste, ModalState::OperatorPending, &b).is_empty());
+        assert!(matches!(
+            edit_menu_actions(EditMenuItem::Paste, visual, &b).as_slice(),
+            [
+                Action::SelectRegister(Register::System),
+                Action::PutOverSelection {
+                    keep_register: false
+                }
+            ]
+        ));
+    }
+
+    /// The menu's Undo and Redo reach the buffer through the peer's
+    /// dispatch entry.
+    #[test]
+    fn the_edit_menus_undo_and_redo_edit_the_buffer() {
+        let mut app = GpuiApp::new(Document::from_text("one\n"));
+        lattice_host::peer_conformance::press(&mut app, "ix<Esc>");
+        assert_eq!(app.editor.document.text(), "xone\n");
+        app.edit_menu(EditMenuItem::Undo);
+        assert_eq!(app.editor.document.text(), "one\n");
+        app.edit_menu(EditMenuItem::Redo);
+        assert_eq!(app.editor.document.text(), "xone\n");
+    }
+
+    /// The scenarios themselves — `lattice_host::peer_conformance`.
+    mod conformance {
+        lattice_host::peer_conformance_tests!(super::super::GpuiApp);
+    }
+
+    /// GD.3 — closing the window is `:qa`, guard included.
+    ///
+    /// The close button and Cmd+Q had no connection to the editor: the
+    /// window went away and unsaved work went with it. They ask first now,
+    /// and an unsaved buffer says no and says why.
+    #[test]
+    fn closing_the_window_is_refused_while_a_buffer_is_unsaved() {
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        app.dispatch_action(Action::Insert("unsaved ".to_string()));
+        assert!(
+            !app.request_close(),
+            "an edited, unsaved buffer keeps the window open"
+        );
+        assert!(!app.should_quit());
+        let echo = app.messages().last.as_ref().map(|m| m.text.to_string());
+        assert!(
+            echo.as_deref()
+                .is_some_and(|t| t.contains("no write since last change")),
+            "and the reason is on screen: {echo:?}"
+        );
+
+        let mut clean = GpuiApp::new(Document::from_text("x\n"));
+        assert!(clean.request_close(), "a clean editor closes");
+        assert!(clean.should_quit());
+    }
+
+    /// GD.3 — a file the OS hands over is opened like `:e`.
+    #[test]
+    fn a_file_handed_over_by_the_os_is_opened() {
+        let path =
+            std::env::temp_dir().join(format!("lattice-gd3-os-open-{}.txt", std::process::id()));
+        std::fs::write(&path, "from the finder\n").expect("temp file writes");
+
+        let mut app = GpuiApp::new(Document::from_text("origin\n"));
+        app.open_path(path.clone());
+
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            app.editor.document.snapshot().buffer.as_string(),
+            "from the finder\n"
+        );
+        let title = app.window_title();
+        assert!(
+            title.starts_with("lattice-gd3-os-open-") && title.ends_with(" — Lattice"),
+            "and the title names it: {title:?}"
+        );
+    }
+
+    /// GD.3 — the URLs macOS sends for "open this file" become paths, and
+    /// nothing else does.
+    #[test]
+    fn open_urls_become_paths() {
+        use std::path::PathBuf;
+        assert_eq!(
+            path_from_open_url("file:///Users/me/a%20b/caf%C3%A9.rs"),
+            Some(PathBuf::from("/Users/me/a b/café.rs"))
+        );
+        assert_eq!(
+            path_from_open_url("file://localhost/tmp/x.rs"),
+            Some(PathBuf::from("/tmp/x.rs"))
+        );
+        assert_eq!(
+            path_from_open_url("/tmp/plain.rs"),
+            Some(PathBuf::from("/tmp/plain.rs"))
+        );
+        assert_eq!(path_from_open_url("https://example.com/x.rs"), None);
+        assert_eq!(path_from_open_url("file://otherhost/tmp/x.rs"), None);
+        assert_eq!(path_from_open_url("file:///tmp/bad%2"), None);
+        assert_eq!(path_from_open_url("file:///tmp/bad%zz"), None);
+        assert_eq!(path_from_open_url("relative/x.rs"), None);
+    }
+
+    /// GD.3 — `--tutor N` opens the tutor in this peer too.
+    #[test]
+    fn the_tutor_flag_opens_the_tutor() {
+        let mut app = GpuiApp::new(Document::empty());
+        let before = app.editor.document_buffer_id;
+        app.open_tutor(1);
+        assert_ne!(
+            app.editor.document_buffer_id, before,
+            "the tutor's lesson buffer is the active one"
+        );
+    }
+
+    /// GD.8a — `<Esc>` leaves a FOCUSED popup's keys alone.
+    #[test]
+    fn esc_dismisses_a_popup_only_while_the_document_has_focus() {
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        assert!(!app.esc_dismisses_popup(), "no popup, nothing to dismiss");
+
+        app.handle_renderer_signal(RendererSignal::DisplayBuffer(Box::new(
+            lattice_host::dispatch::DisplayBufferRequest {
+                content: lattice_help::HelpContent::from_lines("hover", vec!["text".to_string()]),
+                category: lattice_core::ui::display::BufferDisplayCategory::Hover,
+            },
+        )));
+        assert!(app.render_state.load().popup.is_open(), "test premise");
+        assert!(
+            app.esc_dismisses_popup(),
+            "a popup over a focused document: Esc dismisses it"
+        );
+
+        app.editor.popup_focused = true;
+        app.editor.publish_render_state();
+        assert!(
+            !app.esc_dismisses_popup(),
+            "focus inside the popup: Esc goes to the keymap, so a search in \
+             there is cancelled before the popup is"
+        );
+    }
+
+    /// GD.8a — the host learns the window's width, and a redraw request is
+    /// cleared.
+    #[test]
+    fn the_window_reports_its_width_and_acknowledges_a_redraw() {
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        app.set_window_columns(203);
+        assert_eq!(app.editor.terminal_width, Some(203));
+        assert_eq!(
+            app.render_state.load().lifecycle.terminal_width,
+            Some(203),
+            "published, which is where pane geometry reads it"
+        );
+
+        app.editor.pending_redraw = true;
+        app.editor.publish_render_state();
+        app.acknowledge_redraw_if_pending();
+        assert!(!app.editor.pending_redraw, "`<C-l>` is acknowledged");
+
+        let before = actor_calls::snapshot();
+        app.acknowledge_redraw_if_pending();
+        assert_eq!(actor_calls::snapshot() - before, 0, "and free when idle");
+    }
+
+    /// GD.1 — a repaint wake with nothing queued costs no actor crossing.
+    ///
+    /// The window drains queued renderer effects from EVERY repaint wake,
+    /// including the ones a keystroke causes, so the empty case has to be a
+    /// published read and nothing more. (That a queued effect IS applied is
+    /// the conformance scenario
+    /// `a_queued_renderer_effect_is_applied_on_an_idle_wake`.)
+    #[test]
+    fn an_idle_wake_with_nothing_queued_is_free() {
+        let mut app = GpuiApp::new(Document::from_text("origin\n"));
+
+        let before = actor_calls::snapshot();
+        assert!(!app.drain_idle_renderer_effects(), "nothing queued");
+        assert_eq!(
+            actor_calls::snapshot() - before,
+            0,
+            "an empty queue is free"
+        );
+    }
+
+    /// GD.1 — toggling `ui.nerd_fonts` re-renders every file tree.
+    ///
+    /// A tree publishes its icons from a per-buffer palette flag. This peer's
+    /// `NerdFontsToggled` arm was a no-op with a comment saying it had no
+    /// file-tree buffers, which stopped being true long ago: the tree kept
+    /// its old glyphs after the toggle, and turning nerd fonts OFF on an
+    /// unpatched font is exactly when those glyphs are unreadable boxes.
+    #[test]
+    fn toggling_nerd_fonts_reaches_every_file_tree() {
+        use lattice_listing::file_tree::modes::FileTreeNerdFonts;
+
+        let dir = std::env::temp_dir().join(format!("lattice-gd1-tree-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("a.txt"), "a\n").expect("temp file");
+
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        let root = dir.clone();
+        let _ = app.mutate_editor_with(move |e| e.do_open_file_tree(Some(root)));
+        let trees = app.editor.buffers.file_tree_ids();
+        assert_eq!(trees.len(), 1, "test premise: one file tree is open");
+        let tree = trees[0];
+        let palette = |app: &GpuiApp| {
+            app.editor
+                .buffer_locals
+                .get(&tree)
+                .and_then(|l| l.get::<FileTreeNerdFonts>())
+                .map(|v| v.0)
+        };
+        let before = palette(&app);
+
+        let want = !before.unwrap_or(false);
+        let setting = format!("ui.nerd_fonts={}", if want { "on" } else { "off" });
+        app.editor
+            .config
+            .parse_and_set_command(&setting)
+            .expect("option sets");
+        app.handle_renderer_signal(RendererSignal::NerdFontsToggled);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            palette(&app),
+            Some(want),
+            "the tree's palette follows the option (was {before:?})"
+        );
+    }
 
     /// The 5.7 scaffold's core claim: a GPUI-side composition root
     /// constructs from the host substrate alone. If this builds, the
@@ -1998,6 +2509,109 @@ mod tests {
     /// `"i"` in Normal mode is canonical vim "enter Insert"; if
     /// the pipeline is wired correctly the editor's `modal` ends
     /// up in [`ModalState::Insert`].
+    /// GD.4: committed text lands wherever text is being entered — a
+    /// buffer in Insert, the `:` line in Command — as if typed.
+    #[test]
+    fn committed_text_is_typed_into_the_buffer_and_the_command_line() {
+        let mut app = GpuiApp::new(Document::empty());
+        app.dispatch_keystroke("i", false, false, false, false);
+        assert!(app.input_state().text_entry);
+        app.commit_text("é日");
+        assert_eq!(
+            app.editor.document.snapshot().buffer.line(0).unwrap(),
+            "é日"
+        );
+
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        assert!(
+            !app.input_state().text_entry,
+            "Normal mode is not text entry"
+        );
+        app.dispatch_keystroke(":", false, false, false, false);
+        assert!(app.input_state().text_entry);
+        app.commit_text("ñ");
+        assert_eq!(app.editor.command_line(), "ñ");
+    }
+
+    /// Backspace removes one CHARACTER. It used to step back one byte, so
+    /// on `é` the delete began mid-character and took the newline too:
+    /// the line vanished with the cursor still on it.
+    #[test]
+    fn backspace_removes_a_whole_multibyte_character_and_keeps_the_line() {
+        use lattice_host::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
+        let bs = KeyChord::new(KeyKind::Special(SpecialKey::Backspace), KeyMods::NONE);
+
+        let mut app = GpuiApp::new(Document::from_text("abc\n\n"));
+        app.dispatch_keystroke("j", false, false, false, false);
+        app.dispatch_keystroke("i", false, false, false, false);
+        app.commit_text("aé😀");
+        let line = |app: &GpuiApp, n| {
+            let l = app.editor.document.snapshot().buffer.line(n).unwrap();
+            l.trim_end_matches('\n').to_string()
+        };
+        assert_eq!(line(&app, 1), "aé😀");
+
+        app.dispatch_chord(bs);
+        assert_eq!(line(&app, 1), "aé", "the emoji goes, whole");
+        app.dispatch_chord(bs);
+        assert_eq!(line(&app, 1), "a", "then the accented letter, whole");
+        app.dispatch_chord(bs);
+        assert_eq!(line(&app, 1), "");
+        assert_eq!(line(&app, 0), "abc", "the line above is untouched");
+        assert_eq!(
+            (app.editor.cursor.line, app.editor.cursor.byte),
+            (1, 0),
+            "the cursor is still on its own, now empty, line"
+        );
+        assert_eq!(
+            app.editor.document.snapshot().buffer.content_line_count(),
+            2,
+            "emptying a line does not remove it"
+        );
+    }
+
+    /// The forward twins of the backspace bug: `~` and Replace mode's
+    /// overstrike (and its backspace-undo) act on the character at the
+    /// cursor, and used to take one byte of it.
+    #[test]
+    fn tilde_and_replace_mode_act_on_a_whole_multibyte_character() {
+        use lattice_host::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
+        let line0 = |app: &GpuiApp| {
+            let l = app.editor.document.snapshot().buffer.line(0).unwrap();
+            l.trim_end_matches('\n').to_string()
+        };
+
+        let mut app = GpuiApp::new(Document::from_text("éa\nnext\n"));
+        app.dispatch_keystroke("~", false, false, false, false);
+        assert_eq!(line0(&app), "Éa", "`~` toggles the accented letter's case");
+        assert_eq!(app.editor.cursor.byte, 2, "and steps past all of it");
+
+        let mut app = GpuiApp::new(Document::from_text("éa\nnext\n"));
+        app.dispatch_keystroke("r", false, false, true, false);
+        assert_eq!(app.editor.modal, ModalState::Replace);
+        app.commit_text("x");
+        assert_eq!(line0(&app), "xa", "overstrike replaces `é`, not half of it");
+        app.dispatch_chord(KeyChord::new(
+            KeyKind::Special(SpecialKey::Backspace),
+            KeyMods::NONE,
+        ));
+        assert_eq!(line0(&app), "éa", "and backspace puts it back whole");
+        assert_eq!(
+            app.editor.document.snapshot().buffer.line(1).unwrap(),
+            "next",
+            "the line below is untouched"
+        );
+    }
+
+    /// GD.4: nothing binds `<M-e>` in Insert, so Option-e is the platform's
+    /// to compose; outside text entry the question is not a text one.
+    #[test]
+    fn an_unbound_option_chord_is_not_claimed_by_the_keymap() {
+        let mut app = GpuiApp::new(Document::empty());
+        app.dispatch_keystroke("i", false, false, false, false);
+        assert!(!app.option_chord_is_bound("e", false));
+    }
+
     #[test]
     fn dispatch_keystroke_routes_i_to_insert_mode() {
         let mut app = GpuiApp::new(Document::empty());
@@ -2043,54 +2657,6 @@ mod tests {
             app.editor.command_line(),
             "ab",
             "backspace must delete on the `:` line"
-        );
-    }
-
-    /// AP.0.2 — a DECLINED chord falls through to the layer below.
-    ///
-    /// This peer had no fall-through at all, and the cost was not subtle: a
-    /// mode that binds a chord it only *sometimes* wants made that key dead.
-    /// `auto-pair` binds `( [ { ) ] } " ' \`` and `<BS>` in Insert with a
-    /// Global policy and declines whenever the situation is not a pair — so
-    /// every one of those keys did nothing in GPUI, while `<C-w>` (the one
-    /// insert key auto-pair does not bind) worked. `<Tab>` was the same bug
-    /// through `table-mode`.
-    ///
-    /// Driven here with `table-mode`, which is native — no plugin fixture
-    /// needed — and binds `<Tab>` in Insert, declining outside a table. The
-    /// fall-through is the builtin insert-tab, so the observable is a tab
-    /// character actually reaching the buffer.
-    #[test]
-    fn a_declined_chord_falls_through_to_the_layer_below() {
-        use lattice_host::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
-
-        let mut app = GpuiApp::new(Document::from_text("x\n"));
-        let buffer = app.editor.document_buffer_id;
-        let _ = app
-            .editor
-            .activate_mode_by_id(buffer, lattice_mode::TableMode::mode_id());
-        app.editor.publish_render_state();
-        assert!(
-            app.render_state
-                .load()
-                .translator
-                .active_minor_modes
-                .contains(&lattice_mode::TableMode::mode_id()),
-            "precondition: table-mode must be an active layer, or there is \
-             nothing to decline and the test proves nothing"
-        );
-
-        app.dispatch_chord(KeyChord::new(KeyKind::Char('i'), KeyMods::NONE));
-        app.dispatch_chord(KeyChord::new(
-            KeyKind::Special(SpecialKey::Tab),
-            KeyMods::NONE,
-        ));
-
-        assert!(
-            app.editor.document.text().contains('\t'),
-            "`<Tab>` outside a table must fall through to insert-tab; the \
-             buffer is {:?}",
-            app.editor.document.text()
         );
     }
 

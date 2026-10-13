@@ -465,6 +465,29 @@ pub enum AppEffect {
     /// the cursor. Promoted from `Action::PasteBefore` in slice
     /// 8.i.1.e.
     PasteBefore,
+    /// The put variants beside plain `p` / `P`: `gp` / `gP` (cursor
+    /// after the new text) and `]p` / `[p` (the text re-indented to the
+    /// current line). See [`PutSpec`].
+    Put(PutSpec),
+    /// Vim's `p` / `P` in Visual mode: replace the selection with the
+    /// register. With `keep_register` (`P`) the replaced text is
+    /// discarded; without it (`p`) it becomes the unnamed register, so
+    /// the next put would paste what was just replaced.
+    PutOverSelection {
+        /// `P`: do not overwrite the unnamed register.
+        keep_register: bool,
+    },
+    /// `:[line]pu[t][!] [x]`: put register `x` (unnamed when `None`) as
+    /// whole lines below `line` (the cursor's line when `None`), or
+    /// above it with `!`. Always linewise, whatever the register holds.
+    PutLine {
+        /// The register named on the `:` line.
+        register: Option<char>,
+        /// `:put!` — above the line instead of below.
+        before: bool,
+        /// 0-based target line; the cursor's line when `None`.
+        line: Option<u32>,
+    },
     // L7: the 6 nav `AppEffect::Lsp*Request` variants (`gd` / `gD` / `gy`
     // / `gI` / `gr` / `gx`) removed — they are mode-owned now. `lsp-mode`'s
     // `action_handlers()` closures emit `Effect::Lsp(LspRequest::{Definition,
@@ -1096,6 +1119,19 @@ pub enum AppEffect {
         /// The trigger's parameters, passed to the opener verbatim.
         args: crate::args::Args,
     },
+}
+
+/// How a put (`p` and its relatives) places text and leaves the cursor.
+///
+/// The default is plain `p`: after the cursor, cursor on the new text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PutSpec {
+    /// `P`: before the cursor / above the line, instead of after / below.
+    pub before: bool,
+    /// `gp` / `gP`: leave the cursor just after the new text.
+    pub cursor_after: bool,
+    /// `]p` / `[p`: re-indent linewise text to the current line's indent.
+    pub indent: bool,
 }
 
 #[cfg(test)]

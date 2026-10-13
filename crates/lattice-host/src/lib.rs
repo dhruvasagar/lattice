@@ -55,6 +55,7 @@ pub mod search_line_mode;
 // libs); host's default build stays headless-friendly.
 #[cfg(feature = "system-clipboard")]
 pub mod clipboard;
+pub mod cmdline_row;
 pub mod cursor_shape;
 pub mod dashboard;
 // AP.0.2: the layer peel behind `Effect::Declined`. One walk, called by the
@@ -75,6 +76,7 @@ mod ex_range;
 pub mod excommand;
 pub mod file_tree;
 pub mod folds;
+mod semantic_spans;
 pub mod shell_filter;
 // D.3.f.0 (2026-05-29): FoldProvider trait + registry. See
 // `docs/dev/architecture/fold-architecture.md`. Substrate-only
@@ -182,8 +184,13 @@ pub mod oil;
 pub mod pane;
 // PBH.1: per-pane buffer history (`<C-6>` / `<C-7>`). Design:
 // docs/dev/architecture/pane-buffer-history.md
+pub mod effect_completeness;
 pub mod pane_history;
 pub mod pane_render;
+/// Scenarios every renderer peer runs through its own entry points. Test
+/// support: compiled only for this crate's tests and for a peer's.
+#[cfg(any(test, feature = "peer-conformance"))]
+pub mod peer_conformance;
 pub mod popup;
 pub mod preview;
 // Phase 5.8.AF.5 / Slice 3b: per-buffer cache primitive for the

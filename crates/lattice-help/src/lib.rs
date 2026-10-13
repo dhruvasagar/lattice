@@ -197,6 +197,17 @@ impl std::ops::DerefMut for HelpContent {
 /// their visible labels and indexing each link's range against
 /// the cleaned text. The buffer's content is the cleaned text;
 /// links land on the metadata.
+/// The modeline label of a help buffer titled `title`.
+///
+/// GD.7b: help names its own buffers, as the file tree and oil do.
+pub fn modeline_label(title: &str) -> String {
+    if title.is_empty() {
+        "[help]".to_string()
+    } else {
+        format!("[help] {title}")
+    }
+}
+
 pub fn parse_help_lines(title: impl Into<String>, lines: Vec<String>) -> HelpContent {
     parse_help_lines_and_anchors(title, lines, Vec::new())
 }

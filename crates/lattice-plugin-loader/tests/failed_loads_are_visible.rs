@@ -175,6 +175,116 @@ async fn repeated_failures_do_not_accumulate_rows() {
     );
 }
 
+/// `r` on a failed plugin's entry in `:plugins` is this call. It used to
+/// answer "not loaded" — true, and the reason the user pressed it.
+///
+/// Needs a load that succeeds, so it skips without the `modes-guest` fixture.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reloading_a_plugin_that_failed_to_load_tries_the_load_again() {
+    let Some(wasm) = modes_guest_wasm() else {
+        eprintln!("skipping: modes-guest wasm not built (no wasm32-wasip2 target)");
+        return;
+    };
+
+    let base = tempfile::tempdir().unwrap();
+    let plugins = base.path().join("plugins");
+    let dir = write_broken_plugin(&plugins, "modes-fixture");
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "id = \"modes-fixture\"\nprovides = [\"modes\"]\n",
+    )
+    .unwrap();
+
+    let loader = seam_loader(base.path());
+    loader
+        .discover_and_load(&plugins, TrustTier::UserInstalled)
+        .await;
+    assert_eq!(loader.failed_loads().len(), 1);
+
+    // The user fixes it and presses `r` — no rescan, no restart.
+    std::fs::write(dir.join("component.wasm"), &wasm).unwrap();
+    loader
+        .reload("modes-fixture", TrustTier::UserInstalled)
+        .await
+        .expect("a failed plugin can be reloaded once it is fixed");
+
+    assert!(loader.is_loaded("modes-fixture"));
+    assert!(
+        loader.failed_loads().is_empty(),
+        "and its failure goes with it"
+    );
+}
+
+/// The retry of a plugin that is STILL broken: it fails as a load, with the
+/// load's reason — not as "not loaded" — and it is retried at the tier it
+/// first failed at, whatever tier the caller names. The view's `r` passes the
+/// user tier for every row; a bundled plugin retried at that tier would come
+/// back without the capabilities only its own tier grants.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_that_fails_again_keeps_one_record_at_the_tier_it_failed_at() {
+    let base = tempfile::tempdir().unwrap();
+    let plugins = base.path().join("plugins");
+    write_broken_plugin(&plugins, "org");
+
+    let loader = loader(base.path());
+    loader.discover_and_load(&plugins, TrustTier::Bundled).await;
+    assert_eq!(loader.failed_loads()[0].tier, TrustTier::Bundled);
+
+    let err = loader
+        .reload("org", TrustTier::UserInstalled)
+        .await
+        .expect_err("still broken");
+    assert!(
+        !matches!(err, lattice_plugin_loader::PluginLoaderError::NotLoaded(_)),
+        "the load was attempted: {err}"
+    );
+
+    let failed = loader.failed_loads();
+    assert_eq!(failed.len(), 1, "one record, replaced: {failed:?}");
+    assert_eq!(
+        failed[0].tier,
+        TrustTier::Bundled,
+        "retried at the tier it failed at, not the one the caller passed"
+    );
+}
+
+/// A name that never tried to load is still "not loaded": the retry is for
+/// plugins with a failure on record, not a second way to load anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reloading_a_name_nothing_ever_tried_to_load_is_still_not_loaded() {
+    let base = tempfile::tempdir().unwrap();
+    let loader = loader(base.path());
+    let err = loader
+        .reload("ghost", TrustTier::UserInstalled)
+        .await
+        .expect_err("nothing to reload");
+    assert!(
+        matches!(err, lattice_plugin_loader::PluginLoaderError::NotLoaded(_)),
+        "{err}"
+    );
+}
+
+/// `b` on a failed plugin's entry. This one has a component and no source —
+/// hand-installed — so there is nothing to build, and the answer has to say
+/// THAT. "`org` is not loaded" was the answer before, to a user looking at
+/// the entry telling them so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rebuilding_a_failed_plugin_with_no_source_says_there_is_no_source() {
+    let base = tempfile::tempdir().unwrap();
+    let plugins = base.path().join("plugins");
+    write_broken_plugin(&plugins, "org");
+
+    let loader = loader(base.path());
+    loader
+        .discover_and_load(&plugins, TrustTier::UserInstalled)
+        .await;
+
+    let err = loader.rebuild("org").await.expect_err("nothing to build");
+    assert!(err.contains("no buildable source"), "{err}");
+    let err = loader.update("org").await.expect_err("nothing to fetch");
+    assert!(!err.contains("is not loaded"), "{err}");
+}
+
 /// A directory that is not a plugin at all is NOT a failed load. `:plugin-load`
 /// on a wrong path is a mistake the user made and gets told about directly;
 /// recording it would put a permanent row in `:plugins` for a plugin that does

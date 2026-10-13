@@ -615,6 +615,21 @@ impl Document {
         Ok(())
     }
 
+    /// Declare the current text the document's clean state, without
+    /// writing it anywhere.
+    ///
+    /// GD.7d: for a buffer whose text is produced, not typed — a
+    /// directory listing, a file tree, a help page. When its owner
+    /// replaces the text, that text is the baseline: nothing in it is
+    /// an unsaved modification. Without this such a buffer reads as
+    /// modified from the moment it is filled, so its modified flag says
+    /// nothing; with it, the flag means "the user changed this since
+    /// the owner last wrote it", and undoing back to that point clears
+    /// it, exactly as undoing back to a save does.
+    pub fn mark_clean(&mut self) {
+        self.clean_position = Some(self.undo.undo_depth());
+    }
+
     /// Called after an `apply_edit` that just pushed a new undo entry
     /// (and cleared the redo stack as a side effect). If the saved-clean
     /// depth lived past `pre_push_depth`, it was reachable only via the
@@ -945,6 +960,23 @@ mod tests {
         let tv_after_undo = d.text_version();
         d.redo().unwrap();
         assert!(d.text_version() > tv_after_undo);
+    }
+
+    /// GD.7d: an owner-written baseline is clean, an edit on top of it
+    /// is not, and undoing that edit is clean again.
+    #[test]
+    fn mark_clean_makes_the_current_text_the_baseline() {
+        let mut d = Document::empty();
+        d.apply_edit(Edit::insert(Position::ZERO, "listing"))
+            .unwrap();
+        assert!(d.dirty(), "filled by its owner, it reads as modified");
+        d.mark_clean();
+        assert!(!d.dirty());
+
+        d.apply_edit(Edit::insert(Position::ZERO, "x")).unwrap();
+        assert!(d.dirty());
+        d.undo().unwrap();
+        assert!(!d.dirty(), "back at the baseline");
     }
 
     #[test]

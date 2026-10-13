@@ -103,6 +103,14 @@ To see exactly what your terminal transmits, independent of lattice:
 
 	kitten show_key -m kitty
 
+In the **GUI window** none of this applies, and there is nothing to
+configure. Option+letter runs a binding when one claims that chord in the
+current mode, and otherwise types the character macOS assigns to it
+(including dead keys: Option+e then e is `é`). So `<M-k>` works as soon as
+something binds it, and typing accented characters keeps working where
+nothing does. A terminal pane inside the window always receives Option as
+Meta.
+
 ## Other keys terminals commonly intercept
 
 - **The terminal's own shortcuts** win before any application sees them.

@@ -1433,6 +1433,13 @@ pub(crate) struct EditorView {
     last_cell_metrics: Option<(f32, f32)>,
     pub(crate) app: GpuiApp,
     focus_handle: FocusHandle,
+    /// GD.4: text the platform is still composing (a dead key's accent, an
+    /// input method's candidate). Window state only — see `text_input`.
+    composition: crate::text_input::Composition,
+    /// GD.4: the caret's cell as of the last render, `(top, left, row_px,
+    /// col_px)` in window pixels: where the in-progress text is drawn and
+    /// where the platform is told to put its candidate list.
+    caret_px: Option<(f32, f32, f32, f32)>,
     /// The title the window currently shows, and one waiting to be shown.
     /// The repaint wake computes the title (it reads the buffer registry,
     /// which locks) and `render` only hands a changed one to the platform.
@@ -1564,6 +1571,8 @@ impl EditorView {
             last_cell_metrics: None,
             app,
             focus_handle: cx.focus_handle(),
+            composition: crate::text_input::Composition::default(),
+            caret_px: None,
             glyph_resolver: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::glyph_resolver::GlyphResolver::new(),
             )),
@@ -1627,6 +1636,30 @@ impl EditorView {
             cx.stop_propagation();
             cx.notify();
             return;
+        }
+        // GD.4: a key that types text where text is being entered is the
+        // platform's to compose. Returning WITHOUT stopping propagation is
+        // the hand-off: GPUI then offers the key to the OS text input,
+        // which calls back through `EntityInputHandler` with what it types
+        // (`é` for a dead key and a vowel, a candidate from an input
+        // method). Consuming every key here is why none of that worked.
+        let route = crate::text_input::route_key(
+            self.app.input_state(),
+            &ks.key,
+            ks.key_char.as_deref(),
+            ks.modifiers.control,
+            ks.modifiers.alt,
+            ks.modifiers.platform,
+            || self.app.option_chord_is_bound(&ks.key, ks.modifiers.shift),
+        );
+        if route == crate::text_input::KeyRoute::Platform {
+            tracing::debug!("lattice-gpui: key left to the platform's text input");
+            return;
+        }
+        // A key the window handles itself abandons an open composition:
+        // the platform declined it (it offers composing keys there first).
+        if self.composition.clear() {
+            cx.notify();
         }
         let outcome = self.app.dispatch_keystroke(
             &ks.key,
@@ -3850,6 +3883,113 @@ impl EditorView {
     }
 }
 
+/// GD.4: the window as the platform's text-input client.
+///
+/// The platform calls these for keys `on_key_down` left unhandled (see
+/// `text_input::route_key`). The document it thinks it is editing is just
+/// the open composition: ranges are in UTF-16 units from the start of the
+/// in-progress text, and the buffer itself is never exposed — committed
+/// text goes to the editor as typed chords.
+impl gpui::EntityInputHandler for EditorView {
+    fn text_for_range(
+        &mut self,
+        _range: std::ops::Range<usize>,
+        _adjusted_range: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        // No surrounding text is offered, so the platform's "reconvert"
+        // of already-committed text is not available.
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui::UTF16Selection> {
+        // `None` outside text entry tells the platform there is nowhere
+        // to type: no composition starts in Normal mode.
+        if !self.app.input_state().text_entry {
+            return None;
+        }
+        let at = self.composition.utf16_len();
+        Some(gpui::UTF16Selection {
+            range: at..at,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        self.composition
+            .is_active()
+            .then(|| 0..self.composition.utf16_len())
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.composition.clear() {
+            cx.notify();
+        }
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.composition.clear();
+        tracing::debug!(text, "lattice-gpui: text committed by the platform");
+        self.app.commit_text(text);
+        cx.notify();
+        self.quit_if_requested(cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        tracing::debug!(text = new_text, "lattice-gpui: composing");
+        self.composition.set(new_text);
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: std::ops::Range<usize>,
+        _element_bounds: Bounds<gpui::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<gpui::Pixels>> {
+        // Where the candidate list goes: the caret's cell, moved right by
+        // the part of the composition before the asked-for range.
+        let (top, left, row_px, col_px) = self.caret_px?;
+        Some(Bounds::new(
+            gpui::point(px(left + range_utf16.start as f32 * col_px), px(top)),
+            size(px(col_px), px(row_px)),
+        ))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: gpui::Point<gpui::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // A title the repaint wake found changed. One platform call, and only
@@ -5822,6 +5962,73 @@ impl Render for EditorView {
                     .justify_center()
                     .items_center()
                     .child(overlay),
+            );
+        }
+        // GD.4: the caret's cell, for the composition overlay and for the
+        // platform's candidate window. On the `:` line and in a search the
+        // caret is on the bottom row, whose column this does not track;
+        // the row's left edge is close enough to place a candidate list.
+        {
+            let ad = self.app.ad();
+            let pane_pad = rem * 0.75;
+            let on_bottom_row = matches!(
+                ad.modal,
+                lattice_grammar::ModalState::Command
+                    | lattice_grammar::ModalState::Search(_)
+                    | lattice_grammar::ModalState::Prompt
+            );
+            let (top, left) = if on_bottom_row {
+                (
+                    f32::from(viewport_px.height) - estimated_row_px - pane_pad,
+                    pane_pad,
+                )
+            } else {
+                text_cell_px(
+                    self.text_origin.get(),
+                    (pane_pad, tabline_h_px + pane_pad),
+                    ad.cursor.byte.saturating_sub(ad.leftcol),
+                    ad.cursor.line.saturating_sub(ad.scroll),
+                    glyph_advance_px,
+                    estimated_row_px,
+                )
+            };
+            self.caret_px = Some((top, left, estimated_row_px, glyph_advance_px));
+            if self.composition.is_active() {
+                // Underlined, on the pane's background so it covers the
+                // text it will displace rather than tangling with it.
+                root = root.child(
+                    div()
+                        .absolute()
+                        .top(px(top))
+                        .left(px(left))
+                        .h(px(estimated_row_px))
+                        .bg(rgb(theme.background))
+                        .text_color(rgb(theme.foreground))
+                        .text_size(px(font_size_px))
+                        .underline()
+                        .child(SharedString::from(self.composition.marked().to_string())),
+                );
+            }
+        }
+        // GD.4: register this view as the window's text input for the
+        // frame. `handle_input` must be called during paint, which is what
+        // the canvas is for; it draws nothing and takes no mouse events.
+        {
+            let focus = self.focus_handle.clone();
+            let view = cx.entity();
+            root = root.child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |bounds, (), window, cx| {
+                        window.handle_input(
+                            &focus,
+                            gpui::ElementInputHandler::new(bounds, view),
+                            cx,
+                        );
+                    },
+                )
+                .absolute()
+                .size_full(),
             );
         }
         // GD.5a: the candidate popup sits at the text it completes, not in a

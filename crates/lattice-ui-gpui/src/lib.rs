@@ -79,6 +79,10 @@ use std::sync::Arc;
 
 pub mod gpui_chord;
 
+/// GD.4: which keys the platform composes into text, and the composition
+/// the window holds until it is committed.
+pub mod text_input;
+
 /// GPUI window-opening entry point ([`run`], [`document_from_path`],
 /// [`document_from_first_arg`]). Behind the `window` Cargo feature
 /// so the lib's headless build doesn't link gpui. Lifted from the
@@ -1010,6 +1014,42 @@ impl GpuiApp {
     ) -> Option<DispatchOutcome> {
         let chord = gpui_chord::from_keystroke(key, control, alt, shift, platform)?;
         Some(self.dispatch_chord(chord))
+    }
+
+    /// GD.4: what the key router needs to know right now — whether text is
+    /// being entered, and the two states that take keys as pressed.
+    pub fn input_state(&self) -> text_input::InputState {
+        let ad = self.ad();
+        text_input::InputState {
+            text_entry: text_input::accepts_text(ad.modal) || ad.picker_open,
+            terminal: ad.terminal_insert_active,
+            capture: ad.chord_capture,
+        }
+    }
+
+    /// GD.4: whether the keymap claims `key` + Option **as pressed** in the
+    /// current state, so the chord stays a binding instead of becoming the
+    /// character the platform types for it.
+    pub fn option_chord_is_bound(&self, key: &str, shift: bool) -> bool {
+        let Some(chord) = gpui_chord::from_keystroke(key, false, true, shift, false) else {
+            return false;
+        };
+        let translator = self.render_state.load().translator.clone();
+        lattice_host::input::binds_as_pressed(
+            self.ad().modal,
+            &translator.keymap,
+            &translator.partial_chord,
+            chord,
+            &translator.active_minor_modes,
+        )
+    }
+
+    /// GD.4: text the platform committed — a composed `é`, an emoji, an
+    /// input method's word — arrives as the chords typing it would be.
+    pub fn commit_text(&mut self, text: &str) {
+        for chord in text_input::chords_for_text(text) {
+            self.dispatch_chord(chord);
+        }
     }
 
     /// Translate a canonical [`KeyChord`] into an [`Action`] (via
@@ -2468,6 +2508,39 @@ mod tests {
     /// `"i"` in Normal mode is canonical vim "enter Insert"; if
     /// the pipeline is wired correctly the editor's `modal` ends
     /// up in [`ModalState::Insert`].
+    /// GD.4: committed text lands wherever text is being entered — a
+    /// buffer in Insert, the `:` line in Command — as if typed.
+    #[test]
+    fn committed_text_is_typed_into_the_buffer_and_the_command_line() {
+        let mut app = GpuiApp::new(Document::empty());
+        app.dispatch_keystroke("i", false, false, false, false);
+        assert!(app.input_state().text_entry);
+        app.commit_text("é日");
+        assert_eq!(
+            app.editor.document.snapshot().buffer.line(0).unwrap(),
+            "é日"
+        );
+
+        let mut app = GpuiApp::new(Document::from_text("x\n"));
+        assert!(
+            !app.input_state().text_entry,
+            "Normal mode is not text entry"
+        );
+        app.dispatch_keystroke(":", false, false, false, false);
+        assert!(app.input_state().text_entry);
+        app.commit_text("ñ");
+        assert_eq!(app.editor.command_line(), "ñ");
+    }
+
+    /// GD.4: nothing binds `<M-e>` in Insert, so Option-e is the platform's
+    /// to compose; outside text entry the question is not a text one.
+    #[test]
+    fn an_unbound_option_chord_is_not_claimed_by_the_keymap() {
+        let mut app = GpuiApp::new(Document::empty());
+        app.dispatch_keystroke("i", false, false, false, false);
+        assert!(!app.option_chord_is_bound("e", false));
+    }
+
     #[test]
     fn dispatch_keystroke_routes_i_to_insert_mode() {
         let mut app = GpuiApp::new(Document::empty());

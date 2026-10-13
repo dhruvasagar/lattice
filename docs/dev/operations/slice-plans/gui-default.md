@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅, GD.5c ✅, GD.8c ✅, GD.7c ✅; GD.4 📝; GD.9b ❌.** Target release: **0.9.8**.
+**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅, GD.5c ✅, GD.8c ✅, GD.7c ✅, GD.4 ✅; GD.9b ❌.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -213,12 +213,49 @@ copy, paste, undo) need actions that route into the editor's registers and
 undo, which is its own piece of work — noted under GD.8. File associations in
 the bundle's `Info.plist` are a packaging change — GD.9.
 
-### GD.4 📝 — text input
+### GD.4 ✅ — text input
 
-IME, dead keys, composition, and the layouts where `Keystroke.key` is not the
-character typed. Needs a GPUI `InputHandler`. Establish first (by running it)
-what `Keystroke.key` delivers for shifted symbols and non-US layouts, and
-macOS option-as-meta.
+(2026-10-13.) Dead keys, the accent picker, the emoji panel, input methods,
+and `Option` + a key. Design: [`gui-default.md`](../../architecture/gui-default.md)
+§ "Text input in the window".
+
+Established by running it first. Dhruva captured ~220 key-downs on a Mac with
+the `key_char` logging from `bccae436`:
+
+- Letters, digits, punctuation and shifted symbols arrive as the character
+  (`key="~"`, no shift flag); named keys and Control chords are correct.
+  Nothing to fix there.
+- `Option-e` then `e` arrived as two keys and typed `ee`: no composition.
+- A held `e` repeated 45 times: no accent picker.
+- The emoji panel's chord arrived; no text followed.
+- `Option-a` / `Option-3` typed the bare `a` / `3`, though the platform
+  reported `¯` / `£`.
+
+One cause for the first three: the window registered no text-input client and
+consumed every key. The fourth is the host's ALT-strip fallback.
+
+- `text_input.rs` (new, pure, built without the `window` feature):
+  `route_key`, `chords_for_text`, `Composition`.
+- `EditorView` implements `gpui::EntityInputHandler`; a paint-phase canvas
+  registers it each frame. `on_key_down` returns without stopping propagation
+  for a platform-routed key.
+- `lattice_host::input::binds_as_pressed` — the keymap's answer to "is this
+  `Option` chord bound here".
+- `GpuiApp::commit_text` dispatches committed text as chords.
+
+Decided (Dhruva, 2026-10-13): composition only where text is entered, a bound
+Meta chord wins over typing; in-progress text is window state. Reasons and
+rejected alternatives are in the design section.
+
+Not captured: a second keyboard layout and a real input method (groups 12 and
+13 of the key list). The routing does not depend on either, but neither has
+been seen working.
+
+Gate: targeted — `text_input::tests`, the two `GpuiApp` tests
+(`committed_text_is_typed_…`, `an_unbound_option_chord_…`), `cargo check
+--features window`. **Not run on macOS:** the handler compiles on Linux and
+its logic is tested, but composition itself can only be confirmed in a window
+on a Mac.
 
 ### GD.5 — completion and command-line paint
 

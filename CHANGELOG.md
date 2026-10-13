@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- **GUI: accented characters, emoji and input methods.** In the window,
+  dead keys now compose (`Option-e` then `e` types `é`), holding a letter
+  opens the macOS accent picker, the emoji panel inserts, and an input
+  method's in-progress text is shown underlined at the cursor. This applies
+  wherever you type text: Insert, Replace, the `:` line, search and picker
+  queries. Normal and Visual mode still take keys as pressed, so an active
+  input method never intercepts a command.
+- **GUI: `Option` types its character unless a binding claims it.**
+  `Option-3` types `£` where it used to type `3`. A chord a mode binds, such
+  as org's `<M-CR>`, still runs the binding, and a terminal pane still gets
+  `Option` as Meta.
 - **GUI: open files from the operating system.** Drop a file on the window,
   or open one with Lattice from Finder or `open -a`, and it opens as `:e`
   would. The window title shows the active file's name, and macOS has a

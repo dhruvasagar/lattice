@@ -92,6 +92,44 @@ How it reads input, how it paints, and the renderer-coupled arm of each effect
 a new variant fails to compile in the peer that forgot it; the tail had no such
 guard, which is why it is now a host function and not a convention.
 
+### Text input in the window
+
+Reading input is the one place the peers differ by nature. A terminal
+emulator composes text before the editor sees a byte: a dead key, an accent
+picker and an input method all arrive as finished characters. A window gets
+key-downs, and the operating system composes only for a view that registers
+as a text-input client and leaves the composing keys unhandled.
+
+So the window routes each key-down (`lattice-ui-gpui::text_input`):
+
+- **Where text is entered** — Insert, Replace, the `:` line, search, a
+  prompt, a picker's query — a key whose name is one character is left to the
+  platform, which calls back with the text it types. That text is dispatched
+  as the chords typing it would be, so it reaches every text-entry state and
+  Insert-mode bindings on characters still see it.
+- **Everywhere else** the key is dispatched as pressed. The grammar never
+  passes through composition (paramount #3): an active input method does not
+  swallow `j`.
+- **`Option` + a printable key** runs a binding when the keymap claims the
+  chord as pressed (`input::binds_as_pressed`), and types what the platform
+  says otherwise. A terminal pane always takes it as Meta.
+
+In-progress text (a dead key's accent, an input method's candidate) is window
+state, drawn underlined at the caret. Nothing crosses to the editor until it
+is committed, so composing costs no edit, undo entry, reparse or LSP change
+(paramount #1).
+
+Rejected: composition in every mode (an input method would eat Normal-mode
+commands); publishing the in-progress text from the host (an actor crossing
+per composition step for state only one peer can write); inserting it into
+the buffer and replacing it (each step an edit); an "Option is Meta" setting
+(the keymap can decide per key, so no setting is needed to have both).
+
+Known limits: the in-progress text is drawn over the text at the caret
+rather than pushing it aside; on the `:` line and in a search it is anchored
+at the row's left edge, not the caret's column; the platform is not offered
+surrounding text, so reconverting committed text is unavailable.
+
 ### How it is checked
 
 `lattice_host::peer_conformance` holds one set of scenarios, and each peer

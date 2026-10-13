@@ -149,6 +149,42 @@ pub struct TranslateContext<'a> {
     pub active_minor_modes: &'a [lattice_mode::ModeId],
 }
 
+/// GD.4: whether the keymap claims `chord` **as pressed** in a text-entry
+/// state — bound, or the prefix of a longer binding — at `prefix`, with
+/// `active_minor_modes` as the gated layers.
+///
+/// A window peer asks this before letting the platform turn `Option` + a
+/// key into the character it types: a mode that binds `<M-x>` keeps the
+/// chord, and an unbound one is text. It is the first half of the raw-then-
+/// normalized lookup the Insert dispatch does (`lookup_insert_chord`); the
+/// second half — strip the modifier and type the bare letter — is what the
+/// platform route replaces.
+///
+/// `false` outside the text-entry states: there the chord is dispatched
+/// and the question does not arise.
+pub fn binds_as_pressed(
+    modal: ModalState,
+    keymap: &KeymapHandle,
+    prefix: &[KeyChord],
+    chord: KeyChord,
+    active_minor_modes: &[lattice_mode::ModeId],
+) -> bool {
+    let mode = match modal {
+        ModalState::Insert => lattice_keymap::BindingMode::Insert,
+        ModalState::Replace => lattice_keymap::BindingMode::Replace,
+        ModalState::Command => lattice_keymap::BindingMode::Command,
+        ModalState::Search(_) => lattice_keymap::BindingMode::Search,
+        ModalState::Prompt => lattice_keymap::BindingMode::Prompt,
+        _ => return false,
+    };
+    let mut path = prefix.to_vec();
+    path.push(chord);
+    matches!(
+        keymap.lookup_with_context(mode, &path, active_minor_modes),
+        lattice_keymap::LookupResult::Bound { .. } | lattice_keymap::LookupResult::Partial
+    )
+}
+
 pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
     // Slice 5.4 (slice 5): renderer-neutral dispatch entry point.
     // Takes a canonical `KeyChord` directly; the crossterm-coupled

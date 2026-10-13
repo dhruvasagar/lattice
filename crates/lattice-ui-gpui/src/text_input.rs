@@ -50,7 +50,20 @@ pub struct InputState {
     /// The next key is being captured (`:describe-key`), so it must arrive
     /// exactly as pressed.
     pub capture: bool,
+    /// This platform's text input is wired up — see [`PLATFORM_COMPOSES`].
+    pub platform_composes: bool,
 }
+
+/// Whether the window hands text keys to the platform on this OS.
+///
+/// **macOS only, deliberately.** The routing was designed from a capture
+/// taken on a Mac and has been seen nowhere else, and GPUI treats an
+/// unhandled key differently per platform: on Linux an unhandled `Alt`
+/// chord types nothing, on Windows it falls to the system menu. Until
+/// Linux and Windows each get their own capture, every key there is
+/// dispatched as pressed, exactly as before this module existed, and the
+/// window registers no input handler.
+pub const PLATFORM_COMPOSES: bool = cfg!(target_os = "macos");
 
 /// Whether `modal` is a state in which typed keys are text.
 ///
@@ -88,7 +101,7 @@ pub fn route_key(
     platform: bool,
     bound_as_pressed: impl FnOnce() -> bool,
 ) -> KeyRoute {
-    if !state.text_entry || state.capture || control || platform {
+    if !state.platform_composes || !state.text_entry || state.capture || control || platform {
         return KeyRoute::Dispatch;
     }
     if key_char.is_none_or(str::is_empty) || key.chars().count() != 1 {
@@ -172,11 +185,13 @@ mod tests {
         text_entry: true,
         terminal: false,
         capture: false,
+        platform_composes: true,
     };
     const NORMAL: InputState = InputState {
         text_entry: false,
         terminal: false,
         capture: false,
+        platform_composes: true,
     };
 
     fn never() -> bool {
@@ -282,6 +297,25 @@ mod tests {
         };
         assert_eq!(
             route_key(capture, "a", Some("a"), false, false, false, never),
+            KeyRoute::Dispatch
+        );
+    }
+
+    /// Off macOS nothing is routed to the platform: every key is dispatched
+    /// as pressed, as it was before this module, and the keymap is never
+    /// asked the Option question.
+    #[test]
+    fn a_platform_without_wired_text_input_dispatches_every_key() {
+        let other = InputState {
+            platform_composes: false,
+            ..INSERT
+        };
+        assert_eq!(
+            route_key(other, "a", Some("a"), false, false, false, never),
+            KeyRoute::Dispatch
+        );
+        assert_eq!(
+            route_key(other, "e", Some("e"), false, true, false, never),
             KeyRoute::Dispatch
         );
     }

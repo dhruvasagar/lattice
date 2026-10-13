@@ -6013,7 +6013,11 @@ impl Render for EditorView {
         // GD.4: register this view as the window's text input for the
         // frame. `handle_input` must be called during paint, which is what
         // the canvas is for; it draws nothing and takes no mouse events.
-        {
+        //
+        // macOS only (`PLATFORM_COMPOSES`): elsewhere no key is routed to
+        // the platform, and a registered handler would still receive an
+        // input method's commits, which is a change no one has looked at.
+        if crate::text_input::PLATFORM_COMPOSES {
             let focus = self.focus_handle.clone();
             let view = cx.entity();
             root = root.child(

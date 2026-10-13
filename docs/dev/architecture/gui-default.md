@@ -125,6 +125,13 @@ per composition step for state only one peer can write); inserting it into
 the buffer and replacing it (each step an edit); an "Option is Meta" setting
 (the keymap can decide per key, so no setting is needed to have both).
 
+**macOS only for now** (`text_input::PLATFORM_COMPOSES`). The routing came
+from a capture on a Mac, and GPUI treats an unhandled key differently per
+platform (on Linux an unhandled `Alt` chord types nothing; on Windows it
+falls to the system menu). Elsewhere every key is dispatched as pressed and
+no handler is registered — byte-for-byte the behaviour before this section.
+Linux and Windows composition each need their own capture first.
+
 Known limits: the in-progress text is drawn over the text at the caret
 rather than pushing it aside; on the `:` line and in a search it is anchored
 at the row's left edge, not the caret's column; the platform is not offered

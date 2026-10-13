@@ -247,6 +247,12 @@ Decided (Dhruva, 2026-10-13): composition only where text is entered, a bound
 Meta chord wins over typing; in-progress text is window state. Reasons and
 rejected alternatives are in the design section.
 
+**macOS only** (`PLATFORM_COMPOSES`): Dhruva asked that other platforms be
+unaffected. GPUI's Linux and Windows back-ends handle an unhandled key
+differently, so there every key is dispatched as before and no handler is
+registered. Dead keys and input methods on Linux and Windows are open, and
+want their own capture — not a slice of this plan.
+
 Not captured: a second keyboard layout and a real input method (groups 12 and
 13 of the key list). The routing does not depend on either, but neither has
 been seen working.

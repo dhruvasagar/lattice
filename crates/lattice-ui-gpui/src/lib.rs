@@ -1024,6 +1024,7 @@ impl GpuiApp {
             text_entry: text_input::accepts_text(ad.modal) || ad.picker_open,
             terminal: ad.terminal_insert_active,
             capture: ad.chord_capture,
+            platform_composes: text_input::PLATFORM_COMPOSES,
         }
     }
 

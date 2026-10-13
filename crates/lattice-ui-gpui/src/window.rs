@@ -1582,7 +1582,7 @@ impl EditorView {
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         tracing::debug!(
             key = %ks.key,
@@ -1635,6 +1635,25 @@ impl EditorView {
             self.app.mutate_editor(|e| e.do_paste_from_clipboard());
             cx.stop_propagation();
             cx.notify();
+            return;
+        }
+        // GD.4: Ctrl-Cmd-Space is the macOS emoji and symbols panel. No
+        // menu item carries it here, so the window opens the panel itself;
+        // what the user picks arrives through the input handler like any
+        // other committed text. Only where text is entered — in Normal mode
+        // a picked character would have nowhere to go.
+        if crate::text_input::PLATFORM_COMPOSES
+            && ks.key.eq_ignore_ascii_case("space")
+            && ks.modifiers.control
+            && ks.modifiers.platform
+            && !ks.modifiers.alt
+            && !ks.modifiers.shift
+        {
+            if self.app.input_state().text_entry {
+                tracing::debug!("lattice-gpui: opening the character palette");
+                window.show_character_palette();
+            }
+            cx.stop_propagation();
             return;
         }
         // GD.4: a key that types text where text is being entered is the
@@ -3945,6 +3964,17 @@ impl gpui::EntityInputHandler for EditorView {
         cx: &mut Context<Self>,
     ) {
         self.composition.clear();
+        // Text can arrive with no key behind it (the emoji panel, a
+        // dictation). Outside text entry its characters would run as
+        // Normal-mode commands, so it is dropped there.
+        if !self.app.input_state().text_entry {
+            tracing::debug!(
+                text,
+                "lattice-gpui: platform text dropped, not in text entry"
+            );
+            cx.notify();
+            return;
+        }
         tracing::debug!(text, "lattice-gpui: text committed by the platform");
         self.app.commit_text(text);
         cx.notify();

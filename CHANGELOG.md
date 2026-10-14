@@ -30,6 +30,10 @@
   left the cursor past the popup's right edge instead of scrolling the
   content. The popup now scrolls horizontally to keep the cursor in view, in
   the terminal and the window.
+- **GUI: horizontal scroll moves the text, not just the cursor.** With
+  ligatures on (the default), scrolling sideways (`zl`, `zh`, or a cursor
+  past the edge with `nowrap`) moved the cursor and highlights while the
+  text stayed put, so the cursor landed in the wrong place on the line.
 - **TypeScript and C++ syntax highlighting is complete.** In `.ts`, `.tsx`,
   `.cpp` and `.hpp` files, strings, comments, numbers, function names and
   most keywords rendered as plain text; only the type annotations (and C++'s

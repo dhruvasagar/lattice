@@ -1367,6 +1367,9 @@ impl Element for EditorElement {
                 .or_else(|| self.cell_matrix.as_ref().map(|m| m.wrap_width))
                 .unwrap_or(0)
         };
+        // HS.1b: the horizontal pan the shaped rows take — the same gate
+        // `paint` applies (pinned to 0 under wrap).
+        let leftcol = if wrap_width == 0 { self.leftcol } else { 0 };
 
         // Per-row diagnostic-segment computation. Walks
         // `self.diagnostic_underlines` against (line_idx, line_text,
@@ -1779,6 +1782,7 @@ impl Element for EditorElement {
                     &full_overlay,
                     seg_count,
                     wrap_width,
+                    leftcol,
                     None,
                     self.gutter_width,
                     self.sign_column,
@@ -2038,6 +2042,7 @@ impl Element for EditorElement {
                     &full_overlay,
                     seg_count,
                     wrap_width,
+                    leftcol,
                     Some(shaped_g),
                     self.gutter_width,
                     self.sign_column,
@@ -3654,6 +3659,33 @@ const WRAP_CONT_GUTTER_COLOR: u32 = 0x585b70;
 /// `wrap_width == 0` (wrapping off) returns the whole line on segment
 /// 0. Segment boundaries match `lattice_cells::wrap_segments`, so the
 /// renderer and the host scroll model agree on display-row counts.
+/// The char range of a doc row's text that one shaped row carries.
+///
+/// Wrap on: the segment's slice ([`segment_char_range`]). Wrap off: the
+/// whole line panned left by `leftcol`, exactly as the cell path slices
+/// its cells (HS.1b) — this range feeds the `ShapedLine` that paints the
+/// glyphs whenever ligatures are on, which is the default, so an unpanned
+/// range here scrolled the cursor and the decorations (`col_x` subtracts
+/// `leftcol`) but not the text under them. Heading-split rows are not
+/// panned, on either path.
+fn shaped_char_range(
+    total_chars: usize,
+    seg: u32,
+    wrap_width: u32,
+    leftcol: u32,
+    heading_split: bool,
+) -> (usize, usize) {
+    if wrap_width > 0 {
+        return segment_char_range(total_chars, seg, wrap_width);
+    }
+    let lo = if heading_split {
+        0
+    } else {
+        (leftcol as usize).min(total_chars)
+    };
+    (lo, total_chars)
+}
+
 fn segment_char_range(total_chars: usize, seg: u32, wrap_width: u32) -> (usize, usize) {
     if wrap_width == 0 {
         return (0, total_chars);
@@ -3784,6 +3816,7 @@ fn push_wrapped_doc_row(
     full_overlay: &[(u32, u32, u32)],
     seg_count: u32,
     wrap_width: u32,
+    leftcol: u32,
     gutter_seg0: Option<ShapedLine>,
     gutter_width: usize,
     sign_column: bool,
@@ -3821,10 +3854,10 @@ fn push_wrapped_doc_row(
         if seg > 0 && shaped_text.len() as u32 >= viewport_height {
             return true;
         }
-        let (seg_text, seg_runs) = if single {
+        let (lo, hi) = shaped_char_range(total_chars, seg, wrap_width, leftcol, heading.is_some());
+        let (seg_text, seg_runs) = if (lo, hi) == (0, total_chars) {
             (combined.to_string(), runs.to_vec())
         } else {
-            let (lo, hi) = segment_char_range(total_chars, seg, wrap_width);
             slice_runs_to_char_range(combined, runs, lo, hi)
         };
         let shaped = window.text_system().shape_line(
@@ -5063,6 +5096,20 @@ mod tests {
             .collect();
         assert_eq!(fold_runs.len(), 1, "one run should carry the fold colour");
         assert_eq!(fold_runs[0].len, FOLD_GLYPH_CLOSED.len_utf8());
+    }
+
+    #[test]
+    fn shaped_rows_pan_by_leftcol_with_wrap_off() {
+        // `$` on a 129-column table row in an 80-column popup: the host
+        // scrolls to `leftcol = 88`, so the shaped text starts there.
+        assert_eq!(shaped_char_range(129, 0, 0, 88, false), (88, 129));
+        assert_eq!(shaped_char_range(129, 0, 0, 0, false), (0, 129));
+        // Panned past the end: nothing left to shape, never a bad slice.
+        assert_eq!(shaped_char_range(10, 0, 0, 40, false), (10, 10));
+        // Heading-split rows keep their prefix math, like the cell path.
+        assert_eq!(shaped_char_range(129, 0, 0, 88, true), (0, 129));
+        // Wrap on: the segment, and `leftcol` plays no part.
+        assert_eq!(shaped_char_range(129, 1, 80, 0, false), (80, 129));
     }
 
     #[test]

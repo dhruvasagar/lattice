@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0 ✅, LH.1 ✅, LH.2 ✅, LH.3 ✅. Open: LH.0.2b ⛔ (`zip`), LH.1.2b ⛔ (recipes).** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅, LH.1 ✅, LH.2 ✅, LH.3 ✅, LH.4 🚧. Open: LH.0.2b ⛔ (`zip`), LH.4.4 📝 (recipe entries).** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -202,7 +202,7 @@ its instance id. **Seen red:** with the old comparison restored, three of the
 four fail — including the fixture's own job, which had only ever passed because
 the two numbers were both `0`.
 
-### LH.1 — the lighthouse plugin  ✅ (LH.1.2b ⛔)
+### LH.1 — the lighthouse plugin  ✅ (LH.1.2b → LH.4.3 ✅)
 The core WASM Component plugin consuming LH.0. Crate `plugins/lighthouse/`.
 
 #### LH.1.1 — the crate, the registry, and `:lsp-install`  ✅
@@ -296,7 +296,7 @@ binary. That is the supervisor's behaviour given a registration, and its test
 is LH.0.4's (a marker script standing in for the server). No test crosses
 both; the join is the `LanguageServerRegistrar` trait.
 
-#### LH.1.2b — package-manager `recipe` installs  ⛔ → LH.4.3
+#### LH.1.2b — package-manager `recipe` installs  ✅ (as LH.4.3)
 A registry entry that names a command to run (`npm install --prefix …`)
 instead of a URL, through `spawn-process`, its output streamed into the same
 buffer. Deferred until a server that needs it is added to the registry: the
@@ -418,8 +418,16 @@ match GitHub's published digests. The list tests now build a fixed registry
 and compare rows with padding collapsed, so a new entry no longer rewrites
 them.
 
-#### LH.4.3 — package-manager installs (was LH.1.2b)  📝
-The `recipe` entry, with typescript-language-server first.
+#### LH.4.3 — package-manager installs (was LH.1.2b)  ✅
+`[server.recipe]` (`command`, `args` with `{dir}`, `binary`), exclusive with
+`platform`; run through `spawn-process` in the staging directory, output
+streamed via `job-output`, then the shared install tail. Refused on Windows.
+First entry: typescript-language-server 5.3.0 with TypeScript 6.0.3 — 5.3
+because 6.x needs Node ≥ 22.22.2 (its only breaking change), TypeScript 6
+because 7 is the native port with no tsserver API. Verified by hand with npm:
+the tree survives the final rename (relative `.bin` symlink), and a `.tsx`
+opened as `typescriptreact` parses where `typescript` does not. Integration
+tests drive a real `sh` recipe through the host (success and failure).
 
 #### LH.4.4 — recipe entries  📝
 pyright, gopls, bash-language-server, yaml-language-server and the three

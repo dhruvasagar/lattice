@@ -480,6 +480,126 @@ async fn lsp_install_downloads_verifies_and_installs_a_server() {
     assert_eq!(spec.root_markers, vec![".git"]);
 }
 
+/// A recipe entry whose "package manager" is `sh -c <script>`, with the
+/// install directory passed as `$0` so the script can say where it ran.
+#[cfg(unix)]
+fn recipe_entry(name: &str, script: &str) -> String {
+    format!(
+        r#"
+[[server]]
+name = "{name}"
+lsp-id = "fake"
+language-id = "fake"
+version = "1.0"
+args = ["--stdio"]
+file-patterns = ["*.fake"]
+
+[server.recipe]
+command = "sh"
+args = ["-c", '{script}', "{{dir}}"]
+binary = "bin/{name}"
+"#
+    )
+}
+
+/// LH.4.3: a recipe install, through the real host — the package manager
+/// runs in the staging directory with `{dir}` filled in, what it prints
+/// streams into the install buffer, and what it leaves is installed and
+/// registered like a download.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recipe_runs_its_command_and_installs_what_it_built() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("SKIP: lighthouse component not built");
+        return;
+    };
+    let script = "echo building in $0 && pwd && mkdir -p bin && \
+                  printf \"#!/bin/sh\\necho recipe-ls ready\\n\" > bin/recipe-ls";
+    let editor = boot(wasm, &recipe_entry("recipe-ls", script), |_| {}).await;
+    editor.lsp_install("recipe-ls");
+
+    let log = editor.settled("recipe-ls").await;
+    let status = log.status.clone().expect("a status was set");
+    assert_eq!(status.state, OutputState::Succeeded, "{log:?}");
+    assert_eq!(status.text, "recipe-ls 1.0 installed");
+
+    // `{dir}` reached the command as the staging directory's absolute path
+    // (`$0`), and the command ran there (`pwd`) — both the command's own
+    // output, streamed into the buffer.
+    let staging = "lsp/recipe-ls/1.0.partial";
+    let dir_arg = log
+        .lines
+        .iter()
+        .find_map(|l| l.strip_prefix("building in "))
+        .unwrap_or_else(|| panic!("the script's output is in the buffer: {:?}", log.lines));
+    assert!(
+        dir_arg.starts_with('/') && dir_arg.ends_with(staging),
+        "{dir_arg}"
+    );
+    assert!(
+        log.lines
+            .iter()
+            .any(|l| l.starts_with('/') && l.ends_with(staging)),
+        "the command ran in the staging directory: {:?}",
+        log.lines
+    );
+    assert!(
+        log.lines
+            .iter()
+            .any(|l| l.starts_with("Running: sh -c ") && l.ends_with(" <install dir>")),
+        "{:?}",
+        log.lines
+    );
+
+    // Installed and executable — the script never marked it so.
+    assert_eq!(editor.tree(), vec!["recipe-ls/1.0/bin/recipe-ls"]);
+    let binary = editor.data_dir.join("lsp/recipe-ls/1.0/bin/recipe-ls");
+    let out = std::process::Command::new(&binary).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "recipe-ls ready\n");
+    assert_eq!(
+        editor.installed_record("recipe-ls").as_deref(),
+        Some("1.0\nbin/recipe-ls")
+    );
+    let told = editor.told();
+    let [Told::Register(_, spec)] = told.as_slice() else {
+        panic!("exactly one registration: {told:?}");
+    };
+    assert_eq!(
+        std::fs::canonicalize(&spec.command).unwrap(),
+        std::fs::canonicalize(&binary).unwrap()
+    );
+}
+
+/// A package manager that fails says why in the buffer, and leaves nothing.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failing_recipe_reports_its_output_and_leaves_nothing() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("SKIP: lighthouse component not built");
+        return;
+    };
+    let script = "mkdir -p bin && echo E404 no such package >&2 && exit 3";
+    let editor = boot(wasm, &recipe_entry("broken-ls", script), |_| {}).await;
+    editor.lsp_install("broken-ls");
+
+    let log = editor.settled("broken-ls").await;
+    let status = log.status.clone().expect("a status was set");
+    assert_eq!(status.state, OutputState::Failed, "{log:?}");
+    assert!(
+        log.lines.iter().any(|l| l == "E404 no such package"),
+        "the command's own explanation is in the buffer: {:?}",
+        log.lines
+    );
+    assert!(
+        log.lines.iter().any(|l| l.starts_with("error:")),
+        "{:?}",
+        log.lines
+    );
+    assert_eq!(editor.tree(), Vec::<String>::new(), "no staging tree left");
+    assert_eq!(editor.installed_record("broken-ls"), None);
+    assert!(editor.told().is_empty(), "nothing registered");
+}
+
 fn echoed(effect: lattice_grammar::effect::Effect) -> String {
     match effect {
         lattice_grammar::effect::Effect::Echo { text, .. } => text,

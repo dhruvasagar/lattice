@@ -132,6 +132,21 @@ archive = "gz"                  # or "tar-gz", or "none" for a bare executable
 binary = "rust-analyzer"        # the executable inside the unpacked tree
 ```
 
+A server with no pre-built download is installed by its package manager
+instead. In place of the `[server.platform.…]` tables it has a recipe:
+
+```toml
+[server.recipe]
+command = "npm"                 # a program on your PATH; run directly, no shell
+args = ["install", "--prefix", "{dir}", "--ignore-scripts", "my-ls@1.2.3"]
+binary = "node_modules/.bin/my-ls"
+```
+
+`{dir}` is the directory the server is installed into, and the command runs
+there. What it prints appears in the install buffer as it runs. Pin exact
+versions: the package manager checks what it downloads, but only an exact pin
+makes that the release you meant. Recipes run on Linux and macOS.
+
 An entry with a new `name` adds a server. An entry with the name of one
 lighthouse ships **replaces** it — that is how you pin a different version.
 The `sha256` is required; `sha256sum <file>` prints it.
@@ -153,12 +168,16 @@ server and the field.
 
 Each for Linux and macOS on x86_64 and aarch64:
 
-| Server | Language |
-|---|---|
-| `rust-analyzer` | Rust |
-| `lua-language-server` | Lua |
-| `taplo` | TOML |
-| `marksman` | Markdown |
+| Server | Language | Installed by |
+|---|---|---|
+| `rust-analyzer` | Rust | download |
+| `lua-language-server` | Lua | download |
+| `taplo` | TOML | download |
+| `marksman` | Markdown | download |
+| `typescript-language-server` | TypeScript, JavaScript, TSX, JSX | `npm` (Node 20 or later) |
+
+A download needs nothing on your machine; a server installed by `npm` needs
+`npm` on your `PATH` when you install it and `node` when it runs.
 
 More arrive over time; `:lsp-servers` is the list for the version you are
 running.

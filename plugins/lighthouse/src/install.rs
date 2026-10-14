@@ -12,6 +12,17 @@
 //! extract: the verified download is moved into the staging directory under
 //! the binary's name, and the install carries on from "mark executable".
 //!
+//! A server with a `recipe` has no download at all. Its package manager runs
+//! in the staging directory, its output streaming into the install buffer,
+//! and the install carries on from "mark executable" when it exits cleanly:
+//!
+//! ```text
+//! request ─► run the recipe ──ok──► mark executable ─► move into place ─► record ─► register
+//! ```
+//!
+//! What it fetched is checked by the package manager (npm's lockfile
+//! integrity, Go's checksum database), not against a digest lighthouse pins.
+//!
 //! "Register" is what makes an installed server *used*: the editor is told to
 //! run the managed binary for that language. It is not a step of the install
 //! so much as a consequence of the record — see [`Installer::reconcile`].
@@ -47,7 +58,7 @@
 //! removes the scratch names, and [`sweep`] removes any an editor exit left
 //! behind.
 
-use crate::registry::{Archive, Registry, Server};
+use crate::registry::{Archive, Recipe, Registry, Server};
 
 /// Store-key prefix of the installed-server records.
 pub const INSTALLED_PREFIX: &str = "installed/";
@@ -72,6 +83,10 @@ pub trait Host {
     fn download(&mut self, url: &str, sha256: &str, dest: &str) -> Result<u64, String>;
     /// Start unpacking `src` to `dest`; `Ok(id)` once it is under way.
     fn extract(&mut self, src: &str, dest: &str, archive: Archive) -> Result<u64, String>;
+    /// Start `command` with `args` in the directory `dir`, every `{dir}` in
+    /// `args` replaced by that directory's path on the host; `Ok(id)` once
+    /// it is under way. Its output arrives through [`Installer::output`].
+    fn spawn(&mut self, command: &str, args: &[String], dir: &str) -> Result<u64, String>;
     fn set_executable(&mut self, path: &str) -> Result<(), String>;
     /// Create a directory and any missing parents. Present is fine.
     fn create_dir(&mut self, path: &str) -> Result<(), String>;
@@ -154,6 +169,8 @@ fn download_file(name: &str, version: &str) -> String {
 enum Step {
     Download,
     Extract,
+    /// A recipe's package manager is running.
+    Build,
 }
 
 /// One install in flight.
@@ -396,22 +413,28 @@ impl Installer {
         }
         host.reset(&buffer);
         let version = &server.version;
-        let Some(build) = server.platform.get(platform) else {
-            let available: Vec<&str> = server.platform.keys().map(String::as_str).collect();
-            host.say(
-                &buffer,
-                &format!(
-                    "{name} has no build for {platform} (available: {})",
-                    available.join(", ")
+        if !server.available_on(platform) {
+            let why = match &server.recipe {
+                Some(recipe) => format!(
+                    "{name} is installed with `{}`, which lighthouse does not run on {platform}",
+                    recipe.command
                 ),
-            );
+                None => {
+                    let available: Vec<&str> = server.platform.keys().map(String::as_str).collect();
+                    format!(
+                        "{name} has no build for {platform} (available: {})",
+                        available.join(", ")
+                    )
+                }
+            };
+            host.say(&buffer, &why);
             host.status(
                 &buffer,
                 Phase::Failed,
                 &format!("{name}: no build for {platform}"),
             );
             return;
-        };
+        }
         // Say so when this replaces something: a reinstall and a first
         // install look the same from here on, and the difference matters to
         // someone wondering whether their server just changed under them.
@@ -434,6 +457,14 @@ impl Installer {
                 &format!("Installing {name} {version} for {platform}"),
             ),
         }
+        if let Some(recipe) = &server.recipe {
+            self.build(host, server, recipe);
+            return;
+        }
+        // `available_on` said there is one.
+        let Some(build) = server.platform.get(platform) else {
+            return;
+        };
         host.say(&buffer, &format!("Downloading {}", build.url));
         host.status(
             &buffer,
@@ -457,6 +488,60 @@ impl Installer {
         match host.download(&build.url, &build.sha256, &download_file(name, version)) {
             Ok(id) => self.jobs.push((id, job)),
             Err(e) => fail(host, &job, &e),
+        }
+    }
+
+    /// Start a recipe install: run the package manager in a fresh staging
+    /// directory.
+    fn build(&mut self, host: &mut impl Host, server: &Server, recipe: &Recipe) {
+        let (name, version) = (&server.name, &server.version);
+        let buffer = buffer_name(name);
+        let shown: Vec<String> = recipe
+            .args
+            .iter()
+            .map(|a| a.replace("{dir}", "<install dir>"))
+            .collect();
+        host.say(
+            &buffer,
+            &format!("Running: {} {}", recipe.command, shown.join(" ")),
+        );
+        host.status(
+            &buffer,
+            Phase::Running,
+            &format!(
+                "{name} {version}: installing with {}\u{2026}",
+                recipe.command
+            ),
+        );
+        // As for a download: nothing an interrupted attempt left is trusted.
+        let staging = partial(name, version);
+        host.remove_tree(&staging);
+        let job = Job {
+            name: name.clone(),
+            version: version.clone(),
+            archive: Archive::None,
+            binary: recipe.binary.clone(),
+            step: Step::Build,
+        };
+        let started = host
+            .create_dir(&staging)
+            .and_then(|()| host.spawn(&recipe.command, &recipe.args, &staging));
+        match started {
+            Ok(id) => self.jobs.push((id, job)),
+            Err(e) => fail(host, &job, &e),
+        }
+    }
+
+    /// A running recipe printed something. It goes to the install buffer as
+    /// it comes: an `npm install` can take a minute, and a silent minute
+    /// reads as a hang.
+    pub fn output(&mut self, host: &mut impl Host, id: u64, lines: &[String]) {
+        let Some((_, job)) = self.jobs.iter().find(|(job_id, _)| *job_id == id) else {
+            return;
+        };
+        let buffer = job.buffer();
+        for line in lines {
+            host.say(&buffer, line);
         }
     }
 
@@ -539,6 +624,10 @@ impl Installer {
                 }
             }
             Step::Extract => self.complete(host, registry, &job),
+            Step::Build => {
+                host.say(&buffer, "The package manager finished");
+                self.complete(host, registry, &job);
+            }
         }
     }
 
@@ -658,6 +747,13 @@ mod tests {
         fn extract(&mut self, src: &str, dest: &str, archive: Archive) -> Result<u64, String> {
             self.calls.push(format!("extract {src} {dest} {archive:?}"));
             self.refuses("extract")?;
+            self.next_id += 1;
+            Ok(self.next_id)
+        }
+        fn spawn(&mut self, command: &str, args: &[String], dir: &str) -> Result<u64, String> {
+            self.calls
+                .push(format!("spawn {command} {} in {dir}", args.join(" ")));
+            self.refuses("spawn")?;
             self.next_id += 1;
             Ok(self.next_id)
         }
@@ -951,6 +1047,134 @@ binary = "marksman"
         assert!(host.files.is_empty(), "left behind: {:?}", host.files);
         assert_eq!(installed(&host, "marksman"), None);
         assert_eq!(host.last_status().0, Phase::Failed);
+    }
+
+    const RECIPE: &str = r#"
+[[server]]
+name = "ts"
+lsp-id = "typescript"
+language-id = "typescript"
+version = "1.0.0"
+file-patterns = ["*.ts"]
+[server.recipe]
+command = "npm"
+args = ["install", "--prefix", "{dir}", "ts@1.0.0"]
+binary = "node_modules/.bin/ts"
+"#;
+
+    fn recipe_registry() -> Registry {
+        let (registry, problem) = Registry::load(Some(RECIPE));
+        assert_eq!(problem, None);
+        registry
+    }
+
+    #[test]
+    fn a_recipe_runs_its_package_manager_in_staging_and_installs_what_it_left() {
+        let registry = recipe_registry();
+        let server = registry.get("ts").unwrap().clone();
+        let (mut installer, mut host, _) = setup(server.clone());
+        installer.request(&mut host, &server, PLATFORM);
+        assert_eq!(
+            host.calls,
+            vec![
+                "mkdir lsp/ts/1.0.0.partial".to_string(),
+                // `{dir}` reaches the host as written; the host fills it in.
+                "spawn npm install --prefix {dir} ts@1.0.0 in lsp/ts/1.0.0.partial".to_string(),
+            ]
+        );
+        assert!(
+            host.said
+                .iter()
+                .any(|l| l == "Running: npm install --prefix <install dir> ts@1.0.0"),
+            "{:?}",
+            host.said
+        );
+        let run = host.next_id;
+        installer.output(&mut host, run, &["added 3 packages".to_string()]);
+        assert!(host.said.iter().any(|l| l == "added 3 packages"));
+
+        host.files
+            .insert("lsp/ts/1.0.0.partial/node_modules/.bin/ts".into());
+        host.files
+            .insert("lsp/ts/1.0.0.partial/node_modules/ts/cli.js".into());
+        installer.finished(&mut host, &registry, run, Ok(()));
+
+        assert!(host.has("lsp/ts/1.0.0/node_modules/.bin/ts"));
+        assert!(
+            host.has("lsp/ts/1.0.0/node_modules/ts/cli.js"),
+            "the whole tree moves"
+        );
+        assert_eq!(
+            installed(&host, "ts").unwrap().binary,
+            "node_modules/.bin/ts"
+        );
+        assert!(editor_calls(&host).iter().any(
+            |c| c.starts_with("register ts as typescript -> lsp/ts/1.0.0/node_modules/.bin/ts")
+        ));
+        assert_eq!(host.last_status().0, Phase::Succeeded, "{:?}", host.said);
+        assert!(
+            !host.calls.iter().any(|c| c.starts_with("download")),
+            "a recipe downloads nothing itself"
+        );
+    }
+
+    #[test]
+    fn a_failed_recipe_reports_and_leaves_no_partial_tree() {
+        let registry = recipe_registry();
+        let server = registry.get("ts").unwrap().clone();
+        let (mut installer, mut host, _) = setup(server.clone());
+        installer.request(&mut host, &server, PLATFORM);
+        let run = host.next_id;
+        host.files
+            .insert("lsp/ts/1.0.0.partial/node_modules/half".into());
+        installer.finished(
+            &mut host,
+            &registry,
+            run,
+            Err("process exited with status 1".into()),
+        );
+        assert!(host.files.is_empty(), "left behind: {:?}", host.files);
+        assert_eq!(installed(&host, "ts"), None);
+        assert_eq!(host.last_status().0, Phase::Failed);
+        assert!(!installer.is_installing("ts"), "it can be tried again");
+    }
+
+    /// The package manager not being installed is the likeliest failure;
+    /// it must read as that, not as something lighthouse got wrong.
+    #[test]
+    fn a_recipe_whose_command_cannot_start_fails_by_name() {
+        let registry = recipe_registry();
+        let server = registry.get("ts").unwrap().clone();
+        let (mut installer, mut host, _) = setup(server.clone());
+        host.refuse = Some("spawn");
+        installer.request(&mut host, &server, PLATFORM);
+        assert!(host.files.is_empty());
+        assert_eq!(host.last_status().0, Phase::Failed);
+        assert!(
+            host.said.iter().any(|l| l == "error: spawn refused"),
+            "{:?}",
+            host.said
+        );
+        assert!(!installer.is_installing("ts"));
+    }
+
+    #[test]
+    fn a_recipe_is_not_run_on_windows() {
+        let registry = recipe_registry();
+        let server = registry.get("ts").unwrap().clone();
+        let (mut installer, mut host, _) = setup(server.clone());
+        installer.request(&mut host, &server, "windows-x86_64");
+        assert!(host.calls.is_empty(), "{:?}", host.calls);
+        assert_eq!(host.last_status().0, Phase::Failed);
+        assert!(host.said[0].contains("`npm`"), "{:?}", host.said);
+    }
+
+    /// Output for a job this installer is not running goes nowhere.
+    #[test]
+    fn output_for_an_unknown_job_is_ignored() {
+        let (mut installer, mut host, _) = setup(rust_analyzer());
+        installer.output(&mut host, 99, &["stray".to_string()]);
+        assert!(host.said.is_empty());
     }
 
     /// The exit criterion: a download that fails verification installs

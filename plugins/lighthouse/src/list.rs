@@ -98,7 +98,7 @@ pub fn rows(
                     Some(r) => State::UpdateAvailable {
                         installed: r.version.clone(),
                     },
-                    None if server.platform.contains_key(platform) => State::NotInstalled,
+                    None if server.available_on(platform) => State::NotInstalled,
                     None => State::Unavailable,
                 }
             };

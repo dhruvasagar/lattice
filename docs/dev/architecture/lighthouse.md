@@ -260,6 +260,18 @@ worth per `job-output`, bounded in size, nothing dropped, all of it before the
 `job-finished`. A non-zero exit is an ordinary outcome — an `err` naming the
 status, with the output that explains it already delivered.
 
+**The registry side (LH.4.3).** A `[server.recipe]` names `command` (a bare
+program, found on `PATH`), `args` (with `{dir}` standing for the install
+directory) and `binary`. The plugin creates the staging directory, runs the
+command there with `{dir}` filled in by the adapter — the state machine deals
+only in data-relative paths — and streams `job-output` into the install
+buffer. A clean exit continues exactly as an unpacked download does
+(`set-executable`, one rename, record, register), so a failed or interrupted
+recipe leaves nothing, by the same mechanism. Integrity is the package
+manager's (npm's integrity hashes, Go's checksum database) against an exact
+version pin; npm runs with `--ignore-scripts`. Recipes are refused on Windows,
+where npm leaves `.cmd` shims rather than executables.
+
 **A cancel kills the tree, not the child.** `npm` is a script that starts
 `node`, which starts more; killing only the direct child ends the job just as
 promptly and leaves processes nobody owns. The child leads its own process

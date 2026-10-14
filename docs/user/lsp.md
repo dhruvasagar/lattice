@@ -81,7 +81,9 @@ unpacks it into a directory it manages, and uses it from then on —
 no `PATH` entry, no toolchain. `:lsp-servers` lists what can be
 installed this way and what already is; `:help lighthouse` has the
 rest. Today that list is `rust-analyzer`, `lua-language-server`, `taplo`
-and `marksman`.
+and `marksman`, plus `typescript-language-server`, which has no
+download and is installed with `npm` (pinned to an exact version)
+into the same managed directory.
 
 For everything else, install the server through your language's
 standard channel. The defaults expect the canonical binary on

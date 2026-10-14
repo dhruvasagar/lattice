@@ -212,6 +212,12 @@ impl install::Host for Edge {
         host_services::extract_archive(&self.on_host(src), &self.on_host(dest), format)
     }
 
+    fn spawn(&mut self, command: &str, args: &[String], dir: &str) -> Result<u64, String> {
+        let dir = self.on_host(dir);
+        let args: Vec<String> = args.iter().map(|a| a.replace("{dir}", &dir)).collect();
+        host_services::spawn_process(command, &args, &dir)
+    }
+
     fn set_executable(&mut self, path: &str) -> Result<(), String> {
         host_services::set_executable(&self.on_host(path))
     }
@@ -624,6 +630,7 @@ fn on_job(ev: &Event) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match ev {
         Event::JobProgress(p) => installer.progress(&mut edge, p.id, p.done, p.total),
+        Event::JobOutput(o) => installer.output(&mut edge, o.id, &o.lines),
         Event::JobFinished(f) => {
             let (registry, problem) = registry();
             installer.finished(&mut edge, &registry, f.id, f.outcome.clone());
@@ -755,7 +762,11 @@ impl Guest for Component {
         );
         lattice::plugin_host::events::subscribe(&kinds(&[EventKind::Plugin]), ON_REQUEST);
         lattice::plugin_host::events::subscribe(
-            &kinds(&[EventKind::JobProgress, EventKind::JobFinished]),
+            &kinds(&[
+                EventKind::JobProgress,
+                EventKind::JobOutput,
+                EventKind::JobFinished,
+            ]),
             ON_JOB,
         );
         // Nothing can be in flight yet, so any scratch file is from an

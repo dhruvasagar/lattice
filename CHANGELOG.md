@@ -12,6 +12,12 @@
   `taplo` and `marksman` join `rust-analyzer`: downloaded, checked against a
   pinned SHA-256 and used in place of any copy on your `PATH`, on Linux and
   macOS.
+- **`:lsp-install typescript-language-server`.** Servers with no download
+  can now be installed by their package manager: lighthouse runs `npm` with
+  an exact version pin into its own directory, shows npm's output in the
+  install buffer, and uses the result like any other install. TypeScript,
+  JavaScript, TSX and JSX files then get the managed server. Needs `npm` and
+  Node 20 or later.
 
 ### Fixed
 - **TypeScript and C++ syntax highlighting is complete.** In `.ts`, `.tsx`,

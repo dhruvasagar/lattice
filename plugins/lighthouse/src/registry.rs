@@ -59,8 +59,42 @@ pub struct Server {
     pub file_patterns: Vec<String>,
     #[serde(default)]
     pub root_markers: Vec<String>,
-    /// Keyed `<os>-<arch>`.
+    /// Keyed `<os>-<arch>`. Empty for a server installed by a `recipe`.
+    #[serde(default)]
     pub platform: BTreeMap<String, Build>,
+    /// Installed by running a package manager instead of downloading a
+    /// build. Exactly one of this and `platform` is given.
+    #[serde(default)]
+    pub recipe: Option<Recipe>,
+}
+
+/// A server with no pre-built download, installed by its package manager.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct Recipe {
+    /// The program to run — a bare name, found on `PATH`. Run directly: no
+    /// shell, so nothing in `args` is split or expanded.
+    pub command: String,
+    /// Its arguments. `{dir}` in any of them stands for the directory the
+    /// server is installed into, which is also where the command runs.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// The executable the command leaves behind, relative to that directory.
+    pub binary: String,
+}
+
+/// The OS a recipe cannot run on: package managers there leave `.cmd` shims
+/// rather than executables, which the editor cannot start as a server.
+const NO_RECIPES_ON: &str = "windows-";
+
+impl Server {
+    /// Whether this server can be installed on `platform` (`<os>-<arch>`).
+    pub fn available_on(&self, platform: &str) -> bool {
+        match &self.recipe {
+            Some(_) => !platform.starts_with(NO_RECIPES_ON),
+            None => self.platform.contains_key(platform),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -94,6 +128,22 @@ fn is_component(s: &str) -> bool {
 /// A relative path that stays inside the tree it is joined to.
 fn is_relative_inside(path: &str) -> bool {
     !path.is_empty() && path.split('/').all(is_component)
+}
+
+/// A relative path that stays inside the tree, where — unlike a download's
+/// binary — a component may start with a dot: package managers put their
+/// executables under `node_modules/.bin`. `.` and `..` themselves are still
+/// refused, and so is anything `is_component` would refuse but the dot.
+fn is_recipe_binary(path: &str) -> bool {
+    !path.is_empty()
+        && path.split('/').all(|c| {
+            !matches!(c, "" | "." | "..") && is_component(c.strip_prefix('.').unwrap_or(c))
+        })
+}
+
+/// A program named the way `PATH` lookup takes it: one word, no directory.
+fn is_program(s: &str) -> bool {
+    !s.is_empty() && !s.contains(['/', '\\']) && !s.chars().any(char::is_whitespace)
 }
 
 fn is_sha256(s: &str) -> bool {
@@ -148,11 +198,34 @@ fn validate(server: &Server) -> Result<(), String> {
             "is empty, so no buffer would ever start it",
         );
     }
-    if server.platform.is_empty() {
-        return bad(
-            "platform",
-            "has no entries, so it cannot be installed anywhere",
-        );
+    match (&server.recipe, server.platform.is_empty()) {
+        (Some(_), false) => {
+            return bad(
+                "recipe",
+                "and `platform` are both given: a server is either downloaded or built",
+            );
+        }
+        (None, true) => {
+            return bad(
+                "platform",
+                "has no entries and there is no `recipe`, so it cannot be installed anywhere",
+            );
+        }
+        _ => {}
+    }
+    if let Some(recipe) = &server.recipe {
+        if !is_program(&recipe.command) {
+            return bad(
+                "recipe.command",
+                "must be a bare program name, found on PATH",
+            );
+        }
+        if !is_recipe_binary(&recipe.binary) {
+            return bad(
+                "recipe.binary",
+                "must be a relative path inside the install directory, with no `..`",
+            );
+        }
     }
     for (platform, build) in &server.platform {
         let bad = |field: &str, why: &str| {
@@ -353,6 +426,63 @@ binary = "bin/zls"
             .replace("archive = \"tar-gz\"", "archive = \"none\"")
             .replace("binary = \"bin/zls\"", "binary = \"zls\"");
         assert!(Registry::parse(&bare).is_ok(), "a bare name is accepted");
+    }
+
+    const RECIPE: &str = r#"
+[[server]]
+name = "ts"
+lsp-id = "typescript"
+language-id = "typescript"
+version = "1.0.0"
+file-patterns = ["*.ts"]
+[server.recipe]
+command = "npm"
+args = ["install", "--prefix", "{dir}", "ts@1.0.0"]
+binary = "node_modules/.bin/ts"
+"#;
+
+    #[test]
+    fn a_recipe_server_parses_and_runs_everywhere_but_windows() {
+        let registry = Registry::parse(RECIPE).unwrap();
+        let ts = registry.get("ts").unwrap();
+        let recipe = ts.recipe.as_ref().unwrap();
+        assert_eq!(recipe.command, "npm");
+        assert_eq!(recipe.binary, "node_modules/.bin/ts");
+        assert!(ts.platform.is_empty());
+        assert!(ts.available_on("linux-x86_64"));
+        assert!(ts.available_on("macos-aarch64"));
+        assert!(!ts.available_on("windows-x86_64"));
+    }
+
+    #[test]
+    fn a_recipe_is_checked_like_a_download() {
+        for (field, bad) in [
+            ("command = \"npm\"", "command = \"/usr/bin/npm\""),
+            ("command = \"npm\"", "command = \"npm install\""),
+            ("command = \"npm\"", "command = \"\""),
+            ("binary = \"node_modules/.bin/ts\"", "binary = \"../ts\""),
+            ("binary = \"node_modules/.bin/ts\"", "binary = \"/bin/ts\""),
+            ("binary = \"node_modules/.bin/ts\"", "binary = \"bin/./ts\""),
+            (
+                "binary = \"node_modules/.bin/ts\"",
+                "binary = \"bin/.../ts\"",
+            ),
+        ] {
+            let text = RECIPE.replace(field, bad);
+            let err = Registry::parse(&text).unwrap_err();
+            assert!(err.contains("recipe."), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_server_is_downloaded_or_built_not_both() {
+        let both = format!(
+            "{RECIPE}[server.platform.linux-x86_64]\nurl = \"https://example.org/x\"\n\
+             sha256 = \"{}\"\narchive = \"none\"\nbinary = \"x\"\n",
+            "0".repeat(64)
+        );
+        let err = Registry::parse(&both).unwrap_err();
+        assert!(err.contains("both"), "{err}");
     }
 
     #[test]

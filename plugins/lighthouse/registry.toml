@@ -27,6 +27,17 @@
 #
 # The digests below are the ones GitHub publishes for each release asset;
 # linux-x86_64 was also downloaded and hashed when it was pinned.
+#
+# A server with no pre-built download has a `[server.recipe]` instead of
+# platforms — its package manager, run in the install directory:
+#   command        a bare program name, found on `PATH` (no shell)
+#   args           passed verbatim; `{dir}` is the install directory
+#   binary         what the command leaves behind, relative to that directory
+# Pin exact versions in `args`: the package manager checks what it fetched
+# (npm's integrity hashes, Go's checksum database), and an exact pin is what
+# makes that check mean "the release we tested". npm runs with
+# `--ignore-scripts`, so no dependency's install script runs. Recipes run on
+# Linux and macOS.
 
 [[server]]
 name = "rust-analyzer"
@@ -164,3 +175,26 @@ url = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/mar
 sha256 = "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b"
 archive = "none"
 binary = "marksman"
+
+# typescript-language-server drives TypeScript's `tsserver`, so it is
+# installed beside a pinned TypeScript 6 (7 is the native port, with no
+# tsserver API). 5.3 rather than 6.x: 6.0 requires Node >= 22.22.2, and its
+# only breaking change is that requirement. The server is told
+# `typescriptreact` / `javascript` / `javascriptreact` per file by the editor.
+[[server]]
+name = "typescript-language-server"
+lsp-id = "typescript"
+language-id = "typescript"
+version = "5.3.0+ts.6.0.3"
+args = ["--stdio"]
+file-patterns = ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mts", "*.cts"]
+root-markers = ["tsconfig.json", "jsconfig.json", "package.json", ".git"]
+
+[server.recipe]
+command = "npm"
+args = [
+    "install", "--prefix", "{dir}", "--no-save", "--no-fund", "--no-audit",
+    "--no-update-notifier", "--ignore-scripts", "--loglevel=warn",
+    "typescript-language-server@5.3.0", "typescript@6.0.3",
+]
+binary = "node_modules/.bin/typescript-language-server"

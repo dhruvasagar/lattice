@@ -297,12 +297,19 @@ impl LangRegistry {
                 Some(PYTHON_TEXTOBJECTS_QUERY),
             )?,
         );
+        // The JavaScript grammar parses JSX, but its JSX captures (tags,
+        // attributes) live in a separate query that has to be appended.
+        let js_highlights = [
+            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+        ]
+        .concat();
         configs.insert(
             "javascript",
             build_config(
                 tree_sitter_javascript::LANGUAGE.into(),
                 "javascript",
-                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                &js_highlights,
                 tree_sitter_javascript::INJECTIONS_QUERY,
                 tree_sitter_javascript::LOCALS_QUERY,
                 Some(JAVASCRIPT_FOLDS_QUERY),
@@ -376,12 +383,20 @@ impl LangRegistry {
                 Some(C_TEXTOBJECTS_QUERY),
             )?,
         );
+        // Like TypeScript over JavaScript, tree-sitter-cpp's highlights
+        // are only the C++ delta on top of C's; C's go first so the C++
+        // captures win where they overlap.
+        let cpp_highlights = [
+            tree_sitter_c::HIGHLIGHT_QUERY,
+            tree_sitter_cpp::HIGHLIGHT_QUERY,
+        ]
+        .concat();
         configs.insert(
             "cpp",
             build_config(
                 tree_sitter_cpp::LANGUAGE.into(),
                 "cpp",
-                tree_sitter_cpp::HIGHLIGHT_QUERY,
+                &cpp_highlights,
                 "",
                 "",
                 Some(CPP_FOLDS_QUERY),
@@ -535,14 +550,39 @@ impl LangRegistry {
         // LANGUAGE_TYPESCRIPT (strict TS) and LANGUAGE_TSX (TS+JSX).
         // We register "typescript" with the TS grammar; see "tsx"
         // for the TSX variant.
+        //
+        // Its highlights and locals queries are only the TypeScript
+        // DELTA (types, `interface`, `readonly`, ...): the grammar
+        // extends JavaScript's and expects JavaScript's queries
+        // underneath, as the tree-sitter CLI, Helix and Neovim all
+        // compose them. On their own, strings, comments, functions and
+        // most keywords render plain. JavaScript's go FIRST: a later
+        // pattern wins an overlap (see `syntax.rs`), so the TypeScript
+        // captures override the JavaScript ones they refine.
+        let ts_highlights = [
+            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+        ]
+        .concat();
+        let tsx_highlights = [
+            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+        ]
+        .concat();
+        let ts_locals = [
+            tree_sitter_javascript::LOCALS_QUERY,
+            tree_sitter_typescript::LOCALS_QUERY,
+        ]
+        .concat();
         configs.insert(
             "typescript",
             build_config(
                 tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
                 "typescript",
-                tree_sitter_typescript::HIGHLIGHTS_QUERY,
-                "",
-                tree_sitter_typescript::LOCALS_QUERY,
+                &ts_highlights,
+                tree_sitter_javascript::INJECTIONS_QUERY,
+                &ts_locals,
                 Some(TYPESCRIPT_FOLDS_QUERY),
                 Some(TYPESCRIPT_SYMBOLS_QUERY),
                 Some(TYPESCRIPT_TEXTOBJECTS_QUERY),
@@ -559,9 +599,9 @@ impl LangRegistry {
             build_config(
                 tree_sitter_typescript::LANGUAGE_TSX.into(),
                 "tsx",
-                tree_sitter_typescript::HIGHLIGHTS_QUERY,
-                "",
-                tree_sitter_typescript::LOCALS_QUERY,
+                &tsx_highlights,
+                tree_sitter_javascript::INJECTIONS_QUERY,
+                &ts_locals,
                 Some(TYPESCRIPT_FOLDS_QUERY),
                 Some(TYPESCRIPT_SYMBOLS_QUERY),
                 Some(TYPESCRIPT_TEXTOBJECTS_QUERY),
@@ -674,7 +714,7 @@ impl LangRegistry {
         let canonical = match name {
             "rs" => "rust",
             "py" => "python",
-            "js" | "mjs" | "cjs" => "javascript",
+            "js" | "mjs" | "cjs" | "jsx" => "javascript",
             "sh" => "bash",
             "h" => "c",
             "cc" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",

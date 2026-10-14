@@ -2389,6 +2389,55 @@ const MAX: i32 = 10;\n\
         );
     }
 
+    /// tree-sitter-typescript's highlights query is only the TS delta;
+    /// without JavaScript's underneath, strings, comments, functions and
+    /// `const` / `return` all rendered plain.
+    #[test]
+    fn native_typescript_and_tsx_get_the_javascript_highlights_too() {
+        let src = "// note\nconst greet = (name: string): number => {\n    return \"hi\".length;\n};\nfunction f() {}\n";
+        for lang in [Lang::TypeScript, Lang::Tsx] {
+            assert_has_style(lang, src, Style::Comment);
+            assert_has_style(lang, src, Style::String);
+            assert_has_style(lang, src, Style::Keyword);
+            assert_has_style(lang, src, Style::Function);
+            // The TypeScript delta still applies on top.
+            assert_has_style(lang, src, Style::Type);
+        }
+    }
+
+    /// Same shape as TypeScript: tree-sitter-cpp's query is the C++
+    /// delta and needs C's underneath.
+    #[test]
+    fn native_cpp_gets_the_c_highlights_too() {
+        let src = "// note\nint main() {\n    return 42 + sizeof(\"x\");\n}\nclass A {};\n";
+        assert_has_style(Lang::Cpp, src, Style::Comment);
+        assert_has_style(Lang::Cpp, src, Style::String);
+        assert_has_style(Lang::Cpp, src, Style::Number);
+        assert_has_style(Lang::Cpp, src, Style::Keyword);
+        assert_has_style(Lang::Cpp, src, Style::Function);
+    }
+
+    #[test]
+    fn native_jsx_tags_are_highlighted_in_javascript_and_tsx() {
+        // Upstream tags only lowercase (HTML) names; components are left
+        // to the identifier captures.
+        let src = "const el = <div className={c}>hi</div>;\n";
+        for lang in [Lang::JavaScript, Lang::Tsx] {
+            let mut s = Syntax::for_language(lang).unwrap().unwrap();
+            s.parse(src);
+            let lines = s.highlight_lines(0, 1).unwrap();
+            // `<div` starts at byte 11; the tag name must not be plain.
+            let tag = lines[0]
+                .iter()
+                .find(|sp| sp.start <= 12 && 12 < sp.end)
+                .map(|sp| sp.style);
+            assert!(
+                tag.is_some_and(|st| st != Style::Default && st != Style::Punctuation),
+                "{lang:?}: JSX tag name unstyled: {lines:?}"
+            );
+        }
+    }
+
     #[test]
     fn native_markdown_fenced_rust_block_emits_rust_spans() {
         // Native markdown injection recurses into the fenced

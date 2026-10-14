@@ -121,7 +121,7 @@ impl Lang {
         {
             Some("rs") => Lang::Rust,
             Some("py") | Some("pyw") => Lang::Python,
-            Some("js") | Some("mjs") | Some("cjs") => Lang::JavaScript,
+            Some("js") | Some("mjs") | Some("cjs") | Some("jsx") => Lang::JavaScript,
             Some("sh") | Some("bash") | Some("zsh") | Some("fish") => Lang::Bash,
             Some("c") | Some("h") => Lang::C,
             Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") | Some("hh") | Some("hxx") => {
@@ -331,6 +331,10 @@ mod tests {
         );
         assert_eq!(
             Lang::detect_from_path(Some(&PathBuf::from("foo.cjs"))),
+            Lang::JavaScript
+        );
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("App.jsx"))),
             Lang::JavaScript
         );
     }

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **TypeScript and C++ syntax highlighting is complete.** In `.ts`, `.tsx`,
+  `.cpp` and `.hpp` files, strings, comments, numbers, function names and
+  most keywords rendered as plain text; only the type annotations (and C++'s
+  own additions) were coloured. They now highlight like JavaScript and C.
+- **JSX is highlighted, and `.jsx` files are recognised.** HTML tags and
+  attributes inside JSX are coloured in `.js`, `.jsx` and `.tsx` files, and
+  `.jsx` files open as JavaScript instead of plain text.
+
 ## 0.9.8 — 2026-10-14
 
 ### Added

@@ -5357,7 +5357,8 @@ impl Render for EditorView {
             // of the TUI's `draw_help_overlay` compose flip (PU.1b-3). Only
             // the box (border + title + separator) below stays
             // popup-specific chrome. A help popup is now pixel-equivalent to
-            // a `:set nonu signcolumn=no wrap` document in a box (K.4 /
+            // a `:set nonu signcolumn=no` document in a box, wrapping or
+            // h-scrolling as its buffer's `wrap` says (K.4 /
             // `feedback_render_is_option_derived`).
             //
             // PU.1b-4b: title + content + line-count are sourced from the
@@ -5474,8 +5475,12 @@ impl Render for EditorView {
                 theme: theme.clone(),
                 text: std::sync::Arc::new(window_text),
                 scroll: popup_scroll,
-                // Help wraps; the host pins `leftcol = 0` under wrap.
-                leftcol: 0,
+                // Focused (State B): the popup IS the active buffer, so the
+                // live `leftcol` is its horizontal scroll (help-mode is
+                // `nowrap`; under wrap the host pins it to 0). State A has no
+                // cursor in the popup to follow, so it shows the left edge —
+                // the TUI's `draw_help_overlay` makes the same split.
+                leftcol: if popup_focused { ad.leftcol } else { 0 },
                 viewport_height: popup_inner_rows,
                 // Empty gutter → the text-only walk. Help-mode is `nonu`
                 // + `signcolumn=no`, so there is no gutter to paint.

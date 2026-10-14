@@ -25,6 +25,11 @@
   `:lsp-servers`, except C / C++ (clangd) and Ruby (`gem install ruby-lsp`).
 
 ### Fixed
+- **`$` in a popup scrolls it sideways.** Help pages don't wrap (so tables
+  keep their columns), but moving to the end of a line wider than the popup
+  left the cursor past the popup's right edge instead of scrolling the
+  content. The popup now scrolls horizontally to keep the cursor in view, in
+  the terminal and the window.
 - **TypeScript and C++ syntax highlighting is complete.** In `.ts`, `.tsx`,
   `.cpp` and `.hpp` files, strings, comments, numbers, function names and
   most keywords rendered as plain text; only the type annotations (and C++'s

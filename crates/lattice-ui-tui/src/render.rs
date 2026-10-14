@@ -2672,7 +2672,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // active buffer, so its live cursor / scroll / leftcol are on
     // `app.ad()`. State A (popup shown, doc focused): the popup's
     // persisted scroll is `popup_help().scroll` (the `popup_scroll`
-    // stash), no cursor inside the popup, leftcol pinned (help wraps).
+    // stash), no cursor inside the popup to follow, so leftcol is 0.
     let popup_focused = app.ad().popup_focused;
     let (scroll, cursor_line, leftcol) = if popup_focused {
         (app.ad().scroll, app.ad().cursor.line, app.ad().leftcol)

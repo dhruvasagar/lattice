@@ -7464,6 +7464,16 @@ impl Editor {
     /// degrades gracefully (the cursor stays visible, the centre is
     /// off by the gutter delta) rather than hiding the cursor.
     pub(crate) fn body_text_width(&self) -> u32 {
+        // A focused floating popup is the surface the cursor moves in, so
+        // its inner width is the window `leftcol` must keep the cursor
+        // inside — the same switch `ensure_cursor_visible` makes for
+        // height. Measuring the pane behind it let `$` on a line wider
+        // than the popup but narrower than the pane leave `leftcol` at 0
+        // and the caret outside the popup. Popups are gutterless, so the
+        // fed width is already the text width (as in `scroll_wrap_width`).
+        if self.popup_focused && self.popup_viewport_width > 0 {
+            return self.popup_viewport_width;
+        }
         let full = self.pane_tree.active().viewport_width;
         if full == 0 {
             return 0;
@@ -17589,9 +17599,13 @@ impl Editor {
                     cursor_line,
                     viewport_height: self.popup_viewport_height,
                     viewport_width: self.popup_viewport_width,
-                    // The floating help popup always wraps (help-mode's
-                    // `Wrap = true`).
-                    wrap: true,
+                    // The popup buffer's own `wrap`, like any pane: help-mode
+                    // is `Wrap = false` (HP.3 — a wrapped table row lies about
+                    // its columns), hover-mode `Wrap = true`. Hardcoding
+                    // `true` here built a wrapped matrix under a buffer the
+                    // cursor clamp and the TUI compose both treat as
+                    // unwrapped, so the two disagreed on where text was.
+                    wrap: *self.resolved_option::<lattice_config::Wrap>(popup_id),
                 });
             }
         }
@@ -56142,6 +56156,48 @@ mod tests {
         );
     }
 
+    /// `$` in a focused popup whose line is wider than the POPUP — but not
+    /// than the pane behind it — must scroll the popup sideways. The
+    /// horizontal clamp measured the pane, saw the cursor inside it, and
+    /// left `leftcol` at 0 with the caret past the popup's right edge.
+    #[test]
+    fn dollar_in_a_focused_popup_scrolls_it_horizontally() {
+        use crate::popup::PopupPlacement;
+        use lattice_core::ui::pane::PaneId;
+        let mut editor = Editor::boot(lattice_core::Document::from_text("fn main() {}\n"));
+        editor.pane_tree.active_mut().viewport_width = 200;
+        editor.viewport_height = 40;
+        let content =
+            lattice_help::parse_help_lines("t", vec!["x".repeat(100), "short".to_string()]);
+        editor.open_popup(content, PopupPlacement::Centered);
+        assert!(editor.popup_focused, "precondition: popup has focus");
+        editor.popup_viewport_height = 10;
+        editor.popup_viewport_width = 40;
+        assert!(
+            !editor.option_cache.wrap_lines,
+            "precondition: help-mode is `nowrap` (HP.3)"
+        );
+
+        editor.cursor = lattice_protocol::Position::new(0, 99);
+        editor.ensure_cursor_visible();
+        let cc = 99;
+        assert!(
+            editor.leftcol <= cc && cc < editor.leftcol + 40,
+            "cursor col {cc} must sit inside the popup's [{}, {}) window",
+            editor.leftcol,
+            editor.leftcol + 40,
+        );
+
+        // The matrix the renderers paint from must agree that the popup
+        // does not wrap — otherwise GPUI wraps text the clamp scrolled.
+        let panes = editor.build_cells_panes(None);
+        let pop = panes
+            .iter()
+            .find(|p| p.pane_id == PaneId::POPUP)
+            .expect("popup pane");
+        assert!(!pop.wrap, "the popup follows its buffer's `nowrap`");
+    }
+
     /// The clamp's display-row accounting must compose wrap segments
     /// AND folds: a closed fold removes its body's rows while wrapped
     /// lines add rows. `goto_last_line` must still scroll far enough
@@ -56273,7 +56329,7 @@ mod tests {
         );
 
         // After feedback: the synthetic pane appears, keyed to the popup
-        // buffer, sized to the fed inner rect, always-wrap.
+        // buffer, sized to the fed inner rect, wrapping as its buffer says.
         editor.popup_viewport_height = 18;
         editor.popup_viewport_width = 60;
         let panes = editor.build_cells_panes(None);
@@ -56284,7 +56340,11 @@ mod tests {
         assert_eq!(pop.buffer_id, popup_id, "keyed to the popup buffer");
         assert_eq!(pop.viewport_width, 60, "sized to fed inner width");
         assert_eq!(pop.viewport_height, 18, "sized to fed inner height");
-        assert!(pop.wrap, "the floating help popup always wraps");
+        assert_eq!(
+            pop.wrap,
+            *editor.resolved_option::<lattice_config::Wrap>(popup_id),
+            "the popup wraps per its buffer's `wrap`, not a hardcoded value"
+        );
         assert!(
             pop.snapshot.is_some(),
             "popup buffer snapshot resolves through the registry"
@@ -56349,7 +56409,11 @@ mod tests {
         assert_eq!(band.buffer_id, band_id, "each keyed to its own buffer");
         assert_eq!((band.viewport_height, band.viewport_width), (3, 80));
         assert_eq!((pop.viewport_height, pop.viewport_width), (18, 60));
-        assert!(pop.wrap, "the popup wraps");
+        assert_eq!(
+            pop.wrap,
+            *editor.resolved_option::<lattice_config::Wrap>(popup_id),
+            "the popup wraps per its buffer's `wrap`"
+        );
         assert!(!band.wrap, "the band shows a grid and does not");
         assert_eq!(band.scroll, 0, "the band's top is its anchor");
     }

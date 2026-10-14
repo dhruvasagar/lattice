@@ -18,6 +18,11 @@
   install buffer, and uses the result like any other install. TypeScript,
   JavaScript, TSX and JSX files then get the managed server. Needs `npm` and
   Node 20 or later.
+- **`:lsp-install` for Python, Go, Bash, YAML, HTML, CSS and JSON.**
+  `pyright`, `bash-language-server`, `yaml-language-server` and the VS Code
+  HTML / CSS / JSON servers install with `npm`; `gopls` with `go install`.
+  Every language lattice has a server for can now get one from
+  `:lsp-servers`, except C / C++ (clangd) and Ruby (`gem install ruby-lsp`).
 
 ### Fixed
 - **TypeScript and C++ syntax highlighting is complete.** In `.ts`, `.tsx`,

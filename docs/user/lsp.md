@@ -80,10 +80,14 @@ Lattice downloads the server, checks it against a pinned SHA-256,
 unpacks it into a directory it manages, and uses it from then on —
 no `PATH` entry, no toolchain. `:lsp-servers` lists what can be
 installed this way and what already is; `:help lighthouse` has the
-rest. Today that list is `rust-analyzer`, `lua-language-server`, `taplo`
-and `marksman`, plus `typescript-language-server`, which has no
-download and is installed with `npm` (pinned to an exact version)
-into the same managed directory.
+rest. Every language in the table below except C / C++ and Ruby has
+one: `rust-analyzer`, `lua-language-server`, `taplo` and `marksman` are
+downloads; `typescript-language-server`, `pyright`,
+`bash-language-server`, `yaml-language-server` and the three
+`vscode-*-language-server`s are installed with `npm`, and `gopls` with
+`go install` — each pinned to an exact version, into the same managed
+directory. (clangd waits on `.zip` support; ruby-lsp has to run under
+your project's own Ruby, so install it with `gem`.)
 
 For everything else, install the server through your language's
 standard channel. The defaults expect the canonical binary on

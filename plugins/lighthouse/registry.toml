@@ -198,3 +198,133 @@ args = [
     "typescript-language-server@5.3.0", "typescript@6.0.3",
 ]
 binary = "node_modules/.bin/typescript-language-server"
+
+[[server]]
+name = "pyright"
+lsp-id = "python"
+language-id = "python"
+version = "1.1.414"
+args = ["--stdio"]
+file-patterns = ["*.py", "*.pyi"]
+root-markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", ".git"]
+
+[server.recipe]
+command = "npm"
+args = [
+    "install", "--prefix", "{dir}", "--no-save", "--no-fund", "--no-audit",
+    "--no-update-notifier", "--ignore-scripts", "--loglevel=warn",
+    "pyright@1.1.414",
+]
+binary = "node_modules/.bin/pyright-langserver"
+
+[[server]]
+name = "bash-language-server"
+lsp-id = "bash"
+language-id = "shellscript"
+version = "5.8.1"
+args = ["start"]
+file-patterns = ["*.sh", "*.bash"]
+root-markers = [".shellcheckrc", ".git"]
+
+[server.recipe]
+command = "npm"
+args = [
+    "install", "--prefix", "{dir}", "--no-save", "--no-fund", "--no-audit",
+    "--no-update-notifier", "--ignore-scripts", "--loglevel=warn",
+    "bash-language-server@5.8.1",
+]
+binary = "node_modules/.bin/bash-language-server"
+
+[[server]]
+name = "yaml-language-server"
+lsp-id = "yaml"
+language-id = "yaml"
+version = "1.25.0"
+args = ["--stdio"]
+file-patterns = ["*.yaml", "*.yml"]
+root-markers = [".yamllint", ".yamllint.yaml", ".git"]
+
+[server.recipe]
+command = "npm"
+args = [
+    "install", "--prefix", "{dir}", "--no-save", "--no-fund", "--no-audit",
+    "--no-update-notifier", "--ignore-scripts", "--loglevel=warn",
+    "yaml-language-server@1.25.0",
+]
+binary = "node_modules/.bin/yaml-language-server"
+
+# vscode-langservers-extracted ships VS Code's HTML, CSS and JSON servers in
+# one package. Each is its own entry, so each installs and updates on its own
+# (at the cost of three copies of a small package).
+[[server]]
+name = "vscode-html-language-server"
+lsp-id = "html"
+language-id = "html"
+version = "4.10.0"
+args = ["--stdio"]
+file-patterns = ["*.html", "*.htm"]
+root-markers = ["package.json", ".git"]
+
+[server.recipe]
+command = "npm"
+args = [
+    "install", "--prefix", "{dir}", "--no-save", "--no-fund", "--no-audit",
+    "--no-update-notifier", "--ignore-scripts", "--loglevel=warn",
+    "vscode-langservers-extracted@4.10.0",
+]
+binary = "node_modules/.bin/vscode-html-language-server"
+
+[[server]]
+name = "vscode-css-language-server"
+lsp-id = "css"
+language-id = "css"
+version = "4.10.0"
+args = ["--stdio"]
+file-patterns = ["*.css", "*.scss", "*.less"]
+root-markers = ["package.json", ".git"]
+
+[server.recipe]
+command = "npm"
+args = [
+    "install", "--prefix", "{dir}", "--no-save", "--no-fund", "--no-audit",
+    "--no-update-notifier", "--ignore-scripts", "--loglevel=warn",
+    "vscode-langservers-extracted@4.10.0",
+]
+binary = "node_modules/.bin/vscode-css-language-server"
+
+[[server]]
+name = "vscode-json-language-server"
+lsp-id = "json"
+language-id = "json"
+version = "4.10.0"
+args = ["--stdio"]
+file-patterns = ["*.json", "*.jsonc"]
+root-markers = ["package.json", ".git"]
+
+[server.recipe]
+command = "npm"
+args = [
+    "install", "--prefix", "{dir}", "--no-save", "--no-fund", "--no-audit",
+    "--no-update-notifier", "--ignore-scripts", "--loglevel=warn",
+    "vscode-langservers-extracted@4.10.0",
+]
+binary = "node_modules/.bin/vscode-json-language-server"
+
+# gopls has no release downloads; `go install` builds it (about half a minute)
+# into `GOBIN`, which `go` reads only from the environment — hence `env`. The
+# module is checked against Go's checksum database. The result is a single
+# static binary that does not need Go to run, though gopls itself uses the
+# `go` on your PATH to load your packages.
+[[server]]
+name = "gopls"
+lsp-id = "go"
+language-id = "go"
+version = "0.23.0"
+args = []
+file-patterns = ["*.go"]
+root-markers = ["go.mod", "go.work", ".git"]
+
+[server.recipe]
+command = "env"
+args = ["GOBIN={dir}/bin", "go", "install", "golang.org/x/tools/gopls@v0.23.0"]
+binary = "bin/gopls"

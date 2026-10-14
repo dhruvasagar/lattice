@@ -175,9 +175,21 @@ Each for Linux and macOS on x86_64 and aarch64:
 | `taplo` | TOML | download |
 | `marksman` | Markdown | download |
 | `typescript-language-server` | TypeScript, JavaScript, TSX, JSX | `npm` (Node 20 or later) |
+| `pyright` | Python | `npm` |
+| `bash-language-server` | Bash | `npm` (Node 20 or later) |
+| `yaml-language-server` | YAML | `npm` |
+| `vscode-html-language-server` | HTML | `npm` |
+| `vscode-css-language-server` | CSS, SCSS, Less | `npm` |
+| `vscode-json-language-server` | JSON | `npm` |
+| `gopls` | Go | `go install` (about half a minute) |
 
-A download needs nothing on your machine; a server installed by `npm` needs
-`npm` on your `PATH` when you install it and `node` when it runs.
+A download needs nothing on your machine. A server installed by `npm` needs
+`npm` on your `PATH` when you install it and `node` when it runs; `gopls`
+needs `go` to install, and to load your packages once it runs.
+
+The package manager runs in lighthouse's own directory, not your project's,
+so a version manager that picks versions per directory (asdf, mise, nvm's
+`.nvmrc`) uses your global version there.
 
 More arrive over time; `:lsp-servers` is the list for the version you are
 running.

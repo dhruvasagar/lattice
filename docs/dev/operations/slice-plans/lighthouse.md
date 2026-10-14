@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · �
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 LH.0 ✅, LH.1 ✅, LH.2 ✅, LH.3 ✅, LH.4 🚧. Open: LH.0.2b ⛔ (`zip`), LH.4.4 📝 (recipe entries).** Re-planned 2026-10-10 against the current
+**Status: 🚧 LH.0 ✅, LH.1 ✅, LH.2 ✅, LH.3 ✅, LH.4 ✅. Open: LH.0.2b ⛔ (`zip`, then clangd).** Re-planned 2026-10-10 against the current
 host: the seams are request → addressed-event (design §3.0), the progress buffer
 is the plugin's, and lighthouse is a **core plugin** (`plugins/lighthouse/`).
 
@@ -399,7 +399,7 @@ another version. From here a changed signature is 0.3.0.
 `lattice-org-plugin` builds against the published crates with its pins and its
 `@0.1.0` world references moved to 0.2.
 
-### LH.4 — registry parity with the grammars  🚧
+### LH.4 — registry parity with the grammars  ✅
 Started 2026-10-14. Every language lattice highlights should have a server
 `:lsp-install` can fetch. The built-in configs came first (`bcd063fb`: HTML,
 CSS, JSON, YAML, TOML, Bash, Markdown, Ruby, and the per-file `languageId`
@@ -429,9 +429,15 @@ the tree survives the final rename (relative `.bin` symlink), and a `.tsx`
 opened as `typescriptreact` parses where `typescript` does not. Integration
 tests drive a real `sh` recipe through the host (success and failure).
 
-#### LH.4.4 — recipe entries  📝
-pyright, gopls, bash-language-server, yaml-language-server and the three
-servers of vscode-langservers-extracted.
+#### LH.4.4 — recipe entries  ✅
+pyright 1.1.414, bash-language-server 5.8.1, yaml-language-server 1.25.0 and
+the three servers of vscode-langservers-extracted 4.10.0 (one entry each, so
+each installs and updates on its own) through npm; gopls 0.23.0 through
+`env GOBIN={dir}/bin go install` (`go` reads `GOBIN` only from the
+environment, and `spawn-process` takes none). Each install command was run by
+hand and each server answered `initialize` under Node 20. With this every
+language that has a built-in config has a `:lsp-install` except C/C++ and
+Ruby (below).
 
 #### Not in LH.4
 - **clangd** ships only as zip, which is LH.0.2b — an `archive-format` case,

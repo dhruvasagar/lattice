@@ -296,7 +296,7 @@ binary. That is the supervisor's behaviour given a registration, and its test
 is LH.0.4's (a marker script standing in for the server). No test crosses
 both; the join is the `LanguageServerRegistrar` trait.
 
-#### LH.1.2b — package-manager `recipe` installs  ⛔
+#### LH.1.2b — package-manager `recipe` installs  ⛔ → LH.4.3
 A registry entry that names a command to run (`npm install --prefix …`)
 instead of a URL, through `spawn-process`, its output streamed into the same
 buffer. Deferred until a server that needs it is added to the registry: the
@@ -398,6 +398,40 @@ another version. From here a changed signature is 0.3.0.
 
 `lattice-org-plugin` builds against the published crates with its pins and its
 `@0.1.0` world references moved to 0.2.
+
+### LH.4 — registry parity with the grammars  🚧
+Started 2026-10-14. Every language lattice highlights should have a server
+`:lsp-install` can fetch. The built-in configs came first (`bcd063fb`: HTML,
+CSS, JSON, YAML, TOML, Bash, Markdown, Ruby, and the per-file `languageId`
+that makes `.tsx` work); a test in `lattice-lsp` now fails if a registry
+`lsp-id` names no built-in config. No slice here changes the WIT.
+
+#### LH.4.1 — bare-executable downloads  ✅
+`archive = "none"`: the verified download is moved into staging under the
+binary's name and the install continues from `set-executable`. Plugin-side;
+`archive-format` untouched. `573820a5`.
+
+#### LH.4.2 — download entries: lua-language-server, taplo, marksman  ✅
+Pinned with SHA-256 for Linux and macOS, x86_64 and aarch64. taplo publishes
+no digests: its four were computed from the downloaded assets; the others
+match GitHub's published digests. The list tests now build a fixed registry
+and compare rows with padding collapsed, so a new entry no longer rewrites
+them.
+
+#### LH.4.3 — package-manager installs (was LH.1.2b)  📝
+The `recipe` entry, with typescript-language-server first.
+
+#### LH.4.4 — recipe entries  📝
+pyright, gopls, bash-language-server, yaml-language-server and the three
+servers of vscode-langservers-extracted.
+
+#### Not in LH.4
+- **clangd** ships only as zip, which is LH.0.2b — an `archive-format` case,
+  so it waits for the next WIT generation.
+- **ruby-lsp** must run under the project's own Ruby and bundle; a copy
+  lighthouse installs into its data directory would see neither.
+- **Java (jdtls)** needs a JDK and its own launcher; **SQL** has no server
+  good enough to be a default; **WIT** has no maintained server.
 
 ## Notes
 

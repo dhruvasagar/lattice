@@ -80,7 +80,8 @@ Lattice downloads the server, checks it against a pinned SHA-256,
 unpacks it into a directory it manages, and uses it from then on —
 no `PATH` entry, no toolchain. `:lsp-servers` lists what can be
 installed this way and what already is; `:help lighthouse` has the
-rest. Today that list is `rust-analyzer`.
+rest. Today that list is `rust-analyzer`, `lua-language-server`, `taplo`
+and `marksman`.
 
 For everything else, install the server through your language's
 standard channel. The defaults expect the canonical binary on

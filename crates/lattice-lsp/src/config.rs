@@ -414,6 +414,29 @@ mod tests {
         }
     }
 
+    /// Lighthouse installs a server by registering it under its registry
+    /// entry's `lsp-id`, which REPLACES the built-in config with that id.
+    /// An id that matches nothing here would run the managed server
+    /// beside the `PATH` one instead of in its place.
+    #[test]
+    fn every_lighthouse_server_replaces_a_builtin_config() {
+        let registry = include_str!("../../../plugins/lighthouse/registry.toml");
+        let ids: Vec<String> = builtin_servers().into_iter().map(|c| c.id).collect();
+        let mut seen = 0;
+        for line in registry.lines() {
+            let Some(rest) = line.strip_prefix("lsp-id = \"") else {
+                continue;
+            };
+            let id = rest.trim_end_matches('"');
+            assert!(
+                ids.iter().any(|b| b == id),
+                "lighthouse lsp-id `{id}` is not a built-in server id ({ids:?})"
+            );
+            seen += 1;
+        }
+        assert!(seen > 0, "the registry lists servers");
+    }
+
     #[test]
     fn language_id_follows_the_file_within_the_server_family() {
         let ts = builtin_servers()

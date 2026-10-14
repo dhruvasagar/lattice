@@ -224,7 +224,10 @@ async fn lsp_servers_opens_a_drawn_list_with_its_mode_active() {
     };
     let lines = open_list(&mut editor).await;
 
-    assert_eq!(lines[0], "  Server         Version     Status");
+    assert_eq!(
+        lines[0].split_whitespace().collect::<Vec<_>>(),
+        ["Server", "Version", "Status"]
+    );
     // The bundled registry has rust-analyzer builds for Linux and macOS;
     // anywhere else the row says there is none, and that is the row working.
     let status = if cfg!(any(target_os = "linux", target_os = "macos")) {
@@ -236,8 +239,12 @@ async fn lsp_servers_opens_a_drawn_list_with_its_mode_active() {
             std::env::consts::ARCH
         )
     };
+    // The rows are sorted by name, so rust-analyzer is not necessarily
+    // first; its padding follows the longest bundled name.
     assert!(
-        lines[1].starts_with("  rust-analyzer  ") && lines[1].ends_with(&status),
+        lines
+            .iter()
+            .any(|l| { l.trim_start().starts_with("rust-analyzer ") && l.ends_with(&status) }),
         "{lines:?}"
     );
     assert!(

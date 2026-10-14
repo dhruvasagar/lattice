@@ -419,16 +419,18 @@ binary = "bin/zls"
 
     #[test]
     fn an_overlay_adds_servers_and_replaces_a_bundled_one_by_name() {
+        let bundled = Registry::load(None).0.names().len();
         let (registry, problem) = Registry::load(Some(ONE));
         assert_eq!(problem, None);
-        assert_eq!(registry.names(), vec!["rust-analyzer", "zls"]);
+        assert_eq!(registry.names().len(), bundled + 1);
+        assert!(registry.get("zls").is_some());
 
         let mine = ONE
             .replace("name = \"zls\"", "name = \"rust-analyzer\"")
             .replace("0.13.0", "my-build");
         let (registry, problem) = Registry::load(Some(&mine));
         assert_eq!(problem, None);
-        assert_eq!(registry.names(), vec!["rust-analyzer"]);
+        assert_eq!(registry.names().len(), bundled, "replaced, not added");
         assert_eq!(registry.get("rust-analyzer").unwrap().version, "my-build");
     }
 

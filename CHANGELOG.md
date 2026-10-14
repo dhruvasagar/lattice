@@ -8,6 +8,10 @@
   it is on your `PATH`: the VS Code HTML / CSS / JSON servers,
   `yaml-language-server`, `taplo`, `bash-language-server`, `marksman` and
   `ruby-lsp`. `:help lsp` lists the binaries and how to install them.
+- **`:lsp-install` for Lua, TOML and Markdown.** `lua-language-server`,
+  `taplo` and `marksman` join `rust-analyzer`: downloaded, checked against a
+  pinned SHA-256 and used in place of any copy on your `PATH`, on Linux and
+  macOS.
 
 ### Fixed
 - **TypeScript and C++ syntax highlighting is complete.** In `.ts`, `.tsx`,

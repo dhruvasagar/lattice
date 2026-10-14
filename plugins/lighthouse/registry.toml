@@ -60,3 +60,107 @@ url = "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-05/r
 sha256 = "64d3f6b8aacd94a93a03298d7988dfa0c747f8a4fcc539a4e59d9c9f920ca62f"
 archive = "gz"
 binary = "rust-analyzer"
+
+[[server]]
+name = "lua-language-server"
+lsp-id = "lua"
+language-id = "lua"
+version = "3.19.2"
+args = []
+file-patterns = ["*.lua"]
+root-markers = [".luarc.json", ".luarc.jsonc", "stylua.toml", ".git"]
+
+# The binary finds its scripts (`main.lua`, `script/`) relative to itself, so
+# the whole tree is kept and `binary` points into it.
+[server.platform.linux-x86_64]
+url = "https://github.com/LuaLS/lua-language-server/releases/download/3.19.2/lua-language-server-3.19.2-linux-x64.tar.gz"
+sha256 = "93ad326b10f6c00911dd8c450fa098332dbd8f9f45d1052f5636a2d54479b947"
+archive = "tar-gz"
+binary = "bin/lua-language-server"
+
+[server.platform.linux-aarch64]
+url = "https://github.com/LuaLS/lua-language-server/releases/download/3.19.2/lua-language-server-3.19.2-linux-arm64.tar.gz"
+sha256 = "17b8e401a874440adeb649e5024c364f2bb9d15156c74a40e56d1ae9a1b2e4f2"
+archive = "tar-gz"
+binary = "bin/lua-language-server"
+
+[server.platform.macos-x86_64]
+url = "https://github.com/LuaLS/lua-language-server/releases/download/3.19.2/lua-language-server-3.19.2-darwin-x64.tar.gz"
+sha256 = "6f2174ece5ec63bcd9d5b22b2c902445c1cd9045fafe48c62602448ebf4c09cc"
+archive = "tar-gz"
+binary = "bin/lua-language-server"
+
+[server.platform.macos-aarch64]
+url = "https://github.com/LuaLS/lua-language-server/releases/download/3.19.2/lua-language-server-3.19.2-darwin-arm64.tar.gz"
+sha256 = "79149584320a23bd5fcd5bc31f47a1975acd8a4560a0e89036bb1016fa61687f"
+archive = "tar-gz"
+binary = "bin/lua-language-server"
+
+# taplo publishes no digests; these were computed from the downloaded assets
+# when the version was pinned.
+[[server]]
+name = "taplo"
+lsp-id = "toml"
+language-id = "toml"
+version = "0.10.0"
+args = ["lsp", "stdio"]
+file-patterns = ["*.toml"]
+root-markers = [".taplo.toml", "taplo.toml", ".git"]
+
+[server.platform.linux-x86_64]
+url = "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-x86_64.gz"
+sha256 = "8fe196b894ccf9072f98d4e1013a180306e17d244830b03986ee5e8eabeb6156"
+archive = "gz"
+binary = "taplo"
+
+[server.platform.linux-aarch64]
+url = "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-aarch64.gz"
+sha256 = "033681d01eec8376c3fd38fa3703c79316f5e14bb013d859943b60a07bccdcc3"
+archive = "gz"
+binary = "taplo"
+
+[server.platform.macos-x86_64]
+url = "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-darwin-x86_64.gz"
+sha256 = "898122cde3a0b1cd1cbc2d52d3624f23338218c91b5ddb71518236a4c2c10ef2"
+archive = "gz"
+binary = "taplo"
+
+[server.platform.macos-aarch64]
+url = "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-darwin-aarch64.gz"
+sha256 = "713734314c3e71894b9e77513c5349835eefbd52908445a0d73b0c7dc469347d"
+archive = "gz"
+binary = "taplo"
+
+# marksman ships bare executables; the macOS one is universal.
+[[server]]
+name = "marksman"
+lsp-id = "markdown"
+language-id = "markdown"
+version = "2026-02-08"
+args = ["server"]
+file-patterns = ["*.md", "*.markdown"]
+root-markers = [".marksman.toml", ".git"]
+
+[server.platform.linux-x86_64]
+url = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-linux-x64"
+sha256 = "be5098e8213219269c47fc0d916a66fa31ce0602ec967475c722260aabf26087"
+archive = "none"
+binary = "marksman"
+
+[server.platform.linux-aarch64]
+url = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-linux-arm64"
+sha256 = "db8e124527f7f8048e3e6c91821b9c52ef173d92c01e47d221bf1337afd962fb"
+archive = "none"
+binary = "marksman"
+
+[server.platform.macos-x86_64]
+url = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-macos"
+sha256 = "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b"
+archive = "none"
+binary = "marksman"
+
+[server.platform.macos-aarch64]
+url = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-macos"
+sha256 = "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b"
+archive = "none"
+binary = "marksman"

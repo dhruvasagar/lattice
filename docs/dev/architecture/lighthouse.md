@@ -230,6 +230,11 @@ dependency, and on the platforms lattice builds for the first registry's
 pre-built servers ship as one of the other two. It becomes necessary with a
 Windows registry entry or a zip-only server (clangd).
 
+A server published as the bare executable (marksman) needs no format at all:
+the registry says `archive = "none"`, and the plugin moves the verified
+download into its staging directory under the binary's name and carries on
+from `set-executable`. That is plugin-side, so `archive-format` stays as it is.
+
 ### 3.3 `proc:spawn` — `spawn-process`
 
 ```wit

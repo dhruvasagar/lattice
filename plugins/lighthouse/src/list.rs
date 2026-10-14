@@ -253,6 +253,22 @@ mod tests {
 
     const PLATFORM: &str = "linux-x86_64";
 
+    /// The tests list a fixed registry, not the bundled one, so adding a
+    /// server to `registry.toml` does not rewrite every expected table.
+    const RUST_ANALYZER: &str = r#"
+[[server]]
+name = "rust-analyzer"
+lsp-id = "rust"
+language-id = "rust"
+version = "2026-10-05"
+file-patterns = ["*.rs"]
+[server.platform.linux-x86_64]
+url = "https://example.org/rust-analyzer.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+archive = "gz"
+binary = "rust-analyzer"
+"#;
+
     const EXTRA: &str = r#"
 [[server]]
 name = "zls"
@@ -280,9 +296,7 @@ binary = "m"
 "#;
 
     fn registry() -> Registry {
-        let (registry, problem) = Registry::load(Some(EXTRA));
-        assert_eq!(problem, None);
-        registry
+        Registry::parse(&format!("{RUST_ANALYZER}{EXTRA}")).unwrap()
     }
 
     fn record(version: &str, binary: &str) -> Installed {
@@ -443,7 +457,7 @@ binary = "m"
 
     #[test]
     fn a_singular_count_reads_as_one() {
-        let (only, _) = Registry::load(None);
+        let only = Registry::parse(RUST_ANALYZER).unwrap();
         let rows = rows(&only, PLATFORM, &[], |_| false, |_| true);
         assert_eq!(summary(&rows), "1 server \u{b7} 0 installed");
     }

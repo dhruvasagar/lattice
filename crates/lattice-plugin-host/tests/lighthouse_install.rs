@@ -322,7 +322,7 @@ impl Editor {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
             let snap = self.list();
-            if snap.lines.iter().any(|l| l.contains(want))
+            if snap.lines.iter().any(|l| squeeze(l).contains(want))
                 || tokio::time::Instant::now() >= deadline
             {
                 return snap;
@@ -782,6 +782,19 @@ async fn starting_up_removes_the_scratch_files_of_an_interrupted_install() {
 /// so elsewhere the honest status is that there is none — which is what a
 /// Windows runner showed, and what a test written on Linux had not allowed
 /// for.
+/// A list line with its column padding collapsed to single spaces. The
+/// padding follows the longest server name in the bundled registry, which
+/// grows as servers are added; what a test means is the fields.
+fn squeeze(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The server rows of a rendered list: between the heading and the blank
+/// line above the keys.
+fn server_rows(lines: &[String]) -> Vec<&String> {
+    lines.iter().skip(1).take_while(|l| !l.is_empty()).collect()
+}
+
 fn bundled_rust_analyzer_status() -> String {
     if cfg!(any(target_os = "linux", target_os = "macos")) {
         "not installed".to_string()
@@ -837,23 +850,45 @@ async fn lsp_servers_lists_the_registry_in_a_buffer_with_its_own_mode() {
     }
 
     let list = editor.list_shows("fake-ls").await;
+    assert_eq!(squeeze(&list.lines[0]), "Server Version Status");
+    let rows = server_rows(&list.lines);
+    let squeezed: Vec<String> = rows.iter().map(|l| squeeze(l)).collect();
+    assert!(
+        squeezed.contains(&"fake-ls 1.0 not installed".to_string()),
+        "the overlay's server: {:?}",
+        list.lines
+    );
+    assert!(
+        squeezed.contains(&format!(
+            "rust-analyzer 2026-10-05 {}",
+            bundled_rust_analyzer_status()
+        )),
+        "the bundled one: {:?}",
+        list.lines
+    );
+    // Sorted by name, and every row's version starts under the heading's.
+    let names: Vec<&str> = squeezed
+        .iter()
+        .map(|l| l.split(' ').next().unwrap())
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "sorted by name");
+    let version_col = list.lines[0].find("Version").unwrap();
+    for row in &rows {
+        assert!(
+            row[..version_col].ends_with(' ') && !row[version_col..].starts_with(' '),
+            "aligned: {:?}",
+            list.lines
+        );
+    }
     assert_eq!(
-        list.lines,
-        vec![
-            "  Server         Version     Status",
-            "  fake-ls        1.0         not installed",
-            &format!(
-                "  rust-analyzer  2026-10-05  {}",
-                bundled_rust_analyzer_status()
-            ),
-            "",
-            "i install   u update   x uninstall   <CR> show log   gr refresh",
-        ],
-        "the overlay's server and the bundled one, aligned"
+        list.lines.last().map(String::as_str),
+        Some("i install   u update   x uninstall   <CR> show log   gr refresh"),
     );
     assert_eq!(
         list.status.map(|s| s.text),
-        Some("2 servers \u{b7} 0 installed".to_string())
+        Some(format!("{} servers \u{b7} 0 installed", rows.len()))
     );
 }
 
@@ -890,19 +925,23 @@ async fn a_row_chord_acts_on_its_server_and_the_list_redraws_itself() {
     let said = echoed(editor.row_action("lsp-servers-install", &text, row));
     assert!(said.contains("installing fake-ls"), "{said}");
 
-    let list = editor
-        .list_shows("fake-ls        1.0         installed")
-        .await;
+    let list = editor.list_shows("fake-ls 1.0 installed").await;
     assert!(
         list.lines
             .iter()
-            .any(|l| l == "  fake-ls        1.0         installed"),
+            .any(|l| squeeze(l) == "fake-ls 1.0 installed"),
         "the row became `installed` with no redraw requested: {:?}",
         list.lines
     );
     assert_eq!(
         list.status.as_ref().map(|s| s.text.as_str()),
-        Some("2 servers \u{b7} 1 installed")
+        Some(
+            format!(
+                "{} servers \u{b7} 1 installed",
+                server_rows(&list.lines).len()
+            )
+            .as_str()
+        )
     );
     assert_eq!(editor.tree(), vec!["fake-ls/1.0/fake-ls"]);
 
@@ -920,13 +959,11 @@ async fn a_row_chord_acts_on_its_server_and_the_list_redraws_itself() {
     // `x` removes it, and the row goes back.
     let said = echoed(editor.row_action("lsp-servers-uninstall", &text, row));
     assert!(said.contains("uninstalling fake-ls"), "{said}");
-    let list = editor
-        .list_shows("fake-ls        1.0         not installed")
-        .await;
+    let list = editor.list_shows("fake-ls 1.0 not installed").await;
     assert!(
         list.lines
             .iter()
-            .any(|l| l == "  fake-ls        1.0         not installed"),
+            .any(|l| squeeze(l) == "fake-ls 1.0 not installed"),
         "{:?}",
         list.lines
     );

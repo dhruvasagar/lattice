@@ -128,7 +128,7 @@ root-markers = ["Cargo.toml", ".git"]
 [server.platform.linux-x86_64]  # <os>-<arch>
 url = "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-05/rust-analyzer-x86_64-unknown-linux-gnu.gz"
 sha256 = "28070188df63b6f217768040781decc8db43bc9d29b126847acb365575b09bc9"
-archive = "gz"                  # or "tar-gz"
+archive = "gz"                  # or "tar-gz", or "none" for a bare executable
 binary = "rust-analyzer"        # the executable inside the unpacked tree
 ```
 
@@ -142,8 +142,8 @@ Two limits:
   today, GitHub releases. A URL anywhere else is refused when the download
   starts, and the install buffer says why. The registry is yours to edit;
   where the editor may connect is not.
-- **Archives are `.gz` (one compressed file) or `.tar.gz`.** `.zip` is not
-  supported yet.
+- **Downloads are `.gz` (one compressed file), `.tar.gz`, or the executable
+  itself.** `.zip` is not supported yet.
 
 If your file has a mistake, lighthouse ignores the whole file and keeps its
 own servers. `:lsp-servers` shows the problem under the list, naming the
@@ -151,5 +151,14 @@ server and the field.
 
 ## Which servers ship
 
-`rust-analyzer`, for Linux and macOS on x86_64 and aarch64. More arrive over
-time; `:lsp-servers` is the list for the version you are running.
+Each for Linux and macOS on x86_64 and aarch64:
+
+| Server | Language |
+|---|---|
+| `rust-analyzer` | Rust |
+| `lua-language-server` | Lua |
+| `taplo` | TOML |
+| `marksman` | Markdown |
+
+More arrive over time; `:lsp-servers` is the list for the version you are
+running.

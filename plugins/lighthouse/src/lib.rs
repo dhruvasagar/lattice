@@ -205,12 +205,20 @@ impl install::Host for Edge {
         let format = match archive {
             Archive::Gz => ArchiveFormat::Gz,
             Archive::TarGz => ArchiveFormat::TarGz,
+            // The machine never unpacks a bare download; refuse by name
+            // rather than hand the host a format it would misread.
+            Archive::None => return Err("a bare download has nothing to unpack".into()),
         };
         host_services::extract_archive(&self.on_host(src), &self.on_host(dest), format)
     }
 
     fn set_executable(&mut self, path: &str) -> Result<(), String> {
         host_services::set_executable(&self.on_host(path))
+    }
+
+    fn create_dir(&mut self, path: &str) -> Result<(), String> {
+        std::fs::create_dir_all(Self::in_guest(path))
+            .map_err(|e| format!("could not create '{path}': {e}"))
     }
 
     fn remove_file(&mut self, path: &str) {

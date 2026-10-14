@@ -31,6 +31,8 @@ pub enum Archive {
     Gz,
     /// A gzip-compressed tarball.
     TarGz,
+    /// Not packed at all: the download IS the server binary.
+    None,
 }
 
 /// One server's download for one platform.
@@ -170,9 +172,13 @@ fn validate(server: &Server) -> Result<(), String> {
                 "must be a relative path inside the unpacked tree, with no `..`",
             );
         }
-        // A `.gz` is one file; it has no directories to put the binary in.
-        if build.archive == Archive::Gz && build.binary.contains('/') {
-            return bad("binary", "must be a bare file name for a `gz` archive");
+        // A `.gz` or a bare download is one file; it has no directories to
+        // put the binary in.
+        if matches!(build.archive, Archive::Gz | Archive::None) && build.binary.contains('/') {
+            return bad(
+                "binary",
+                "must be a bare file name for a `gz` or `none` archive",
+            );
         }
     }
     Ok(())
@@ -337,6 +343,16 @@ binary = "bin/zls"
     fn a_gz_archive_holds_one_file_so_its_binary_is_a_bare_name() {
         let err = with("archive = \"tar-gz\"", "archive = \"gz\"").unwrap_err();
         assert!(err.contains("bare file name"), "{err}");
+    }
+
+    #[test]
+    fn a_bare_download_is_one_file_so_its_binary_is_a_bare_name() {
+        let err = with("archive = \"tar-gz\"", "archive = \"none\"").unwrap_err();
+        assert!(err.contains("bare file name"), "{err}");
+        let bare = ONE
+            .replace("archive = \"tar-gz\"", "archive = \"none\"")
+            .replace("binary = \"bin/zls\"", "binary = \"zls\"");
+        assert!(Registry::parse(&bare).is_ok(), "a bare name is accepted");
     }
 
     #[test]

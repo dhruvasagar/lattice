@@ -8,6 +8,10 @@
 //!               └──── err ───────┴──────────────────┴──────────────────┴─► clean up, report
 //! ```
 //!
+//! A server published as a bare executable (`archive = "none"`) skips the
+//! extract: the verified download is moved into the staging directory under
+//! the binary's name, and the install carries on from "mark executable".
+//!
 //! "Register" is what makes an installed server *used*: the editor is told to
 //! run the managed binary for that language. It is not a step of the install
 //! so much as a consequence of the record — see [`Installer::reconcile`].
@@ -69,6 +73,8 @@ pub trait Host {
     /// Start unpacking `src` to `dest`; `Ok(id)` once it is under way.
     fn extract(&mut self, src: &str, dest: &str, archive: Archive) -> Result<u64, String>;
     fn set_executable(&mut self, path: &str) -> Result<(), String>;
+    /// Create a directory and any missing parents. Present is fine.
+    fn create_dir(&mut self, path: &str) -> Result<(), String>;
     /// Remove a file. Absent is fine.
     fn remove_file(&mut self, path: &str);
     /// Remove a directory and everything in it. Absent is fine.
@@ -498,20 +504,32 @@ impl Installer {
         match job.step {
             Step::Download => {
                 host.say(&buffer, "Downloaded; SHA-256 verified");
+                let staging = partial(&job.name, &job.version);
+                let src = download_file(&job.name, &job.version);
+                if job.archive == Archive::None {
+                    // The download is the binary: give it its name inside
+                    // the staging directory, and the rest is the same.
+                    let placed = host
+                        .create_dir(&staging)
+                        .and_then(|()| host.rename(&src, &format!("{staging}/{}", job.binary)));
+                    match placed {
+                        Ok(()) => self.complete(host, registry, &job),
+                        Err(e) => fail(host, &job, &e),
+                    }
+                    return;
+                }
                 host.say(&buffer, "Unpacking");
                 host.status(
                     &buffer,
                     Phase::Running,
                     &format!("{} {}: unpacking\u{2026}", job.name, job.version),
                 );
-                let staging = partial(&job.name, &job.version);
                 // A `.gz` is the binary itself and unpacks to a file; a
                 // tarball unpacks to a directory.
                 let dest = match job.archive {
                     Archive::Gz => format!("{staging}/{}", job.binary),
-                    Archive::TarGz => staging,
+                    Archive::TarGz | Archive::None => staging,
                 };
-                let src = download_file(&job.name, &job.version);
                 match host.extract(&src, &dest, job.archive) {
                     Ok(next) => {
                         job.step = Step::Extract;
@@ -520,43 +538,49 @@ impl Installer {
                     Err(e) => fail(host, &job, &e),
                 }
             }
-            Step::Extract => match put_in_place(host, &job) {
-                Ok(()) => {
-                    host.say(&buffer, &format!("Installed {} {}", job.name, job.version));
-                    self.reconcile(host, registry);
-                    if !self.is_registered(&job.name, &job.version) {
-                        // `reconcile` said why. The files are in place and
-                        // the record is written, so the next startup tries
-                        // again; this session just does not have the server.
-                        host.status(
-                            &buffer,
-                            Phase::Failed,
-                            &format!("{} {} installed, but not registered", job.name, job.version),
-                        );
-                        return;
-                    }
-                    host.say(
-                        &buffer,
-                        "Registered with the editor: files opened from now on use it.",
-                    );
-                    // The version just replaced, if any — only now, after
-                    // the editor has been moved off it.
-                    let dir = server_dir(&job.name);
-                    for entry in host.list(&dir) {
-                        if entry != job.version && !is_scratch(&entry) {
-                            host.remove_tree(&format!("{dir}/{entry}"));
-                            host.say(&buffer, &format!("Removed the previous version, {entry}"));
-                        }
-                    }
-                    host.status(
-                        &buffer,
-                        Phase::Succeeded,
-                        &format!("{} {} installed", job.name, job.version),
-                    );
-                }
-                Err(e) => fail(host, &job, &e),
-            },
+            Step::Extract => self.complete(host, registry, &job),
         }
+    }
+
+    /// The tree is staged: put it in place, record it, register it, and
+    /// clear out the version it replaced.
+    fn complete(&mut self, host: &mut impl Host, registry: &Registry, job: &Job) {
+        let buffer = job.buffer();
+        if let Err(e) = put_in_place(host, job) {
+            fail(host, job, &e);
+            return;
+        }
+        host.say(&buffer, &format!("Installed {} {}", job.name, job.version));
+        self.reconcile(host, registry);
+        if !self.is_registered(&job.name, &job.version) {
+            // `reconcile` said why. The files are in place and the record is
+            // written, so the next startup tries again; this session just
+            // does not have the server.
+            host.status(
+                &buffer,
+                Phase::Failed,
+                &format!("{} {} installed, but not registered", job.name, job.version),
+            );
+            return;
+        }
+        host.say(
+            &buffer,
+            "Registered with the editor: files opened from now on use it.",
+        );
+        // The version just replaced, if any — only now, after the editor has
+        // been moved off it.
+        let dir = server_dir(&job.name);
+        for entry in host.list(&dir) {
+            if entry != job.version && !is_scratch(&entry) {
+                host.remove_tree(&format!("{dir}/{entry}"));
+                host.say(&buffer, &format!("Removed the previous version, {entry}"));
+            }
+        }
+        host.status(
+            &buffer,
+            Phase::Succeeded,
+            &format!("{} {} installed", job.name, job.version),
+        );
     }
 }
 
@@ -645,6 +669,10 @@ mod tests {
             } else {
                 Err(format!("set executable failed: '{path}': no such file"))
             }
+        }
+        fn create_dir(&mut self, path: &str) -> Result<(), String> {
+            self.calls.push(format!("mkdir {path}"));
+            self.refuses("mkdir")
         }
         fn remove_file(&mut self, path: &str) {
             self.files.remove(path);
@@ -863,6 +891,66 @@ binary = "bin/zls"
         assert!(host.has("lsp/zls/0.13.0/bin/zls"));
         assert!(host.has("lsp/zls/0.13.0/README"), "the whole tree moves");
         assert_eq!(installed(&host, "zls").unwrap().binary, "bin/zls");
+    }
+
+    const BARE: &str = r#"
+[[server]]
+name = "marksman"
+lsp-id = "markdown"
+language-id = "markdown"
+version = "2026-02-08"
+file-patterns = ["*.md"]
+[server.platform.linux-x86_64]
+url = "https://example.org/marksman-linux-x64"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+archive = "none"
+binary = "marksman"
+"#;
+
+    #[test]
+    fn a_bare_binary_is_moved_into_place_without_unpacking() {
+        let (registry, problem) = Registry::load(Some(BARE));
+        assert_eq!(problem, None);
+        let server = registry.get("marksman").unwrap().clone();
+        let (mut installer, mut host, _) = setup(server.clone());
+        installer.request(&mut host, &server, PLATFORM);
+        let download = host.next_id;
+        host.files.insert("lsp/marksman/2026-02-08.download".into());
+        installer.finished(&mut host, &registry, download, Ok(()));
+
+        assert!(
+            !host.calls.iter().any(|c| c.starts_with("extract")),
+            "{:?}",
+            host.calls
+        );
+        assert!(
+            host.has("lsp/marksman/2026-02-08/marksman"),
+            "{:?}",
+            host.files
+        );
+        assert!(!host.has("lsp/marksman/2026-02-08.download"));
+        assert!(host
+            .calls
+            .contains(&"chmod lsp/marksman/2026-02-08.partial/marksman".to_string()));
+        assert_eq!(installed(&host, "marksman").unwrap().binary, "marksman");
+        assert_eq!(host.last_status().0, Phase::Succeeded, "{:?}", host.said);
+        assert!(!installer.is_installing("marksman"));
+    }
+
+    #[test]
+    fn a_bare_binary_that_cannot_be_staged_fails_and_leaves_nothing() {
+        let (registry, _) = Registry::load(Some(BARE));
+        let server = registry.get("marksman").unwrap().clone();
+        let (mut installer, mut host, _) = setup(server.clone());
+        host.refuse = Some("mkdir");
+        installer.request(&mut host, &server, PLATFORM);
+        let download = host.next_id;
+        host.files.insert("lsp/marksman/2026-02-08.download".into());
+        installer.finished(&mut host, &registry, download, Ok(()));
+
+        assert!(host.files.is_empty(), "left behind: {:?}", host.files);
+        assert_eq!(installed(&host, "marksman"), None);
+        assert_eq!(host.last_status().0, Phase::Failed);
     }
 
     /// The exit criterion: a download that fails verification installs

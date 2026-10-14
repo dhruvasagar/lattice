@@ -20,9 +20,10 @@
 #   url            https only
 #   sha256         of the file at `url`. MANDATORY, and checked by the host as
 #                  the bytes arrive: a mismatch installs nothing.
-#   archive        `gz` (one compressed file) or `tar-gz`
+#   archive        `gz` (one compressed file), `tar-gz`, or `none` (the
+#                  download is the executable itself)
 #   binary         the server executable, relative to the unpacked tree. For
-#                  `gz` it is the name the single file is given.
+#                  `gz` and `none` it is the name the single file is given.
 #
 # The digests below are the ones GitHub publishes for each release asset;
 # linux-x86_64 was also downloaded and hashed when it was pinned.

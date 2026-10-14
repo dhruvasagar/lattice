@@ -7,7 +7,9 @@
 //! config.
 //!
 //! v1 ships hardcoded defaults for rust-analyzer, pyright, gopls,
-//! tsserver, clangd, and lua-language-server; users override via
+//! typescript-language-server, clangd, lua-language-server, the
+//! VS Code HTML / CSS / JSON servers, yaml-language-server, taplo,
+//! bash-language-server, marksman and ruby-lsp; users override via
 //! a future `lsp.toml` (queued behind §5.12). For now,
 //! [`builtin_servers`] returns the curated list and the editor
 //! reads from it directly.
@@ -125,7 +127,61 @@ impl ServerConfig {
         self.initialization_options = Some(opts);
         self
     }
+
+    /// The `languageId` to send for `file` (a path or URI).
+    ///
+    /// The id belongs to the document, not the server: one server
+    /// serves a whole FAMILY of ids and parses each file by the one
+    /// it is given. typescript-language-server reads `.tsx` as JSX
+    /// only when told `typescriptreact`, and type-checks `.js` as
+    /// TypeScript when told `typescript`. So a file whose extension
+    /// names a member of `language_id`'s family gets that member's
+    /// id; everything else gets `language_id` unchanged.
+    ///
+    /// Resolved here rather than declared per pattern so it holds
+    /// for a server registered through the plugin API too, whose
+    /// spec carries a single `language-id` (lighthouse's managed
+    /// TypeScript server replaces the built-in config wholesale).
+    pub fn language_id_for(&self, file: &str) -> &str {
+        let ext = file
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.rsplit_once('.'))
+            .map(|(_, ext)| ext.to_ascii_lowercase());
+        let Some(ext) = ext else {
+            return &self.language_id;
+        };
+        LANGUAGE_FAMILIES
+            .iter()
+            .find(|family| family.iter().any(|(_, id)| *id == self.language_id))
+            .and_then(|family| {
+                family
+                    .iter()
+                    .find(|(exts, _)| exts.contains(&ext.as_str()))
+                    .map(|(_, id)| *id)
+            })
+            .unwrap_or(&self.language_id)
+    }
 }
+
+/// Language ids one server legitimately serves together, each with
+/// the extensions that select it (ids from the LSP specification's
+/// list). See [`ServerConfig::language_id_for`]. `.h` is left out on
+/// purpose: it is C or C++ by project, not by name.
+const LANGUAGE_FAMILIES: &[&[(&[&str], &str)]] = &[
+    &[
+        (&["ts", "mts", "cts"], "typescript"),
+        (&["tsx"], "typescriptreact"),
+        (&["js", "mjs", "cjs"], "javascript"),
+        (&["jsx"], "javascriptreact"),
+    ],
+    &[
+        (&["c"], "c"),
+        (&["cc", "cpp", "cxx", "hpp", "hh", "hxx"], "cpp"),
+    ],
+    &[(&["css"], "css"), (&["scss"], "scss"), (&["less"], "less")],
+    &[(&["json"], "json"), (&["jsonc"], "jsonc")],
+];
 
 /// Curated registry of well-known language servers. The editor
 /// loads these as defaults; user overrides (from `lsp.toml` in a
@@ -183,6 +239,47 @@ pub fn builtin_servers() -> Vec<ServerConfig> {
         ServerConfig::new("lua", "lua-language-server", "lua")
             .with_root_markers([".luarc.json", ".luarc.jsonc", "stylua.toml", ".git"])
             .with_file_patterns(["*.lua"]),
+        // The three servers VS Code extracts from its own HTML / CSS /
+        // JSON support (npm `vscode-langservers-extracted`).
+        ServerConfig::new("html", "vscode-html-language-server", "html")
+            .with_args(["--stdio"])
+            .with_root_markers(["package.json", ".git"])
+            .with_file_patterns(["*.html", "*.htm"]),
+        ServerConfig::new("css", "vscode-css-language-server", "css")
+            .with_args(["--stdio"])
+            .with_root_markers(["package.json", ".git"])
+            .with_file_patterns(["*.css", "*.scss", "*.less"]),
+        ServerConfig::new("json", "vscode-json-language-server", "json")
+            .with_args(["--stdio"])
+            .with_root_markers(["package.json", ".git"])
+            .with_file_patterns(["*.json", "*.jsonc"]),
+        // yaml-language-server: Red Hat's YAML server (schemas,
+        // validation, completion).
+        ServerConfig::new("yaml", "yaml-language-server", "yaml")
+            .with_args(["--stdio"])
+            .with_root_markers([".yamllint", ".yamllint.yaml", ".git"])
+            .with_file_patterns(["*.yaml", "*.yml"]),
+        // taplo: the TOML toolkit; its LSP is a subcommand.
+        ServerConfig::new("toml", "taplo", "toml")
+            .with_args(["lsp", "stdio"])
+            .with_root_markers([".taplo.toml", "taplo.toml", ".git"])
+            .with_file_patterns(["*.toml"]),
+        // bash-language-server: bash only — zsh and fish parse
+        // differently and it reports their syntax as errors.
+        ServerConfig::new("bash", "bash-language-server", "shellscript")
+            .with_args(["start"])
+            .with_root_markers([".shellcheckrc", ".git"])
+            .with_file_patterns(["*.sh", "*.bash"]),
+        // marksman: Markdown links, references and headings.
+        ServerConfig::new("markdown", "marksman", "markdown")
+            .with_args(["server"])
+            .with_root_markers([".marksman.toml", ".git"])
+            .with_file_patterns(["*.md", "*.markdown"]),
+        // ruby-lsp: Shopify's server, the one the Ruby community
+        // has standardised on. Speaks stdio with no arguments.
+        ServerConfig::new("ruby", "ruby-lsp", "ruby")
+            .with_root_markers(["Gemfile", ".ruby-version", ".git"])
+            .with_file_patterns(["*.rb"]),
     ]
 }
 
@@ -315,6 +412,40 @@ mod tests {
                 cfg.id
             );
         }
+    }
+
+    #[test]
+    fn language_id_follows_the_file_within_the_server_family() {
+        let ts = builtin_servers()
+            .into_iter()
+            .find(|c| c.id == "typescript")
+            .unwrap();
+        assert_eq!(ts.language_id_for("file:///p/a.ts"), "typescript");
+        assert_eq!(ts.language_id_for("file:///p/App.tsx"), "typescriptreact");
+        assert_eq!(ts.language_id_for("file:///p/a.mjs"), "javascript");
+        assert_eq!(ts.language_id_for("file:///p/App.JSX"), "javascriptreact");
+        let c = builtin_servers()
+            .into_iter()
+            .find(|c| c.id == "c-cpp")
+            .unwrap();
+        assert_eq!(c.language_id_for("/p/main.c"), "c");
+        assert_eq!(c.language_id_for("/p/main.cpp"), "cpp");
+        // `.h` is ambiguous: the configured id stands.
+        assert_eq!(c.language_id_for("/p/main.h"), "cpp");
+    }
+
+    #[test]
+    fn language_id_never_crosses_into_another_family() {
+        // A Rust server opening a `.tsx` (it would not, but a plugin
+        // could register odd patterns) still says what it was told.
+        let rust = ServerConfig::new("rust", "rust-analyzer", "rust");
+        assert_eq!(rust.language_id_for("/p/App.tsx"), "rust");
+        // A plugin-registered server with a non-family id, and a
+        // file with no extension at all.
+        let zig = ServerConfig::new("zig", "zls", "zig");
+        assert_eq!(zig.language_id_for("/p/a.zig"), "zig");
+        let ts = ServerConfig::new("typescript", "x", "typescript");
+        assert_eq!(ts.language_id_for("/p.d/Makefile"), "typescript");
     }
 
     #[test]

@@ -553,7 +553,11 @@ impl LspSupervisor {
 
             // Drive the DocSync inside the actor: single writer
             // means no contention with the edit / flush path.
-            handle.open_doc(uri.clone(), config.language_id.clone(), text.clone())?;
+            handle.open_doc(
+                uri.clone(),
+                config.language_id_for(uri.as_str()).to_string(),
+                text.clone(),
+            )?;
 
             handles.push(handle);
             keys.push(key);
@@ -892,9 +896,11 @@ impl LspSupervisor {
                 })
                 .collect();
             for uri in &uris_for_key {
-                if let Err(e) =
-                    new_handle.open_doc(uri.clone(), config.language_id.clone(), String::new())
-                {
+                if let Err(e) = new_handle.open_doc(
+                    uri.clone(),
+                    config.language_id_for(uri.as_str()).to_string(),
+                    String::new(),
+                ) {
                     self.logger.log(
                         None,
                         LogLevel::Warn,
@@ -1729,9 +1735,11 @@ async fn handle_actor_exit(
             })
             .collect();
         for uri in uris_for_key {
-            if let Err(e) =
-                new_handle.open_doc(uri.clone(), config.language_id.clone(), String::new())
-            {
+            if let Err(e) = new_handle.open_doc(
+                uri.clone(),
+                config.language_id_for(uri.as_str()).to_string(),
+                String::new(),
+            ) {
                 state.logger.log(
                     None,
                     LogLevel::Warn,

@@ -94,6 +94,12 @@ standard channel. The defaults expect the canonical binary on
 | TypeScript / JavaScript | `typescript-language-server` | `npm install -g typescript-language-server typescript` |
 | C / C++                 | `clangd`                     | `apt install clangd` / `brew install llvm`             |
 | Lua                     | `lua-language-server`        | `brew install lua-language-server`                     |
+| HTML / CSS / JSON       | `vscode-html-language-server`, `vscode-css-language-server`, `vscode-json-language-server` | `npm install -g vscode-langservers-extracted` |
+| YAML                    | `yaml-language-server`       | `npm install -g yaml-language-server`                  |
+| TOML                    | `taplo`                      | `cargo install taplo-cli --locked` / `brew install taplo` |
+| Bash                    | `bash-language-server`       | `npm install -g bash-language-server`                  |
+| Markdown                | `marksman`                   | `brew install marksman`                                |
+| Ruby                    | `ruby-lsp`                   | `gem install ruby-lsp`                                 |
 
 Other servers can be configured manually (see
 **Configuration** below).
@@ -267,6 +273,21 @@ under its standard name:
 | TypeScript / JavaScript | `typescript-language-server --stdio` | `*.ts`, `*.tsx`, `*.js`, `*.jsx`, `*.mts`, `*.cts` |
 | C / C++ | `clangd` | `*.c`, `*.h`, `*.cc`, `*.cpp`, `*.cxx`, `*.hpp`, `*.hh` |
 | Lua | `lua-language-server` | `*.lua` |
+| HTML | `vscode-html-language-server --stdio` | `*.html`, `*.htm` |
+| CSS | `vscode-css-language-server --stdio` | `*.css`, `*.scss`, `*.less` |
+| JSON | `vscode-json-language-server --stdio` | `*.json`, `*.jsonc` |
+| YAML | `yaml-language-server --stdio` | `*.yaml`, `*.yml` |
+| TOML | `taplo lsp stdio` | `*.toml` |
+| Bash | `bash-language-server start` | `*.sh`, `*.bash` |
+| Markdown | `marksman server` | `*.md`, `*.markdown` |
+| Ruby | `ruby-lsp` | `*.rb` |
+
+One server can serve several related languages, and it is told
+which one each file is: the TypeScript server hears `typescriptreact`
+for a `.tsx` file and `javascript` for a `.js` one, so JSX parses as
+JSX and plain JavaScript is not type-checked as TypeScript. The same
+holds for C against C++ (`.h` counts as C++) and for CSS, SCSS and
+Less.
 
 **The list is not configurable yet.** A different binary path,
 extra arguments, other root markers, server priority or a server

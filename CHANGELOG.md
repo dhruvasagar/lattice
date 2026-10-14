@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+- **Language servers for HTML, CSS, JSON, YAML, TOML, Bash, Markdown and
+  Ruby.** Opening one of these files now starts its standard server when
+  it is on your `PATH`: the VS Code HTML / CSS / JSON servers,
+  `yaml-language-server`, `taplo`, `bash-language-server`, `marksman` and
+  `ruby-lsp`. `:help lsp` lists the binaries and how to install them.
+
 ### Fixed
 - **TypeScript and C++ syntax highlighting is complete.** In `.ts`, `.tsx`,
   `.cpp` and `.hpp` files, strings, comments, numbers, function names and
@@ -10,6 +17,12 @@
 - **JSX is highlighted, and `.jsx` files are recognised.** HTML tags and
   attributes inside JSX are coloured in `.js`, `.jsx` and `.tsx` files, and
   `.jsx` files open as JavaScript instead of plain text.
+- **The TypeScript server understands `.tsx`, `.js` and `.jsx` files.**
+  Every file it handled was announced as TypeScript, so JSX in `.tsx`
+  files was reported as errors and plain JavaScript was type-checked as
+  TypeScript. Each file is now sent as what it is (`typescriptreact`,
+  `javascript`, `javascriptreact`), and `clangd` hears `c` for a `.c`
+  file instead of `cpp`.
 
 ## 0.9.8 — 2026-10-14
 

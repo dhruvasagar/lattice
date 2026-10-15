@@ -59,6 +59,8 @@ pub mod lang;
 // MDL.1: markdown link scanning + heading slugs, shared by markdown-mode's
 // follow-link and help buffers. See `docs/dev/architecture/markdown-links.md`.
 pub mod markdown;
+// MDL.2: markdown-mode, which owns `<CR>`-follows-link.
+pub mod markdown_mode;
 pub mod modes;
 // LG.2: languages registered at runtime rather than compiled in.
 pub mod motions;

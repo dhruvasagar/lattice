@@ -44,11 +44,30 @@ Both exist for the other eighteen bundled languages; see
 
 ## Keybindings
 
-None of its own. Markdown-mode names the language and supplies queries;
-it contributes no chords. In a help buffer, `<CR>`-follows-link comes
-from [`help-mode`](help:help-mode) layered on top, not from here — which
-is why `<CR>` follows a link in `:help` and inserts a newline in a
-markdown file you are editing.
+| Key | Mode | Does |
+|---|---|---|
+| `<CR>` | Normal | Follow the link under the cursor |
+
+The cursor counts as on a link anywhere from its `[` to its `)`. What happens depends on where the link points:
+
+| Link | `<CR>` |
+|---|---|
+| `[text](#install)` | Jump to the heading `# Install` in this buffer |
+| `[text](guide.md)` | Open `guide.md`, relative to *this file's* directory |
+| `[text](guide.md#setup)` | Open `guide.md` at its `## Setup` heading |
+| `[text](https://…)`, `<https://…>` | Open in your browser (the OS handler) |
+
+Heading anchors use GitHub's slugs: lowercase, punctuation dropped,
+spaces become `-`. So `## 1. Getting Started` is `#1-getting-started`.
+Every follow is recorded as a jump, so `<C-o>` takes you back to the
+link. A link to a file that doesn't exist reports `no such file`
+instead of opening an empty buffer.
+
+Off a link, `<CR>` does nothing. Reference links (`[text][ref]`) and
+wiki links (`[[note]]`) aren't followed yet.
+
+In a help buffer, `<CR>` follows help's own links (from
+[`help-mode`](help:help-mode)), as it always has.
 
 ## Options
 

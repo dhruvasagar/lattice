@@ -21,7 +21,6 @@ use lattice_completion::{
     CandidateKind, CompletionSourceContribution, CompletionSourceKind, InsertContext, RawCandidate,
     SourceId, SyncCompletionSource,
 };
-use lattice_core::BufferKind;
 use lattice_mode::{
     CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
@@ -33,37 +32,21 @@ use crate::lang::Lang;
 /// keeping each mode's source plain Rust (no proc-macro
 /// indirection for now).
 ///
-/// Second arm (with `target_kind = $kind`) overrides
-/// [`Mode::target_buffer_kind`] for language majors that are also
-/// the default major for a non-`Document` [`BufferKind`] — today
-/// only `markdown-mode`, which serves both `Document + Markdown`
-/// (via `Lang` detection) and `Help` (via H.2's kind dispatch).
+/// No `target_buffer_kind` arm: the one language major that is also a
+/// non-`Document` kind's default (`markdown-mode`, for `Help`) is
+/// hand-written in `markdown_mode.rs`.
 macro_rules! lang_mode {
     ($struct_name:ident, $mode_name:literal) => {
-        lang_mode!(@impl $struct_name, $mode_name, None, {});
-    };
-    ($struct_name:ident, $mode_name:literal, target_kind = $kind:expr) => {
-        lang_mode!(@impl $struct_name, $mode_name, Some($kind), {});
+        lang_mode!(@impl $struct_name, $mode_name, {});
     };
     // IN.11: a language whose tooling assumes different indent
     // conventions from the global defaults states them here. No new
     // mechanism -- `Mode::options()` is layer 4 of the buffer-local
     // resolution stack and had simply never been used for indentation.
     ($struct_name:ident, $mode_name:literal, options = { $($opt:tt)* }) => {
-        lang_mode!(@impl $struct_name, $mode_name, None, { $($opt)* });
+        lang_mode!(@impl $struct_name, $mode_name, { $($opt)* });
     };
-    // RF.4: the fourth combination. `markdown-mode` is the first mode to
-    // need BOTH a target kind and option overrides, and the macro had
-    // three arms covering every other pairing.
-    (
-        $struct_name:ident,
-        $mode_name:literal,
-        target_kind = $kind:expr,
-        options = { $($opt:tt)* }
-    ) => {
-        lang_mode!(@impl $struct_name, $mode_name, Some($kind), { $($opt)* });
-    };
-    (@impl $struct_name:ident, $mode_name:literal, $target_kind:expr, { $($opt:tt)* }) => {
+    (@impl $struct_name:ident, $mode_name:literal, { $($opt:tt)* }) => {
         pub struct $struct_name;
 
         impl $struct_name {
@@ -79,9 +62,6 @@ macro_rules! lang_mode {
             }
             fn kind(&self) -> ModeKind {
                 ModeKind::Major
-            }
-            fn target_buffer_kind(&self) -> Option<BufferKind> {
-                $target_kind
             }
             fn options(&self) -> lattice_config::OptionOverrideSet {
                 lattice_config::overrides! { $($opt)* }
@@ -207,25 +187,10 @@ lang_mode!(
         lattice_config::Shiftwidth = 2,
     }
 );
-// H.2 (2026-05-31): `markdown-mode` is the default major for two
-// dispatch paths — `Document + Lang::Markdown` (via language
-// detection) and `BufferKind::Help` (via the registry's kind
-// index). Both paths land on the same mode; the kind binding
-// here drives the latter.
-lang_mode!(
-    MarkdownMode,
-    "markdown-mode",
-    target_kind = BufferKind::Help,
-    options = {
-        // RF.4: markdown IS prose, so wrapping while typing applies to
-        // every line rather than only to comments (there are none). The
-        // global default is the conservative `comments` rung because a
-        // code line broken mid-expression is destructive in a way a
-        // broken sentence is not; a prose major has no such hazard and
-        // opts up.
-        lattice_config::AutoWrapOption = lattice_core::AutoWrap::All,
-    }
-);
+// `markdown-mode` is hand-written in `markdown_mode.rs`: it is the one
+// language major with a chord of its own (MDL.2, `<CR>` follows a link),
+// and the macro carries options, not keymaps or action handlers.
+pub use crate::markdown_mode::MarkdownMode;
 
 /// Resolve a [`Lang`] to its corresponding major-mode id.
 /// `Lang::Plain` returns `None` because `text-mode` (the

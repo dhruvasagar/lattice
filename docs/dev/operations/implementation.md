@@ -7397,7 +7397,7 @@ Slice plan: [`slice-plans/archive/api-docs.md`](slice-plans/archive/api-docs.md)
 | Slice | What | Status |
 |---|---|---|
 | MDL.1 | one link scanner + heading slugs, in `lattice-syntax::markdown` | ✅ |
-| MDL.2 | `markdown-mode` `<CR>` follows `#anchor` / file / `file#anchor` / URL | 📝 |
+| MDL.2 | `markdown-mode` `<CR>` follows `#anchor` / file / `file#anchor` / URL | ✅ |
 | MDL.3 | native conceal rules; markdown links render as their label | 📝 |
 
 Markdown files get what org links and help buffers already had: links that

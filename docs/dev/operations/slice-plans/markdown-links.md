@@ -11,7 +11,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 | Slice | What | Status |
 |---|---|---|
 | MDL.1 | Markdown link scanning + heading slugs move to `lattice-syntax::markdown`; `lattice-help` builds on it. No behaviour change. | ✅ |
-| MDL.2 | `markdown-mode` owns `<CR>` → `action:markdown-follow-link`: `#anchor`, file, `file#anchor`, external URL, autolink; declines off a link. | 📝 |
+| MDL.2 | `markdown-mode` owns `<CR>` → `action:markdown-follow-link`: `#anchor`, file, `file#anchor`, external URL, autolink; declines off a link. | ✅ |
 | MDL.3 | Native languages can declare conceal rules (`conceal_source`); markdown declares inline-link + autolink rules. Bench case. | 📝 |
 
 ## MDL.1 — one scanner

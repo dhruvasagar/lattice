@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- **`<CR>` follows markdown links.** In a markdown file, `<CR>` on
+  `[text](#heading)` jumps to that heading, on `[text](other.md)` or
+  `[text](other.md#heading)` opens the file (relative to the current file),
+  and on `[text](https://…)` or `<https://…>` opens your browser. `<C-o>`
+  returns to the link. `:help markdown-mode` has the details.
 - **Language servers for HTML, CSS, JSON, YAML, TOML, Bash, Markdown and
   Ruby.** Opening one of these files now starts its standard server when
   it is on your `PATH`: the VS Code HTML / CSS / JSON servers,

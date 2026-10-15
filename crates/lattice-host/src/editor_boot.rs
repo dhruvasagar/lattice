@@ -822,6 +822,10 @@ impl Editor {
         // wires chord -> id. Must run while the command registry is still
         // mutable (before `freeze_command_registry` below).
         let syntax_motion_ids = lattice_syntax::register_syntax_motions(boot.commands_mut());
+        // MDL.2: markdown-mode's `<CR>` command. The body is
+        // `MarkdownMode::action_handlers()`; this declaration only gives the
+        // keymap's `cmd:` a `CommandId` to bind to.
+        lattice_syntax::markdown_mode::register_markdown_commands(boot.commands_mut());
 
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire

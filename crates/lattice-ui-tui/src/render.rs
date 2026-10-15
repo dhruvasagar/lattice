@@ -7490,8 +7490,32 @@ fn cursor_screen_position_at(
     let inlay_hints = &rs_st.syntax.inlay_hints;
     // Display column of the cursor within its (unwrapped) line —
     // tab-expanded + inlay-shifted.
-    let display_col =
-        display_col_for_byte(&snap.buffer, cursor, inlay_hints, ad.option_cache.tabstop);
+    //
+    // Conceal removes columns where inlays add them: a hidden range is
+    // absent from the painted row, so the caret must not count it. The
+    // ranges come from this pane's display matrix — the same row the
+    // compose loop paints — and the clamp is `lattice_cells`'s, shared
+    // with GPUI and the host's horizontal clamp so the three cannot
+    // disagree about where a caret inside or past a link sits.
+    let conceals = view
+        .app
+        .render_state
+        .load()
+        .cells
+        .load_full()
+        .display_matrix_for_pane(pane_id)
+        .and_then(|cell| {
+            cell.load_full()
+                .row_at_source_line(cursor.line)
+                .map(|row| row.conceals.clone())
+        });
+    let display_col = display_col_for_byte(
+        &snap.buffer,
+        cursor,
+        inlay_hints,
+        conceals.as_deref().unwrap_or(&[]),
+        ad.option_cache.tabstop,
+    );
     // W.4.t: split that column across wrap segments. The cursor's
     // own segment index (`display_col / wrap_width`) adds to the
     // row; the remainder (`display_col % wrap_width`) is the column
@@ -7567,6 +7591,7 @@ fn display_col_for_byte(
     buffer: &lattice_core::Buffer,
     pos: lattice_protocol::Position,
     inlay_hints: &[lattice_host::render_state::InlayHintRow],
+    conceals: &[lattice_cells::ConcealRange],
     tabstop: u32,
 ) -> u32 {
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -7608,7 +7633,10 @@ fn display_col_for_byte(
         .filter(|h| h.line == pos.line && (h.byte as usize) <= byte)
         .map(|h| UnicodeWidthStr::width(h.text.as_str()) as u32)
         .sum();
-    base + inlay_shift
+    // Conceal ranges are in the source line's CHAR space, so the clamp
+    // is told the cursor's char index, not its tab-expanded column.
+    let source_col = line[..byte].chars().count() as u32;
+    lattice_cells::subtract_conceals(base + inlay_shift, source_col, conceals)
 }
 
 #[cfg(test)]
@@ -10509,6 +10537,7 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 4),
             &inlays,
+            &[],
             4,
         );
         assert_eq!(before, 4, "shift must not apply before inlay anchor");
@@ -10518,6 +10547,7 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 5),
             &inlays,
+            &[],
             4,
         );
         assert_eq!(at, 5 + 5, "shift applies at the inlay anchor");
@@ -10527,6 +10557,7 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 9),
             &inlays,
+            &[],
             4,
         );
         assert_eq!(eol, 9 + 5, "shift carries through to EOL");
@@ -10535,9 +10566,37 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 9),
             &[],
+            &[],
             4,
         );
         assert_eq!(no_inlay, 9);
+    }
+
+    /// A concealed range is absent from the painted row, so the caret must
+    /// not count it. `$` on `see [a](b.md)` lands on the hidden `)`, which
+    /// sits — like every byte of its range — at the range's start: just
+    /// past the label, where GPUI's caret already was. Without the
+    /// subtraction the TUI caret drew seven columns right of the text.
+    #[test]
+    fn display_col_for_byte_subtracts_concealed_ranges() {
+        let app = app_with("see [a](b.md) x\n", 5);
+        let buf = &app.ad().snapshot.buffer;
+        // `[` is char 4; `](b.md)` is chars 6..13 — what markdown's rules
+        // hide, in the char space the display matrix stores them in.
+        let conceals = [(4u32, 5u32), (6u32, 13u32)];
+        let at = |byte: u32| {
+            display_col_for_byte(
+                buf,
+                lattice_protocol::Position::new(0, byte),
+                &[],
+                &conceals,
+                4,
+            )
+        };
+        assert_eq!(at(3), 3, "before the link: untouched");
+        assert_eq!(at(5), 4, "the label sits where the hidden `[` was");
+        assert_eq!(at(12), 5, "`$`-style `)` clamps to just past the label");
+        assert_eq!(at(14), 6, "past the link: both ranges' widths removed");
     }
 
     #[test]
@@ -10685,8 +10744,9 @@ mod tests {
         // tab-stop, matching the cells builder's expansion.
         let app = app_with("\tab", 5);
         let buf = &app.ad().snapshot.buffer;
-        let col =
-            |byte: u32| display_col_for_byte(buf, lattice_protocol::Position::new(0, byte), &[], 4);
+        let col = |byte: u32| {
+            display_col_for_byte(buf, lattice_protocol::Position::new(0, byte), &[], &[], 4)
+        };
         assert_eq!(col(0), 0, "cursor on the tab sits at its start column");
         assert_eq!(col(1), 4, "'a' after a tab lands at column tabstop");
         assert_eq!(col(2), 5, "'b' follows at column tabstop+1");

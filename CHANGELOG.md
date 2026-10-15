@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **The cursor ignored hidden link markup in the terminal.** With markdown
+  links shown as their text, `$` on a line ending in a link put the terminal
+  cursor where the hidden URL would have been, and on a line with wrapping
+  off it could scroll the view sideways past the text. The cursor now lands
+  just past the link's text, in the terminal and the GUI alike, and the GUI's
+  block cursor no longer shows the hidden `)` under it.
+
 ## 0.9.9 — 2026-10-15
 
 ### Added

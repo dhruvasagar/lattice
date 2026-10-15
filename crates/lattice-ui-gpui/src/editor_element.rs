@@ -2182,8 +2182,7 @@ impl Element for EditorElement {
                         } else {
                             let shaped =
                                 if matches!(c.shape, CursorShape::Block) && byte < line.len() {
-                                    let rest = &line[byte..];
-                                    let ch = rest.chars().next().unwrap_or(' ');
+                                    let ch = block_cursor_char(line, byte, cursor_row_inlays);
                                     let runs = vec![TextRun {
                                         len: ch.len_utf8(),
                                         font: font.clone(),
@@ -3402,6 +3401,23 @@ pub(crate) fn x_to_column(
         }
     }
     lo
+}
+
+/// The character a block cursor at `byte` re-stamps: the one painted in
+/// its cell. Usually the source char at `byte`, but a byte inside a
+/// concealed range is not painted — its caret sits at the range's start
+/// column ([`lattice_cells::subtract_conceals`]), where the first char
+/// PAST the range is drawn. Stamping the hidden char instead would show
+/// the `)` of a concealed link under the cursor; the terminal peer shows
+/// the cell's own glyph, so this keeps the two block cursors alike.
+fn block_cursor_char(line: &str, byte: usize, coords: &RowCoords) -> char {
+    let ci = line[..byte].chars().count() as u32;
+    let shown = coords
+        .conceals
+        .iter()
+        .find(|(start, end)| *start <= ci && ci < *end)
+        .map_or(ci, |(_, end)| *end);
+    line.chars().nth(shown as usize).unwrap_or(' ')
 }
 
 /// Convert a utf-8 byte offset within `line` to a char column in
@@ -5110,6 +5126,33 @@ mod tests {
         assert_eq!(shaped_char_range(129, 0, 0, 88, true), (0, 129));
         // Wrap on: the segment, and `leftcol` plays no part.
         assert_eq!(shaped_char_range(129, 1, 80, 0, false), (80, 129));
+    }
+
+    #[test]
+    fn a_block_cursor_on_a_concealed_byte_stamps_the_painted_char() {
+        let line = "see [a](b.md) x";
+        let coords = RowCoords {
+            conceals: vec![(4, 5), (6, 13)],
+            ..RowCoords::default()
+        };
+        assert_eq!(block_cursor_char(line, 5, &coords), 'a', "visible: itself");
+        assert_eq!(
+            block_cursor_char(line, 12, &coords),
+            ' ',
+            "hidden `)`: the char after"
+        );
+        assert_eq!(
+            block_cursor_char(
+                "[a](b)",
+                5,
+                &RowCoords {
+                    conceals: vec![(0, 1), (2, 6)],
+                    ..RowCoords::default()
+                }
+            ),
+            ' ',
+            "past the end: blank"
+        );
     }
 
     #[test]

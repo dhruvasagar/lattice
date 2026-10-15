@@ -7498,6 +7498,34 @@ impl Editor {
     /// falls back to a tab-expanded scan of the line text when the
     /// row is outside the built window.
     fn cursor_display_col(&self) -> u32 {
+        let col = self.cursor_display_col_unconcealed();
+        // Conceal removes columns where inlays add them, and the cell rows
+        // read above carry no conceal ranges — the display matrix does.
+        // Without this, `$` on a line ending in a concealed link measured
+        // the hidden URL and scrolled `leftcol` past text that is not
+        // there. The clamp is `lattice_cells`'s, shared with both renderers'
+        // carets so the three agree on where the cursor is.
+        let bid = self.active_buffer_id();
+        let matrix = self.display_matrix_for(bid).load_full();
+        let Some(row) = matrix.row_at_source_line(self.cursor.line) else {
+            return col;
+        };
+        if row.conceals.is_empty() {
+            return col;
+        }
+        let snap = self.document.snapshot();
+        let text = snap.buffer.line(self.cursor.line).unwrap_or_default();
+        let mut byte = (self.cursor.byte as usize).min(text.len());
+        while byte > 0 && !text.is_char_boundary(byte) {
+            byte -= 1;
+        }
+        let source_col = text[..byte].chars().count() as u32;
+        lattice_cells::subtract_conceals(col, source_col, &row.conceals)
+    }
+
+    /// [`Self::cursor_display_col`] before conceal: tab- and
+    /// inlay-expanded only.
+    fn cursor_display_col_unconcealed(&self) -> u32 {
         let bid = self.active_buffer_id();
         if let Some(col) = self
             .cells_matrix_for(bid)
@@ -56160,6 +56188,50 @@ mod tests {
     /// than the pane behind it — must scroll the popup sideways. The
     /// horizontal clamp measured the pane, saw the cursor inside it, and
     /// left `leftcol` at 0 with the caret past the popup's right edge.
+    /// `$` on a `nowrap` line ending in a concealed link must measure the
+    /// line as painted. The horizontal clamp read cell rows, which carry no
+    /// conceal ranges, so it counted the hidden URL and scrolled `leftcol`
+    /// to a column past the visible text — the caret jumped away from the
+    /// end of the label it should sit beside.
+    #[test]
+    fn dollar_on_a_concealed_link_does_not_scroll_past_the_label() {
+        use crate::display_matrix::{DisplayChunk, DisplayLine, DisplayMatrix, DisplayRun};
+        let url = format!("{}.md", "x".repeat(60));
+        let text = format!("see [a]({url})");
+        let mut editor = Editor::boot(lattice_core::Document::from_text(&format!("{text}\n")));
+        editor.option_cache.wrap_lines = false;
+        editor.pane_tree.active_mut().viewport_width = 40;
+        editor.viewport_height = 10;
+        // What markdown's rules hide: `[` and `](…)`, in char space.
+        let len = text.chars().count() as u32;
+        let conceals = [(4u32, 5u32), (6u32, len)];
+        let row = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from("see a"),
+            runs: std::sync::Arc::from([] as [DisplayRun; 0]),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from(conceals),
+            col_count: 5,
+            fold: None,
+        };
+        let chunk = DisplayChunk::new(0, vec![row], lattice_cells::MatrixVersion::default());
+        editor
+            .display_matrix_for(editor.active_buffer_id())
+            .store(std::sync::Arc::new(DisplayMatrix::whole_doc(
+                std::sync::Arc::new(chunk),
+                1,
+            )));
+
+        editor.cursor = lattice_protocol::Position::new(0, len - 1);
+        editor.ensure_cursor_horizontally_visible();
+        assert_eq!(
+            editor.cursor_display_col(),
+            5,
+            "the hidden `)` sits just past the label, as on both renderers"
+        );
+        assert_eq!(editor.leftcol, 0, "a five-column line needs no scroll");
+    }
+
     #[test]
     fn dollar_in_a_focused_popup_scrolls_it_horizontally() {
         use crate::popup::PopupPlacement;

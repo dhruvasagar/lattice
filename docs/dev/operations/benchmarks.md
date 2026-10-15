@@ -340,6 +340,28 @@ not where a rebuild's time goes. If a future workload makes it matter,
 `captures_read` with a reused `Locations` is the fix and needs no
 design change.
 
+### MDL.3 — markdown's rules (2026-10-15)
+
+⚠️ **WSL2 (Linux 6.6), rustc 1.94.0** — a different machine from the M1
+figures above, so compare rows within this table, not across tables. Same
+bench, two new workloads. Design:
+[`../architecture/markdown-links.md`](../architecture/markdown-links.md).
+
+| Workload | Per line |
+|---|---|
+| `no_rules` (same-machine reference) | 2.22 ns |
+| org's two rules, prose (same-machine reference) | 75.0 ns |
+| org's two rules, three links (same-machine reference) | 1.02 µs |
+| markdown's two rules, prose (no match) | **70.9 ns** |
+| markdown's two rules, three links + an autolink | **1.28 µs** |
+
+Markdown is the first compiled-in language with rules, which retires the
+"every Markdown buffer pays nothing" line above: markdown buffers (and help
+buffers, whose major is markdown) now pay org's price. A 50-line viewport
+of prose is ~3.5 µs per rebuild; one where every line is link-dense,
+~65 µs. Both are off the UI thread, and the miss — the common line — costs
+less than org's.
+
 ---
 
 ## LG.3a — the live language registry (2026-08-23)

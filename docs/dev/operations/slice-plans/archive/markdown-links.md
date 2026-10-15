@@ -1,18 +1,18 @@
 # Markdown links — slice plan (MDL)
 
-> Design: [`../../architecture/markdown-links.md`](../../architecture/markdown-links.md).
-> Precedent: [`archive/conceal-and-org-links.md`](archive/conceal-and-org-links.md)
+> Design: [`../../architecture/markdown-links.md`](../../../architecture/markdown-links.md).
+> Precedent: [`conceal-and-org-links.md`](conceal-and-org-links.md)
 > (the same two halves — render and follow — for org).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
-**Status:** 🚧 in progress (started 2026-10-15).
+**Status:** ✅ complete (2026-10-15). All three slices landed. Reference links and wiki links are out of scope by design (see the design fragment), not deferred slices.
 
 | Slice | What | Status |
 |---|---|---|
 | MDL.1 | Markdown link scanning + heading slugs move to `lattice-syntax::markdown`; `lattice-help` builds on it. No behaviour change. | ✅ |
 | MDL.2 | `markdown-mode` owns `<CR>` → `action:markdown-follow-link`: `#anchor`, file, `file#anchor`, external URL, autolink; declines off a link. | ✅ |
-| MDL.3 | Native languages can declare conceal rules (`conceal_source`); markdown declares inline-link + autolink rules. Bench case. | 📝 |
+| MDL.3 | Native languages can declare conceal rules (`conceal_source`); markdown declares inline-link + autolink rules. Bench case. | ✅ |
 
 ## MDL.1 — one scanner
 

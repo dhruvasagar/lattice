@@ -158,6 +158,18 @@ impl std::fmt::Display for ConcealRuleError {
 
 impl std::error::Error for ConcealRuleError {}
 
+/// MDL.3: the conceal rules a **compiled-in** language declares, as
+/// `(pattern, hide)`. The native peer of a plugin language's `conceal-rule`
+/// list — the same shape `indents_source` gives native indent queries —
+/// compiled through the same [`compile_rules`], with the same caps and the
+/// same refusal logging. Empty for every language that declares none.
+pub(crate) fn conceal_source(name: &str) -> &'static [(&'static str, &'static [u32])] {
+    match name {
+        "markdown" => crate::markdown::CONCEAL_RULES,
+        _ => &[],
+    }
+}
+
 /// Compile one rule, or say precisely why not.
 pub fn compile_rule(pattern: &str, hide: &[u32]) -> Result<ConcealRule, ConcealRuleError> {
     compile_rule_styled(pattern, hide, None, None)

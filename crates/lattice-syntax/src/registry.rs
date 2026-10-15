@@ -817,14 +817,48 @@ fn build_config(
         textobjects,
         indents,
         provenance: None,
-        conceal_rules: Arc::from([] as [crate::conceal::ConcealRule; 0]),
+        conceal_rules: native_conceal_rules(name),
     })
+}
+
+/// MDL.3: compile a native language's declared conceal rules. Native rules
+/// carry no style slot, so there is no theme to resolve against. A refused
+/// rule is logged and skipped, as for a plugin; for a native language it is
+/// a bug in this crate, which `native_conceal_rules_compile` pins.
+fn native_conceal_rules(name: &str) -> Arc<[crate::conceal::ConcealRule]> {
+    let declared: Vec<(String, Vec<u32>, Option<String>)> = crate::conceal::conceal_source(name)
+        .iter()
+        .map(|(p, h)| (p.to_string(), h.to_vec(), None))
+        .collect();
+    let (rules, errs) = crate::conceal::compile_rules(&declared, None);
+    for (i, e) in &errs {
+        tracing::warn!(
+            language = name,
+            rule = i,
+            "native conceal rule refused: {e}"
+        );
+    }
+    Arc::from(rules.into_boxed_slice())
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    /// MDL.3: a compiled-in language's conceal rules reach the registry, and
+    /// only the language that declares them pays for them. A refused native
+    /// rule is a bug in this crate, so every declared rule must compile.
+    #[test]
+    fn native_conceal_rules_compile() {
+        let r = LangRegistry::standard().unwrap();
+        assert_eq!(
+            r.conceal_rules("markdown").len(),
+            crate::conceal::conceal_source("markdown").len()
+        );
+        assert!(r.conceal_rules("rust").is_empty());
+        assert!(r.conceal_rules("markdown_inline").is_empty());
+    }
 
     #[test]
     fn standard_registry_includes_every_supported_language() {

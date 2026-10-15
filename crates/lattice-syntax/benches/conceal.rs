@@ -20,6 +20,11 @@
 //!   if the miss were expensive the per-viewport cost would be set by
 //!   line count rather than by link count.
 //!
+//! - `markdown_rules_link_dense` / `markdown_rules_no_match` — MDL.3:
+//!   markdown's rules, the first a compiled-in language declares. Same two
+//!   questions; markdown files are far more common than org ones, so the
+//!   miss is the number that matters most.
+//!
 //! Multiply the per-line figure by ~50 (a viewport) for the per-rebuild
 //! cost, and note the rebuild is off the UI thread.
 
@@ -52,6 +57,21 @@ fn org_rules() -> Vec<ConcealRule> {
     ok
 }
 
+/// Markdown's rules, exactly as the native language declares them.
+fn markdown_rules() -> Vec<ConcealRule> {
+    let declared: Vec<(String, Vec<u32>, Option<String>)> = lattice_syntax::markdown::CONCEAL_RULES
+        .iter()
+        .map(|(p, h)| (p.to_string(), h.to_vec(), None))
+        .collect();
+    let (ok, errs) = compile_rules(&declared, None);
+    assert!(errs.is_empty(), "{errs:?}");
+    ok
+}
+
+const MD_LINK_DENSE: &str = "See [the design fragment](docs/dev/architecture/markdown-links.md), \
+                             [its slice plan](slice-plans/markdown-links.md#mdl3) and \
+                             <https://commonmark.org/help/> before [review](#review).";
+
 const LINK_DENSE: &str = "- See [[id:6F398E54-7E63-4492-9EB6-89C8A90E7DD3][Project Kickoff \
                           Checklist]], [[id:3C6D10DB-3272-4E96-A3F3-D2E6BC835708][ComfyUI \
                           Workflow]] and [[https://example.com/some/long/path]] before Friday.";
@@ -75,6 +95,15 @@ fn bench_conceal_spans(c: &mut Criterion) {
 
     g.bench_function("org_rules_no_match", |b| {
         b.iter(|| conceal_spans(black_box(&rules), black_box(PROSE)))
+    });
+
+    let md = markdown_rules();
+    g.bench_function("markdown_rules_link_dense", |b| {
+        b.iter(|| conceal_spans(black_box(&md), black_box(MD_LINK_DENSE)))
+    });
+
+    g.bench_function("markdown_rules_no_match", |b| {
+        b.iter(|| conceal_spans(black_box(&md), black_box(PROSE)))
     });
 
     g.finish();

@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- **Markdown links render as their text.** Outside Insert mode,
+  `[the guide](guide.md)` shows as `the guide` and `<https://…>` as the bare
+  URL; Insert mode shows the markup again. Display only, so the file is
+  unchanged.
 - **`<CR>` follows markdown links.** In a markdown file, `<CR>` on
   `[text](#heading)` jumps to that heading, on `[text](other.md)` or
   `[text](other.md#heading)` opens the file (relative to the current file),

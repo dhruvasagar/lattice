@@ -24,12 +24,27 @@ system with it.
 |---|---|
 | Syntax highlighting | a **hand-written** `queries/markdown/highlights.scm`, plus `tree-sitter-md`'s inline query |
 | Folds (`zc` / `zo` / `zM` / `zR`) | `queries/markdown/folds.scm` — by section, so a heading folds its body |
+| Link rendering | `[text](url)` shows as **text**, `<https://…>` as the bare URL |
 
 Markdown is the one bundled language whose highlight query lattice
 writes itself rather than taking from the grammar crate. Markdown's
 parse tree splits into a block grammar and an inline grammar, and the
 useful captures for an editor don't line up with what the upstream
 query emits.
+
+## Links render as their text
+
+Outside Insert mode a link shows only its label: `[the guide](guide.md)`
+reads as `the guide`, and `<https://example.com>` as
+`https://example.com`. Insert mode shows the raw markup again, so you
+can edit the target. Nothing in the file changes; this is display only
+(the same concealment org links use).
+
+A few cases stay raw on purpose: images (`![alt](src)`), escaped
+brackets (`\[…`), and a link written as the first thing in a code span.
+A link further inside a code span, or inside a fenced code block, does
+get concealed, because concealment works line by line and can't tell
+it's in code.
 
 ## Not provided
 

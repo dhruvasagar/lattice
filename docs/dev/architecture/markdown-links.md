@@ -1,7 +1,7 @@
 # Markdown links
 
 Status: design fragment (2026-10-15). Slice plan:
-[`../operations/slice-plans/markdown-links.md`](../operations/slice-plans/markdown-links.md).
+[`../operations/slice-plans/archive/markdown-links.md`](../operations/slice-plans/archive/markdown-links.md).
 
 Anchors: [`conceal.md`](conceal.md) (the display-time elision this configures),
 [`org-mode.md`](org-mode.md) §7 (the same feature for org, the precedent),
@@ -129,6 +129,12 @@ The costs of patterns, stated rather than smuggled:
   than rendering it as `!alt`.
 - **The guard consumes a character**, so of two links written back to back
   with nothing between them only the first conceals.
+
+**Help buffers inherit the rules**, because the host looks rules up by the
+buffer's language and a help buffer's is markdown. Their links are already
+stripped to labels at build time, so in practice this only touches a raw
+link a help page quotes in prose — which now renders as its label, the same
+as it would in the `.md` file it came from.
 
 None of these changes what `<CR>` does — the follow path scans the raw line —
 and Insert mode reveals the whole buffer, as it does for org.

@@ -13,6 +13,29 @@
 //! stops resolving while the user types is worse than one that never
 //! consulted the tree.
 
+/// MDL.3: markdown's [conceal](crate::conceal) rules — an inline link
+/// renders as its label, an autolink as its URL. `(pattern, hide)`, the shape
+/// a plugin's `conceal-rule` takes, compiled through the same
+/// [`compile_rules`](crate::conceal::compile_rules).
+///
+/// No style slot: unlike org's, markdown's parse tree already highlights a
+/// link's label, and a slot would paint over it.
+///
+/// The leading `(?:^|[^!\\`])` is a guard that the regex engine (no
+/// lookbehind) can only express by consuming a character. It keeps
+/// `![alt](src)` raw instead of rendering `!alt`, leaves an escaped `\[`
+/// alone, and spares a link quoted as the first thing in a code span. The
+/// costs are recorded in `markdown-links.md`: a link deeper inside a code
+/// span still conceals, and of two links with nothing between them only the
+/// first does.
+pub const CONCEAL_RULES: &[(&str, &[u32])] = &[
+    (
+        r#"(?:^|[^!\\`])(\[)[^\[\]]+(\]\([^)\s]+(?:\s+"[^"]*")?\))"#,
+        &[1, 2],
+    ),
+    (r"(<)(?:https?://|mailto:)[^>\s]+(>)", &[1, 2]),
+];
+
 /// Byte bounds of one inline link `[label](url)`, in the text it was
 /// scanned from. `label` excludes the brackets, `url` the parentheses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,5 +450,60 @@ mod tests {
         assert_eq!(find_heading(lines, "title"), Some(0));
         assert_eq!(find_heading(lines, "not-a-heading"), None);
         assert_eq!(find_heading(lines, "Not-A-Heading-Either"), Some(4));
+    }
+
+    /// What the user sees once the rules have hidden their spans.
+    fn concealed(line: &str) -> String {
+        let declared: Vec<(String, Vec<u32>, Option<String>)> = CONCEAL_RULES
+            .iter()
+            .map(|(p, h)| (p.to_string(), h.to_vec(), None))
+            .collect();
+        let (rules, errs) = crate::conceal::compile_rules(&declared, None);
+        assert!(
+            errs.is_empty(),
+            "markdown's rules must all compile: {errs:?}"
+        );
+        let mut out = String::new();
+        let mut at = 0;
+        for (s, e) in crate::conceal::conceal_spans(&rules, line) {
+            out.push_str(&line[at..s as usize]);
+            at = e as usize;
+        }
+        out.push_str(&line[at..]);
+        out
+    }
+
+    #[test]
+    fn an_inline_link_renders_as_its_label() {
+        assert_eq!(
+            concealed("see [the guide](guide.md) now"),
+            "see the guide now"
+        );
+        assert_eq!(concealed("[start](#a) of line"), "start of line");
+        assert_eq!(
+            concealed(r#"[titled](a.md "The Title") and [two](b.md)"#),
+            "titled and two"
+        );
+    }
+
+    #[test]
+    fn an_autolink_renders_as_its_url() {
+        assert_eq!(
+            concealed("go to <https://example.com/x> now"),
+            "go to https://example.com/x now"
+        );
+        assert_eq!(concealed("an <em>html</em> tag"), "an <em>html</em> tag");
+    }
+
+    #[test]
+    fn images_escapes_and_code_span_links_stay_raw() {
+        for raw in [
+            "![alt](img.png)",
+            r"\[not a link](x)",
+            "quote `[label](url)` syntax",
+            "[label] without a url",
+        ] {
+            assert_eq!(concealed(raw), raw);
+        }
     }
 }

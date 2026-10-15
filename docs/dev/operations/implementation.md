@@ -7392,19 +7392,19 @@ Slice plan: [`slice-plans/archive/api-docs.md`](slice-plans/archive/api-docs.md)
 
 ---
 
-## Markdown links (MDL, 2026-10-15 — 🚧 in progress)
+## Markdown links (MDL, 2026-10-15 — ✅ complete)
 
 | Slice | What | Status |
 |---|---|---|
 | MDL.1 | one link scanner + heading slugs, in `lattice-syntax::markdown` | ✅ |
 | MDL.2 | `markdown-mode` `<CR>` follows `#anchor` / file / `file#anchor` / URL | ✅ |
-| MDL.3 | native conceal rules; markdown links render as their label | 📝 |
+| MDL.3 | native conceal rules; markdown links render as their label | ✅ |
 
 Markdown files get what org links and help buffers already had: links that
 read as their label and open on `<CR>`. Mode-owned end to end (no host
 method, no `Action` variant); rendering reuses the conceal evaluator.
 Design: [`../architecture/markdown-links.md`](../architecture/markdown-links.md).
-Slice plan: [`slice-plans/markdown-links.md`](slice-plans/markdown-links.md).
+Slice plan: [`slice-plans/archive/markdown-links.md`](slice-plans/archive/markdown-links.md).
 
 ---
 

@@ -5111,6 +5111,34 @@ mod tests {
         assert!(rules_for_row(&[], 41).is_none());
     }
 
+    /// MDL.3: a markdown buffer reaches markdown's conceal rules through the
+    /// same lookup the rebuild uses — by the buffer's language name — and a
+    /// buffer in a language that declares none still gets none, so its
+    /// `conceal` axis stays the constant that keeps it off the rebuild path.
+    #[test]
+    fn mdl3_a_markdown_buffer_gets_markdowns_conceal_rules() {
+        let handle = |lang| {
+            let mut s = lattice_syntax::Syntax::for_language(lang)
+                .unwrap()
+                .expect("grammar available in test build");
+            s.parse_at("see [a](b.md)\n", 1);
+            lattice_syntax::SyntaxHandle::seeded(s)
+        };
+        let md = handle(lattice_syntax::Lang::Markdown);
+        let rules = conceal_rules_for(Some(&md));
+        assert!(!rules.is_empty(), "markdown declares rules");
+        assert_eq!(
+            lattice_syntax::conceal::conceal_spans(&rules, "see [a](b.md)"),
+            vec![(4, 5), (6, 13)],
+            "`[` and `](b.md)` hidden, the label kept"
+        );
+        assert_ne!(conceal_version_for(Some(&md)), 0);
+
+        let rust = handle(lattice_syntax::Lang::Rust);
+        assert!(conceal_rules_for(Some(&rust)).is_empty());
+        assert_eq!(conceal_version_for(Some(&rust)), 0);
+    }
+
     fn org_conceal_rules() -> Vec<lattice_syntax::conceal::ConcealRule> {
         // OL.1: slots carried, so these fixtures exercise the styled path the
         // shipped rules take rather than a conceal-only shape org no longer has.

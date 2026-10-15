@@ -20,10 +20,13 @@ use lattice_mode::{MediaBlockRequest, MediaSourceRegistryHandle};
 use crate::editor::Editor;
 use crate::per_buffer_cache::{PerBufferCache, PerBufferCacheExt};
 
-/// `(line_height_px, pane_width_px)` — what sizing a block needs, and the
-/// only pixel geometry the host holds. `None` means no peer that draws
-/// images has published its cell metrics.
-pub type MediaGeometry = (f32, f32);
+/// `(line_height_px, pane_width_px, pane_height_px)` — what sizing a block
+/// needs, and the only pixel geometry the host holds. `None` means no peer
+/// that draws images has published its cell metrics.
+///
+/// The height is what a [`MediaFit::Window`](lattice_cells::MediaFit::Window)
+/// block may fill; the other fits read only the width.
+pub type MediaGeometry = (f32, f32, f32);
 
 /// What a refresh is single-flighted on: which buffer, at which document
 /// version, measured against which geometry. The geometry is part of the key
@@ -343,7 +346,7 @@ fn size_blocks(
             block.fit = req.fit;
             let rows = match geometry {
                 None => PROVISIONAL_ROWS,
-                Some((line_height_px, pane_width_px)) => match known
+                Some((line_height_px, pane_width_px, pane_height_px)) => match known
                     .get(&req.path)
                     .copied()
                     .map(Ok)
@@ -355,6 +358,7 @@ fn size_blocks(
                             req.fit,
                             line_height_px,
                             pane_width_px,
+                            pane_height_px,
                         );
                         block.intrinsic = Some(intrinsic);
                         block.height_lh = Some(height_lh);
@@ -380,12 +384,16 @@ fn size_blocks(
 }
 
 impl Editor {
-    /// IM.7a — `(line_height_px, pane_width_px)` for the active pane, if a
-    /// peer that draws images has published its cell metrics.
+    /// IM.7a — [`MediaGeometry`] for the active pane, if a peer that draws
+    /// images has published its cell metrics.
     ///
-    /// The pane's width comes from the column count it already publishes,
-    /// multiplied by the column advance — which is why the metric channel is
-    /// two scalars rather than a per-pane pixel rectangle.
+    /// Both sizes come from counts the pane already publishes — columns and
+    /// rows — multiplied by the cell advance, which is why the metric
+    /// channel is two scalars rather than a per-pane pixel rectangle.
+    ///
+    /// The height leaves out one row: a block hangs BELOW its anchor line,
+    /// so a block as tall as the whole pane would push that line, or its own
+    /// bottom, out of view.
     fn media_geometry(&self) -> Option<MediaGeometry> {
         let m = self.cell_metrics?;
         let cols = match self.pane_tree.active().viewport_width {
@@ -393,7 +401,8 @@ impl Editor {
             w => w,
         };
         let pane_width_px = cols as f32 * m.col_px;
-        (pane_width_px > 0.0).then_some((m.row_px, pane_width_px))
+        let pane_height_px = self.viewport_height.saturating_sub(1) as f32 * m.row_px;
+        (pane_width_px > 0.0).then_some((m.row_px, pane_width_px, pane_height_px))
     }
 }
 

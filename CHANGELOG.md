@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Fixed
+- **An image opened directly fits the window.** `:e photo.png` in the GUI
+  scaled a large picture to the pane's width only, so a tall screenshot or
+  portrait photo ran off the bottom of the window. It is now scaled down to
+  fit both the width and the height, and re-fitted when the pane is resized.
+  Small images still show at their own size.
 - **The cursor ignored hidden link markup in the terminal.** With markdown
   links shown as their text, `$` on a line ending in a link put the terminal
   cursor where the hidden URL would have been, and on a line with wrapping

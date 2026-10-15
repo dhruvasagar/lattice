@@ -165,7 +165,7 @@ async fn settle(editor: &Editor) {
 async fn measured_at(
     editor: &Editor,
     buffer: lattice_core::BufferId,
-    geometry: (f32, f32),
+    geometry: (f32, f32, f32),
 ) -> bool {
     for _ in 0..40 {
         if editor
@@ -295,7 +295,7 @@ async fn resizing_the_pane_re_measures_the_block() {
     with_metrics(&mut editor, 20.0, 10.0, 20);
     editor.maybe_refresh_wasm_media();
     assert!(
-        measured_at(&editor, buffer, (20.0, 200.0)).await,
+        measured_at(&editor, buffer, (20.0, 200.0, 0.0)).await,
         "a resize must re-measure; the document version did not change"
     );
     assert_eq!(
@@ -338,7 +338,7 @@ async fn a_measurement_is_not_retaken_on_every_refresh() {
     // A resize forces a fresh sizing pass without touching the document.
     with_metrics(&mut editor, 20.0, 10.0, 20);
     editor.maybe_refresh_wasm_media();
-    assert!(measured_at(&editor, buffer, (20.0, 200.0)).await);
+    assert!(measured_at(&editor, buffer, (20.0, 200.0, 0.0)).await);
 
     let rows = editor.virtual_row_providers.snapshot(buffer)[0].collect();
     assert_eq!(
@@ -576,4 +576,47 @@ async fn unloading_the_last_producer_unregisters_the_provider() {
         editor.virtual_row_providers.snapshot(buffer).is_empty(),
         "the provider must go when the last producer does"
     );
+}
+
+/// `:e photo.png` fits the picture to the WINDOW: a portrait image in a short
+/// pane is bound by the pane's height, not only its width. `image-mode` asked
+/// for `Contain`, which fits the width alone, so a tall image ran off the
+/// bottom of the window and could never be seen whole.
+#[tokio::test]
+async fn an_image_buffer_fits_its_picture_to_the_window_height() {
+    let dir = tempfile::tempdir().unwrap();
+    // 200x800 in a 400px-wide pane: the width allows it at natural size,
+    // 800px = 40 rows. The pane is 11 rows; one is the anchor line, so the
+    // picture gets 10 rows = 200px, i.e. a quarter of its height.
+    let png = write_png(dir.path(), "tall.png", 200, 800);
+
+    let mut editor = Editor::boot(
+        lattice_core::DocumentBuilder::default()
+            .with_text("\n")
+            .with_path(png)
+            .build(),
+    );
+    let buffer = editor.document_buffer_id;
+    editor.viewport_height = 11;
+    with_metrics(&mut editor, 20.0, 10.0, 40);
+    let mut r = MediaSourceRegistry::new();
+    r.register(Arc::new(lattice_mode::modes::ImageFileMediaSource));
+    editor.wasm_media = WasmMediaState::with_registry(Arc::new(arc_swap::ArcSwap::from_pointee(r)));
+    settle(&editor).await;
+
+    editor.maybe_refresh_wasm_media();
+    assert!(landed(&editor).await);
+
+    let rows = editor.virtual_row_providers.snapshot(buffer)[0].collect();
+    let block = rows[0]
+        .media
+        .as_ref()
+        .expect("a media row carries its block");
+    assert_eq!(block.fit, lattice_cells::MediaFit::Window);
+    assert_eq!(
+        block.height_lh,
+        Some(10.0),
+        "bound by the 200px left below the anchor line, not by the width"
+    );
+    assert_eq!(rows.len(), 10, "the whole picture fits in the window");
 }

@@ -26,8 +26,10 @@ and moves between panes the same way, so a diagram can sit beside the
 code it describes.
 
 The picture is drawn at its own size and scaled **down** to fit the
-pane when it is larger. It is never scaled up: an icon blown up to fill
-the window is worse than the icon.
+window when it is larger — in both directions, so a tall screenshot or a
+portrait photo shows whole instead of running off the bottom of the pane.
+It is never scaled up: an icon blown up to fill the window is worse than
+the icon. Resize the pane and the picture is fitted again.
 
 ## Read-only, and why
 

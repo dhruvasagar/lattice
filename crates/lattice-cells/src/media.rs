@@ -69,6 +69,14 @@ pub enum MediaFit {
     /// Scale to the box's width, preserving aspect ratio, and let the row
     /// count follow from the result.
     Width,
+    /// Scale down to fit the pane's width AND height, preserving aspect
+    /// ratio; never scale up. For a block that is the buffer's whole content
+    /// — `image-mode`'s picture — where [`MediaFit::Contain`]'s width-only
+    /// fit lets a tall image run past the bottom of the window and the
+    /// reader can never see it whole. Not on the WIT surface: an inline
+    /// block sits among text, and sizing one to the window would let a
+    /// single diagram crowd out the document around it.
+    Window,
 }
 
 /// An inline media block: what to draw, how big, and what to say instead.

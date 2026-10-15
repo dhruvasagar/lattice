@@ -388,11 +388,15 @@ pub fn fit_within(src: (u32, u32), bounds: (u32, u32)) -> (u32, u32) {
 ///
 /// `rows` is `ceil(height_lh)` so the reservation never under-covers the
 /// drawing — an image must not paint over the line beneath it.
+///
+/// `pane_height_px` is the height a [`MediaFit::Window`](lattice_cells::MediaFit::Window)
+/// block may fill; the other fits ignore it.
 pub fn block_geometry(
     intrinsic: (u32, u32),
     fit: lattice_cells::MediaFit,
     line_height_px: f32,
     pane_width_px: f32,
+    pane_height_px: f32,
 ) -> (u16, f32) {
     // Degenerate geometry (a pane not yet measured, a zero line height)
     // yields one row rather than a division by zero or an absurd
@@ -420,6 +424,19 @@ pub fn block_geometry(
         }
         // Always fill the width, up or down, and let the height follow.
         lattice_cells::MediaFit::Width => ih as f32 * (pane_width_px / iw as f32),
+        // Both axes, never up. A pane height that is not yet known (or not
+        // finite) leaves only the width bound — the `Contain` answer — rather
+        // than collapsing the block to nothing; the next measured frame
+        // re-sizes it, because the geometry is part of the refresh key.
+        lattice_cells::MediaFit::Window => {
+            let by_width = pane_width_px / iw as f32;
+            let by_height = if pane_height_px.is_finite() && pane_height_px > 0.0 {
+                pane_height_px / ih as f32
+            } else {
+                f32::INFINITY
+            };
+            ih as f32 * by_width.min(by_height).min(1.0)
+        }
     };
 
     let height_lh = (drawn_h_px / line_height_px).max(MIN_BLOCK_LH);
@@ -780,14 +797,14 @@ mod tests {
         use lattice_cells::MediaFit;
         // 400x200 in a 200px pane at 20px lines: halved to 200x100, which is
         // 5 line-heights, so 5 rows.
-        let (rows, lh) = block_geometry((400, 200), MediaFit::Contain, 20.0, 200.0);
+        let (rows, lh) = block_geometry((400, 200), MediaFit::Contain, 20.0, 200.0, 0.0);
         assert_eq!(rows, 5);
         assert!((lh - 5.0).abs() < 0.001, "got {lh}");
 
         // Fractional heights are KEPT, not snapped — that is what makes the
         // block variable-height rather than whole-row. 4.25 draws 4.25 and
         // reserves 5, so it never paints over the line beneath it.
-        let (rows, lh) = block_geometry((400, 170), MediaFit::Contain, 20.0, 200.0);
+        let (rows, lh) = block_geometry((400, 170), MediaFit::Contain, 20.0, 200.0, 0.0);
         assert!((lh - 4.25).abs() < 0.001, "got {lh}");
         assert_eq!(
             rows, 5,
@@ -800,17 +817,55 @@ mod tests {
     #[test]
     fn contain_never_upscales_but_width_does() {
         use lattice_cells::MediaFit;
-        let (_, lh_contain) = block_geometry((32, 32), MediaFit::Contain, 20.0, 400.0);
+        let (_, lh_contain) = block_geometry((32, 32), MediaFit::Contain, 20.0, 400.0, 0.0);
         assert!(
             (lh_contain - 1.6).abs() < 0.001,
             "32px / 20px lines, got {lh_contain}"
         );
 
-        let (_, lh_width) = block_geometry((32, 32), MediaFit::Width, 20.0, 400.0);
+        let (_, lh_width) = block_geometry((32, 32), MediaFit::Width, 20.0, 400.0, 0.0);
         assert!(
             (lh_width - 20.0).abs() < 0.001,
             "filled the width, got {lh_width}"
         );
+    }
+
+    /// `Window` bounds BOTH axes. A portrait photo in a landscape pane is the
+    /// case `Contain` gets wrong: fitted to the width alone it runs past the
+    /// bottom of the window, so the reader never sees it whole.
+    #[test]
+    fn window_fits_the_height_as_well_as_the_width() {
+        use lattice_cells::MediaFit;
+        // 1000x2000 into 800x400 at 20px lines. Width alone allows 0.8
+        // (1600px tall); height allows 0.2 (400px). The smaller wins: 20 lh.
+        let (rows, lh) = block_geometry((1000, 2000), MediaFit::Window, 20.0, 800.0, 400.0);
+        assert!((lh - 20.0).abs() < 0.001, "got {lh}");
+        assert_eq!(rows, 20, "never taller than the pane");
+        let (_, contain) = block_geometry((1000, 2000), MediaFit::Contain, 20.0, 800.0, 400.0);
+        assert!(
+            (contain - 80.0).abs() < 0.001,
+            "Contain ignores height: {contain}"
+        );
+
+        // A landscape image is bound by the width, as before.
+        let (_, lh) = block_geometry((1600, 400), MediaFit::Window, 20.0, 800.0, 400.0);
+        assert!(
+            (lh - 10.0).abs() < 0.001,
+            "half width => 200px => 10 lh, got {lh}"
+        );
+    }
+
+    /// `Window` never scales up — a small icon stays its own size — and an
+    /// unmeasured height falls back to the width bound rather than to nothing.
+    #[test]
+    fn window_never_upscales_and_survives_an_unknown_height() {
+        use lattice_cells::MediaFit;
+        let (_, lh) = block_geometry((32, 32), MediaFit::Window, 20.0, 800.0, 400.0);
+        assert!((lh - 1.6).abs() < 0.001, "kept at 32px, got {lh}");
+        for h in [0.0, f32::NAN] {
+            let (_, lh) = block_geometry((400, 200), MediaFit::Window, 20.0, 200.0, h);
+            assert!((lh - 5.0).abs() < 0.001, "width bound only, got {lh}");
+        }
     }
 
     /// Degenerate geometry must not divide by zero or reserve something
@@ -824,7 +879,7 @@ mod tests {
             ((0, 100), 20.0, 200.0),
             ((100, 0), 20.0, 200.0),
         ] {
-            let (rows, lh) = block_geometry(args.0, MediaFit::Contain, args.1, args.2);
+            let (rows, lh) = block_geometry(args.0, MediaFit::Contain, args.1, args.2, 0.0);
             assert_eq!((rows, lh), (1, 1.0), "for {args:?}");
         }
     }
@@ -834,7 +889,7 @@ mod tests {
     #[test]
     fn an_extreme_ratio_still_draws_at_least_one_line() {
         use lattice_cells::MediaFit;
-        let (rows, lh) = block_geometry((10_000, 1), MediaFit::Contain, 20.0, 200.0);
+        let (rows, lh) = block_geometry((10_000, 1), MediaFit::Contain, 20.0, 200.0, 0.0);
         assert!(lh >= MIN_BLOCK_LH, "got {lh}");
         assert_eq!(rows, 1);
     }

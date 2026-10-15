@@ -134,9 +134,11 @@ impl crate::media_source::AsyncMediaSource for ImageFileMediaSource {
                     // and for a buffer whose whole content IS the file, the file
                     // name is the most useful thing to say.
                     alt: None,
-                    // Never upscale: an icon blown up to fill the pane is worse
-                    // than the icon.
-                    fit: lattice_cells::MediaFit::Contain,
+                    // The picture IS the buffer, so it fits the window — both
+                    // axes, or a tall image runs off the bottom and is never
+                    // seen whole. Never upscaled: an icon blown up to fill the
+                    // pane is worse than the icon.
+                    fit: lattice_cells::MediaFit::Window,
                 });
         Box::pin(async move { Ok(block.into_iter().collect()) })
     }

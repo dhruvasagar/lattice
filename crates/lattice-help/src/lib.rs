@@ -561,64 +561,11 @@ pub fn key_link(chord: &str) -> String {
     format!("[{c}](key:{c})")
 }
 
-/// Escape the link syntax's own punctuation — `\`, `[`, `]`, `(`, `)` — with a
-/// backslash, so a label or URL may contain it. Chords are the reason: `]f`,
-/// `di(`, `da)`, `ci]` are ordinary motions and text objects, and unescaped
-/// each one ended the label or the URL early. The parsers
-/// ([`extract_links_and_clean`], [`parse_help_links`]) unescape.
-///
-/// Every `*_link` helper applies it; a hand-built `[..](..)` whose text can
-/// contain these characters must too.
-pub fn escape_link_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if matches!(ch, '\\' | '[' | ']' | '(' | ')') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
-}
-
-/// Inverse of [`escape_link_text`]: a backslash makes the next char literal.
-fn unescape_link_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\\' => out.extend(chars.next()),
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// Byte index of the first `target` at or after `from` that is not escaped.
-/// `target` is ASCII, so a match is always a char boundary.
-fn find_unescaped(bytes: &[u8], from: usize, target: u8) -> Option<usize> {
-    let mut j = from;
-    while j < bytes.len() {
-        match bytes[j] {
-            b'\\' => j += 2,
-            b if b == target => return Some(j),
-            _ => j += 1,
-        }
-    }
-    None
-}
-
-/// `[label](url)` starting at the `[` at `open`: the byte bounds of the label
-/// and of the url, escape-aware. `None` when it is not a well-formed link.
-fn scan_link(bytes: &[u8], open: usize) -> Option<(usize, usize, usize, usize)> {
-    let label_start = open + 1;
-    let label_end = find_unescaped(bytes, label_start, b']')?;
-    if bytes.get(label_end + 1) != Some(&b'(') {
-        return None;
-    }
-    let url_start = label_end + 2;
-    let url_end = find_unescaped(bytes, url_start, b')')?;
-    Some((label_start, label_end, url_start, url_end))
-}
+// MDL.1: the link scanner, escaping and heading slugs moved to
+// `lattice_syntax::markdown` so markdown-mode's follow-link reads the same
+// syntax help does. Re-exported here so help formatters keep their paths.
+pub use lattice_syntax::markdown::{escape_link_text, slugify_heading};
+use lattice_syntax::markdown::{is_external_url, scan_inline_link, unescape_link_text};
 
 /// Helper for help-content formatters. Renders a command link in
 /// standard markdown form: `[name](command:name)`.
@@ -677,7 +624,13 @@ pub fn extract_links_and_clean(text: &str) -> (String, Vec<HelpLink>) {
             // Try to match `[label](url)` starting at i. On any
             // failure (no `]`, no `(`, no `)`) fall through and copy
             // the `[` byte literally.
-            if let Some((label_start, label_end, url_start, url_end)) = scan_link(bytes, i) {
+            if let Some(span) = scan_inline_link(bytes, i) {
+                let (label_start, label_end, url_start, url_end) = (
+                    span.label_start,
+                    span.label_end,
+                    span.url_start,
+                    span.url_end,
+                );
                 let label = unescape_link_text(&text[label_start..label_end]);
                 let target = classify_link_url(&unescape_link_text(&text[url_start..url_end]));
                 let label_byte_start = out.len();
@@ -740,10 +693,16 @@ pub fn parse_help_links(text: &str) -> Vec<HelpLink> {
         }
         // Escape-aware (see `escape_link_text`); the range stays over the
         // label AS WRITTEN, since this parser keeps the source verbatim.
-        let Some((label_start, label_end, url_start, url_end)) = scan_link(bytes, i) else {
+        let Some(span) = scan_inline_link(bytes, i) else {
             i += 1;
             continue;
         };
+        let (label_start, label_end, url_start, url_end) = (
+            span.label_start,
+            span.label_end,
+            span.url_start,
+            span.url_end,
+        );
         let target = classify_link_url(&unescape_link_text(&text[url_start..url_end]));
         let start_pos = byte_offset_to_position(text, label_start);
         let end_pos = byte_offset_to_position(text, label_end);
@@ -807,66 +766,6 @@ fn classify_link_url(url: &str) -> HelpLinkTarget {
     }
 }
 
-/// Whether `url` carries a real network / application scheme that the OS
-/// handler should open (browser, mail client, registered app). True for
-/// any `scheme://…` authority form (`http://`, `https://`, `ftp://`, and
-/// app links like `slack://` / `vscode://`) and for `mailto:`. Bare
-/// schemeless strings (`github.com/x`, a relative path) are NOT treated as
-/// URLs — they stay `Unresolved` rather than risk shelling out on ambiguous
-/// input.
-fn is_external_url(url: &str) -> bool {
-    if url.starts_with("mailto:") {
-        return true;
-    }
-    // `scheme://authority`: a non-empty scheme of URL-safe characters
-    // followed by `://`. Guarding the scheme shape (rather than a bare
-    // `contains("://")`) keeps this from matching stray text.
-    if let Some((scheme, _)) = url.split_once("://") {
-        return !scheme.is_empty()
-            && scheme
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
-    }
-    false
-}
-
-/// Convert a markdown heading line ("## 1. Tree-sitter, core") into
-/// the GitHub-style slug ("1-tree-sitter-core") used for intra-doc
-/// anchor links. Algorithm:
-///
-/// 1. Strip the leading `#`s + any whitespace.
-/// 2. Lowercase.
-/// 3. Drop any non-alphanumeric / non-hyphen / non-space character
-///    (punctuation, fences, parens, periods, etc.).
-/// 4. Collapse whitespace runs to a single hyphen; collapse hyphen
-///    runs to a single hyphen.
-/// 5. Trim leading / trailing hyphens.
-///
-/// Matches the slugs GitHub renders for `# Heading` blocks so links
-/// authored against rendered docs work in-editor too.
-pub fn slugify_heading(text: &str) -> String {
-    let mut s = text.trim().to_lowercase();
-    // Strip leading `#`s + whitespace.
-    s = s.trim_start_matches('#').trim_start().to_string();
-    let mut out = String::with_capacity(s.len());
-    let mut prev_hyphen = false;
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch);
-            prev_hyphen = false;
-        } else if (ch == '-' || ch.is_whitespace()) && !prev_hyphen && !out.is_empty() {
-            out.push('-');
-            prev_hyphen = true;
-        }
-        // Anything else (punctuation, backticks, parens, slashes...)
-        // is dropped, mirroring GitHub.
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
-}
-
 /// Walk `lines` for ATX-style markdown headings (`#`, `##`, ...) and
 /// emit a [`HelpAnchor`] per heading whose name is the GitHub-style
 /// slug. Used by the help-topic loader so authors can write
@@ -877,41 +776,10 @@ pub fn slugify_heading(text: &str) -> String {
 /// (` ``` ` / ` ~~~ `) so a `# foo` line in a Rust example doesn't
 /// register as an anchor.
 pub fn generate_heading_anchors(lines: &[String]) -> Vec<HelpAnchor> {
-    let mut anchors = Vec::new();
-    let mut in_fence = false;
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            continue;
-        }
-        if !trimmed.starts_with('#') {
-            continue;
-        }
-        // Count leading `#`s; ATX cap is 6.
-        let depth = trimmed.chars().take_while(|c| *c == '#').count();
-        if !(1..=6).contains(&depth) {
-            continue;
-        }
-        // Require at least one whitespace between hashes and content
-        // (CommonMark §4.2). Bare `###foo` is not a heading.
-        let after = &trimmed[depth..];
-        if !after.is_empty() && !after.starts_with(|c: char| c.is_whitespace()) {
-            continue;
-        }
-        let slug = slugify_heading(trimmed);
-        if slug.is_empty() {
-            continue;
-        }
-        anchors.push(HelpAnchor {
-            name: slug,
-            line: i as u32,
-        });
-    }
-    anchors
+    lattice_syntax::markdown::heading_slugs(lines.iter().map(String::as_str))
+        .into_iter()
+        .map(|(name, line)| HelpAnchor { name, line })
+        .collect()
 }
 
 /// Convert a flat byte offset in `text` into a `(line, byte_in_line)`

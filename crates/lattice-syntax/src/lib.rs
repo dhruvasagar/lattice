@@ -56,6 +56,9 @@ pub mod handle;
 // `.scm` files). IN.2 adds the `indents.scm` evaluator here.
 pub mod indent;
 pub mod lang;
+// MDL.1: markdown link scanning + heading slugs, shared by markdown-mode's
+// follow-link and help buffers. See `docs/dev/architecture/markdown-links.md`.
+pub mod markdown;
 pub mod modes;
 // LG.2: languages registered at runtime rather than compiled in.
 pub mod motions;

@@ -96,6 +96,7 @@ docs = [
   "architecture/cell-grid-renderer",
   "architecture/display-line",
   "architecture/conceal",
+  "architecture/markdown-links",
   "architecture/soft-wrap",
   "architecture/horizontal-scroll",
   "architecture/virtual-rows",

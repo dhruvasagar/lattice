@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.9 — 2026-10-15
 
 ### Added
 - **Markdown links render as their text.** Outside Insert mode,

@@ -37,6 +37,7 @@ code in the buffer's own syntax colours.
 |---|---|
 | `:picker <source> [args]` | The named source (see the table below). `<Tab>` after `:picker ` lists sources. |
 | `:files [root]`           | File picker (alias for `:picker files [root]`) |
+| `:files-refresh`          | Re-read the project's file list now, after files were created or removed outside the editor (`<C-o>` inside `:files`) |
 | `:recent`                 | Recently-edited files (alias for `:picker recent`) |
 | `:buffers` / `:b`         | Buffer switcher (fuzzy picker; `:ls` is the static text listing) |
 | `:colorscheme`            | Theme picker, with live preview (see [`themes`](help:themes)) |
@@ -77,7 +78,8 @@ the `*problems*` view over the result; set
 `:copen` on your own terms. Either way `:cnext` / `]q` walk the entries.
 
 **Some other keys mean something only in some pickers.** `<C-l>` goes
-into a directory, `<C-d>` removes a row from the list behind it, and
+into a directory, `<C-d>` removes a row from the list behind it,
+`<C-o>` re-reads the list (in [`files`](help:picker-files)), and
 `<Tab>` drills in rather than moving down where the picker has depth.
 Which of these a picker supports — and what exactly they do there — is on
 that picker's own page: press `<C-h>` inside it, or

@@ -699,6 +699,14 @@ pub enum AppEffect {
     /// `gU`, `gu`, `g~` -- bind to typed actions whose
     /// `ApplySpec` returns this variant.
     AbsorbOperatorPrefix(OperatorId),
+    /// Re-read a picker source's list off the UI thread — `:files-refresh`
+    /// for `files`. Replaces the rows of an open picker of that source in
+    /// place; with none open, the source's cache is brought current and the
+    /// echo area says how many entries it now holds.
+    RefreshPickerSource {
+        /// The picker-registry source id (`files`).
+        source: String,
+    },
     /// Vim `:h v_b_c`: a blockwise operator that ends in Insert (`c`)
     /// has the text typed next repeated on every row of the block, as
     /// block `I` does. The grammar deleted the rectangle; this tells the

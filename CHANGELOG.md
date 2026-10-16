@@ -2,7 +2,17 @@
 
 ## Unreleased
 
+### Added
+- **`<C-o>` re-reads an open `:files` list, and `:files-refresh` does it from
+  anywhere.** For files created or removed while the picker is open; your
+  query and the selected file stay put.
+
 ### Fixed
+- **`:files` shows files created outside the editor the next time you open
+  it.** The list is remembered for speed, and a stale one used to be corrected
+  only for the open *after* next, so the first `:files` after a build or a
+  `git checkout` still missed the new files. It now opens on the remembered
+  list at once and replaces the rows a moment later, when the re-read lands.
 - **Visual-block `c` changes every row.** After `<C-v>` and `c`, the text you
   typed replaced the block on the top row only; the rows below were left with
   the block deleted and nothing in its place. It now lands on every row the

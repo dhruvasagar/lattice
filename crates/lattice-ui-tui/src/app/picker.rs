@@ -723,6 +723,135 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    fn files_tempdir(tag: &str) -> std::path::PathBuf {
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-files-refresh-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        tmp
+    }
+
+    fn picker_lists(app: &App, name: &str) -> bool {
+        app.editor
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.candidates.iter().any(|c| c.raw.display == name))
+    }
+
+    /// Pump the refresh drain the way the async-landed wake does — no key
+    /// is pressed — until `done`, or fail after a few seconds.
+    fn settle_refresh(app: &mut App, done: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done(app) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the refreshed list never landed"
+            );
+            let _ = app.editor.drain_pending_picker_refresh();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// `<C-o>` re-reads the open `:files` list: a file created outside the
+    /// editor while the picker is open appears, the query is kept, and the
+    /// selection stays on the file it was on.
+    #[test]
+    fn ctrl_o_refreshes_the_open_files_picker_in_place() {
+        let tmp = files_tempdir("ctrl-o");
+        std::fs::write(tmp.join("b.rs"), "").unwrap();
+        std::fs::write(tmp.join("c.rs"), "").unwrap();
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("files".into(), vec![tmp.display().to_string()], None, None);
+        {
+            let p = app.editor.picker.as_mut().expect("picker open");
+            p.query = ".rs".into();
+            p.query_cursor = 3;
+            p.refilter();
+            p.selected = p
+                .candidates
+                .iter()
+                .position(|c| c.raw.display == "c.rs")
+                .expect("c.rs listed");
+        }
+        std::fs::write(tmp.join("a.rs"), "").unwrap();
+        assert!(!picker_lists(&app, "a.rs"), "precondition: not listed yet");
+
+        app.apply(Action::PickerRefresh);
+        assert!(
+            app.editor.picker.as_ref().unwrap().loading,
+            "searching… while it re-reads"
+        );
+        settle_refresh(&mut app, |a| picker_lists(a, "a.rs"));
+
+        let p = app.editor.picker.as_ref().unwrap();
+        assert_eq!(p.query, ".rs");
+        assert_eq!(p.candidates[p.selected].raw.display, "c.rs");
+        assert!(!p.loading);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The first `:files` after a file appears outside the editor shows it:
+    /// the open serves the stale cache at once, then replaces the rows when
+    /// the re-read lands. Before, only the open AFTER that one did.
+    #[test]
+    fn reopening_files_after_the_cache_goes_stale_lists_new_files() {
+        let tmp = files_tempdir("reopen");
+        std::fs::write(tmp.join("old.rs"), "").unwrap();
+        let mut app = app_with("hi\n", 5);
+        let root = vec![tmp.display().to_string()];
+        app.open_picker("files".into(), root.clone(), None, None);
+        app.apply(Action::PickerDismiss);
+
+        std::fs::write(tmp.join("new.rs"), "").unwrap();
+        // Past the cache's freshness window, so the open serves it stale.
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        app.open_picker("files".into(), root, None, None);
+        assert!(picker_lists(&app, "old.rs"));
+        assert!(
+            !picker_lists(&app, "new.rs"),
+            "precondition: the open is served from the cache"
+        );
+        settle_refresh(&mut app, |a| picker_lists(a, "new.rs"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `:files-refresh` with no picker open re-reads the list and says how
+    /// many files it found.
+    #[test]
+    fn files_refresh_command_rereads_and_reports() {
+        let mut app = app_with("hi\n", 5);
+        app.editor.picker = None;
+        app.apply(Action::EnterCommandLine);
+        crate::app::test_helpers::press_chars(&mut app, "files-refresh");
+        app.apply(Action::CommandLineSubmit);
+        let pending = app
+            .editor
+            .pending_picker_refresh
+            .as_ref()
+            .expect("the command starts a re-read");
+        assert_eq!(pending.source_id, "files");
+        assert!(pending.announce, "a command the user ran reports back");
+
+        // The report itself, on a small root rather than the test's cwd.
+        let tmp = files_tempdir("command");
+        std::fs::write(tmp.join("one.rs"), "").unwrap();
+        assert!(app.editor.start_picker_refresh(
+            "files",
+            vec![tmp.display().to_string()],
+            true,
+            true
+        ));
+        settle_refresh(&mut app, |a| {
+            a.editor
+                .last_message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("files: re-read, 1 entries"))
+        });
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// Slice 12: `:picker buffers` shares the buffer-switcher
     /// shape `:b` produces -- candidates per registry entry.
     #[test]

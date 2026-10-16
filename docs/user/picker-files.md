@@ -26,6 +26,7 @@ project root either way.
 | `<C-n>` / `<C-p>`, `<Down>` / `<Up>`, `<Tab>` / `<S-Tab>` | Move the selection |
 | `<BS>` / `<C-w>` | Delete a character / the previous word of the query |
 | `<C-r>` | Append something from your yank history to the query |
+| **`<C-o>`** | **Re-read the list** — for files created or removed while the picker is open. Your query and selection stay |
 | `<Esc>` / `<C-c>` | Close without opening anything |
 | `<C-h>` | This page |
 
@@ -53,6 +54,19 @@ The walk is deliberately simple and fast:
 - Regular files only; symlinks are not followed.
 - At most **5000** files. A larger tree is cut off, so pass a narrower
   root: `:files crates/lattice-host`.
+
+### When the list is current
+
+The walk is remembered for the session, so `:files` opens instantly. When
+what it remembers is more than a couple of seconds old, the picker still
+opens on it at once and re-reads the disk behind it; the rows are replaced
+when that lands, a moment later, keeping your query and the file you had
+selected. So a file created outside the editor — by a build, `git
+checkout`, another program — shows up the next time you open `:files`.
+
+A file that appears *while* the picker is open is not noticed on its own:
+press `<C-o>` to re-read. From anywhere else, `:files-refresh` re-reads the
+project's list and says how many files it found.
 
 ---
 

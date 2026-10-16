@@ -3329,6 +3329,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             let signals = editor.do_picker_help();
             _out.renderer_signals.extend(signals);
         }
+        Action::PickerRefresh => {
+            let signals = editor.do_picker_refresh();
+            _out.renderer_signals.extend(signals);
+        }
         Action::PickerDescendOrSelectNext => {
             let signals = editor.do_picker_tab();
             _out.renderer_signals.extend(signals);
@@ -11188,6 +11192,11 @@ impl Editor {
             AppEffect::StartMacroRecord(c) => out.next_actions.push(Action::StartMacroRecord(c)),
             AppEffect::PlayMacro(c) => out.next_actions.push(Action::PlayMacro(c)),
             AppEffect::PlayLastMacro => out.next_actions.push(Action::PlayLastMacro),
+            AppEffect::RefreshPickerSource { source } => {
+                if !self.start_picker_refresh(&source, Vec::new(), true, true) {
+                    self.set_message(EchoLevel::Info, format!("{source}: nothing to refresh"));
+                }
+            }
             // `:h v_b_c`: the grammar's block `c` deleted the rectangle
             // and entered Insert; park the block so `<Esc>` replays what
             // was typed onto every row — the state block `I` parks.
@@ -14843,36 +14852,43 @@ impl Editor {
         self.seat_picker_from_pairs(source, pairs)
     }
 
-    pub fn seat_picker_from_pairs(
-        &mut self,
-        source: String,
-        pairs: lattice_picker::CandidateBatch,
-    ) -> Vec<RendererSignal> {
-        let title = source.clone();
+    /// Each candidate's recently-used ranking bonus for `source`, or all zero
+    /// with `picker.mru-enabled` off. Shared by a picker's seating and by a
+    /// refresh replacing its rows, so a refreshed list ranks as an opened one
+    /// does.
+    fn picker_mru_bonuses(&self, source: &str, pairs: &lattice_picker::CandidateBatch) -> Vec<f64> {
         let mru_enabled = self
             .config
             .get_typed::<lattice_config::core_options::PickerMruEnabled>()
             .map(|b| *b)
             .unwrap_or(true);
+        if !mru_enabled {
+            return vec![0.0; pairs.len()];
+        }
         let now = std::time::SystemTime::now();
         let half_life = self
             .config
             .get_typed::<lattice_config::core_options::PickerMruRecencyHalfLifeDays>()
             .map(|d| std::time::Duration::from_secs((*d).max(1) as u64 * 24 * 60 * 60))
             .unwrap_or(lattice_picker::DEFAULT_HALF_LIFE);
-        let bonuses: Vec<f64> = if mru_enabled {
-            pairs
-                .iter()
-                .map(
-                    |(_cand, routing)| match lattice_picker::routing_identity(routing) {
-                        Some(id) => self.picker_mru.frecency_bonus(&source, &id, now, half_life),
-                        None => 0.0,
-                    },
-                )
-                .collect()
-        } else {
-            vec![0.0; pairs.len()]
-        };
+        pairs
+            .iter()
+            .map(
+                |(_cand, routing)| match lattice_picker::routing_identity(routing) {
+                    Some(id) => self.picker_mru.frecency_bonus(source, &id, now, half_life),
+                    None => 0.0,
+                },
+            )
+            .collect()
+    }
+
+    pub fn seat_picker_from_pairs(
+        &mut self,
+        source: String,
+        pairs: lattice_picker::CandidateBatch,
+    ) -> Vec<RendererSignal> {
+        let title = source.clone();
+        let bonuses = self.picker_mru_bonuses(&source, &pairs);
         let mut picker = lattice_picker::Picker::new(
             title,
             picker_source_for(&source),
@@ -15050,6 +15066,12 @@ impl Editor {
             return Vec::new();
         };
 
+        // Remembered for `<C-o>`, which re-reads the list this open asked
+        // for (an explicit root included), not the source's default.
+        self.picker_open_args = Some(crate::state::PickerOpenArgs {
+            source_id: source.clone(),
+            args: args.clone(),
+        });
         // Sync prelude: build the context against a fresh
         // snapshot, call init, drop the borrow.
         let snap = self.document.snapshot();
@@ -15109,7 +15131,14 @@ impl Editor {
         }
         match init_result {
             lattice_picker::PickerInitResult::Inline(pairs) => {
-                self.seat_picker_from_pairs(source, pairs)
+                let signals = self.seat_picker_from_pairs(source.clone(), pairs);
+                // A source that seated from a cache brings it current now,
+                // replacing the rows on screen when the re-read lands. Without
+                // this a file created outside the editor was missing from the
+                // first `:files` after it appeared and only showed on the one
+                // after that.
+                self.start_picker_refresh(&source, args, false, false);
+                signals
             }
             lattice_picker::PickerInitResult::Future(fut) => {
                 if let Some(prev) = self.pending_picker_init.take() {
@@ -15174,6 +15203,134 @@ impl Editor {
                         "picker: streaming sources not yet wired (source `{source}` returned a Stream)"
                     ),
                 );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Ask `source`'s generator to re-read its list off the UI thread
+    /// (`PickerSourceGenerator::refresh`); the result lands through
+    /// [`Self::drain_pending_picker_refresh`] on the async-landed wake, so it
+    /// reaches the screen without a keystroke. Supersedes any refresh still
+    /// in flight. Returns `false` when the source had nothing to re-read.
+    pub fn start_picker_refresh(
+        &mut self,
+        source: &str,
+        args: Vec<String>,
+        force: bool,
+        announce: bool,
+    ) -> bool {
+        let registry = self.picker_registry.load_full();
+        let Some(generator) = registry.entry(source).and_then(|e| e.generator.clone()) else {
+            return false;
+        };
+        let snap = self.document.snapshot();
+        let ctx = self.build_picker_context(&snap);
+        let work = generator.refresh(&ctx, &args, force);
+        drop(ctx);
+        drop(snap);
+        let Some(work) = work else {
+            return false;
+        };
+        if let Some(prev) = self.pending_picker_refresh.take() {
+            prev.cancel.cancel();
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = lattice_protocol::CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let async_landed = self.async_landed.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let result = work.await;
+            if !cancel_clone.is_cancelled() {
+                let _ = tx.send(result);
+                async_landed.notify_one();
+            }
+        });
+        self.pending_picker_refresh = Some(crate::state::PendingPickerRefresh {
+            source_id: source.to_string(),
+            cancel,
+            rx,
+            announce,
+        });
+        true
+    }
+
+    /// `<C-o>` in a picker: re-read the list it shows, with the arguments it
+    /// was opened with. `searching…` shows until the rows are replaced.
+    pub fn do_picker_refresh(&mut self) -> Vec<RendererSignal> {
+        let Some(source) = self.picker.as_ref().and_then(|p| p.source_id.clone()) else {
+            return Vec::new();
+        };
+        let args = self
+            .picker_open_args
+            .as_ref()
+            .filter(|open| open.source_id == source)
+            .map(|open| open.args.clone())
+            .unwrap_or_default();
+        if self.start_picker_refresh(&source, args, true, false) {
+            if let Some(p) = self.picker.as_mut() {
+                p.loading = true;
+            }
+        } else {
+            self.set_message(EchoLevel::Info, format!("{source}: nothing to refresh"));
+        }
+        Vec::new()
+    }
+
+    /// Apply a refreshed list that has landed. Into the open picker when it
+    /// is still the refreshed source's — query kept, selection following its
+    /// item — and reported in the echo area when the user asked by command.
+    /// A refresh whose picker has since closed, and that nobody asked to hear
+    /// about, is dropped: the source's cache is already current.
+    pub fn drain_pending_picker_refresh(&mut self) -> Vec<RendererSignal> {
+        let Some(pending) = self.pending_picker_refresh.as_mut() else {
+            return Vec::new();
+        };
+        let result = match pending.rx.try_recv() {
+            Ok(r) => r,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return Vec::new(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                self.pending_picker_refresh = None;
+                return Vec::new();
+            }
+        };
+        let pending = self.pending_picker_refresh.take().expect("guarded above");
+        let on_screen = self
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.source_id.as_deref() == Some(pending.source_id.as_str()));
+        match result {
+            Ok(pairs) => {
+                let count = pairs.len();
+                let mut signals = Vec::new();
+                if on_screen {
+                    let bonuses = self.picker_mru_bonuses(&pending.source_id, &pairs);
+                    let mut kept = true;
+                    if let Some(p) = self.picker.as_mut() {
+                        p.loading = false;
+                        kept = p.replace_candidates_keeping_selection(pairs, bonuses);
+                    }
+                    // The preview tracks the selected row; it only goes stale
+                    // when the selection had to move off a vanished item.
+                    if !kept {
+                        signals = self.preview_picker_selection();
+                    }
+                }
+                if pending.announce {
+                    self.set_message(
+                        EchoLevel::Info,
+                        format!("{}: re-read, {count} entries", pending.source_id),
+                    );
+                }
+                signals
+            }
+            Err(e) => {
+                if on_screen && let Some(p) = self.picker.as_mut() {
+                    p.loading = false;
+                }
+                if on_screen || pending.announce {
+                    self.set_message(EchoLevel::Error, e);
+                }
                 Vec::new()
             }
         }
@@ -19463,6 +19620,9 @@ impl Editor {
         self.refresh_overlay_folds();
         self.drain_pending_selection_range();
         signals.extend(self.drain_pending_picker_init());
+        // A picker source's refreshed list (after an open, `<C-o>`,
+        // `:files-refresh`) — same async-landed wake as init.
+        signals.extend(self.drain_pending_picker_refresh());
         // PH7.4c.2: commit any async plugin-source accept whose outcome landed
         // (same async-landed wake as init; no renderer-specific wiring needed).
         signals.extend(self.drain_pending_picker_accept());

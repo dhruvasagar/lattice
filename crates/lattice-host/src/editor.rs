@@ -1193,6 +1193,11 @@ pub struct Editor {
     /// In-flight async picker init, if the active picker
     /// source's `init` returned a Future.
     pub pending_picker_init: Option<PendingPickerInit>,
+    /// In-flight refresh of a picker source's list — after an open that
+    /// seated from a cache, on `<C-o>`, or from `:files-refresh`.
+    pub pending_picker_refresh: Option<crate::state::PendingPickerRefresh>,
+    /// What the open picker was opened with, for `<C-o>`.
+    pub picker_open_args: Option<crate::state::PickerOpenArgs>,
     /// In-flight async picker accept, if the accepted source's
     /// `accept_async` returned a Future (a WASM plugin source).
     /// Its resolved outcome commits via

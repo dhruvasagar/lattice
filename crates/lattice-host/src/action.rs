@@ -558,6 +558,10 @@ pub enum Action {
     /// PH.1: `<C-h>` — close the picker and open its help page. See
     /// `Editor::do_picker_help` for how the page is chosen.
     PickerHelp,
+    /// `<C-o>` — re-read the open picker's list and replace its rows in
+    /// place, query and selection kept: a file created outside the editor
+    /// while `:files` is open. See `Editor::do_picker_refresh`.
+    PickerRefresh,
     /// PP.5: `<Tab>` — drill in where the source has depth, select the next
     /// row everywhere else.
     ///

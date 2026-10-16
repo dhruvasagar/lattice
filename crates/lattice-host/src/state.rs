@@ -374,6 +374,40 @@ pub struct PendingBlockInsert {
     pub rows: Option<Vec<u32>>,
 }
 
+/// An in-flight refresh of a picker source's list
+/// (`PickerSourceGenerator::refresh`). Applied by
+/// `drain_pending_picker_refresh` on the async-landed wake: into the open
+/// picker when it is still that source's, keeping its query and selection.
+pub struct PendingPickerRefresh {
+    pub source_id: String,
+    pub cancel: CancellationToken,
+    pub rx: tokio::sync::mpsc::UnboundedReceiver<
+        lattice_picker::SourceResult<lattice_picker::CandidateBatch>,
+    >,
+    /// Report the result even with no picker of this source on screen — set
+    /// when the user asked by command (`:files-refresh`), clear for the
+    /// refresh that quietly follows an open.
+    pub announce: bool,
+}
+
+impl std::fmt::Debug for PendingPickerRefresh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingPickerRefresh")
+            .field("source_id", &self.source_id)
+            .field("announce", &self.announce)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The source and arguments the open picker was opened with, so `<C-o>`
+/// re-reads the same list: `:files ~/notes` refreshes `~/notes`, not the
+/// project.
+#[derive(Debug, Clone)]
+pub struct PickerOpenArgs {
+    pub source_id: String,
+    pub args: Vec<String>,
+}
+
 /// In-flight async picker init. The future from
 /// `PickerSourceGenerator::init` is spawned on the LSP
 /// runtime; its resolved batch lands here via `rx`. The

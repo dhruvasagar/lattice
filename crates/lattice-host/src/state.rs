@@ -369,7 +369,8 @@ pub struct PendingBlockInsert {
     /// The rows that receive the text, when the producer knows them
     /// better than line lengths do: block `c` deletes the block first,
     /// after which a row the block never reached looks like one it
-    /// emptied. `None` (block `I` / `A`) decides by line length.
+    /// emptied, and block `I` excludes a row that ends exactly at the
+    /// block's left column. `None` (block `A`) decides by line length.
     pub rows: Option<Vec<u32>>,
 }
 

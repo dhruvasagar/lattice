@@ -8,6 +8,9 @@
   the block deleted and nothing in its place. It now lands on every row the
   block covers, as `I` already did, and one `u` takes it back off all of them.
   Rows too short to reach the block are left alone, as in Vim.
+- **Visual-block `I` skips rows that end where the block starts.** A row
+  exactly as long as the block's left column got the inserted text added to
+  its end; Vim leaves it alone, and now so does Lattice.
 - **`cc` in magit-status commits in the status buffer's repository.** The
   commit buffer it opened showed nothing staged and `C-c C-c` committed
   nothing, unless the editor had been started in that same repository.

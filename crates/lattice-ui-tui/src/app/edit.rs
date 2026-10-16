@@ -1420,6 +1420,22 @@ mod tests {
         assert_eq!(a.editor.document.text(), "aXbcd\n1X234\nWXXYZ");
     }
 
+    /// Vim `:h v_b_I`: the text goes in front of the block "provided
+    /// the line extends into the block" — a row exactly as long as the
+    /// block's left column does not, and is left alone.
+    #[test]
+    fn block_visual_capital_i_leaves_rows_that_do_not_reach_the_block() {
+        let mut a = enter_block_visual(
+            "abcd\n1234\nW\nwxyz",
+            Position::new(0, 1),
+            Position::new(3, 2),
+        );
+        a.apply(Action::EnterBlockVisualInsert);
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.editor.document.text(), "aXbcd\n1X234\nW\nwXxyz");
+    }
+
     #[test]
     fn block_visual_capital_a_appends_after_block_right_column() {
         // Block cols 1..=2 across 3 rows; `A` lands at col 3 on each row.

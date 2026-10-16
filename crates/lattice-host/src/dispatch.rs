@@ -26411,12 +26411,22 @@ impl Editor {
         let left_col = sel.anchor.byte.min(sel.head.byte);
         let right_col = sel.anchor.byte.max(sel.head.byte);
         let insert_col = if append { right_col + 1 } else { left_col };
+        // `:h v_b_I`: `I` inserts "provided the line extends into the
+        // block", so a row exactly as long as the left column is left
+        // alone — the length rule below would admit it. `A` keeps that
+        // rule: it appends after the block on rows that reach its end.
+        let rows = (!append).then(|| {
+            let buffer = &self.document.snapshot().buffer;
+            (start_line..=end_line)
+                .filter(|&line| buffer.line_byte_len(line) > left_col)
+                .collect()
+        });
         self.pending_block_insert = Some(crate::state::PendingBlockInsert {
             start_line,
             end_line,
             insert_col,
             live_edits: 0,
-            rows: None,
+            rows,
         });
         let line_len = self.document.snapshot().buffer.line_byte_len(start_line);
         let cursor_col = insert_col.min(line_len);

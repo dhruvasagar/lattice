@@ -7406,6 +7406,16 @@ method, no `Action` variant); rendering reuses the conceal evaluator.
 Design: [`../architecture/markdown-links.md`](../architecture/markdown-links.md).
 Slice plan: [`slice-plans/archive/markdown-links.md`](slice-plans/archive/markdown-links.md).
 
+## Plugin distribution (PRL, 2026-10-16 — 📝 planned)
+
+Installing a plugin without a Rust toolchain: authors publish a package
+(`plugin.toml` + component) per plugin-API generation from a reusable release
+workflow; users `require-release` it by repository and tag. Adds a source
+kind beside `Local` / `Git` / `Prebuilt` and changes none of them. PRL.1–PRL.9
+planned; signing (PRL.10) and a plugin index (PRL.11) deferred.
+Design: [`../architecture/plugin-distribution.md`](../architecture/plugin-distribution.md).
+Slice plan: [`slice-plans/plugin-distribution.md`](slice-plans/plugin-distribution.md).
+
 ---
 
 ## Conventions for updating this doc

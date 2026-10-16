@@ -16,11 +16,15 @@ the reason several of them exist.
 
 ## Installing it
 
-Build the component and drop it in your plugins directory:
+The plugin is released as `vX.Y.Z` tags; its
+[README](https://github.com/dhruvasagar/lattice-org-plugin#readme) names the
+current one and its `CHANGELOG.md` says what each changed. Build a release and
+drop it in your plugins directory:
 
 ```bash
 git clone https://github.com/dhruvasagar/lattice-org-plugin
 cd lattice-org-plugin
+git checkout v0.1.0    # the release you want; skip to build main
 cargo build --release --target wasm32-wasip2
 mkdir -p ~/.config/lattice/plugins/org
 cp target/wasm32-wasip2/release/lattice_org_plugin.wasm \
@@ -28,9 +32,9 @@ cp target/wasm32-wasip2/release/lattice_org_plugin.wasm \
 cp plugin.toml ~/.config/lattice/plugins/org/
 ```
 
-Or point the plugin manager at a local checkout and let the editor build it on
-first boot — see [`plugins`](help:plugins) for the loading model, capability
-grants and the `:plugins` manager view.
+Or `require` it from your config with `rev` set to a release tag, and let the
+editor clone and build it on first boot — see [`plugins`](help:plugins) for the
+loading model, capability grants and the `:plugins` manager view.
 
 Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 

@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Fixed
+- **Visual-block `c` changes every row.** After `<C-v>` and `c`, the text you
+  typed replaced the block on the top row only; the rows below were left with
+  the block deleted and nothing in its place. It now lands on every row the
+  block covers, as `I` already did, and one `u` takes it back off all of them.
+  Rows too short to reach the block are left alone, as in Vim.
 - **`cc` in magit-status commits in the status buffer's repository.** The
   commit buffer it opened showed nothing staged and `C-c C-c` committed
   nothing, unless the editor had been started in that same repository.

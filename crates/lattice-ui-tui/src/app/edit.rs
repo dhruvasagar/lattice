@@ -1502,6 +1502,28 @@ mod tests {
         assert!(matches!(a.editor.modal, ModalState::Insert));
     }
 
+    /// Vim `:h v_b_c`: the text typed after a block `c` replaces the
+    /// block on EVERY row, as block `I` does — not only the top one.
+    /// Rows the block does not reach are left alone, as in vim.
+    #[test]
+    fn block_change_replicates_typed_text_on_every_row() {
+        let mut a = enter_block_visual(
+            "abcd\n1234\nW\nwxyz",
+            Position::new(0, 1),
+            Position::new(3, 2),
+        );
+        let inv = CommandInvocation::of(a.editor.builtins.change.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.editor.document.text(), "ad\n14\nW\nwz");
+        a.apply(Action::Insert("XY".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.editor.document.text(), "aXYd\n1XY4\nW\nwXYz");
+        // One `u` takes the replicated text back off every row.
+        let _ = a.undo_blocking();
+        assert_eq!(a.editor.document.text(), "ad\n14\nW\nwz");
+    }
+
     #[test]
     fn block_paste_after_replays_rectangle_on_consecutive_lines() {
         // Yank a 2x2 rectangle from the top, paste it at column 0 of

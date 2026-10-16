@@ -360,12 +360,17 @@ pub struct MissingArgPrompt {
 /// per-line insert column at entry time, then replay the
 /// recorded text to all lines except the top one (the top row
 /// was edited live during the Insert session).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PendingBlockInsert {
     pub start_line: u32,
     pub end_line: u32,
     pub insert_col: u32,
     pub live_edits: u32,
+    /// The rows that receive the text, when the producer knows them
+    /// better than line lengths do: block `c` deletes the block first,
+    /// after which a row the block never reached looks like one it
+    /// emptied. `None` (block `I` / `A`) decides by line length.
+    pub rows: Option<Vec<u32>>,
 }
 
 /// In-flight async picker init. The future from

@@ -532,6 +532,14 @@ fn execute_operator_blockwise(
         ));
     }
 
+    // The rows the block reaches, before the delete makes a row that
+    // never reached it look like one whose slice ran to its end.
+    let reached_rows: Vec<u32> = row_ranges
+        .iter()
+        .filter(|r| !r.is_empty())
+        .map(|r| r.start.line)
+        .collect();
+
     // Snapshot row contents top-down before any mutation. Each row is
     // either the column slice (if non-empty) or an empty string; the
     // joined-by-newlines result is the Blockwise yank's content.
@@ -643,7 +651,8 @@ fn execute_operator_blockwise(
         register,
         collapsed_edit,
         cursor_target,
-        document,
+        (top_line, bottom_line, left_col),
+        reached_rows,
     ))
 }
 
@@ -672,7 +681,8 @@ fn merge_blockwise_effects(
     primary_register: crate::register::Register,
     collapsed_edit: Option<lattice_core::buffer::AppliedEdit>,
     cursor_target: Option<Position>,
-    _document: &Document,
+    (top_line, bottom_line, left_col): (u32, u32, u32),
+    reached_rows: Vec<u32>,
 ) -> Effect {
     let mut flat: Vec<Effect> = Vec::new();
     for e in per_row_effects {
@@ -745,6 +755,18 @@ fn merge_blockwise_effects(
     }
     if let Some(m) = enter_mode {
         out.push(Effect::EnterMode(m));
+        // `:h v_b_c`: what is typed next replaces the block on every
+        // row, not only the top one the cursor is on.
+        if matches!(m, ModalState::Insert) {
+            out.push(Effect::AppAction(
+                crate::app_effect::AppEffect::BeginBlockInsert {
+                    start_line: top_line,
+                    end_line: bottom_line,
+                    col: left_col,
+                    rows: reached_rows,
+                },
+            ));
+        }
     }
 
     Effect::Many(out)

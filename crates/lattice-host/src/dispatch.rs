@@ -11188,6 +11188,23 @@ impl Editor {
             AppEffect::StartMacroRecord(c) => out.next_actions.push(Action::StartMacroRecord(c)),
             AppEffect::PlayMacro(c) => out.next_actions.push(Action::PlayMacro(c)),
             AppEffect::PlayLastMacro => out.next_actions.push(Action::PlayLastMacro),
+            // `:h v_b_c`: the grammar's block `c` deleted the rectangle
+            // and entered Insert; park the block so `<Esc>` replays what
+            // was typed onto every row — the state block `I` parks.
+            AppEffect::BeginBlockInsert {
+                start_line,
+                end_line,
+                col,
+                rows,
+            } => {
+                self.pending_block_insert = Some(crate::state::PendingBlockInsert {
+                    start_line,
+                    end_line,
+                    insert_col: col,
+                    live_edits: 0,
+                    rows: Some(rows),
+                });
+            }
             AppEffect::AbsorbOperatorPrefix(op) => {
                 // Slice 8.i.4.c: arm operator-pending via the
                 // partial_chord mechanism. Two atomic effects:
@@ -26361,7 +26378,11 @@ impl Editor {
         ));
         for line in (spec.start_line + 1)..=spec.end_line {
             let line_len = buffer.line_byte_len(line);
-            if line_len < spec.insert_col {
+            let reached = match &spec.rows {
+                Some(rows) => rows.contains(&line),
+                None => line_len >= spec.insert_col,
+            };
+            if !reached {
                 continue;
             }
             edits.push(lattice_protocol::edit::Edit::insert(
@@ -26395,6 +26416,7 @@ impl Editor {
             end_line,
             insert_col,
             live_edits: 0,
+            rows: None,
         });
         let line_len = self.document.snapshot().buffer.line_byte_len(start_line);
         let cursor_col = insert_col.min(line_len);

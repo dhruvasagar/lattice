@@ -381,6 +381,16 @@ impl WitBoundary for NativeAppEffect {
             // that wants an argument picker declares one in its
             // `args_schema` (`ArgSpec.picker`, which DOES cross) rather
             // than emitting this effect.
+            // Emitted only by the grammar's own blockwise dispatch, about
+            // an Insert session the host holds; a plugin operator that
+            // runs blockwise gets it from that dispatch, not by sending it.
+            NativeAppEffect::BeginBlockInsert { .. } => {
+                return Err(
+                    "begin-block-insert is host-internal (the blockwise `c` replay), \
+                     not representable over WIT"
+                        .into(),
+                );
+            }
             NativeAppEffect::InsertRegister(_)
             | NativeAppEffect::OpenYankPicker
             | NativeAppEffect::OpenArgPicker => {

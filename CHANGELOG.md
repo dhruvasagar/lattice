@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Fixed
+- **`cc` in magit-status commits in the status buffer's repository.** The
+  commit buffer it opened showed nothing staged and `C-c C-c` committed
+  nothing, unless the editor had been started in that same repository.
+  `cc` and `ca` now open the same commit buffer as `C-c g c` / `C-c g a`.
 - **An image opened directly fits the window.** `:e photo.png` in the GUI
   scaled a large picture to the pane's width only, so a tall screenshot or
   portrait photo ran off the bottom of the window. It is now scaled down to

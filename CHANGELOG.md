@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- **`:version`** opens a `*version*` page with what a bug report needs: the
+  version, the commit it was built from (and whether the tree was modified),
+  debug or release, the Rust toolchain and target, the renderer you are in,
+  the plugin API generation, and where Lattice keeps its config, plugins and
+  cache. `Y` copies the whole page to the clipboard as markdown.
+  `lattice --version --verbose` prints the same page without starting the
+  editor; plain `--version` is unchanged.
 - **`<C-o>` re-reads an open `:files` list, and `:files-refresh` does it from
   anywhere.** For files created or removed while the picker is open; your
   query and the selected file stay put.

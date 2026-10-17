@@ -41,6 +41,7 @@ pub mod messages;
 pub mod surround;
 pub mod table;
 pub mod text;
+pub mod version;
 pub mod which_key;
 
 pub use completion::{
@@ -56,6 +57,7 @@ pub use hover::HoverMode;
 pub use image::{ImageFileMediaSource, ImageMode, is_image_path, register_image_media_source};
 pub use messages::MessagesMode;
 pub use text::TextMode;
+pub use version::{VersionMode, VersionReport, VersionSection, set_version_report};
 pub use which_key::{
     WhichKeyGrid, WhichKeyMode, install as install_which_key, wire as wire_which_key,
 };

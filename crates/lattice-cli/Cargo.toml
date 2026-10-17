@@ -29,6 +29,9 @@ lattice-plugin-loader = { path = "../lattice-plugin-loader" }
 # `lattice --init` resolves the config home (`~/.config/lattice/init/`) via the
 # canonical `config_home()` — the same tree the loader discovers init.rs from.
 lattice-config = { path = "../lattice-config" }
+# `:version`: the report the CLI assembles at startup is handed to
+# `version-mode` (`set_version_report`) before the editor boots.
+lattice-mode = { path = "../lattice-mode" }
 # 5.9 / 5.8.M: optional GPUI peer renderer. Off by default so
 # `cargo build -p lattice-cli` and `cargo test -p lattice-cli` stay
 # headless-friendly (no system-display-lib link required). Enable

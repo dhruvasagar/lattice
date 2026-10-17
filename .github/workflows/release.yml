@@ -115,6 +115,13 @@ jobs:
     name: dist (${{ matrix.build }})
     needs: [prepare, core-plugins]
     runs-on: ${{ matrix.os }}
+    # The `:version` build stamp (crates/lattice-cli/build.rs). The commit and
+    # its date come from this checkout; "dirty" does not, because the step
+    # below deletes the tracked `rust-toolchain.toml` before building, which
+    # would stamp every release binary as built from modified sources. The
+    # code built IS the tagged commit, so the stamp says so.
+    env:
+      LATTICE_GIT_DIRTY: clean
     strategy:
       fail-fast: false
       matrix:

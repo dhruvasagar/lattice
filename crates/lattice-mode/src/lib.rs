@@ -272,8 +272,8 @@ pub use crate::mode::{
 };
 pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
-    HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
-    register_help_mode_actions,
+    HoverMode, MessagesMode, PathCompletionMode, TextMode, VersionMode, VersionReport,
+    VersionSection, register_foundation_modes, register_help_mode_actions, set_version_report,
 };
 pub use crate::operator_chord::{OperatorChordWirer, OperatorChordWirerHandle};
 // TB.1: `table-mode` — the shared pipe-table minor. Re-exported beside the

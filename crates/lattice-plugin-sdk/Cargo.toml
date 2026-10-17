@@ -20,7 +20,7 @@ readme = "README.md"
 # `version` AND `path`: the path is what the workspace builds against, the
 # version is what a published release resolves to. Cargo requires the version
 # to publish at all, and drops the path when it packages.
-lattice-plugin-sdk-derive = { path = "../lattice-plugin-sdk-derive", version = "0.3.0" }
+lattice-plugin-sdk-derive = { path = "../lattice-plugin-sdk-derive", version = "0.3.1" }
 serde = { workspace = true }
 rmp-serde = { workspace = true }
 

@@ -64,9 +64,13 @@ below accepted.
 
 A declarative macro in `lattice-plugin-sdk` producing the TOML payload and the
 `#[unsafe(link_section = "lattice-manifest")] #[used]` static, with
-`#[allow(unsafe_code)]` on the item. Published crate: a **patch** bump
-(`0.3.1`) — the SDK's `major.minor` is the WIT generation (its README), and an
-additive macro moves no WIT.
+`#[allow(unsafe_code)]` on the item. Published crates: a **patch** bump of
+all three (`lattice-wit`, `lattice-plugin-sdk`, `lattice-plugin-sdk-derive`
+→ `0.3.1`). They share one version whose `major.minor` is the WIT
+generation; the patch is the crates' own, so the WIT package stays `@0.3.0`
+and no plugin's ABI moves. Not `cargo xtask bump-plugin-api`, which moves
+the WIT package too. Publishing (`scripts/publish-plugin-api.sh`) runs from
+`main` after the merge.
 
 Shape as built: `manifest!(<TOML text>)`, the same schema as `plugin.toml`,
 validated by the loader at load time (a named error in `:plugins`). A

@@ -19,7 +19,7 @@
   A plugin's source directory no longer needs a `plugin.toml` either: a
   cargo project under `~/.config/lattice/plugins/` (or your `init/`) is
   built in place and named from the manifest its component embeds.
-- **`lattice_plugin_sdk::manifest!`** (SDK 0.3.1) embeds a plugin's
+- **`lattice_plugin_sdk::manifest!`** (plugin API crates 0.3.1) embeds a plugin's
   manifest in its component, so a Rust plugin needs no `plugin.toml`. It
   builds in a crate that denies unsafe code.
 - **`:version`** opens a `*version*` page with what a bug report needs: the

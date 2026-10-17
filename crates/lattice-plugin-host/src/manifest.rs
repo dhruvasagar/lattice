@@ -810,6 +810,62 @@ fn embedded_manifest(bytes: &[u8]) -> Option<&[u8]> {
 }
 
 /// An unsigned LEB128 `u32` at `at`, and the offset just past it.
+/// `bytes` with every `lattice-manifest` custom section removed — at the top
+/// level and inside a component's core modules — so a `plugin.toml` beside
+/// it is the manifest that applies, as for a component built before 0.9.10.
+///
+/// For tests and tools that load a real component under a manifest of their
+/// own (a narrower `provides`, a grant on a temporary directory). The
+/// embedded manifest always wins over a file, so overriding it means taking
+/// it out. Bytes that are not a wasm module or component come back unchanged.
+pub fn without_embedded_manifest(bytes: &[u8]) -> Vec<u8> {
+    strip_manifest_sections(bytes).unwrap_or_else(|| bytes.to_vec())
+}
+
+fn strip_manifest_sections(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 8 || &bytes[..4] != b"\0asm" {
+        return None;
+    }
+    let is_component = bytes[6] == 1 && bytes[7] == 0;
+    let mut out = bytes[..8].to_vec();
+    let mut at = 8usize;
+    while at < bytes.len() {
+        let id = bytes[at];
+        let (len, body) = read_leb_u32(bytes, at + 1)?;
+        let end = body.checked_add(len as usize)?;
+        let section = bytes.get(body..end)?;
+        let is_manifest = id == 0
+            && read_leb_u32(section, 0).is_some_and(|(name_len, name_at)| {
+                section.get(name_at..name_at + name_len as usize)
+                    == Some(MANIFEST_SECTION.as_bytes())
+            });
+        if is_manifest {
+            // Dropped.
+        } else if is_component && id == 1 {
+            let inner = strip_manifest_sections(section)?;
+            out.push(id);
+            write_leb_u32(&mut out, u32::try_from(inner.len()).ok()?);
+            out.extend_from_slice(&inner);
+        } else {
+            out.extend_from_slice(&bytes[at..end]);
+        }
+        at = end;
+    }
+    Some(out)
+}
+
+fn write_leb_u32(out: &mut Vec<u8>, mut n: u32) {
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
 fn read_leb_u32(bytes: &[u8], mut at: usize) -> Option<(u32, usize)> {
     let mut result: u32 = 0;
     for shift in (0..35).step_by(7) {
@@ -856,6 +912,38 @@ mod tests {
         body.extend_from_slice(name.as_bytes());
         body.extend_from_slice(payload);
         section(0, &body)
+    }
+
+    #[test]
+    fn stripping_removes_the_embedded_manifest_everywhere_it_can_sit() {
+        let toml = "id = \"x\"\n";
+        // A component whose core module carries the section, plus one at the
+        // top level: both go, and the rest is byte-for-byte what it was.
+        let mut module = b"\0asm\x01\x00\x00\x00".to_vec();
+        module.extend(custom(MANIFEST_SECTION, toml.as_bytes()));
+        module.extend(custom("producers", b"keep"));
+        let mut component = b"\0asm\x0d\x00\x01\x00".to_vec();
+        component.push(1);
+        component.extend(leb(module.len()));
+        component.extend(&module);
+        component.extend(custom(MANIFEST_SECTION, toml.as_bytes()));
+        assert!(
+            PluginManifest::from_component_bytes(&component)
+                .unwrap()
+                .is_some()
+        );
+
+        let stripped = without_embedded_manifest(&component);
+        assert!(
+            PluginManifest::from_component_bytes(&stripped)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            stripped.windows(4).any(|w| w == b"keep"),
+            "other custom sections survive"
+        );
+        assert_eq!(without_embedded_manifest(b"not wasm"), b"not wasm".to_vec());
     }
 
     const CORE: &[u8] = b"\0asm\x01\0\0\0";

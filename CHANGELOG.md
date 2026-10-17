@@ -14,6 +14,12 @@
   anywhere.** For files created or removed while the picker is open; your
   query and the selected file stay put.
 
+### Changed
+- **Unfocused popups dim in the GUI, as they do in the terminal.** A
+  `:help` or `:describe-*` popup you have not focused into is drawn dimmed,
+  like any pane without focus — the GUI never dimmed popups before. Hover and
+  signature-help popups are the exception in both, and stay undimmed.
+
 ### Fixed
 - **A colour name works in a style even when no palette defines it.** An org
   TODO keyword styled `fg: "magenta"` in `init.rs` showed no colour — no
@@ -36,7 +42,7 @@
   is read while the cursor stays in your file, so it never has focus — and it
   was dimmed like any unfocused pane until you focused it. `ui.dim_inactive`
   is now resolved per buffer, and hover popups turn it off, in the terminal
-  and the GUI alike. Other unfocused popups dim the same way in both.
+  and the GUI alike (see *Changed* for the other popups).
 - **`:files` shows files created outside the editor the next time you open
   it.** The list is remembered for speed, and a stale one used to be corrected
   only for the open *after* next, so the first `:files` after a build or a
@@ -65,6 +71,12 @@
   off it could scroll the view sideways past the text. The cursor now lands
   just past the link's text, in the terminal and the GUI alike, and the GUI's
   block cursor no longer shows the hidden `)` under it.
+
+### Documentation
+- **The org plugin installs by release.** `org.md` now checks out a tagged
+  release of `lattice-org-plugin` (which has a CHANGELOG and `vX.Y.Z` tags
+  of its own) rather than building whatever `main` holds, and the
+  `require` route pins `rev` to a tag.
 
 ## 0.9.9 — 2026-10-15
 

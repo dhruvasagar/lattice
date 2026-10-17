@@ -32,6 +32,39 @@
 //! Word-boundary / string-comment suppression (don't pair a `'` inside `don't`)
 //! + per-language pair tables are deferred to v2.
 
+// AP.1/AP.3 — the auto-pair plugin manifest. Bundled (pre-granted). It reaches no
+// filesystem, network, or subprocess — it only reads buffer text through the
+// grammar `borrow<document>` handle and contributes grammar / modes / config
+// registry entries.
+//
+// OM.0: the ORDER of `provides` no longer matters. This mode's keymap binds to
+// the plugin's OWN grammar actions by name, resolved against the command
+// registry at bind time, so the grammar drain must run first — and the loader
+// now guarantees that by sorting on `PluginSeam::drain_rank` instead of trusting
+// this list. It reads in dependency order below because that is the clearest way
+// to write it, not because anything depends on it.
+//
+// AP.3: the `manual` style bounds its backward scan to the enclosing lexical
+// scope via the tree-sitter seam (plugin-treesitter-seam.md), which is gated on
+// the `tree-sitter` editor capability (TS.1 §5) — so the manifest declares it.
+// Bundled ⇒ pre-granted; a `manual`-style user with no grant degrades to the
+// line-capped fallback scan (design §7).
+//
+// AP.4/PM.3: `default_mode` makes `auto-pair-mode` the mode this plugin enables
+// by default. The loader auto-registers `auto-pair.enabled` (default true) that
+// gates it — so a fresh editor auto-pairs out of the box, and `:set
+// auto-pair.enabled=false` turns it off. No init.rs needed to enable it.
+//
+// The manifest is embedded in the component (PMF.11) — no `plugin.toml`.
+lattice_plugin_sdk::manifest!(
+    r#"
+id = "auto-pair"
+provides = ["grammar", "modes", "config", "help"]
+editor_capabilities = ["tree-sitter"]
+default_mode = "auto-pair-mode"
+"#
+);
+
 wit_bindgen::generate!({
     world: "auto-pair-plugin",
     path: "../../crates/lattice-wit/wit",

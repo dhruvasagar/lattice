@@ -291,14 +291,15 @@ fn build_core_plugins() -> Result<(), String> {
             ));
         }
 
-        // Stage the component + its manifest into the runtime root (PM.1 layout:
-        // one dir per plugin, a `plugin.toml` + the sole `.wasm`).
+        // Stage the component into the runtime root (PM.1 layout: one dir per
+        // plugin, the sole `.wasm`). PMF.11: its manifest is embedded in it, so
+        // there is no `plugin.toml` to copy — and one left by an older staging
+        // is removed rather than left to contradict the component.
         let dest = runtime_plugins.join(name);
         std::fs::create_dir_all(&dest).map_err(|e| format!("mkdir {}: {e}", dest.display()))?;
         std::fs::copy(&artifact, dest.join(format!("{name}.wasm")))
             .map_err(|e| format!("stage component: {e}"))?;
-        std::fs::copy(plugin_dir.join("plugin.toml"), dest.join("plugin.toml"))
-            .map_err(|e| format!("stage plugin.toml: {e}"))?;
+        let _ = std::fs::remove_file(dest.join("plugin.toml"));
         // PM.8a: mark it bundled. The `:plugins` SOURCE column reads this
         // marker like it reads a required plugin's, so a core plugin says
         // `bundled` rather than `—`; and `is_buildable() == false` is what

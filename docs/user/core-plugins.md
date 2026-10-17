@@ -26,8 +26,8 @@ with its mode, its `<id>.enabled` option, and its own options.
 
 ## How a core plugin loads
 
-1. **Ships prebuilt.** A release stages each core plugin's `.wasm` + `plugin.toml`
-   into lattice's **runtime root** — a directory beside the binary, found via a
+1. **Ships prebuilt.** A release stages each core plugin's `.wasm` — its
+   manifest is embedded in it — into lattice's **runtime root** — a directory beside the binary, found via a
    search path (`$LATTICE_RUNTIME` → the install prefix's `share/lattice` →
    next to the executable → the dev workspace's `runtime/`).
 2. **Discovered at boot.** The editor scans `<runtime>/plugins/` and loads each

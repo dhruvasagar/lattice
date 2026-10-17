@@ -34,6 +34,9 @@
   query and the selected file stay put.
 
 ### Changed
+- **The core plugins are one file each.** auto-pair, treesitter-context,
+  project, comment and lighthouse carry their manifests inside their
+  components; a release no longer ships a `plugin.toml` beside each.
 - **Unfocused popups dim in the GUI, as they do in the terminal.** A
   `:help` or `:describe-*` popup you have not focused into is drawn dimmed,
   like any pane without focus — the GUI never dimmed popups before. Hover and

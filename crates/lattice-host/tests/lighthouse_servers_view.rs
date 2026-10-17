@@ -50,16 +50,10 @@ fn plugin_wasm() -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
-/// The plugin as it ships: the real manifest beside the real component.
+/// The plugin as it ships: the real component, its manifest embedded.
 fn write_plugin_dir(root: &std::path::Path, wasm: &[u8]) {
     let dir = root.join("lighthouse");
     std::fs::create_dir_all(&dir).unwrap();
-    let manifest = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/lighthouse/plugin.toml"
-    ))
-    .unwrap();
-    std::fs::write(dir.join("plugin.toml"), manifest).unwrap();
     std::fs::write(dir.join("component.wasm"), wasm).unwrap();
 }
 

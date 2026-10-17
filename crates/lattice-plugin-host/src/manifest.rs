@@ -1042,15 +1042,24 @@ mod tests {
 
     /// PM.4: the SHIPPED `auto-pair` manifest declares its `default_mode` (+ the
     /// `tree-sitter` capability), so it enables out of the box via the gate. Reads
-    /// the real manifest from the repo — a regression guard on the shipped file.
+    /// the real manifest from the repo — a regression guard on the shipped
+    /// source. PMF.11: it lives in `manifest!` in the plugin's `lib.rs`; read
+    /// from the source rather than a built component, so the guard does not
+    /// depend on a `wasm32-wasip2` build having run.
     #[test]
     fn shipped_auto_pair_manifest_declares_the_gate() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/auto-pair/plugin.toml"
+            "/../../plugins/auto-pair/src/lib.rs"
         );
-        let text = std::fs::read_to_string(path).expect("the auto-pair manifest exists");
-        let m = PluginManifest::from_toml_str(&text).expect("it parses");
+        let source = std::fs::read_to_string(path).expect("the auto-pair source exists");
+        let text = source
+            .split_once("lattice_plugin_sdk::manifest!(")
+            .and_then(|(_, rest)| rest.split_once("r#\""))
+            .and_then(|(_, rest)| rest.split_once("\"#"))
+            .map(|(toml, _)| toml)
+            .expect("auto-pair embeds its manifest with `manifest!`");
+        let m = PluginManifest::from_toml_str(text).expect("it parses");
         assert_eq!(m.id, "auto-pair");
         assert_eq!(
             m.default_modes,

@@ -20,6 +20,35 @@
 //! 3. **Skip blank lines.** A commented blank line is trailing whitespace with
 //!    extra steps, and it breaks rule 1 on the way back.
 
+// CM.3 — the `comment` bundled plugin manifest.
+//
+// `capabilities = ["grammar:chord"]` is the CM.2 capability: permission to bind
+// an operator's chord into the universal operator-pending grammar. It is
+// declared rather than assumed because claiming keys in the grammar every
+// buffer shares is the most user-visible power a plugin can take — the claim
+// belongs in the manifest, in `:plugins`' capability column, and in the grant
+// the trust tier computes. Withheld, the operator still registers and stays
+// reachable by name; only `gc` stops working.
+//
+// No `fs:` or `state:write`: the operator reads the buffer through the
+// `borrow<document>` handle it is handed and returns edits. It touches nothing
+// else.
+//
+// CM.2: the chord is scoped to this mode's keymap layer, never `Builtin`. A
+// chord at `Builtin` would outlive `:set comment.enabled=false` and point at a
+// handler that is gone. The loader refuses to bind a chord for a plugin with no
+// `default_modes` for exactly that reason.
+//
+// The manifest is embedded in the component (PMF.11) — no `plugin.toml`.
+lattice_plugin_sdk::manifest!(
+    r#"
+id = "comment"
+provides = ["grammar", "modes", "config", "help"]
+capabilities = ["grammar:chord"]
+default_modes = ["comment-mode"]
+"#
+);
+
 wit_bindgen::generate!({
     world: "comment-plugin",
     path: "../../crates/lattice-wit/wit",

@@ -373,12 +373,24 @@ pub const MANIFEST_SECTION: &str = "lattice-manifest";
 #[macro_export]
 macro_rules! manifest {
     ($toml:expr $(,)?) => {
+        // The copy is spelled out rather than calling a helper here, so the
+        // expansion needs nothing from this crate but its name, and nothing
+        // from it is reachable at run time.
         #[doc(hidden)]
         #[allow(unsafe_code)]
         #[unsafe(link_section = "lattice-manifest")]
         #[used]
-        pub static LATTICE_MANIFEST: [u8; { $toml }.len()] =
-            $crate::__private::manifest_bytes::<{ { $toml }.len() }>($toml);
+        static LATTICE_MANIFEST: [u8; { $toml }.len()] = {
+            const TEXT: &str = $toml;
+            let bytes = TEXT.as_bytes();
+            let mut out = [0u8; TEXT.len()];
+            let mut i = 0;
+            while i < out.len() {
+                out[i] = bytes[i];
+                i += 1;
+            }
+            out
+        };
     };
 }
 
@@ -401,19 +413,6 @@ pub mod __private {
     /// SDK's opaque [`DecodeError`].
     pub fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
         rmp_serde::from_slice(bytes).map_err(|e| DecodeError(e.to_string()))
-    }
-
-    /// The bytes of `text` as an array, for [`manifest!`](crate::manifest): a
-    /// link-section static must be a sized value, not a reference to one.
-    pub const fn manifest_bytes<const N: usize>(text: &str) -> [u8; N] {
-        let bytes = text.as_bytes();
-        let mut out = [0u8; N];
-        let mut i = 0;
-        while i < N {
-            out[i] = bytes[i];
-            i += 1;
-        }
-        out
     }
 }
 

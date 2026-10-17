@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- **A plugin's file access can follow your configuration.** A plugin may
+  declare `fs:write:{org.directory|~/org}` instead of a fixed path: it gets
+  the directory you set in that option, or its default until you do, so no
+  plugin ships with a path of its own (or its author's) baked in. The option
+  must be the plugin's own.
 - **`:version`** opens a `*version*` page with what a bug report needs: the
   version, the commit it was built from (and whether the tree was modified),
   debug or release, the Rust toolchain and target, the renderer you are in,

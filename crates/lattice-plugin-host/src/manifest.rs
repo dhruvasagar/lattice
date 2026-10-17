@@ -88,12 +88,71 @@ pub enum Capability {
     /// (`register-binding`'s contract), and a refused chord is a decision
     /// rather than a broken wire.
     GrammarChord,
+    /// PMF.3: read access to the path one of the plugin's own options names
+    /// (`fs:read:{<option>|<default>}`), resolved when the grant is made.
+    FsReadOption(OptionPath),
+    /// PMF.3: read + write access to the path one of the plugin's own options
+    /// names (`fs:write:{org.directory|~/org}`). See [`OptionPath`].
+    FsWriteOption(OptionPath),
+}
+
+/// PMF.3: a filesystem grant that follows a configuration option rather than
+/// naming a path (`plugin-manifest.md` §2).
+///
+/// A path in a manifest is the user's data in a plugin-owned file — org's
+/// shipped grant was its author's notes directory. A user who sets
+/// `org.directory` has already said where their notes are; naming the option
+/// makes that the grant too, so no path ships in the plugin.
+///
+/// Resolved when the grant is made: the option's value if it has one, else
+/// [`Self::default`]; `~` expands; an explicitly empty value grants nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionPath {
+    /// The option, fully named (`org.directory`). Must be in the plugin's own
+    /// namespace (`<id>.`), checked when the manifest is parsed.
+    pub option: String,
+    /// The path to use while the option has no value — the plugin's default,
+    /// stated here because the grant is made before the plugin registers its
+    /// options. `None` (`{org.directory}`) grants nothing until it is set.
+    pub default: Option<PathBuf>,
+}
+
+impl OptionPath {
+    /// `{name}` or `{name|default}` — the part after `fs:read:` / `fs:write:`.
+    fn parse(p: &str) -> Option<Self> {
+        let inner = p.strip_prefix('{')?.strip_suffix('}')?;
+        let (name, default) = match inner.split_once('|') {
+            Some((n, d)) => (n, Some(d)),
+            None => (inner, None),
+        };
+        let name = name.trim();
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return None;
+        }
+        let default = default
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(|d| PathBuf::from(expand_tilde(d)));
+        Some(Self {
+            option: name.to_string(),
+            default,
+        })
+    }
+}
+
+impl std::fmt::Display for OptionPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.default {
+            Some(d) => write!(f, "{{{}|{}}}", self.option, d.display()),
+            None => write!(f, "{{{}}}", self.option),
+        }
+    }
 }
 
 /// The string `s` was not a recognised capability form.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` / `net:http:<host>` / `proc:spawn` / `state:write` / `grammar:chord`)"
+    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` (a path, or `{{<option>|<default>}}`) / `net:http:<host>` / `proc:spawn` / `state:write` / `grammar:chord`)"
 )]
 pub struct CapabilityParseError(pub String);
 
@@ -111,6 +170,17 @@ impl FromStr for Capability {
             // an unexpanded tilde does not narrow the grant, it VOIDS it, and
             // every write is refused with a message that says the path is
             // outside the granted paths. Which is true, and useless.
+            // PMF.3: `{option|default}` names an option instead of a path. A
+            // `{` that does not parse as one is an error, not a path that
+            // happens to start with a brace.
+            (Some("fs"), Some(kind @ ("read" | "write")), Some(p)) if p.starts_with('{') => {
+                let op = OptionPath::parse(p).ok_or_else(|| CapabilityParseError(s.to_string()))?;
+                Ok(if kind == "read" {
+                    Capability::FsReadOption(op)
+                } else {
+                    Capability::FsWriteOption(op)
+                })
+            }
             (Some("fs"), Some("read"), Some(p)) if !p.is_empty() => {
                 Ok(Capability::FsRead(PathBuf::from(expand_tilde(p))))
             }
@@ -137,6 +207,8 @@ impl std::fmt::Display for Capability {
             Capability::ProcSpawn => f.write_str("proc:spawn"),
             Capability::StateWrite => f.write_str("state:write"),
             Capability::GrammarChord => f.write_str("grammar:chord"),
+            Capability::FsReadOption(op) => write!(f, "fs:read:{op}"),
+            Capability::FsWriteOption(op) => write!(f, "fs:write:{op}"),
         }
     }
 }
@@ -492,6 +564,22 @@ pub enum ManifestError {
         "unrecognised plugin seam `{0}` (expected picker-source / completion-source / grammar / events / modes / config / decorations / keymap)"
     )]
     Seam(String),
+
+    /// PMF.3: an option-bound grant named an option outside the plugin's own
+    /// namespace. A plugin's grant may follow ITS configuration only — naming
+    /// another plugin's option (or a core one) would let that setting widen
+    /// this plugin's reach without the user knowing the two were linked.
+    #[error(
+        "capability `{capability}` names option `{option}`, which is not one of plugin `{id}`'s own (`{id}.…`)"
+    )]
+    ForeignOption {
+        /// The plugin's id.
+        id: String,
+        /// The option it named.
+        option: String,
+        /// The capability as written.
+        capability: String,
+    },
 }
 
 /// Is `id` a single, safe path component — usable as a directory name that
@@ -552,6 +640,19 @@ impl PluginManifest {
             .iter()
             .map(|c| Capability::from_str(c))
             .collect::<Result<Vec<_>, _>>()?;
+        // PMF.3: an option-bound grant follows the plugin's own configuration.
+        let own = format!("{}.", raw.id);
+        for cap in &requested {
+            if let Capability::FsReadOption(op) | Capability::FsWriteOption(op) = cap
+                && !op.option.starts_with(&own)
+            {
+                return Err(ManifestError::ForeignOption {
+                    id: raw.id.clone(),
+                    option: op.option.clone(),
+                    capability: cap.to_string(),
+                });
+            }
+        }
         let mut editor = CapabilitySet::empty();
         for name in &raw.editor_capabilities {
             editor |= parse_editor_capability(name)

@@ -1191,7 +1191,7 @@ impl PluginLoader {
         // `grant` is pure (manifest + tier), so this mirrors exactly what each
         // seam spawn computes internally — `denied` is the tier-withheld set,
         // `granted` the requested capabilities that survived it.
-        let outcome = lattice_plugin_host::grant(manifest, tier);
+        let outcome = self.host.grant_for(manifest, tier);
         let denied = outcome.denied.clone();
         let granted: Vec<Capability> = manifest
             .requested
@@ -3075,7 +3075,7 @@ impl PluginLoader {
         // BOUNDARY, where provenance is still known; by the time an excerpt
         // reaches `lattice-multibuffer` the host no longer knows which plugin
         // asked, exactly as `EffectAuthorizer` documents for `WriteToFile`.
-        let grant = lattice_plugin_host::capability::grant(manifest, tier).grant;
+        let grant = self.host.grant_for(manifest, tier).grant;
 
         for spec in specs {
             let native = lattice_multibuffer::providers::plugin_view::PluginViewSpec {
@@ -3517,10 +3517,7 @@ impl PluginLoader {
             // user's decision, and `register-binding`'s standing contract is
             // that a plugin never silently mis-binds. The operator stays
             // registered and reachable by name.
-            if !lattice_plugin_host::grant(manifest, tier)
-                .grant
-                .grammar_chord
-            {
+            if !self.host.grant_for(manifest, tier).grant.grammar_chord {
                 tracing::info!(
                     plugin = %manifest.id,
                     "operator chord(s) not bound: `grammar:chord` was not \

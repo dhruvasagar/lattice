@@ -146,7 +146,9 @@ pub use context_source::WasmContextSource;
 pub use context_task::{ContextActor, ContextClient};
 pub use decoration_source::WasmDecorationSource;
 pub use decoration_task::{DecorationActor, DecorationClient};
-pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest, PluginSeam};
+pub use manifest::{
+    Capability, CapabilityParseError, ManifestError, OptionPath, PluginManifest, PluginSeam,
+};
 pub use picker_source::WasmPickerSource;
 pub use picker_task::{PickerActor, PickerClient};
 pub use teardown::{PluginTeardown, TeardownRegistries, TeardownReport};
@@ -4680,12 +4682,31 @@ impl PluginHost {
     /// picker actor spawn (`picker_task`) instantiates under the identical
     /// capability model. A data dir that cannot be created degrades to "no data
     /// mount" (a `warn!`, never a failed load — fragment §6).
+    /// PMF.3: a plugin's capability grant, with option-bound filesystem grants
+    /// (`fs:write:{org.directory|~/org}`) resolved against the editor's
+    /// config. The one place a grant is computed, so the WASI view, the
+    /// manager view and every seam's check agree on what a plugin may reach.
+    ///
+    /// At a plugin's first load its options are not registered yet, so a
+    /// lookup finds nothing and the manifest's default applies; once the
+    /// plugin registers them and the user's value lands, a changed grant
+    /// reloads the plugin (PMF.4).
+    pub fn grant_for(&self, manifest: &PluginManifest, tier: TrustTier) -> GrantOutcome {
+        let registry = self.config.get().cloned();
+        crate::capability::grant_with(manifest, tier, &|name| {
+            registry
+                .as_ref()
+                .and_then(|r| r.lookup(name))
+                .map(|opt| opt.get_formatted())
+        })
+    }
+
     fn build_plugin_wasi(
         &self,
         manifest: &PluginManifest,
         tier: TrustTier,
     ) -> (WasiCtx, GrantOutcome, PathBuf) {
-        let mut outcome = grant(manifest, tier);
+        let mut outcome = self.grant_for(manifest, tier);
         // SECURITY (isolation, defense-in-depth): the id is validated at parse
         // (`from_toml_str` rejects a path-escaping id), but a programmatic
         // `PluginManifest::new` bypasses that. Re-check HERE — the true security

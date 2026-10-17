@@ -16,6 +16,9 @@
   (`min_lattice = "0.9.10"`): an older Lattice refuses it by name in
   `:plugins` — *"org needs lattice ≥ 0.9.10; this is 0.9.9"* — rather than
   failing on a field it doesn't understand.
+- **`lattice_plugin_sdk::manifest!`** (SDK 0.3.1) embeds a plugin's
+  manifest in its component, so a Rust plugin needs no `plugin.toml`. It
+  builds in a crate that denies unsafe code.
 - **`:version`** opens a `*version*` page with what a bug report needs: the
   version, the commit it was built from (and whether the tree was modified),
   debug or release, the Rust toolchain and target, the renderer you are in,

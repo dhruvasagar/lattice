@@ -32,9 +32,10 @@ A component carries its manifest in a wasm **custom section** named
 lives.
 
 - **Written at build time** with `#[link_section]` on a static. Authors never
-  write that: `lattice-plugin-sdk` provides `manifest!{ … }`, which emits the
-  section from the same fields (and contains the `#[unsafe(link_section)]`
-  attribute, so a crate that denies unsafe code still builds). Any language
+  write that: `lattice-plugin-sdk` provides `manifest!(<TOML text>)`, which emits
+  the section from the same TOML a `plugin.toml` holds (and contains the
+  `#[unsafe(link_section)]` attribute, so a crate that denies unsafe code
+  still builds). Any language
   whose toolchain can emit a custom section can carry one; the section name
   and payload schema are the contract, documented beside the WIT.
 - **Read without instantiating.** The loader walks the component's sections —

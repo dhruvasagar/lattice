@@ -333,6 +333,55 @@ impl std::fmt::Display for OptionParseError {
 
 impl std::error::Error for OptionParseError {}
 
+/// The name of the wasm custom section a plugin's manifest is embedded in.
+/// The loader reads it before instantiating anything; see
+/// `docs/dev/architecture/plugin-manifest.md` §1.
+pub const MANIFEST_SECTION: &str = "lattice-manifest";
+
+/// Embed this plugin's manifest in the component, so the `.wasm` is the whole
+/// plugin and no `plugin.toml` ships beside it.
+///
+/// The argument is the manifest's TOML text — the same schema `plugin.toml`
+/// uses (`id`, `provides`, `capabilities`, `min_lattice`, …). It is stored as
+/// the [`MANIFEST_SECTION`] custom section and parsed by the loader at load
+/// time, so a malformed manifest is a named load error in `:plugins`, not a
+/// compile error.
+///
+/// Invoke it once, at the crate root. A second invocation is a compile error
+/// (`LATTICE_MANIFEST` defined twice): a component has one manifest.
+///
+/// ```
+/// #![deny(unsafe_code)]
+///
+/// lattice_plugin_sdk::manifest!(
+///     r#"
+///     id = "org"
+///     provides = ["grammar", "config"]
+///     capabilities = ["fs:write:{org.directory|~/org}", "state:write"]
+///     min_lattice = "0.9.10"
+///     "#
+/// );
+/// # fn main() {
+/// # assert!(std::str::from_utf8(&LATTICE_MANIFEST).unwrap().contains("id = \"org\""));
+/// # }
+/// ```
+///
+/// Placing a static in a named link section is an `unsafe` attribute, which
+/// the expansion allows on its own item, so a crate that `deny`s unsafe code
+/// still builds. One that `forbid`s it cannot: `forbid` cannot be allowed
+/// locally — write `plugin.toml` instead, or relax it to `deny`.
+#[macro_export]
+macro_rules! manifest {
+    ($toml:expr $(,)?) => {
+        #[doc(hidden)]
+        #[allow(unsafe_code)]
+        #[unsafe(link_section = "lattice-manifest")]
+        #[used]
+        pub static LATTICE_MANIFEST: [u8; { $toml }.len()] =
+            $crate::__private::manifest_bytes::<{ { $toml }.len() }>($toml);
+    };
+}
+
 /// Implementation detail used by the generated `#[derive(PluginEvent)]` code so a
 /// consumer depends only on `lattice-plugin-sdk` (the SDK owns the `rmp-serde`
 /// dependency, not every plugin). Not part of the stable API.
@@ -352,6 +401,19 @@ pub mod __private {
     /// SDK's opaque [`DecodeError`].
     pub fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
         rmp_serde::from_slice(bytes).map_err(|e| DecodeError(e.to_string()))
+    }
+
+    /// The bytes of `text` as an array, for [`manifest!`](crate::manifest): a
+    /// link-section static must be a sized value, not a reference to one.
+    pub const fn manifest_bytes<const N: usize>(text: &str) -> [u8; N] {
+        let bytes = text.as_bytes();
+        let mut out = [0u8; N];
+        let mut i = 0;
+        while i < N {
+            out[i] = bytes[i];
+            i += 1;
+        }
+        out
     }
 }
 

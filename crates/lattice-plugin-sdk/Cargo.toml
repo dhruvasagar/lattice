@@ -8,7 +8,7 @@
 # decide about, for a crate that did not change.
 [package]
 name = "lattice-plugin-sdk"
-version = "0.3.0"
+version = "0.3.1"
 description = "Helpers for writing lattice editor plugins as WebAssembly components: typed config shapes and event payloads."
 edition.workspace = true
 rust-version.workspace = true

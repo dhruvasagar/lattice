@@ -5861,7 +5861,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-sdk"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "lattice-plugin-sdk-derive",
  "rmp-serde",

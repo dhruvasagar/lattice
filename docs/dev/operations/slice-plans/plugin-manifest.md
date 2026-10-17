@@ -15,7 +15,7 @@ Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 | Slice | What | Repo | Status |
 |---|---|---|---|
 | PMF.1 | Read a `lattice-manifest` custom section from the component; embedded wins over `plugin.toml`; `plugin.toml`-only plugins unchanged; `min_lattice` refuses a plugin that needs a newer editor. | lattice | ✅ |
-| PMF.2 | `lattice-plugin-sdk::manifest!` emits the section (and hides the unsafe attribute). | lattice | 📝 |
+| PMF.2 | `lattice-plugin-sdk::manifest!` emits the section (and hides the unsafe attribute). | lattice | ✅ |
 | PMF.3 | Option-bound grants: `fs:read/write:{option\|default}` parsed, resolved at grant time from the user's value or the default; same-plugin rule. | lattice | ✅ |
 | PMF.4 | A grant-bearing option changing reloads its plugin when the resolved path differs; default-vs-registered mismatch warns. | lattice | ✅ |
 | PMF.5 | Grant-bearing options cannot be set by plugins (except `init.rs`), refused by name. | lattice | ✅ |
@@ -60,7 +60,14 @@ below accepted.
 
 A declarative macro in `lattice-plugin-sdk` producing the TOML payload and the
 `#[unsafe(link_section = "lattice-manifest")] #[used]` static, with
-`#[allow(unsafe_code)]` on the item. Published crate: a minor version bump.
+`#[allow(unsafe_code)]` on the item. Published crate: a **patch** bump
+(`0.3.1`) — the SDK's `major.minor` is the WIT generation (its README), and an
+additive macro moves no WIT.
+
+Shape as built: `manifest!(<TOML text>)`, the same schema as `plugin.toml`,
+validated by the loader at load time (a named error in `:plugins`). A
+field-syntax proc macro that checks the manifest at compile time is possible
+later; it would need the host's capability grammar in the derive crate.
 
 **Tests:** a compile test that the macro builds under `#![deny(unsafe_code)]`;
 the payload round-trips through the host parser.

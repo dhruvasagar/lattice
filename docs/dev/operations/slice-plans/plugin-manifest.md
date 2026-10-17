@@ -9,17 +9,17 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
 + tests including failure modes + graceful error handling).
 
-**Status: 📝 planned (2026-10-17).** The embedding spike passed (design §1).
+**Status: 🚧 in progress (2026-10-17).** The embedding spike passed (design §1).
 Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 
 | Slice | What | Repo | Status |
 |---|---|---|---|
-| PMF.1 | Read a `lattice-manifest` custom section from the component; embedded wins over `plugin.toml`; `plugin.toml`-only plugins unchanged; `min_lattice` refuses a plugin that needs a newer editor. | lattice | 📝 |
+| PMF.1 | Read a `lattice-manifest` custom section from the component; embedded wins over `plugin.toml`; `plugin.toml`-only plugins unchanged; `min_lattice` refuses a plugin that needs a newer editor. | lattice | ✅ |
 | PMF.2 | `lattice-plugin-sdk::manifest!` emits the section (and hides the unsafe attribute). | lattice | 📝 |
-| PMF.3 | Option-bound grants: `fs:read/write:{option\|default}` parsed, resolved at grant time from the user's value or the default; same-plugin rule. | lattice | 📝 |
-| PMF.4 | A grant-bearing option changing reloads its plugin when the resolved path differs; default-vs-registered mismatch warns. | lattice | 📝 |
-| PMF.5 | Grant-bearing options cannot be set by plugins (except `init.rs`), refused by name. | lattice | 📝 |
-| PMF.6 | `:plugins` shows expanded grants and their origin; out-of-grant refusals name the option. | lattice | 📝 |
+| PMF.3 | Option-bound grants: `fs:read/write:{option\|default}` parsed, resolved at grant time from the user's value or the default; same-plugin rule. | lattice | ✅ |
+| PMF.4 | A grant-bearing option changing reloads its plugin when the resolved path differs; default-vs-registered mismatch warns. | lattice | ✅ |
+| PMF.5 | Grant-bearing options cannot be set by plugins (except `init.rs`), refused by name. | lattice | ✅ |
+| PMF.6 | `:plugins` shows expanded grants and their origin; out-of-grant refusals name the option. | lattice | ✅ |
 | PMF.7 | Docs: `:help plugins` "Capabilities and your configuration", plugin-authoring guide, manifest custom-section schema beside the WIT. | lattice | 📝 |
 | PMF.8 | Org adopts: embedded manifest, `{org.directory\|~/org}` / `{org.roam-directory\|~/org/roam}`, defaults registered to match; `plugin.toml` removed; `org.md` and README updated. | lattice-org-plugin + lattice docs | 📝 |
 | PMF.9 | Revise the distribution design and plan to the one-file package. | lattice | ✅ |

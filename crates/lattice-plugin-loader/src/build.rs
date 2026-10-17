@@ -788,10 +788,19 @@ fn stage(
                 .map_err(|e| format!("stage manifest → {}: {e}", manifest_dst.display()))?;
         }
     } else {
-        return Err(format!(
-            "source has no plugin.toml at {}",
-            manifest_src.display()
-        ));
+        // PMF.1: no `plugin.toml` is fine when the component carries its
+        // manifest — discovery reads it from the artifact.
+        let embedded = std::fs::read(artifact).ok().and_then(|bytes| {
+            lattice_plugin_host::PluginManifest::from_component_bytes(&bytes)
+                .ok()
+                .flatten()
+        });
+        if embedded.is_none() {
+            return Err(format!(
+                "source has no plugin.toml at {}, and its component embeds no manifest",
+                manifest_src.display()
+            ));
+        }
     }
     std::fs::write(stamp_path(user_root, name), stamp.render())
         .map_err(|e| format!("write build stamp: {e}"))?;

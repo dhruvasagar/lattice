@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use lattice_plugin_host::PluginManifest;
 
+use crate::source_record::SourceRecord;
+
 /// The manifest filename inside a plugin directory.
 const MANIFEST_FILE: &str = "plugin.toml";
 
@@ -259,35 +261,83 @@ pub fn discover_one(plugin_dir: &Path) -> Result<DiscoveredPlugin, String> {
     match load_one(plugin_dir) {
         Ok(Some(plugin)) => Ok(plugin),
         Ok(None) => Err(format!(
-            "no `{MANIFEST_FILE}` in {} (not a plugin directory)",
+            "no `{MANIFEST_FILE}` and no component in {} (not a plugin directory)",
             plugin_dir.display()
         )),
         Err(reason) => Err(reason),
     }
 }
 
-/// Parse a single plugin directory. `Ok(None)` if it has no manifest (not a
-/// plugin dir); `Err(reason)` if it has a manifest but is otherwise malformed
-/// (bad TOML, missing/ambiguous component) — the caller logs the reason.
+/// Parse a single plugin directory. `Ok(None)` if it is not a plugin dir (no
+/// manifest file and no component); `Err(reason)` if it is one but cannot load
+/// (bad manifest, missing/ambiguous component, needs a newer editor) — the
+/// caller logs the reason.
+///
+/// PMF.1: the manifest is the component's embedded `lattice-manifest` section
+/// when it has one, else `plugin.toml` beside it. When both exist the embedded
+/// one wins — the component is what was built, the file only what was copied.
 fn load_one(plugin_dir: &Path) -> Result<Option<DiscoveredPlugin>, String> {
     let manifest_path = plugin_dir.join(MANIFEST_FILE);
-    if !manifest_path.exists() {
-        return Ok(None);
-    }
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("cannot read {MANIFEST_FILE}: {e}"))?;
-    let manifest = PluginManifest::from_toml_str(&manifest_text)
-        .map_err(|e| format!("invalid manifest: {e}"))?;
-
-    let component_path = sole_wasm(plugin_dir)?;
+    let has_file = manifest_path.exists();
+    let component_path = match sole_wasm(plugin_dir) {
+        Ok(path) => path,
+        // No manifest file and no single component: not a plugin directory.
+        Err(_) if !has_file => return Ok(None),
+        Err(reason) => return Err(reason),
+    };
     let component_bytes = std::fs::read(&component_path)
         .map_err(|e| format!("cannot read component {}: {e}", component_path.display()))?;
+    let embedded = PluginManifest::from_component_bytes(&component_bytes)
+        .map_err(|e| format!("invalid embedded manifest: {e}"))?;
+    let source = crate::source_record::read(plugin_dir);
+    // A `Prebuilt` download is the least-known code the editor runs, and its
+    // install gives it a synthesised manifest with no capabilities on purpose
+    // (`resolve_prebuilt`). A component's own manifest must not undo that by
+    // winning over the file: the file stays authoritative, and without one the
+    // embedded manifest loads with its capability requests dropped.
+    let prebuilt = matches!(source, SourceRecord::Prebuilt { .. });
+    let embedded = match embedded {
+        Some(_) if prebuilt && has_file => None,
+        Some(mut manifest) if prebuilt => {
+            manifest.requested.clear();
+            Some(manifest)
+        }
+        other => other,
+    };
+    let manifest = match embedded {
+        Some(manifest) => {
+            if has_file {
+                tracing::debug!(
+                    dir = %plugin_dir.display(),
+                    "component carries its own manifest; {MANIFEST_FILE} ignored"
+                );
+            }
+            manifest
+        }
+        None if has_file => {
+            let manifest_text = std::fs::read_to_string(&manifest_path)
+                .map_err(|e| format!("cannot read {MANIFEST_FILE}: {e}"))?;
+            PluginManifest::from_toml_str(&manifest_text)
+                .map_err(|e| format!("invalid manifest: {e}"))?
+        }
+        None => {
+            return Err(format!(
+                "no manifest: neither a {MANIFEST_FILE} nor one embedded in {}",
+                component_path.display()
+            ));
+        }
+    };
+    // PMF.1: refuse by name a plugin that needs a newer editor, rather than
+    // failing on the first manifest feature this one does not understand.
+    if let Some(reason) = manifest.requires_newer_lattice(env!("CARGO_PKG_VERSION")) {
+        return Err(reason);
+    }
 
     Ok(Some(DiscoveredPlugin {
         manifest,
         component_bytes,
         dir: plugin_dir.to_path_buf(),
-        source: crate::source_record::read(plugin_dir),
+        source,
     }))
 }
 

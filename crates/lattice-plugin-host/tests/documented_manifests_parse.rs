@@ -80,6 +80,7 @@ fn every_documented_manifest_parses() {
             "doc",
             "default_mode",
             "default_modes",
+            "min_lattice",
         ];
         for line in toml.lines() {
             let line = line.trim();

@@ -8,6 +8,14 @@
   the directory you set in that option, or its default until you do, so no
   plugin ships with a path of its own (or its author's) baked in. The option
   must be the plugin's own.
+- **A plugin can be a single `.wasm` file.** Its manifest — what
+  `plugin.toml` holds — can be embedded in the component itself, as a
+  `lattice-manifest` custom section; a plugin directory with the component
+  alone loads. `plugin.toml` still works, and when both are present the
+  embedded one is used. A manifest may also say which editor it needs
+  (`min_lattice = "0.9.10"`): an older Lattice refuses it by name in
+  `:plugins` — *"org needs lattice ≥ 0.9.10; this is 0.9.9"* — rather than
+  failing on a field it doesn't understand.
 - **`:version`** opens a `*version*` page with what a bug report needs: the
   version, the commit it was built from (and whether the tree was modified),
   debug or release, the Rust toolchain and target, the renderer you are in,

@@ -262,9 +262,11 @@ impl CapabilityGrant {
 /// `data_dir`. Only filesystem preopens are wired (see the module note);
 /// sockets and subprocess spawning stay disabled at the WASI layer.
 ///
-/// **Graceful degradation:** a granted prefix that cannot be opened (missing
-/// dir, permission error) is skipped with a `warn!`, never a panic or a failed
-/// load — the plugin runs with that one capability degraded (fragment §6). The
+/// **Graceful degradation:** a granted prefix that cannot be opened is skipped,
+/// never a panic or a failed load — the plugin runs with that one capability
+/// degraded (fragment §6). A directory that does not exist is logged at
+/// `debug!` (an option-bound grant's default often does not); one that exists
+/// but will not open (permissions) at `warn!`. The
 /// caller must have created `data_dir` before this runs (the host does).
 pub fn build_wasi_ctx(grant: &CapabilityGrant, data_dir: &Path) -> WasiCtx {
     let mut builder = WasiCtxBuilder::new();
@@ -303,6 +305,18 @@ pub fn build_wasi_ctx(grant: &CapabilityGrant, data_dir: &Path) -> WasiCtx {
         } else {
             (DirPerms::READ, FilePerms::READ)
         };
+        // PMF.3: a grant that follows an option starts on the plugin's default
+        // (org's `~/org-roam`), which most users never create. A directory that
+        // does not exist is therefore the normal case, not a fault: it is simply
+        // not mounted, and the plugin treats the feature as off. Only a path
+        // that exists and still cannot be opened is worth a warning.
+        if !spec.host_path.exists() {
+            tracing::debug!(
+                host_path = %spec.host_path.display(),
+                "granted directory does not exist; not mounted"
+            );
+            continue;
+        }
         if let Err(err) =
             builder.preopened_dir(&spec.host_path, &spec.guest_path, dir_perms, file_perms)
         {

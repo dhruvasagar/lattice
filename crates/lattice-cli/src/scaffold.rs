@@ -2,10 +2,15 @@
 //! **self-contained, buildable** WASM-component starter (config or plugin) into
 //! the lattice config tree.
 //!
-//! Each scaffold is a complete cargo crate: a `Cargo.toml`, the `plugin.toml` the
-//! editor discovers, a minimal `src/lib.rs`, and a `wit/` copy of the editor's
-//! own API package (embedded at build time — [`crate::WIT_FILES`]) so it builds
-//! with no separate checkout, matched to this editor's version. The user edits
+//! Each scaffold is a complete cargo crate: a `Cargo.toml`, a minimal
+//! `src/lib.rs` that embeds the manifest the editor discovers (PMF.12 — no
+//! `plugin.toml`), and a `wit/` copy of the editor's own API package
+//! (embedded at build time — [`crate::WIT_FILES`]) so it builds with no
+//! separate checkout, matched to this editor's version.
+//!
+//! The manifest is written as the custom section directly rather than with
+//! `lattice_plugin_sdk::manifest!`: the scaffold depends on `wit-bindgen`
+//! alone, and two lines are cheaper than a second dependency for a starter. The user edits
 //! `src/lib.rs`, builds to `wasm32-wasip2`, drops the artifact in, and reloads.
 //! Refuses to clobber an existing non-empty directory.
 //!
@@ -48,13 +53,6 @@ strip = true
 [workspace]
 "#;
 
-const PLUGIN_TOML: &str = r#"# The init config manifest. `id` MUST be "init" (the :reload-config target).
-# `provides` lists the seams your init.rs registers into — add "grammar" /
-# "decorations" / … as you use them, matching the exports in wit/init.wit.
-id = "init"
-provides = ["config", "keymap", "events"]
-"#;
-
 const INIT_WIT: &str = r#"package lattice:plugin-host@0.3.0;
 
 // Your init.rs world — the seams you use. EXPORT the register-* your guest
@@ -85,6 +83,19 @@ const LIB_RS: &str = r####"//! Your lattice config, compiled to a WASM component
 //! Edit freely, then rebuild + `:reload-config` (see this dir's build steps, or
 //! `docs/user/init.md`). Everything below is illustrative — delete what you
 //! don't want.
+
+// The manifest the editor reads before it loads this component — embedded in
+// the `.wasm` as the `lattice-manifest` custom section, so this directory
+// needs no `plugin.toml`. `id` MUST be "init" (the :reload-config target).
+// `provides` lists the seams this file registers into — add "grammar" /
+// "decorations" / … as you use them, matching the exports in wit/init.wit.
+const MANIFEST: &[u8] = br#"
+id = "init"
+provides = ["config", "keymap", "events"]
+"#;
+#[unsafe(link_section = "lattice-manifest")]
+#[used]
+static LATTICE_MANIFEST: [u8; MANIFEST.len()] = *MANIFEST.first_chunk().unwrap();
 
 wit_bindgen::generate!({ world: "init", path: "wit" });
 
@@ -193,18 +204,6 @@ strip = true
 [workspace]
 "#;
 
-const PLUGIN_MANIFEST: &str = r#"# The plugin manifest the editor discovers. `grammar` MUST precede `modes` in
-# `provides`: the mode's keymap binds the plugin's OWN grammar action by name,
-# resolved at bind time. `default_mode` makes `__MODE__` on by default via the
-# auto-registered `__NAME__.enabled` option (`:set __NAME__.enabled=false` off).
-# A plugin with more than one on-by-default mode uses `default_modes = [...]`
-# instead — one gate, every mode named. A mode that is neither is registered
-# but never activates.
-id = "__NAME__"
-provides = ["grammar", "modes"]
-default_mode = "__MODE__"
-"#;
-
 const PLUGIN_WORLD_WIT: &str = r#"package lattice:plugin-host@0.3.0;
 
 // Your plugin world — a grammar action + a minor mode that binds a key to it.
@@ -225,6 +224,22 @@ const PLUGIN_LIB_RS: &str = r####"//! The `__NAME__` lattice plugin. A grammar a
 //! plus a minor mode (`__MODE__`) binding `gh` (Normal) to it. Edit freely;
 //! rebuild + reinstall (see this dir's build steps). Browse seam signatures with
 //! `:describe-plugin-api <seam>`.
+
+// The manifest the editor reads before it loads this component — embedded in
+// the `.wasm` as the `lattice-manifest` custom section, so this directory
+// needs no `plugin.toml`. `default_mode` makes `__MODE__` on by default via
+// the auto-registered `__NAME__.enabled` option (`:set __NAME__.enabled=false`
+// turns it off). A plugin with more than one on-by-default mode uses
+// `default_modes = [...]` instead — one gate, every mode named. A mode that is
+// neither is registered but never activates.
+const MANIFEST: &[u8] = br#"
+id = "__NAME__"
+provides = ["grammar", "modes"]
+default_mode = "__MODE__"
+"#;
+#[unsafe(link_section = "lattice-manifest")]
+#[used]
+static LATTICE_MANIFEST: [u8; MANIFEST.len()] = *MANIFEST.first_chunk().unwrap();
 
 wit_bindgen::generate!({ world: "user-plugin", path: "wit" });
 
@@ -463,7 +478,6 @@ fn write_scaffold_init(dir: &Path) -> Result<()> {
     write_wit_package(dir)?;
     write(&dir.join("wit").join("init.wit"), INIT_WIT)?;
     write(&dir.join("Cargo.toml"), CARGO_TOML)?;
-    write(&dir.join("plugin.toml"), PLUGIN_TOML)?;
     write(&dir.join("src").join("lib.rs"), LIB_RS)?;
     Ok(())
 }
@@ -489,7 +503,6 @@ fn write_scaffold_plugin(dir: &Path, name: &str) -> Result<()> {
         PLUGIN_WORLD_WIT,
     )?;
     write(&dir.join("Cargo.toml"), &sub(PLUGIN_CARGO_TOML))?;
-    write(&dir.join("plugin.toml"), &sub(PLUGIN_MANIFEST))?;
     write(&dir.join("src").join("lib.rs"), &sub(PLUGIN_LIB_RS))?;
     Ok(())
 }
@@ -535,10 +548,13 @@ mod tests {
         let dir = tmp.path().join("init");
         write_scaffold_init(&dir).unwrap();
 
-        // The four hand-written files + a non-empty embedded wit package.
+        // The hand-written files + a non-empty embedded wit package.
         assert!(dir.join("Cargo.toml").exists());
-        assert!(dir.join("plugin.toml").exists());
         assert!(dir.join("src/lib.rs").exists());
+        assert!(
+            !dir.join("plugin.toml").exists(),
+            "the manifest is embedded in the component (PMF.12)"
+        );
         assert!(dir.join("wit/init.wit").exists());
         assert!(
             dir.join("wit/types.wit").exists(),
@@ -549,9 +565,11 @@ mod tests {
             "wit package embedded at build"
         );
 
-        // The manifest the editor discovers declares the init id.
-        let manifest = std::fs::read_to_string(dir.join("plugin.toml")).unwrap();
-        assert!(manifest.contains("id = \"init\""));
+        // The manifest the editor discovers declares the init id, and is
+        // placed in the section the loader reads.
+        let lib = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
+        assert!(lib.contains("id = \"init\""));
+        assert!(lib.contains("link_section = \"lattice-manifest\""));
 
         // Only one package may carry a doc comment: `init.wit` must NOT lead with
         // one before `package` (the bug that broke the first build).
@@ -586,7 +604,8 @@ mod tests {
             "the API package is copied"
         );
 
-        let manifest = std::fs::read_to_string(dir.join("plugin.toml")).unwrap();
+        assert!(!dir.join("plugin.toml").exists());
+        let manifest = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
         assert!(manifest.contains("id = \"my-plugin\""));
         assert!(manifest.contains("default_mode = \"my-plugin-mode\""));
 

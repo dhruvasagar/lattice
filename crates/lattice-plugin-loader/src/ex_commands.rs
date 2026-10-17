@@ -31,8 +31,9 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
     registry.register_ex_command(
         "plugin-load",
         "Load a plugin from a directory (`:plugin-load <path>`). The directory \
-         must hold a `plugin.toml` manifest and exactly one `.wasm` component; \
-         its declared seams are drained into the editor's native registries. \
+         must hold exactly one `.wasm` component, with its manifest embedded \
+         or in a `plugin.toml` beside it; a cargo project is built first. Its \
+         declared seams are drained into the editor's native registries. \
          Loads asynchronously — completion is reported in `*messages*`.",
         load_spec(Arc::downgrade(loader)),
     );
@@ -206,7 +207,7 @@ fn load_spec(loader: Weak<PluginLoader>) -> ExCommandSpec {
         }),
         args_schema: string_arg(
             "path",
-            "Directory holding the plugin's `plugin.toml` + `.wasm` component.",
+            "Directory holding the plugin's `.wasm` component (or its cargo project).",
             "path:",
             "gen:files",
         ),

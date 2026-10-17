@@ -19,6 +19,9 @@
   A plugin's source directory no longer needs a `plugin.toml` either: a
   cargo project under `~/.config/lattice/plugins/` (or your `init/`) is
   built in place and named from the manifest its component embeds.
+  `--scaffold-init` and `--scaffold-plugin` now write the manifest into
+  `src/lib.rs` instead of a `plugin.toml`; a config scaffolded earlier keeps
+  its `plugin.toml` and keeps working.
 - **`lattice_plugin_sdk::manifest!`** (plugin API crates 0.3.1) embeds a plugin's
   manifest in its component, so a Rust plugin needs no `plugin.toml`. It
   builds in a crate that denies unsafe code.

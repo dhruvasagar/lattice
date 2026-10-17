@@ -82,9 +82,8 @@ Your compiled config is a plugin directory at:
 
 ```
 <config>/lattice/init/
-├── plugin.toml      # the manifest (id = "init", provides = [...])
 ├── Cargo.toml       # your config is a small cargo crate…
-├── src/lib.rs       # …and this is the file you edit
+├── src/lib.rs       # …and this is the file you edit (its manifest at the top)
 ├── wit/             # the editor's API, written for you — do not edit
 └── init.wasm        # the compiled component (built for you, cached)
 ```
@@ -144,7 +143,10 @@ native editor subsystem:
 > are all the _same_ seam** (`grammar`), so a single grammar component can define
 > all of them together (the big example below).
 
-`plugin.toml` declares which seam(s) the component provides:
+The manifest at the top of `src/lib.rs` declares which seam(s) the component
+provides — it is embedded in the component, so there is no separate file. (A
+config scaffolded before 0.9.10 has it in a `plugin.toml` beside `Cargo.toml`
+instead; that keeps working.)
 
 ```toml
 id = "init"                 # required; the :reload-config target
@@ -204,7 +206,7 @@ Subscribe with an `EventFilter` — any combination of event **kinds**, path
 ### A worked event-handler config
 
 ```rust
-// init.rs — an events-plugin. plugin.toml: provides = ["events"]
+// init.rs — an events-plugin. Manifest: provides = ["events"]
 wit_bindgen::generate!({ world: "events-plugin", path: "wit" });
 
 use lattice::plugin_host::events;
@@ -275,7 +277,7 @@ impl Guest for Component {
 
 // The only side effect a handler can have without extra capabilities: write to
 // its own private, always-writable `/data` dir. (An `fs:read:<prefix>` grant in
-// plugin.toml also lets a handler read outside it via the gated `walk`.)
+// the manifest also lets a handler read outside it via the gated `walk`.)
 fn log(line: &str) {
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/data/events.log") {
@@ -396,7 +398,7 @@ You implement two halves of the `grammar-plugin` world:
 ### One config with several grammar contributions
 
 ```rust
-// init.rs — a grammar-plugin. plugin.toml: provides = ["grammar"]
+// init.rs — a grammar-plugin. Manifest: provides = ["grammar"]
 wit_bindgen::generate!({ world: "grammar-plugin", path: "wit" });
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as Callbacks;
@@ -562,7 +564,7 @@ your grammar config added), landing in the user keymap layer — above the built
 vim grammar, so your bindings win.
 
 ```rust
-// init.rs — a keymap-plugin. plugin.toml: provides = ["keymap"]
+// init.rs — a keymap-plugin. Manifest: provides = ["keymap"]
 wit_bindgen::generate!({ world: "keymap-plugin", path: "wit" });
 
 use lattice::plugin_host::keymap;
@@ -598,7 +600,7 @@ for values you compute or set conditionally (per filetype, on a plugin loading).
 value — it never mis-sets.
 
 ```rust
-// init.rs — a config-plugin. plugin.toml: provides = ["config"]
+// init.rs — a config-plugin. Manifest: provides = ["config"]
 wit_bindgen::generate!({ world: "config-plugin", path: "wit" });
 
 use lattice::plugin_host::config;
@@ -641,7 +643,7 @@ world init {
 }
 ```
 
-`plugin.toml`: `provides = ["config", "keymap", "events"]` — the seams you
+The manifest: `provides = ["config", "keymap", "events"]` — the seams you
 register into. (`modes` is *not* listed: you don't declare a mode, you only call
 `enable-mode` on one another plugin declared.) Read the guest top to bottom —
 **immediate** config runs when `init.rs` loads; a plugin's **options** run from
@@ -755,7 +757,7 @@ lattice --scaffold-init
 ```
 
 This creates `~/.config/lattice/init/` with a complete WASM-component config crate
-— `Cargo.toml`, `plugin.toml`, `src/lib.rs` (a minimal config: an option, a
+— `Cargo.toml`, `src/lib.rs` (its manifest, and a minimal config: an option, a
 keybinding, an event handler), and a `wit/` copy of *this editor's* API (so it
 builds with no separate checkout, matched to your version). It refuses to
 overwrite an existing config.
@@ -814,7 +816,7 @@ Build and install:
 rustup target add wasm32-wasip2                    # once
 cargo build --target wasm32-wasip2 --release
 cp target/wasm32-wasip2/release/lattice_init.wasm \
-   ~/.config/lattice/init/init.wasm                # place beside plugin.toml
+   ~/.config/lattice/init/init.wasm                # place beside Cargo.toml
 ```
 
 Then in a running editor, `:reload-config` — no restart. (Or start the editor;
@@ -831,7 +833,7 @@ dump scaffolding with `:export-plugin-api markdown`.
 tier (it's your own config):
 
 - **Capabilities are deny-by-default.** No filesystem beyond your private `/data`
-  dir unless `plugin.toml` requests an `fs:` prefix; no network, no process spawn.
+  dir unless its manifest requests an `fs:` prefix; no network, no process spawn.
 - **Fuel + deadline bounded.** Every call has a budget; a runaway loop is trapped,
   not hung. The synchronous `grammar` seam has the tightest budget — keep `apply`
   cheap.

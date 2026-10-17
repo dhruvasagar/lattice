@@ -25,7 +25,7 @@ Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 | PMF.9 | Revise the distribution design and plan to the one-file package. | lattice | ✅ |
 | PMF.10 | A source with no `plugin.toml` builds: an in-place project is a cargo project; ids come from the built component; a staged copy left by an older build is removed. | lattice | ✅ |
 | PMF.11 | Bundled plugins embed their manifests (`manifest!`); their `plugin.toml` files, the core-plugin staging and release-archive checks that expected them, and the tests that copied them, go. | lattice | ✅ |
-| PMF.12 | `--scaffold-init` / `--scaffold-plugin` write `manifest!` instead of `plugin.toml`. Existing configs keep theirs and keep working. | lattice | 📝 |
+| PMF.12 | `--scaffold-init` / `--scaffold-plugin` write `manifest!` instead of `plugin.toml`. Existing configs keep theirs and keep working. | lattice | ✅ |
 
 ## Sequencing
 
@@ -156,7 +156,15 @@ copying it.
 ## PMF.12 — scaffolds embed
 
 `--scaffold-init` and `--scaffold-plugin` write the manifest into `src/lib.rs`
-with `manifest!`, depend on `lattice-plugin-sdk`, and write no `plugin.toml`.
+and write no `plugin.toml`.
+
+As built: the section is written directly (`#[unsafe(link_section =
+"lattice-manifest")] static … = *MANIFEST.first_chunk().unwrap()`), not with
+`manifest!`. The scaffolds depend on `wit-bindgen` alone, and `manifest!`
+ships in plugin-API 0.3.1, which is published from `main` after this branch
+merges — a scaffold needing it would fail `the_scaffolds_compile` on the PR
+that introduces it. Switching the scaffolds to `manifest!` is a one-line
+follow-up once 0.3.1 is on crates.io, if wanted.
 
 ## PMF.9 — distribution follows
 

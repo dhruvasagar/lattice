@@ -3,6 +3,11 @@
 Status: design fragment (2026-10-16). Slice plan:
 [`../operations/slice-plans/plugin-distribution.md`](../operations/slice-plans/plugin-distribution.md).
 
+> **Amended 2026-10-17** by [`plugin-manifest.md`](plugin-manifest.md): a
+> component now carries its own manifest, so a release asset is the component
+> alone, and filesystem grants follow the plugin's own options instead of a
+> `grants` field. §2, §3 and §5 below are revised to match; the rest stands.
+
 Anchors: [`plugin-manager.md`](plugin-manager.md) §4 (the source model this
 adds a kind to), §7 (the no-toolchain promise this keeps), §8 (`:plugins`);
 [`release-pipeline.md`](release-pipeline.md) (the editor's own release, whose
@@ -44,35 +49,21 @@ not name a plugin, a version, or the API generation those bytes target — and
 those three are what a user means when they ask for "org, 0.2". The source
 kind has to carry them.
 
-## 2. The artefact: a package, laid out like a build
+## 2. The artefact: the component, carrying its manifest
 
 A release publishes, per plugin API generation it supports:
 
-	<id>-<version>-api<MAJOR>.<MINOR>.tar.gz
-	<id>-<version>-api<MAJOR>.<MINOR>.tar.gz.sha256
+	<id>-<version>-api<MAJOR>.<MINOR>.wasm
+	<id>-<version>-api<MAJOR>.<MINOR>.wasm.sha256
 
-e.g. `org-0.2.0-api0.3.tar.gz`. The archive holds exactly what a source build
-stages into `~/.config/lattice/plugins/<id>/`:
-
-	plugin.toml
-	<id>.wasm
-
-Nothing else: no nested directory, no README, no second `.wasm` (discovery's
-contract is exactly one), and any other entry is refused. Unpacking goes
-through the same hardened extractor lighthouse uses (§6), into a sibling that
-is renamed into place only once complete — so an interrupted install leaves
-the previous version loadable.
-
-**Why a package and not a bare `.wasm`.** The manifest is not optional
-metadata; it is what the loader drains seams from. Shipping it separately
-means two downloads that can disagree, and synthesizing it (today's
-behaviour) produces a plugin that does nothing.
-
-**Why not the manifest as a wasm custom section.** Single file, cannot drift —
-but it needs an embedding step in every author's build and an extraction step
-in the loader, to save one archive entry. The package keeps the staged layout
-identical across all source kinds, so discovery, `:plugins` and unload need no
-new case.
+e.g. `org-0.2.0-api0.3.wasm`. The component carries its manifest in a
+`lattice-manifest` custom section
+([`plugin-manifest.md`](plugin-manifest.md) §1), so it is the whole plugin:
+the installer writes it into `~/.config/lattice/plugins/<id>/` — through a
+temporary sibling renamed into place once complete, so an interrupted install
+leaves the previous version loadable — and discovery reads the manifest from
+it. The publishing workflow (§8) refuses a component with no embedded
+manifest: a released plugin is one file or it is not released.
 
 **Why `api<MAJOR>.<MINOR>` in the name.** It lets the installer choose — and
 refuse — *before* downloading (§4), and lets one release carry builds for two
@@ -80,18 +71,22 @@ API generations across a host bump. Major.minor is the whole compatibility
 key: `releasing.md` holds `lattice-wit`'s major.minor equal to the WIT
 package's, and a patch never changes the ABI.
 
+**Superseded:** this section first specified a `.tar.gz` holding
+`plugin.toml` + the component. An archive was needed only because the
+manifest was a second file; with it embedded, the archive, its extractor and
+its entry-validation rules are unnecessary.
+
 ## 3. The source kind: `Release`
 
 	Release {
 		repo:    "owner/name",        // a GitHub repository
 		version: Option<"vX.Y.Z">,    // a tag; None = newest compatible
 		sha256:  Option<String>,      // pin the bytes, not just the tag
-		grants:  Option<Vec<String>>, // §5
 	}
 
 With a version, the asset URL is a convention, not a lookup:
 
-	https://github.com/<repo>/releases/download/<version>/<id>-<ver>-api<M>.<m>.tar.gz
+	https://github.com/<repo>/releases/download/<version>/<id>-<ver>-api<M>.<m>.wasm
 
 so a pinned install makes no API call and meets no rate limit. Without one,
 the installer asks the GitHub releases API once for the newest non-draft,
@@ -126,7 +121,6 @@ guest that does not import it is unaffected — so the seam is:
 		repo: string,
 		version: option<string>,
 		sha256: option<string>,
-		grants: option<list<string>>,
 		enable-mode: option<string>,
 	}
 
@@ -135,9 +129,8 @@ guest that does not import it is unaffected — so the seam is:
 It records and returns exactly as `require` does (plugin-manager.wit,
 "Recording, not doing"); resolution runs off-thread after the export returns.
 
-The cost, stated: `grants` exists only on this path. Folding it into
-`plugin-spec` for `Git`/`Local` too is a breaking change, and belongs to the
-next deliberate API generation rather than being spent here.
+There is no `grants` field: filesystem grants follow the plugin's own options
+(§5), which the user sets in their config whatever the source kind.
 
 ## 4. Compatibility is checked before the download
 
@@ -160,26 +153,14 @@ build's `.build-stamp` fingerprint is not available here — it is written by
 the editor's build service from the editor's own `lattice-wit`, and a CI build
 has neither.
 
-## 5. Capabilities: the user's grants, not the author's
+## 5. Capabilities: the user's configuration decides
 
-A plugin's `plugin.toml` grants itself what it requests (`capability::grant`;
-user consent is a stub). For a plugin built from the user's own checkout that
-is tolerable — they can edit the file they built from. A downloaded package
-makes it visible: org's manifest grants `fs:write:` on *its author's* notes
-directory, so every copy would carry it, and an `update` that replaces the
-package would silently restore it over the user's edit.
-
-So `release-spec.grants`, when given, **replaces** the manifest's
-`capabilities`, under one rule: **a user grant may narrow or retarget a
-capability kind the manifest requests, never add a kind.** `fs:write:~/notes`
-is accepted for a manifest asking `fs:write:<anything>`; `net:http:…` for a
-manifest that asked for no network is refused, by name. `proc:spawn` stays
-denied to user-installed plugins as today. The grants live in `init.rs`, so
-they are re-applied every boot and survive every update without a merge rule.
-
-Not in scope, and named so it is not mistaken for done: interactive consent
-("org wants write access to … — allow?"), and grants for `Git`/`Local` sources
-(§3).
+Superseded by [`plugin-manifest.md`](plugin-manifest.md) §2. This section
+first proposed a `grants` list on `release-spec` replacing the manifest's
+capabilities. Instead, a filesystem grant names one of the plugin's own
+options with a default — `fs:write:{org.directory|~/org}` — so the path comes
+from the user's configuration for every source kind, release installs
+included, and no user path ships in any plugin.
 
 ## 6. On disk, and when the network is touched
 
@@ -202,16 +183,12 @@ The package unpacks to the same `<user_root>/<id>/` a build stages into. The
 This is `RefreshPolicy` (plugin-manager.md §4) applied as written — the rule
 `Git` already follows.
 
-**Not a second downloader.** Lighthouse's LH.0 already built both halves this
-needs, hardened, in `lattice-plugin-host`: `download_host` (connect / response /
-body timeouts, a byte ceiling, sha256 verified before the file is kept) and
-`extract_host` (paths confined to the destination, nothing written through a
-symlink, links and devices refused by name, all-or-nothing via a `.part`
-sibling). They are reachable today only as guest-facing, capability-checked
-jobs. The installer calls the same cores from the host side, run on
-`spawn_blocking`; the slice that does this factors each core out of its job
-wrapper rather than copying it. Two archive readers in one tree is how one of
-them ends up without the `..` check.
+**Not a second downloader.** Lighthouse's LH.0 already built this, hardened,
+in `lattice-plugin-host`: `download_host` (connect / response / body timeouts,
+a byte ceiling, sha256 verified before the file is kept). It is reachable today
+only as a guest-facing, capability-checked job. The installer calls the same
+core from the host side, run on `spawn_blocking`; the slice that does this
+factors it out of its job wrapper rather than copying it.
 
 ## 7. Integrity
 

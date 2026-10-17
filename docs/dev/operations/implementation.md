@@ -7416,6 +7416,17 @@ planned; signing (PRL.10) and a plugin index (PRL.11) deferred.
 Design: [`../architecture/plugin-distribution.md`](../architecture/plugin-distribution.md).
 Slice plan: [`slice-plans/plugin-distribution.md`](slice-plans/plugin-distribution.md).
 
+## Plugin manifest (PMF, 2026-10-17 — 📝 planned)
+
+A plugin becomes one file: its manifest is a `lattice-manifest` custom section
+inside the component (spike passed), with `plugin.toml` still accepted. A
+filesystem grant can name one of the plugin's own options with a default —
+`fs:write:{org.directory|~/org}` — so the user's configuration decides what a
+plugin may touch, and no user path ships in a plugin. Amends PRL: the release
+package is the component alone and PRL.6 is superseded.
+Design: [`../architecture/plugin-manifest.md`](../architecture/plugin-manifest.md).
+Slice plan: [`slice-plans/plugin-manifest.md`](slice-plans/plugin-manifest.md).
+
 ---
 
 ## Conventions for updating this doc

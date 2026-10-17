@@ -2,10 +2,12 @@
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
 > Design contract: [`../../architecture/plugin-distribution.md`](../../architecture/plugin-distribution.md).
+> Amended by [`plugin-manifest.md`](plugin-manifest.md) (2026-10-17): the
+> release asset is the component alone (no archive), and PRL.6 is superseded.
 > Builds on the plugin manager's user track (PM.5–PM.9, tracked in
 > [`../implementation.md`](../implementation.md) and
 > [`archive/plugin-loader.md`](archive/plugin-loader.md)) and reuses
-> lighthouse's LH.0 download / extract cores ([`lighthouse.md`](lighthouse.md)).
+> lighthouse's LH.0 download core ([`lighthouse.md`](lighthouse.md)).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
@@ -15,12 +17,12 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 
 | Slice | What | Repo | Status |
 |---|---|---|---|
-| PRL.1 | Factor LH.0's download and extract cores out of their job wrappers, host-callable. No behaviour change. | lattice | 📝 |
+| PRL.1 | Factor LH.0's download core out of its job wrapper, host-callable. No behaviour change. | lattice | 📝 |
 | PRL.2 | `Prebuilt{url}` bug fixes: no re-download when present; timeouts and a byte ceiling via PRL.1. | lattice | 📝 |
 | PRL.3 | The package installer: `PluginSource::Release`, convention URL, sha256, id check, swap into place, `.source` kind `release`. | lattice | 📝 |
 | PRL.4 | Compatibility and resolution: API generation in the asset name, the named refusal, newest-compatible lookup for unpinned specs and `update`. | lattice | 📝 |
 | PRL.5 | WIT `require-release` + host wiring; `:plugins` source label. | lattice | 📝 |
-| PRL.6 | User grants: `release-spec.grants` replaces manifest capabilities under the narrow-or-retarget rule. | lattice | 📝 |
+| PRL.6 | User grants on `release-spec`. | lattice | ❌ superseded by option-bound grants, [`plugin-manifest.md`](plugin-manifest.md) PMF.3–PMF.5 |
 | PRL.7 | Publishing: one shared plugin build script; reusable `plugin-release.yml`; `release.yml`'s core-plugin job calls the same script. | lattice | 📝 |
 | PRL.8 | Org adopts the workflow; first published release. | lattice-org-plugin | 📝 |
 | PRL.9 | User and author docs; fix the `plugin-authoring.md` contradiction. | lattice | 📝 |
@@ -39,17 +41,17 @@ the others consume them. PRL.8 needs both — a published package and an editor
 that installs one — because PRL.8 is the end-to-end proof. PRL.9 lands last,
 so the docs describe what shipped rather than what was planned.
 
-## PRL.1 — the download and extract cores, host-callable
+## PRL.1 — the download core, host-callable
 
-`download_host` and `extract_host` in `lattice-plugin-host` hold the hardened
-logic (timeouts, byte ceiling, sha256 before the file is kept; path
-confinement, no write through a symlink, links and devices refused, `.part`
-all-or-nothing). Each is reachable today only through a guest job carrying a
-`CapabilityGrant`. Split each into a plain function over a request and its
-limits that the job wrapper calls, and export it for `lattice-plugin-loader`.
+`download_host` in `lattice-plugin-host` holds the hardened logic (timeouts,
+byte ceiling, sha256 before the file is kept). It is reachable today only
+through a guest job carrying a `CapabilityGrant`. Split it into a plain
+function over a request and its limits that the job wrapper calls, and export
+it for `lattice-plugin-loader`. (The release asset is a single component since
+PMF, so the extract core is no longer needed here.)
 
-**Done when:** every LH.0 test passes unchanged, the cores have direct unit
-tests, and nothing outside the two modules changes behaviour.
+**Done when:** every LH.0 test passes unchanged, the core has direct unit
+tests, and nothing outside the module changes behaviour.
 
 ## PRL.2 — `Prebuilt{url}` fixes
 
@@ -67,16 +69,16 @@ accepts and never answers) — the first test to run the real HTTP path.
 
 ## PRL.3 — the package installer
 
-`PluginSource::Release { repo, version, sha256, grants }` in the loader.
+`PluginSource::Release { repo, version, sha256 }` in the loader.
 `resolve_release`:
 
 1. Build the asset URL from the convention (design §3) and the host's API
    generation.
-2. Download the `.sha256`, then the package, through PRL.1; verify — and when
-   the spec pins a `sha256`, against that too.
-3. Extract through PRL.1 into a sibling; refuse any entry other than
-   `plugin.toml` and one `.wasm`; check the manifest `id` equals the spec's
-   `name`.
+2. Download the `.sha256`, then the component, through PRL.1; verify — and
+   when the spec pins a `sha256`, against that too.
+3. Write it into a sibling directory; read its embedded manifest (PMF.1) —
+   refuse a component without one — and check the manifest `id` equals the
+   spec's `name`.
 4. Swap into `<user_root>/<id>/` — rename the old directory aside, the new one
    in, then remove the old — so a failure at any step leaves the previous
    version loading.
@@ -84,9 +86,9 @@ accepts and never answers) — the first test to run the real HTTP path.
 
 Warm boot with a matching `.source` resolves to the artifact with no network.
 
-**Tests** (fixture packages built in-test with `tar` + `flate2`): the happy
-path; a hash mismatch; a spec-pinned hash mismatch; an extra entry; two
-`.wasm`; an id mismatch; a truncated download; the previous version still
+**Tests** (fixture components with an embedded manifest, built in-test): the
+happy path; a hash mismatch; a spec-pinned hash mismatch; a component with no
+manifest; an id mismatch; a truncated download; the previous version still
 loads after each failure; warm boot makes no fetch; one end-to-end install
 over a local HTTP server. **Bench:** none — the path is off-thread and, warm,
 never runs; the warm-boot no-fetch test is the guard that matters.
@@ -137,7 +139,8 @@ today; an `update` that replaces the package keeps the user's grants.
 
 - `scripts/build-plugin.sh <dir>`, the one recipe: `cargo build --release
   --target wasm32-wasip2`, the single-`.wasm` and non-empty checks, the API
-  generation from the locked `lattice-wit`, the package and its `.sha256`.
+  generation from the locked `lattice-wit`, the embedded-manifest check, and
+  the renamed component and its `.sha256`.
 - `release.yml`'s `core-plugins` job calls it for its build step. What the
   editor's archives contain does not change; their existing verify step
   proves it.

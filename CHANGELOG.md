@@ -15,6 +15,11 @@
   query and the selected file stay put.
 
 ### Fixed
+- **`*notifications*` keys work.** `<CR>` (run a notification's action), `d`
+  (dismiss) and `gr` (refresh) did nothing: the actions they name were never
+  registered, so they were dropped at startup with a warning in the log.
+- **`<C-c>` interrupts Claude again** in a Claude Code terminal (Normal mode).
+  It named a command that no longer exists under that name.
 - **Semantic highlighting appears without `:e!`.** Opening a file sometimes
   asked the language server for semantic tokens and inlay hints before it had
   finished starting; the empty answer was kept, and nothing asked again until

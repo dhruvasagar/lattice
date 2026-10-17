@@ -335,6 +335,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // PM.3: react to `<id>.enabled` toggles — activate/deactivate a core plugin's
     // default mode live (`:set auto-pair.enabled=false`).
     loader.subscribe_mode_gates();
+    // PMF.4: an option a plugin's file access follows (`org.directory`)
+    // changing reloads that plugin with the new grant.
+    loader.subscribe_grant_options();
     boot.register_service::<PluginLoaderHandle>(loader.clone());
 
     // PO.4.3: observe `:set plugin.trace-level=…` and push the new default into

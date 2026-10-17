@@ -205,6 +205,13 @@ struct LoadedRecord {
     default_modes: Vec<String>,
     /// PM.8a: where the plugin came from (its `.source` marker at load time).
     source: crate::source_record::SourceRecord,
+    /// PMF.4: the manifest it loaded from, so a change to an option one of its
+    /// grants follows can be re-resolved without re-reading the plugin.
+    manifest: lattice_plugin_host::PluginManifest,
+    /// PMF.3/PMF.4: how its option-bound grants resolved at load — compared
+    /// against a fresh resolution when such an option changes, and shown in
+    /// `:plugins` (PMF.6).
+    option_bound: Vec<lattice_plugin_host::capability::OptionBoundGrant>,
 }
 
 /// PM.8b: what a build for one plugin is doing right now.
@@ -1222,6 +1229,8 @@ impl PluginLoader {
             health: PluginHealth::Healthy,
             default_modes: manifest.default_modes.clone(),
             source: plugin.source.clone(),
+            manifest: manifest.clone(),
+            option_bound: outcome.option_bound.clone(),
         };
         // EVERY host id this load issued, in DRAIN order (see the sort below —
         // no longer the order `provides` lists them in).
@@ -1483,6 +1492,17 @@ impl PluginLoader {
         // <id>.enabled=false`. Subsequent changes are handled by
         // `subscribe_mode_gates`.
         self.apply_default_mode_gate(&manifest.id, &manifest.default_modes);
+        // PMF.4: the plugin has registered its options by now; a grant default
+        // that disagrees with the option's own default is a plugin bug the user
+        // would otherwise meet as a refusal.
+        self.warn_grant_default_mismatch(manifest);
+        // PMF.4: the grant was resolved before the plugin registered its
+        // options, so a value the user already had for one (`lattice.toml`, an
+        // `init.rs` set before this load) applied at registration without an
+        // `OptionChanged`. Re-resolve now; anything that moved is announced
+        // through that event, which `subscribe_grant_options` turns into a
+        // reload — rather than reloading from inside this load.
+        self.announce_moved_grants(manifest, tier, &outcome.option_bound);
         // LA.1: the mode/language CATALOG changed. Separate from `PluginLoaded`
         // above because the subscriber is different and much more expensive —
         // it re-resolves the major mode of every open buffer
@@ -1805,6 +1825,149 @@ impl PluginLoader {
     /// option back to the loaded plugin's `default_mode` and request the mode's
     /// enablement to match, so the toggle activates / deactivates it live. Mirrors
     /// [`Self::subscribe_health`]; a no-op when no bus/runtime was wired.
+    /// PMF.4: warn when an option-bound grant's default (`{org.directory|~/org}`)
+    /// disagrees with the default the plugin registered for that option.
+    ///
+    /// The template states its own default because the grant is made before the
+    /// plugin registers its options — so the two can drift, and a plugin that
+    /// looks in one place by default while being allowed to write in another
+    /// fails every write until the user sets the option.
+    fn warn_grant_default_mismatch(&self, manifest: &lattice_plugin_host::PluginManifest) {
+        let Some(registry) = self.env.config_registry.as_ref() else {
+            return;
+        };
+        for cap in &manifest.requested {
+            let (Capability::FsReadOption(op) | Capability::FsWriteOption(op)) = cap else {
+                continue;
+            };
+            let Some(registered) = registry.lookup(&op.option) else {
+                tracing::warn!(
+                    plugin = %manifest.id,
+                    option = %op.option,
+                    "a capability follows `{}`, which the plugin never registered; \
+                     its grant stays at the manifest default",
+                    op.option
+                );
+                continue;
+            };
+            let registered = std::path::PathBuf::from(lattice_core::home::expand_tilde(
+                registered.default_formatted(),
+            ));
+            if op.default.as_ref() != Some(&registered) && !registered.as_os_str().is_empty() {
+                tracing::warn!(
+                    plugin = %manifest.id,
+                    option = %op.option,
+                    grant_default = ?op.default,
+                    option_default = %registered.display(),
+                    "the manifest grants a different default directory than the option uses"
+                );
+            }
+        }
+    }
+
+    /// PMF.4: reload a plugin when an option one of its grants follows changes
+    /// — `:set org.directory=…`, a config reload, or `lattice.toml` being read
+    /// after the plugin started at boot.
+    ///
+    /// A grant is fixed for an instance's life (WASI pre-opened directories and
+    /// host-side checks), so following a new value means a new instance. Only
+    /// when the resolved paths actually differ: a reload re-registers the
+    /// plugin's options, which may announce a change again, and comparing paths
+    /// is what stops that becoming a loop. A change that resolves to the same
+    /// paths (a default becoming the user's identical value) only updates what
+    /// `:plugins` reports.
+    /// PMF.4: after a load, publish `OptionChanged` for each option-bound grant
+    /// whose resolution differs from the one the plugin was instantiated with.
+    fn announce_moved_grants(
+        &self,
+        manifest: &lattice_plugin_host::PluginManifest,
+        tier: TrustTier,
+        at_load: &[lattice_plugin_host::capability::OptionBoundGrant],
+    ) {
+        let Some(bus) = self.env.bus.as_ref() else {
+            return;
+        };
+        let now = self.host.grant_for(manifest, tier).option_bound;
+        for (then, now) in at_load.iter().zip(now.iter()) {
+            if then.path != now.path {
+                let new = now
+                    .path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                bus.publish(Event::OptionChanged {
+                    name: now.option.clone(),
+                    old: then.path.as_ref().map(|p| p.display().to_string()),
+                    new,
+                });
+            }
+        }
+    }
+
+    pub fn subscribe_grant_options(self: &Arc<Self>) {
+        let (Some(bus), Some(runtime)) = (self.env.bus.as_ref(), self.env.runtime.as_ref()) else {
+            return;
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        bus.subscribe(
+            EventFilter::kind(EventKind::OptionChanged),
+            SubscriptionTarget::Channel(tx),
+        );
+        let weak = Arc::downgrade(self);
+        runtime.spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let Event::OptionChanged { name, .. } = event else {
+                    continue;
+                };
+                let Some(loader) = weak.upgrade() else { break };
+                let affected: Vec<(String, TrustTier, lattice_plugin_host::PluginManifest)> = {
+                    let loaded = loader
+                        .loaded
+                        .lock()
+                        .expect("plugin-loader loaded-set mutex poisoned");
+                    loaded
+                        .iter()
+                        .filter(|r| r.option_bound.iter().any(|g| g.option == name))
+                        .map(|r| (r.name.clone(), r.tier, r.manifest.clone()))
+                        .collect()
+                };
+                for (plugin, tier, manifest) in affected {
+                    let fresh = loader.host.grant_for(&manifest, tier).option_bound;
+                    let changed = {
+                        let mut loaded = loader
+                            .loaded
+                            .lock()
+                            .expect("plugin-loader loaded-set mutex poisoned");
+                        let Some(record) = loaded.iter_mut().find(|r| r.name == plugin) else {
+                            continue;
+                        };
+                        let paths = |g: &[lattice_plugin_host::capability::OptionBoundGrant]| {
+                            g.iter()
+                                .map(|g| (g.option.clone(), g.path.clone(), g.write))
+                                .collect::<Vec<_>>()
+                        };
+                        let changed = paths(&record.option_bound) != paths(&fresh);
+                        if !changed {
+                            record.option_bound = fresh;
+                        }
+                        changed
+                    };
+                    if !changed {
+                        continue;
+                    }
+                    tracing::info!(
+                        plugin = %plugin,
+                        option = %name,
+                        "an option this plugin's file access follows changed; reloading it"
+                    );
+                    if let Err(err) = loader.reload(&plugin, tier).await {
+                        tracing::warn!(plugin = %plugin, error = %err, "reload after a grant change failed");
+                    }
+                }
+            }
+        });
+    }
+
     pub fn subscribe_mode_gates(self: &Arc<Self>) {
         let (Some(bus), Some(runtime)) = (self.env.bus.as_ref(), self.env.runtime.as_ref()) else {
             return;

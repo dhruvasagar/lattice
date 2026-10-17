@@ -20,7 +20,7 @@ Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 | PMF.4 | A grant-bearing option changing reloads its plugin when the resolved path differs; default-vs-registered mismatch warns. | lattice | ✅ |
 | PMF.5 | Grant-bearing options cannot be set by plugins (except `init.rs`), refused by name. | lattice | ✅ |
 | PMF.6 | `:plugins` shows expanded grants and their origin; out-of-grant refusals name the option. | lattice | ✅ |
-| PMF.7 | Docs: `:help plugins` "Capabilities and your configuration", plugin-authoring guide, manifest custom-section schema beside the WIT. | lattice | 📝 |
+| PMF.7 | Docs: `:help plugins` "Capabilities and your configuration", plugin-authoring guide, manifest custom-section schema beside the WIT. | lattice | ✅ |
 | PMF.8 | Org adopts: embedded manifest, `{org.directory\|~/org}` / `{org.roam-directory\|~/org/roam}`, defaults registered to match; `plugin.toml` removed; `org.md` and README updated. | lattice-org-plugin + lattice docs | 📝 |
 | PMF.9 | Revise the distribution design and plan to the one-file package. | lattice | ✅ |
 

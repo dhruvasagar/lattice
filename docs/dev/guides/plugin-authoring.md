@@ -296,10 +296,25 @@ shim and no side-by-side generation support; if that changes, it lands as the
 
 ## Manifest, world and entry points
 
-A plugin directory holds a component crate and a **`plugin.toml`** manifest.
-The manifest declares identity and asks for capabilities; nothing in it is
-executed. A malformed manifest is a typed error — the host logs it and skips
-the plugin, never panics.
+A plugin's **manifest** declares its identity and asks for capabilities;
+nothing in it is executed. It lives inside the component — the `.wasm` is the
+whole plugin — written with the SDK's `manifest!` at the crate root:
+
+```rust
+lattice_plugin_sdk::manifest!(
+    r#"
+    id = "my-plugin"
+    provides = ["grammar", "config"]
+    capabilities = ["fs:write:{my-plugin.directory|~/notes}"]
+    min_lattice = "0.9.10"
+    "#
+);
+```
+
+The same TOML can instead sit beside the component as `plugin.toml`, which is
+what every editor before 0.9.10 reads; when both exist the embedded one wins.
+A malformed manifest is a typed error — the host logs it, lists it under
+*Failed to load* in `:plugins`, and skips the plugin, never panics.
 
 <!-- manifest -->
 ```toml
@@ -307,12 +322,14 @@ id = "my-plugin"                         # required; keys the plugin's data dir
 doc = "One line shown by :describe-plugin."
 provides = ["grammar", "modes", "config", "help"]   # the seams it implements
 capabilities = [                         # OS + editor powers it requests
-    "fs:read:~/notes",                   #   read under a path prefix
+    "fs:read:~/notes",                   #   read under a fixed path prefix
+    "fs:write:{my-plugin.directory|~/notes}",  # write where an option says
     "state:write",                       #   the plugin-private key/value store
     "grammar:chord",                     #   bind an operator's chord
 ]
 editor_capabilities = ["tree-sitter"]    # subsystems a declared mode needs
 default_modes = ["my-plugin-mode"]       # on by default, gated by my-plugin.enabled
+min_lattice = "0.9.10"                   # oldest editor that can load it
 ```
 
 | Key | Meaning |
@@ -323,10 +340,55 @@ default_modes = ["my-plugin-mode"]       # on by default, gated by my-plugin.ena
 | `capabilities` | `fs:read:<prefix>`, `fs:write:<prefix>`, `net:http:<host>`, `proc:spawn` (bundled plugins only), `state:write` (the plugin store), `grammar:chord` (bind an operator's chord). Deny-by-default: the grant is the intersection of the request and the trust tier. |
 | `editor_capabilities` | `buffer-uri`, `lsp`, `tree-sitter`, `folds`, `writable`, `diagnostics` — what a mode the plugin declares requires of the buffers it activates on. |
 | `default_modes` / `default_mode` | Minor modes enabled by default. The loader registers a `<id>.enabled` option that gates them; either spelling works. |
+| `min_lattice` | The oldest editor version that can load this plugin, `"major.minor.patch"`. An older editor refuses it by name (*"my-plugin needs lattice ≥ 0.9.10; this is 0.9.9"*). Declare `0.9.10` or later if the manifest is embedded or a grant names an option — earlier editors understand neither. |
 
 The manifest above is parsed by the real parser in a test
 (`lattice-plugin-host/tests/documented_manifests_parse.rs`), so every key and
 capability form on this page is one the loader accepts.
+
+### A grant that follows an option
+
+A path in a grant is the *user's* path, not the plugin's: where their notes
+are, where their project lives. So a filesystem grant may name one of the
+plugin's own options instead of a fixed path, with the default the plugin
+ships:
+
+    fs:write:{my-plugin.directory|~/notes}
+
+The plugin may write under whatever `my-plugin.directory` is set to; until the
+user sets it, under `~/notes`. Setting the option — which the user does anyway,
+so the plugin knows where to look — is the grant. The rules:
+
+- **Only `fs:read` and `fs:write`**, the capabilities that take a path.
+- **The option must be the plugin's own** (`<id>.…`). Naming another plugin's
+  option is a manifest error.
+- **Register the option with the same default.** Grants are fixed before your
+  `register-options` runs, so the template carries the default; if the two
+  disagree the loader warns, because the plugin would look in one place and
+  be allowed another.
+- **The plugin reloads when the value moves.** A grant becomes the instance's
+  pre-opened directories, so a new path needs a new instance. Your stored
+  state (`state:write`) survives; anything only in memory does not.
+- **The plugin cannot set the option itself.** `set-option` on an option a
+  grant follows is refused — otherwise a plugin could widen its own grant to
+  `/`. The user's `init.rs` may set it; it is the user's configuration.
+- **An empty value grants nothing**, which is how a user switches the access
+  off without uninstalling.
+
+Users see the resolved path and where it came from in `:plugins`
+(`fs:write ~/work/notes (my-plugin.directory)`), and a write refused for
+falling outside it names the option to change.
+
+### The embedded manifest, for other languages
+
+`manifest!` is Rust convenience over a contract any toolchain can meet: a wasm
+**custom section** named `lattice-manifest` whose payload is the manifest's
+UTF-8 TOML, in the schema above. The loader finds it either at the
+component's top level or inside the component's core module (where a Rust
+`#[link_section]` static lands), reads it without instantiating anything, and
+parses it with the same parser as `plugin.toml`. A section that is not UTF-8,
+or does not parse, is a named load error. There is one manifest per
+component; the first section found is the one used.
 
 **The world** decides what the component imports and exports; the
 [worlds page](../reference/plugin-api/worlds.md) lists them all. A plugin

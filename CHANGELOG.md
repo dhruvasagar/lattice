@@ -93,6 +93,13 @@
   release of `lattice-org-plugin` (which has a CHANGELOG and `vX.Y.Z` tags
   of its own) rather than building whatever `main` holds, and the
   `require` route pins `rev` to a tag.
+- **`:help plugins` explains grants that follow your configuration**
+  ("Capabilities and your configuration"): that setting an option like
+  `org.directory` is also what decides where the plugin may write, how to
+  see the resolved paths in `:plugins`, and why a plugin cannot change them
+  itself. The plugin authoring guide documents `manifest!`, option-bound
+  grants, `min_lattice`, and the `lattice-manifest` section format for
+  toolchains other than Rust.
 
 ## 0.9.9 — 2026-10-15
 

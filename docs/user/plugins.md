@@ -77,8 +77,10 @@ Everything below applies to both; the difference is only *where they come from* 
 
 ## Loading a plugin
 
-A plugin is a `wasm32-wasip2` component plus a `manifest.toml` declaring its id,
-the seams it provides, and the capabilities it requests. Load one explicitly
+A plugin is a `wasm32-wasip2` component carrying a manifest that declares its
+id, the seams it provides, and the capabilities it requests — embedded in the
+`.wasm` itself, or (for plugins built before 0.9.10) in a `plugin.toml` beside
+it. A single `.wasm` file in its own directory is a complete plugin. Load one explicitly
 with `:plugin-load <path>`, or drop it into the plugins directory for automatic
 discovery at startup. On load the host computes the plugin's capability grant
 (what it requested ∩ what its trust tier permits), creates its private data dir,
@@ -346,9 +348,45 @@ are explicit and prefix-scoped:
 | Capability | Grants |
 |---|---|
 | `fs:read:<path>` / `fs:write:<path>` | Read/write access under a specific path prefix only. `fs:write` also authorises a plugin to **file text into another buffer** — see below. |
+| `fs:read:{<option>\|<default>}` / `fs:write:{…}` | The same, under the path one of the plugin's options is set to — see [Capabilities and your configuration](#capabilities-and-your-configuration). |
 | `net:http:<host>` | HTTP to a named host (serviced through a gated host-service, not raw sockets). |
 | `proc:spawn` | Spawn a subprocess — **bundled plugins only**. |
 | editor caps (`lsp`, `tree-sitter`, `folds`, `diagnostics`, `writable`, `buffer-uri`) | Access to specific editor subsystems, for plugin-declared modes. |
+
+### Capabilities and your configuration
+
+A plugin's file access is often **a setting of yours, not of the plugin's**.
+The org plugin needs to write where your notes are; it does not know where
+that is, and no plugin should ship with a path baked in. So a grant can follow
+one of the plugin's own options:
+
+| The plugin asks for | It may write under |
+|---|---|
+| `fs:write:{org.directory\|~/org}` | whatever `org.directory` is set to — or `~/org` until you set it |
+
+What that means for you:
+
+- **Setting the option sets the access.** Put `org.directory` in your
+  `lattice.toml` or `init.rs` (or `:set org.directory=~/work/notes`) and org
+  may now write there, and only there. There is no separate grant to edit.
+- **The plugin restarts to pick it up.** Access is fixed when a plugin starts,
+  so changing the option reloads that one plugin — off the keystroke path, with
+  its saved state intact. Setting it to the value it already has does nothing.
+- **The plugin cannot move it.** A plugin that tries to set an option one of
+  its grants follows is refused, by name; only you (through your config,
+  `init.rs` or `:set`) can. Otherwise a plugin could point its own access at
+  your whole disk.
+- **Empty means none.** Setting the option to `""` grants nothing.
+- **`:plugins` shows what was resolved.** The capability column reads
+  `fs:write ~/work/notes (org.directory)` when the path is yours, and
+  `fs:write ~/org (org.directory, default)` while the default is in force.
+- **A refused write names the option.** *"org: write denied — ~/elsewhere/x.org
+  is outside org.directory (~/work/notes) — set org.directory to change where
+  org may write."*
+
+A plugin's own help page names the options that carry its grants.
+
+### Filing text into other files
 
 **A plugin can file text into a file you have not opened**, if it holds
 `fs:write` over that path. This is what an org plugin's archive, refile and

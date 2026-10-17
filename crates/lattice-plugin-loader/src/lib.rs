@@ -1654,6 +1654,7 @@ impl PluginLoader {
                 tier: r.tier,
                 granted: r.granted.clone(),
                 denied: r.denied.clone(),
+                option_bound: r.option_bound.clone(),
                 health: r.health.clone(),
                 source: r.source.clone(),
                 build: build_state_of(r, activity.get(&r.name)),

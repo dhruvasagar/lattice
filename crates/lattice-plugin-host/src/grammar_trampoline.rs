@@ -856,10 +856,16 @@ impl PluginHost {
         // Move the store + bindings behind the shared lock every trampoline reads.
         // The `Quarantine` rides inside so one `apply-*` trap quarantines every
         // contribution from this plugin (they share the one guest).
-        let authorizer = Arc::new(crate::EffectAuthorizer::new(
-            &store.data().grant,
-            manifest.id.clone(),
-        ));
+        let option_bound = store
+            .data()
+            .grant_guard
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bound_for(&manifest.id);
+        let authorizer = Arc::new(
+            crate::EffectAuthorizer::new(&store.data().grant, manifest.id.clone())
+                .with_option_bound(option_bound),
+        );
         let guest = Arc::new(Mutex::new(GrammarGuest {
             store,
             bindings,

@@ -1018,6 +1018,9 @@ impl Drop for EpochTicker {
 pub struct GrantGuard {
     options: std::collections::HashSet<String>,
     authority: Option<String>,
+    /// PMF.6: each plugin's latest option-bound grants (by manifest id), so a
+    /// refusal can name the option that decides where the plugin may write.
+    bound: std::collections::HashMap<String, Vec<crate::capability::OptionBoundGrant>>,
 }
 
 /// Shared between the host and every plugin instance it creates.
@@ -1025,6 +1028,11 @@ pub type GrantGuardHandle = Arc<std::sync::RwLock<GrantGuard>>;
 
 impl GrantGuard {
     /// Does writing `option` from plugin `writer` need refusing?
+    /// PMF.6: `plugin`'s option-bound grants as last resolved.
+    pub fn bound_for(&self, plugin: &str) -> Vec<crate::capability::OptionBoundGrant> {
+        self.bound.get(plugin).cloned().unwrap_or_default()
+    }
+
     fn refuses(&self, option: &str, writer: Option<&str>) -> bool {
         self.options.contains(option) && writer.is_none_or(|w| self.authority.as_deref() != Some(w))
     }
@@ -4764,12 +4772,20 @@ impl PluginHost {
             }
         }
         let registry = self.config.get().cloned();
-        crate::capability::grant_with(manifest, tier, &|name| {
+        let outcome = crate::capability::grant_with(manifest, tier, &|name| {
             registry
                 .as_ref()
                 .and_then(|r| r.lookup(name))
                 .map(|opt| opt.get_formatted())
-        })
+        });
+        if !outcome.option_bound.is_empty() {
+            self.grant_guard
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .bound
+                .insert(manifest.id.clone(), outcome.option_bound.clone());
+        }
+        outcome
     }
 
     /// PMF.5: name the plugin that is the user's `init.rs` — the one plugin
@@ -4921,6 +4937,7 @@ mod grant_guard_tests {
         GrantGuard {
             options: options.iter().map(|s| s.to_string()).collect(),
             authority: authority.map(str::to_string),
+            ..GrantGuard::default()
         }
     }
 

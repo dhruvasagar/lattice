@@ -15,6 +15,11 @@
   query and the selected file stay put.
 
 ### Fixed
+- **Hover documentation is no longer dimmed.** A hover popup (`K`, LSP hover)
+  is read while the cursor stays in your file, so it never has focus — and it
+  was dimmed like any unfocused pane until you focused it. `ui.dim_inactive`
+  is now resolved per buffer, and hover popups turn it off, in the terminal
+  and the GUI alike. Other unfocused popups dim the same way in both.
 - **`:files` shows files created outside the editor the next time you open
   it.** The list is remembered for speed, and a stale one used to be corrected
   only for the open *after* next, so the first `:files` after a build or a

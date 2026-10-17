@@ -227,6 +227,21 @@ fn validate_picker_display(s: &String) -> Result<(), String> {
 // plugins must use their own `<plugin-id>.` prefix.
 
 crate::options! {
+    group = crate::Appearance;
+
+    /// Dim the content of a pane that does not have focus, so the focused
+    /// one stands out — the TUI with a `DIM` overlay, GPUI at
+    /// `ui.inactive_pane_opacity`.
+    ///
+    /// Resolved per buffer, like `wrap`, so a mode can turn it off for the
+    /// buffers it owns: `hover-mode` does, because a hover popup is read
+    /// while the cursor stays in the document, and dimming it made the
+    /// documentation hard to read until the popup was focused.
+    #[name("ui.dim_inactive")]
+    pub UiDimInactive: bool = true;
+}
+
+crate::options! {
     group = crate::Editor;
 
     /// Show absolute line numbers in the gutter.

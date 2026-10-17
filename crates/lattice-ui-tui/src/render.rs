@@ -122,6 +122,12 @@ pub struct FrameView<'a> {
     /// `app.ad().option_cache` directly so the resolver is always
     /// in one place.
     pub wrap_lines: bool,
+    /// Whether this pane's content dims while it is not focused
+    /// (`ui.dim_inactive`), resolved for ITS buffer: a mode can turn the
+    /// dim off for the buffers it owns — `hover-mode` does, so a hover
+    /// read while the cursor stays in the document is not greyed out.
+    /// GPUI resolves the same option per buffer for its opacity.
+    pub dim_inactive: bool,
     /// PU.1b-1a (`signcolumn`): whether to reserve this pane's gutter
     /// sign columns (diagnostics severity + diff sign). Resolved
     /// per-buffer like every other view option — `from_app` reads the
@@ -188,6 +194,7 @@ impl<'a> FrameView<'a> {
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(doc_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
             wrap_lines: ad.option_cache.wrap_lines,
+            dim_inactive: app.theme.dim_inactive_panes,
             sign_column: ad.option_cache.sign_column,
             content_left_pad: ad.option_cache.content_left_pad,
         }
@@ -247,6 +254,7 @@ impl<'a> FrameView<'a> {
             // ITS mode stack — e.g. help-mode's `Wrap = true` /
             // `signcolumn = no` — not the active buffer's settings.
             wrap_lines: *rs.resolved_option_for::<lattice_config::Wrap>(buffer_id),
+            dim_inactive: *rs.resolved_option_for::<lattice_config::UiDimInactive>(buffer_id),
             sign_column: rs
                 .resolved_option_for::<lattice_config::SignColumnOption>(buffer_id)
                 .reserved(),
@@ -5742,7 +5750,7 @@ pub(crate) fn compose_pane_lines(
         // skips this entirely (opacity 1.0 → byte-identical). The
         // gutter/severity/diff-sign prefix keeps its own styling, as
         // it did on the pre-merge inactive path.
-        let body = if ctx.is_active || !view.app.theme.dim_inactive_panes {
+        let body = if ctx.is_active || !view.dim_inactive {
             body
         } else {
             let overlay = view.app.theme.inactive_pane_overlay;
@@ -14194,6 +14202,97 @@ mod transient_palette_tests {
                  standing in for several roles cannot distinguish them.",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod hover_popup_dimming_tests {
+    //! A hover popup is read while the cursor stays in the document, so it is
+    //! never the focused pane — and an unfocused popup is composed as an
+    //! inactive pane. `hover-mode` turns `ui.dim_inactive` off for its buffer,
+    //! so the documentation being read is not greyed out until focused.
+
+    use super::*;
+    use crate::app::App;
+    use lattice_core::Document;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn app_with_unfocused_hover() -> (App, lattice_core::BufferId) {
+        let text = (0..20)
+            .map(|n| format!("line {n} of the document\n"))
+            .collect::<String>();
+        let mut a = App::new(Document::from_text(&text));
+        a.set_viewport_height(20);
+        let popup = a.mutate_editor_with(|e| {
+            e.cursor.line = 5;
+            let content = lattice_help::parse_help_lines(
+                "hover",
+                vec!["fn thing() -> u32".to_string(), "the docs".to_string()],
+            );
+            let _ = e.open_floating_popup(content, crate::popup::PopupPlacement::CursorAnchored);
+            e.publish_render_state();
+            e.popup_buffer.expect("the popup opens")
+        });
+        (a, popup)
+    }
+
+    /// Whether `cell` carries the inactive-pane overlay — whatever the theme
+    /// makes it: a modifier (`DIM`), a foreground, or both.
+    fn dimmed(cell: &ratatui::buffer::Cell, overlay: ratatui::style::Style) -> bool {
+        (!overlay.add_modifier.is_empty() && cell.modifier.contains(overlay.add_modifier))
+            || overlay.fg.is_some_and(|fg| cell.fg == fg)
+            || overlay.bg.is_some_and(|bg| cell.bg == bg)
+    }
+
+    #[test]
+    fn an_unfocused_hover_popup_is_not_dimmed() {
+        let (a, popup) = app_with_unfocused_hover();
+        assert!(
+            !a.ad().popup_focused,
+            "precondition: the popup is unfocused"
+        );
+
+        let (w, h) = (80u16, 24u16);
+        let snap = a.ad().snapshot.clone();
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &a, &snap);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let overlay = a.theme.inactive_pane_overlay;
+        assert_ne!(
+            overlay,
+            ratatui::style::Style::default(),
+            "precondition: the theme's inactive-pane overlay changes something, \
+             or this test cannot see a dim"
+        );
+        let row = (0..h)
+            .find(|&y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("the docs")
+            })
+            .expect("the popup body is drawn");
+        let line: String = (0..w).map(|x| buf[(x, row)].symbol()).collect();
+        let start = line.find("the docs").unwrap() as u16;
+        for x in start..start + "the docs".len() as u16 {
+            assert!(
+                !dimmed(&buf[(x, row)], overlay),
+                "hover text at column {x} carries the inactive-pane dim"
+            );
+        }
+        assert!(
+            !FrameView::for_buffer(&a, popup).dim_inactive,
+            "hover-mode resolves `ui.dim_inactive` off for the popup's buffer"
+        );
+        assert!(
+            FrameView::for_buffer(&a, a.active_buffer_id()).dim_inactive,
+            "the document keeps the user's setting"
+        );
     }
 }
 

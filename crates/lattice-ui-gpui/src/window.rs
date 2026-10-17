@@ -732,21 +732,17 @@ fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
 // wrap branch remains.
 
 /// 2026-05-27: read `ui.inactive_pane_opacity` (percent 0-100) and
-/// convert to a 0.0..=1.0 alpha. `ui.dim_inactive=false` short-
-/// circuits to 1.0 so the inactive pane paints at full opacity (the
-/// user has opted out of the dim entirely).
+/// convert to a 0.0..=1.0 alpha. `dim_inactive` false — the pane's
+/// buffer resolved `ui.dim_inactive` off, by the user or by a mode
+/// such as `hover-mode` — short-circuits to 1.0 so it paints at full
+/// opacity.
 ///
-/// Used by `pane_chrome` for every pane kind via a single threaded
-/// parameter; renderers without alpha support (TUI) ignore the
-/// number and use their own dim modifier instead.
-fn inactive_pane_opacity(app: &GpuiApp) -> f32 {
-    let dim_on = app
-        .options()
-        .config
-        .get_typed::<lattice_host::ui::theme_options::UiDimInactive>()
-        .map(|v| *v)
-        .unwrap_or(true);
-    if !dim_on {
+/// `dim_inactive` is per buffer (`PaneOptions::dim_inactive`); the
+/// opacity itself is one global setting. Used by `pane_chrome` and the
+/// floating popup; renderers without alpha support (TUI) use their own
+/// dim modifier instead.
+fn inactive_pane_opacity(app: &GpuiApp, dim_inactive: bool) -> f32 {
+    if !dim_inactive {
         return 1.0;
     }
     let percent = app
@@ -2240,11 +2236,13 @@ impl EditorView {
             // ML.2: terminal panes get the same zone/per-Span modeline as
             // every other kind (shared resolver) — no kind-specific status.
             let status_row = Self::modeline_row(pane, is_active, &rs_guard, cx);
+            let dim_inactive =
+                *rs_guard.resolved_option_for::<lattice_config::UiDimInactive>(pane.buffer_id);
             return Self::pane_chrome(
                 inner,
                 status_row,
                 is_active,
-                inactive_pane_opacity(&self.app),
+                inactive_pane_opacity(&self.app, dim_inactive),
             );
         }
         // DL.4/DL.5: oil and the file tree USED to have arms here,
@@ -3473,7 +3471,7 @@ impl EditorView {
             editor_element.into_any_element(),
             status_row,
             render_active,
-            inactive_pane_opacity(&self.app),
+            inactive_pane_opacity(&self.app, pane_options.dim_inactive),
         )
         .on_scroll_wheel(cx.listener(
             move |this, ev: &gpui::ScrollWheelEvent, _window, cx| {
@@ -5522,6 +5520,16 @@ impl Render for EditorView {
                 glyph_resolver: self.glyph_resolver.clone(),
             };
 
+            // An unfocused popup is an inactive pane: it dims like one — the
+            // TUI composes it with `is_active = popup_focused` and applies the
+            // same dim — unless its buffer opts out. `hover-mode` does, so a
+            // hover read with the cursor still in the document is not greyed.
+            let body_opacity = if popup_focused {
+                1.0
+            } else {
+                let dim = *rs.resolved_option_for::<lattice_config::UiDimInactive>(popup_id);
+                inactive_pane_opacity(&self.app, dim)
+            };
             let border_color = if popup_focused {
                 rgb(theme.cursor_background)
             } else {
@@ -5600,6 +5608,7 @@ impl Render for EditorView {
                         .min_h(px(popup_body_h_px))
                         .max_h(px(popup_body_h_px))
                         .overflow_hidden()
+                        .opacity(body_opacity)
                         .child(editor_element.into_any_element()),
                 )
         };

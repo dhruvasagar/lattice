@@ -215,7 +215,7 @@ pub use core_options::{
     ModelineSeparator, MouseEnabled, NoFile, Number, PickerResultDisplay, ProjectRootMarkers,
     ReadOnly, RelativeNumber, Scroll, Scrollbind, Scrolloff, Shiftwidth, Sidescroll, Sidescrolloff,
     SignColumnOption, SignatureDisplay, StartOfLine, TablineShowOption, Tabstop, TerminalEscExits,
-    TerminalScrollbackLines, TextWidth, TransientMaxRows, Whitespace, WhitespaceEol,
+    TerminalScrollbackLines, TextWidth, TransientMaxRows, UiDimInactive, Whitespace, WhitespaceEol,
     WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;

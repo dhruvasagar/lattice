@@ -44,8 +44,13 @@ impl Mode for HoverMode {
         // anchored, capped at ~80 cells); long markdown bodies
         // need to wrap or they overflow horizontally with
         // no horizontal scroll path.
+        //
+        // A hover is read while focus stays in the document, so the popup
+        // is never the focused pane — and inactive-pane dimming made the
+        // documentation being read hard to read until it was focused.
         lattice_config::overrides! {
             lattice_config::Wrap = true,
+            lattice_config::UiDimInactive = false,
         }
     }
     fn required_capabilities(&self) -> CapabilitySet {
@@ -77,10 +82,28 @@ mod tests {
     }
 
     #[test]
-    fn contributes_wrap() {
-        // Bug 4: hover popups are width-constrained; long
-        // markdown bodies need to wrap.
+    fn contributes_wrap_and_no_inactive_dim() {
+        // Bug 4: hover popups are width-constrained; long markdown bodies
+        // need to wrap. And a hover is read while focus stays in the
+        // document, so the popup must not take the inactive-pane dim.
         let opts = HoverMode.options();
-        assert_eq!(opts.iter().count(), 1, "expected Wrap");
+        let value_of = |id: std::any::TypeId| {
+            opts.iter()
+                .find(|o| o.option_type_id == id)
+                .and_then(|o| o.value.downcast_ref::<bool>().copied())
+        };
+        assert_eq!(
+            opts.iter().count(),
+            2,
+            "Wrap and UiDimInactive, nothing else"
+        );
+        assert_eq!(
+            value_of(std::any::TypeId::of::<lattice_config::Wrap>()),
+            Some(true)
+        );
+        assert_eq!(
+            value_of(std::any::TypeId::of::<lattice_config::UiDimInactive>()),
+            Some(false)
+        );
     }
 }

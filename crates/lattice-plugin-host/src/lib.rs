@@ -1007,6 +1007,29 @@ impl Drop for EpochTicker {
 ///
 /// Later slices grow this with the plugin's document-handle / callback
 /// resource tables (PH7.3) — they share this same `ResourceTable`.
+/// PMF.5: the options some loaded plugin's filesystem grant follows, and who
+/// may set them.
+///
+/// `set-option` writes the layer `:set` does, so without this a plugin could set
+/// `org.directory` to `/` and reload (PMF.4) into a grant on the whole disk.
+/// Only the user may move such an option — by `:set`, their config file, or
+/// their `init.rs`, which is the one plugin allowed through (`authority`).
+#[derive(Debug, Default)]
+pub struct GrantGuard {
+    options: std::collections::HashSet<String>,
+    authority: Option<String>,
+}
+
+/// Shared between the host and every plugin instance it creates.
+pub type GrantGuardHandle = Arc<std::sync::RwLock<GrantGuard>>;
+
+impl GrantGuard {
+    /// Does writing `option` from plugin `writer` need refusing?
+    fn refuses(&self, option: &str, writer: Option<&str>) -> bool {
+        self.options.contains(option) && writer.is_none_or(|w| self.authority.as_deref() != Some(w))
+    }
+}
+
 struct PluginState {
     /// The scoped WASI context (granted filesystem preopens + nothing else).
     wasi: WasiCtx,
@@ -1045,6 +1068,8 @@ struct PluginState {
     /// `register-option` returns `false` and `get-option` returns `none` (the
     /// honest "no registry wired" degradation — the host isn't boot-wired yet).
     config_registry: Option<Arc<lattice_config::ConfigRegistry>>,
+    /// PMF.5: refuses `set-option` on an option a plugin's grant follows.
+    grant_guard: GrantGuardHandle,
     /// TC.4: the theme registry a `theme` plugin's `register-element` inserts
     /// into. Wired before `register-theme-elements` runs; `None` for every
     /// other world (the call then logs and registers nothing).
@@ -3155,6 +3180,21 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             .map(|id| format!("{id}.{name}"))
             .filter(|full| registry.lookup(full).is_some())
             .unwrap_or(name);
+        // PMF.5: an option a plugin's file access follows is the user's to set.
+        if self
+            .grant_guard
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .refuses(&target, self.plugin_name.as_deref())
+        {
+            tracing::warn!(
+                option = %target,
+                plugin = ?self.plugin_name,
+                "set-option-value refused: `{target}` decides which files a plugin may access, \
+                 so only your configuration (`:set`, lattice.toml, init.rs) can change it"
+            );
+            return false;
+        }
         let Some(opt) = registry.lookup(&target) else {
             tracing::warn!(option = %target, "set-option-value failed: unknown option");
             return false;
@@ -3258,6 +3298,21 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             .map(|id| format!("{id}.{name}"))
             .filter(|full| registry.lookup(full).is_some())
             .unwrap_or(name);
+        // PMF.5: an option a plugin's file access follows is the user's to set.
+        if self
+            .grant_guard
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .refuses(&target, self.plugin_name.as_deref())
+        {
+            tracing::warn!(
+                option = %target,
+                plugin = ?self.plugin_name,
+                "set-option refused: `{target}` decides which files a plugin may access, \
+                 so only your configuration (`:set`, lattice.toml, init.rs) can change it"
+            );
+            return false;
+        }
         match registry.parse_and_set_command(&format!("{target}={value}")) {
             Ok(_) => true,
             Err(err) => {
@@ -3658,6 +3713,8 @@ pub struct PluginHost {
     // it. Reading configuration needs no plugin id and has nothing to wait for,
     // so like `project` there is no path that can forget it.
     config: std::sync::OnceLock<Arc<lattice_config::ConfigRegistry>>,
+    /// PMF.5: see [`GrantGuard`].
+    grant_guard: GrantGuardHandle,
     // OA.23: answers "which file did this composed line come from". Abstract
     // for `project`'s reason — the plugin host cannot depend on
     // `lattice-multibuffer`, which sits above it. Unset answers `none`, which
@@ -4145,6 +4202,7 @@ impl PluginHost {
             cancel: std::sync::OnceLock::new(),
             sleeper: std::sync::OnceLock::new(),
             config: std::sync::OnceLock::new(),
+            grant_guard: GrantGuardHandle::default(),
             excerpt_source: std::sync::OnceLock::new(),
             view_args: std::sync::OnceLock::new(),
             decoration_epoch: std::sync::OnceLock::new(),
@@ -4586,6 +4644,7 @@ impl PluginHost {
             // one. `None` only when boot wired no registry at all, which is the
             // honest degradation (warn + false / none).
             config_registry: self.config.get().cloned(),
+            grant_guard: self.grant_guard.clone(),
             // From the manifest id; drives config-option auto-namespacing.
             plugin_name: name.map(str::to_string),
             config_contributions: Vec::new(),
@@ -4692,6 +4751,18 @@ impl PluginHost {
     /// plugin registers them and the user's value lands, a changed grant
     /// reloads the plugin (PMF.4).
     pub fn grant_for(&self, manifest: &PluginManifest, tier: TrustTier) -> GrantOutcome {
+        // PMF.5: once a grant follows an option, plugins may no longer set it.
+        {
+            let mut guard = self
+                .grant_guard
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for cap in &manifest.requested {
+                if let Capability::FsReadOption(op) | Capability::FsWriteOption(op) = cap {
+                    guard.options.insert(op.option.clone());
+                }
+            }
+        }
         let registry = self.config.get().cloned();
         crate::capability::grant_with(manifest, tier, &|name| {
             registry
@@ -4699,6 +4770,16 @@ impl PluginHost {
                 .and_then(|r| r.lookup(name))
                 .map(|opt| opt.get_formatted())
         })
+    }
+
+    /// PMF.5: name the plugin that is the user's `init.rs` — the one plugin
+    /// allowed to set an option another plugin's grant follows, because it IS
+    /// the user's configuration. The loader calls this before loading it.
+    pub fn set_config_authority(&self, plugin_id: &str) {
+        self.grant_guard
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .authority = Some(plugin_id.to_string());
     }
 
     fn build_plugin_wasi(
@@ -4823,5 +4904,91 @@ impl LoadedPlugin {
                 kind: classify_trap(&source),
                 source: source.into(),
             })
+    }
+}
+
+#[cfg(test)]
+mod grant_guard_tests {
+    //! PMF.5: a plugin cannot set an option a plugin's file access follows —
+    //! otherwise it could set `org.directory` to `/` and reload into a grant on
+    //! the whole disk. The user's `init.rs` can, being the user's config.
+
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn guard(options: &[&str], authority: Option<&str>) -> GrantGuard {
+        GrantGuard {
+            options: options.iter().map(|s| s.to_string()).collect(),
+            authority: authority.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_plugin_cannot_set_an_option_its_grant_follows() {
+        let g = guard(&["org.directory"], Some("init"));
+        assert!(
+            g.refuses("org.directory", Some("org")),
+            "org widening its own grant"
+        );
+        assert!(
+            g.refuses("org.directory", Some("other")),
+            "nor may another plugin"
+        );
+        assert!(
+            g.refuses("org.directory", None),
+            "an unnamed writer is not trusted"
+        );
+    }
+
+    #[test]
+    fn init_rs_can_and_other_options_are_untouched() {
+        let g = guard(&["org.directory"], Some("init"));
+        assert!(
+            !g.refuses("org.directory", Some("init")),
+            "init.rs is the user's config"
+        );
+        assert!(
+            !g.refuses("org.todo-keywords", Some("org")),
+            "only grant-bearing options"
+        );
+        let no_authority = guard(&["org.directory"], None);
+        assert!(
+            no_authority.refuses("org.directory", Some("init")),
+            "unnamed authority grants no one"
+        );
+    }
+
+    #[test]
+    fn computing_a_grant_is_what_guards_its_option() {
+        let host = PluginHost::new().unwrap();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.directory|~/org}\"]\n",
+        )
+        .unwrap();
+        assert!(
+            !host
+                .grant_guard
+                .read()
+                .unwrap()
+                .options
+                .contains("org.directory")
+        );
+        let _ = host.grant_for(&manifest, TrustTier::UserInstalled);
+        assert!(
+            host.grant_guard
+                .read()
+                .unwrap()
+                .options
+                .contains("org.directory")
+        );
+        host.set_config_authority("init");
+        assert!(
+            !host
+                .grant_guard
+                .read()
+                .unwrap()
+                .refuses("org.directory", Some("init"))
+        );
     }
 }

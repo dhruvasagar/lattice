@@ -440,6 +440,12 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                 // must still get an editor — with their previous init.wasm if
                 // one exists (`StaleKept`), and without config if not.
                 let build_error = build_init_if_needed(&loader, &init_dir).await;
+                // PMF.5: init.rs is the user's configuration, so it — and no
+                // other plugin — may set an option a plugin's grant follows.
+                // Named before it loads, so its first `set-option` already counts.
+                if let Ok(init) = crate::discover_one(&init_dir) {
+                    loader.set_config_authority(&init.manifest.id);
+                }
                 match loader.load_path(&init_dir, TrustTier::Bundled).await {
                     Ok(id) => tracing::info!(
                         id = id.0,

@@ -1904,6 +1904,12 @@ impl PluginLoader {
         }
     }
 
+    /// PMF.5: name the user's `init.rs` (by manifest id) as the one plugin that
+    /// may set an option another plugin's file access follows.
+    pub fn set_config_authority(&self, plugin_id: &str) {
+        self.host.set_config_authority(plugin_id);
+    }
+
     pub fn subscribe_grant_options(self: &Arc<Self>) {
         let (Some(bus), Some(runtime)) = (self.env.bus.as_ref(), self.env.runtime.as_ref()) else {
             return;

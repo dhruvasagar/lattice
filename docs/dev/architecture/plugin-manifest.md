@@ -50,6 +50,19 @@ lives.
   embedded manifest wins and the loader logs (debug) that the file is
   ignored — the component is what was built, the file is what was copied.
 
+**A manifest says which editor it needs: `min_lattice`.** Neither embedding
+nor option-bound grants (§2) changes the plugin API — no WIT version moves —
+yet an editor older than the one that introduced them cannot load such a
+plugin: it never looks for the section, and it rejects
+`fs:write:{org.directory|~/org}` as an unrecognised capability. The plugin-API
+version cannot say so, because what changed is the manifest format, not the
+API. So the manifest carries an optional `min_lattice = "0.9.10"`. A loader
+older than that refuses the plugin by name — *"org needs lattice ≥ 0.9.10;
+this is 0.9.9"* — in `:plugins`, instead of failing on the first field it
+does not understand. Absent means "any version that can read the manifest",
+which is every plugin written so far. Both features ship in 0.9.10, so a
+plugin using either declares at least that.
+
 **Why not a WIT export (`manifest() -> plugin-manifest`).** Calling an export
 needs an instance, and an instance needs its capability grant — which is what
 the manifest decides. Instantiating twice (once ungranted to ask, once to run)

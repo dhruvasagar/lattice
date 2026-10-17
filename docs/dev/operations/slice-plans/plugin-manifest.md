@@ -10,10 +10,11 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 + tests including failure modes + graceful error handling).
 
 **Status: 📝 planned (2026-10-17).** The embedding spike passed (design §1).
+Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 
 | Slice | What | Repo | Status |
 |---|---|---|---|
-| PMF.1 | Read a `lattice-manifest` custom section from the component; embedded wins over `plugin.toml`; `plugin.toml`-only plugins unchanged. | lattice | 📝 |
+| PMF.1 | Read a `lattice-manifest` custom section from the component; embedded wins over `plugin.toml`; `plugin.toml`-only plugins unchanged; `min_lattice` refuses a plugin that needs a newer editor. | lattice | 📝 |
 | PMF.2 | `lattice-plugin-sdk::manifest!` emits the section (and hides the unsafe attribute). | lattice | 📝 |
 | PMF.3 | Option-bound grants: `fs:read/write:{option\|default}` parsed, resolved at grant time from the user's value or the default; same-plugin rule. | lattice | 📝 |
 | PMF.4 | A grant-bearing option changing reloads its plugin when the resolved path differs; default-vs-registered mismatch warns. | lattice | 📝 |
@@ -42,10 +43,18 @@ existing manifest parser. The loader asks it before looking for
 `plugin.toml`; a staged directory with no `plugin.toml` but an embedded
 manifest is discovered as a plugin.
 
+`min_lattice` (either source of manifest): a version newer than the running
+editor (`CARGO_PKG_VERSION`) refuses the plugin with
+`"<id> needs lattice ≥ <v>; this is <running>"`, recorded as a failed load so
+`:plugins` shows it. Absent or unparseable-as-semver: absent is accepted,
+unparseable is a named manifest error.
+
 **Tests:** a fixture component with the section (built in-test by appending a
 custom section — valid at the component's top level too, which the reader also
 accepts); embedded wins over a conflicting file; a file-only plugin loads as
-before; a malformed payload is a named load error, never a panic.
+before; a malformed payload is a named load error, never a panic;
+`min_lattice` above the running version refused with the message, equal and
+below accepted.
 
 ## PMF.2 — `manifest!`
 
@@ -104,7 +113,7 @@ beside the WIT reference.
 In `lattice-org-plugin`: `manifest!` replacing `plugin.toml`; grants
 `fs:write:{org.directory|~/org}` and `fs:write:{org.roam-directory|~/org/roam}`;
 `org.directory` / `org.roam-directory` registered with the same defaults.
-Released as a minor version. Lattice's `org.md` names the two options as the
+Its manifest declares `min_lattice = "0.9.10"`. Released as a minor version. Lattice's `org.md` names the two options as the
 ones that decide where org may write.
 
 ## PMF.9 — distribution follows

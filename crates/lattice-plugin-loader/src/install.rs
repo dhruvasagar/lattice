@@ -462,10 +462,15 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                     // editor opened, everything was absent, and this line said
                     // it at a level nobody sees.
                     //
-                    // A `plugin.toml` in the init dir is what tells them apart:
-                    // if one is there the user meant to have config, so its
-                    // absence is a failure they need to be told about.
-                    Err(err) if init_dir.join("plugin.toml").is_file() => {
+                    // A `plugin.toml` or a cargo project in the init dir is
+                    // what tells them apart: if one is there the user meant to
+                    // have config, so its absence is a failure they need to be
+                    // told about. (PMF.10: a scaffold from 0.9.10 on embeds its
+                    // manifest and has no `plugin.toml`.)
+                    Err(err)
+                        if init_dir.join("plugin.toml").is_file()
+                            || init_dir.join("Cargo.toml").is_file() =>
+                    {
                         tracing::warn!(
                             dir = %init_dir.display(),
                             error = %err,

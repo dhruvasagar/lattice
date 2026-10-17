@@ -233,15 +233,19 @@ pub fn discover_reporting(dir: &Path) -> (Vec<DiscoveredPlugin>, Vec<MalformedPl
 }
 
 /// The manifest id of the plugin in `plugin_dir`, when it has a manifest that
-/// parses — without requiring a component beside it. For naming a plugin
-/// that cannot be loaded yet (its build is about to run, or just failed).
+/// parses — for naming a plugin that cannot be loaded yet (its build is about
+/// to run, or just failed). A `plugin.toml` answers without a component; a
+/// manifest embedded in the component answers once one has been built.
 pub fn manifest_id(plugin_dir: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(plugin_dir.join(MANIFEST_FILE)).ok()?;
-    Some(PluginManifest::from_toml_str(&text).ok()?.id)
+    if let Ok(text) = std::fs::read_to_string(plugin_dir.join(MANIFEST_FILE)) {
+        return Some(PluginManifest::from_toml_str(&text).ok()?.id);
+    }
+    let bytes = std::fs::read(sole_wasm(plugin_dir).ok()?).ok()?;
+    Some(PluginManifest::from_component_bytes(&bytes).ok()??.id)
 }
 
 /// Is `plugin_dir` a plugin whose **source lives in the directory itself** —
-/// a manifest beside a cargo project?
+/// a cargo project in the plugins directory?
 ///
 /// That is what `--scaffold-plugin` writes and what a plugin under
 /// development looks like. It is the same shape as the user's `init/`
@@ -249,8 +253,13 @@ pub fn manifest_id(plugin_dir: &Path) -> Option<String> {
 /// with no resolver and no network. A plugin *installed* by `require` is
 /// staged without its source (that stays in the source cache), so this never
 /// matches one.
+///
+/// PMF.10: the cargo project alone decides it. A plugin whose manifest is
+/// embedded (`manifest!`) has no `plugin.toml` until it is built — and not
+/// after either — so requiring one would leave a fresh scaffold unbuilt and
+/// invisible.
 pub fn is_in_place_project(plugin_dir: &Path) -> bool {
-    plugin_dir.join(MANIFEST_FILE).is_file() && plugin_dir.join("Cargo.toml").is_file()
+    plugin_dir.join("Cargo.toml").is_file()
 }
 
 /// Parse a single explicitly-named plugin directory — the `:plugin-load <path>`
@@ -364,7 +373,7 @@ fn sole_wasm(plugin_dir: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::{core_plugins_dir_from, invoked_exe_from};
+    use super::{core_plugins_dir_from, invoked_exe_from, is_in_place_project};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -553,5 +562,15 @@ mod tests {
     fn got_matches(exe: &Path, expected_existing: &Path) -> bool {
         let got = core_plugins_dir_from(None, None, &[exe]).unwrap();
         got.canonicalize().ok() == expected_existing.canonicalize().ok()
+    }
+
+    /// PMF.10: a fresh `manifest!` scaffold has a `Cargo.toml` and no
+    /// `plugin.toml`, and must still be built in place.
+    #[test]
+    fn a_cargo_project_without_a_plugin_toml_is_an_in_place_project() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_in_place_project(dir.path()), "an empty dir is not");
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        assert!(is_in_place_project(dir.path()));
     }
 }

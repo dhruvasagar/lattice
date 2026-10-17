@@ -70,7 +70,7 @@ cur_patch="${BASH_REMATCH[3]}"
 if [ "$#" -eq 0 ]; then
     cat <<USAGE
 
-  current   v$current
+  current   v$current   (scripts/release.sh $current releases it as is, if untagged)
 
   patch     v$cur_major.$cur_minor.$((cur_patch + 1))
   minor     v$cur_major.$((cur_minor + 1)).0
@@ -101,7 +101,14 @@ case "$bump" in
     *)     next="$bump" ;;
 esac
 [[ "$next" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "'$next' is not an X.Y.Z version"
-[ "$next" != "$current" ] || die "already at v$current"
+
+# The version may already be the one being released: `Cargo.toml` is bumped
+# ahead of the release when something in the tree needs to say which editor it
+# targets before that editor ships (a plugin's `min_lattice`). Releasing it is
+# then tagging what is there — no bump. Whether the tag is free is checked in
+# preflight like any other.
+prebumped=0
+[ "$next" != "$current" ] || prebumped=1
 
 tag="v$next"
 if [ "$dry_run" -eq 1 ]; then printf '\n(dry run — nothing will be changed)\n'; fi
@@ -186,7 +193,9 @@ echo "  '## $next' section present ($(printf '%s\n' "$section" | wc -l | tr -d '
 # --------------------------------------------------------------------- bump
 say "bump"
 
-if [ "$dry_run" -eq 1 ]; then
+if [ "$prebumped" -eq 1 ]; then
+    echo "  Cargo.toml is already $next (bumped ahead of the release) — nothing to bump"
+elif [ "$dry_run" -eq 1 ]; then
     echo "  would set Cargo.toml version = \"$next\""
     echo "  would run cargo update --workspace"
 else

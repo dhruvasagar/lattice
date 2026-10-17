@@ -548,17 +548,32 @@ mod tests {
         );
     }
 
-    /// A style with no foreground (e.g. `messages.info`, which inherits the
-    /// buffer's default text colour) must fall back to the caller's default
+    /// A style with no foreground must fall back to the caller's default
     /// foreground — not paint `rgb(0)` = black. Regression: this Site-B path
     /// had no `default_fg` fallback, so INFO log lines rendered black in GPUI
     /// while the active-pane painter and the TUI showed them in the default fg.
+    ///
+    /// The fixture is `messages.trace` (dim, no colour). It was
+    /// `messages.info` until INFO got a colour of its own (`2a66ed1c`), after
+    /// which the test no longer had a no-foreground style to test — hence the
+    /// precondition below.
     #[test]
     fn a_run_with_no_foreground_inherits_default_fg_not_black() {
         let (resolved, ids) = theme_defaults();
+        assert!(
+            lattice_host::ui::theme::resolve_syntax_style(
+                &resolved,
+                &ids,
+                lattice_syntax::Style::MessagesTrace
+            )
+            .fg
+            .is_none(),
+            "precondition: the fixture style must have no foreground — pick \
+             another if the default theme now colours this one"
+        );
         let info_run = DisplayRun {
             len: 5,
-            style: lattice_syntax::Style::MessagesInfo,
+            style: lattice_syntax::Style::MessagesTrace,
             flags: 0,
             refine: None,
         };

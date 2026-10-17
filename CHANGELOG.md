@@ -15,6 +15,12 @@
   query and the selected file stay put.
 
 ### Fixed
+- **A colour name works in a style even when no palette defines it.** An org
+  TODO keyword styled `fg: "magenta"` in `init.rs` showed no colour — no
+  built-in palette has a `magenta` role — and logged "unknown palette key"
+  on every theme rebuild. A name that isn't a palette role now falls back to
+  the terminal colour of that name, or a `#rrggbb` value; palette roles still
+  win, so a theme's own `green` is unchanged.
 - **`*notifications*` keys work.** `<CR>` (run a notification's action), `d`
   (dismiss) and `gr` (refresh) did nothing: the actions they name were never
   registered, so they were dropped at startup with a warning in the log.

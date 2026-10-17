@@ -12,6 +12,12 @@ lattice a theme is a **palette** (a set of named colour roles like
 every styled surface to a role. Swapping the palette recolours the
 whole editor at once; there is no per-surface theme wiring to maintain.
 
+A colour you name in a style — a plugin's, or one you set in `init.rs`,
+such as an org TODO keyword's — is read as a palette role first, so
+`green` means *this theme's* green. A name no palette has falls back to the
+terminal colour of that name (`magenta`, `lightblue`, …) or a `#rrggbb`
+hex value, the same words `:set ui.*` accepts.
+
 > One model, two renderers. The TUI inherits the terminal's own
 > background/foreground for the canvas (it can't repaint the terminal),
 > so swapping to a light theme there recolours syntax and chrome but

@@ -15,6 +15,12 @@
   query and the selected file stay put.
 
 ### Fixed
+- **Semantic highlighting appears without `:e!`.** Opening a file sometimes
+  asked the language server for semantic tokens and inlay hints before it had
+  finished starting; the empty answer was kept, and nothing asked again until
+  you edited the file or ran `:e!`. Whether you hit it depended on startup
+  timing. Both are now requested again as soon as the server is ready for the
+  file, and still update when it finishes indexing.
 - **Hover documentation is no longer dimmed.** A hover popup (`K`, LSP hover)
   is read while the cursor stays in your file, so it never has focus — and it
   was dimmed like any unfocused pane until you focused it. `ui.dim_inactive`

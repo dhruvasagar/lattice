@@ -19226,6 +19226,33 @@ impl Editor {
     /// Drain `LspBufferDetached` events; fire didClose + clear
     /// per-buffer URI mapping via `lsp_close_buffer` (already
     /// host). Phase 5.8.AA.d: hoisted from TUI App.
+    /// A buffer's language server has finished `initialize` and has the
+    /// file open: refetch the results that could not be had before.
+    ///
+    /// Semantic tokens and inlay hints are requested on the first ticks
+    /// after a file opens, which can be before its server is ready. That
+    /// request is answered with nothing and cached at the current text
+    /// version, so every later tick sees "already fetched" — and the server,
+    /// never asked, has no reason to send a `refresh`. The colour then came
+    /// only from an edit or `:e!`, and whether you saw it depended on boot
+    /// timing. Marking both refresh-pending here (the flags a server
+    /// `refresh` sets) refetches them now, while whatever is cached keeps
+    /// rendering until the answer replaces it.
+    pub fn drain_lsp_attach_events(&mut self) {
+        let Some(mut rx) = self.pending_lsp_attach_rx.take() else {
+            return;
+        };
+        let mut buffer_ids: Vec<lattice_core::BufferId> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            buffer_ids.push(lattice_core::BufferId(event.id.raw() as u32));
+        }
+        self.pending_lsp_attach_rx = Some(rx);
+        for buffer_id in buffer_ids {
+            self.semantic_tokens_refresh_pending.insert(buffer_id);
+            self.inlay_refresh_pending.insert(buffer_id);
+        }
+    }
+
     pub fn drain_lsp_detach_events(&mut self) {
         let Some(mut rx) = self.pending_lsp_detach_rx.take() else {
             return;
@@ -19571,6 +19598,9 @@ impl Editor {
         self.drain_diagnostic_refresh();
         self.drain_inlay_hint_refresh();
         self.drain_semantic_tokens_refresh();
+        // Before the request pumps below, so a server that just became ready
+        // is asked on this same tick.
+        self.drain_lsp_attach_events();
         self.drain_code_lens_refresh();
         self.drain_pending_insert_completion_lsp();
         self.drain_pending_completion_resolve();

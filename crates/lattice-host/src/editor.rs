@@ -2269,6 +2269,11 @@ pub struct Editor {
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspSemanticTokensRefresh>>,
     pub pending_lsp_detach_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::events::LspBufferDetached>>,
+    /// `LspBufferAttached`: the buffer's server is ready. Drained per tick
+    /// by `drain_lsp_attach_events`, which forces a refetch of what was
+    /// requested before it was.
+    pub pending_lsp_attach_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::events::LspBufferAttached>>,
     pub pending_mode_lifecycle_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_mode::ModeEvent>>,
     /// MA.2: receives `Event::MajorEntered` so the per-tick

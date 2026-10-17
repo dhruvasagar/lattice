@@ -92,6 +92,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.wake_on_event::<LspSemanticTokensRefresh>();
     boot.wake_on_event::<LspDiagnosticRefresh>();
     boot.wake_on_event::<LspCodeLensRefresh>();
+    // A buffer's server finishing `initialize` (`lsp-mode` publishes this
+    // after the handshake and `didOpen`). Results requested before then were
+    // answered with nothing, and nothing else asks again; the host refetches
+    // on this event, so it must reach the screen without a keypress.
+    boot.wake_on_event::<crate::LspBufferAttached>();
 
     // ── EP.3: the error-list feed ───────────────────────────────────────────
     install_error_list_feed(boot);

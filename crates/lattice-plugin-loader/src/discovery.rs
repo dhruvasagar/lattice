@@ -285,7 +285,7 @@ pub fn discover_one(plugin_dir: &Path) -> Result<DiscoveredPlugin, String> {
 /// PMF.1: the manifest is the component's embedded `lattice-manifest` section
 /// when it has one, else `plugin.toml` beside it. When both exist the embedded
 /// one wins — the component is what was built, the file only what was copied.
-fn load_one(plugin_dir: &Path) -> Result<Option<DiscoveredPlugin>, String> {
+pub(crate) fn load_one(plugin_dir: &Path) -> Result<Option<DiscoveredPlugin>, String> {
     let manifest_path = plugin_dir.join(MANIFEST_FILE);
     let has_file = manifest_path.exists();
     let component_path = match sole_wasm(plugin_dir) {

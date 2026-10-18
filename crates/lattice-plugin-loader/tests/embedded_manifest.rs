@@ -209,3 +209,44 @@ async fn a_prebuilt_download_keeps_its_synthesised_grant() {
         status.granted
     );
 }
+
+/// `require` and `:plugin-load` load one directory through `load_path`, not
+/// the directory scan. A refusal raised while reading the manifest must reach
+/// `:plugins` there too — at boot it was the only path a `require`d plugin
+/// took, and the refusal vanished.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refusal_through_load_path_is_recorded_too() {
+    let Some(wasm) = config_guest_wasm() else {
+        eprintln!("skipping: config-guest wasm not built (no wasm32-wasip2 target)");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let dir = base.path().join("plugins").join("future");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("future.wasm"),
+        with_manifest(
+            &wasm,
+            "id = \"future\"\nprovides = [\"config\"]\nmin_lattice = \"999.0.0\"\n",
+        ),
+    )
+    .unwrap();
+
+    let loader = loader(base.path());
+    assert!(loader.load_path(&dir, TrustTier::Bundled).await.is_err());
+    let failed = loader.failed_loads();
+    assert_eq!(failed.len(), 1, "visible in :plugins: {failed:?}");
+    assert_eq!(failed[0].name, "future", "named from the embedded manifest");
+    assert!(
+        failed[0].error.contains("needs lattice ≥ 999.0.0"),
+        "{}",
+        failed[0].error
+    );
+
+    // A directory that is not a plugin at all is still the caller's answer,
+    // not a `:plugins` row.
+    let empty = base.path().join("plugins").join("nothing");
+    std::fs::create_dir_all(&empty).unwrap();
+    assert!(loader.load_path(&empty, TrustTier::Bundled).await.is_err());
+    assert_eq!(loader.failed_loads().len(), 1);
+}

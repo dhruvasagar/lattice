@@ -46,6 +46,16 @@
   signature-help popups are the exception in both, and stay undimmed.
 
 ### Fixed
+- **A plugin is loaded once, not twice.** At startup a plugin your
+  `init.rs` requires could appear twice in `:plugins` — or once beside a
+  failure reading "plugin declares no loadable seam". When a setting that
+  decides the plugin's file access changed while it loaded, it was reloaded,
+  and the startup scan of your plugins directory could look in the moment
+  between unload and load, find nothing, and load a second copy. Loads and
+  reloads now take turns.
+- **A plugin refused at startup shows in `:plugins`.** One that needs a newer
+  Lattice, or whose manifest does not parse, was listed nowhere when it came
+  from `require`; it now appears under *Failed to load* with the reason.
 - **A colour name works in a style even when no palette defines it.** An org
   TODO keyword styled `fg: "magenta"` in `init.rs` showed no colour — no
   built-in palette has a `magenta` role — and logged "unknown palette key"

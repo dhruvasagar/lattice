@@ -128,3 +128,89 @@ async fn the_plugin_reloads_when_its_grant_bearing_option_moves() {
         "the same value is not a reason to reload"
     );
 }
+
+/// Boot's two paths into one plugin directory. `require` loads the plugin
+/// (`load_path`); the user's `init.rs` sets a grant-bearing option during that
+/// load, so the grant moves and a reload is scheduled; then the user-root scan
+/// walks the same directory. The scan used to land in the reload's gap —
+/// unloaded, not yet loaded again — see nothing loaded, and load a second
+/// copy: two entries in `:plugins`, or one and a failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_scan_during_a_grant_reload_does_not_load_a_second_copy() {
+    let Some(wasm) = config_guest_wasm() else {
+        eprintln!("skipping: config-guest wasm not built (no wasm32-wasip2 target)");
+        return;
+    };
+    // The window is a few milliseconds wide; a handful of boots finds it
+    // reliably when it is open.
+    for round in 0..8 {
+        let base = tempfile::tempdir().unwrap();
+        let plugins = base.path().join("plugins");
+        let dir = plugins.join("config-fixture");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plugin.toml"),
+            "id = \"config-fixture\"\nprovides = [\"config\"]\n\
+             capabilities = [\"fs:read:{config-fixture.label|hello}\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("component.wasm"), &wasm).unwrap();
+
+        let bus = Arc::new(EventBus::new());
+        let config = Arc::new(ConfigRegistry::default());
+        let publish_to = bus.clone();
+        config.set_event_publisher(Arc::new(move |event| publish_to.publish(event)));
+        // `init.rs` on `pre-plugin-loaded`: point the option somewhere else.
+        let init_config = config.clone();
+        let init_value = format!(
+            "config-fixture.label={}",
+            base.path().join("notes").display()
+        );
+        bus.subscribe(
+            EventFilter::kind(EventKind::PrePluginLoaded),
+            SubscriptionTarget::Plugin {
+                plugin: 0,
+                handler: 1,
+                sink: Arc::new(move |_event, _ack| {
+                    let _ = init_config.parse_and_set_command(&init_value);
+                    true
+                }),
+            },
+        );
+        let loader = Arc::new(PluginLoader::with_services(
+            Arc::new(
+                PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap(),
+            ),
+            LoaderServices {
+                runtime: Some(tokio::runtime::Handle::current()),
+                bus: Some(bus.clone()),
+                config_registry: Some(config.clone()),
+                ..Default::default()
+            },
+        ));
+        loader.subscribe_grant_options();
+
+        // `require`, then the scan — boot's order.
+        loader
+            .load_path(&dir, TrustTier::UserInstalled)
+            .await
+            .unwrap();
+        loader
+            .discover_and_load(&plugins, TrustTier::UserInstalled)
+            .await;
+        // Let the reload finish.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let copies = loader
+            .plugin_status()
+            .into_iter()
+            .filter(|s| s.name == "config-fixture")
+            .count();
+        assert_eq!(copies, 1, "round {round}: one copy loaded, not {copies}");
+        assert!(
+            loader.failed_loads().is_empty(),
+            "round {round}: no second copy failing beside it: {:?}",
+            loader.failed_loads()
+        );
+    }
+}

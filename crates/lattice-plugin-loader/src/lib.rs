@@ -757,6 +757,16 @@ pub struct PluginLoader {
     /// `std::sync::Mutex` (not `tokio`): taken only to push / read the loaded
     /// set *after* the async load work completes, never across an `.await`.
     loaded: Mutex<Vec<LoadedRecord>>,
+    /// Loads, reloads and the scan's "already loaded?" check run one at a
+    /// time. `tokio`, not `std`: held across the whole async load.
+    ///
+    /// Without it, "is `org` loaded?" could be answered from the middle of
+    /// someone else's reload. Boot did exactly that: a `require`d plugin whose
+    /// grant moved during its own load (PMF.4) was being reloaded — unloaded,
+    /// not yet loaded again — when the user-root scan reached its directory,
+    /// saw nothing loaded, and loaded a second copy. Two `org`s in `:plugins`,
+    /// or one and a failure, depending on which won.
+    load_ops: tokio::sync::Mutex<()>,
     /// PM.8b: builds running (or failed) **this session**, keyed by plugin
     /// name.
     ///
@@ -977,6 +987,7 @@ impl PluginLoader {
             host,
             env: LoaderServices::default(),
             loaded: Mutex::new(Vec::new()),
+            load_ops: tokio::sync::Mutex::new(()),
             building: Mutex::new(std::collections::HashMap::new()),
             building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
@@ -1004,6 +1015,7 @@ impl PluginLoader {
             host,
             env: services,
             loaded: Mutex::new(Vec::new()),
+            load_ops: tokio::sync::Mutex::new(()),
             building: Mutex::new(std::collections::HashMap::new()),
             building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
@@ -1149,6 +1161,8 @@ impl PluginLoader {
             // always skip what is already in, whereas an explicit
             // `:plugin-load` is a request the user made and `reload` unloads
             // before loading again.
+            // The check and the load are one step: see `load_ops`.
+            let _serial = self.load_ops.lock().await;
             if self.is_loaded(&plugin.manifest.id) {
                 tracing::debug!(
                     plugin = %plugin.manifest.id,
@@ -2315,12 +2329,40 @@ impl PluginLoader {
         dir: &std::path::Path,
         tier: TrustTier,
     ) -> Result<PluginId, PluginLoaderError> {
-        let plugin = discovery::discover_one(dir).map_err(PluginLoaderError::Discovery)?;
-        // WT.4: a `discover_one` failure is deliberately NOT recorded above —
-        // that is "this directory is not a plugin", which the caller asked about
-        // and gets as an error. Past this point the directory *is* a plugin, so
-        // a failure is a plugin that should be here and is not, and it belongs
-        // in `:plugins` however the load was triggered.
+        let _serial = self.load_ops.lock().await;
+        self.load_path_serialised(dir, tier).await
+    }
+
+    /// [`load_path`](Self::load_path)'s body, for a caller already holding
+    /// `load_ops` (a reload holds it across its unload and load).
+    async fn load_path_serialised(
+        &self,
+        dir: &std::path::Path,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        // WT.4: "this directory is not a plugin" is deliberately NOT recorded —
+        // the caller asked about it and gets the error. But a directory that IS
+        // a plugin and is refused while being read (a malformed manifest, one
+        // that needs a newer editor) is a plugin that should be here and is
+        // not, and belongs in `:plugins` however the load was triggered. PMF.1's
+        // `min_lattice` refusal is raised here, and a `require`d plugin reaches
+        // the editor only through this path — so recording only past discovery
+        // made the refusal invisible exactly where it mattered.
+        let plugin = match discovery::load_one(dir) {
+            Ok(Some(plugin)) => plugin,
+            Ok(None) => {
+                return Err(PluginLoaderError::Discovery(
+                    discovery::discover_one(dir)
+                        .err()
+                        .unwrap_or_else(|| "not a plugin directory".to_string()),
+                ));
+            }
+            Err(reason) => {
+                self.record_failure(&plugin_name(dir), dir, tier, &reason);
+                return Err(PluginLoaderError::Discovery(reason));
+            }
+        };
+        // Past this point a failure is likewise a plugin that should be here.
         let outcome = self.load_discovered(&plugin, tier).await;
         match &outcome {
             Ok(_) => self.clear_failure(&plugin.manifest.id),
@@ -2706,6 +2748,8 @@ impl PluginLoader {
         target: &str,
         tier: TrustTier,
     ) -> Result<PluginId, PluginLoaderError> {
+        // Unload and load as one step, so no scan sees the gap between them.
+        let _serial = self.load_ops.lock().await;
         // Capture the source dir before unloading (unload removes the record).
         let dir = {
             let loaded = self
@@ -2730,10 +2774,10 @@ impl PluginLoader {
             let failed = self
                 .failed_load(target)
                 .ok_or_else(|| PluginLoaderError::NotLoaded(target.to_string()))?;
-            return self.load_path(&failed.dir, failed.tier).await;
+            return self.load_path_serialised(&failed.dir, failed.tier).await;
         };
         self.unload(target);
-        self.load_path(&dir, tier).await
+        self.load_path_serialised(&dir, tier).await
     }
 
     /// Load the `init` config if it isn't loaded, or reload it if it is — the

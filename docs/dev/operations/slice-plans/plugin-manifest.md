@@ -26,12 +26,15 @@ Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 | PMF.10 | A source with no `plugin.toml` builds: an in-place project is a cargo project; ids come from the built component; a staged copy left by an older build is removed. | lattice | ✅ |
 | PMF.11 | Bundled plugins embed their manifests (`manifest!`); their `plugin.toml` files, the core-plugin staging and release-archive checks that expected them, and the tests that copied them, go. | lattice | ✅ |
 | PMF.12 | `--scaffold-init` / `--scaffold-plugin` write `manifest!` instead of `plugin.toml`. Existing configs keep theirs and keep working. | lattice | ✅ |
+| PMF.13 | Loads, reloads and the scan's check-then-load are serialised (`load_ops`): no caller sees a plugin in the gap of another's reload. | lattice | ✅ |
+| PMF.14 | `require` reconciles instead of loading: at boot it installs and the user-root scan is the one loader; after boot (`:reload-config`) it loads what is new, reloads what was rebuilt, and is a no-op otherwise. | lattice | 📝 |
 
 ## Sequencing
 
 	PMF.1 ──► PMF.2 ──────────────────────────────┐
 	PMF.3 ──► PMF.4 ──► PMF.5 ──► PMF.6 ──► PMF.7 ─┴─► PMF.8
 	PMF.1 ──► PMF.10 ──► PMF.11 ──► PMF.12 ──► PMF.8
+	PMF.4 ──► PMF.13 ──► PMF.14
 	PMF.9 (docs only, any time after the design is accepted)
 
 PMF.1 and PMF.3 are independent: one is where the manifest comes from, the
@@ -165,6 +168,58 @@ ships in plugin-API 0.3.1, which is published from `main` after this branch
 merges — a scaffold needing it would fail `the_scaffolds_compile` on the PR
 that introduces it. Switching the scaffolds to `manifest!` is a one-line
 follow-up once 0.3.1 is on crates.io, if wanted.
+
+## PMF.13 — loads are serialised
+
+**Found in use (2026-10-18).** Boot has two paths into a `require`d plugin's
+directory: `install_required_plugins` loads it, and the user-root scan then
+walks the same root, skipping anything loaded. A user's `init.rs` sets
+`org.roam-directory` on `pre-plugin-loaded` — mid-load, after the grant was
+fixed — so PMF.4 schedules a reload. When the scan reached `org/` between that
+reload's unload and its load, "is org loaded?" answered no and it loaded a
+second copy: two `org` rows in `:plugins`, or one beside a failure ("declares
+no loadable seam" — the second copy's `org-completion-mode` collided).
+
+`PluginLoader::load_ops`, a `tokio` mutex held by `load_path`, by `reload`
+across its unload *and* load, and by the scan around each check-then-load.
+Not boot-specific: `:plugin-load`, `:plugin-reload` and the plugins-view
+chords can each meet a reload's gap the same way.
+
+**Tests:** `a_scan_during_a_grant_reload_does_not_load_a_second_copy` boots
+`load_path` then the scan eight times; without the lock round 0 ends with two
+copies.
+
+## PMF.14 — `require` reconciles
+
+Today `install_required_plugins` runs once, at boot, and calls `load_path` for
+every spec whether or not anything was installed or rebuilt. After boot it is
+never drained, so a `require` added before `:reload-config` is recorded and
+not installed until a restart.
+
+`require` becomes a declaration the loader reconciles against what is on disk
+and loaded:
+
+| When | What happens |
+|---|---|
+| Boot | Install / build / stage only. The user-root scan, which runs next, is the single loader; `enable_mode` is applied after it. |
+| After boot, newly installed | Loaded. |
+| After boot, loaded and rebuilt | Reloaded onto the new build. |
+| After boot, loaded and unchanged | Nothing. |
+
+One loader per directory at boot removes the duplicate by construction; PMF.13
+stays for every path that is not boot. `:reload-config` drains the specs its
+`init.rs` records.
+
+**Tests:** a warm boot loads a required plugin once and builds nothing; a
+`require` added before `:reload-config` is installed and loaded without a
+restart; a rebuilt required plugin reloads; an unchanged one is not touched;
+`enable_mode` applies to a plugin the scan loaded.
+
+**Not this slice:** org still loads twice per boot when `init.rs` sets a
+grant-bearing option on `pre-plugin-loaded` — the grant is fixed before the
+option exists. Removing that reload needs `init.rs` to be able to set an option
+before the plugin registers it (held, applied at registration); it is a
+`set-option` contract change and is decided separately.
 
 ## PMF.9 — distribution follows
 

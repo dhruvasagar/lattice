@@ -83,7 +83,13 @@ fn write_plugin_dir(root: &std::path::Path, id: &str, wasm: &[u8]) {
         format!("id = \"{id}\"\nprovides = [\"help\"]\n"),
     )
     .unwrap();
-    std::fs::write(dir.join("component.wasm"), wasm).unwrap();
+    // The component embeds its real manifest, which wins over this file
+    // (PMF.11); take it out so this narrower one applies.
+    std::fs::write(
+        dir.join("component.wasm"),
+        lattice_plugin_host::manifest::without_embedded_manifest(wasm),
+    )
+    .unwrap();
 }
 
 struct Rig {

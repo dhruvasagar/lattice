@@ -24,17 +24,32 @@ drop it in your plugins directory:
 ```bash
 git clone https://github.com/dhruvasagar/lattice-org-plugin
 cd lattice-org-plugin
-git checkout v0.1.0    # the release you want; skip to build main
+git checkout vX.Y.Z     # the release the README names; skip to build main
 cargo build --release --target wasm32-wasip2
 mkdir -p ~/.config/lattice/plugins/org
 cp target/wasm32-wasip2/release/lattice_org_plugin.wasm \
    ~/.config/lattice/plugins/org/org.wasm
-cp plugin.toml ~/.config/lattice/plugins/org/
 ```
 
-Or `require` it from your config with `rev` set to a release tag, and let the
+That one file is the whole plugin — its manifest is embedded in it. Or
+`require` it from your config with `rev` set to a release tag, and let the
 editor clone and build it on first boot — see [`plugins`](help:plugins) for the
 loading model, capability grants and the `:plugins` manager view.
+
+### Where org may write
+
+Archive, refile and capture write into files other than the one you are in,
+and org may do that only under two of its own options:
+
+| Option | Default |
+|---|---|
+| `org.directory` | `~/org` |
+| `org.roam-directory` | `~/org-roam` |
+
+Point them at your notes and that is the permission — there is no separate
+grant to edit, and org reloads itself when they change. A write anywhere else
+is refused with a message naming the option. See [Capabilities and your
+configuration](help:plugins#capabilities-and-your-configuration).
 
 Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 

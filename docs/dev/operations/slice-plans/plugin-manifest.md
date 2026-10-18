@@ -21,7 +21,7 @@ Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 | PMF.5 | Grant-bearing options cannot be set by plugins (except `init.rs`), refused by name. | lattice | ✅ |
 | PMF.6 | `:plugins` shows expanded grants and their origin; out-of-grant refusals name the option. | lattice | ✅ |
 | PMF.7 | Docs: `:help plugins` "Capabilities and your configuration", plugin-authoring guide, manifest custom-section schema beside the WIT. | lattice | ✅ |
-| PMF.8 | Org adopts: embedded manifest, `{org.directory\|~/org}` / `{org.roam-directory\|~/org/roam}`, defaults registered to match; `plugin.toml` removed; `org.md` and README updated. | lattice-org-plugin + lattice docs | 📝 |
+| PMF.8 | Org adopts: embedded manifest, `{org.directory\|~/org}` / `{org.roam-directory\|~/org/roam}`, defaults registered to match; `plugin.toml` removed; `org.md` and README updated. | lattice-org-plugin + lattice docs | ✅ |
 | PMF.9 | Revise the distribution design and plan to the one-file package. | lattice | ✅ |
 | PMF.10 | A source with no `plugin.toml` builds: an in-place project is a cargo project; ids come from the built component; a staged copy left by an older build is removed. | lattice | ✅ |
 | PMF.11 | Bundled plugins embed their manifests (`manifest!`); their `plugin.toml` files, the core-plugin staging and release-archive checks that expected them, and the tests that copied them, go. | lattice | ✅ |
@@ -133,6 +133,14 @@ In `lattice-org-plugin`: `manifest!` replacing `plugin.toml`; grants
 `org.directory` / `org.roam-directory` registered with the same defaults.
 Its manifest declares `min_lattice = "0.9.10"`. Released as a minor version. Lattice's `org.md` names the two options as the
 ones that decide where org may write.
+
+As built (org `aacd323`): defaults are emacs's — `~/org` and `~/org-roam`
+(not `~/org/roam`), so roam needs its own grant. Roam's "unset means inert"
+became "absent means inert": a directory that does not exist keeps it off,
+which a missing preopen makes true inside the guest too. The section is
+written directly, not with `manifest!`, so org builds from crates.io until
+plugin-API 0.3.1 is published. Its integration tests strip the embedded
+manifest (`without_embedded_manifest`) to load under their own.
 
 ## PMF.10 — sources without a `plugin.toml`
 

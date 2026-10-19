@@ -371,9 +371,8 @@ What that means for you:
   `register_options`, before org has even loaded; see [configuring user
   plugins](help:init#configuring-user-plugins-that-load-after-you) — or live
   with `:set org.directory=~/work/notes`, and org may now write there, and
-  only there. There is no separate grant to edit. (Not `lattice.toml`: it
-  is read before any plugin has registered its options, so a plugin's option
-  there is reported unknown.)
+  only there. There is no separate grant to edit. Or in `lattice.toml`
+  (`[org]` / `directory = "~/work/notes"`), which holds it the same way.
 - **The plugin restarts to pick it up.** Access is fixed when a plugin starts,
   so changing the option reloads that one plugin — off the keystroke path, with
   its saved state intact. Setting it to the value it already has does nothing.

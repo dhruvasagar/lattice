@@ -86,9 +86,9 @@ grant with it, in their own config, and never edits a plugin file.
 
 **Resolution.** When the loader grants capabilities:
 
-1. the option's value if the user has set one (`init.rs`, `:set`; a plugin's
-   options are not settable from `lattice.toml`, which is read before any
-   plugin registers them);
+1. the option's value if the user has set one (`lattice.toml`, `init.rs`,
+   `:set`) — including a value set before the plugin registered the option,
+   which the registry holds until it does (PMF.15/16);
 2. otherwise the template's default (`~/org`), so the plugin starts with
    access to where it would look by default;
 3. `~` expands; an explicitly empty value grants nothing.

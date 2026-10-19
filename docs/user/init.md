@@ -322,7 +322,9 @@ plugin's options.
 Your `init.rs` loads **first** — before the *user* plugins in
 `~/.config/lattice/plugins/`. That splits what you configure in two.
 
-**A plugin's options: set them anywhere, at the top level included.** An
+**A plugin's options: set them anywhere, at the top level included** — or
+in `lattice.toml` (`[org]` / `directory = "~/notes"`), which does the same for
+a value that needs no code. An
 option a plugin will declare does not exist yet when your `init.rs` runs, so
 lattice holds the value and applies it when the plugin registers the option —
 and again if the plugin reloads. Setting them up front, from `register_options`,

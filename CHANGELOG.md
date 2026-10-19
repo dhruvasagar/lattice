@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Added
+- **A plugin's options can go in `lattice.toml`.** `[org]` /
+  `directory = "~/notes"` used to be reported as an unknown option at
+  startup and ignored: the file is read before any plugin has declared its
+  options. Such a value is now held and applied when the plugin declares the
+  option (and again if it reloads), and a plugin's file access sees it from
+  its first load. A typo in a namespace that is already registered
+  (`ui.nerd_fontz`) still warns at startup; one in a plugin's namespace is
+  reported once every plugin has loaded. Where `lattice.toml` and `init.rs`
+  both set an option, `init.rs` wins.
 - **`init.rs` can set a plugin's options before the plugin loads.** Your
   config loads first, so a user plugin's options did not exist yet and
   `set_option` on them was rejected — they could only be set from the

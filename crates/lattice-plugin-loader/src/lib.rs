@@ -1521,12 +1521,13 @@ impl PluginLoader {
         // would otherwise meet as a refusal.
         self.warn_grant_default_mismatch(manifest);
         // PMF.4: the grant was resolved before the plugin registered its
-        // options, so a value `init.rs` set while it loaded (its
-        // `pre-plugin-loaded` handler — the one place a plugin's options are
-        // set from config; `lattice.toml` cannot, it is read before they
-        // exist) is not in it. Re-resolve now; anything that moved is announced
-        // through `OptionChanged`, which `subscribe_grant_options` turns into a
-        // reload — rather than reloading from inside this load.
+        // options. A value set up front (`lattice.toml`, `init.rs`'s
+        // `register_options`) is held by the registry and was already in that
+        // grant (PMF.15/16); one `init.rs` set mid-load, from its
+        // `pre-plugin-loaded` handler, was not. Re-resolve now; anything that
+        // moved is announced through `OptionChanged`, which
+        // `subscribe_grant_options` turns into a reload — rather than
+        // reloading from inside this load.
         self.announce_moved_grants(manifest, tier, &outcome.option_bound);
         // LA.1: the mode/language CATALOG changed. Separate from `PluginLoaded`
         // above because the subscriber is different and much more expensive —
@@ -2771,16 +2772,18 @@ impl PluginLoader {
         pending_modes
     }
 
-    /// PMF.15: report, once every plugin has loaded, the options `init.rs` set
-    /// that no plugin registered — a misspelt name, or a plugin that did not
+    /// PMF.15/16: report, once every plugin has loaded, the options your
+    /// configuration (`lattice.toml`, `init.rs`) set that no plugin registered — a misspelt name, or a plugin that did not
     /// load. `warn!`, so it reaches `*messages*`: without it the setting would
     /// simply never take effect, which is the silent failure holding them
     /// replaced (the unknown-option warning at the time of the set).
     pub fn report_unclaimed_options(&self) {
-        for name in self.host.unclaimed_held_options() {
+        for (name, source) in self.host.unclaimed_held_options() {
+            let source = source.label();
             tracing::warn!(
                 option = %name,
-                "init.rs set `{name}`, but no loaded plugin declares that option \
+                source,
+                "{source} sets `{name}`, but no loaded plugin declares that option \
                  — check the name, and `:plugins` for a plugin that failed to load"
             );
         }

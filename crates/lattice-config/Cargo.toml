@@ -13,6 +13,9 @@ lattice-completion = { path = "../lattice-completion" }
 lattice-config-macros = { path = "../lattice-config-macros" }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
+# PMF.16: a held value that does not fit the option it is applied to is
+# reported when the option registers — long after the config was read.
+tracing = { workspace = true }
 toml = { workspace = true }
 dirs = { workspace = true }
 linkme = { workspace = true }

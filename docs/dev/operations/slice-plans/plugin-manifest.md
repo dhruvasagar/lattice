@@ -29,13 +29,14 @@ Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 | PMF.13 | Loads, reloads and the scan's check-then-load are serialised (`load_ops`): no caller sees a plugin in the gap of another's reload. | lattice | ✅ |
 | PMF.14 | `require` reconciles instead of loading: at boot it installs and the user-root scan is the one loader; after boot (`:reload-config`) it loads what is new, reloads what was rebuilt, and is a no-op otherwise. | lattice | ✅ |
 | PMF.15 | `init.rs` may set a plugin's option before the plugin registers it: held, applied at registration (and re-registration), seen by the grant — no reload for a grant-bearing option set up front. | lattice | ✅ |
+| PMF.16 | The held values move into `ConfigRegistry`, tagged by source, and `lattice.toml` holds a plugin's options too: applied at registration, `init.rs` over `lattice.toml`, each source cleared on its own re-read. | lattice | ✅ |
 
 ## Sequencing
 
 	PMF.1 ──► PMF.2 ──────────────────────────────┐
 	PMF.3 ──► PMF.4 ──► PMF.5 ──► PMF.6 ──► PMF.7 ─┴─► PMF.8
 	PMF.1 ──► PMF.10 ──► PMF.11 ──► PMF.12 ──► PMF.8
-	PMF.4 ──► PMF.13 ──► PMF.14 ──► PMF.15
+	PMF.4 ──► PMF.13 ──► PMF.14 ──► PMF.15 ──► PMF.16
 	PMF.9 (docs only, any time after the design is accepted)
 
 PMF.1 and PMF.3 are independent: one is where the manifest comes from, the
@@ -104,8 +105,8 @@ differs. A default that disagrees with the registered option default warns in
 
 **Tests:** `:set org.directory=…` reloads with the new grant; setting it to its
 current value does not reload; a value `init.rs` sets during the load reloads
-once. (Not `lattice.toml`: a plugin's options are not settable there — it is
-read before any plugin registers them; `init.rs` is the place.)
+once. (Since PMF.15/16, a value set before the plugin loads — in
+`register_options` or `lattice.toml` — reloads it not at all.)
 
 ## PMF.5 — plugins cannot widen their grant
 
@@ -271,6 +272,40 @@ applied; the first grant follows the held value; a reloaded plugin gets the
 values back; another plugin is still refused; a reloaded `init.rs` starts
 clean; a misspelt name is reported and a bad value does not block. With holding
 disabled, the four positive cases fail.
+
+## PMF.16 — `lattice.toml` holds a plugin's options too
+
+PMF.15 let `init.rs` set a plugin's option before the plugin registered it,
+with the store in the plugin host. `lattice.toml` has the same problem — it is
+read at boot, before any plugin — and rejected `[org] directory = …` as an
+unknown option, so a value that needed no code still needed `init.rs`.
+
+The store moves into `ConfigRegistry` (`hold`, `held_value`, `clear_held`,
+`unclaimed_held`, `namespace_in_use`), each value tagged with a
+`HeldSource` — `ConfigFile` (`lattice.toml`, a project's `config.toml`) before
+`Init`, the order they are read in, so `init.rs` wins. `try_register` applies
+the held values for an option as it registers, in that order, so every source
+and every registration path get the same behaviour; the plugin host keeps only
+the `init.rs`-only rule and reads `held_value` for grants. `load_default_paths`
+clears `ConfigFile` values before each read and `sync_init` clears `Init`
+before `init.rs` reloads, so re-reading one never drops the other's.
+
+The loader holds a dotted assignment when its option is known (so a plugin
+re-registering it gets it back) or its namespace is unused — a plugin not
+loaded yet. An unknown name in a namespace that *is* registered — or one
+named exactly as a scalar option (`[tabstop]`) — is a mistake about something
+that is here, and still warns at once; an undotted unknown name too. A held
+name no plugin claims is reported after the boot scan, with its source.
+
+Not held: a structured value (an array of tables) for a plugin option that
+is not registered yet; `[plugin.<id>]` structural sections are untouched.
+
+**Tests:** in `lattice-config`'s loader — a `[org]` value held, applied at
+registration and re-registration; a typo in a registered namespace still
+warns; an undotted unknown still warns; `init.rs` over `lattice.toml`, each
+cleared alone; unclaimed names listed with their source. In
+`lattice-plugin-host`, a `lattice.toml` value is in the first grant and
+`init.rs` overrides it.
 
 ## PMF.9 — distribution follows
 

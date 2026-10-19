@@ -295,6 +295,10 @@ pub fn load_default_paths(
     // forever. Clearing inside `load_file` would instead have the PROJECT
     // config wipe what the user config just recorded.
     registry.clear_all_failed_assignments();
+    // PMF.16: likewise what this reading will hold for plugins' options — a line
+    // deleted since the last read must not keep applying. `init.rs`'s are its
+    // own, cleared when it reloads.
+    registry.clear_held(crate::registry::HeldSource::ConfigFile);
     if let Some(user) = default_user_config_path()
         && user.exists()
     {
@@ -569,6 +573,23 @@ fn apply_assignment(
     dotted: &str,
     value: &str,
 ) {
+    // PMF.16: a plugin's option. The plugin has not loaded yet — this file is
+    // read before any does — so its options do not exist; the value is held
+    // and applied when the plugin registers the option, and again if it
+    // reloads. Held too when the option already exists, so a reload of its
+    // plugin gets the value back. An unknown name in a namespace that IS
+    // registered is not a plugin waiting to load but a typo, and is reported
+    // below as before.
+    if let Some((namespace, _)) = dotted.split_once('.') {
+        let known = registry.lookup(dotted).is_some();
+        let awaited = !known && !registry.namespace_in_use(namespace);
+        if known || awaited {
+            registry.hold(dotted, value, crate::registry::HeldSource::ConfigFile);
+        }
+        if awaited {
+            return;
+        }
+    }
     let assign = format!("{dotted}={value}");
     if let Err(err) = registry.parse_and_set_command(&assign) {
         let body = match err {
@@ -1120,11 +1141,24 @@ mod tests {
     #[test]
     fn unknown_key_emits_warning_other_keys_still_apply() {
         let r = registry_with_options();
-        let p = write_temp("unknown", "number = false\nbogus.key = 42\ntabstop = 2\n");
+        let p = write_temp(
+            "unknown",
+            "number = false\nnosuch = 42\nbogus.key = 42\ntabstop = 2\n",
+        );
         let out = load_file(&r, &p, &[]);
-        assert_eq!(out.messages.len(), 1);
+        assert_eq!(out.messages.len(), 1, "{:?}", out.messages);
         assert_eq!(out.messages[0].level, LoadMessageLevel::Warning);
-        assert!(out.messages[0].body.contains("unknown option"));
+        assert!(out.messages[0].body.contains("unknown option `nosuch`"));
+        // PMF.16: `bogus.key` is in a namespace nothing has registered, so it
+        // may be a plugin's option that has not loaded yet: held, and reported
+        // once every plugin has loaded if none declares it — not now.
+        assert_eq!(
+            r.unclaimed_held(),
+            [(
+                "bogus.key".to_string(),
+                crate::registry::HeldSource::ConfigFile
+            )]
+        );
         assert_eq!(r.lookup("number").unwrap().get_formatted(), "false");
         assert_eq!(r.lookup("tabstop").unwrap().get_formatted(), "2");
     }
@@ -1386,5 +1420,122 @@ mod tests {
     fn project_path_helper_lands_at_dot_lattice_config_toml() {
         let p = project_config_path(Path::new("/workspace/foo"));
         assert_eq!(p, PathBuf::from("/workspace/foo/.lattice/config.toml"));
+    }
+
+    // ── PMF.16: a plugin's options from lattice.toml ─────────────────
+
+    /// What a plugin registering its option does.
+    fn register_plugin_string(r: &ConfigRegistry, name: &str, default: &str) {
+        r.try_register(ConfigOption::<String>::new(
+            name.to_string(),
+            default.to_string(),
+            "doc".to_string(),
+        ))
+        .unwrap();
+    }
+
+    fn string_of(r: &ConfigRegistry, name: &str) -> std::option::Option<String> {
+        r.lookup(name).map(|o| o.get_formatted())
+    }
+
+    #[test]
+    fn a_plugins_option_in_lattice_toml_waits_for_the_plugin() {
+        let r = registry_with_options();
+        let p = write_temp("held-plugin-option", "[org]\ndirectory = \"~/notes\"\n");
+        let out = load_file(&r, &p, &[]);
+        assert!(
+            out.messages.is_empty(),
+            "not an unknown option: org has not loaded yet: {:?}",
+            out.messages
+        );
+        assert_eq!(r.held_value("org.directory").as_deref(), Some("~/notes"));
+
+        // org loads and declares it: it starts with the file's value.
+        register_plugin_string(&r, "org.directory", "~/org");
+        assert_eq!(string_of(&r, "org.directory").as_deref(), Some("~/notes"));
+
+        // org reloads: its options go and come back — with the value again.
+        assert!(r.unregister("org.directory"));
+        register_plugin_string(&r, "org.directory", "~/org");
+        assert_eq!(string_of(&r, "org.directory").as_deref(), Some("~/notes"));
+    }
+
+    #[test]
+    fn a_misspelt_option_in_a_namespace_that_is_here_still_warns_at_once() {
+        let r = registry_with_options();
+        register_plugin_string(&r, "org.directory", "~/org");
+        let p = write_temp("held-typo", "[org]\ndirectroy = \"~/notes\"\n");
+        let out = load_file(&r, &p, &[]);
+        assert_eq!(out.messages.len(), 1, "{:?}", out.messages);
+        assert!(
+            out.messages[0]
+                .body
+                .contains("unknown option `org.directroy`")
+        );
+        assert_eq!(r.held_value("org.directroy"), None, "and nothing is held");
+    }
+
+    #[test]
+    fn an_undotted_unknown_name_still_warns_at_once() {
+        let r = registry_with_options();
+        let p = write_temp("held-undotted", "no_such_option = 42\n");
+        let out = load_file(&r, &p, &[]);
+        assert_eq!(out.messages.len(), 1, "{:?}", out.messages);
+        assert!(out.messages[0].body.contains("unknown option"));
+    }
+
+    #[test]
+    fn init_rs_overrides_lattice_toml_and_each_clears_alone() {
+        use crate::registry::HeldSource;
+        let r = registry_with_options();
+        r.hold("org.directory", "~/from-toml", HeldSource::ConfigFile);
+        r.hold("org.directory", "~/from-init", HeldSource::Init);
+        assert_eq!(
+            r.held_value("org.directory").as_deref(),
+            Some("~/from-init"),
+            "read in that order, so init.rs wins"
+        );
+        register_plugin_string(&r, "org.directory", "~/org");
+        assert_eq!(
+            string_of(&r, "org.directory").as_deref(),
+            Some("~/from-init")
+        );
+
+        // init.rs reloads: only its values go; the file's still apply.
+        r.clear_held(HeldSource::Init);
+        assert_eq!(
+            r.held_value("org.directory").as_deref(),
+            Some("~/from-toml")
+        );
+        assert!(r.unregister("org.directory"));
+        register_plugin_string(&r, "org.directory", "~/org");
+        assert_eq!(
+            string_of(&r, "org.directory").as_deref(),
+            Some("~/from-toml")
+        );
+
+        r.clear_held(HeldSource::ConfigFile);
+        assert_eq!(r.held_value("org.directory"), None);
+    }
+
+    #[test]
+    fn held_names_no_plugin_declares_are_listed_with_their_source() {
+        use crate::registry::HeldSource;
+        let r = registry_with_options();
+        let p = write_temp("held-unclaimed", "[org]\ndirectory = \"~/notes\"\n");
+        let _ = load_file(&r, &p, &[]);
+        r.hold("other.thing", "x", HeldSource::Init);
+        assert_eq!(
+            r.unclaimed_held(),
+            [
+                ("org.directory".to_string(), HeldSource::ConfigFile),
+                ("other.thing".to_string(), HeldSource::Init),
+            ]
+        );
+        register_plugin_string(&r, "org.directory", "~/org");
+        assert_eq!(
+            r.unclaimed_held(),
+            [("other.thing".to_string(), HeldSource::Init)]
+        );
     }
 }

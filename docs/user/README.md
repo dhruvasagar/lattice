@@ -206,6 +206,7 @@ same surface).
 |   — LSP source             | [`lsp-completion-mode`](help:lsp-completion-mode) | ✅      |
 | Picker preview             | [`preview-mode`](help:preview-mode) | ✅      |
 | The `*messages*` log       | [`messages-mode`](help:messages-mode) | ✅      |
+| The `*version*` page       | [`version-mode`](help:version-mode)   | ✅      |
 | Plugins                    | [`plugins`](help:plugins)                | ✅      |
 |   — the manager buffer     | [`plugins-mode`](help:plugins-mode) | ✅      |
 |   — the boundary trace     | [`plugin-trace-mode`](help:plugin-trace-mode) | ✅      |

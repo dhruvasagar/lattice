@@ -49,8 +49,19 @@ pub(crate) mod bindings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequiredSource {
     Local(String),
-    Git { url: String, rev: Option<String> },
-    Prebuilt { url: String },
+    Git {
+        url: String,
+        rev: Option<String>,
+    },
+    Prebuilt {
+        url: String,
+    },
+    /// PRL.5: a GitHub release — from `require-release`.
+    Release {
+        repo: String,
+        version: Option<String>,
+        sha256: Option<String>,
+    },
 }
 
 /// One plugin a guest declared via `require`.

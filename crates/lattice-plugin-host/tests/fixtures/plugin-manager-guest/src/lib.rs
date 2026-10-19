@@ -16,7 +16,7 @@ wit_bindgen::generate!({
 });
 
 use lattice::plugin_host::plugin_manager;
-use lattice::plugin_host::plugin_manager::{GitSource, PluginSource, PluginSpec};
+use lattice::plugin_host::plugin_manager::{GitSource, PluginSource, PluginSpec, ReleaseSpec};
 
 struct Component;
 
@@ -51,6 +51,27 @@ impl Guest for Component {
             pinned: false,
         });
         // @end-example
+
+        // @example plugin-manager.require-release: Install a plugin from its GitHub release, pinned to a tag and its bytes, without building it
+        // PRL.5: a released component — downloaded, never built, so the user
+        // needs no Rust toolchain.
+        let ok = plugin_manager::require_release(&ReleaseSpec {
+            name: "release-demo".to_string(),
+            repo: "example/release-demo".to_string(),
+            version: Some("v0.2.0".to_string()),
+            sha256: Some("ab".repeat(32)),
+            enable_mode: Some("release-demo-mode".to_string()),
+        });
+        // @end-example
+        assert!(ok, "a well-formed release spec must be accepted");
+        let rejected = plugin_manager::require_release(&ReleaseSpec {
+            name: "../escape-release".to_string(),
+            repo: "example/x".to_string(),
+            version: None,
+            sha256: None,
+            enable_mode: None,
+        });
+        assert!(!rejected, "an unsafe release name must be refused too");
 
         // A path-traversal name. The host must reject it and keep going —
         // one bad entry cannot take the whole config down.

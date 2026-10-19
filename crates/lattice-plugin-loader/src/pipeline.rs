@@ -69,6 +69,15 @@ pub fn to_required_spec(
             }
             Host::Git { url, rev } => PluginSource::Git { url, rev },
             Host::Prebuilt { url } => PluginSource::Prebuilt { url },
+            Host::Release {
+                repo,
+                version,
+                sha256,
+            } => PluginSource::Release {
+                repo,
+                version,
+                sha256,
+            },
         },
         enable_mode: p.enable_mode,
         pinned: p.pinned,

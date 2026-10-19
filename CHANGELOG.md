@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Added
+- **Install a plugin from its release, without building it.** `init.rs` can
+  `require_release` a plugin published on GitHub — `repo`, an optional tag
+  and an optional `sha256` pin — and lattice downloads the build for its own
+  plugin API instead of cloning and compiling, so no Rust toolchain is
+  needed. The download is checked against the release's published checksum
+  (and your pin), must carry its own manifest naming the plugin, and only
+  then replaces what is installed; once installed, startup makes no network
+  request. Without a tag it takes the newest release built for your editor.
+  A release with no build for your editor is refused by name in `:plugins`,
+  saying what it ships instead. `:plugins` shows the source as
+  `release owner/name@v0.2.0`. A new function in the plugin API, so plugins
+  built from source rebuild once.
 - **A plugin's options can go in `lattice.toml`.** `[org]` /
   `directory = "~/notes"` used to be reported as an unknown option at
   startup and ignored: the file is read before any plugin has declared its

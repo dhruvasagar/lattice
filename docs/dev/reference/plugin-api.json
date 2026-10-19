@@ -3655,6 +3655,31 @@
               "code": "// A pinned git source.\nplugin_manager::require(&PluginSpec {\n    name: \"git_demo\".to_string(),\n    source: PluginSource::Git(GitSource {\n        url: \"https://example.invalid/demo.git\".to_string(),\n        rev: Some(\"abc123\".to_string()),\n    }),\n    enable_mode: None,\n    pinned: true,\n});\n\n// A prebuilt download — no build, no toolchain.\nplugin_manager::require(&PluginSpec {\n    name: \"prebuilt-demo\".to_string(),\n    source: PluginSource::Prebuilt(\"https://example.invalid/d.wasm\".to_string()),\n    enable_mode: None,\n    pinned: false,\n});"
             }
           ]
+        },
+        {
+          "name": "require-release",
+          "display_name": "require-release",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "spec",
+              "type": "release-spec"
+            }
+          ],
+          "result": "bool",
+          "signature": "require-release: func(spec: release-spec) -> bool",
+          "doc": "Declare a plugin installed from a release. Records the spec exactly as\n`require` does — the download runs off-thread after the calling export\nreturns; nothing is fetched at boot once it is installed. Returns\n`false` when the spec is rejected outright (an unsafe `name`).\n\nA function beside `require` rather than a fourth `plugin-source` case:\na variant's shape is part of the component type, so a grown variant\nwould stop every compiled `init.rs` linking; a new function leaves a\nguest that does not import it untouched.",
+          "examples": [
+            {
+              "id": "plugin-manager-guest:plugin-manager.require-release",
+              "caption": "Install a plugin from its GitHub release, pinned to a tag and its bytes, without building it",
+              "source": "crates/lattice-plugin-host/tests/fixtures/plugin-manager-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// PRL.5: a released component — downloaded, never built, so the user\n// needs no Rust toolchain.\nlet ok = plugin_manager::require_release(&ReleaseSpec {\n    name: \"release-demo\".to_string(),\n    repo: \"example/release-demo\".to_string(),\n    version: Some(\"v0.2.0\".to_string()),\n    sha256: Some(\"ab\".repeat(32)),\n    enable_mode: Some(\"release-demo-mode\".to_string()),\n});"
+            }
+          ]
         }
       ],
       "types": [
@@ -3726,6 +3751,40 @@
               "name": "pinned",
               "type": "bool",
               "doc": "Skip the rebuild-on-change check; build only if the artifact is\nabsent. The escape hatch for a known-good build that should stay\nput regardless of what the source tree does."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "release-spec",
+          "kind": "record",
+          "doc": "A plugin published as a GitHub release — installed without building it,\nso it needs no Rust toolchain (plugin-distribution.md §3).\n\nThe host downloads the release asset built for its own plugin API\ngeneration (`<name>-<version>-api<M>.<m>.wasm`), checks it against the\nrelease's published `.sha256` — and against `sha256` when given — and\nrequires the component's embedded manifest to name `name`. A release\nwith no build for this editor is refused by name in `:plugins`, saying\nwhat it ships instead.",
+          "definition": "record release-spec {\n    name: string,\n    repo: string,\n    version: option<string>,\n    sha256: option<string>,\n    enable-mode: option<string>,\n}",
+          "members": [
+            {
+              "name": "name",
+              "type": "string",
+              "doc": "The plugin's id, as for `plugin-spec.name`."
+            },
+            {
+              "name": "repo",
+              "type": "string",
+              "doc": "The GitHub repository, `owner/name`."
+            },
+            {
+              "name": "version",
+              "type": "option<string>",
+              "doc": "A release tag (`v0.2.0`). Omitted: the newest non-draft,\nnon-prerelease release with a build for this editor, looked up once\nand kept until an update asks again."
+            },
+            {
+              "name": "sha256",
+              "type": "option<string>",
+              "doc": "Pin the bytes, not just the tag: a re-published tag is refused."
+            },
+            {
+              "name": "enable-mode",
+              "type": "option<string>",
+              "doc": "As `plugin-spec.enable-mode`."
             }
           ],
           "examples": []

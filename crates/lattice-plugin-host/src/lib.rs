@@ -2086,6 +2086,36 @@ impl crate::plugin_manager_host::bindings::lattice::plugin_host::plugin_manager:
             });
         true
     }
+
+    /// PRL.5: `require`'s peer for a released component. Records, never
+    /// fetches: the loader installs it off-thread (`PluginSource::Release`).
+    fn require_release(
+        &mut self,
+        spec: crate::plugin_manager_host::bindings::lattice::plugin_host::plugin_manager::ReleaseSpec,
+    ) -> bool {
+        if !plugin_manager_host::is_safe_plugin_name(&spec.name) {
+            tracing::warn!(
+                name = %spec.name,
+                "require-release ignored: plugin name is not a single safe path component"
+            );
+            return false;
+        }
+        tracing::debug!(name = %spec.name, repo = %spec.repo, "require-release recorded");
+        self.require_contributions
+            .record(plugin_manager_host::RequiredPlugin {
+                name: spec.name,
+                source: plugin_manager_host::RequiredSource::Release {
+                    repo: spec.repo,
+                    version: spec.version,
+                    sha256: spec.sha256,
+                },
+                enable_mode: spec.enable_mode,
+                // A release is downloaded, never built: there is no rebuild to
+                // skip.
+                pinned: false,
+            });
+        true
+    }
 }
 
 /// PR.6: what the guest `project` seam needs to answer.

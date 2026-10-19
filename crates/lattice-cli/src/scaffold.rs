@@ -111,13 +111,18 @@ use lattice::plugin_host::{config, events, keymap, modes};
 struct Config;
 
 impl Guest for Config {
-    // IMMEDIATE — option overrides (also settable in lattice.toml or via `:set`).
+    // IMMEDIATE — option overrides (also settable live with `:set`).
     fn register_options() {
         config::set_option("tabstop", "4");
 
         // auto-pair is a CORE plugin, ON by default. Configure it here:
         // config::set_option("auto-pair.style", "manual"); // manual close-key pairing
         // config::set_option("auto-pair.enabled", "false"); // …or turn it off
+
+        // A USER plugin's options go here too, though it has not loaded yet:
+        // the value is held and applied when the plugin declares the option.
+        // Full names — a bare `style` would be looked up as `init.style`.
+        // config::set_option("my-plugin.style", "manual");
     }
 
     // IMMEDIATE — keybindings layered above the builtin vim grammar.
@@ -128,11 +133,10 @@ impl Guest for Config {
 
     // Subscribe deferred / event-flow hooks (handler ids are yours to choose).
     fn register_events() {
-        // SET a plugin's options here: `pre-plugin-loaded` fires after that
-        // plugin has declared them and before it reads any, and the load WAITS
-        // for this handler. A plugin that reads an option while loading — to
-        // build theme elements or a highlight query from it, say — sees your
-        // value rather than its default.
+        // COMPUTE a plugin's option here, when the value depends on the plugin
+        // being there (plain values go in `register_options` above):
+        // `pre-plugin-loaded` fires after that plugin has declared its options
+        // and before it reads any, and the load WAITS for this handler.
         events::subscribe(
             &EventFilter {
                 kinds: Some(vec![EventKind::PrePluginLoaded]),
@@ -158,9 +162,9 @@ impl Guest for Config {
     // React to events. Core plugins like auto-pair are on by default —
     // configure those in `register_options` above, not here.
     fn on_event(handler: u32, ev: Event) {
-        // Options, before the plugin can read them. Full names: `set_option`
-        // prefixes a bare name with the CALLING plugin's id, so `style` would
-        // be looked up as `init.style`.
+        // An option worked out once the plugin is there, before it reads it.
+        // Full names: `set_option` prefixes a bare name with the CALLING
+        // plugin's id, so `style` would be looked up as `init.style`.
         if let (1, Event::PrePluginLoaded(name)) = (handler, &ev) {
             if name == "my-plugin" {
                 config::set_option("my-plugin.style", "manual");

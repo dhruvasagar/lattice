@@ -28,13 +28,14 @@ Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 | PMF.12 | `--scaffold-init` / `--scaffold-plugin` write `manifest!` instead of `plugin.toml`. Existing configs keep theirs and keep working. | lattice | ✅ |
 | PMF.13 | Loads, reloads and the scan's check-then-load are serialised (`load_ops`): no caller sees a plugin in the gap of another's reload. | lattice | ✅ |
 | PMF.14 | `require` reconciles instead of loading: at boot it installs and the user-root scan is the one loader; after boot (`:reload-config`) it loads what is new, reloads what was rebuilt, and is a no-op otherwise. | lattice | ✅ |
+| PMF.15 | `init.rs` may set a plugin's option before the plugin registers it: held, applied at registration (and re-registration), seen by the grant — no reload for a grant-bearing option set up front. | lattice | ✅ |
 
 ## Sequencing
 
 	PMF.1 ──► PMF.2 ──────────────────────────────┐
 	PMF.3 ──► PMF.4 ──► PMF.5 ──► PMF.6 ──► PMF.7 ─┴─► PMF.8
 	PMF.1 ──► PMF.10 ──► PMF.11 ──► PMF.12 ──► PMF.8
-	PMF.4 ──► PMF.13 ──► PMF.14
+	PMF.4 ──► PMF.13 ──► PMF.14 ──► PMF.15
 	PMF.9 (docs only, any time after the design is accepted)
 
 PMF.1 and PMF.3 are independent: one is where the manifest comes from, the
@@ -238,6 +239,38 @@ grant-bearing option on `pre-plugin-loaded` — the grant is fixed before the
 option exists. Removing that reload needs `init.rs` to be able to set an option
 before the plugin registers it (held, applied at registration); it is a
 `set-option` contract change and is decided separately.
+
+## PMF.15 — `init.rs` sets options before their plugin exists
+
+PMF.14's "not this slice". `init.rs` loads before every user plugin, so the
+options a plugin will declare did not exist when it ran, and `set-option` on
+them returned `false`. The only working place was the plugin's
+`pre-plugin-loaded` handler — mid-load, after its grant was fixed — so a
+grant-bearing option (`org.directory`) cost a full reload at every boot.
+
+`HeldOptionsHandle` in the plugin host: every `set-option` from the config
+authority (PMF.5's `init.rs`) is recorded by full name; on an unregistered name
+it is held and returns `true`. `register-option` applies a held value through
+`parse_and_set_command` after registering (a value that does not fit is warned,
+never blocks the registration); `grant_for` reads held values before
+`GrantGuard::remembered`, so the first instance's grant is the user's. Values
+are kept, not consumed, so a reloaded plugin gets them back; `sync_init` clears
+them before `init.rs` reloads and declares them again. After the boot scan,
+`report_unclaimed_options` warns for each held name no plugin declared.
+
+Other plugins setting an unregistered name are still refused: holding is the
+user's configuration speaking, not a way for a plugin to pre-seed another's
+options. The WIT doc of `set-option` states the new contract (a comment-only
+change: no package bump, but `ABI_FINGERPRINT` moves, so source-built plugins
+rebuild once). `set-option-value` (structured) is unchanged: it still needs its
+option registered.
+
+**Tests:** `held_options_tests` in `lattice-plugin-host` drive the real
+`set-option` / `register-option` host functions on real stores — held then
+applied; the first grant follows the held value; a reloaded plugin gets the
+values back; another plugin is still refused; a reloaded `init.rs` starts
+clean; a misspelt name is reported and a bad value does not block. With holding
+disabled, the four positive cases fail.
 
 ## PMF.9 — distribution follows
 

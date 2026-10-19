@@ -320,9 +320,30 @@ plugin's options.
 ### Configuring *user* plugins that load after you
 
 Your `init.rs` loads **first** — before the *user* plugins in
-`~/.config/lattice/plugins/`. So config that targets a user plugin (enable its
-mode, set its options, bind keys to its commands) can't run at the top level: the
-plugin isn't there yet. Instead, **subscribe and react when it arrives** — the
+`~/.config/lattice/plugins/`. That splits what you configure in two.
+
+**A plugin's options: set them anywhere, at the top level included.** An
+option a plugin will declare does not exist yet when your `init.rs` runs, so
+lattice holds the value and applies it when the plugin registers the option —
+and again if the plugin reloads. Setting them up front, from `register_options`,
+is the simplest place, and the best one for an option a plugin's file access
+follows (`org.directory`): the plugin's very first load is already granted your
+directory, where setting it later costs a reload.
+
+```rust
+fn register_options() {
+    config::set_option("org.directory", "~/notes");
+    config::set_option("org.roam-directory", "~/notes/roam");
+}
+```
+
+Full names (`org.directory`): a bare `directory` would mean an option of
+`init`'s own. A name no plugin ends up declaring — usually a typo — is reported
+in `*messages*` once every plugin has loaded. (This is `init.rs` only: another
+plugin setting an option that does not exist is still refused.)
+
+**Everything else — enable its mode, bind keys to its commands — needs the
+plugin there.** Subscribe and react when it arrives — the
 `with-eval-after-load` / lazy-autocmd pattern. There are two moments, and which
 one you want depends on what you are doing:
 
@@ -343,15 +364,18 @@ fn on_event(handler: u32, ev: Event) {
 }
 ```
 
-**`PrePluginLoaded` for options, `PluginLoaded` for everything else.** A plugin
-may read its own options *while it is loading* — org builds a theme element and a
-highlight-query rule per TODO keyword out of `org.todo-keywords` before its load
-finishes — and by `PluginLoaded` those reads have already happened. So an option
-set there is set too late, silently: the plugin keeps its default and nothing
-reports a problem. `PrePluginLoaded` fires after the plugin has declared its
-options and before it reads any, and **the load waits for your handler**, so the
-value is in place when the plugin looks for it. Conversely `enable-mode` cannot
-go there — the mode is not registered yet.
+**`PrePluginLoaded` for options you must compute, `PluginLoaded` for everything
+else.** Most options are just set up front, as above. `PrePluginLoaded` is for a
+value you can only work out once the plugin is there — one that depends on
+another of its options, say. A plugin may read its own options *while it is
+loading* — org builds a theme element and a highlight-query rule per TODO keyword
+out of `org.todo-keywords` before its load finishes — and by `PluginLoaded` those
+reads have already happened. So an option set there is set too late, silently:
+the plugin keeps its default and nothing reports a problem. `PrePluginLoaded`
+fires after the plugin has declared its options and before it reads any, and
+**the load waits for your handler**, so the value is in place when the plugin
+looks for it. Conversely `enable-mode` cannot go there — the mode is not
+registered yet.
 
 Both fire for *every* plugin, so check the name.
 
@@ -363,8 +387,8 @@ Why a handler at all, rather than a top-level `enable_mode(...)`:
   your open buffers immediately. (Core plugins differ: their `<id>.enabled` gate
   turns their default mode on for you — see above.)
 - **The target must exist when you configure it.** `PluginLoaded` fires *after*
-  the plugin's seams all registered, so `enable-mode` / `set-option` always hit a
-  present target.
+  the plugin's seams all registered, so `enable-mode` always hits a present
+  target. (`set-option` is the exception, above: it waits for its option.)
 - **Graceful by construction.** If a plugin never loads (not installed, failed to
   compile), its `PluginLoaded` never fires and your handler never runs — no error,
   no guard to write. Config for a plugin you removed simply goes dormant.

@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Added
+- **`init.rs` can set a plugin's options before the plugin loads.** Your
+  config loads first, so a user plugin's options did not exist yet and
+  `set_option` on them was rejected — they could only be set from the
+  plugin's `pre-plugin-loaded` handler. Now the value is held and applied
+  when the plugin declares the option, and again if it reloads, so plain
+  `config::set_option("org.directory", "~/notes")` in `register_options`
+  works. For an option a plugin's file access follows, that also saves a
+  full reload of the plugin at every start. A name no plugin declares —
+  usually a typo — is reported in `*messages*`. Only `init.rs` can do this;
+  another plugin naming an option that does not exist is still refused.
+  The plugin API's documentation of `set-option` changed with it, so
+  plugins built from source rebuild once.
 - **A plugin's file access can follow your configuration.** A plugin may
   declare `fs:write:{org.directory|~/org}` instead of a fixed path: it gets
   the directory you set in that option, or its default until you do, so no

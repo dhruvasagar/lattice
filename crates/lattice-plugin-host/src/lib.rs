@@ -1037,6 +1037,64 @@ pub struct GrantGuard {
 /// Shared between the host and every plugin instance it creates.
 pub type GrantGuardHandle = Arc<std::sync::RwLock<GrantGuard>>;
 
+/// Option values the user's `init.rs` set before the plugin that owns the
+/// option registered it, by full option name — applied when it does.
+///
+/// A plugin's options exist only once it has loaded, and `init.rs` loads
+/// first. Without this, the only place `init.rs` could set them was the
+/// plugin's `pre-plugin-loaded` handler — mid-load, after the plugin's file
+/// grant was already fixed — so an option a grant follows (`org.directory`)
+/// cost a full reload at every boot. A value held here is applied at
+/// registration and seen by the grant, so the first instance is already
+/// right.
+///
+/// Only the config authority's writes are recorded (PMF.5's `init.rs`): it is
+/// the user's configuration. Every one is — registered option or not — and
+/// re-applied each time the option registers, so a reloaded plugin gets the
+/// user's values back rather than its defaults. Cleared when `init.rs` itself
+/// reloads, since it declares them afresh. Held strings are applied with the same `parse_and_set_command`
+/// `:set` uses; a value that does not parse is reported then, by name.
+pub type HeldOptionsHandle = Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>;
+
+impl PluginState {
+    /// PMF.15: is this instance the user's `init.rs`?
+    fn is_config_authority(&self) -> bool {
+        let guard = self
+            .grant_guard
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.authority.is_some() && guard.authority.as_deref() == self.plugin_name.as_deref()
+    }
+
+    /// PMF.15: give a just-registered option the value `init.rs` set for it
+    /// before it existed. Kept (not taken): the next registration of the same
+    /// option — the plugin reloaded — gets it again.
+    fn apply_held_option(&self, name: &str) {
+        let Some(registry) = self.config_registry.as_ref() else {
+            return;
+        };
+        let held = self
+            .held_options
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .cloned();
+        let Some(value) = held else {
+            return;
+        };
+        if let Err(err) = registry.parse_and_set_command(&format!("{name}={value}")) {
+            // One-shot and user-actionable: their config named a value the
+            // option rejects.
+            tracing::warn!(
+                option = %name,
+                %value,
+                %err,
+                "a value init.rs set for this option does not fit it"
+            );
+        }
+    }
+}
+
 impl GrantGuard {
     /// Does writing `option` from plugin `writer` need refusing?
     /// PMF.6: `plugin`'s option-bound grants as last resolved.
@@ -1089,6 +1147,8 @@ struct PluginState {
     config_registry: Option<Arc<lattice_config::ConfigRegistry>>,
     /// PMF.5: refuses `set-option` on an option a plugin's grant follows.
     grant_guard: GrantGuardHandle,
+    /// PMF.15: see [`HeldOptionsHandle`].
+    held_options: HeldOptionsHandle,
     /// TC.4: the theme registry a `theme` plugin's `register-element` inserts
     /// into. Wired before `register-theme-elements` runs; `None` for every
     /// other world (the call then logs and registers nothing).
@@ -3040,6 +3100,7 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             }
         };
         if registered {
+            self.apply_held_option(&full);
             self.config_contributions.push(full);
         }
         registered
@@ -3328,9 +3389,26 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
                 option = %target,
                 plugin = ?self.plugin_name,
                 "set-option refused: `{target}` decides which files a plugin may access, \
-                 so only your configuration (`:set`, lattice.toml, init.rs) can change it"
+                 so only your configuration (`init.rs`, `:set`) can change it"
             );
             return false;
+        }
+        // PMF.15: what the user's `init.rs` sets is recorded, so a plugin that
+        // registers the option later — `init.rs` loads before every user plugin
+        // — or registers it again after a reload gets it; see
+        // `HeldOptionsHandle`. Not registered yet: that is the whole answer.
+        if self.is_config_authority() {
+            self.held_options
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(target.clone(), value.clone());
+            if registry.lookup(&target).is_none() {
+                tracing::debug!(
+                    option = %target,
+                    "set-option held until the plugin that owns it registers it"
+                );
+                return true;
+            }
         }
         match registry.parse_and_set_command(&format!("{target}={value}")) {
             Ok(_) => true,
@@ -3734,6 +3812,8 @@ pub struct PluginHost {
     config: std::sync::OnceLock<Arc<lattice_config::ConfigRegistry>>,
     /// PMF.5: see [`GrantGuard`].
     grant_guard: GrantGuardHandle,
+    /// PMF.15: see [`HeldOptionsHandle`].
+    held_options: HeldOptionsHandle,
     // OA.23: answers "which file did this composed line come from". Abstract
     // for `project`'s reason — the plugin host cannot depend on
     // `lattice-multibuffer`, which sits above it. Unset answers `none`, which
@@ -4222,6 +4302,7 @@ impl PluginHost {
             sleeper: std::sync::OnceLock::new(),
             config: std::sync::OnceLock::new(),
             grant_guard: GrantGuardHandle::default(),
+            held_options: HeldOptionsHandle::default(),
             excerpt_source: std::sync::OnceLock::new(),
             view_args: std::sync::OnceLock::new(),
             decoration_epoch: std::sync::OnceLock::new(),
@@ -4664,6 +4745,7 @@ impl PluginHost {
             // honest degradation (warn + false / none).
             config_registry: self.config.get().cloned(),
             grant_guard: self.grant_guard.clone(),
+            held_options: self.held_options.clone(),
             // From the manifest id; drives config-option auto-namespacing.
             plugin_name: name.map(str::to_string),
             config_contributions: Vec::new(),
@@ -4789,6 +4871,11 @@ impl PluginHost {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remembered
             .clone();
+        let held = self
+            .held_options
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let live = std::cell::RefCell::new(Vec::new());
         let outcome = crate::capability::grant_with(manifest, tier, &|name| {
             match registry.as_ref().and_then(|r| r.lookup(name)) {
@@ -4797,9 +4884,10 @@ impl PluginHost {
                     live.borrow_mut().push((name.to_string(), value.clone()));
                     Some(value)
                 }
-                // Not registered: the plugin is between instances. See
-                // `GrantGuard::remembered`.
-                None => remembered.get(name).cloned(),
+                // Not registered yet: what `init.rs` has said it will be
+                // (PMF.15), else what it was while the plugin was last loaded
+                // (between instances; `GrantGuard::remembered`).
+                None => held.get(name).or_else(|| remembered.get(name)).cloned(),
             }
         });
         let mut guard = self
@@ -4823,6 +4911,33 @@ impl PluginHost {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .authority = Some(plugin_id.to_string());
+    }
+
+    /// PMF.15: forget what `init.rs` set for options not yet registered. Called
+    /// before it (re)loads: it declares them again as it runs, and a line the
+    /// user deleted must not keep applying.
+    pub fn clear_held_options(&self) {
+        self.held_options
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    /// PMF.15: options `init.rs` set that no loaded plugin has registered —
+    /// after every plugin has loaded, almost always a misspelt name or a
+    /// plugin that failed to load. Sorted, for a stable report.
+    pub fn unclaimed_held_options(&self) -> Vec<String> {
+        let registry = self.config.get();
+        let mut names: Vec<String> = self
+            .held_options
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .filter(|name| registry.is_none_or(|r| r.lookup(name).is_none()))
+            .cloned()
+            .collect();
+        names.sort();
+        names
     }
 
     fn build_plugin_wasi(
@@ -4947,6 +5062,192 @@ impl LoadedPlugin {
                 kind: classify_trap(&source),
                 source: source.into(),
             })
+    }
+}
+
+#[cfg(test)]
+mod held_options_tests {
+    //! PMF.15: `init.rs` sets a plugin's option before the plugin registers
+    //! it. Driven through the real `set-option` / `register-option` host
+    //! functions on real stores — `init`'s and `org`'s — with no guest.
+
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::config_host::bindings::lattice::plugin_host::config::{
+        Host as ConfigHost, OptionType,
+    };
+
+    struct Rig {
+        host: PluginHost,
+        config: Arc<lattice_config::ConfigRegistry>,
+        _base: tempfile::TempDir,
+    }
+
+    fn rig() -> Rig {
+        let base = tempfile::tempdir().unwrap();
+        let host =
+            PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap();
+        let config = Arc::new(lattice_config::ConfigRegistry::default());
+        host.set_config_registry(config.clone());
+        host.set_config_authority("init");
+        Rig {
+            host,
+            config,
+            _base: base,
+        }
+    }
+
+    fn store(rig: &Rig, id: &str) -> Store<PluginState> {
+        rig.host
+            .new_store(
+                WasiCtxBuilder::new().build(),
+                CapabilityGrant::default(),
+                PluginBudget::default(),
+                Some(id),
+            )
+            .unwrap()
+    }
+
+    fn value(rig: &Rig, name: &str) -> Option<String> {
+        rig.config.lookup(name).map(|o| o.get_formatted())
+    }
+
+    #[test]
+    fn init_rs_can_set_an_option_before_its_plugin_registers_it() {
+        let rig = rig();
+        let mut init = store(&rig, "init");
+        assert!(
+            init.data_mut()
+                .set_option("org.directory".into(), "~/notes".into()),
+            "accepted, though nothing has registered it yet"
+        );
+        assert_eq!(value(&rig, "org.directory"), None, "held, not invented");
+
+        // org loads and declares the option: it starts with the user's value.
+        let mut org = store(&rig, "org");
+        assert!(org.data_mut().register_option(
+            "directory".into(),
+            OptionType::String,
+            "~/org".into(),
+            "doc".into()
+        ));
+        assert_eq!(value(&rig, "org.directory").as_deref(), Some("~/notes"));
+    }
+
+    #[test]
+    fn the_first_grant_already_follows_the_held_value() {
+        let rig = rig();
+        let mut init = store(&rig, "init");
+        let notes = rig._base.path().join("notes");
+        init.data_mut()
+            .set_option("org.directory".into(), notes.display().to_string());
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.directory|/never}\"]\n",
+        )
+        .unwrap();
+        // Before org has registered anything — the grant its first instance
+        // gets. With the default here, org would reload onto the user's
+        // directory the moment its options appeared.
+        assert_eq!(
+            rig.host
+                .grant_for(&manifest, TrustTier::UserInstalled)
+                .option_bound[0]
+                .path,
+            Some(notes)
+        );
+    }
+
+    #[test]
+    fn a_reloaded_plugin_gets_the_users_values_back() {
+        let rig = rig();
+        let mut init = store(&rig, "init");
+        let mut org = store(&rig, "org");
+        org.data_mut().register_option(
+            "agenda-files".into(),
+            OptionType::String,
+            "".into(),
+            "doc".into(),
+        );
+        // Set while org is loaded: applied at once, and remembered.
+        init.data_mut()
+            .set_option("org.agenda-files".into(), "~/notes".into());
+        assert_eq!(value(&rig, "org.agenda-files").as_deref(), Some("~/notes"));
+
+        // A reload drops org's options and registers them again.
+        assert!(rig.config.unregister("org.agenda-files"));
+        let mut org = store(&rig, "org");
+        org.data_mut().register_option(
+            "agenda-files".into(),
+            OptionType::String,
+            "".into(),
+            "doc".into(),
+        );
+        assert_eq!(
+            value(&rig, "org.agenda-files").as_deref(),
+            Some("~/notes"),
+            "not back to the default"
+        );
+    }
+
+    #[test]
+    fn only_init_rs_writes_are_held() {
+        let rig = rig();
+        let mut other = store(&rig, "other");
+        assert!(
+            !other
+                .data_mut()
+                .set_option("org.agenda-files".into(), "~/x".into()),
+            "another plugin naming an option that does not exist is still refused"
+        );
+        let mut org = store(&rig, "org");
+        org.data_mut().register_option(
+            "agenda-files".into(),
+            OptionType::String,
+            "".into(),
+            "doc".into(),
+        );
+        assert_eq!(value(&rig, "org.agenda-files").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_reloaded_init_rs_starts_from_nothing_held() {
+        let rig = rig();
+        let mut init = store(&rig, "init");
+        init.data_mut()
+            .set_option("org.agenda-files".into(), "~/old".into());
+        // init.rs reloads — the line was deleted, so it is not set again.
+        rig.host.clear_held_options();
+        let mut org = store(&rig, "org");
+        org.data_mut().register_option(
+            "agenda-files".into(),
+            OptionType::String,
+            "".into(),
+            "doc".into(),
+        );
+        assert_eq!(value(&rig, "org.agenda-files").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_name_no_plugin_declares_is_reported_and_a_bad_value_is_survivable() {
+        let rig = rig();
+        let mut init = store(&rig, "init");
+        init.data_mut()
+            .set_option("org.directroy".into(), "~/notes".into());
+        init.data_mut()
+            .set_option("org.count".into(), "lots".into());
+        let mut org = store(&rig, "org");
+        assert!(
+            org.data_mut().register_option(
+                "count".into(),
+                OptionType::Integer,
+                "3".into(),
+                "doc".into()
+            ),
+            "a held value that does not parse never blocks the registration"
+        );
+        assert_eq!(value(&rig, "org.count").as_deref(), Some("3"));
+        assert_eq!(rig.host.unclaimed_held_options(), ["org.directroy"]);
     }
 }
 

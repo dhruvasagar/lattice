@@ -366,11 +366,12 @@ one of the plugin's own options:
 
 What that means for you:
 
-- **Setting the option sets the access.** Set `org.directory` from your
-  `init.rs` — in the plugin's `PrePluginLoaded` handler, see [configuring
-  user plugins](help:init#configuring-user-plugins-that-load-after-you) — or
-  live with `:set org.directory=~/work/notes`, and org may now write there,
-  and only there. There is no separate grant to edit. (Not `lattice.toml`: it
+- **Setting the option sets the access.** Set `org.directory` in your
+  `init.rs` — `config::set_option("org.directory", "~/work/notes")` in
+  `register_options`, before org has even loaded; see [configuring user
+  plugins](help:init#configuring-user-plugins-that-load-after-you) — or live
+  with `:set org.directory=~/work/notes`, and org may now write there, and
+  only there. There is no separate grant to edit. (Not `lattice.toml`: it
   is read before any plugin has registered its options, so a plugin's option
   there is reported unknown.)
 - **The plugin restarts to pick it up.** Access is fixed when a plugin starts,

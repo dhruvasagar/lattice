@@ -519,6 +519,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             // 3. use-package's `enable-mode`, now that the plugins it names
             //    are loaded.
             loader.enable_required_modes(required_modes);
+            // 4. Anything init.rs set for an option no plugin turned out to
+            //    declare (PMF.15).
+            loader.report_unclaimed_options();
         });
     }
 }

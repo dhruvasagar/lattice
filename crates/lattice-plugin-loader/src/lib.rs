@@ -2771,6 +2771,21 @@ impl PluginLoader {
         pending_modes
     }
 
+    /// PMF.15: report, once every plugin has loaded, the options `init.rs` set
+    /// that no plugin registered — a misspelt name, or a plugin that did not
+    /// load. `warn!`, so it reaches `*messages*`: without it the setting would
+    /// simply never take effect, which is the silent failure holding them
+    /// replaced (the unknown-option warning at the time of the set).
+    pub fn report_unclaimed_options(&self) {
+        for name in self.host.unclaimed_held_options() {
+            tracing::warn!(
+                option = %name,
+                "init.rs set `{name}`, but no loaded plugin declares that option \
+                 — check the name, and `:plugins` for a plugin that failed to load"
+            );
+        }
+    }
+
     /// PMF.14: apply the `enable_mode` requests [`apply_required`](Self::apply_required)
     /// deferred at boot, once the scan has loaded the plugins they belong to.
     /// A plugin that did not load gets none: there is no mode to enable.
@@ -2907,6 +2922,9 @@ impl PluginLoader {
         init_dir: &std::path::Path,
         tier: TrustTier,
     ) -> Result<PluginId, PluginLoaderError> {
+        // PMF.15: init.rs declares the values it holds for plugins' options
+        // afresh as it loads; a line the user deleted must not keep applying.
+        self.host.clear_held_options();
         let loaded = if self.is_loaded(INIT_PLUGIN_ID) {
             self.reload(INIT_PLUGIN_ID, tier).await
         } else {

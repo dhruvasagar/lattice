@@ -88,8 +88,9 @@
 ### Changed
 - **A plugin you add with `require` loads on `:reload-config`.** It used to
   be recorded and not installed until the next restart. A reload now
-  installs new ones, reloads one whose build changed, and leaves the rest
-  alone; at startup each required plugin is loaded once, by the scan of your
+  installs new ones, reloads one whose build changed — or whose download
+  did, as when you switch a plugin to a release or to another tag — and
+  leaves the rest alone; at startup each required plugin is loaded once, by the scan of your
   plugins directory, rather than by `require` and then again by the scan.
 - **The core plugins are one file each.** auto-pair, treesitter-context,
   project, comment and lighthouse carry their manifests inside their

@@ -129,6 +129,15 @@ pub fn install_required(
         name: spec.name.clone(),
         error,
     };
+    // A downloaded plugin (prebuilt, release) is installed as
+    // `<name>/<name>.wasm`; whether the resolve below replaces it is whether
+    // a loaded copy has to be reloaded.
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let downloaded_before = modified(
+        &user_root
+            .join(&spec.name)
+            .join(format!("{}.wasm", spec.name)),
+    );
 
     let resolved = match resolve(
         git,
@@ -159,14 +168,17 @@ pub fn install_required(
             {
                 crate::source_record::write(dir, &spec.source);
             }
+            // Not built, but new all the same when the download replaced
+            // what was there: switching a loaded plugin to a release, or to
+            // another tag, must load the bytes just fetched. A reused file
+            // keeps its modification time, so an unchanged spec stays a no-op.
+            let rebuilt = modified(&artifact) != downloaded_before;
             return Install::Ready {
                 name: spec.name.clone(),
                 artifact,
                 enable_mode: spec.enable_mode.clone(),
                 stale: None,
-                // A prebuilt is fetched, not built; a newly installed one is
-                // caught by "not loaded yet", which is what decides there.
-                rebuilt: false,
+                rebuilt,
             };
         }
         Resolved::Source(dir) => dir,
@@ -424,6 +436,41 @@ mod tests {
             builder.calls.load(Ordering::SeqCst),
             0,
             "a prebuilt must skip the build entirely"
+        );
+    }
+
+    /// A download that replaces the installed file is new, so a loaded copy
+    /// is reloaded after boot; one that reuses it is not. Switching a loaded
+    /// plugin to a different source used to leave the old build running
+    /// until a restart.
+    #[test]
+    fn a_download_is_new_only_when_it_replaced_the_installed_file() {
+        let root = tempdir("prebuilt-fresh");
+        let install = |url: &str| match install_required(
+            &NoGit,
+            &StubFetch,
+            &StubBuild::ok(),
+            &RequiredSpec {
+                name: "pre".into(),
+                source: PluginSource::Prebuilt { url: url.into() },
+                enable_mode: None,
+                pinned: false,
+            },
+            &root.join("cache"),
+            &root.join("user"),
+            RefreshPolicy::UseCache,
+        ) {
+            Install::Ready { rebuilt, .. } => rebuilt,
+            Install::Skipped { error, .. } => panic!("skipped: {error}"),
+        };
+        assert!(install("https://example.invalid/a.wasm"), "first install");
+        assert!(
+            !install("https://example.invalid/a.wasm"),
+            "unchanged: reused"
+        );
+        assert!(
+            install("https://example.invalid/b.wasm"),
+            "a new source: fetched"
         );
     }
 

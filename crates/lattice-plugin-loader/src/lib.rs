@@ -418,6 +418,13 @@ fn update_refusal(name: &str, source: Option<&resolve::PluginSource>) -> Option<
         Some(resolve::PluginSource::Git { rev: Some(rev), .. }) => {
             Some(format!("`{name}` is pinned to {rev}; nothing to update"))
         }
+        // A release named by its tag in `init.rs`: the tag is the answer, as
+        // a git pin is. Change the `version` there to move it.
+        Some(resolve::PluginSource::Release {
+            version: Some(tag), ..
+        }) => Some(format!(
+            "`{name}` is pinned to release {tag}; change its `version` in init.rs to update it"
+        )),
         _ => None,
     }
 }
@@ -2214,7 +2221,7 @@ impl PluginLoader {
                 if let Some(why) = update_refusal(name, source.as_plugin_source().as_ref()) {
                     return BulkLeg::Skipped(why);
                 }
-                if !source.is_buildable() && !matches!(source, SourceRecord::Prebuilt { .. }) {
+                if source.as_plugin_source().is_none() {
                     return BulkLeg::Skipped(format!("no updatable source ({})", source.label()));
                 }
                 match self.update(name).await {
@@ -2579,8 +2586,8 @@ impl PluginLoader {
     /// it is the whole verb: rebuild compiles the source you already have,
     /// update goes and gets a newer one first.
     ///
-    /// What "newer" means is the source's to answer, and three of the four
-    /// kinds answer it without any work here:
+    /// What "newer" means is the source's to answer, and each kind
+    /// answers it without any work here:
     ///
     /// | source | update |
     /// |---|---|
@@ -2588,6 +2595,8 @@ impl PluginLoader {
     /// | `Git { rev: Some(_) }` | **declines** — a pin is the answer already |
     /// | `Local(_)` | rebuild; the directory IS the source, so it is always current |
     /// | `Prebuilt { url }` | re-download (the resolver fetches unconditionally) |
+    /// | `Release { version: None }` | install the newest compatible release, if newer |
+    /// | `Release { version: Some(_) }` | **declines** — the tag is a pin |
     ///
     /// The pinned arm declines rather than silently rebuilding, because those
     /// are different outcomes and a user who pinned a plugin and then pressed
@@ -2616,16 +2625,22 @@ impl PluginLoader {
         let (source, dir) = self
             .source_of(name)
             .ok_or_else(|| format!("`{name}` is not loaded"))?;
-        if !source.is_buildable() {
-            // Bundled ships prebuilt and Unknown has nowhere to build from.
-            // Saying so beats running a build that cannot work.
+        // Rebuilding compiles the source you have, so a downloaded plugin
+        // (prebuilt, release) has nothing to rebuild. Updating fetches it
+        // again, so for an update the gate is "has a source" instead.
+        // Bundled ships with the editor and Unknown has nowhere to come
+        // from: neither verb has anything to do for those.
+        if policy == resolve::RefreshPolicy::UseCache && !source.is_buildable() {
             return Err(format!(
                 "`{name}` has no buildable source ({})",
                 source.label()
             ));
         }
         let Some(plugin_source) = source.as_plugin_source() else {
-            return Err(format!("`{name}` has no recorded source"));
+            return Err(format!(
+                "`{name}` has no source to update from ({})",
+                source.label()
+            ));
         };
         let Some(user_root) = default_plugins_dir() else {
             return Err("no config directory for the plugin cache".to_string());
@@ -5043,6 +5058,12 @@ mod update_refusal_tests {
             resolve::PluginSource::Prebuilt {
                 url: "https://example.invalid/demo.wasm".into(),
             },
+            // An unpinned release: an update looks for a newer one.
+            resolve::PluginSource::Release {
+                repo: "example/demo".into(),
+                version: None,
+                sha256: None,
+            },
         ] {
             assert_eq!(
                 update_refusal("demo", Some(&source)),
@@ -5052,8 +5073,28 @@ mod update_refusal_tests {
         }
     }
 
+    /// A release named by its tag is pinned, as a git rev is: the message
+    /// says where to change it.
+    #[test]
+    fn update_declines_a_release_pinned_to_a_tag() {
+        let reason = update_refusal(
+            "org",
+            Some(&resolve::PluginSource::Release {
+                repo: "dhruvasagar/lattice-org-plugin".into(),
+                version: Some("v0.2.0".into()),
+                sha256: None,
+            }),
+        )
+        .expect("a tagged release is pinned");
+        assert!(reason.contains("pinned to release v0.2.0"), "{reason}");
+        assert!(
+            reason.contains("init.rs"),
+            "says where to change it: {reason}"
+        );
+    }
+
     /// A record with no recorded source falls through to `rebuild_with`, which
-    /// owns the "no buildable source" message — two functions must not both
+    /// owns the "no source to update from" message — two functions must not both
     /// answer the same question differently.
     #[test]
     fn update_leaves_a_sourceless_record_to_the_rebuild_path() {

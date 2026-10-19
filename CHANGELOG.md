@@ -10,8 +10,10 @@
   needed. The download is checked against the release's published checksum
   (and your pin), must carry its own manifest naming the plugin, and only
   then replaces what is installed; once installed, startup makes no network
-  request. Without a tag it takes the newest release built for your editor.
-  A release with no build for your editor is refused by name in `:plugins`,
+  request. Without a tag it takes the newest release built for your editor,
+  and `:plugin-update <name>` (or `:plugin-update-all`) installs a newer one
+  when there is one; with a tag it stays on that release until you change
+  the tag. A release with no build for your editor is refused by name in `:plugins`,
   saying what it ships instead. `:plugins` shows the source as
   `release owner/name@v0.2.0`. A new function in the plugin API, so plugins
   built from source rebuild once.
@@ -98,6 +100,10 @@
   signature-help popups are the exception in both, and stay undimmed.
 
 ### Fixed
+- **`:plugin-update` updates a plugin installed from a URL.** A `Prebuilt`
+  plugin was refused with "has no buildable source" instead of being
+  downloaded again; `:plugin-rebuild` still says that, since there is nothing
+  to build.
 - **Magit pushes a branch that has no upstream yet.** `C-c g p`, `-u`, `p`
   (and `:magit-push`) ran `git push --set-upstream` with nowhere to push, which
   git refuses for a new branch — so a branch could only be pushed the first

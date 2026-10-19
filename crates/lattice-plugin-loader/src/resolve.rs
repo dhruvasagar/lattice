@@ -430,11 +430,12 @@ fn resolve_release(
         version: tag.to_string(),
         sha256: pin.clone(),
         api: api.to_string(),
+        latest: version.is_none(),
     };
-    if policy == RefreshPolicy::UseCache
-        && artifact.is_file()
-        && crate::source_record::read(&dir) == wanted
-    {
+    // A release's asset does not change under its tag, so the installed one
+    // is reused under either policy: an update that finds no newer release
+    // has nothing to download.
+    if artifact.is_file() && crate::source_record::read(&dir) == wanted {
         return Ok(artifact);
     }
 
@@ -503,15 +504,9 @@ fn resolve_release(
         std::fs::rename(&part, &artifact)
             .map_err(|e| format!("{label}: installing {}: {e}", artifact.display()))?;
         // Recorded here, not by the pipeline: an unpinned spec names no tag,
-        // and the record is what the next boot's no-network check compares.
-        crate::source_record::write(
-            &dir,
-            &PluginSource::Release {
-                repo: repo.to_string(),
-                version: Some(tag.to_string()),
-                sha256: pin.clone(),
-            },
-        );
+        // and the record is what the next boot's no-network check compares —
+        // and what tells `:plugin-update` whether to look for a newer one.
+        crate::source_record::write_record(&dir, &wanted);
         Ok(())
     })();
     let _ = std::fs::remove_file(&digest_part);
@@ -1566,9 +1561,20 @@ mod tests {
                 version: "v0.2.0".into(),
                 sha256: None,
                 api: lattice_wit::api_generation().to_string(),
+                latest: true,
             },
             "the draft, the prerelease and the other generation's v0.3.0 are passed over, \
              and the tag it resolved to is what is recorded"
+        );
+        // …as a resolved tag, not a pin: read back, it is still "the newest",
+        // which is what lets `:plugin-update` look for a newer release.
+        assert_eq!(
+            crate::source_record::read(&user.join("org")).as_plugin_source(),
+            Some(PluginSource::Release {
+                repo: REPO.into(),
+                version: None,
+                sha256: None,
+            })
         );
     }
 
@@ -1603,6 +1609,65 @@ mod tests {
             std::fs::read(user.join("org").join("org.wasm")).unwrap(),
             installed
         );
+    }
+
+    /// `:plugin-update` resolves from the install record, which (read back)
+    /// is unpinned: a newer release is installed, and an update that finds
+    /// none downloads nothing — the asset under a tag does not change.
+    #[test]
+    fn an_update_installs_a_newer_release_and_nothing_when_there_is_none() {
+        let root = tempdir("release-update");
+        let user = root.join("user");
+        let f = listing_with_v0_2_0_compatible();
+        resolve_org(&f, &user, None, RefreshPolicy::UseCache).unwrap();
+
+        // Nothing newer: the listing is asked, the asset is not fetched again.
+        let before = f.calls.load(Ordering::SeqCst);
+        resolve_org(&f, &user, None, RefreshPolicy::Update).unwrap();
+        assert_eq!(
+            f.calls.load(Ordering::SeqCst),
+            before + 1,
+            "one listing request, no download"
+        );
+
+        // v0.2.1 is published: the update, from the record, installs it.
+        let newer = component("id = \"org\"\nversion = \"0.2.1\"\n");
+        let listing = serde_json::json!([
+            api_release(
+                "v0.2.1",
+                false,
+                false,
+                &[release_asset_name("org", "v0.2.1")]
+            ),
+            api_release(
+                "v0.2.0",
+                false,
+                false,
+                &[release_asset_name("org", "v0.2.0")]
+            ),
+        ]);
+        let f = release("v0.2.1", &newer).serve(&releases_api_url(REPO, None), listing.to_string());
+        let from_record = crate::source_record::read(&user.join("org"))
+            .as_plugin_source()
+            .expect("a release records its source");
+        resolve(
+            &FakeGit::default(),
+            &f,
+            &from_record,
+            "org",
+            Path::new("/unused"),
+            &user,
+            RefreshPolicy::Update,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(user.join("org").join("org.wasm")).unwrap(),
+            newer
+        );
+        assert!(matches!(
+            crate::source_record::read(&user.join("org")),
+            crate::SourceRecord::Release { version, latest: true, .. } if version == "v0.2.1"
+        ));
     }
 
     #[test]

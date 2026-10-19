@@ -2751,6 +2751,69 @@ pub fn resolve_upstream(workdir: &std::path::Path) -> Option<String> {
     Some(format!("{remote} {branch}"))
 }
 
+/// One `git` query's trimmed stdout, or `None` if it failed or said
+/// nothing — for reading config, not for running operations.
+fn git_value(workdir: &std::path::Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(workdir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+/// Where a plain push (magit's `p`) sends a branch that has **no
+/// upstream yet** — `Ok(None)` when it has one, or is detached, and git
+/// resolves the destination itself.
+///
+/// Git's default `push.default=simple` refuses a branch with no upstream,
+/// with or without `--set-upstream`, so `C-c g p -u p` on a new branch
+/// failed every time. Git's own push-remote order is honoured first
+/// (`branch.<name>.pushRemote`, `remote.pushDefault`,
+/// `branch.<name>.remote`); with none set, a repository with exactly
+/// one remote has only one place to push, so that is it. Several
+/// remotes and nothing configured is ambiguous, and that is refused
+/// rather than guessed (see `spawn_remote_op_to`) — `e` pushes
+/// elsewhere, naming the remote.
+pub fn resolve_push_destination(workdir: &std::path::Path) -> Result<Option<String>, String> {
+    if resolve_upstream(workdir).is_some() {
+        return Ok(None);
+    }
+    let Some(branch) = git_value(workdir, &["symbolic-ref", "--quiet", "--short", "HEAD"]) else {
+        return Ok(None);
+    };
+    let configured = [
+        format!("branch.{branch}.pushRemote"),
+        "remote.pushDefault".to_string(),
+        format!("branch.{branch}.remote"),
+    ]
+    .iter()
+    .find_map(|key| git_value(workdir, &["config", "--get", key]));
+    let remote = match configured {
+        Some(remote) => remote,
+        None => {
+            let remotes: Vec<String> = git_value(workdir, &["remote"])
+                .map(|r| r.lines().map(str::to_string).collect())
+                .unwrap_or_default();
+            match remotes.as_slice() {
+                [only] => only.clone(),
+                [] => return Err("this repository has no remote to push to".to_string()),
+                _ => {
+                    return Err(format!(
+                        "`{branch}` has no upstream and {} remotes, none configured for \
+                         pushing — push elsewhere (`e`) to name one",
+                        remotes.len()
+                    ));
+                }
+            }
+        }
+    };
+    Ok(Some(format!("{remote} HEAD")))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteOp {
     /// NC.4: what this does, as an imperative phrase a user reads
@@ -4658,6 +4721,17 @@ pub fn spawn_remote_op_to(
             };
             let mut argv = base;
             argv.extend(target.argv(resolved.as_deref()));
+            // A plain push of a branch with no upstream yet: name where it
+            // goes, or git refuses (`--set-upstream` included).
+            if op == RemoteOp::PUSH && target == RemoteTarget::Configured {
+                match resolve_push_destination(&workdir) {
+                    Ok(Some(destination)) => {
+                        argv.extend(destination.split_whitespace().map(str::to_string));
+                    }
+                    Ok(None) => {}
+                    Err(why) => return (op.label(&argv), Err(why)),
+                }
+            }
             (op.label(&argv), run_remote_op(&workdir, &argv))
         })
         .await
@@ -4675,6 +4749,13 @@ pub fn spawn_remote_op(
     op: RemoteOp,
     args: &lattice_grammar::Args,
 ) -> Effect {
+    // `:magit-push` is magit's `p`: the configured destination — which,
+    // for a branch with no upstream yet, has to be named (see
+    // `resolve_push_destination`). One path for both surfaces, so the
+    // ex-command and the transient row cannot disagree about it.
+    if op == RemoteOp::PUSH {
+        return spawn_remote_op_to(workdir, op, args, RemoteTarget::Configured, None);
+    }
     let argv = op.argv(args);
     let shown = argv.join(" ");
     let label = op.label(&argv);
@@ -6253,7 +6334,7 @@ mod task_labels {
 
 #[cfg(test)]
 mod run_remote_op_reports {
-    use super::{resolve_upstream, run_remote_op};
+    use super::{resolve_push_destination, resolve_upstream, run_remote_op};
     use std::path::Path;
     use std::process::Command;
 
@@ -6314,6 +6395,69 @@ mod run_remote_op_reports {
         assert!(
             matches!(&outcome, super::TaskResult::Stopped(why) if why.starts_with("CONFLICT")),
             "a conflict must be a stop, got {outcome:?}"
+        );
+    }
+
+    /// A bare origin, a clone of it on `main` tracking `origin/main`, and a
+    /// new local branch `feature` with no upstream — the branch
+    /// `C-c g p -u p` could not push.
+    fn new_branch_without_upstream() -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = tempfile::tempdir().expect("temp dir");
+        git(root.path(), &["init", "-q", "--bare", "origin.git"]);
+        git(root.path(), &["clone", "-q", "origin.git", "work"]);
+        let work = root.path().join("work");
+        git(&work, &["config", "user.email", "t@example.invalid"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(&work, &["push", "-q", "-u", "origin", "HEAD:main"]);
+        git(&work, &["checkout", "-q", "-b", "feature"]);
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "feature"]);
+        (root, work)
+    }
+
+    #[test]
+    fn a_branch_without_an_upstream_pushes_to_its_only_remote() {
+        let (_root, work) = new_branch_without_upstream();
+        assert_eq!(
+            resolve_push_destination(&work),
+            Ok(Some("origin HEAD".to_string()))
+        );
+        // The argv the `p` row now runs, with `-u`: it pushes, and the
+        // branch has an upstream afterwards.
+        let mut push = argv(&["push", "--set-upstream"]);
+        push.extend(argv(&["origin", "HEAD"]));
+        run_remote_op(&work, &push).expect("the push succeeds");
+        assert_eq!(resolve_upstream(&work).as_deref(), Some("origin feature"));
+        // Now it has one, git resolves the destination itself again.
+        assert_eq!(resolve_push_destination(&work), Ok(None));
+    }
+
+    #[test]
+    fn the_push_remote_git_is_configured_with_wins_and_several_remotes_are_not_guessed() {
+        let (root, work) = new_branch_without_upstream();
+        git(root.path(), &["init", "-q", "--bare", "fork.git"]);
+        git(
+            &work,
+            &[
+                "remote",
+                "add",
+                "fork",
+                &root.path().join("fork.git").to_string_lossy(),
+            ],
+        );
+        let err = resolve_push_destination(&work).expect_err("two remotes, none configured");
+        assert!(err.contains("push elsewhere"), "{err}");
+
+        git(&work, &["config", "remote.pushDefault", "fork"]);
+        assert_eq!(
+            resolve_push_destination(&work),
+            Ok(Some("fork HEAD".to_string()))
+        );
+        git(&work, &["config", "branch.feature.pushRemote", "origin"]);
+        assert_eq!(
+            resolve_push_destination(&work),
+            Ok(Some("origin HEAD".to_string())),
+            "the branch's own pushRemote outranks remote.pushDefault, as in git"
         );
     }
 

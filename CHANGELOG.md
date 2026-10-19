@@ -84,6 +84,13 @@
   signature-help popups are the exception in both, and stay undimmed.
 
 ### Fixed
+- **Magit pushes a branch that has no upstream yet.** `C-c g p`, `-u`, `p`
+  (and `:magit-push`) ran `git push --set-upstream` with nowhere to push, which
+  git refuses for a new branch — so a branch could only be pushed the first
+  time from a shell. Lattice now names the destination: the push remote git is
+  configured with, or the repository's only remote; `-u` then sets the
+  upstream. With several remotes and none configured it says so and points you
+  at `e` (push elsewhere) rather than guessing.
 - **A `Prebuilt` plugin is not downloaded again at every start.** A plugin
   `require`d from a URL was fetched on each boot even when it was already on
   disk; it is now fetched only when missing, when the URL in your config

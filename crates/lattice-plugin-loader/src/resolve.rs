@@ -94,25 +94,23 @@ pub trait Fetcher: Send + Sync {
 pub struct HttpFetcher;
 
 impl Fetcher for HttpFetcher {
+    /// PRL.2: through the plugin host's hardened download core rather than a
+    /// bare GET — connect / response / body timeouts and a byte ceiling, so a
+    /// stalled server cannot hang the install task, and the body renamed into
+    /// place only when complete, so an interrupted transfer cannot leave a
+    /// truncated `.wasm` that looks like a cached artifact next boot.
+    ///
+    /// Any `https` host: the URL is one the user wrote in their own config,
+    /// and following the server's redirects (a release host's CDN) is what
+    /// any downloader does.
     fn fetch(&self, url: &str, dest: &Path) -> Result<(), String> {
-        let mut response = ureq::get(url)
-            .call()
-            .map_err(|e| format!("GET {url}: {e}"))?;
-        let mut body = response.body_mut().as_reader();
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create {}: {e}", parent.display()))?;
-        }
-        // Download to a sibling temp path and rename into place, so an
-        // interrupted transfer cannot leave a truncated `.wasm` that
-        // looks like a valid cached artifact on the next boot.
-        let tmp = dest.with_extension("wasm.part");
-        let mut file =
-            std::fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
-        std::io::copy(&mut body, &mut file).map_err(|e| format!("download {url}: {e}"))?;
-        drop(file);
-        std::fs::rename(&tmp, dest).map_err(|e| format!("finalise {}: {e}", dest.display()))?;
-        Ok(())
+        lattice_plugin_host::download_to_file(
+            url,
+            lattice_plugin_host::Hosts::AnyHttps,
+            dest,
+            None,
+            lattice_plugin_host::DownloadLimits::default(),
+        )
     }
 }
 
@@ -160,8 +158,8 @@ pub fn git_cache_dir(cache_root: &Path, name: &str) -> PathBuf {
 /// `Prebuilt` artifact lands in.
 ///
 /// `policy` decides whether an already-cloned git source is advanced from the
-/// network; it is meaningless for `Local` (the tree IS the source) and for
-/// `Prebuilt` (which re-downloads whenever the artifact is missing).
+/// network, and whether a `Prebuilt` already on disk is fetched again; it is
+/// meaningless for `Local` (the tree IS the source).
 ///
 /// Blocking (clone / fetch / download). Run on `spawn_blocking`.
 pub fn resolve(
@@ -188,7 +186,7 @@ pub fn resolve(
             Ok(Resolved::Source(dir))
         }
         PluginSource::Prebuilt { url } => {
-            let artifact = resolve_prebuilt(fetcher, url, name, user_root)?;
+            let artifact = resolve_prebuilt(fetcher, url, name, user_root, policy)?;
             Ok(Resolved::Artifact(artifact))
         }
     }
@@ -299,10 +297,23 @@ fn resolve_prebuilt(
     url: &str,
     name: &str,
     user_root: &Path,
+    policy: RefreshPolicy,
 ) -> Result<PathBuf, String> {
     let dir = user_root.join(name);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let artifact = dir.join(format!("{name}.wasm"));
+    // PRL.2: a boot (`UseCache`) uses what is on disk. It downloaded on every
+    // resolve — every start — though `RefreshPolicy` said not to. Fetched
+    // again only when it is missing, when the URL in the config changed, or
+    // when asked (`Update`).
+    let cached = artifact.is_file()
+        && crate::source_record::read(&dir)
+            == crate::SourceRecord::Prebuilt {
+                url: url.to_string(),
+            };
+    if policy == RefreshPolicy::UseCache && cached {
+        return Ok(artifact);
+    }
     fetcher.fetch(url, &artifact)?;
     let manifest = dir.join("plugin.toml");
     if !manifest.exists() {
@@ -760,6 +771,72 @@ mod tests {
             "Artifact, not Source — a prebuilt has no source tree to build"
         );
         assert_eq!(std::fs::read(&artifact).unwrap(), b"\0asm-prebuilt");
+    }
+
+    /// PRL.2: what a boot does, twice — the second start fetches nothing.
+    #[test]
+    fn a_prebuilt_already_on_disk_is_not_fetched_again_at_boot() {
+        let root = tempdir("prebuilt-warm");
+        let user = root.join("user");
+        let url = "https://example.invalid/demo.wasm".to_string();
+        let source = PluginSource::Prebuilt { url: url.clone() };
+        let f = fetcher(b"\0asm-prebuilt");
+        let boot = |f: &FakeFetcher, policy| {
+            resolve(
+                &FakeGit::default(),
+                f,
+                &source,
+                "demo",
+                &root.join("cache"),
+                &user,
+                policy,
+            )
+            .unwrap()
+        };
+        boot(&f, RefreshPolicy::UseCache);
+        // The pipeline records where it came from beside the artifact.
+        crate::source_record::write(&user.join("demo"), &source);
+        assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+
+        boot(&f, RefreshPolicy::UseCache);
+        assert_eq!(
+            f.calls.load(Ordering::SeqCst),
+            1,
+            "a warm boot makes no request"
+        );
+
+        boot(&f, RefreshPolicy::Update);
+        assert_eq!(f.calls.load(Ordering::SeqCst), 2, "`update` asks again");
+    }
+
+    #[test]
+    fn a_prebuilt_whose_url_changed_is_fetched_again() {
+        let root = tempdir("prebuilt-moved");
+        let user = root.join("user");
+        let dir = user.join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("demo.wasm"), b"old").unwrap();
+        crate::source_record::write(
+            &dir,
+            &PluginSource::Prebuilt {
+                url: "https://example.invalid/v1/demo.wasm".into(),
+            },
+        );
+        let f = fetcher(b"new");
+        resolve(
+            &FakeGit::default(),
+            &f,
+            &PluginSource::Prebuilt {
+                url: "https://example.invalid/v2/demo.wasm".into(),
+            },
+            "demo",
+            &root.join("cache"),
+            &user,
+            RefreshPolicy::UseCache,
+        )
+        .unwrap();
+        assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read(dir.join("demo.wasm")).unwrap(), b"new");
     }
 
     #[test]

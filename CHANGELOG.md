@@ -72,6 +72,11 @@
   signature-help popups are the exception in both, and stay undimmed.
 
 ### Fixed
+- **A `Prebuilt` plugin is not downloaded again at every start.** A plugin
+  `require`d from a URL was fetched on each boot even when it was already on
+  disk; it is now fetched only when missing, when the URL in your config
+  changed, or on update. The download also has timeouts and a size limit, so
+  a server that stops answering cannot hang plugin installation.
 - **The dashboard no longer shows `[+]`.** Its modeline marked it modified
   from the moment it opened — its own content counted as an edit — until
   something redrew it.

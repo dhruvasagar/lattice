@@ -100,7 +100,7 @@ struct Request {
     dest: PathBuf,
     /// The grant's `net:http` entries, lowercased — every redirect hop is
     /// checked against these on the transfer thread.
-    hosts: Vec<String>,
+    hosts: Hosts,
     limits: Limits,
 }
 
@@ -162,7 +162,7 @@ fn prepare_with(
         url: url.to_string(),
         sha256: Some(sha256.to_ascii_lowercase()),
         dest: dest_path,
-        hosts,
+        hosts: Hosts::Only(hosts),
         limits,
     };
     Ok(PendingJob::new(plugin, bus, "download", move |job| {
@@ -175,6 +175,49 @@ fn prepare_with(
 /// `https`, or `http` to a loopback address; and the host — with its effective
 /// port, when the grant entry names one — in `hosts`.
 fn check_url(hosts: &[String], url: &str) -> Result<(), String> {
+    let (host, port) = target_of(url)?;
+    let with_port = format!("{host}:{port}");
+    if hosts.iter().any(|h| *h == host || *h == with_port) {
+        Ok(())
+    } else {
+        Err(format!(
+            "http download denied: host '{host}' is not in the plugin's net:http grant"
+        ))
+    }
+}
+
+/// PRL.2: which hosts a transfer may reach — the first URL and every
+/// redirect hop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Hosts {
+    /// Only these (lowercase; an entry may name a port). A plugin's
+    /// `net:http` grant, or a release host's known list.
+    Only(Vec<String>),
+    /// Any host, `https` only (or plain `http` to loopback). For a URL the
+    /// user wrote in their own config — a `Prebuilt` source — where following
+    /// the server's redirects is what any downloader does.
+    AnyHttps,
+}
+
+impl Hosts {
+    fn check(&self, url: &str) -> Result<(), String> {
+        match self {
+            Hosts::Only(list) => check_url(list, url),
+            Hosts::AnyHttps => target_of(url).map(|_| ()),
+        }
+    }
+
+    fn lowercased(self) -> Self {
+        match self {
+            Hosts::Only(list) => Hosts::Only(list.iter().map(|h| h.to_ascii_lowercase()).collect()),
+            any => any,
+        }
+    }
+}
+
+/// `url`'s host and effective port, if it may be fetched at all: `https`, or
+/// `http` to a loopback address.
+fn target_of(url: &str) -> Result<(String, u16), String> {
     let uri: Uri = url
         .parse()
         .map_err(|e| format!("http download failed: '{url}' is not a URL: {e}"))?;
@@ -199,14 +242,7 @@ fn check_url(hosts: &[String], url: &str) -> Result<(), String> {
             ));
         }
     };
-    let with_port = format!("{host}:{port}");
-    if hosts.iter().any(|h| *h == host || *h == with_port) {
-        Ok(())
-    } else {
-        Err(format!(
-            "http download denied: host '{host}' is not in the plugin's net:http grant"
-        ))
-    }
+    Ok((host, port))
 }
 
 fn is_loopback(host: &str) -> bool {
@@ -287,7 +323,7 @@ impl Transfer for Unobserved {
 /// Blocking: run it on `spawn_blocking`.
 pub fn download_to_file(
     url: &str,
-    hosts: &[String],
+    hosts: Hosts,
     dest: &Path,
     sha256: Option<&str>,
     limits: Limits,
@@ -299,8 +335,8 @@ pub fn download_to_file(
             "http download failed: '{digest}' is not a SHA-256 digest (64 hex digits)"
         ));
     }
-    let hosts: Vec<String> = hosts.iter().map(|h| h.to_ascii_lowercase()).collect();
-    check_url(&hosts, url)?;
+    let hosts = hosts.lowercased();
+    hosts.check(url)?;
     let req = Request {
         url: url.to_string(),
         sha256: sha256.map(str::to_ascii_lowercase),
@@ -314,9 +350,9 @@ pub fn download_to_file(
 /// PRL.1: fetch a small body (a `.sha256` sidecar, a releases listing) into
 /// memory, under the same checks as [`download_to_file`] and a ceiling of
 /// `limits.max_bytes`. Blocking.
-pub fn fetch_bytes(url: &str, hosts: &[String], limits: Limits) -> Result<Vec<u8>, String> {
-    let hosts: Vec<String> = hosts.iter().map(|h| h.to_ascii_lowercase()).collect();
-    check_url(&hosts, url)?;
+pub fn fetch_bytes(url: &str, hosts: Hosts, limits: Limits) -> Result<Vec<u8>, String> {
+    let hosts = hosts.lowercased();
+    hosts.check(url)?;
     let mut body = Vec::new();
     fetch(url, &hosts, limits, &mut Unobserved, &mut |chunk| {
         body.extend_from_slice(chunk);
@@ -411,7 +447,7 @@ fn fetch_into(req: &Request, job: &mut dyn Transfer, part: &Path) -> Result<(), 
 /// host's small fetches (to memory), so both get the same checks.
 fn fetch(
     first_url: &str,
-    hosts: &[String],
+    hosts: &Hosts,
     limits: Limits,
     job: &mut dyn Transfer,
     sink: &mut dyn FnMut(&[u8]) -> Result<(), String>,
@@ -434,7 +470,7 @@ fn fetch(
         job.check_cancelled()?;
         // The first URL was checked by the caller; re-checking it here costs a
         // parse and keeps this loop the one place a request can leave from.
-        check_url(hosts, &url)?;
+        hosts.check(&url)?;
         let response = agent
             .get(&url)
             // GitHub's API refuses a request without one; harmless elsewhere.
@@ -989,8 +1025,8 @@ mod tests {
 
     // ── PRL.1: the core, called by the host ─────────────────────────
 
-    fn host_hosts(server: &Server) -> Vec<String> {
-        vec![server.host()]
+    fn host_hosts(server: &Server) -> Hosts {
+        Hosts::Only(vec![server.host()])
     }
 
     #[test]
@@ -1000,7 +1036,7 @@ mod tests {
         let dest = dir.path().join("sub").join("plugin.wasm");
         download_to_file(
             &server.url("/file"),
-            &host_hosts(&server),
+            host_hosts(&server),
             &dest,
             Some(&sha(BODY)),
             Limits::default(),
@@ -1016,7 +1052,7 @@ mod tests {
         let dest = dir.path().join("plugin.wasm");
         download_to_file(
             &server.url("/moved"),
-            &host_hosts(&server),
+            host_hosts(&server),
             &dest,
             None,
             Limits::default(),
@@ -1036,7 +1072,7 @@ mod tests {
         let dest = dir.path().join("sub").join("plugin.wasm");
         let err = download_to_file(
             &server.url("/missing"),
-            &host_hosts(&server),
+            host_hosts(&server),
             &dest,
             None,
             Limits::default(),
@@ -1047,7 +1083,7 @@ mod tests {
 
         let err = download_to_file(
             &server.url("/file"),
-            &host_hosts(&server),
+            host_hosts(&server),
             &dest,
             Some(&"0".repeat(64)),
             Limits::default(),
@@ -1063,7 +1099,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = download_to_file(
             &server.url("/elsewhere"),
-            &host_hosts(&server),
+            host_hosts(&server),
             &dir.path().join("x"),
             None,
             Limits::default(),
@@ -1075,28 +1111,46 @@ mod tests {
         );
     }
 
+    /// PRL.2: a URL the user wrote follows the server's redirects anywhere —
+    /// `https` still required — where a host list would refuse the hop.
     #[test]
-    fn fetch_bytes_reads_a_small_body_and_keeps_to_its_ceiling() {
+    fn any_https_follows_a_redirect_a_host_list_refuses() {
         let server = Server::start();
-        let body = fetch_bytes(
-            &server.url("/file"),
-            &host_hosts(&server),
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("x");
+        download_to_file(
+            &server.url("/elsewhere"),
+            Hosts::AnyHttps,
+            &dest,
+            Some(&sha(BODY)),
             Limits::default(),
         )
         .unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), BODY);
+        assert!(
+            Hosts::AnyHttps.check("http://example.com/x").is_err(),
+            "not https"
+        );
+    }
+
+    #[test]
+    fn fetch_bytes_reads_a_small_body_and_keeps_to_its_ceiling() {
+        let server = Server::start();
+        let body =
+            fetch_bytes(&server.url("/file"), host_hosts(&server), Limits::default()).unwrap();
         assert_eq!(body, BODY);
         let tight = Limits {
             max_bytes: 4,
             ..Limits::default()
         };
-        let err = fetch_bytes(&server.url("/file"), &host_hosts(&server), tight).unwrap_err();
+        let err = fetch_bytes(&server.url("/file"), host_hosts(&server), tight).unwrap_err();
         assert!(err.contains("byte limit"), "{err}");
         // A body short of its `Content-Length` is a failure, whichever layer
         // notices first (the client's "peer disconnected" or our length check).
         assert!(
             fetch_bytes(
                 &server.url("/truncated"),
-                &host_hosts(&server),
+                host_hosts(&server),
                 Limits::default(),
             )
             .is_err()

@@ -86,6 +86,11 @@
   query and the selected file stay put.
 
 ### Changed
+- **`lattice --scaffold-init` writes a config that can install plugins.** Its
+  world imports `plugin-manager` and it has a `register_plugins` with a
+  `require_release` example commented out, so installing a plugin is
+  uncommenting one block. A config scaffolded earlier needs the seam added by
+  hand; `:help plugins` says how.
 - **A plugin you add with `require` loads on `:reload-config`.** It used to
   be recorded and not installed until the next restart. A reload now
   installs new ones, reloads one whose build changed — or whose download

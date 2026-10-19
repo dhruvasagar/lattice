@@ -64,10 +64,13 @@ world init {
     import keymap;
     import events;
     import modes;
+    import plugin-manager;
 
     export register-options: func();
     export register-keymap: func();
     export register-events: func();
+    // The plugins you install: `require` / `require-release` calls.
+    export register-plugins: func();
     export on-event: func(handler: u32, ev: event);
     // A periodic wake you asked for with `events::wake_every(ms)`. Required
     // even if you arm none — the host instantiates this world against the
@@ -91,7 +94,7 @@ const LIB_RS: &str = r####"//! Your lattice config, compiled to a WASM component
 // "decorations" / … as you use them, matching the exports in wit/init.wit.
 const MANIFEST: &[u8] = br#"
 id = "init"
-provides = ["config", "keymap", "events"]
+provides = ["config", "keymap", "events", "plugin-manager"]
 "#;
 #[unsafe(link_section = "lattice-manifest")]
 #[used]
@@ -129,6 +132,25 @@ impl Guest for Config {
     fn register_keymap() {
         // <C-s> in Normal → an existing command (binds only if the command exists).
         keymap::register_binding(BindingMode::Normal, "<C-s>", "ex:write");
+    }
+
+    // The plugins you want installed. Lattice installs them after this
+    // config loads, off the startup path; `:reload-config` applies a change.
+    fn register_plugins() {
+        // A plugin published as a GitHub release — downloaded ready-built, no
+        // Rust toolchain needed. Uncomment to install the org plugin:
+        //
+        // use lattice::plugin_host::plugin_manager::{self, ReleaseSpec};
+        // plugin_manager::require_release(&ReleaseSpec {
+        //     name: "org".to_string(),
+        //     repo: "dhruvasagar/lattice-org-plugin".to_string(),
+        //     version: None, // the newest built for this editor; or Some("v0.2.0")
+        //     sha256: None,  // optionally pin the exact bytes
+        //     enable_mode: None,
+        // });
+        //
+        // Building from source instead (needs Rust + wasm32-wasip2):
+        // `plugin_manager::require` with a `PluginSource::Git` or `Local`.
     }
 
     // Subscribe deferred / event-flow hooks (handler ids are yours to choose).

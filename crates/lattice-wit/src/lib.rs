@@ -37,6 +37,22 @@ use std::path::Path;
 
 include!(concat!(env!("OUT_DIR"), "/wit_assets.rs"));
 
+/// The plugin API generation this crate is: its `major.minor` (`"0.3"`),
+/// which is the WIT package's — `the_crate_versions_track_the_wit_package_version`
+/// holds the two together. A component built against `0.3.x` loads in any
+/// editor speaking `0.3`; the patch is the crates' own.
+///
+/// What a release asset's name carries (`org-0.2.0-api0.3.wasm`), so an editor
+/// picks — and refuses — a build before downloading it.
+pub fn api_generation() -> &'static str {
+    let version = env!("CARGO_PKG_VERSION");
+    let end = version
+        .match_indices('.')
+        .nth(1)
+        .map_or(version.len(), |(i, _)| i);
+    &version[..end]
+}
+
 /// Write the embedded package into `dir`, creating it if needed.
 ///
 /// Overwrites whatever is there: the directory is a cache of this package, and

@@ -19,7 +19,7 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 |---|---|---|---|
 | PRL.1 | Factor LH.0's download core out of its job wrapper, host-callable. No behaviour change. | lattice | ✅ |
 | PRL.2 | `Prebuilt{url}` bug fixes: no re-download when present; timeouts and a byte ceiling via PRL.1. | lattice | ✅ |
-| PRL.3 | The package installer: `PluginSource::Release`, convention URL, sha256, id check, swap into place, `.source` kind `release`. | lattice | 📝 |
+| PRL.3 | The package installer: `PluginSource::Release`, convention URL, sha256, id check, swap into place, `.source` kind `release`. | lattice | ✅ |
 | PRL.4 | Compatibility and resolution: API generation in the asset name, the named refusal, newest-compatible lookup for unpinned specs and `update`. | lattice | 📝 |
 | PRL.5 | WIT `require-release` + host wiring; `:plugins` source label. | lattice | 📝 |
 | PRL.6 | User grants on `release-spec`. | lattice | ❌ superseded by option-bound grants, [`plugin-manifest.md`](plugin-manifest.md) PMF.3–PMF.5 |
@@ -92,6 +92,28 @@ manifest; an id mismatch; a truncated download; the previous version still
 loads after each failure; warm boot makes no fetch; one end-to-end install
 over a local HTTP server. **Bench:** none — the path is off-thread and, warm,
 never runs; the warm-boot no-fetch test is the guard that matters.
+
+**As built (2026-10-19).** Two departures from the steps above, both on
+merit:
+
+- **The component is replaced, not the directory.** `<user_root>/<id>/` also
+  holds the plugin's `data/` (its store), so swapping the directory would move
+  user data aside and then delete it. The download lands in
+  `<id>/.<id>.wasm.part`, is checked (published `.sha256`, the spec's pin, the
+  embedded manifest, its `id`), and only then renamed onto `<id>.wasm`; any
+  other `.wasm` there is removed so discovery still finds exactly one. Every
+  failure leaves the previous component in place.
+- **The `.source` record carries `api`**, the plugin API generation the
+  artifact was installed for, so a warm boot after an editor upgrade to a new
+  generation fetches the matching build instead of loading a stale one.
+
+Unpinned specs (`version: None`) are refused with a message until PRL.4. The
+"one end-to-end install over a local HTTP server" test moves to PRL.7, where the
+producer script's real output is installed: the release URL is GitHub's by
+construction, and the transfer itself is PRL.1's, tested over a real loopback
+server there. Tests: `resolve::tests` — the release cases above with a
+URL-keyed fake fetcher, the warm-boot no-fetch, and the spec checked before any
+request; `source_record` round-trips a release.
 
 ## PRL.4 — compatibility and resolution
 

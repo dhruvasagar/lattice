@@ -484,8 +484,13 @@ fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> Bu
         // the same question the same way.
         return in_place_build_state(record);
     };
-    if matches!(source, crate::resolve::PluginSource::Prebuilt { .. }) {
-        // A prebuilt is downloaded, never built, so it has no staleness.
+    if matches!(
+        source,
+        crate::resolve::PluginSource::Prebuilt { .. }
+            | crate::resolve::PluginSource::Release { .. }
+    ) {
+        // A prebuilt or a release is downloaded, never built, so it has no
+        // staleness.
         return BuildState::NotBuilt;
     }
     let Some(dir) = record.source_dir.as_ref() else {

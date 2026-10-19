@@ -37,6 +37,9 @@ doctest = false
 # Zero-dependency by construction (see the crate's own manifest), so taking it
 # here costs the loader nothing in build graph or link size.
 lattice-wit = { path = "../lattice-wit" }
+# PRL.3: a downloaded release component is checked against its published
+# `.sha256` (and a pin in `init.rs`) before it replaces anything.
+sha2 = { workspace = true }
 # The Phase-7 runtime: the wasmtime engine, the WIT API, the capability/fuel/
 # crash model, and every extension seam. PL8.A drives its lifecycle spine
 # (`compile` / `instantiate_plugin` / `activate`); PL8.B spawns its seam actors.

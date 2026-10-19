@@ -86,8 +86,9 @@ grant with it, in their own config, and never edits a plugin file.
 
 **Resolution.** When the loader grants capabilities:
 
-1. the option's value from the user's layers (`lattice.toml`, `init.rs`,
-   `:set`) if it has one;
+1. the option's value if the user has set one (`init.rs`, `:set`; a plugin's
+   options are not settable from `lattice.toml`, which is read before any
+   plugin registers them);
 2. otherwise the template's default (`~/org`), so the plugin starts with
    access to where it would look by default;
 3. `~` expands; an explicitly empty value grants nothing.
@@ -101,8 +102,8 @@ bug the user would otherwise meet as a refusal.
 
 **When the value changes the plugin reloads.** A grant is fixed for the life
 of an instance — it becomes WASI pre-opened directories and host-side checks —
-so a grant-bearing option changing (`:set`, a config reload, or `lattice.toml`
-being read after the plugin started at boot) re-resolves the template and, if
+so a grant-bearing option changing (`:set`, a config reload, or `init.rs`
+setting it while the plugin loads) re-resolves the template and, if
 the path differs, reloads the plugin through the existing reload path. Reload
 is per plugin and off the keystroke path; a plugin's stored state survives it.
 

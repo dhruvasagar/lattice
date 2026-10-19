@@ -40,7 +40,13 @@
   declare `fs:write:{org.directory|~/org}` instead of a fixed path: it gets
   the directory you set in that option, or its default until you do, so no
   plugin ships with a path of its own (or its author's) baked in. The option
-  must be the plugin's own.
+  must be the plugin's own. Changing the option reloads that plugin with the
+  new access — setting it to the value it already has does nothing — and a
+  plugin cannot change such an option itself, so it cannot widen its own
+  access; only your configuration can. `:plugins` shows each grant as
+  resolved, with where it came from (`fs:write ~/notes (org.directory)`, or
+  `…, default`), and a write refused for falling outside it names the option
+  to change.
 - **A plugin can be a single `.wasm` file.** Its manifest — what
   `plugin.toml` holds — can be embedded in the component itself, as a
   `lattice-manifest` custom section; a plugin directory with the component
@@ -55,6 +61,14 @@
   `--scaffold-init` and `--scaffold-plugin` now write the manifest into
   `src/lib.rs` instead of a `plugin.toml`; a config scaffolded earlier keeps
   its `plugin.toml` and keeps working.
+- **Publish a plugin as a release users install without building it.**
+  For plugin authors: `scripts/build-plugin.sh` builds a plugin, checks it
+  carries its manifest, and packages `<id>-<version>-api<M>.<m>.wasm` with
+  its `.sha256` — the API generation read from the plugin's locked
+  `lattice-wit`. A plugin repository publishes on a version tag by calling
+  lattice's reusable `plugin-release.yml` workflow, which checks the tag is
+  the crate version and attaches both files to a GitHub release. The plugin
+  authoring guide's "Publishing a release" walks through it.
 - **`lattice_plugin_sdk::manifest!`** (plugin API crates 0.3.1) embeds a plugin's
   manifest in its component, so a Rust plugin needs no `plugin.toml`. It
   builds in a crate that denies unsafe code.
@@ -167,10 +181,18 @@
   block cursor no longer shows the hidden `)` under it.
 
 ### Documentation
-- **The org plugin installs by release.** `org.md` now checks out a tagged
-  release of `lattice-org-plugin` (which has a CHANGELOG and `vX.Y.Z` tags
-  of its own) rather than building whatever `main` holds, and the
-  `require` route pins `rev` to a tag.
+- **The org plugin installs by release.** `org.md` leads with
+  `require_release`, which installs a published org without a Rust
+  toolchain; building it yourself now checks out a release tag (the README
+  names the current one) and copies one `.wasm` — no `plugin.toml`. A new
+  section says where org may write (`org.directory`, `org.roam-directory`)
+  and that setting those options is the permission.
+- **Installing plugins from `init.rs`** is documented in `:help plugins` —
+  a released build with `require_release`, or building from source with
+  `require` — which lattice's own docs had never shown.
+- **Plugin options in `lattice.toml`** — `options.md` documents setting a
+  plugin's options there, when it is held until the plugin loads, how typos
+  are reported, and that `init.rs` wins over it.
 - **`:help plugins` explains grants that follow your configuration**
   ("Capabilities and your configuration"): that setting an option like
   `org.directory` is also what decides where the plugin may write, how to

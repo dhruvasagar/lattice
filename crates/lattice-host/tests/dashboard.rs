@@ -856,3 +856,23 @@ mod owc_adopt {
         );
     }
 }
+
+/// The dashboard is never modified: its content is the owner's, and the
+/// modeline's ` [+]` must mean an edit the user made (GD.7d). The FIRST draw
+/// seeded the text with an append that left the buffer dirty, so `[+]` showed
+/// from startup until something happened to redraw it.
+#[test]
+fn the_dashboard_is_clean_when_first_drawn_and_when_redrawn() {
+    let mut editor = boot();
+    editor.do_open_dashboard();
+    let id = editor
+        .buffers
+        .by_name("*dashboard*")
+        .expect("the dashboard opened");
+    assert!(
+        !editor.buffers.document_dirty(id),
+        "first draw: the content is the dashboard's own, not an edit"
+    );
+    editor.do_open_dashboard();
+    assert!(!editor.buffers.document_dirty(id), "a redraw is clean too");
+}

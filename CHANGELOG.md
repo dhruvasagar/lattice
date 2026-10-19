@@ -46,6 +46,9 @@
   signature-help popups are the exception in both, and stay undimmed.
 
 ### Fixed
+- **The dashboard no longer shows `[+]`.** Its modeline marked it modified
+  from the moment it opened — its own content counted as an edit — until
+  something redrew it.
 - **A plugin whose file access follows your settings no longer reloads
   forever.** With `org.directory` or `org.roam-directory` set from `init.rs`,
   org loaded, reloaded onto your directory, and reloaded again, endlessly:

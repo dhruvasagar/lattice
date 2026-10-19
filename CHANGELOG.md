@@ -46,6 +46,12 @@
   signature-help popups are the exception in both, and stay undimmed.
 
 ### Fixed
+- **A plugin whose file access follows your settings no longer reloads
+  forever.** With `org.directory` or `org.roam-directory` set from `init.rs`,
+  org loaded, reloaded onto your directory, and reloaded again, endlessly:
+  each reload dropped org's options, so the next copy started on the
+  defaults and your setting moved it once more. It now reloads once and
+  stays loaded.
 - **A plugin is loaded once, not twice.** At startup a plugin your
   `init.rs` requires could appear twice in `:plugins` — or once beside a
   failure reading "plugin declares no loadable seam". When a setting that

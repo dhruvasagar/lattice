@@ -1021,6 +1021,17 @@ pub struct GrantGuard {
     /// PMF.6: each plugin's latest option-bound grants (by manifest id), so a
     /// refusal can name the option that decides where the plugin may write.
     bound: std::collections::HashMap<String, Vec<crate::capability::OptionBoundGrant>>,
+    /// PMF.4: the last value each grant-bearing option had while registered.
+    ///
+    /// A plugin's options exist only while it is loaded, and its grant is
+    /// fixed when it is instantiated — before it registers them. A reload made
+    /// *because* the user's value moved the grant unloads the plugin, which
+    /// drops its options, so the next instance resolved its grant from the
+    /// template default again; `init.rs` then set the user's value again, the
+    /// grant moved again, and the plugin reloaded forever (seen with org on
+    /// every boot, 2026-10-19). Resolving an unregistered option to the value
+    /// it last had ends that after one reload.
+    remembered: std::collections::HashMap<String, String>,
 }
 
 /// Shared between the host and every plugin instance it creates.
@@ -4772,16 +4783,32 @@ impl PluginHost {
             }
         }
         let registry = self.config.get().cloned();
+        let remembered = self
+            .grant_guard
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remembered
+            .clone();
+        let live = std::cell::RefCell::new(Vec::new());
         let outcome = crate::capability::grant_with(manifest, tier, &|name| {
-            registry
-                .as_ref()
-                .and_then(|r| r.lookup(name))
-                .map(|opt| opt.get_formatted())
+            match registry.as_ref().and_then(|r| r.lookup(name)) {
+                Some(opt) => {
+                    let value = opt.get_formatted();
+                    live.borrow_mut().push((name.to_string(), value.clone()));
+                    Some(value)
+                }
+                // Not registered: the plugin is between instances. See
+                // `GrantGuard::remembered`.
+                None => remembered.get(name).cloned(),
+            }
         });
+        let mut guard = self
+            .grant_guard
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.remembered.extend(live.into_inner());
         if !outcome.option_bound.is_empty() {
-            self.grant_guard
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            guard
                 .bound
                 .insert(manifest.id.clone(), outcome.option_bound.clone());
         }
@@ -4939,6 +4966,53 @@ mod grant_guard_tests {
             authority: authority.map(str::to_string),
             ..GrantGuard::default()
         }
+    }
+
+    /// The org reload loop (2026-10-19), at the host: a reload drops the
+    /// plugin's options, so the next instance's grant must come from the value
+    /// the option had, not from the template default — or the user's value,
+    /// set again during that load, moves the grant again, forever.
+    #[test]
+    fn a_grant_keeps_the_users_value_while_the_plugin_is_between_instances() {
+        use crate::config_host::{PluginOptionKind, register_plugin_option};
+        let base = tempfile::tempdir().unwrap();
+        let host =
+            PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap();
+        let config = Arc::new(lattice_config::ConfigRegistry::default());
+        host.set_config_registry(config.clone());
+        let notes = base.path().join("notes");
+        let manifest = PluginManifest::from_toml_str(&format!(
+            "id = \"org\"\ncapabilities = [\"fs:write:{{org.directory|{}}}\"]\n",
+            base.path().join("default").display()
+        ))
+        .unwrap();
+        let path = |host: &PluginHost| {
+            host.grant_for(&manifest, TrustTier::UserInstalled)
+                .option_bound[0]
+                .path
+                .clone()
+        };
+
+        // Loaded: org registered its option, and the user's config set it.
+        assert!(register_plugin_option(
+            &config,
+            "org.directory",
+            PluginOptionKind::String,
+            "",
+            "doc"
+        ));
+        config
+            .parse_and_set_command(&format!("org.directory={}", notes.display()))
+            .unwrap();
+        assert_eq!(path(&host), Some(notes.clone()));
+
+        // Unloaded for the reload: the option is gone with the plugin.
+        assert!(config.unregister("org.directory"));
+        assert_eq!(
+            path(&host),
+            Some(notes),
+            "the next instance is granted the user's directory, not the default"
+        );
     }
 
     #[test]

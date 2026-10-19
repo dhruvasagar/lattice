@@ -378,7 +378,10 @@ macro_rules! manifest {
         // from it is reachable at run time.
         #[doc(hidden)]
         #[allow(unsafe_code)]
-        #[unsafe(link_section = "lattice-manifest")]
+        // Only a wasm component carries the section. On a native target —
+        // where only tests and doctests build this — the name is not even
+        // valid everywhere: Mach-O wants `segment,section`.
+        #[cfg_attr(target_family = "wasm", unsafe(link_section = "lattice-manifest"))]
         #[used]
         static LATTICE_MANIFEST: [u8; { $toml }.len()] = {
             const TEXT: &str = $toml;

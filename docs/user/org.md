@@ -18,8 +18,25 @@ the reason several of them exist.
 
 The plugin is released as `vX.Y.Z` tags; its
 [README](https://github.com/dhruvasagar/lattice-org-plugin#readme) names the
-current one and its `CHANGELOG.md` says what each changed. Build a release and
-drop it in your plugins directory:
+current one and its `CHANGELOG.md` says what each changed.
+
+**Without building it.** Each release publishes org ready-built, so the
+simplest install needs no Rust toolchain — in your `init.rs`:
+
+```rust
+plugin_manager::require_release(&ReleaseSpec {
+    name: "org".to_string(),
+    repo: "dhruvasagar/lattice-org-plugin".to_string(),
+    version: None, // the newest release built for this editor
+    sha256: None,
+    enable_mode: None,
+});
+```
+
+See [installing plugins from `init.rs`](help:plugins#installing-plugins-from-init-rs).
+
+**Building it yourself.** Build a release and drop it in your plugins
+directory:
 
 ```bash
 git clone https://github.com/dhruvasagar/lattice-org-plugin

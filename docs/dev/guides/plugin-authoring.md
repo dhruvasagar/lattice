@@ -95,14 +95,19 @@ older API. The user upgrades lattice. What happens?**
 
 A plugin does not "target lattice 0.9". It targets an ABI generation.
 
-### Plugins ship as source, and are built on boot
+### Plugins ship as source — and, if you publish one, as a release
 
-This is the part that makes the whole model work, and it is unusual enough to
-state plainly: **the plugin manager clones a plugin's source and compiles it on
-the machine it will run on.** It does not download a prebuilt `.wasm`.
+The plugin manager's first route is unusual enough to state plainly: **for a
+`require`d git or local source it clones the plugin and compiles it on the
+machine it will run on.** For that route the upgrade question is not "does this
+old binary still run" — it is "does this source still compile, and against
+which WIT".
 
-So the upgrade question is not "does this old binary still run" — it is "does
-this source still compile, and against which WIT".
+The second route is a **release**: a user who `require_release`s your plugin
+gets a component you built and published, for their editor's plugin API
+generation, without a Rust toolchain — see [Publishing a
+release](#publishing-a-release). It is checked against its published
+checksum and its embedded manifest before it is installed.
 
 Rebuilds are cached on a `.build-stamp` recording two fingerprints
 (`lattice-plugin-loader/src/build.rs`):
@@ -293,6 +298,41 @@ Concretely, expect:
 The editor runs **one ABI generation at a time**. There is no compatibility
 shim and no side-by-side generation support; if that changes, it lands as the
 §12 fragment and this section changes with it.
+
+## Publishing a release
+
+Users without a Rust toolchain install a plugin from a GitHub release with
+`require_release`. To publish one:
+
+1. **Embed the manifest** (`lattice_plugin_sdk::manifest!`, [above](#manifest-world-and-entry-points)) —
+   a released plugin is one file, and the installer refuses a component that
+   does not carry its manifest, or whose `id` is not the plugin asked for.
+2. **Add a release workflow** that calls lattice's:
+
+   ```yaml
+   on:
+     push:
+       tags: ['v*']
+   jobs:
+     release:
+       uses: dhruvasagar/lattice/.github/workflows/plugin-release.yml@main
+       permissions:
+         contents: write
+   ```
+
+3. **Tag `vX.Y.Z`, where `X.Y.Z` is your crate's version**, and push the tag.
+   The workflow checks the two agree, builds with lattice's
+   `scripts/build-plugin.sh`, and creates the release — the tag's message as
+   its notes — with two files: `<id>-<version>-api<M>.<m>.wasm` and its
+   `.sha256`.
+
+The `api<M>.<m>` in the asset's name is your locked `lattice-wit`'s
+`major.minor`, and it is what the installer matches: an editor speaking
+another plugin API generation refuses the release by name instead of
+downloading a build it cannot load. To support two generations across an
+editor bump, attach a build for each to the same release. Run
+`scripts/build-plugin.sh <your-plugin> dist/` locally to see exactly what will
+be published.
 
 ## Manifest, world and entry points
 

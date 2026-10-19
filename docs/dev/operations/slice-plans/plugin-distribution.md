@@ -24,8 +24,8 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 | PRL.5 | WIT `require-release` + host wiring; `:plugins` source label. | lattice | ✅ |
 | PRL.6 | User grants on `release-spec`. | lattice | ❌ superseded by option-bound grants, [`plugin-manifest.md`](plugin-manifest.md) PMF.3–PMF.5 |
 | PRL.7 | Publishing: one shared plugin build script; reusable `plugin-release.yml`; `release.yml`'s core-plugin job calls the same script. | lattice | ✅ |
-| PRL.8 | Org adopts the workflow; first published release. | lattice-org-plugin | 📝 |
-| PRL.9 | User and author docs; fix the `plugin-authoring.md` contradiction. | lattice | 📝 |
+| PRL.8 | Org adopts the workflow; first published release. | lattice-org-plugin | 🚧 |
+| PRL.9 | User and author docs; fix the `plugin-authoring.md` contradiction. | lattice | ✅ |
 | PRL.10 | Signed packages (attestations or minisign). | lattice | ⛔ after PRL.8 has shipped real releases — the threat model needs a real publisher to be written against (design §7). |
 | PRL.11 | A plugin index resolving an id to a `Release` spec. | — | ⛔ until there are enough third-party plugins for discovery to be the problem (design §3). |
 

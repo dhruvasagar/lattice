@@ -94,9 +94,9 @@ non-prerelease release carrying an asset for this editor's API generation,
 installs it, and records the resolved tag (§6). Boot never asks again; only
 `update` does.
 
-`<id>` is the spec's `name`, and after unpacking the installer checks the
-package's `plugin.toml` declares the same `id`. A mismatch is refused: the
-user asked for one plugin and the release holds another.
+`<id>` is the spec's `name`, and before installing the installer checks the
+component's embedded manifest declares the same `id`. A mismatch is refused:
+the user asked for one plugin and the release holds another.
 
 **Why GitHub releases, and not an index.** A central index — `id → repo,
 versions, hashes` — is the better end state for discovery ("what plugins

@@ -109,6 +109,44 @@ keymaps, autocmds/hooks, custom commands — lives there as code; static option
 overrides stay in TOML. `:reload-config` re-loads it, and a rebuilt `init.wasm`
 is auto-detected and reloaded without a manual command.
 
+### Installing plugins from `init.rs`
+
+`init.rs` declares the plugins you want, from its `register_plugins` export;
+lattice installs them after it loads, off the startup path. Two ways in:
+
+**Use a released build — no Rust toolchain needed.** A plugin that publishes
+releases (the org plugin does) can be installed ready-built:
+
+```rust
+plugin_manager::require_release(&ReleaseSpec {
+    name: "org".to_string(),
+    repo: "dhruvasagar/lattice-org-plugin".to_string(),
+    version: Some("v0.2.0".to_string()), // None: the newest built for your editor
+    sha256: None,                        // optionally pin the exact bytes
+    enable_mode: None,
+});
+```
+
+Lattice downloads the build made for its own plugin API
+(`org-0.2.0-api0.3.wasm`), checks it against the release's published checksum
+— and your pin, if you gave one — and requires it to carry its own manifest
+naming the plugin before it replaces anything. A failed download leaves the
+version you had loading. Once installed, starting the editor makes no network
+request; without a `version`, only an update looks for a newer release. A
+release with no build for your editor is refused in `:plugins` by name, saying
+which it has.
+
+**Build it from source**, with `require` and a `PluginSource`: `Git` (a
+repository, optionally pinned to a `rev`), `Local` (a checkout on your disk) or
+`Prebuilt` (a URL serving a `.wasm`). Git and local sources need Rust and the
+`wasm32-wasip2` target; lattice builds them and rebuilds them when their source
+changes.
+
+Either way, a `require` added to `init.rs` takes effect on `:reload-config` —
+new plugins install and load, a rebuilt one reloads, the rest are left alone.
+`:plugins` shows where each came from (`release owner/name@v0.2.0`,
+`git@abc1234`, `local`).
+
 ---
 
 ## The `:plugins` manager view

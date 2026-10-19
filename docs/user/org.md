@@ -21,19 +21,30 @@ The plugin is released as `vX.Y.Z` tags; its
 current one and its `CHANGELOG.md` says what each changed.
 
 **Without building it.** Each release publishes org ready-built, so the
-simplest install needs no Rust toolchain — in your `init.rs`:
+simplest install needs no Rust toolchain. You need lattice 0.9.10 or later,
+and an `init.rs` (`lattice --scaffold-init` makes one). In its
+`register_plugins`:
 
 ```rust
-plugin_manager::require_release(&ReleaseSpec {
-    name: "org".to_string(),
-    repo: "dhruvasagar/lattice-org-plugin".to_string(),
-    version: None, // the newest release built for this editor
-    sha256: None,
-    enable_mode: None,
-});
+fn register_plugins() {
+    use lattice::plugin_host::plugin_manager::{self, ReleaseSpec};
+    plugin_manager::require_release(&ReleaseSpec {
+        name: "org".to_string(),
+        repo: "dhruvasagar/lattice-org-plugin".to_string(),
+        version: None, // the newest release built for this editor
+        sha256: None,
+        enable_mode: None, // org-mode turns on by itself for .org files
+    });
+}
 ```
 
-See [installing plugins from `init.rs`](help:plugins#installing-plugins-from-init-rs).
+Then `:reload-config`, and org appears in `:plugins` as
+`release dhruvasagar/lattice-org-plugin@v…`. `:plugin-update org` installs a
+newer release when there is one; set `version: Some("v0.2.0".to_string())`
+instead to stay on one. A config scaffolded before 0.9.10 needs the
+`plugin-manager` seam added first, and pinning, removing and the messages you
+may see are covered in
+[installing plugins from `init.rs`](help:plugins#installing-plugins-from-init-rs).
 
 **Building it yourself.** Build a release and drop it in your plugins
 directory:

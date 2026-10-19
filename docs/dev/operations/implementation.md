@@ -7406,17 +7406,19 @@ method, no `Action` variant); rendering reuses the conceal evaluator.
 Design: [`../architecture/markdown-links.md`](../architecture/markdown-links.md).
 Slice plan: [`slice-plans/archive/markdown-links.md`](slice-plans/archive/markdown-links.md).
 
-## Plugin distribution (PRL, 2026-10-16 — 📝 planned)
+## Plugin distribution (PRL, 2026-10-16 — 🚧 PRL.8 awaits org's first release)
 
-Installing a plugin without a Rust toolchain: authors publish a package
-(`plugin.toml` + component) per plugin-API generation from a reusable release
-workflow; users `require-release` it by repository and tag. Adds a source
-kind beside `Local` / `Git` / `Prebuilt` and changes none of them. PRL.1–PRL.9
-planned; signing (PRL.10) and a plugin index (PRL.11) deferred.
+Installing a plugin without a Rust toolchain: authors publish the component
+(manifest embedded) per plugin-API generation from a reusable release
+workflow; users `require-release` it by repository and tag, or take the newest
+built for their editor. Adds a source kind beside `Local` / `Git` /
+`Prebuilt` and changes none of them. PRL.1–PRL.5, PRL.7, PRL.9 and the
+follow-ups PRL.12–PRL.14 ✅; PRL.6 superseded; PRL.8 is org's first published
+release; signing (PRL.10) and a plugin index (PRL.11) deferred.
 Design: [`../architecture/plugin-distribution.md`](../architecture/plugin-distribution.md).
 Slice plan: [`slice-plans/plugin-distribution.md`](slice-plans/plugin-distribution.md).
 
-## Plugin manifest (PMF, 2026-10-17 — 📝 planned)
+## Plugin manifest (PMF, 2026-10-17 — ✅ PMF.1–PMF.16)
 
 A plugin becomes one file: its manifest is a `lattice-manifest` custom section
 inside the component (spike passed), with `plugin.toml` still accepted. A

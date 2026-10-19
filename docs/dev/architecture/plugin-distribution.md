@@ -172,13 +172,19 @@ The package unpacks to the same `<user_root>/<id>/` a build stages into. The
 	version = v0.2.0
 	sha256 = 3f9a…
 	api = 0.3
+	latest = true
+
+`latest` marks a record whose spec named no version: `version` is the tag it
+resolved to, not a pin. Without it the record reads back as pinned to that
+tag, and `update` — which works from the record — would fetch the same
+release forever.
 
 | Caller | Network |
 |---|---|
 | Boot, artifact present, `.source` matches the spec | **none** |
 | Boot, artifact absent, or the spec's version / sha256 changed | download |
 | `update`, unpinned spec | one API call; a download only if a newer compatible release exists |
-| `update`, pinned spec | none |
+| `update`, pinned spec | none — it declines, naming the pin, as a pinned git rev does |
 
 This is `RefreshPolicy` (plugin-manager.md §4) applied as written — the rule
 `Git` already follows.

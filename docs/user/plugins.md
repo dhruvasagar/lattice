@@ -40,7 +40,7 @@ feature uses — it is not a second-class bolt-on.
 | `:plugin-load <path>` | Load a `.wasm` component from `<path>` (under its manifest's capability grant). |
 | `:plugin-unload <name>` | Unload a plugin by name (or numeric id): abort its tasks, reverse every registry contribution. |
 | `:plugin-reload <name>` | Unload then re-load from disk — a fresh instance with an untripped quarantine. |
-| `:plugin-update <name>` | Bring its source up to date, rebuild, reload. Pinned plugins decline and say so. |
+| `:plugin-update <name>` | Bring it up to date — a newer release, or the newest source rebuilt — and reload. Pinned plugins decline and say so. |
 | `:plugin-rebuild-all` | Rebuild every loaded plugin from the source it already has, then reload each. |
 | `:plugin-reload-all` | Reload every loaded plugin from the artifact on disk — no build, no network. |
 | `:plugin-update-all` | Update every loaded plugin. Pinned ones are skipped, not failed. |
@@ -67,9 +67,10 @@ Lattice has **two plugin roots**:
   beside the binary, discovered at boot at the bundled tier, and enabled by
   default via a `<id>.enabled` gate. `auto-pair` is the first. You configure or
   disable them, you don't install them. See **[`core-plugins`](help:core-plugins)**.
-- **User plugins** live in `~/.config/lattice/plugins/` — you install them (drop a
-  built component there, or, with the use-package layer, declare a git/local
-  source that the editor builds on first boot). These load at the user-installed
+- **User plugins** live in `~/.config/lattice/plugins/` — you install them:
+  declare them in `init.rs` ([below](#installing-plugins-from-init-rs)) as a
+  released build lattice downloads or a git/local source it builds, or drop a
+  built component in that directory yourself. These load at the user-installed
   tier under a capability grant.
 
 Everything below applies to both; the difference is only *where they come from* and
@@ -111,41 +112,134 @@ is auto-detected and reloaded without a manual command.
 
 ### Installing plugins from `init.rs`
 
-`init.rs` declares the plugins you want, from its `register_plugins` export;
-lattice installs them after it loads, off the startup path. Two ways in:
+`init.rs` names the plugins you want in its `register_plugins` function, and
+lattice installs them after your config loads, off the startup path. A plugin
+installs into `~/.config/lattice/plugins/<name>/` and loads from there at every
+start; the network is used to install and to update, never to start.
 
-**Use a released build — no Rust toolchain needed.** A plugin that publishes
-releases (the org plugin does) can be installed ready-built:
+**Your config needs the `plugin-manager` seam.** A config made by
+`lattice --scaffold-init` (0.9.10 or later) has it: `register_plugins` is
+there, with the release example below commented out. A config made earlier
+needs three additions:
+
+1. `wit/init.wit` — inside `world init { … }`:
+
+   ```wit
+   import plugin-manager;
+   export register-plugins: func();
+   ```
+
+2. the manifest at the top of `src/lib.rs` (or your `plugin.toml`) — add
+   `"plugin-manager"` to `provides`;
+3. `src/lib.rs` — a `fn register_plugins() { … }` in your `impl Guest`.
+
+A change takes effect on `:reload-config`: a plugin you added installs and
+loads, one whose build or download changed reloads, and the rest are left
+alone.
+
+#### A released build — no Rust toolchain needed
+
+A plugin that publishes releases (the org plugin does) installs ready-built:
 
 ```rust
-plugin_manager::require_release(&ReleaseSpec {
+fn register_plugins() {
+    use lattice::plugin_host::plugin_manager::{self, ReleaseSpec};
+    plugin_manager::require_release(&ReleaseSpec {
+        name: "org".to_string(),
+        repo: "dhruvasagar/lattice-org-plugin".to_string(),
+        version: Some("v0.2.0".to_string()), // or None: the newest
+        sha256: None,
+        enable_mode: None,
+    });
+}
+```
+
+| Field | What it is |
+|---|---|
+| `name` | The plugin's id. The release must carry a plugin of that id, and it installs into `plugins/<name>/`. |
+| `repo` | The GitHub repository, `owner/name`. |
+| `version` | A release tag (`"v0.2.0"`), or `None` for the newest release built for your editor. |
+| `sha256` | Optional. The exact bytes you expect, as a hex SHA-256 — see below. |
+| `enable_mode` | A minor mode to switch on once it loads, or `None`. A plugin whose mode activates by file type (org's is a major mode) needs none. |
+
+**Which file is downloaded.** A release carries one build per plugin API
+generation, named `<name>-<version>-api<M>.<m>.wasm` (`org-0.2.0-api0.3.wasm`),
+and lattice takes the one for its own API — so an editor and a plugin built
+for different APIs never meet. Before it replaces anything, the download must
+match the checksum the release publishes beside it (and your `sha256`, if you
+gave one) and carry its own manifest naming `name`. A download or check that
+fails leaves the version you had installed and loading.
+
+**Pinned or newest:**
+
+| `version` | First install | At startup | `:plugin-update <name>` |
+|---|---|---|---|
+| `None` | The newest release that is not a draft or prerelease and has a build for your editor | Keeps what is installed; no network | Looks for a newer release and installs it; offline, keeps what you have |
+| `Some("v0.2.0")` | That release | Keeps what is installed; no network | Declines — *"pinned to release v0.2.0; change its `version` in init.rs"* |
+
+`u` on the plugin's row in `:plugins` is `:plugin-update`; `U` and
+`:plugin-update-all` update every plugin, skipping pinned ones. To move a
+pinned plugin, change its tag and `:reload-config`.
+
+**Pinning the bytes.** A tag names a release, but its owner could re-publish
+it. To accept only the bytes you checked, set `sha256` to the digest from the
+release's `.sha256` file (its first word) — together with a pinned
+`version`, since every new release has a new digest:
+
+```rust
+version: Some("v0.2.0".to_string()),
+sha256: Some("3f0c…".to_string()), // from org-0.2.0-api0.3.wasm.sha256
+```
+
+**When it is refused**, the plugin appears under failed loads in `:plugins`,
+with the reason:
+
+| Message | What to do |
+|---|---|
+| *no release of `owner/name` has a build for plugin API 0.3 (newest: v0.3.0)* | The plugin has not released a build for your editor. Update lattice, or wait for a release. |
+| *org v0.2.0 has no build for plugin API 0.3 (it ships: api0.2)* | That tag was built for another editor; pick a tag that ships yours, or `None`. |
+| *org needs lattice ≥ 0.9.10; this is 0.9.9* | The plugin needs a newer lattice. |
+| *the release publishes …, not the pinned …* | The tag was re-published with different bytes than your `sha256`. Check before you change the pin. |
+| *cannot list the releases of `owner/name`* | GitHub could not be reached, or its API rate limit (60 requests an hour without signing in) is spent. `None` asks the API to find the newest release, when it installs or updates; a pinned `version` downloads directly. |
+
+#### Building from source
+
+`require` with a `PluginSource` builds the plugin with your Rust toolchain
+(and the `wasm32-wasip2` target):
+
+```rust
+use lattice::plugin_host::plugin_manager::{self, GitSource, PluginSource, PluginSpec};
+plugin_manager::require(&PluginSpec {
     name: "org".to_string(),
-    repo: "dhruvasagar/lattice-org-plugin".to_string(),
-    version: Some("v0.2.0".to_string()), // None: the newest built for your editor
-    sha256: None,                        // optionally pin the exact bytes
+    source: PluginSource::Git(GitSource {
+        url: "https://github.com/dhruvasagar/lattice-org-plugin".to_string(),
+        rev: Some("v0.2.0".to_string()), // a tag or commit; None: the default branch
+    }),
     enable_mode: None,
+    pinned: false,
 });
 ```
 
-Lattice downloads the build made for its own plugin API
-(`org-0.2.0-api0.3.wasm`), checks it against the release's published checksum
-— and your pin, if you gave one — and requires it to carry its own manifest
-naming the plugin before it replaces anything. A failed download leaves the
-version you had loading. Once installed, starting the editor makes no network
-request; without a `version`, only an update looks for a newer release. A
-release with no build for your editor is refused in `:plugins` by name, saying
-which it has.
+`PluginSource::Local(path)` builds a checkout on your disk in place, so an edit and `:reload-config` picks it up — the way to work on a
+plugin. `PluginSource::Prebuilt(url)` downloads a `.wasm` from any HTTPS URL,
+without the checks a release gets. `pinned: true` keeps the build you have
+even when its source changes, building only if there is none. Lattice rebuilds a source plugin when its
+source changes; `:plugin-update` moves an unpinned git source to its newest
+commit, and `:plugin-rebuild` (`b` in `:plugins`) rebuilds what you have.
 
-**Build it from source**, with `require` and a `PluginSource`: `Git` (a
-repository, optionally pinned to a `rev`), `Local` (a checkout on your disk) or
-`Prebuilt` (a URL serving a `.wasm`). Git and local sources need Rust and the
-`wasm32-wasip2` target; lattice builds them and rebuilds them when their source
-changes.
+#### Switching and removing
 
-Either way, a `require` added to `init.rs` takes effect on `:reload-config` —
-new plugins install and load, a rebuilt one reloads, the rest are left alone.
-`:plugins` shows where each came from (`release owner/name@v0.2.0`,
-`git@abc1234`, `local`).
+To switch an installed plugin between a release and a source build, replace
+its call with the other one, keeping the same `name`, and `:reload-config`:
+the new build replaces the old and the plugin reloads.
+
+Deleting a plugin's call does **not** uninstall it — it is still in your
+plugins directory, which lattice loads at every start. To remove it, delete
+the call, then `:plugin-unload <name>` and `:plugin-clean!` (`:plugin-clean`
+first lists what it would delete).
+
+`:plugins` shows where each plugin came from: `release owner/name@v0.2.0`,
+`git@abc1234`, `local`.
 
 ---
 

@@ -65,8 +65,10 @@ Three things that are easy to get wrong:
   package it separately — or use rustup instead.
 
 The same requirements apply to any plugin you install **from source**
-(`plugins::require(...)`, or a `--scaffold-plugin` project). A plugin that
-ships a prebuilt `.wasm` needs none of it.
+(`plugin_manager::require(...)`, or a `--scaffold-plugin` project). A plugin
+installed from its release (`plugin_manager::require_release(...)`, see
+[installing plugins](#installing-plugins)) is downloaded ready-built and needs
+none of it — though the `init.rs` that names it is still compiled.
 
 When a config does not load, **`:plugins` says why**: `init` appears under
 *Failed to load* (or *Build failed*, if a previous build is still running)
@@ -130,18 +132,20 @@ native editor subsystem:
 | declare a typed option (`:set my.opt=…`) | `config` | `config-plugin` |
 | observe editor events (save, mode change, …) | `events` | `events-plugin` |
 | define a minor mode | `modes` | `modes-plugin` |
+| install plugins (`require`, `require_release`) | `plugin-manager` | `plugin-manager-plugin` |
 
-> **One component implements one seam world today.** A WebAssembly component has
-> a single world type, so a single `init.wasm` targets one `wit_bindgen::generate!`
-> world. If your config spans several seams (say, custom commands **and** event
-> handlers), ship the extra concerns as additional plugins under
-> `<data>/lattice/plugins/<name>/` — each a one-seam component — alongside the
-> `init/` dir. A unified `init` world that lets one component register across
-> every seam at once is planned; until then, one component = one seam.
+> **One component, one world — spanning as many seams as you use.** A component
+> has a single world type, so your config writes one: `wit/init.wit`'s
+> `world init`, which imports the host APIs you call and exports the
+> `register-*` functions of the seams you register into. The scaffold's covers
+> `config`, `keymap`, `events` and `plugin-manager`; add a seam by adding its
+> imports and exports there and its name to the manifest's `provides` (the
+> [annotated example](#a-complete-annotated-init-rs) shows one such world).
+> The per-seam worlds in the table are what a one-seam plugin uses instead.
 >
-> The good news: **commands, motions, text objects, operators, and ex-commands
-> are all the _same_ seam** (`grammar`), so a single grammar component can define
-> all of them together (the big example below).
+> **Commands, motions, text objects, operators, and ex-commands are all the
+> _same_ seam** (`grammar`), so one component can define all of them together
+> (the big example below).
 
 The manifest at the top of `src/lib.rs` declares which seam(s) the component
 provides — it is embedded in the component, so there is no separate file. (A
@@ -645,6 +649,36 @@ impl Guest for Component {
 export!(Component);
 ```
 
+## Installing plugins
+
+`register_plugins` names the plugins your config wants; lattice installs them
+after `init.rs` loads and loads them at every start. Ready-built, from a
+plugin's GitHub release:
+
+```rust
+fn register_plugins() {
+    use lattice::plugin_host::plugin_manager::{self, ReleaseSpec};
+    plugin_manager::require_release(&ReleaseSpec {
+        name: "org".to_string(),
+        repo: "dhruvasagar/lattice-org-plugin".to_string(),
+        version: None,      // the newest release built for this editor; or Some("v0.2.0")
+        sha256: None,       // optionally pin the exact bytes
+        enable_mode: None,
+    });
+}
+```
+
+or built from source with `plugin_manager::require` and a git or local
+`PluginSource`. `:reload-config` applies a change; `:plugin-update <name>`
+moves an unpinned plugin to its newest release or commit.
+
+The scaffold already has this seam, with the example commented out. A config
+scaffolded before 0.9.10 needs `import plugin-manager;` and
+`export register-plugins: func();` in `wit/init.wit`, and `"plugin-manager"`
+in its manifest's `provides`. Every field, pinning, updating, removing and
+the messages you may see are in
+[`plugins`](help:plugins#installing-plugins-from-init-rs).
+
 ---
 
 ## A complete annotated `init.rs`
@@ -784,7 +818,7 @@ lattice --scaffold-init
 
 This creates `~/.config/lattice/init/` with a complete WASM-component config crate
 — `Cargo.toml`, `src/lib.rs` (its manifest, and a minimal config: an option, a
-keybinding, an event handler), and a `wit/` copy of *this editor's* API (so it
+keybinding, an event handler, and a plugin install to uncomment), and a `wit/` copy of *this editor's* API (so it
 builds with no separate checkout, matched to your version). It refuses to
 overwrite an existing config.
 

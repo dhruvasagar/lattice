@@ -28,6 +28,9 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 | PRL.9 | User and author docs; fix the `plugin-authoring.md` contradiction. | lattice | ✅ |
 | PRL.10 | Signed packages (attestations or minisign). | lattice | ⛔ after PRL.8 has shipped real releases — the threat model needs a real publisher to be written against (design §7). |
 | PRL.11 | A plugin index resolving an id to a `Release` spec. | — | ⛔ until there are enough third-party plugins for discovery to be the problem (design §3). |
+| PRL.12 | `:plugin-update` reaches a downloaded plugin: the update gate asks for a source, not a build; an unpinned release records `latest = true` so the record reads back unpinned; a tagged release is declined as a pin; the same tag is not downloaded twice. Found documenting PRL.9 — PRL.4's update path was unreachable. | lattice | ✅ |
+| PRL.13 | A download that replaced a loaded plugin reloads it on `:reload-config` (switching a plugin to a release or another tag). | lattice | ✅ |
+| PRL.14 | `--scaffold-init` carries the `plugin-manager` seam, with a commented `require_release` example; the docs pass of PRL.9 redone end to end (setup, fields, pin vs newest, updating, removing, refusals; author guide; org README). | lattice, lattice-org-plugin | ✅ |
 
 ## Sequencing
 

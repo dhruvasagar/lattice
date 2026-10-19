@@ -87,6 +87,10 @@ pub enum Install {
         /// previous build is what will load. Not a failure; a caveat the
         /// user should be able to see.
         stale: Option<String>,
+        /// PMF.14: this install produced a new artifact (a fresh build).
+        /// After boot, a loaded plugin is reloaded only when this is set —
+        /// an unchanged `require` is a no-op.
+        rebuilt: bool,
     },
     /// Nothing loadable. The plugin is absent this session.
     Skipped { name: String, error: String },
@@ -147,6 +151,9 @@ pub fn install_required(
                 artifact,
                 enable_mode: spec.enable_mode.clone(),
                 stale: None,
+                // A prebuilt is fetched, not built; a newly installed one is
+                // caught by "not loaded yet", which is what decides there.
+                rebuilt: false,
             };
         }
         Resolved::Source(dir) => dir,
@@ -162,17 +169,26 @@ pub fn install_required(
         crate::source_record::write(dir, &spec.source);
     }
     match outcome {
-        BuildOutcome::Cached { artifact } | BuildOutcome::Fresh { artifact } => Install::Ready {
+        BuildOutcome::Cached { artifact } => Install::Ready {
             name: spec.name.clone(),
             artifact,
             enable_mode: spec.enable_mode.clone(),
             stale: None,
+            rebuilt: false,
+        },
+        BuildOutcome::Fresh { artifact } => Install::Ready {
+            name: spec.name.clone(),
+            artifact,
+            enable_mode: spec.enable_mode.clone(),
+            stale: None,
+            rebuilt: true,
         },
         BuildOutcome::StaleKept { artifact, error } => Install::Ready {
             name: spec.name.clone(),
             artifact,
             enable_mode: spec.enable_mode.clone(),
             stale: Some(error),
+            rebuilt: false,
         },
         BuildOutcome::Failed { error } => {
             tracing::warn!(plugin = %spec.name, error = %error, "require: build failed; skipping");
@@ -357,6 +373,7 @@ mod tests {
                 artifact,
                 enable_mode,
                 stale,
+                ..
             } => {
                 assert_eq!(name, "demo");
                 assert!(artifact.is_file());

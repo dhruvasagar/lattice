@@ -525,6 +525,16 @@ fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> Bu
     }
 }
 
+/// PMF.14: when the plugins `init.rs` `require`s are reconciled — see
+/// [`PluginLoader::apply_required`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequirePhase {
+    /// At startup, before the user-root scan: install only; the scan loads.
+    Boot,
+    /// After startup: load what is new, reload what was rebuilt.
+    AfterBoot,
+}
+
 /// The editor-side runtime environment the loader drives seams against —
 /// captured once from the boot context in [`install`], or built directly by a
 /// headless harness / test. Every handle is `Option` because a given consumer
@@ -1511,10 +1521,11 @@ impl PluginLoader {
         // would otherwise meet as a refusal.
         self.warn_grant_default_mismatch(manifest);
         // PMF.4: the grant was resolved before the plugin registered its
-        // options, so a value the user already had for one (`lattice.toml`, an
-        // `init.rs` set before this load) applied at registration without an
-        // `OptionChanged`. Re-resolve now; anything that moved is announced
-        // through that event, which `subscribe_grant_options` turns into a
+        // options, so a value `init.rs` set while it loaded (its
+        // `pre-plugin-loaded` handler — the one place a plugin's options are
+        // set from config; `lattice.toml` cannot, it is read before they
+        // exist) is not in it. Re-resolve now; anything that moved is announced
+        // through `OptionChanged`, which `subscribe_grant_options` turns into a
         // reload — rather than reloading from inside this load.
         self.announce_moved_grants(manifest, tier, &outcome.option_bound);
         // LA.1: the mode/language CATALOG changed. Separate from `PluginLoaded`
@@ -1881,8 +1892,8 @@ impl PluginLoader {
     }
 
     /// PMF.4: reload a plugin when an option one of its grants follows changes
-    /// — `:set org.directory=…`, a config reload, or `lattice.toml` being read
-    /// after the plugin started at boot.
+    /// — `:set org.directory=…`, a config reload, or `init.rs` setting it while
+    /// the plugin loads.
     ///
     /// A grant is fixed for an instance's life (WASI pre-opened directories and
     /// host-side checks), so following a new value means a new instance. Only
@@ -2668,6 +2679,109 @@ impl PluginLoader {
         }
     }
 
+    /// PMF.14: act on the results of installing what `init.rs` `require`s.
+    ///
+    /// `require` declares the plugins the user wants; this reconciles that
+    /// with what is loaded rather than loading every spec, which loaded each
+    /// `require`d plugin by a second path into the directory the boot scan
+    /// also walks.
+    ///
+    /// - [`RequirePhase::Boot`]: nothing is loaded here. The user-root scan
+    ///   runs next and is the one loader for the directory; the `enable_mode`
+    ///   requests come back to be applied after it
+    ///   ([`enable_required_modes`](Self::enable_required_modes)).
+    /// - [`RequirePhase::AfterBoot`] (a `:reload-config`, or init's watcher):
+    ///   a plugin not loaded yet is loaded; a loaded one is reloaded only if
+    ///   this install rebuilt it; anything else is left alone.
+    ///
+    /// A spec that produced nothing loadable is recorded for `:plugins`
+    /// either way.
+    pub async fn apply_required(
+        &self,
+        installs: Vec<pipeline::Install>,
+        user_root: &std::path::Path,
+        phase: RequirePhase,
+    ) -> Vec<(String, String)> {
+        let mut pending_modes = Vec::new();
+        for install in installs {
+            match install {
+                pipeline::Install::Ready {
+                    name,
+                    stale,
+                    enable_mode,
+                    rebuilt,
+                    ..
+                } => {
+                    if let Some(error) = stale {
+                        tracing::warn!(
+                            plugin = %name,
+                            %error,
+                            "plugin is running a previous build (rebuild failed)"
+                        );
+                        self.note_build_failure(&name, &error);
+                    }
+                    if phase == RequirePhase::Boot {
+                        if let Some(mode) = enable_mode {
+                            pending_modes.push((name, mode));
+                        }
+                        continue;
+                    }
+                    let dir = user_root.join(&name);
+                    let tier = TrustTier::UserInstalled;
+                    let outcome = if !self.is_loaded(&name) {
+                        Some(self.load_path(&dir, tier).await)
+                    } else if rebuilt {
+                        Some(self.reload(&name, tier).await)
+                    } else {
+                        None
+                    };
+                    match outcome {
+                        Some(Ok(id)) => {
+                            tracing::info!(plugin = %name, id = id.0, "required plugin loaded");
+                            // use-package's `enable-mode` sugar, only after a
+                            // load that succeeded.
+                            if let Some(mode) = enable_mode {
+                                self.request_mode_enablement(&mode);
+                            }
+                        }
+                        Some(Err(err)) => tracing::warn!(
+                            plugin = %name,
+                            error = %err,
+                            "required plugin built but failed to load"
+                        ),
+                        None => tracing::debug!(
+                            plugin = %name,
+                            "required plugin already loaded and unchanged"
+                        ),
+                    }
+                }
+                pipeline::Install::Skipped { name, error } => {
+                    tracing::warn!(plugin = %name, %error, "required plugin skipped");
+                    // A plugin that never produced an artifact never reaches
+                    // `load_path`, so nothing else records it.
+                    self.record_failure(
+                        &name,
+                        &user_root.join(&name),
+                        TrustTier::UserInstalled,
+                        &error,
+                    );
+                }
+            }
+        }
+        pending_modes
+    }
+
+    /// PMF.14: apply the `enable_mode` requests [`apply_required`](Self::apply_required)
+    /// deferred at boot, once the scan has loaded the plugins they belong to.
+    /// A plugin that did not load gets none: there is no mode to enable.
+    pub fn enable_required_modes(&self, pending: Vec<(String, String)>) {
+        for (plugin, mode) in pending {
+            if self.is_loaded(&plugin) {
+                self.request_mode_enablement(&mode);
+            }
+        }
+    }
+
     /// PM.7b: take the plugins declared via `require` so far, leaving the
     /// queue empty.
     ///
@@ -2793,11 +2907,17 @@ impl PluginLoader {
         init_dir: &std::path::Path,
         tier: TrustTier,
     ) -> Result<PluginId, PluginLoaderError> {
-        if self.is_loaded(INIT_PLUGIN_ID) {
+        let loaded = if self.is_loaded(INIT_PLUGIN_ID) {
             self.reload(INIT_PLUGIN_ID, tier).await
         } else {
             self.load_path(init_dir, tier).await
-        }
+        }?;
+        // PMF.14: the reloaded init.rs has declared its `require`s again.
+        // Reconcile them now — a plugin added since boot is installed and
+        // loaded, a rebuilt one reloaded, an unchanged one left alone —
+        // rather than leaving them recorded and unread until the next restart.
+        crate::install::run_required(self, RequirePhase::AfterBoot).await;
+        Ok(loaded)
     }
 
     /// The `source_dir` of the loaded `init` plugin, if it is loaded — the dir

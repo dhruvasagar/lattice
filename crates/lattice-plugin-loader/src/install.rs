@@ -425,6 +425,8 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                     );
                 }
             }
+            // `enable_mode` requests from `require`, applied after step 2.
+            let mut required_modes = Vec::new();
             // 1. init.rs next — AWAITED, so its subscriptions are live before
             //    step 2 loads plugins that fire `plugin-loaded`.
             if let Some(init_dir) = init_dir {
@@ -497,13 +499,15 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                         "no user init.rs loaded"
                     ),
                 }
-                // PM.7b: whatever init.rs `require`d is now queued. Resolve,
-                // build and load it BEFORE step 2's on-disk scan, so a plugin
-                // that was just installed into the user root is discovered by
-                // that scan rather than waiting for the next boot.
-                install_required_plugins(&loader).await;
+                // PM.7b / PMF.14: whatever init.rs `require`d is now queued.
+                // Resolve, build and stage it BEFORE step 2's on-disk scan —
+                // but do not load it: the scan is the one loader for that
+                // directory, so a required plugin cannot be loaded twice by
+                // two paths into it.
+                required_modes = run_required(&loader, crate::RequirePhase::Boot).await;
             }
-            // 2. Then the plugins the init.rs handlers react to.
+            // 2. Then the plugins the init.rs handlers react to — `require`d
+            //    and hand-installed alike.
             if let Some(dir) = plugins_dir {
                 let n = loader
                     .discover_and_load(&dir, TrustTier::UserInstalled)
@@ -512,6 +516,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                     tracing::info!(count = n, dir = %dir.display(), "plugins loaded from disk");
                 }
             }
+            // 3. use-package's `enable-mode`, now that the plugins it names
+            //    are loaded.
+            loader.enable_required_modes(required_modes);
         });
     }
 }
@@ -622,19 +629,26 @@ async fn build_init_if_needed(
     }
 }
 
-/// PM.7b: resolve, build and load everything `init.rs` declared via `require`.
+/// PM.7b / PMF.14: resolve and build everything `init.rs` declared via
+/// `require`, then reconcile it with what is loaded
+/// ([`PluginLoader::apply_required`]). Returns the `enable_mode` requests a
+/// [`RequirePhase::Boot`] run defers until the user-root scan has loaded the
+/// plugins.
 ///
 /// Each spec is independent: one broken source costs that plugin and nothing
-/// else. The whole pipeline runs on `spawn_blocking` — it clones, downloads
-/// and compiles — and only the final load returns to the async context.
-async fn install_required_plugins(loader: &std::sync::Arc<crate::PluginLoader>) {
+/// else. Resolution and builds run on `spawn_blocking` — they clone, download
+/// and compile — and only the loads return to the async context.
+pub(crate) async fn run_required(
+    loader: &crate::PluginLoader,
+    phase: crate::RequirePhase,
+) -> Vec<(String, String)> {
     let specs = loader.take_required();
     if specs.is_empty() {
-        return;
+        return Vec::new();
     }
     let Some(user_root) = crate::default_plugins_dir() else {
         tracing::warn!("require: no config dir; cannot install declared plugins");
-        return;
+        return Vec::new();
     };
     let cache_root = crate::default_source_cache_dir();
     tracing::info!(
@@ -652,7 +666,7 @@ async fn install_required_plugins(loader: &std::sync::Arc<crate::PluginLoader>) 
                 &specs,
                 &cache_root,
                 &user_root,
-                // Boot uses what the user already has: deterministic, works
+                // Uses what the user already has: deterministic, works
                 // offline, no network round trip per start. `:plugin-update`
                 // is the verb that goes looking for something newer.
                 crate::resolve::RefreshPolicy::UseCache,
@@ -664,63 +678,8 @@ async fn install_required_plugins(loader: &std::sync::Arc<crate::PluginLoader>) 
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, "require: install task failed to run");
-            return;
+            return Vec::new();
         }
     };
-
-    for install in installs {
-        match install {
-            crate::pipeline::Install::Ready {
-                name,
-                stale,
-                enable_mode,
-                ..
-            } => {
-                if let Some(error) = stale {
-                    tracing::warn!(
-                        plugin = %name,
-                        %error,
-                        "plugin is running a previous build (rebuild failed)"
-                    );
-                    loader.note_build_failure(&name, &error);
-                }
-                // The artifact is staged in the user root; load it through the
-                // ordinary discovery path so a `require`d plugin and a
-                // hand-installed one take exactly the same route in.
-                let dir = user_root.join(&name);
-                match loader.load_path(&dir, TrustTier::UserInstalled).await {
-                    Ok(id) => {
-                        tracing::info!(plugin = %name, id = id.0, "required plugin loaded");
-                        // use-package's `enable-mode` sugar. Requested only
-                        // AFTER a successful load: asking to enable a mode
-                        // belonging to a plugin that failed to load would be
-                        // a request nothing can satisfy.
-                        if let Some(mode) = enable_mode {
-                            loader.request_mode_enablement(&mode);
-                        }
-                    }
-                    Err(err) => tracing::warn!(
-                        plugin = %name,
-                        error = %err,
-                        "required plugin built but failed to load"
-                    ),
-                }
-            }
-            crate::pipeline::Install::Skipped { name, error } => {
-                tracing::warn!(
-                    plugin = %name,
-                    %error,
-                    "required plugin skipped"
-                );
-                // Same gap as init: a plugin that never produced an artifact
-                // never reaches `load_path`, so nothing recorded it.
-                loader.record_failure(
-                    &name,
-                    &user_root.join(&name),
-                    TrustTier::UserInstalled,
-                    &error,
-                );
-            }
-        }
-    }
+    loader.apply_required(installs, &user_root, phase).await
 }

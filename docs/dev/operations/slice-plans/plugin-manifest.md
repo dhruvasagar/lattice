@@ -27,7 +27,7 @@ Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 | PMF.11 | Bundled plugins embed their manifests (`manifest!`); their `plugin.toml` files, the core-plugin staging and release-archive checks that expected them, and the tests that copied them, go. | lattice | ✅ |
 | PMF.12 | `--scaffold-init` / `--scaffold-plugin` write `manifest!` instead of `plugin.toml`. Existing configs keep theirs and keep working. | lattice | ✅ |
 | PMF.13 | Loads, reloads and the scan's check-then-load are serialised (`load_ops`): no caller sees a plugin in the gap of another's reload. | lattice | ✅ |
-| PMF.14 | `require` reconciles instead of loading: at boot it installs and the user-root scan is the one loader; after boot (`:reload-config`) it loads what is new, reloads what was rebuilt, and is a no-op otherwise. | lattice | 📝 |
+| PMF.14 | `require` reconciles instead of loading: at boot it installs and the user-root scan is the one loader; after boot (`:reload-config`) it loads what is new, reloads what was rebuilt, and is a no-op otherwise. | lattice | ✅ |
 
 ## Sequencing
 
@@ -102,7 +102,9 @@ differs. A default that disagrees with the registered option default warns in
 `:plugins` and `*messages*`.
 
 **Tests:** `:set org.directory=…` reloads with the new grant; setting it to its
-current value does not reload; `lattice.toml` read after boot reloads once.
+current value does not reload; a value `init.rs` sets during the load reloads
+once. (Not `lattice.toml`: a plugin's options are not settable there — it is
+read before any plugin registers them; `init.rs` is the place.)
 
 ## PMF.5 — plugins cannot widen their grant
 
@@ -222,6 +224,14 @@ stays for every path that is not boot. `:reload-config` drains the specs its
 `require` added before `:reload-config` is installed and loaded without a
 restart; a rebuilt required plugin reloads; an unchanged one is not touched;
 `enable_mode` applies to a plugin the scan loaded.
+
+As built: `PluginLoader::apply_required(installs, user_root, phase)` holds
+the rules and `enable_required_modes` applies boot's deferred modes after the
+scan; `Install::Ready` gained `rebuilt` (a fresh build). The post-boot drain
+runs at the end of `sync_init`, so `:reload-config` and init's file watcher
+both reconcile. `tests/require_reconcile.rs` drives the decisions with
+pipeline results, no git or cargo. A `require` *removed* from `init.rs` still
+leaves its plugin loaded until restart.
 
 **Not this slice:** org still loads twice per boot when `init.rs` sets a
 grant-bearing option on `pre-plugin-loaded` — the grant is fixed before the

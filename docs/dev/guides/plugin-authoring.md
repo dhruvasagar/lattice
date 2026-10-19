@@ -302,7 +302,7 @@ shim and no side-by-side generation support; if that changes, it lands as the
 ## Publishing a release
 
 Users without a Rust toolchain install a plugin from its GitHub release with
-`require_release` — see [installing plugins](../../user/plugins.md#installing-plugins-from-initrs)
+`require_release` — see [installing plugins](../../user/plugins.md#installing-plugins-from-init-rs)
 for their side. What a release must be, and how to make one.
 
 ### What the installer accepts

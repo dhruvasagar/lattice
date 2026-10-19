@@ -20,7 +20,7 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 | PRL.1 | Factor LH.0's download core out of its job wrapper, host-callable. No behaviour change. | lattice | ✅ |
 | PRL.2 | `Prebuilt{url}` bug fixes: no re-download when present; timeouts and a byte ceiling via PRL.1. | lattice | ✅ |
 | PRL.3 | The package installer: `PluginSource::Release`, convention URL, sha256, id check, swap into place, `.source` kind `release`. | lattice | ✅ |
-| PRL.4 | Compatibility and resolution: API generation in the asset name, the named refusal, newest-compatible lookup for unpinned specs and `update`. | lattice | 📝 |
+| PRL.4 | Compatibility and resolution: API generation in the asset name, the named refusal, newest-compatible lookup for unpinned specs and `update`. | lattice | ✅ |
 | PRL.5 | WIT `require-release` + host wiring; `:plugins` source label. | lattice | 📝 |
 | PRL.6 | User grants on `release-spec`. | lattice | ❌ superseded by option-bound grants, [`plugin-manifest.md`](plugin-manifest.md) PMF.3–PMF.5 |
 | PRL.7 | Publishing: one shared plugin build script; reusable `plugin-release.yml`; `release.yml`'s core-plugin job calls the same script. | lattice | 📝 |

@@ -223,6 +223,104 @@ fn release_asset_url(repo: &str, tag: &str, asset: &str) -> String {
     format!("https://github.com/{repo}/releases/download/{tag}/{asset}")
 }
 
+/// PRL.4: GitHub's releases API for `repo` — every release, or one by tag.
+fn releases_api_url(repo: &str, tag: Option<&str>) -> String {
+    match tag {
+        Some(tag) => format!("https://api.github.com/repos/{repo}/releases/tags/{tag}"),
+        None => format!("https://api.github.com/repos/{repo}/releases?per_page=30"),
+    }
+}
+
+/// Fetch `url` and parse it as JSON, through the same `Fetcher` (and so the
+/// same hardening) as the downloads; the body goes through a scratch file in
+/// `dir` and is removed.
+fn fetch_json(fetcher: &dyn Fetcher, url: &str, dir: &Path) -> Result<serde_json::Value, String> {
+    let scratch = dir.join(".release-api.json.part");
+    let result = fetcher.fetch(url, &scratch).and_then(|()| {
+        let text = std::fs::read_to_string(&scratch).map_err(|e| format!("reading {url}: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("{url}: not JSON: {e}"))
+    });
+    let _ = std::fs::remove_file(&scratch);
+    result
+}
+
+/// The asset names a release object lists.
+fn asset_names(release: &serde_json::Value) -> Vec<String> {
+    release["assets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| a["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// PRL.4: the newest release of `repo` that ships `name` for this editor's
+/// API generation — skipping drafts, prereleases, and releases built only for
+/// other generations. One API call.
+fn newest_compatible(
+    fetcher: &dyn Fetcher,
+    repo: &str,
+    name: &str,
+    dir: &Path,
+) -> Result<String, String> {
+    let api = lattice_wit::api_generation();
+    let listing = fetch_json(fetcher, &releases_api_url(repo, None), dir)
+        .map_err(|e| format!("{name}: cannot list the releases of `{repo}`: {e}"))?;
+    let releases = listing
+        .as_array()
+        .ok_or_else(|| format!("{name}: `{repo}`'s releases listing is not a list"))?;
+    let mut newer_elsewhere = Vec::new();
+    for release in releases {
+        if release["draft"].as_bool() == Some(true) || release["prerelease"].as_bool() == Some(true)
+        {
+            continue;
+        }
+        let Some(tag) = release["tag_name"].as_str() else {
+            continue;
+        };
+        if asset_names(release).contains(&release_asset_name(name, tag)) {
+            return Ok(tag.to_string());
+        }
+        newer_elsewhere.push(tag.to_string());
+    }
+    Err(if newer_elsewhere.is_empty() {
+        format!("{name}: `{repo}` has no published release")
+    } else {
+        format!(
+            "{name}: no release of `{repo}` has a build for plugin API {api} (newest: {})",
+            newer_elsewhere[0]
+        )
+    })
+}
+
+/// PRL.4: why a pinned release has no asset for this editor — what it ships
+/// instead, from one API call made only on that failure. `None` when the
+/// release cannot be listed either.
+fn shipped_instead(
+    fetcher: &dyn Fetcher,
+    repo: &str,
+    tag: &str,
+    name: &str,
+    dir: &Path,
+) -> Option<String> {
+    let release = fetch_json(fetcher, &releases_api_url(repo, Some(tag)), dir).ok()?;
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    let prefix = format!("{name}-{version}-");
+    let generations: Vec<String> = asset_names(&release)
+        .into_iter()
+        .filter_map(|n| {
+            n.strip_prefix(&prefix)?
+                .strip_suffix(".wasm")
+                .map(str::to_string)
+        })
+        .collect();
+    Some(if generations.is_empty() {
+        format!("it ships no build of `{name}`")
+    } else {
+        format!("it ships: {}", generations.join(", "))
+    })
+}
+
 /// The asset a release publishes for this editor's plugin API generation:
 /// `<id>-<version>-api<M>.<m>.wasm` (design §2).
 pub fn release_asset_name(name: &str, tag: &str) -> String {
@@ -282,12 +380,7 @@ fn resolve_release(
     user_root: &Path,
     policy: RefreshPolicy,
 ) -> Result<PathBuf, String> {
-    let Some(tag) = version else {
-        return Err(format!(
-            "release `{repo}`: name a version (`version: Some(\"v0.2.0\")`)"
-        ));
-    };
-    check_release_spec(repo, tag)?;
+    check_release_spec(repo, version.unwrap_or("latest"))?;
     let pin = sha256.map(str::to_ascii_lowercase);
     if let Some(pin) = &pin
         && (pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -298,11 +391,45 @@ fn resolve_release(
     let dir = user_root.join(name);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let artifact = dir.join(format!("{name}.wasm"));
+    let api = lattice_wit::api_generation();
+    let installed = crate::source_record::read(&dir);
+    let installed_here = artifact.is_file()
+        && matches!(&installed, crate::SourceRecord::Release { repo: r, api: a, .. }
+            if r == repo && a == api);
+
+    // PRL.4: an unpinned spec means "the newest release built for this API".
+    // Boot keeps what was installed (no API call, no rate limit); only
+    // `update` asks again — and if GitHub cannot be asked, keeps it too.
+    let resolved_tag;
+    let tag = match version {
+        Some(tag) => tag,
+        None => {
+            if policy == RefreshPolicy::UseCache && installed_here {
+                return Ok(artifact);
+            }
+            match newest_compatible(fetcher, repo, name, &dir) {
+                Ok(tag) => {
+                    check_release_spec(repo, &tag)?;
+                    resolved_tag = tag;
+                    &resolved_tag
+                }
+                Err(err) if installed_here => {
+                    tracing::warn!(
+                        plugin = name,
+                        error = %err,
+                        "could not look for a newer release; keeping the installed one"
+                    );
+                    return Ok(artifact);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    };
     let wanted = crate::SourceRecord::Release {
         repo: repo.to_string(),
         version: tag.to_string(),
         sha256: pin.clone(),
-        api: lattice_wit::api_generation().to_string(),
+        api: api.to_string(),
     };
     if policy == RefreshPolicy::UseCache
         && artifact.is_file()
@@ -317,9 +444,16 @@ fn resolve_release(
     let part = dir.join(format!(".{name}.wasm.part"));
     let digest_part = dir.join(format!(".{name}.wasm.sha256.part"));
     let outcome = (|| {
-        fetcher
-            .fetch(&format!("{url}.sha256"), &digest_part)
-            .map_err(|e| format!("{label}: no published checksum ({asset}.sha256): {e}"))?;
+        if let Err(e) = fetcher.fetch(&format!("{url}.sha256"), &digest_part) {
+            // PRL.4: say what the release DOES ship — fetched only on this
+            // failure — rather than only that this asset is not there.
+            return Err(match shipped_instead(fetcher, repo, tag, name, &dir) {
+                Some(shipped) => {
+                    format!("{label} has no build for plugin API {api} ({shipped})")
+                }
+                None => format!("{label}: no published checksum ({asset}.sha256): {e}"),
+            });
+        }
         let published = std::fs::read_to_string(&digest_part)
             .map_err(|e| format!("{label}: reading the checksum: {e}"))?;
         let published = published
@@ -367,7 +501,18 @@ fn resolve_release(
             }
         }
         std::fs::rename(&part, &artifact)
-            .map_err(|e| format!("{label}: installing {}: {e}", artifact.display()))
+            .map_err(|e| format!("{label}: installing {}: {e}", artifact.display()))?;
+        // Recorded here, not by the pipeline: an unpinned spec names no tag,
+        // and the record is what the next boot's no-network check compares.
+        crate::source_record::write(
+            &dir,
+            &PluginSource::Release {
+                repo: repo.to_string(),
+                version: Some(tag.to_string()),
+                sha256: pin.clone(),
+            },
+        );
+        Ok(())
     })();
     let _ = std::fs::remove_file(&digest_part);
     if outcome.is_err() {
@@ -1334,5 +1479,165 @@ mod tests {
                 "{repo} {tag}: no request"
             );
         }
+    }
+
+    // --- Release resolution (PRL.4) --------------------------------------
+
+    /// A releases-API object for `tag` listing `assets`.
+    fn api_release(
+        tag: &str,
+        draft: bool,
+        prerelease: bool,
+        assets: &[String],
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "tag_name": tag,
+            "draft": draft,
+            "prerelease": prerelease,
+            "assets": assets.iter().map(|n| serde_json::json!({ "name": n })).collect::<Vec<_>>(),
+        })
+    }
+
+    fn other_generation(tag: &str) -> String {
+        format!("org-{}-api9.9.wasm", tag.trim_start_matches('v'))
+    }
+
+    fn resolve_org(
+        f: &MapFetcher,
+        user: &Path,
+        version: Option<&str>,
+        policy: RefreshPolicy,
+    ) -> Result<Resolved, String> {
+        resolve(
+            &FakeGit::default(),
+            f,
+            &PluginSource::Release {
+                repo: REPO.into(),
+                version: version.map(str::to_string),
+                sha256: None,
+            },
+            "org",
+            Path::new("/unused"),
+            user,
+            policy,
+        )
+    }
+
+    /// Releases newest first, as the API lists them: a draft, a prerelease and
+    /// a release built only for another generation sit above the one to pick.
+    fn listing_with_v0_2_0_compatible() -> MapFetcher {
+        let wasm = component("id = \"org\"\n");
+        let listing = serde_json::json!([
+            api_release(
+                "v0.5.0",
+                true,
+                false,
+                &[release_asset_name("org", "v0.5.0")]
+            ),
+            api_release(
+                "v0.4.0",
+                false,
+                true,
+                &[release_asset_name("org", "v0.4.0")]
+            ),
+            api_release("v0.3.0", false, false, &[other_generation("v0.3.0")]),
+            api_release(
+                "v0.2.0",
+                false,
+                false,
+                &[release_asset_name("org", "v0.2.0")]
+            ),
+        ]);
+        let mut f = release("v0.2.0", &wasm);
+        f = f.serve(&releases_api_url(REPO, None), listing.to_string());
+        f
+    }
+
+    #[test]
+    fn unpinned_installs_the_newest_release_built_for_this_api() {
+        let root = tempdir("release-newest");
+        let user = root.join("user");
+        let f = listing_with_v0_2_0_compatible();
+        resolve_org(&f, &user, None, RefreshPolicy::UseCache).unwrap();
+        assert_eq!(
+            crate::source_record::read(&user.join("org")),
+            crate::SourceRecord::Release {
+                repo: REPO.into(),
+                version: "v0.2.0".into(),
+                sha256: None,
+                api: lattice_wit::api_generation().to_string(),
+            },
+            "the draft, the prerelease and the other generation's v0.3.0 are passed over, \
+             and the tag it resolved to is what is recorded"
+        );
+    }
+
+    #[test]
+    fn unpinned_at_boot_asks_nothing_once_installed() {
+        let root = tempdir("release-unpinned-warm");
+        let user = root.join("user");
+        let f = listing_with_v0_2_0_compatible();
+        resolve_org(&f, &user, None, RefreshPolicy::UseCache).unwrap();
+        let before = f.calls.load(Ordering::SeqCst);
+        resolve_org(&f, &user, None, RefreshPolicy::UseCache).unwrap();
+        assert_eq!(
+            f.calls.load(Ordering::SeqCst),
+            before,
+            "no API call at boot"
+        );
+    }
+
+    #[test]
+    fn an_update_that_cannot_reach_github_keeps_the_installed_release() {
+        let root = tempdir("release-offline");
+        let user = root.join("user");
+        let f = listing_with_v0_2_0_compatible();
+        resolve_org(&f, &user, None, RefreshPolicy::UseCache).unwrap();
+        let installed = std::fs::read(user.join("org").join("org.wasm")).unwrap();
+
+        // Offline: nothing answers.
+        let offline = MapFetcher::default();
+        let got = resolve_org(&offline, &user, None, RefreshPolicy::Update).unwrap();
+        assert_eq!(got, Resolved::Artifact(user.join("org").join("org.wasm")));
+        assert_eq!(
+            std::fs::read(user.join("org").join("org.wasm")).unwrap(),
+            installed
+        );
+    }
+
+    #[test]
+    fn unpinned_with_no_build_for_this_api_is_a_named_refusal() {
+        let root = tempdir("release-none-compatible");
+        let user = root.join("user");
+        let listing = serde_json::json!([api_release(
+            "v0.3.0",
+            false,
+            false,
+            &[other_generation("v0.3.0")]
+        ),]);
+        let f = MapFetcher::default().serve(&releases_api_url(REPO, None), listing.to_string());
+        let err = resolve_org(&f, &user, None, RefreshPolicy::UseCache).unwrap_err();
+        assert!(
+            err.contains("no release of") && err.contains("newest: v0.3.0"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_pinned_release_without_this_api_says_what_it_ships() {
+        let root = tempdir("release-pinned-other-api");
+        let user = root.join("user");
+        let f = MapFetcher::default().serve(
+            &releases_api_url(REPO, Some("v0.3.0")),
+            api_release("v0.3.0", false, false, &[other_generation("v0.3.0")]).to_string(),
+        );
+        let err = resolve_org(&f, &user, Some("v0.3.0"), RefreshPolicy::UseCache).unwrap_err();
+        assert_eq!(
+            err,
+            format!(
+                "org v0.3.0 has no build for plugin API {} (it ships: api9.9)",
+                lattice_wit::api_generation()
+            )
+        );
     }
 }

@@ -142,8 +142,12 @@ pub fn install_required(
         // all, which is the point of the kind.
         Resolved::Artifact(artifact) => {
             // PM.8a: remember where it came from, so the view can say so and
-            // a later re-download knows the URL.
-            if let Some(dir) = artifact.parent() {
+            // a later re-download knows the URL. Not for a release: the
+            // installer records the tag it resolved to, which an unpinned spec
+            // does not name (PRL.4).
+            if let Some(dir) = artifact.parent()
+                && !matches!(spec.source, PluginSource::Release { .. })
+            {
                 crate::source_record::write(dir, &spec.source);
             }
             return Install::Ready {

@@ -219,7 +219,7 @@ pub fn resolve(
 
 /// PRL.3: where a release asset lives. GitHub-specific URLs are confined to
 /// this one function, so a second forge is a second function (design §3).
-fn release_asset_url(repo: &str, tag: &str, asset: &str) -> String {
+pub fn release_asset_url(repo: &str, tag: &str, asset: &str) -> String {
     format!("https://github.com/{repo}/releases/download/{tag}/{asset}")
 }
 

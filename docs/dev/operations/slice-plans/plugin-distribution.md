@@ -23,7 +23,7 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 | PRL.4 | Compatibility and resolution: API generation in the asset name, the named refusal, newest-compatible lookup for unpinned specs and `update`. | lattice | ✅ |
 | PRL.5 | WIT `require-release` + host wiring; `:plugins` source label. | lattice | ✅ |
 | PRL.6 | User grants on `release-spec`. | lattice | ❌ superseded by option-bound grants, [`plugin-manifest.md`](plugin-manifest.md) PMF.3–PMF.5 |
-| PRL.7 | Publishing: one shared plugin build script; reusable `plugin-release.yml`; `release.yml`'s core-plugin job calls the same script. | lattice | 📝 |
+| PRL.7 | Publishing: one shared plugin build script; reusable `plugin-release.yml`; `release.yml`'s core-plugin job calls the same script. | lattice | ✅ |
 | PRL.8 | Org adopts the workflow; first published release. | lattice-org-plugin | 📝 |
 | PRL.9 | User and author docs; fix the `plugin-authoring.md` contradiction. | lattice | 📝 |
 | PRL.10 | Signed packages (attestations or minisign). | lattice | ⛔ after PRL.8 has shipped real releases — the threat model needs a real publisher to be written against (design §7). |
@@ -174,6 +174,24 @@ today; an `update` that replaces the package keeps the user's grants.
 **Tests:** CI runs the script against `plugins/auto-pair` and PRL.3's installer
 installs the result from a local URL — producer and consumer agreeing is the
 test that matters.
+
+**As built (2026-10-19).** `scripts/build-plugin.sh [--no-build] <dir>
+[<out-dir>]` and `.github/workflows/plugin-release.yml`. The script reads the
+embedded manifest with a short Python reader (the loader's walk), so it needs
+no wasm toolchain beyond cargo. The API generation is the plugin's locked
+`lattice-wit`, or this repository's for a plugin that has none (the bundled
+ones). Two departures:
+
+- `release.yml`'s `core-plugins` job keeps `cargo xtask build-core-plugins`.
+  Core plugins ship inside the editor's archives, staged into `runtime/` — not
+  as release assets — so the script's packaging step does not apply to them,
+  and moving a working release job onto it buys nothing.
+- The producer/consumer test is `lattice-plugin-loader/tests/release_round_trip.rs`:
+  the real script packages the built `auto-pair` and the installer installs
+  those exact files. Breaking the asset name in the script fails it.
+
+The workflow itself is checked only for shape here; its first real run is
+PRL.8's first tag.
 
 ## PRL.8 — org adopts it
 

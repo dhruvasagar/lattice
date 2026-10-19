@@ -146,6 +146,8 @@ pub use context_source::WasmContextSource;
 pub use context_task::{ContextActor, ContextClient};
 pub use decoration_source::WasmDecorationSource;
 pub use decoration_task::{DecorationActor, DecorationClient};
+/// PRL.1: the hardened download core, for the host's own plugin installer.
+pub use download_host::{Limits as DownloadLimits, download_to_file, fetch_bytes};
 pub use manifest::{
     Capability, CapabilityParseError, ManifestError, OptionPath, PluginManifest, PluginSeam,
 };

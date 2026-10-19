@@ -13,11 +13,11 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
 + tests including failure modes + graceful error handling).
 
-**Status: 📝 planned (2026-10-16).** No slice started.
+**Status: 🚧 in progress (2026-10-19).**
 
 | Slice | What | Repo | Status |
 |---|---|---|---|
-| PRL.1 | Factor LH.0's download core out of its job wrapper, host-callable. No behaviour change. | lattice | 📝 |
+| PRL.1 | Factor LH.0's download core out of its job wrapper, host-callable. No behaviour change. | lattice | ✅ |
 | PRL.2 | `Prebuilt{url}` bug fixes: no re-download when present; timeouts and a byte ceiling via PRL.1. | lattice | 📝 |
 | PRL.3 | The package installer: `PluginSource::Release`, convention URL, sha256, id check, swap into place, `.source` kind `release`. | lattice | 📝 |
 | PRL.4 | Compatibility and resolution: API generation in the asset name, the named refusal, newest-compatible lookup for unpinned specs and `update`. | lattice | 📝 |

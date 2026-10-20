@@ -5289,8 +5289,10 @@ mod grant_guard_tests {
         let config = Arc::new(lattice_config::ConfigRegistry::default());
         host.set_config_registry(config.clone());
         let notes = base.path().join("notes");
+        // A literal string ('…'): a Windows temp path's backslashes are
+        // escapes in a basic one ("C:\Users" is an invalid `\U`).
         let manifest = PluginManifest::from_toml_str(&format!(
-            "id = \"org\"\ncapabilities = [\"fs:write:{{org.directory|{}}}\"]\n",
+            "id = \"org\"\ncapabilities = ['fs:write:{{org.directory|{}}}']\n",
             base.path().join("default").display()
         ))
         .unwrap();

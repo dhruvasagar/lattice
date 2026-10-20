@@ -1240,7 +1240,7 @@ mod tests {
             },
             OptionBoundGrant {
                 option: "org.roam-directory".into(),
-                path: Some(home.join("org/roam")),
+                path: Some(home.join("org").join("roam")),
                 from_default: true,
                 write: true,
             },
@@ -1253,9 +1253,17 @@ mod tests {
         ];
         let out = render_status(&[s]);
         let row = out.lines().find(|l| l.contains("org.directory")).unwrap();
-        assert!(row.contains("fs:write ~/notes (org.directory)"), "{row}");
+        // `contract_tilde` shows the platform's separator (`~\notes` on
+        // Windows), as everywhere else a path is displayed.
+        let sep = std::path::MAIN_SEPARATOR;
         assert!(
-            row.contains("fs:write ~/org/roam (org.roam-directory, default)"),
+            row.contains(&format!("fs:write ~{sep}notes (org.directory)")),
+            "{row}"
+        );
+        assert!(
+            row.contains(&format!(
+                "fs:write ~{sep}org{sep}roam (org.roam-directory, default)"
+            )),
             "{row}"
         );
         assert!(

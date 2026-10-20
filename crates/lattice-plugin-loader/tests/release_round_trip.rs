@@ -10,8 +10,8 @@
 //! at the URLs it asks for.
 //!
 //! Skips when `auto-pair` has not been built for `wasm32-wasip2` (the
-//! plugin-host build script builds it where the target is installed) or there
-//! is no `bash` / `python3` to run the script.
+//! plugin-host build script builds it where the target is installed), when
+//! there is no `bash` / `python3` to run the script, and on Windows.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -61,6 +61,13 @@ fn what_the_script_publishes_the_installer_installs() {
         .is_file()
     {
         eprintln!("skipping: plugins/auto-pair is not built for wasm32-wasip2");
+        return;
+    }
+    // The script runs where it is used: the release workflow, on Linux. On a
+    // Windows runner `bash` is WSL's launcher, usually with no distribution
+    // behind it, so it fails without saying why.
+    if cfg!(windows) {
+        eprintln!("skipping: build-plugin.sh runs on Linux (the release workflow)");
         return;
     }
     let out = tempfile::tempdir().unwrap();

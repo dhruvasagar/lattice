@@ -52,11 +52,13 @@ async fn the_plugin_reloads_when_its_grant_bearing_option_moves() {
     let plugins = base.path().join("plugins");
     let dir = plugins.join("config-fixture");
     std::fs::create_dir_all(&dir).unwrap();
+    // A literal string ('…') for the path: a Windows temp path's backslashes
+    // are escapes in a basic one, and the manifest would not parse.
     std::fs::write(
         dir.join("plugin.toml"),
         format!(
             "id = \"config-fixture\"\nprovides = [\"config\"]\n\
-             capabilities = [\"fs:read:{{config-fixture.label|{}}}\"]\n",
+             capabilities = ['fs:read:{{config-fixture.label|{}}}']\n",
             base.path().join("default").display()
         ),
     )

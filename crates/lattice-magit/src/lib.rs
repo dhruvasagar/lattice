@@ -94,6 +94,20 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // completion. magit publishes `BackgroundTaskFinished`; the
     // notification layer subscribes. No dependency either way.
     magit_global_mode::set_event_bus(boot.event_bus().clone());
+    // CG.7: capture the foreground-cancel service the same way, so a git
+    // operation triggered again is keyed (`cancellation.md` §9). Looked up
+    // under `ForegroundCancelHandle`, the type boot registers it as; the
+    // registry hands back an `Arc` around it.
+    match boot.service::<lattice_mode::ForegroundCancelHandle>() {
+        Some(cancel) => magit_global_mode::set_foreground_cancel((*cancel).clone()),
+        // Boot registers the service before any install; reaching this
+        // means that order regressed, and every git operation would run
+        // unkeyed — double pushes and all — with nothing else to say so.
+        None => tracing::warn!(
+            "magit: no foreground-cancel service at install; git operations \
+             triggered again will not be refused or superseded"
+        ),
+    }
 
     // ── Modes ──────────────────────────────────────────────
 

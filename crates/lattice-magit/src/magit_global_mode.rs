@@ -2832,11 +2832,21 @@ pub struct RemoteOp {
     pub args: &'static [&'static str],
     /// Toggleable flags, in `args_schema` order.
     pub flags: &'static [RemoteFlag],
+    /// CG.7: what triggering this op again while a run is in flight does
+    /// (`cancellation.md` §9). `Supersede` only where a kill is harmless —
+    /// push, fetch, notes prune: their ref updates are atomic and the next
+    /// run redoes them. Everything that changes the working tree, the index
+    /// or a sequencer's state — pull's merge half, continue/skip/abort,
+    /// stage-all, stash — is `RunToCompletion`: a kill partway can leave
+    /// `.git/index.lock` or a half-applied change. A field, not a match on
+    /// `what`, so a new op cannot forget to say.
+    pub retrigger: lattice_mode::RePolicy,
 }
 
 impl RemoteOp {
     pub const PULL: Self = Self {
         what: "pull",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "pulling",
         // `--ff-only` stays the default: a pull that can create a merge
         // commit behind your back is the wrong default. `--rebase`
@@ -2862,6 +2872,7 @@ impl RemoteOp {
     };
     pub const PUSH: Self = Self {
         what: "push",
+        retrigger: lattice_mode::RePolicy::Supersede,
         doing: "pushing",
         args: &["push"],
         flags: &[
@@ -2911,6 +2922,7 @@ impl RemoteOp {
     };
     pub const FETCH: Self = Self {
         what: "fetch",
+        retrigger: lattice_mode::RePolicy::Supersede,
         doing: "fetching",
         args: &["fetch"],
         flags: &[
@@ -2961,36 +2973,42 @@ impl RemoteOp {
     // different commands and each errors during the other's sequence.
     pub const CHERRY_PICK_CONTINUE: Self = Self {
         what: "continue cherry-pick",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "continuing cherry-pick",
         args: &["cherry-pick", "--continue"],
         flags: &[],
     };
     pub const CHERRY_PICK_SKIP: Self = Self {
         what: "skip commit in cherry-pick",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "skipping commit in cherry-pick",
         args: &["cherry-pick", "--skip"],
         flags: &[],
     };
     pub const CHERRY_PICK_ABORT: Self = Self {
         what: "abort cherry-pick",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting cherry-pick",
         args: &["cherry-pick", "--abort"],
         flags: &[],
     };
     pub const REVERT_CONTINUE: Self = Self {
         what: "continue revert",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "continuing revert",
         args: &["revert", "--continue"],
         flags: &[],
     };
     pub const REVERT_SKIP: Self = Self {
         what: "skip commit in revert",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "skipping commit in revert",
         args: &["revert", "--skip"],
         flags: &[],
     };
     pub const REVERT_ABORT: Self = Self {
         what: "abort revert",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting revert",
         args: &["revert", "--abort"],
         flags: &[],
@@ -3001,6 +3019,7 @@ impl RemoteOp {
     /// answer and is reported rather than swallowed.
     pub const MERGE_CONTINUE: Self = Self {
         what: "conclude merge",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "concluding merge",
         args: &["merge", "--continue"],
         flags: &[],
@@ -3008,18 +3027,21 @@ impl RemoteOp {
     /// Throw the merge away and restore the branch.
     pub const MERGE_ABORT: Self = Self {
         what: "abort merge",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting merge",
         args: &["merge", "--abort"],
         flags: &[],
     };
     pub const REBASE_CONTINUE: Self = Self {
         what: "continue rebase",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "continuing rebase",
         args: &["rebase", "--continue"],
         flags: &[],
     };
     pub const REBASE_SKIP: Self = Self {
         what: "skip commit in rebase",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "skipping commit in rebase",
         args: &["rebase", "--skip"],
         flags: &[],
@@ -3028,6 +3050,7 @@ impl RemoteOp {
     /// open — which is the case once the rebase has actually started.
     pub const REBASE_ABORT: Self = Self {
         what: "abort rebase",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting rebase",
         args: &["rebase", "--abort"],
         flags: &[],
@@ -3038,6 +3061,7 @@ impl RemoteOp {
     /// same reason it fits the rebase sequencer.
     pub const NOTES_PRUNE: Self = Self {
         what: "prune notes",
+        retrigger: lattice_mode::RePolicy::Supersede,
         doing: "pruning notes",
         args: &["notes", "prune"],
         flags: &[RemoteFlag {
@@ -3050,12 +3074,14 @@ impl RemoteOp {
     };
     pub const NOTES_MERGE_COMMIT: Self = Self {
         what: "conclude notes merge",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "concluding notes merge",
         args: &["notes", "merge", "--commit"],
         flags: &[],
     };
     pub const NOTES_MERGE_ABORT: Self = Self {
         what: "abort notes merge",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting notes merge",
         args: &["notes", "merge", "--abort"],
         flags: &[],
@@ -3069,18 +3095,21 @@ impl RemoteOp {
     /// repository in a state the editor cannot finish.
     pub const AM_CONTINUE: Self = Self {
         what: "continue applying patches",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "continuing to apply patches",
         args: &["am", "--continue"],
         flags: &[],
     };
     pub const AM_SKIP: Self = Self {
         what: "skip patch",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "skipping patch",
         args: &["am", "--skip"],
         flags: &[],
     };
     pub const AM_ABORT: Self = Self {
         what: "abort applying patches",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting patch application",
         args: &["am", "--abort"],
         flags: &[],
@@ -3097,6 +3126,7 @@ impl RemoteOp {
     /// magit-status is the explicit path.
     pub const STAGE_ALL: Self = Self {
         what: "stage all tracked changes",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "staging all tracked changes",
         args: &["add", "--update"],
         flags: &[],
@@ -3110,6 +3140,7 @@ impl RemoteOp {
     /// than one file but it is still fully reversible.
     pub const UNSTAGE_ALL: Self = Self {
         what: "unstage everything",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "unstaging everything",
         args: &["reset", "--quiet"],
         flags: &[],
@@ -3118,6 +3149,7 @@ impl RemoteOp {
     /// staged, so a partially-staged commit can be tried in isolation.
     pub const STASH_KEEP_INDEX: Self = Self {
         what: "stash, keeping the index",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "stashing, keeping the index",
         args: &["stash", "push", "--keep-index"],
         flags: &[],
@@ -3125,12 +3157,14 @@ impl RemoteOp {
     /// MG.41d: magit's `i` — stash only what is staged.
     pub const STASH_STAGED: Self = Self {
         what: "stash staged changes",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "stashing staged changes",
         args: &["stash", "push", "--staged"],
         flags: &[],
     };
     pub const STASH: Self = Self {
         what: "stash changes",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "stashing changes",
         args: &["stash", "push"],
         flags: &[
@@ -3412,6 +3446,42 @@ static EVENT_BUS: std::sync::OnceLock<std::sync::Arc<lattice_runtime::EventBus>>
 
 pub(crate) fn set_event_bus(bus: std::sync::Arc<lattice_runtime::EventBus>) {
     let _ = EVENT_BUS.set(bus);
+}
+
+/// CG.7: the foreground-cancel service, captured at install for the same
+/// reason as [`EVENT_BUS`] — a spawner has no context to look it up
+/// through, and a parameter is the thing a spawner forgets. `None` in a
+/// harness that never installed one: work then runs as before, unkeyed.
+static FOREGROUND_CANCEL: std::sync::OnceLock<lattice_mode::ForegroundCancelHandle> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn set_foreground_cancel(cancel: lattice_mode::ForegroundCancelHandle) {
+    let _ = FOREGROUND_CANCEL.set(cancel);
+}
+
+/// CG.7: begin a keyed run of a git operation (`cancellation.md` §9).
+///
+/// `Ok(None)` with no service installed — the run proceeds unkeyed, as
+/// every git operation did before. `Err` is the refusal the caller
+/// echoes: the same operation with the same arguments is already running
+/// (it carries on), or one that is unsafe to kill is.
+pub(crate) fn begin_task(
+    key: lattice_mode::TaskKey,
+) -> Result<Option<lattice_mode::TaskTicket>, lattice_mode::AlreadyRunning> {
+    match FOREGROUND_CANCEL.get() {
+        Some(cancel) => cancel.begin(key).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// What a refused trigger says: the operation, and the repository it is
+/// running in.
+pub(crate) fn already_running(what: &str, workdir: &std::path::Path) -> Effect {
+    let place = task_scope(workdir).unwrap_or_else(|| "this repository".to_string());
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {what} is already running in {place}"),
+    }
 }
 
 /// The bus `finish_task` publishes on, for modes that need to LISTEN
@@ -4698,6 +4768,15 @@ pub fn spawn_remote_op_to(
     let base = op.argv(args);
     let shown = base.join(" ");
     let scope_dir = workdir.clone();
+    let key = remote_task_key(op, &workdir, target, prompted.as_deref(), &base);
+    let ticket = match begin_task(key) {
+        Ok(ticket) => ticket,
+        Err(_) => return already_running(op.what, &workdir),
+    };
+    let token = ticket
+        .as_ref()
+        .map(|t| t.token().clone())
+        .unwrap_or_else(lattice_protocol::CancellationToken::never);
     tokio::task::spawn(async move {
         // The label names the resolved destination, so it is built
         // where the destination resolves; a resolution failure is
@@ -4710,15 +4789,20 @@ pub fn spawn_remote_op_to(
                     None => {
                         return (
                             op.label(&base),
-                            Err("no upstream configured for this branch — set one, \
-                                 or pick a destination explicitly"
-                                .to_string()),
+                            Some(Err("no upstream configured for this branch — set one, \
+                                      or pick a destination explicitly"
+                                .to_string())),
                         );
                     }
                 },
                 RemoteTarget::Prompted => match prompted.as_deref() {
                     Some(v) if !v.trim().is_empty() => Some(v.to_string()),
-                    _ => return (op.label(&base), Err("no destination given".to_string())),
+                    _ => {
+                        return (
+                            op.label(&base),
+                            Some(Err("no destination given".to_string())),
+                        );
+                    }
                 },
                 _ => None,
             };
@@ -4732,14 +4816,17 @@ pub fn spawn_remote_op_to(
                         argv.extend(destination.split_whitespace().map(str::to_string));
                     }
                     Ok(None) => {}
-                    Err(why) => return (op.label(&argv), Err(why)),
+                    Err(why) => return (op.label(&argv), Some(Err(why))),
                 }
             }
-            (op.label(&argv), run_remote_op(&workdir, &argv))
+            (
+                op.label(&argv),
+                run_remote_op_until(&workdir, &argv, &token),
+            )
         })
         .await
-        .unwrap_or_else(|e| (fallback, Err(e.to_string())));
-        finish_task(&scope_dir, &label, result);
+        .unwrap_or_else(|e| (fallback, Some(Err(e.to_string()))));
+        finish_remote_op(&scope_dir, &label, result, ticket.as_ref());
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -4763,10 +4850,20 @@ pub fn spawn_remote_op(
     let shown = argv.join(" ");
     let label = op.label(&argv);
     let scope_dir = workdir.clone();
+    let key = remote_task_key(op, &workdir, RemoteTarget::Configured, None, &argv);
+    let ticket = match begin_task(key) {
+        Ok(ticket) => ticket,
+        Err(_) => return already_running(op.what, &workdir),
+    };
+    let token = ticket
+        .as_ref()
+        .map(|t| t.token().clone())
+        .unwrap_or_else(lattice_protocol::CancellationToken::never);
     tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
+        let result =
+            tokio::task::spawn_blocking(move || run_remote_op_until(&workdir, &argv, &token))
+                .await
+                .unwrap_or_else(|e| Some(Err(e.to_string())));
         // NOTIF.1d / MG.41g: the completion the echo could never
         // carry — the echo is written at *fire* time, so before this
         // the operation succeeded invisibly and failed only into
@@ -4777,7 +4874,7 @@ pub fn spawn_remote_op(
         // `debug!`-on-success / `error!`-on-failure split (the failure
         // log carries git's FULL stderr; the published message is the
         // one line a notification can show).
-        finish_task(&scope_dir, &label, result);
+        finish_remote_op(&scope_dir, &label, result, ticket.as_ref());
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -5026,7 +5123,25 @@ pub(crate) fn short_rev(rev: &str) -> &str {
 /// of hanging. `git push`'s human-readable progress goes to stderr
 /// even on success, so both streams are checked.
 fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, String> {
-    let output = std::process::Command::new("git")
+    run_remote_op_until(workdir, args, &lattice_protocol::CancellationToken::never())
+        .unwrap_or_else(|| Err("cancelled".to_string()))
+}
+
+/// [`run_remote_op`], stopped when `token` is cancelled (CG.7) — `None`
+/// then, since a stopped run has no result to report.
+///
+/// `ProcessGroup::Shared`: a cancel kills git alone. Its `ssh` may be
+/// asking for a key's passphrase on the terminal lattice was started from,
+/// and from a process group of its own that read would suspend it — a push
+/// that hangs silently instead of prompting (`lattice_core::process`).
+fn run_remote_op_until(
+    workdir: &std::path::Path,
+    args: &[String],
+    token: &lattice_protocol::CancellationToken,
+) -> Option<Result<String, String>> {
+    use lattice_core::process::{ProcessGroup, RunOutcome, run_cancellable};
+    let mut command = std::process::Command::new("git");
+    command
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         // MG.34: `rebase --continue` opens `$EDITOR` on the commit
@@ -5043,17 +5158,17 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
         // this an instant-fixup hangs the same way `--continue` would
         // without `GIT_EDITOR`.
         .env("GIT_SEQUENCE_EDITOR", "true")
-        .current_dir(workdir)
-        .output();
+        .current_dir(workdir);
     // NC.3: the line that says what happened goes FIRST, git's full
     // output after it — `finish_task` publishes the first line and
     // logs the rest. Taking stdout-then-stderr as it came made a push
     // read `To <url>` and a conflicted merge read nothing at all.
-    match output {
-        Ok(o) => {
+    match run_cancellable(command, None, ProcessGroup::Shared, token) {
+        Ok(RunOutcome::Cancelled) => None,
+        Ok(RunOutcome::Finished(o)) => {
             let out = String::from_utf8_lossy(&o.stdout);
             let err = String::from_utf8_lossy(&o.stderr);
-            if o.status.success() {
+            Some(if o.status.success() {
                 Ok(crate::git_report::success_report(args, &out, &err))
             } else {
                 Err(crate::git_report::failure_report(
@@ -5061,9 +5176,55 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
                     &err,
                     o.status.code(),
                 ))
-            }
+            })
         }
-        Err(e) => Err(e.to_string()),
+        Err(e) => Some(Err(e.to_string())),
+    }
+}
+
+/// CG.7: the key a remote op runs under. Identity is the op, the
+/// repository and the destination as the user chose it (the row, and a
+/// prompted name) — resolving the actual remote needs git, and the
+/// decision to refuse has to be made before anything is spawned. The
+/// inputs are git's arguments, flags included: a push re-run with `-f`
+/// is a new question, a second press of the same push is not.
+fn remote_task_key(
+    op: RemoteOp,
+    workdir: &std::path::Path,
+    target: RemoteTarget,
+    prompted: Option<&str>,
+    argv: &[String],
+) -> lattice_mode::TaskKey {
+    let scope = format!(
+        "{} {target:?} {}",
+        workdir.display(),
+        prompted.unwrap_or_default()
+    );
+    let key = match op.retrigger {
+        lattice_mode::RePolicy::Supersede => lattice_mode::TaskKey::supersede(op.what, scope),
+        lattice_mode::RePolicy::RunToCompletion => {
+            lattice_mode::TaskKey::run_to_completion(op.what, scope)
+        }
+    };
+    key.with_inputs(argv.join(" "))
+}
+
+/// CG.7: how a remote op's run ended, for [`finish_task`] — or not. A run
+/// that was cancelled, or has since been superseded, reports nothing: the
+/// user asked again (or pressed `<C-g>`), and the run that replaced it
+/// will report. One quiet line says it happened.
+fn finish_remote_op(
+    workdir: &std::path::Path,
+    label: &str,
+    result: Option<Result<String, String>>,
+    ticket: Option<&lattice_mode::TaskTicket>,
+) {
+    let current = ticket.is_none_or(lattice_mode::TaskTicket::is_current);
+    match result {
+        Some(result) if current => finish_task(workdir, label, result),
+        _ => {
+            tracing::info!(target: "lattice_magit", "magit: {label} stopped — superseded or cancelled")
+        }
     }
 }
 
@@ -6559,5 +6720,222 @@ mod reactive_refresh {
                 "{source:?} must not trigger a magit refresh"
             );
         }
+    }
+}
+
+/// CG.7: a remote op triggered again is decided by what the re-trigger asks
+/// for (`cancellation.md` §9), proven against real git. A `pre-receive`
+/// hook that sleeps makes the push slow enough to re-trigger into.
+#[cfg(all(test, unix))]
+mod keyed_remote_ops {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use lattice_grammar::{ArgValue, Args};
+    use lattice_protocol::event::{Event, EventKind, TaskOutcome};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::Duration;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The cancel service and the bus are process-wide in magit (set once,
+    /// at install); every test in this binary shares them, and tells its
+    /// own events apart by repository.
+    fn installed() -> Arc<lattice_runtime::EventBus> {
+        set_foreground_cancel(Arc::new(lattice_mode::ForegroundCancel::default()));
+        if event_bus().is_none() {
+            set_event_bus(Arc::new(lattice_runtime::EventBus::new()));
+        }
+        event_bus().unwrap()
+    }
+
+    /// A clone named `name` with an unpushed commit, whose origin takes
+    /// `secs` to accept a push. Named per test: the bus labels a repository
+    /// by its directory name, qualified once two share one, so two tests
+    /// cloning into `work` would see each other's label change under them.
+    fn slow_origin(name: &str, secs: u32) -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        git(root.path(), &["init", "-q", "--bare", "origin.git"]);
+        git(root.path(), &["clone", "-q", "origin.git", name]);
+        let work = root.path().join(name);
+        git(&work, &["config", "user.email", "t@example.invalid"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(&work, &["push", "-q", "-u", "origin", "HEAD:main"]);
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "unpushed"]);
+        let hook = root.path().join("origin.git/hooks/pre-receive");
+        std::fs::write(&hook, format!("#!/bin/sh\nsleep {secs}\n")).unwrap();
+        Command::new("chmod")
+            .args(["+x"])
+            .arg(&hook)
+            .status()
+            .unwrap();
+        (root, work)
+    }
+
+    /// Every `BackgroundTaskFinished` for `work`'s repository within `wait`.
+    async fn finished(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Event>,
+        work: &Path,
+        wait: Duration,
+    ) -> Vec<TaskOutcome> {
+        let scope = task_scope(work);
+        let mut seen = Vec::new();
+        let deadline = tokio::time::Instant::now() + wait;
+        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+            if let Event::BackgroundTaskFinished {
+                scope: s, outcome, ..
+            } = event
+                && s == scope
+            {
+                seen.push(outcome);
+            }
+        }
+        seen
+    }
+
+    fn subscribe(bus: &lattice_runtime::EventBus) -> tokio::sync::mpsc::UnboundedReceiver<Event> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        bus.subscribe(
+            lattice_runtime::EventFilter::kind(EventKind::BackgroundTaskFinished),
+            lattice_runtime::SubscriptionTarget::Channel(tx),
+        );
+        rx
+    }
+
+    fn echo_text(effect: &Effect) -> &str {
+        match effect {
+            Effect::Echo { text, .. } => text,
+            other => panic!("expected an echo, got {other:?}"),
+        }
+    }
+
+    /// The case that started CG: a double-pressed push. The second press
+    /// is refused and says so; the first carries on and is the only one
+    /// to report — no restart, no rejected ref race.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_double_pressed_push_runs_once() {
+        let bus = installed();
+        let mut rx = subscribe(&bus);
+        let (_root, work) = slow_origin("cg7-double-press", 2);
+
+        let first = spawn_remote_op_to(
+            work.clone(),
+            RemoteOp::PUSH,
+            &Args::None,
+            RemoteTarget::Configured,
+            None,
+        );
+        assert!(!echo_text(&first).contains("already running"));
+        let second = spawn_remote_op_to(
+            work.clone(),
+            RemoteOp::PUSH,
+            &Args::None,
+            RemoteTarget::Configured,
+            None,
+        );
+        assert!(
+            echo_text(&second).contains("push is already running in"),
+            "{}",
+            echo_text(&second)
+        );
+
+        let outcomes = finished(&mut rx, &work, Duration::from_secs(8)).await;
+        assert_eq!(outcomes.len(), 1, "one push ran: {outcomes:?}");
+        assert!(
+            matches!(outcomes[0], TaskOutcome::Succeeded { .. }),
+            "{outcomes:?}"
+        );
+    }
+
+    /// A push re-run with a new flag is a new question: the run in flight
+    /// is stopped without reporting, and the new one is what reports.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_push_re_run_with_a_new_flag_supersedes_the_first() {
+        let bus = installed();
+        let mut rx = subscribe(&bus);
+        let (_root, work) = slow_origin("cg7-new-flag", 2);
+
+        let _first = spawn_remote_op_to(
+            work.clone(),
+            RemoteOp::PUSH,
+            &Args::None,
+            RemoteTarget::Configured,
+            None,
+        );
+        let forced = spawn_remote_op_to(
+            work.clone(),
+            RemoteOp::PUSH,
+            &Args::List(vec![ArgValue::Bool(true), ArgValue::Bool(false)]),
+            RemoteTarget::Configured,
+            None,
+        );
+        assert!(!echo_text(&forced).contains("already running"));
+
+        let outcomes = finished(&mut rx, &work, Duration::from_secs(8)).await;
+        assert_eq!(
+            outcomes.len(),
+            1,
+            "the superseded push reports nothing: {outcomes:?}"
+        );
+    }
+
+    /// Pull is unsafe to kill (its merge half): a re-trigger is refused
+    /// even when its flags differ.
+    #[test]
+    fn pull_refuses_a_re_trigger_even_with_new_flags() {
+        installed();
+        let dir = tempfile::tempdir().unwrap();
+        let key = |args: &Args| {
+            remote_task_key(
+                RemoteOp::PULL,
+                dir.path(),
+                RemoteTarget::Configured,
+                None,
+                &RemoteOp::PULL.argv(args),
+            )
+        };
+        let _running = begin_task(key(&Args::None)).unwrap();
+        let rebase = Args::List(vec![ArgValue::Bool(true), ArgValue::Bool(false)]);
+        assert!(begin_task(key(&rebase)).is_err());
+    }
+
+    /// Different destinations are different tasks: a push to a prompted
+    /// remote does not refuse, or stop, a push to the configured one.
+    #[test]
+    fn a_push_elsewhere_is_another_task() {
+        installed();
+        let dir = tempfile::tempdir().unwrap();
+        let argv = RemoteOp::PUSH.argv(&Args::None);
+        let configured = begin_task(remote_task_key(
+            RemoteOp::PUSH,
+            dir.path(),
+            RemoteTarget::Configured,
+            None,
+            &argv,
+        ))
+        .unwrap()
+        .unwrap();
+        let elsewhere = begin_task(remote_task_key(
+            RemoteOp::PUSH,
+            dir.path(),
+            RemoteTarget::Prompted,
+            Some("fork main"),
+            &argv,
+        ));
+        assert!(elsewhere.is_ok());
+        assert!(configured.is_current());
     }
 }

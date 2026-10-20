@@ -518,7 +518,8 @@ unsafe on a key press too. A `Supersede` ticket's token is enrolled, so
 
 ```rust
 // lattice-core/src/process.rs
-pub fn run_cancellable(command: Command, token: &CancellationToken)
+pub fn run_cancellable(command: Command, input: Option<Vec<u8>>,
+    group: ProcessGroup, token: &CancellationToken)
     -> io::Result<RunOutcome>;          // Finished(Output) | Cancelled
 ```
 
@@ -530,6 +531,16 @@ workspace denies `unsafe`, so not `libc::kill`), `taskkill /T /F` on
 Windows — because a shell's grandchildren otherwise outlive it and keep
 its pipes open. The plugin host's process job and compilation each
 carry a private version of this; they move onto the shared one.
+
+**Unless the child may need the terminal.** `ssh` under `git push` asks
+for a key's passphrase on the terminal lattice was started from; from a
+process group of its own that read is a background read, which the
+terminal answers by suspending it (`SIGTTIN`) — a push that hangs
+silently instead of asking. So the group is the caller's choice
+(`ProcessGroup::Own` / `Shared`): git's remote operations share the
+editor's group and a cancel kills git alone, leaving an `ssh` mid-prompt
+to end on its own. Either way a cancel does not wait for the output
+readers, so a grandchild still holding a pipe cannot delay it.
 
 A superseded run ends quietly: one line in `*messages*`, no error
 notification. The user did not fail at anything — they asked again.

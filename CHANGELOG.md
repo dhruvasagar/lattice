@@ -106,6 +106,16 @@
   signature-help popups are the exception in both, and stay undimmed.
 
 ### Fixed
+- **A git operation pressed twice runs once.** Pushing (or fetching,
+  pulling, `rebase --continue`, …) again while the first is still running
+  used to start a second copy — two pushes raced, and one was rejected by
+  the remote. Now the second press says *"push is already running in
+  lattice"* and the first carries on. Re-running it with different flags —
+  a push with `-f` after a rejection — stops the first and runs the new
+  one. Operations a kill could leave half-done (pull, stash, the rebase /
+  merge / cherry-pick / revert / `am` steps) are never interrupted: a
+  second press is refused until they finish. To restart identical work on
+  purpose, press `<C-g>`, then run it again.
 - **`:plugin-update` updates a plugin installed from a URL.** A `Prebuilt`
   plugin was refused with "has no buildable source" instead of being
   downloaded again; `:plugin-rebuild` still says that, since there is nothing

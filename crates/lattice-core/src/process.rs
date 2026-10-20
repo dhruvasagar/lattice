@@ -10,12 +10,16 @@
 //!
 //! Three things make the way out real rather than nominal:
 //!
-//! - **The child leads its own process group**, and a cancel kills the
-//!   whole group. A shell's grandchildren otherwise outlive it and keep
-//!   its pipes open, which is exactly how compilation's re-run came to
-//!   stream an old run's output into a new one.
+//! - **The child can lead its own process group** ([`ProcessGroup::Own`]),
+//!   and a cancel then kills the whole group. A shell's grandchildren
+//!   otherwise outlive it and keep its pipes open, which is exactly how
+//!   compilation's re-run came to stream an old run's output into a new
+//!   one. [`ProcessGroup::Shared`] is for a child that may need the
+//!   terminal — see its docs.
 //! - **Output is drained on reader threads**, so a child that fills a pipe
-//!   cannot wedge the wait loop that is watching the token.
+//!   cannot wedge the wait loop that is watching the token; and a cancel
+//!   does not wait for them, so a grandchild still holding a pipe cannot
+//!   delay it either.
 //! - **The token is polled**, every [`POLL`], from the thread that waits.
 //!   That thread is the caller's — a blocking-pool thread in practice —
 //!   so nothing new is spawned to watch.
@@ -37,6 +41,23 @@ use lattice_protocol::CancellationToken;
 /// thread that would otherwise be blocked anyway.
 pub const POLL: Duration = Duration::from_millis(10);
 
+/// Whether the child gets a process group of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessGroup {
+    /// The child leads a new process group, and a cancel kills all of it —
+    /// the shell and everything the shell started. The default for work
+    /// that never talks to the terminal: builds, compilation, formatters.
+    Own,
+    /// The child stays in the editor's process group, and a cancel kills
+    /// the child alone. For a child whose descendants may prompt on the
+    /// terminal lattice was started from: `ssh` under `git push` asks for
+    /// a key's passphrase there, and from a group of its own that read
+    /// would suspend it (`SIGTTIN`) — a push that hangs silently instead
+    /// of asking. A grandchild left behind by a cancel ends on its own
+    /// (an `ssh` once its prompt is answered or its git is gone).
+    Shared,
+}
+
 /// How [`run_cancellable`] ended.
 #[derive(Debug)]
 pub enum RunOutcome {
@@ -49,7 +70,8 @@ pub enum RunOutcome {
     Cancelled,
 }
 
-/// Run `command` to completion, or until `token` is cancelled.
+/// Run `command` to completion, or until `token` is cancelled; on cancel,
+/// `group` decides what is killed.
 ///
 /// `stdout` and `stderr` are captured, as `Command::output()` does.
 /// `stdin` is `input` when given — written on its own thread, so a child
@@ -70,12 +92,12 @@ pub enum RunOutcome {
 /// ```
 /// # #[cfg(unix)] {
 /// use std::process::Command;
-/// use lattice_core::process::{run_cancellable, RunOutcome};
+/// use lattice_core::process::{run_cancellable, ProcessGroup, RunOutcome};
 /// use lattice_protocol::CancellationToken;
 ///
 /// let mut echo = Command::new("echo");
 /// echo.arg("hi");
-/// match run_cancellable(echo, None, &CancellationToken::new()).unwrap() {
+/// match run_cancellable(echo, None, ProcessGroup::Own, &CancellationToken::new()).unwrap() {
 ///     RunOutcome::Finished(out) => assert_eq!(out.stdout, b"hi\n"),
 ///     RunOutcome::Cancelled => unreachable!("nothing cancelled it"),
 /// }
@@ -84,6 +106,7 @@ pub enum RunOutcome {
 pub fn run_cancellable(
     mut command: Command,
     input: Option<Vec<u8>>,
+    group: ProcessGroup,
     token: &CancellationToken,
 ) -> io::Result<RunOutcome> {
     if token.is_cancelled() {
@@ -97,7 +120,9 @@ pub fn run_cancellable(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    own_process_group(&mut command);
+    if group == ProcessGroup::Own {
+        own_process_group(&mut command);
+    }
     let mut child = command.spawn()?;
 
     if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
@@ -112,12 +137,17 @@ pub fn run_cancellable(
 
     loop {
         if token.is_cancelled() {
-            kill_tree(&mut child);
+            match group {
+                ProcessGroup::Own => kill_tree(&mut child),
+                ProcessGroup::Shared => {
+                    let _ = child.kill();
+                }
+            }
             let _ = child.wait();
-            // Joined so the readers are not left holding pipes; their
-            // contents are dropped with them.
-            let _ = stdout.join();
-            let _ = stderr.join();
+            // The readers are NOT joined: a grandchild the kill did not
+            // reach may still hold a pipe, and the cancel must not wait on
+            // it. They end, and drop what they read, when the pipes close.
+            drop((stdout, stderr));
             return Ok(RunOutcome::Cancelled);
         }
         if let Some(status) = child.try_wait()? {
@@ -195,6 +225,7 @@ mod tests {
         let RunOutcome::Finished(out) = run_cancellable(
             sh("printf out; printf err >&2; exit 3"),
             None,
+            ProcessGroup::Own,
             &CancellationToken::new(),
         )
         .unwrap() else {
@@ -210,6 +241,7 @@ mod tests {
         let RunOutcome::Finished(out) = run_cancellable(
             Command::new("cat"),
             Some(b"piped".to_vec()),
+            ProcessGroup::Own,
             &CancellationToken::new(),
         )
         .unwrap() else {
@@ -224,8 +256,13 @@ mod tests {
         token.cancel();
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("ran");
-        let outcome =
-            run_cancellable(sh(&format!("touch {}", marker.display())), None, &token).unwrap();
+        let outcome = run_cancellable(
+            sh(&format!("touch {}", marker.display())),
+            None,
+            ProcessGroup::Own,
+            &token,
+        )
+        .unwrap();
         assert!(matches!(outcome, RunOutcome::Cancelled));
         assert!(!marker.exists());
     }
@@ -252,6 +289,7 @@ mod tests {
         let outcome = run_cancellable(
             sh(&format!("sleep 30 & echo $! > {}; wait", pidfile.display())),
             None,
+            ProcessGroup::Own,
             &token,
         )
         .unwrap();
@@ -281,5 +319,54 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         assert!(!alive(), "the shell's `sleep` died with it");
+    }
+
+    /// `Shared`: the child alone is killed — a grandchild that may be
+    /// prompting on the terminal is left to finish — and the cancel still
+    /// returns at once, though that grandchild holds the output pipes.
+    #[test]
+    fn a_shared_group_cancel_returns_without_waiting_on_a_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let token = CancellationToken::new();
+        let canceller = token.clone();
+        let pidfile_seen = pidfile.clone();
+        let cancel = thread::spawn(move || {
+            while std::fs::read_to_string(&pidfile_seen).map_or(true, |s| !s.ends_with('\n')) {
+                thread::sleep(Duration::from_millis(5));
+            }
+            canceller.cancel();
+        });
+        let started = Instant::now();
+        let outcome = run_cancellable(
+            sh(&format!("sleep 30 & echo $! > {}; wait", pidfile.display())),
+            None,
+            ProcessGroup::Shared,
+            &token,
+        )
+        .unwrap();
+        cancel.join().unwrap();
+        assert!(matches!(outcome, RunOutcome::Cancelled));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the cancel does not wait for the grandchild's pipes"
+        );
+
+        let grandchild = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .to_string();
+        let alive = Command::new("kill")
+            .args(["-0", &grandchild])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        // Clean up before asserting, so a failure leaves nothing behind.
+        let _ = Command::new("kill").args(["-KILL", &grandchild]).status();
+        assert!(
+            alive,
+            "Shared kills the child alone; the grandchild is left to finish"
+        );
     }
 }

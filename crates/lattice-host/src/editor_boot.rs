@@ -729,6 +729,15 @@ impl Editor {
         boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(
             std::sync::Arc::new(lattice_picker::TransientSourceRegistry::new()),
         );
+        // CG.2/CG.7: the foreground-cancellation slot, created and registered
+        // BEFORE the subsystem installs. Magit captures it at install (CG.7:
+        // keyed supersede for git operations), and it used to be registered
+        // hundreds of lines below, after every install had run — so an
+        // install that looked it up got `None`. The Editor still holds this
+        // same `Arc` (see the Editor literal), which is the identity `<C-g>`
+        // depends on.
+        let foreground_cancel: lattice_mode::ForegroundCancelHandle = Arc::default();
+        boot.register_service::<lattice_mode::ForegroundCancelHandle>(foreground_cancel.clone());
 
         lattice_magit::install(&mut boot);
         // LSP (BC.8a — last + largest, sub-sliced BC.8a–e): registers the LSP
@@ -1469,14 +1478,13 @@ impl Editor {
         // worker's writes into the quads cell are observable through
         // every
         // `render_state.load_full().syntax.static_overlay_quads.load()`.
-        // CG.2: the foreground-cancellation slot. Created before the
-        // Editor literal and assigned explicitly (overriding the
-        // `..Editor::default()` tail) so the Editor and the
-        // ServiceRegistry share the SAME Arc identity — a provider
-        // arming through `services.get::<ForegroundCancelHandle>()`
-        // must land in the very slot `<C-g>` cancels, not a sibling
-        // copy of it. Registered with the other Phase-A handles below.
-        let foreground_cancel: lattice_mode::ForegroundCancelHandle = Arc::default();
+        // CG.2: the foreground-cancellation slot (`foreground_cancel`,
+        // created and registered before the installs above) is assigned to
+        // the Editor explicitly, overriding the `..Editor::default()` tail,
+        // so the Editor and the ServiceRegistry share the SAME Arc identity
+        // — a provider arming through
+        // `services.get::<ForegroundCancelHandle>()` must land in the very
+        // slot `<C-g>` cancels, not a sibling copy of it.
         let overlay_wake = crate::editor::OverlayWake::default();
         // Perf plan B.2 slice B.2.a: cell carrying the worker's
         // per-row pre-bucketed static-overlay quads (doc_highlight /
@@ -1914,11 +1922,6 @@ impl Editor {
         // holds a clone via `BootContext::new`); register the clone for mode
         // lookups via `services().get::<BufferStoreHandle>()`.
         boot.register_service(buffer_store_handle.clone());
-        // CG.2: same Arc the Editor holds — see its construction above.
-        // Registered under `ForegroundCancelHandle` per the
-        // ServiceRegistry Arc/TypeId rule, which is the type every
-        // provider looks it up by.
-        boot.register_service::<lattice_mode::ForegroundCancelHandle>(foreground_cancel.clone());
         // CB.0 (clipboard.md): default clipboard backing. `FakeClipboard` is
         // the safe default (no OS resource, no display dependency); the TUI
         // peer (CB.2 — `arboard` + OSC52 fallback) and the GPUI peer (CB.4 —

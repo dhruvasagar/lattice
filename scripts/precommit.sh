@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The three gates every commit passes, in order. See CLAUDE.md
+# The four gates every commit passes, in order. See CLAUDE.md
 # ("A commit is fmt-clean, warning-clean and green").
 #
 #   scripts/precommit.sh                  # whole workspace (slow)
@@ -8,6 +8,7 @@
 # Exists because `cargo build` succeeding proves none of this: warnings
 # do not fail a build, and a `grep "^error"` will not show them.
 set -uo pipefail
+unset CDPATH  # or `cd` echoes the directory it lands in
 cd "$(dirname "$0")/.."
 
 if [ "$#" -gt 0 ]; then
@@ -59,7 +60,7 @@ if [ "${others:-0}" -gt 0 ]; then
     [ "${PRECOMMIT_ALLOW_CONCURRENT:-0}" = "1" ] || exit 2
 fi
 
-say "1/3  fmt (strict — CI gates on this)"
+say "1/4  fmt (strict — CI gates on this)"
 if cargo fmt --all -- --check >/dev/null 2>&1; then
     echo "  clean"
 else
@@ -68,7 +69,7 @@ else
     fail=1
 fi
 
-say "2/3  warnings in $SCOPE"
+say "2/4  warnings in $SCOPE"
 # Clippy builds through its own driver, so its artefacts are not
 # interchangeable with the test build's. Sharing one `target/` made each phase
 # evict the other, and every gate then recompiled the whole graph twice.
@@ -133,7 +134,7 @@ else:
 sys.exit(bad)
 ' || fail=1
 
-say "3/3  tests in $SCOPE"
+say "3/4  tests in $SCOPE"
 if cargo test "${PKGS[@]}" ${FEATURES[@]+"${FEATURES[@]}"} >/tmp/lattice-precommit-tests.log 2>&1; then
     # Sum across every suite. `tail -1` alone lands on the doc-test line,
     # which is usually "0 passed" and reads like nothing ran.
@@ -146,6 +147,13 @@ else
     echo "    git stash -u && cargo test ... && git stash pop"
     fail=1
 fi
+
+# The docs CI checks — generated references, rustdoc, the site. Run every
+# time, whatever the scope: three docs failures reached CI from one branch,
+# each caused by a change that was not to a doc (a dependency, a manifest
+# moving into its source). See scripts/docs-check.sh.
+say "4/4  docs"
+scripts/docs-check.sh "$@" || fail=1
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then echo "OK — safe to commit."; else echo "NOT clean — do not commit yet."; fi

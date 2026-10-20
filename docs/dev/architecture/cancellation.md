@@ -509,6 +509,17 @@ with new inputs — not queued (a double-pressed stash would stash twice)
 and not superseded. Decided with Dhruva, 2026-10-20, over
 supersede-everything and queueing.
 
+**Different mutations of one repository take turns** (CG.7b, decided
+with Dhruva 2026-10-20). git allows one writer to a repository's index at
+once, so two *different* tasks — staging one file, then another — raced
+on `.git/index.lock` and the second failed. Every magit mutation takes a
+turn on a per-repository gate, reserved when it is triggered and waited
+for on the blocking pool, so they run one after another **in trigger
+order**: `s` then `u` on one file must not unstage first. This is not the
+queueing rejected below — that was queueing the *same* task, which runs a
+double-pressed mutation twice; here the same task is still refused, and
+only different ones wait.
+
 The same reason keeps a `RunToCompletion` task out of `<C-g>`'s reach
 once it has started: if killing it is unsafe on a re-trigger, it is
 unsafe on a key press too. A `Supersede` ticket's token is enrolled, so

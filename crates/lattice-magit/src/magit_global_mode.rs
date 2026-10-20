@@ -2811,7 +2811,10 @@ pub fn resolve_push_destination(workdir: &std::path::Path) -> Result<Option<Stri
             }
         }
     };
-    Ok(Some(format!("{remote} HEAD")))
+    // The branch by name, not `HEAD`: the same push (`HEAD` resolves to it)
+    // and the same upstream with `-u`, but the report reads
+    // "push to origin/feature" rather than "origin/HEAD".
+    Ok(Some(format!("{remote} {branch}")))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6334,7 +6337,7 @@ mod task_labels {
 
 #[cfg(test)]
 mod run_remote_op_reports {
-    use super::{resolve_push_destination, resolve_upstream, run_remote_op};
+    use super::{RemoteOp, resolve_push_destination, resolve_upstream, run_remote_op};
     use std::path::Path;
     use std::process::Command;
 
@@ -6420,12 +6423,17 @@ mod run_remote_op_reports {
         let (_root, work) = new_branch_without_upstream();
         assert_eq!(
             resolve_push_destination(&work),
-            Ok(Some("origin HEAD".to_string()))
+            Ok(Some("origin feature".to_string()))
         );
         // The argv the `p` row now runs, with `-u`: it pushes, and the
         // branch has an upstream afterwards.
         let mut push = argv(&["push", "--set-upstream"]);
-        push.extend(argv(&["origin", "HEAD"]));
+        push.extend(argv(&["origin", "feature"]));
+        assert_eq!(
+            RemoteOp::PUSH.label(&push),
+            "push to origin/feature",
+            "the report names the branch, not `HEAD`"
+        );
         run_remote_op(&work, &push).expect("the push succeeds");
         assert_eq!(resolve_upstream(&work).as_deref(), Some("origin feature"));
         // Now it has one, git resolves the destination itself again.
@@ -6451,12 +6459,12 @@ mod run_remote_op_reports {
         git(&work, &["config", "remote.pushDefault", "fork"]);
         assert_eq!(
             resolve_push_destination(&work),
-            Ok(Some("fork HEAD".to_string()))
+            Ok(Some("fork feature".to_string()))
         );
         git(&work, &["config", "branch.feature.pushRemote", "origin"]);
         assert_eq!(
             resolve_push_destination(&work),
-            Ok(Some("origin HEAD".to_string())),
+            Ok(Some("origin feature".to_string())),
             "the branch's own pushRemote outranks remote.pushDefault, as in git"
         );
     }

@@ -3361,7 +3361,27 @@ mod background_task_tests {
                  nothing says whether it worked — on failure the buffer \
                  just refreshes as though it had.",
             );
+            // CG.7b: and it takes its turn. A helper that skips the gate
+            // races every other change to the repository on
+            // `.git/index.lock`, and a double press runs twice.
+            assert!(
+                body.contains("RepoMutation::begin"),
+                "{file}: `{helper}` mutates the repository without taking a \
+                 turn (`RepoMutation::begin`) — it would race other writers \
+                 on `.git/index.lock` and run twice on a double press.",
+            );
         }
+        // The refs view's helper reports through its caller's closure, so
+        // it is not in the table above; it still has to take a turn.
+        let refs = include_str!("magit_refs_mode.rs");
+        let idx = refs
+            .find("fn spawn_mutation_and_refresh")
+            .expect("magit_refs_mode.rs: `spawn_mutation_and_refresh` — renamed?");
+        let end = refs[idx..].find("\nfn ").map_or(refs.len(), |e| idx + e);
+        assert!(
+            refs[idx..end].contains("RepoMutation::begin"),
+            "magit_refs_mode.rs: `spawn_mutation_and_refresh` does not take a turn"
+        );
     }
 }
 

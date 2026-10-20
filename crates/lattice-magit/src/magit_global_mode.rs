@@ -3613,6 +3613,53 @@ impl Drop for RepoWriter {
     }
 }
 
+/// CG.7b: a mutation of one repository that has been let through — keyed
+/// (the same one is not already running) and holding its turn
+/// ([`RepoTurn`]). For the call sites that drive their own spawn and
+/// refresh: [`begin`](Self::begin) where the operation is triggered,
+/// [`run`](Self::run) on the blocking pool. [`spawn_repo_task`] is the
+/// whole shape for the ones that do not.
+pub(crate) struct RepoMutation {
+    ticket: Option<lattice_mode::TaskTicket>,
+    turn: RepoTurn,
+}
+
+impl RepoMutation {
+    /// Key the operation and take its turn. `identity` is what makes two
+    /// triggers the same operation; `label` names it in the refusal.
+    ///
+    /// # Errors
+    ///
+    /// The echo saying the same operation is still running.
+    pub(crate) fn begin(
+        workdir: &std::path::Path,
+        identity: &str,
+        label: &str,
+    ) -> Result<Self, Effect> {
+        let key = lattice_mode::TaskKey::run_to_completion(
+            "magit:repo",
+            format!("{} {identity}", workdir.display()),
+        );
+        let ticket = begin_task(key).map_err(|_| already_running(label, workdir))?;
+        Ok(Self {
+            ticket,
+            turn: RepoTurn::reserve(workdir),
+        })
+    }
+
+    /// Wait for this operation's turn, then do it. Blocks — call it on the
+    /// blocking pool. The operation stays "running" (a repeat is refused)
+    /// until `work` returns.
+    pub(crate) fn run<R>(self, work: impl FnOnce() -> R) -> R {
+        let Self { ticket, turn } = self;
+        let writer = turn.wait();
+        let result = work();
+        drop(writer);
+        drop(ticket);
+        result
+    }
+}
+
 /// CG.7b: start one git mutation of `workdir`'s repository — keyed, and
 /// one writer at a time (`cancellation.md` §9.2).
 ///
@@ -3632,22 +3679,13 @@ pub(crate) fn spawn_repo_task<R>(
 where
     R: Into<TaskResult> + Send + 'static,
 {
-    let key = lattice_mode::TaskKey::run_to_completion(
-        "magit:repo",
-        format!("{} {identity}", workdir.display()),
-    );
-    let ticket = begin_task(key).map_err(|_| already_running(&label, &workdir))?;
-    let turn = RepoTurn::reserve(&workdir);
+    let mutation = RepoMutation::begin(&workdir, identity, &label)?;
     let scope_dir = workdir.clone();
     tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
-            let _writer = turn.wait();
-            work(&workdir).into()
-        })
-        .await
-        .unwrap_or_else(|e| TaskResult::Failed(e.to_string()));
+        let result = tokio::task::spawn_blocking(move || mutation.run(|| work(&workdir).into()))
+            .await
+            .unwrap_or_else(|e| TaskResult::Failed(e.to_string()));
         finish_task(&scope_dir, &label, result);
-        drop(ticket);
     });
     Ok(())
 }
@@ -7294,6 +7332,27 @@ mod keyed_repo_tasks {
         .unwrap();
         settle(&again, 1).await;
         assert_eq!(again.lock().unwrap().len(), 1);
+    }
+
+    /// The view helpers' piece (CG.7b-ii): `begin` refuses the same
+    /// operation while it is let through, admits a different one, and
+    /// `run` does the work — after which the same one may begin again.
+    #[test]
+    fn a_repo_mutation_refuses_its_repeat_until_it_has_run() {
+        installed();
+        let repo = tempfile::tempdir().unwrap();
+        let stage = RepoMutation::begin(repo.path(), "stage hunk A", "stage hunk A").unwrap();
+        let refused = RepoMutation::begin(repo.path(), "stage hunk A", "stage hunk A");
+        assert!(refused.is_err(), "the same hunk again is refused");
+        let other = RepoMutation::begin(repo.path(), "stage hunk B", "stage hunk B")
+            .expect("a different hunk is let through, to wait its turn");
+
+        assert_eq!(stage.run(|| 1), 1);
+        assert_eq!(other.run(|| 2), 2, "its turn comes once the first has run");
+        assert!(
+            RepoMutation::begin(repo.path(), "stage hunk A", "stage hunk A").is_ok(),
+            "done, it can run again"
+        );
     }
 
     /// A turn given up unused never stalls the ones behind it — whether

@@ -82,6 +82,19 @@ pub enum CommitIntent {
 }
 
 impl CommitIntent {
+    /// CG.7b: what the confirm does, as a notification names it.
+    pub(crate) fn label(&self) -> String {
+        use crate::magit_global_mode::short_rev;
+        match self {
+            Self::Create => "commit".to_string(),
+            Self::Amend => "amend the last commit".to_string(),
+            Self::Reword => "reword the last commit".to_string(),
+            Self::Augment { target } => format!("fix up {}", short_rev(target)),
+            Self::MergeEdit { branch } => format!("merge {branch}"),
+            Self::RewordCommit { target } => format!("reword {}", short_rev(target)),
+        }
+    }
+
     /// Map a compose buffer's name to its intent. Kept in ONE place so
     /// the mapping is auditable.
     ///
@@ -326,45 +339,56 @@ impl Mode for MagitCommitMode {
                     // mutation. The buffer is KILLED, not buried: a
                     // buried `*magit:commit*` is reused by the next
                     // commit without being re-seeded, which brought the
-                    // previous message back. It closes optimistically; a
-                    // failure surfaces via `tracing::error!` (no
-                    // synchronous path back to the echo area from a
-                    // detached task) rather than leaving the compose
-                    // buffer open forever on a rare `gix` failure.
-                    tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                        let Ok(repo) = Repository::discover(&workdir) else {
-                            tracing::error!(target: "lattice_magit", "commit: repo discover failed");
-                            return;
-                        };
-                        let result = match &intent {
-                            CommitIntent::Amend => Commit::amend(&repo, message.trim()),
-                            CommitIntent::Reword => Commit::reword(&repo, message.trim()),
-                            CommitIntent::Augment { target } => {
-                                Commit::augment(&repo, target, message.trim())
-                            }
-                            CommitIntent::MergeEdit { branch } => {
-                                Commit::merge_with_message(&repo, branch, message.trim())
-                            }
-                            // MG.43c: not an amend — a commit further
-                            // back cannot be amended, so this replays
-                            // history with that commit's todo verb set
-                            // to `reword` and hands git the message
-                            // through `GIT_EDITOR`.
-                            CommitIntent::RewordCommit { target } => {
-                                crate::magit_rebase_mode::rebase_one_commit(
-                                    &workdir,
-                                    target,
-                                    "reword",
-                                    Some(message.trim()),
-                                )
-                                .map_err(lattice_vcs::VcsError::Index)
-                            }
-                            CommitIntent::Create => Commit::create(&repo, message.trim()),
-                        };
-                        if let Err(e) = result {
-                            tracing::error!(target: "lattice_magit", "commit failed: {e}");
-                        }
-                    }));
+                    // previous message back. It closes optimistically;
+                    // the outcome is reported through `finish_task`
+                    // (CG.7b — it used to reach only `tracing::error!`,
+                    // and open views never refreshed after a commit).
+                    //
+                    // CG.7b: it also takes its turn with every other
+                    // change to the repository, so a commit confirmed
+                    // while a stage is still queued lands after it.
+                    let label = intent.label();
+                    let identity = label.clone();
+                    let commit = crate::magit_global_mode::spawn_repo_task(
+                        workdir,
+                        &identity,
+                        label,
+                        move |workdir| {
+                            let repo = Repository::discover(workdir)
+                                .map_err(|e| format!("not a git repository: {e}"))?;
+                            let result = match &intent {
+                                CommitIntent::Amend => Commit::amend(&repo, message.trim()),
+                                CommitIntent::Reword => Commit::reword(&repo, message.trim()),
+                                CommitIntent::Augment { target } => {
+                                    Commit::augment(&repo, target, message.trim())
+                                }
+                                CommitIntent::MergeEdit { branch } => {
+                                    Commit::merge_with_message(&repo, branch, message.trim())
+                                }
+                                // MG.43c: not an amend — a commit further
+                                // back cannot be amended, so this replays
+                                // history with that commit's todo verb set
+                                // to `reword` and hands git the message
+                                // through `GIT_EDITOR`.
+                                CommitIntent::RewordCommit { target } => {
+                                    crate::magit_rebase_mode::rebase_one_commit(
+                                        workdir,
+                                        target,
+                                        "reword",
+                                        Some(message.trim()),
+                                    )
+                                    .map_err(lattice_vcs::VcsError::Index)
+                                }
+                                CommitIntent::Create => Commit::create(&repo, message.trim()),
+                            };
+                            result.map(|()| String::new()).map_err(|e| e.to_string())
+                        },
+                    );
+                    // Refused only if this same commit is still running;
+                    // the buffer stays open so nothing typed is lost.
+                    if let Err(refused) = commit {
+                        return Some(refused);
+                    }
                     Some(Effect::KillBuffer)
                 }),
             },

@@ -395,14 +395,26 @@ fn spawn_submodule_mutation(
     // clears the busy flag on its OWN row. Marking busy here
     // too would need a second guard per target and would clear
     // on a different schedule.
+    // CG.7b: keyed, and one writer at a time. These are prompt-driven (a
+    // name typed, then confirmed), so a repeat while one runs is rare and
+    // the handler has no echo to return through: a refusal is logged.
+    let mutation = match crate::magit_global_mode::RepoMutation::begin(&workdir, &what, &what) {
+        Ok(mutation) => mutation,
+        Err(_) => {
+            tracing::info!(target: "lattice_magit", "magit: {what} is already running");
+            return Some(());
+        }
+    };
     tokio::task::spawn(async move {
         let wd = workdir.clone();
-        let outcome = tokio::task::spawn_blocking(move || match Repository::discover(&wd) {
-            Ok(repo) => mutate(&repo),
-            Err(e) => Err(lattice_vcs::VcsError::Submodule(format!(
-                "no repository at {}: {e}",
-                wd.display()
-            ))),
+        let outcome = tokio::task::spawn_blocking(move || {
+            mutation.run(|| match Repository::discover(&wd) {
+                Ok(repo) => mutate(&repo),
+                Err(e) => Err(lattice_vcs::VcsError::Submodule(format!(
+                    "no repository at {}: {e}",
+                    wd.display()
+                ))),
+            })
         })
         .await;
         // MG.54: publish, don't just log — same migration onto

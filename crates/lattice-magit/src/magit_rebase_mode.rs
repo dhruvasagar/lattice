@@ -183,12 +183,22 @@ impl Mode for MagitRebaseMode {
                     }
                     // Bounded, single-shot git invocation, off the actor
                     // thread — same optimistic-close shape as
-                    // magit-commit's confirm.
-                    tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                        if let Err(e) = run_rebase(&workdir, &upstream, &todo) {
-                            tracing::error!(target: "lattice_magit", "rebase failed: {e}");
-                        }
-                    }));
+                    // magit-commit's confirm, and (CG.7b) the same turn
+                    // with every other change to the repository. The
+                    // outcome is reported through `finish_task`; it used
+                    // to reach only `tracing::error!`.
+                    let label = format!("rebase onto {upstream}");
+                    let identity = label.clone();
+                    if let Err(refused) = crate::magit_global_mode::spawn_repo_task(
+                        workdir,
+                        &identity,
+                        label,
+                        move |workdir| {
+                            run_rebase(workdir, &upstream, &todo).map(|()| String::new())
+                        },
+                    ) {
+                        return Some(refused);
+                    }
                     Some(Effect::KillBuffer)
                 }),
             },

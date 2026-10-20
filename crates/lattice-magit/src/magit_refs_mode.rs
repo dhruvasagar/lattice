@@ -202,7 +202,8 @@ impl Mode for MagitRefsMode {
                         });
                     }
                     let name = entry.name.clone();
-                    spawn_mutation_and_refresh(s, move || {
+                    let label = format!("check out {name}");
+                    spawn_mutation_and_refresh(s, &label, move || {
                         // NC.5: reported, not discarded — a refused
                         // checkout (dirty tree) used to vanish.
                         let result = Repository::discover(&workdir)
@@ -292,20 +293,30 @@ impl Mode for MagitRefsMode {
 
 /// `gr` — re-walk the refs.
 fn refresh(s: Arc<Mutex<RefsState>>) -> Option<Effect> {
-    respawn(s, || {})
+    respawn(s, None)
 }
 
 /// Run `mutate` (a blocking git call) off the actor thread, then
 /// re-walk — the shape every mutating handler uses instead of calling
 /// git inline. Paramount goal #1: no `git` on the actor thread, ever.
+/// CG.7b: keyed by `label` — the same checkout again is refused — and
+/// one writer at a time on the repository.
 fn spawn_mutation_and_refresh(
     s: Arc<Mutex<RefsState>>,
+    label: &str,
     mutate: impl FnOnce() + Send + 'static,
 ) -> Option<Effect> {
-    respawn(s, mutate)
+    let wd = s.lock().ok()?.workdir.clone();
+    match crate::magit_global_mode::RepoMutation::begin(&wd, label, label) {
+        Ok(mutation) => respawn(s, Some(Box::new(move || mutation.run(mutate)))),
+        Err(refused) => Some(refused),
+    }
 }
 
-fn respawn(s: Arc<Mutex<RefsState>>, mutate: impl FnOnce() + Send + 'static) -> Option<Effect> {
+fn respawn(
+    s: Arc<Mutex<RefsState>>,
+    mutate: Option<Box<dyn FnOnce() + Send + 'static>>,
+) -> Option<Effect> {
     let (handle, wd, pending, buffer_id, hl) = {
         let g = s.lock().ok()?;
         (
@@ -321,7 +332,9 @@ fn respawn(s: Arc<Mutex<RefsState>>, mutate: impl FnOnce() + Send + 'static) -> 
     let busy = headerline::busy(&hl);
     tokio::task::spawn(async move {
         let _busy = busy;
-        let _ = tokio::task::spawn_blocking(mutate).await;
+        if let Some(mutate) = mutate {
+            let _ = tokio::task::spawn_blocking(mutate).await;
+        }
         let built = tokio::task::spawn_blocking(move || build_refs_buffer(&wd))
             .await
             .unwrap_or_default();

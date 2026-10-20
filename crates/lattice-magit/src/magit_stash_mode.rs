@@ -419,10 +419,16 @@ fn spawn_mutation_and_refresh(
     // MG.27: the row says "refreshing" from here until the
     // guard drops — including on every early exit inside the
     // task, which is why it is a guard and not a matching pair.
+    // CG.7b: the same operation again is refused; another change to this
+    // repository waits its turn.
+    let mutation = match crate::magit_global_mode::RepoMutation::begin(&wd, &label, &label) {
+        Ok(mutation) => mutation,
+        Err(refused) => return Some(refused),
+    };
     let busy = headerline::busy(&hl);
     tokio::task::spawn(async move {
         let _busy = busy;
-        let result = tokio::task::spawn_blocking(mutate)
+        let result = tokio::task::spawn_blocking(move || mutation.run(mutate))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         crate::magit_global_mode::finish_task(&wd, &label, result);

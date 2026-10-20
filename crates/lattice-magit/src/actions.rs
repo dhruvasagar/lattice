@@ -1435,8 +1435,14 @@ fn spawn_mutation_and_refresh(
     mutate: impl FnOnce() -> Result<String, String> + Send + 'static,
 ) -> Option<Effect> {
     let ctx = refresh_context(&s)?;
+    // CG.7b: the same operation again is refused; another change to this
+    // repository waits its turn.
+    let mutation = match crate::magit_global_mode::RepoMutation::begin(&ctx.wd, &label, &label) {
+        Ok(mutation) => mutation,
+        Err(refused) => return Some(refused),
+    };
     tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(mutate)
+        let result = tokio::task::spawn_blocking(move || mutation.run(mutate))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         crate::magit_global_mode::finish_task(&ctx.wd, &label, result);

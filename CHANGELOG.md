@@ -117,12 +117,16 @@
   second press is refused until they finish. To restart identical work on
   purpose, press `<C-g>`, then run it again.
 - **Magit operations on one repository take turns.** Different operations
-  pressed in quick succession — a branch created, then checked out; a
-  rebase step, then a commit operation; `C-c f` on one file, then another —
-  used to run at once and could fail with *"Unable to create
-  '.git/index.lock': File exists"*. They now run one after another, in the
-  order you pressed them; the same operation pressed again while it runs
-  is refused, as above.
+  pressed in quick succession — `s` on one hunk then the next, `s` then `u`,
+  a branch created then checked out, a stash dropped then another — used to
+  run at once and could fail with *"Unable to create '.git/index.lock': File
+  exists"*, or land out of order. They now run one after another, in the
+  order you pressed them, in the status buffer and every magit view; the
+  same operation pressed again while it runs is refused, as above.
+- **Committing, saving a note, confirming a rebase and `:magit-branch-create`
+  report how they went** and refresh open magit views, like every other
+  magit operation. A failure used to reach only the log, and an open status
+  buffer kept showing the state from before the commit.
 - **`:plugin-update` updates a plugin installed from a URL.** A `Prebuilt`
   plugin was refused with "has no buildable source" instead of being
   downloaded again; `:plugin-rebuild` still says that, since there is nothing

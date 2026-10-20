@@ -1046,14 +1046,27 @@ pub(crate) fn spawn_patch_discard(
         Some(path) => format!("discard a hunk in {path}"),
         None => "discard a hunk".to_string(),
     };
+    // CG.7b: the same hunk discarded again is refused; another change to
+    // this repository waits its turn.
+    let mutation = match crate::magit_global_mode::RepoMutation::begin(
+        &workdir,
+        &format!("discard {patch}"),
+        &label,
+    ) {
+        Ok(mutation) => mutation,
+        Err(refused) => return refused,
+    };
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
-            let repo = lattice_vcs::Repository::discover(&workdir)
-                .map_err(|e| format!("not a git repository: {e}"))?;
-            // `(cached = false, reverse = true)` — the worktree, matching
-            // file-level `x`, which is `git checkout --` and likewise
-            // leaves the index alone.
-            lattice_vcs::Index::apply_patch(&repo, &patch, false, true).map_err(|e| e.to_string())
+            mutation.run(|| {
+                let repo = lattice_vcs::Repository::discover(&workdir)
+                    .map_err(|e| format!("not a git repository: {e}"))?;
+                // `(cached = false, reverse = true)` — the worktree, matching
+                // file-level `x`, which is `git checkout --` and likewise
+                // leaves the index alone.
+                lattice_vcs::Index::apply_patch(&repo, &patch, false, true)
+                    .map_err(|e| e.to_string())
+            })
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
@@ -1098,12 +1111,24 @@ pub(crate) fn spawn_hunk_apply(
     let (cached, reverse) = op.apply_flags();
     let logged = location.clone();
     let scope_dir = workdir.clone();
+    // CG.7b: `s` twice on the same hunk is refused; `s` on the next one
+    // waits its turn, so the two never race on `.git/index.lock`.
+    let mutation = match crate::magit_global_mode::RepoMutation::begin(
+        &workdir,
+        &format!("{} {text}", op.present()),
+        &format!("{} hunk at {location}", op.present()),
+    ) {
+        Ok(mutation) => mutation,
+        Err(refused) => return refused,
+    };
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
-            let repo = lattice_vcs::Repository::discover(&workdir)
-                .map_err(|e| format!("not a git repository: {e}"))?;
-            lattice_vcs::Index::apply_patch(&repo, &text, cached, reverse)
-                .map_err(|e| e.to_string())
+            mutation.run(|| {
+                let repo = lattice_vcs::Repository::discover(&workdir)
+                    .map_err(|e| format!("not a git repository: {e}"))?;
+                lattice_vcs::Index::apply_patch(&repo, &text, cached, reverse)
+                    .map_err(|e| e.to_string())
+            })
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));

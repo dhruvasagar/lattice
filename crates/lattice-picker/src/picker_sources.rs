@@ -2339,7 +2339,14 @@ impl GrepSource {
         max_hits: usize,
         highlighter: Option<Arc<dyn GrepPreviewHighlighter>>,
     ) -> crate::CandidateFuture {
+        // CG.13: dropping this future stops the grep. A live picker drops a
+        // query's future when a newer keystroke supersedes it; before, the
+        // superseded `rg` ran to the end over the whole tree, once per
+        // keystroke, with nobody waiting for its answer.
+        let stop = lattice_protocol::CancellationToken::new();
+        let guard = CancelOnDrop(stop.clone());
         Box::pin(async move {
+            let _guard = guard;
             // PH.3: run BOTH the grep AND the per-hit syntax
             // highlighting inside the blocking closure — the
             // highlighting is CPU-bound (per-line tree-sitter parse)
@@ -2347,7 +2354,7 @@ impl GrepSource {
             // render thread by construction (the picker crate has no
             // syntax dep; the highlighter is host-injected).
             let join = tokio::task::spawn_blocking(move || {
-                run_grep(&binary, &pattern, &root, max_hits)
+                run_grep(&binary, &pattern, &root, max_hits, &stop)
                     .map(|hits| hits_to_pairs(hits, highlighter.as_deref()))
             })
             .await;
@@ -2491,6 +2498,16 @@ impl PickerSourceGenerator for GrepSource {
     }
 }
 
+/// CG.13: cancels its token when dropped — how a dropped grep future
+/// reaches the backend process it started.
+struct CancelOnDrop(lattice_protocol::CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 /// One grep hit -- path + 0-based LSP-flavored line + 0-based
 /// utf-8 byte column + the matching line's text (preview).
 struct GrepHit {
@@ -2548,6 +2565,7 @@ fn run_grep(
     pattern: &str,
     root: &std::path::Path,
     max_hits: usize,
+    stop: &lattice_protocol::CancellationToken,
 ) -> SourceResult<Vec<GrepHit>> {
     let mut cmd = std::process::Command::new(binary);
     match binary {
@@ -2566,9 +2584,21 @@ fn run_grep(
         }
     }
     cmd.arg(pattern).arg(root);
-    let output = cmd
-        .output()
-        .map_err(|e| format!("grep: spawning `{binary}` failed: {e}"))?;
+    // CG.13: through the cancellable runner, so a superseded query's
+    // backend is killed — its whole process group — rather than run out.
+    let output = match lattice_core::process::run_cancellable(
+        cmd,
+        None,
+        lattice_core::process::ProcessGroup::Own,
+        stop,
+    )
+    .map_err(|e| format!("grep: spawning `{binary}` failed: {e}"))?
+    {
+        lattice_core::process::RunOutcome::Finished(output) => output,
+        lattice_core::process::RunOutcome::Cancelled => {
+            return Err("grep: stopped".to_string());
+        }
+    };
     if !output.status.success() && output.stdout.is_empty() {
         // Some backends (`grep`, `rg`) return non-zero on
         // "no hits". Only treat as error when stderr has a
@@ -3415,6 +3445,75 @@ mod tests {
 /// keystroke, `init` through a seated picker) are exercised in
 /// `lattice-ui-tui::picker_sources`, which is where this module's own doc
 /// comment says context-needing tests live.
+/// CG.13: a live grep superseded by a newer keystroke stops its backend.
+#[cfg(all(test, unix))]
+mod grep_stops_when_dropped {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+
+    /// The future is dropped mid-run — what the host now does with a
+    /// superseded query's — and the backend process dies with it rather
+    /// than searching on for nobody.
+    #[test]
+    fn dropping_a_grep_future_kills_its_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let backend = dir.path().join("slow-grep");
+        std::fs::write(
+            &backend,
+            format!(
+                "#!/bin/sh\necho $$ > {}\nexec sleep 30\n",
+                pidfile.display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&backend, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let fut = GrepSource::spawn_grep(
+                backend.to_string_lossy().into_owned(),
+                "needle".to_string(),
+                dir.path().to_path_buf(),
+                100,
+                None,
+            );
+            // Runs until the backend has started, then is dropped.
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(300), fut).await;
+        });
+        let pid = std::fs::read_to_string(&pidfile)
+            .expect("the backend started")
+            .trim()
+            .to_string();
+        let alive = || {
+            std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let still = alive();
+        if still {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &pid])
+                .status();
+        }
+        assert!(!still, "a dropped grep must not keep searching");
+    }
+}
+
 #[cfg(test)]
 mod dir_pick_tests {
     #![allow(clippy::unwrap_used, clippy::panic)]

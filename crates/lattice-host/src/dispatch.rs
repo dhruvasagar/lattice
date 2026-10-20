@@ -496,6 +496,29 @@ impl HeadingHeights {
     }
 }
 
+/// CG.13: run a picker source's future until it completes or `cancel` flips,
+/// whichever is first — `None` when cancelled, with the future DROPPED.
+///
+/// Dropping is what stops a source's work: grep's future kills its backend
+/// process when dropped. Awaiting a superseded future to the end and then
+/// discarding its answer — what the picker used to do — left a full-tree
+/// search running for every keystroke a live picker had moved past. The
+/// token is polled (it has no waker); every 20 ms is invisible next to the
+/// work it stops.
+async fn until_cancelled<F: std::future::Future>(
+    fut: F,
+    cancel: &lattice_protocol::CancellationToken,
+) -> Option<F::Output> {
+    tokio::select! {
+        result = fut => Some(result),
+        () = async {
+            while !cancel.is_cancelled() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        } => None,
+    }
+}
+
 impl Editor {
     /// Renderer-neutral dispatch entry point.
     ///
@@ -15145,7 +15168,11 @@ impl Editor {
                 // invisible until the next key. See lsp-architecture §12.
                 let async_landed = self.async_landed.clone();
                 lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
-                    let result = fut.await;
+                    // CG.13: dropped, not awaited out, once superseded —
+                    // see `until_cancelled`.
+                    let Some(result) = until_cancelled(fut, &cancel_clone).await else {
+                        return;
+                    };
                     if !cancel_clone.is_cancelled() {
                         let _ = tx.send(result);
                         async_landed.notify_one();
@@ -27830,7 +27857,11 @@ impl Editor {
                 // GPUI). See lsp-architecture §12.
                 let async_landed = self.async_landed.clone();
                 lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
-                    let result = fut.await;
+                    // CG.13: dropped, not awaited out, once superseded —
+                    // see `until_cancelled`.
+                    let Some(result) = until_cancelled(fut, &cancel_clone).await else {
+                        return;
+                    };
                     if !cancel_clone.is_cancelled() {
                         let _ = tx.send(result.map(lattice_picker::PickerInitResult::Inline));
                         async_landed.notify_one();
@@ -47391,6 +47422,31 @@ mod tests {
 
         assert!(hover.is_cancelled());
         assert!(rename.is_cancelled());
+    }
+
+    /// CG.13: a picker source's future is dropped once cancelled — not
+    /// awaited out — and a finished one passes its result through.
+    #[test]
+    fn until_cancelled_drops_a_superseded_future_and_passes_a_finished_one() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let cancel = lattice_protocol::CancellationToken::new();
+            let flip = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                flip.cancel();
+            });
+            let started = std::time::Instant::now();
+            let never = std::future::pending::<u32>();
+            assert_eq!(until_cancelled(never, &cancel).await, None);
+            assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+            let live = lattice_protocol::CancellationToken::new();
+            assert_eq!(until_cancelled(async { 7 }, &live).await, Some(7));
+        });
     }
 
     /// The reason enrolment exists rather than a keyed begin: `K` during

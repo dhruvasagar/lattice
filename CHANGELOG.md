@@ -171,6 +171,12 @@
   a `:cd` then `gr` replaces it. `<C-g>` stops a running search, and now also
   stops whatever plugin command is running — previously only possible while
   a search was underway.
+- **A live grep picker stops searching for what you typed before.** Each
+  keystroke in a grep picker started a search over the whole project, and a
+  newer keystroke only discarded the older search's answer — the search
+  itself ran to the end. A superseded search, and a picker's first load
+  once the picker is closed or replaced, is now stopped, backend process
+  and all.
 - **Committing, saving a note, confirming a rebase and `:magit-branch-create`
   report how they went** and refresh open magit views, like every other
   magit operation. A failure used to reach only the log, and an open status

@@ -11476,9 +11476,15 @@ impl Editor {
                     }
                 };
                 match lattice_compilation::start_compilation(self, target, cmdline, cwd) {
-                    Some(id) => {
+                    Some((id, refused)) => {
                         let _ = self.activate_buffer(id);
-                        self.set_message(EchoLevel::Info, started.to_string());
+                        // CG.8: refused when the same command is running —
+                        // its buffer is shown, and the echo says why no new
+                        // run started.
+                        self.set_message(
+                            EchoLevel::Info,
+                            refused.unwrap_or_else(|| started.to_string()),
+                        );
                     }
                     None => self.set_message(EchoLevel::Warn, missing.to_string()),
                 }

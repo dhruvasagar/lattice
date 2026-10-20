@@ -292,6 +292,14 @@ impl Editor {
         // (the `SubsystemBoot` surface can't name the lattice-lsp type). Read by
         // claude-code's read tools; registered once here, not in the late block.
         boot.register_service::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query.clone());
+        // CG.2/CG.7/CG.8: the foreground-cancellation slot, registered in
+        // Phase A — before ANY subsystem install. Installs capture it (magit
+        // and compilation key their tasks on it, `cancellation.md` §9), and
+        // it used to be registered after every install had run, so a lookup
+        // at install got `None`. The Editor holds this same `Arc` (see the
+        // Editor literal), which is the identity `<C-g>` depends on.
+        let foreground_cancel: lattice_mode::ForegroundCancelHandle = Arc::default();
+        boot.register_service::<lattice_mode::ForegroundCancelHandle>(foreground_cancel.clone());
 
         // Typed-options registry (DESIGN.md §5.12). Single source of truth
         // for every option's *current value*: each `Option<T>` owns a
@@ -729,16 +737,6 @@ impl Editor {
         boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(
             std::sync::Arc::new(lattice_picker::TransientSourceRegistry::new()),
         );
-        // CG.2/CG.7: the foreground-cancellation slot, created and registered
-        // BEFORE the subsystem installs. Magit captures it at install (CG.7:
-        // keyed supersede for git operations), and it used to be registered
-        // hundreds of lines below, after every install had run — so an
-        // install that looked it up got `None`. The Editor still holds this
-        // same `Arc` (see the Editor literal), which is the identity `<C-g>`
-        // depends on.
-        let foreground_cancel: lattice_mode::ForegroundCancelHandle = Arc::default();
-        boot.register_service::<lattice_mode::ForegroundCancelHandle>(foreground_cancel.clone());
-
         lattice_magit::install(&mut boot);
         // LSP (BC.8a — last + largest, sub-sliced BC.8a–e): registers the LSP
         // modes (`lsp-completion-mode` reads the supervisor handle via

@@ -129,6 +129,17 @@
   could finish last and repaint what the repository looked like before the
   newer change. A view now shows only its most recent refresh, and the
   "refreshing" mark in its header stays up until the last one is done.
+- **Re-running a build no longer mixes two runs.** `:compile` with a new
+  command while a build was running killed only its shell: the build's
+  child processes kept going, their output streamed into the new run's
+  buffer, and the new run could end up reported as "terminated". The whole
+  process tree is stopped now, and nothing of the old run reaches the new
+  one.
+- **`:recompile` while the same build is running is refused** rather than
+  restarting it — *"compilation is already running — <C-g> stops it"* — so
+  a stray `gr` does not throw away a long build. A different command still
+  replaces the running one; `<C-g>` then `:recompile` restarts on purpose,
+  and `<C-g>` alone stops a build. `:!cmd` behaves the same way.
 - **Committing, saving a note, confirming a rebase and `:magit-branch-create`
   report how they went** and refresh open magit views, like every other
   magit operation. A failure used to reach only the log, and an open status

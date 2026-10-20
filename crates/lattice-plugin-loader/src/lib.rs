@@ -350,6 +350,10 @@ pub enum BulkLeg {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BulkReport {
     pub legs: Vec<(String, BulkLeg)>,
+    /// CG.10: set when the run was refused because a bulk plugin operation
+    /// was already running — then there are no legs, and [`Self::summary`]
+    /// says why.
+    pub refused: Option<String>,
 }
 
 impl BulkReport {
@@ -389,6 +393,9 @@ impl BulkReport {
     /// `3 updated` rather than `3 updated, 0 skipped, 0 failed` — a count of
     /// zero is noise that makes the counts that matter harder to find.
     pub fn summary(&self, verb_past: &str) -> String {
+        if let Some(refused) = &self.refused {
+            return refused.clone();
+        }
         if self.legs.is_empty() {
             return "no plugins loaded".to_string();
         }
@@ -413,6 +420,10 @@ impl BulkReport {
 ///
 /// Split out from [`PluginLoader::update`] so the table is testable without a
 /// loaded plugin behind it — the refusal is a property of the source alone.
+/// CG.10: what a refused rebuild / update says — and how a bulk leg tells
+/// "already building" (a skip) from a build that failed.
+pub const ALREADY_BUILDING: &str = "is already being rebuilt or updated";
+
 fn update_refusal(name: &str, source: Option<&resolve::PluginSource>) -> Option<String> {
     match source {
         Some(resolve::PluginSource::Git { rev: Some(rev), .. }) => {
@@ -555,6 +566,11 @@ pub enum RequirePhase {
 /// [`PluginLoader::with_services`] signature.
 #[derive(Default, Clone)]
 pub struct LoaderServices {
+    /// CG.10: keys `:plugin-update` / `:plugin-rebuild` per plugin and the
+    /// bulk runs (`cancellation.md` §9), so a second trigger while one runs
+    /// is refused rather than starting a second build of the same plugin.
+    /// Absent (a harness): builds run unkeyed, as before.
+    pub foreground_cancel: Option<lattice_mode::ForegroundCancelHandle>,
     /// The shared multi-thread runtime handle (seam actors + discovery run here,
     /// never the current-thread editor actor).
     pub runtime: Option<Handle>,
@@ -2175,6 +2191,19 @@ impl PluginLoader {
         op: BulkOp,
         on_leg: &(dyn Fn(usize, usize, &str) + Send + Sync),
     ) -> BulkReport {
+        // CG.10: one bulk run at a time. Each leg is a build or a reload of
+        // every plugin; a second one alongside would race the first leg by leg.
+        let _bulk = match self.begin_task(
+            lattice_mode::TaskKey::run_to_completion("plugin:bulk", "").with_inputs(op.past()),
+        ) {
+            Ok(ticket) => ticket,
+            Err(_) => {
+                return BulkReport {
+                    refused: Some("a bulk plugin operation is already running".to_string()),
+                    ..BulkReport::default()
+                };
+            }
+        };
         let targets = self.bulk_targets();
         let total = targets.len();
         let mut report = BulkReport::default();
@@ -2214,6 +2243,8 @@ impl PluginLoader {
                 }
                 match self.rebuild(name).await {
                     Ok(()) => BulkLeg::Done,
+                    // CG.10: building already — a skip, not a failure.
+                    Err(why) if why.contains(ALREADY_BUILDING) => BulkLeg::Skipped(why),
                     Err(why) => BulkLeg::Failed(why),
                 }
             }
@@ -2226,10 +2257,40 @@ impl PluginLoader {
                 }
                 match self.update(name).await {
                     Ok(()) => BulkLeg::Done,
+                    Err(why) if why.contains(ALREADY_BUILDING) => BulkLeg::Skipped(why),
                     Err(why) => BulkLeg::Failed(why),
                 }
             }
         }
+    }
+
+    /// CG.10: begin a keyed task on the foreground-cancel service, or run
+    /// unkeyed (`Ok(None)`) in a harness that wired none.
+    fn begin_task(
+        &self,
+        key: lattice_mode::TaskKey,
+    ) -> Result<Option<lattice_mode::TaskTicket>, lattice_mode::AlreadyRunning> {
+        match &self.env.foreground_cancel {
+            Some(cancel) => cancel.begin(key).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// CG.10: a rebuild or update of `name`, keyed per plugin and
+    /// run-to-completion (`cancellation.md` §9.2): it drives git in the
+    /// plugin's source cache, where a kill partway can leave `index.lock`
+    /// behind. A second trigger while one runs is refused — the same reason
+    /// the build-activity flag can no longer be cleared by the first of two
+    /// concurrent builds of one plugin.
+    fn begin_build(
+        &self,
+        name: &str,
+        verb: &str,
+    ) -> Result<Option<lattice_mode::TaskTicket>, String> {
+        self.begin_task(
+            lattice_mode::TaskKey::run_to_completion("plugin:build", name).with_inputs(verb),
+        )
+        .map_err(|_| format!("`{name}` {ALREADY_BUILDING}"))
     }
 
     /// Rebuild every loaded plugin from the source it already has, then reload
@@ -2339,6 +2400,10 @@ impl PluginLoader {
         runtime.spawn(async move {
             match this.update(&target).await {
                 Ok(()) => tracing::info!(plugin = %target, "plugin updated (:plugin-update)"),
+                // CG.10: refused, not failed — a build of it is running.
+                Err(err) if err.contains(ALREADY_BUILDING) => {
+                    tracing::info!(plugin = %target, "{err}")
+                }
                 Err(err) => tracing::warn!(plugin = %target, error = %err, ":plugin-update failed"),
             }
         });
@@ -2528,6 +2593,8 @@ impl PluginLoader {
     ///
     /// Blocking work runs on `spawn_blocking`; only the reload is awaited.
     pub async fn rebuild(&self, name: &str) -> Result<(), String> {
+        // CG.10: one build of a plugin at a time.
+        let _build = self.begin_build(name, "rebuild")?;
         // `init` compiles in place in the config dir and carries no buildable
         // `SourceRecord`, so the generic `rebuild_with` pipeline (stage-into-
         // cache, refuses a non-buildable source) cannot rebuild it — the
@@ -2602,6 +2669,8 @@ impl PluginLoader {
     /// are different outcomes and a user who pinned a plugin and then pressed
     /// update is owed the reason nothing moved.
     pub async fn update(&self, name: &str) -> Result<(), String> {
+        // CG.10: one build of a plugin at a time.
+        let _build = self.begin_build(name, "update")?;
         let (source, _) = self
             .source_of(name)
             .ok_or_else(|| format!("`{name}` is not loaded"))?;
@@ -5114,6 +5183,7 @@ mod bulk_report_tests {
                 .iter()
                 .map(|(n, l)| ((*n).to_string(), l.clone()))
                 .collect(),
+            ..BulkReport::default()
         }
     }
 
@@ -5300,6 +5370,93 @@ mod removable_tests {
         assert!(
             root.join("arrived").is_dir(),
             "the plugin that just loaded still has its files"
+        );
+    }
+}
+
+/// CG.10: a plugin's rebuild / update, and the bulk runs, are keyed — a
+/// second trigger while one runs is refused (`cancellation.md` §9).
+#[cfg(test)]
+mod keyed_builds {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+
+    fn keyed_loader() -> (tempfile::TempDir, PluginLoader) {
+        let base = tempfile::tempdir().unwrap();
+        let host = Arc::new(
+            PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap(),
+        );
+        let loader = PluginLoader::with_services(
+            host,
+            LoaderServices {
+                foreground_cancel: Some(Arc::default()),
+                ..LoaderServices::default()
+            },
+        );
+        (base, loader)
+    }
+
+    #[test]
+    fn a_plugin_building_refuses_another_build_of_it_only() {
+        let (_base, loader) = keyed_loader();
+        let building = loader.begin_build("org", "rebuild").unwrap();
+        let refused = loader.begin_build("org", "update").unwrap_err();
+        assert!(refused.contains(ALREADY_BUILDING), "{refused}");
+        assert!(
+            loader.begin_build("lighthouse", "update").is_ok(),
+            "another plugin builds alongside"
+        );
+        drop(building);
+        assert!(
+            loader.begin_build("org", "update").is_ok(),
+            "done, it can build again"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_and_update_are_refused_while_the_plugin_builds() {
+        let (_base, loader) = keyed_loader();
+        let _building = loader.begin_build("org", "rebuild").unwrap();
+        for result in [loader.rebuild("org").await, loader.update("org").await] {
+            let why = result.unwrap_err();
+            assert!(why.contains(ALREADY_BUILDING), "{why}");
+        }
+    }
+
+    /// A bulk leg whose plugin is building already is a skip, not a
+    /// failure: nothing went wrong, the build is just elsewhere.
+    #[tokio::test]
+    async fn a_bulk_leg_for_a_plugin_already_building_is_skipped() {
+        let (base, loader) = keyed_loader();
+        let _building = loader.begin_build("org", "rebuild").unwrap();
+        let leg = loader
+            .run_leg(
+                BulkOp::Rebuild,
+                "org",
+                &SourceRecord::Local(base.path().to_path_buf()),
+            )
+            .await;
+        assert!(
+            matches!(&leg, BulkLeg::Skipped(why) if why.contains(ALREADY_BUILDING)),
+            "{leg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_bulk_run_is_refused_and_says_so() {
+        let (_base, loader) = keyed_loader();
+        let _running = loader
+            .begin_task(
+                lattice_mode::TaskKey::run_to_completion("plugin:bulk", "")
+                    .with_inputs(BulkOp::Update.past()),
+            )
+            .unwrap();
+        let report = loader.run_bulk(BulkOp::Rebuild, &|_, _, _| {}).await;
+        assert!(report.legs.is_empty(), "nothing ran");
+        assert_eq!(
+            report.summary(BulkOp::Rebuild.past()),
+            "a bulk plugin operation is already running"
         );
     }
 }

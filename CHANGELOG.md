@@ -148,6 +148,14 @@
   echo says it was not applied. `:format` twice on unchanged text is refused
   while the first runs, a format of changed text replaces the one in
   flight, and `<C-g>` stops a slow external formatter.
+- **A plugin is built once at a time.** `:plugin-update`, `:plugin-rebuild`
+  and the plugins view's `u` / `b` pressed again while that plugin is still
+  building used to start a second build of it — and whichever finished
+  first cleared its "building…" mark while the other was still going. A
+  second press is now refused (*"`org` is already being rebuilt or
+  updated"*) and the build carries on; `:plugin-update-all` and its
+  siblings skip a plugin already building, and refuse to start while
+  another bulk run is going.
 - **Committing, saving a note, confirming a rebase and `:magit-branch-create`
   report how they went** and refresh open magit views, like every other
   magit operation. A failure used to reach only the log, and an open status

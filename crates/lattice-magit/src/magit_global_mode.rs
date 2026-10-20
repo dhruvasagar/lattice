@@ -7003,6 +7003,12 @@ mod keyed_remote_ops {
         git(root.path(), &["init", "-q", "--bare", "origin.git"]);
         git(root.path(), &["clone", "-q", "origin.git", name]);
         let work = root.path().join(name);
+        // The local branch is named `main` explicitly, to match the upstream
+        // below. Left to git it takes `init.defaultBranch` — `master` on CI
+        // — and git's default `push.default=simple` then refuses the plain
+        // push this fixture exists to make: "The upstream branch of your
+        // current branch does not match the name of your current branch".
+        git(&work, &["symbolic-ref", "HEAD", "refs/heads/main"]);
         git(&work, &["config", "user.email", "t@example.invalid"]);
         git(&work, &["config", "user.name", "t"]);
         git(&work, &["commit", "-q", "--allow-empty", "-m", "init"]);
@@ -7122,6 +7128,12 @@ mod keyed_remote_ops {
             outcomes.len(),
             1,
             "the superseded push reports nothing: {outcomes:?}"
+        );
+        // …and the one report is the new push's, which succeeded. Counting
+        // alone passed on CI while every push in this fixture was failing.
+        assert!(
+            matches!(outcomes[0], TaskOutcome::Succeeded { .. }),
+            "{outcomes:?}"
         );
     }
 

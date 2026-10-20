@@ -313,7 +313,9 @@ pub use crate::foldable_view_mode::{
     register_foldable_view_actions, register_foldable_view_mode,
 };
 // ML.0a: configurable-modeline element model + descriptor registry.
-pub use crate::foreground_cancel::{ForegroundCancel, ForegroundCancelHandle};
+pub use crate::foreground_cancel::{
+    AlreadyRunning, ForegroundCancel, ForegroundCancelHandle, RePolicy, TaskKey, TaskTicket,
+};
 pub use crate::modeline::{
     ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineElementUpdate,
     ModelineKey, ModelineRegistry, ModelineRole, ModelineService, ModelineServiceHandle,

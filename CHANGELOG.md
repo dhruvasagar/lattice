@@ -140,6 +140,14 @@
   a stray `gr` does not throw away a long build. A different command still
   replaces the running one; `<C-g>` then `:recompile` restarts on purpose,
   and `<C-g>` alone stops a build. `:!cmd` behaves the same way.
+- **`:format` never applies its edits to text that moved on.** A format
+  result was applied to whichever buffer was active when it arrived — even
+  if you had switched buffers or kept typing while it ran — and its edits,
+  positions in the old text, landed in the wrong places. A result now
+  applies only to the buffer and version it was computed for; otherwise the
+  echo says it was not applied. `:format` twice on unchanged text is refused
+  while the first runs, a format of changed text replaces the one in
+  flight, and `<C-g>` stops a slow external formatter.
 - **Committing, saving a note, confirming a rebase and `:magit-branch-create`
   report how they went** and refresh open magit views, like every other
   magit operation. A failure used to reach only the log, and an open status

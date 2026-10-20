@@ -2180,6 +2180,14 @@ pub struct Editor {
     pub pending_filter_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<crate::shell_filter::FilterOutcome>>,
     pub pending_format_token: Option<CancellationToken>,
+    /// CG.9: the user's `:format` in flight, keyed (`cancellation.md` §9):
+    /// the same format again is refused, a newer one supersedes it, and its
+    /// result is applied only while this is still current.
+    pub pending_format_ticket: Option<lattice_mode::TaskTicket>,
+    /// CG.9: the buffer, and its version, a format was computed for. Its
+    /// edits are positions in THAT text: applied to another buffer, or to
+    /// this one after an edit, they land in the wrong places.
+    pub pending_format_target: Option<(BufferId, u64)>,
     pub pending_signature_help_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<SignatureHelpOutcome>>,
     pub pending_signature_help_token: Option<CancellationToken>,

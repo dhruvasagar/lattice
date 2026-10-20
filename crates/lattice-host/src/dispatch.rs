@@ -16269,6 +16269,9 @@ impl Editor {
             return;
         };
         self.pending_format_token = None;
+        if !self.format_result_applies() {
+            return;
+        }
         use lattice_lsp::cache::FormatOutcome;
         match outcome {
             FormatOutcome::NoProvider { is_range } => {
@@ -31490,6 +31493,51 @@ impl Editor {
     /// being hard-wired to an LSP-only path; `:format` **is** the
     /// LSP-independent cascade, and `:lsp-format` remains the LSP-only
     /// command, unchanged.
+    /// CG.9: key a user `:format` of the active buffer (`cancellation.md`
+    /// §9) and record what it is computed for. `None` — with the echo said —
+    /// when the same format of the same text is already running; it carries
+    /// on. A format of changed text supersedes the one in flight.
+    fn begin_format_task(&mut self, what: &str) -> Option<lattice_protocol::CancellationToken> {
+        let buffer = self.active_buffer_id();
+        let version = self.document.version();
+        let key = lattice_mode::TaskKey::supersede("format", format!("{buffer:?}"))
+            .with_inputs(format!("{version} {what}"));
+        match self.foreground_cancel.begin(key) {
+            Ok(ticket) => {
+                let token = ticket.token().clone();
+                self.pending_format_ticket = Some(ticket);
+                self.pending_format_target = Some((buffer, version));
+                Some(token)
+            }
+            Err(_) => {
+                self.set_message(EchoLevel::Info, "format: already running".to_string());
+                None
+            }
+        }
+    }
+
+    /// CG.9: whether a format result may be applied — still the current
+    /// run, for the buffer and version it was computed for. Says why when
+    /// not. Consumes the run's ticket and target either way.
+    fn format_result_applies(&mut self) -> bool {
+        let ticket = self.pending_format_ticket.take();
+        let target = self.pending_format_target.take();
+        if ticket.as_ref().is_some_and(|t| !t.is_current()) {
+            // Superseded by a newer `:format`, or stopped with `<C-g>`.
+            return false;
+        }
+        if let Some((buffer, version)) = target
+            && (self.active_buffer_id() != buffer || self.document.version() != version)
+        {
+            self.set_message(
+                EchoLevel::Info,
+                "format: the buffer changed while it was formatting — not applied".to_string(),
+            );
+            return false;
+        }
+        true
+    }
+
     pub fn do_format_request(&mut self) {
         let buffer = self.active_buffer_id();
         let lang = self.active_lang();
@@ -31534,6 +31582,9 @@ impl Editor {
             }
         };
 
+        let Some(token) = self.begin_format_task(spec.program) else {
+            return;
+        };
         let text = self.active_text().as_string();
         let path = self.document.path();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ExternalFormatOutcome>();
@@ -31544,13 +31595,14 @@ impl Editor {
         let async_landed = self.async_landed.clone();
 
         lattice_runtime::runtime::spawn_blocking_on_lsp_runtime(move || {
-            let outcome = match lattice_format::run(&spec, &text, path.as_deref()) {
-                Ok(formatted) => {
-                    ExternalFormatOutcome::Edits(lattice_format::minimal_edits(&text, &formatted))
-                }
-                Err(e) if e.is_noteworthy() => ExternalFormatOutcome::Failed(e.message()),
-                Err(e) => ExternalFormatOutcome::Skipped(e.message()),
-            };
+            let outcome =
+                match lattice_format::run_cancellable(&spec, &text, path.as_deref(), &token) {
+                    Ok(formatted) => ExternalFormatOutcome::Edits(lattice_format::minimal_edits(
+                        &text, &formatted,
+                    )),
+                    Err(e) if e.is_noteworthy() => ExternalFormatOutcome::Failed(e.message()),
+                    Err(e) => ExternalFormatOutcome::Skipped(e.message()),
+                };
             let _ = tx.send(outcome);
             async_landed.notify_one();
         });
@@ -31689,6 +31741,9 @@ impl Editor {
         let Some(outcome) = latest else {
             return false;
         };
+        if !self.format_result_applies() {
+            return true;
+        }
         match outcome {
             ExternalFormatOutcome::Skipped(msg) => {
                 // Not installed / not configured. Informational, never
@@ -31802,12 +31857,18 @@ impl Editor {
             );
             return;
         };
+        // CG.9: keyed — refused while the same format runs, superseding one
+        // of older text. The ticket's token is reachable by `<C-g>`.
+        let what = match range_lines {
+            Some((s, e)) => format!("lsp {s}-{e}"),
+            None => "lsp".to_string(),
+        };
+        let Some(token) = self.begin_format_task(&what) else {
+            return;
+        };
         let snapshot = self.document.snapshot();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
         self.pending_format_rx = Some(rx);
-        self.pending_format_token = Some(token.clone());
-        self.enrol_foreground(&token);
         let lsp = self.lsp.clone();
         let lsp_range = range_lines.map(|(s, e)| {
             let end_line_text_len = snapshot.buffer.line_byte_len(e);
@@ -33514,6 +33575,12 @@ impl Editor {
         if let Some(token) = self.pending_format_token.take() {
             token.cancel();
         }
+        // CG.9: on-type formatting is automatic and not keyed. It replaces
+        // the shared receiver, so a user `:format` waiting on it is dropped
+        // with its ticket and target, rather than leaving a stale target for
+        // this result to be checked against.
+        self.pending_format_ticket = None;
+        self.pending_format_target = None;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_format_rx = Some(rx);
@@ -58097,6 +58164,56 @@ mod tests {
         editor.do_format_request();
         settle_format(&mut editor);
         assert_eq!(editor.active_text().as_string(), before);
+    }
+
+    /// CG.9: a format computed for text that has since changed lands
+    /// nowhere. Its edits are positions in the OLD text; applied to the new
+    /// one they used to land in the wrong places.
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_made_while_formatting_is_not_overwritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prg = fake_formatter(dir.path(), "slow", "sleep 0.5; sed 's/^ *//; s/^/    /'");
+        let mut editor = editor_with_formatter("fn f() {\nx();\n}\n", &prg);
+        editor.do_format_request();
+        editor
+            .apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+                lattice_protocol::position::Position::new(1, 0),
+                "y",
+            ))
+            .expect("edit while formatting");
+        settle_format(&mut editor);
+        assert_eq!(
+            line_at(&editor, 1),
+            "yx();",
+            "the user's edit stands, unformatted"
+        );
+        let msg = editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        assert!(msg.contains("changed while it was formatting"), "{msg}");
+    }
+
+    /// CG.9: `:format` twice on unchanged text — the second is refused and
+    /// the first carries on (`cancellation.md` §9).
+    #[cfg(unix)]
+    #[test]
+    fn the_same_format_again_is_refused_and_the_first_lands() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prg = fake_formatter(dir.path(), "slow", "sleep 0.3; sed 's/^ *//; s/^/    /'");
+        let mut editor = editor_with_formatter("fn f() {\nx();\n}\n", &prg);
+        editor.do_format_request();
+        editor.do_format_request();
+        let msg = editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        assert!(msg.contains("already running"), "{msg}");
+        settle_format(&mut editor);
+        assert_eq!(line_at(&editor, 1), "    x();", "the first format landed");
     }
 
     #[test]

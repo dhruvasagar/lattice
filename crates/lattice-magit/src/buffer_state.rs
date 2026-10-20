@@ -154,6 +154,56 @@ pub enum DiffSource {
     Committed,
 }
 
+/// CG.7c: the last refresh of a view to START is the one that paints.
+///
+/// Refreshes of one view overlap: a stage finishes and publishes, every
+/// open view rebuilds, and a `gr` or another stage lands while the first
+/// rebuild is still reading git. The rebuild that started first can
+/// finish last, and painting it shows the repository as it was before
+/// the newer change — the stale overwrite this replaces. Each refresh
+/// takes a stamp as it starts and paints only if it is still the latest
+/// for its buffer when its text is ready (`cancellation.md` §9).
+///
+/// A generation, not a keyed `TaskTicket`: refreshes are mostly
+/// automatic, and `<C-g>` must not drop every pending view repaint
+/// (design §3 — automatic work is not foreground).
+pub(crate) struct RefreshStamp {
+    buffer: String,
+    generation: u64,
+}
+
+fn refresh_generations() -> &'static Mutex<HashMap<String, u64>> {
+    static GENERATIONS: std::sync::OnceLock<Mutex<HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    GENERATIONS.get_or_init(Default::default)
+}
+
+impl RefreshStamp {
+    /// Take the next stamp for `buffer`'s view.
+    pub(crate) fn begin(buffer: impl std::fmt::Debug) -> Self {
+        let buffer = format!("{buffer:?}");
+        let mut generations = match refresh_generations().lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let generation = generations.entry(buffer.clone()).or_default();
+        *generation += 1;
+        Self {
+            generation: *generation,
+            buffer,
+        }
+    }
+
+    /// Whether no newer refresh of this view has started since.
+    pub(crate) fn is_latest(&self) -> bool {
+        let generations = match refresh_generations().lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        generations.get(&self.buffer) == Some(&self.generation)
+    }
+}
+
 /// A magit buffer's view behaviour, published per buffer alongside
 /// its state.
 ///
@@ -626,5 +676,76 @@ mod tests {
         let guard = BufferStateGuard::new(states.clone(), BufferId(1));
         drop(guard);
         assert!(states.get(BufferId(1)).is_none());
+    }
+}
+
+/// CG.7c: the last refresh of a view to start is the one that paints.
+#[cfg(test)]
+mod refresh_stamps {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::RefreshStamp;
+
+    #[test]
+    fn only_the_latest_refresh_of_a_view_paints() {
+        let older = RefreshStamp::begin("cg7c-view-a");
+        let newer = RefreshStamp::begin("cg7c-view-a");
+        assert!(!older.is_latest(), "started first, finished last: dropped");
+        assert!(newer.is_latest());
+    }
+
+    #[test]
+    fn views_do_not_stale_each_other() {
+        let a = RefreshStamp::begin("cg7c-view-b");
+        let _b = RefreshStamp::begin("cg7c-view-c");
+        assert!(a.is_latest());
+    }
+
+    /// The guard that keeps it true for views added later: any function
+    /// in this crate that paints a view's text must take a stamp, except
+    /// the views that never refresh and the painting helpers themselves.
+    /// Reads the sources at test time, so a new view is checked without
+    /// being listed.
+    #[test]
+    fn every_view_that_repaints_takes_a_stamp() {
+        // Opened once, never rebuilt in the background: nothing can land
+        // on top of their one paint.
+        const ONE_SHOT: &[&str] = &[
+            "magit_commit_mode.rs",
+            "magit_notes_mode.rs",
+            "magit_rebase_mode.rs",
+            "magit_revision_mode.rs",
+            "magit_stash_show_mode.rs",
+            "magit_file_revision_mode.rs",
+        ];
+        // The painting helpers, which every caller above goes through.
+        const HELPERS: &[&str] = &["buffer_io.rs", "refresh.rs"];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.extension().is_none_or(|e| e != "rs")
+                || ONE_SHOT.contains(&name.as_str())
+                || HELPERS.contains(&name.as_str())
+            {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            // Split so this guard's own source is not a match.
+            let paint = ["replace_buffer_text", "("].concat();
+            for (at, _) in src.match_indices(&paint) {
+                let fn_start = src[..at].rfind("fn ").unwrap_or(0);
+                let body = &src[fn_start..at];
+                assert!(
+                    body.contains("RefreshStamp::begin"),
+                    "{name}: a function paints a view without a `RefreshStamp` — \
+                     a refresh that started first and finishes last would \
+                     overwrite a newer one with older state"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 10, "expected the views' paints, saw {checked}");
     }
 }

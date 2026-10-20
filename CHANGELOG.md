@@ -123,6 +123,12 @@
   exists"*, or land out of order. They now run one after another, in the
   order you pressed them, in the status buffer and every magit view; the
   same operation pressed again while it runs is refused, as above.
+- **Magit views no longer go back to an older state.** When two refreshes
+  of a view overlapped — a `gr` while the view was rebuilding after a stage,
+  or two operations finishing close together — the one that started first
+  could finish last and repaint what the repository looked like before the
+  newer change. A view now shows only its most recent refresh, and the
+  "refreshing" mark in its header stays up until the last one is done.
 - **Committing, saving a note, confirming a rebase and `:magit-branch-create`
   report how they went** and refresh open magit views, like every other
   magit operation. A failure used to reach only the log, and an open status

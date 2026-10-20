@@ -386,15 +386,20 @@ impl Mode for MagitDiffMode {
                     .map(|outer| (*outer).clone())
                     .as_ref(),
             );
+            // CG.7c: the first load is this view's first refresh — it paints
+            // only if no refresh that started after it has painted since.
+            let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
             let text = tokio::task::spawn_blocking(move || {
                 run_diff(&wd, &scope, path_for_task.as_deref(), &[], context)
             })
             .await
             .unwrap_or_default();
-            let spans = crate::hunk_syntax::diff_spans(&text, activation_registry.as_ref());
-            crate::buffer_io::replace_buffer_text(&handle, text).await;
-            if let Some(ref ph) = pending_highlights {
-                ph.store_and_wake(buffer_id, spans);
+            if stamp.is_latest() {
+                let spans = crate::hunk_syntax::diff_spans(&text, activation_registry.as_ref());
+                crate::buffer_io::replace_buffer_text(&handle, text).await;
+                if let Some(ref ph) = pending_highlights {
+                    ph.store_and_wake(buffer_id, spans);
+                }
             }
 
             Ok(guard)
@@ -433,12 +438,17 @@ fn refresh_with(
             crate::hunk_syntax::syntax_registry(g.lang_registry.clone(), g.config.as_ref()),
         )
     };
+    // CG.7c: paint only if no newer refresh of this view started since.
+    let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
     tokio::task::spawn(async move {
         let text = tokio::task::spawn_blocking(move || {
             run_diff(&wd, &scope, path.as_deref(), &extra, context)
         })
         .await
         .unwrap_or_default();
+        if !stamp.is_latest() {
+            return;
+        }
         let spans = crate::hunk_syntax::diff_spans(&text, registry.as_ref());
         let position = restore.and_then(|r| crate::cursor_restore::restore_position(&text, &r));
         crate::buffer_io::replace_buffer_text(&handle, text).await;
@@ -484,6 +494,8 @@ fn spawn_mutation_and_refresh(
         Ok(mutation) => mutation,
         Err(refused) => return Some(refused),
     };
+    // CG.7c: paint only if no newer refresh of this view started since.
+    let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || mutation.run(mutate))
             .await
@@ -494,6 +506,9 @@ fn spawn_mutation_and_refresh(
         })
         .await
         .unwrap_or_default();
+        if !stamp.is_latest() {
+            return;
+        }
         let spans = crate::hunk_syntax::diff_spans(&text, registry.as_ref());
         crate::buffer_io::replace_buffer_text(&handle, text).await;
         if let Some(ph) = pending {

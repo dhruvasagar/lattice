@@ -1576,6 +1576,10 @@ async fn do_refresh(
     // cleared by the guard's drop — including if the `spawn_blocking`
     // below panics or the task is cancelled when the buffer closes.
     let _busy = crate::headerline::busy(&headerline);
+    // CG.7c: paint only if no newer refresh of this buffer started since.
+    // Taken here, at the top of the spawned refresh, which runs as soon
+    // as it is spawned — so stamps follow the order refreshes began.
+    let stamp = crate::buffer_state::RefreshStamp::begin(bid);
     let (text, spans, header, reopened, refine) = tokio::task::spawn_blocking(move || {
         refresh::build_and_format(&wd, &open, context, lang_registry.as_ref())
     })
@@ -1584,6 +1588,9 @@ async fn do_refresh(
     // MG.14: publish before the edit — the header describes the state
     // the body is about to show, and `set` is a comparison plus (at
     // most) one atomic, nowhere near the edit's cost.
+    if !stamp.is_latest() {
+        return;
+    }
     crate::headerline::publish(&headerline, header);
     // The expansion bookkeeping describes the text about to be written,
     // so it is replaced (not merged): an entry that vanished from the

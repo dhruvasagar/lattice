@@ -556,6 +556,21 @@ readers, so a grandchild still holding a pipe cannot delay it.
 A superseded run ends quietly: one line in `*messages*`, no error
 notification. The user did not fail at anything — they asked again.
 
+### 9.3a Refreshes: a generation, not a key (CG.7c)
+
+A view's refresh fits the rule with one twist: its real input is the
+repository's state, which every mutation changes, so each refresh is a
+new question and supersedes the one in flight — keeping the older one
+would paint the state from before the newest change. But a refresh is
+mostly *automatic* (an operation finishing re-renders every open view),
+and by §3 automatic work is not foreground: if refreshes held keyed
+tickets, any `<C-g>` would drop every pending repaint and leave views
+stale. So a refresh takes a per-buffer generation stamp when it starts
+and paints only if it is still the latest when its text is ready — the
+same latest-wins shape the editor already uses for wasm media and
+multibuffer publishes. A first load at open is the view's first refresh
+and stamps too.
+
 ### 9.4 Rejected
 
 - **Always restart** on a re-trigger (the first version of this rule) — a

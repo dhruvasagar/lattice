@@ -349,18 +349,23 @@ impl Mode for MagitRemoteMode {
             }
 
             let wd = workdir.clone();
+            // CG.7c: the first load is this view's first refresh — it paints
+            // only if no refresh that started after it has painted since.
+            let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
             let (text, header, entries) =
                 tokio::task::spawn_blocking(move || build_remote_list(&wd))
                     .await
                     .unwrap_or_else(|_| (String::new(), Vec::new(), Vec::new()));
-            if let Ok(mut g) = state.lock() {
-                g.entries = entries;
-            }
-            headerline::publish(&hl, header);
-            let spans = crate::highlight::remote_styled_spans(&text);
-            crate::buffer_io::replace_buffer_text(&handle, text).await;
-            if let Some(ref ph) = pending_highlights {
-                ph.store_and_wake(buffer_id, spans);
+            if stamp.is_latest() {
+                if let Ok(mut g) = state.lock() {
+                    g.entries = entries;
+                }
+                headerline::publish(&hl, header);
+                let spans = crate::highlight::remote_styled_spans(&text);
+                crate::buffer_io::replace_buffer_text(&handle, text).await;
+                if let Some(ref ph) = pending_highlights {
+                    ph.store_and_wake(buffer_id, spans);
+                }
             }
 
             Ok(guard)
@@ -384,6 +389,8 @@ fn refresh(s: Arc<Mutex<RemoteState>>) -> Option<Effect> {
     // guard drops — including on every early exit inside the
     // task, which is why it is a guard and not a matching pair.
     let busy = headerline::busy(&hl);
+    // CG.7c: paint only if no newer refresh of this view started since.
+    let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
     tokio::task::spawn(async move {
         let _busy = busy;
         let (text, header, entries) = tokio::task::spawn_blocking(move || build_remote_list(&wd))
@@ -391,6 +398,9 @@ fn refresh(s: Arc<Mutex<RemoteState>>) -> Option<Effect> {
             .unwrap_or_else(|_| (String::new(), Vec::new(), Vec::new()));
         if let Ok(mut g) = s.lock() {
             g.entries = entries;
+        }
+        if !stamp.is_latest() {
+            return;
         }
         headerline::publish(&hl, header);
         let spans = crate::highlight::remote_styled_spans(&text);

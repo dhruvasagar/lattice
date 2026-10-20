@@ -2463,26 +2463,8 @@ impl Editor {
         self.pending_register = None;
     }
 
-    /// CG.1: arm a foreground cancellation token for a user-initiated
-    /// async operation, returning the clone the spawned task holds.
-    ///
-    /// Cancels the predecessor first, so a second `:search` before the
-    /// first completes abandons the first scan instead of leaving a
-    /// zombie task racing the new one for the same buffer.
-    ///
-    /// CG.2: a convenience over
-    /// [`ForegroundCancel::arm`](lattice_mode::ForegroundCancel::arm)
-    /// for the paths that already hold `&mut Editor`. Providers reach
-    /// the same slot through `services.get::<ForegroundCancelHandle>()`
-    /// — most spawn sites are `&self` closures and cannot come through
-    /// here.
-    #[must_use = "the returned token must be handed to the spawned task, \
-                  or the operation is unstoppable"]
-    pub fn arm_cancel(&mut self) -> lattice_protocol::CancellationToken {
-        self.foreground_cancel.arm()
-    }
-
-    /// CG.1: the `<C-g>` body. Flip the armed foreground token(s), then
+    /// CG.1: the `<C-g>` body. Flip every foreground token — keyed tasks,
+    /// enrolled requests, the plugin interrupt (CG.12) — then
     /// [`reset_to_normal`](Self::reset_to_normal) — emacs
     /// `keyboard-quit`, which is defined as doing both.
     ///
@@ -2506,9 +2488,9 @@ impl Editor {
     /// already gets right. What was missing is only that `<C-g>` had no
     /// way to reach any of them.
     ///
-    /// Enrol rather than [`arm_cancel`](Self::arm_cancel): `K` is a
-    /// reflexive inspect key, and arming would mean glancing at a
-    /// symbol silently kills the project search you are waiting on.
+    /// Enrol rather than begin a keyed task: these requests already
+    /// supersede per feature, and `K` is a reflexive inspect key that must
+    /// stop nothing but a previous hover.
     ///
     /// **Only user-triggered requests.** `lsp_completion_request`,
     /// `lsp_signature_help_request`, `do_lsp_on_type_formatting_request`
@@ -47363,54 +47345,31 @@ mod tests {
     // covered in `lattice_ui_tui::app::cancel`. These pin the method
     // contracts the async slices CG.2–CG.4 will build on.
 
-    /// The predecessor must die when a new op arms. Without this, a
-    /// second `:search` before the first completes leaves two scans
-    /// racing to write the same buffer, and only one of them is the one
-    /// the user asked for.
-    #[test]
-    fn arm_cancel_kills_the_previous_token() {
-        let mut ed = Editor::default();
-        let first = ed.arm_cancel();
-        assert!(!first.is_cancelled());
-
-        let second = ed.arm_cancel();
-
-        assert!(
-            first.is_cancelled(),
-            "arming a new op must cancel its predecessor"
-        );
-        assert!(!second.is_cancelled(), "the new token starts live");
-        assert!(ed.foreground_cancel.is_armed());
-    }
-
     /// Cancel is bound universally, so the overwhelmingly common press
     /// is one with nothing armed. It must be a no-op, not a panic and
     /// not a state change.
     #[test]
     fn cancel_foreground_is_a_noop_when_idle() {
         let mut ed = Editor::default();
-        assert!(!ed.foreground_cancel.is_armed());
-
         ed.cancel_foreground();
         ed.cancel_foreground();
-
-        assert!(!ed.foreground_cancel.is_armed());
         assert!(matches!(ed.modal, ModalState::Normal));
     }
 
+    /// CG.12: `<C-g>` stops a keyed task and the plugin call running.
     #[test]
-    fn cancel_foreground_flips_and_clears_the_armed_token() {
+    fn cancel_foreground_stops_keyed_work_and_the_running_plugin_call() {
         let mut ed = Editor::default();
-        let token = ed.arm_cancel();
+        let search = ed
+            .foreground_cancel
+            .begin(lattice_mode::TaskKey::supersede("search", "view 1"))
+            .unwrap();
+        let plugin_call = ed.foreground_cancel.current_token().unwrap();
 
         ed.cancel_foreground();
 
-        assert!(token.is_cancelled());
-        assert!(
-            !ed.foreground_cancel.is_armed(),
-            "a cancelled token must not stay armed — the next \
-             `arm_cancel` would otherwise 'cancel' it a second time"
-        );
+        assert!(search.token().is_cancelled());
+        assert!(plugin_call.is_cancelled());
     }
 
     /// CG.3: a user-triggered LSP request reaches `<C-g>` by enrolling.
@@ -47434,12 +47393,16 @@ mod tests {
         assert!(rename.is_cancelled());
     }
 
-    /// The reason enrolment exists rather than a second `arm`: `K`
-    /// during a project search must leave the search running.
+    /// The reason enrolment exists rather than a keyed begin: `K` during
+    /// a project search must leave the search running.
     #[test]
     fn enrolling_an_lsp_request_does_not_cancel_a_running_search() {
-        let mut ed = Editor::default();
-        let search = ed.arm_cancel();
+        let ed = Editor::default();
+        let search = ed
+            .foreground_cancel
+            .begin(lattice_mode::TaskKey::supersede("search", "view 1"))
+            .unwrap();
+        let search = search.token().clone();
 
         let hover = lattice_protocol::CancellationToken::new();
         ed.enrol_foreground(&hover);

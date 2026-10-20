@@ -3,7 +3,7 @@
 //! Design: `docs/dev/architecture/cancellation.md`; sequencing:
 //! `docs/dev/operations/slice-plans/cancellation.md`.
 //!
-//! The unit tests for `arm_cancel` / `cancel_foreground` /
+//! The unit tests for `cancel_foreground` /
 //! `reset_to_normal` live next to those methods in `lattice-host`, and
 //! the binding itself is unit-tested in `lattice_host::keymap_cancel`.
 //! This module covers the seam neither can reach: **press key →
@@ -25,6 +25,18 @@ fn ctrl_g() -> KeyEvent {
     KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)
 }
 
+/// CG.12: some foreground work for `<C-g>` to reach — a keyed task begun
+/// through the editor's slot. Hold the ticket: a dropped ticket frees its
+/// slot, and `<C-g>` would then have nothing to cancel.
+fn running(a: &crate::App) -> lattice_mode::TaskTicket {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    a.editor
+        .foreground_cancel
+        .begin(lattice_mode::TaskKey::supersede("test", n.to_string()))
+        .expect("a fresh key is let through")
+}
+
 fn esc() -> KeyEvent {
     KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
 }
@@ -35,16 +47,17 @@ fn esc() -> KeyEvent {
 #[test]
 fn ctrl_g_cancels_the_armed_foreground_token() {
     let mut a = app_with("hello world\nsecond line\n", 10);
-    let token = a.editor.arm_cancel();
+    let task = running(&a);
+    let token = task.token().clone();
     assert!(!token.is_cancelled(), "a freshly armed token is live");
 
     press(&mut a, ctrl_g());
 
-    assert!(token.is_cancelled(), "<C-g> must flip the armed token");
     assert!(
-        !a.editor.foreground_cancel.is_armed(),
-        "a cancelled token must be cleared, not left armed"
+        token.is_cancelled(),
+        "<C-g> must flip the running task's token"
     );
+    assert!(!task.is_current(), "and its result would land nowhere");
 }
 
 /// The binding is `Builtin`, not `emacs-keys-mode`, so it must not
@@ -54,7 +67,8 @@ fn ctrl_g_cancels_the_armed_foreground_token() {
 fn ctrl_g_cancels_with_emacs_keys_disabled() {
     let mut a = app_with("hello world\n", 10);
     submit_ex(&mut a, "set noemacs-keys");
-    let token = a.editor.arm_cancel();
+    let task = running(&a);
+    let token = task.token().clone();
 
     press(&mut a, ctrl_g());
 
@@ -81,7 +95,6 @@ fn ctrl_g_when_idle_is_harmless() {
          pulls back one byte on entering Normal, so `reset_to_normal` \
          has to skip it when already Normal"
     );
-    assert!(!a.editor.foreground_cancel.is_armed());
 }
 
 /// `<Esc>` deliberately does NOT cancel.
@@ -94,7 +107,8 @@ fn ctrl_g_when_idle_is_harmless() {
 #[test]
 fn esc_does_not_cancel() {
     let mut a = app_with("hello world\n", 10);
-    let token = a.editor.arm_cancel();
+    let task = running(&a);
+    let token = task.token().clone();
 
     press(&mut a, esc());
     press(&mut a, esc());
@@ -103,10 +117,7 @@ fn esc_does_not_cancel() {
         !token.is_cancelled(),
         "reflexive <Esc> must never kill in-flight foreground work"
     );
-    assert!(
-        a.editor.foreground_cancel.is_armed(),
-        "and must leave it armed"
-    );
+    assert!(task.is_current(), "and must leave it running");
 }
 
 /// `<C-g>` returns to Normal from Insert — the `keyboard-quit` contract
@@ -114,7 +125,8 @@ fn esc_does_not_cancel() {
 #[test]
 fn ctrl_g_returns_to_normal_from_insert() {
     let mut a = app_with("hello world\n", 10);
-    let token = a.editor.arm_cancel();
+    let task = running(&a);
+    let token = task.token().clone();
     press_chars(&mut a, "i");
     assert!(matches!(a.editor.modal, ModalState::Insert));
 
@@ -148,7 +160,8 @@ fn ctrl_g_clears_a_pending_count() {
 #[test]
 fn ctrl_g_in_operator_pending_aborts_the_operator_first() {
     let mut a = app_with("hello world\nsecond line\n", 10);
-    let token = a.editor.arm_cancel();
+    let task = running(&a);
+    let token = task.token().clone();
     press_chars(&mut a, "d");
     assert!(!a.editor.partial_chord.is_empty(), "`d` is pending");
 
@@ -191,7 +204,10 @@ fn a_token_armed_through_the_service_is_cancelled_by_the_key() {
         .services
         .get::<lattice_mode::ForegroundCancelHandle>()
         .expect("boot must register ForegroundCancelHandle");
-    let token = fc.arm();
+    let task = fc
+        .begin(lattice_mode::TaskKey::supersede("search", "view 1"))
+        .expect("let through");
+    let token = task.token().clone();
     assert!(!token.is_cancelled());
 
     press(&mut a, ctrl_g());
@@ -203,23 +219,26 @@ fn a_token_armed_through_the_service_is_cancelled_by_the_key() {
     );
 }
 
-/// CG.2: arming supersedes, which is how a second `:search` abandons the
-/// first and how `gr` replaces a running scan. Both spawn sites rely on
-/// this instead of flipping a private flag.
+/// CG.12: `<C-g>` stops the plugin call running when it is pressed — the
+/// interrupt token a guest call snapshots, reached through the same service
+/// slot the plugin host reads.
 #[test]
-fn arming_through_the_service_supersedes_the_previous_operation() {
-    let a = app_with("hello world\n", 10);
+fn ctrl_g_interrupts_the_running_plugin_call() {
+    let mut a = app_with("hello world\n", 10);
     let fc = a
         .editor
         .services
         .get::<lattice_mode::ForegroundCancelHandle>()
         .expect("boot must register ForegroundCancelHandle");
+    let plugin_call = fc.current_token().expect("always present");
 
-    let first = fc.arm();
-    let second = fc.arm();
+    press(&mut a, ctrl_g());
 
-    assert!(first.is_cancelled(), "the superseded operation must stop");
-    assert!(!second.is_cancelled(), "the replacement runs");
+    assert!(plugin_call.is_cancelled());
+    assert!(
+        !fc.current_token().unwrap().is_cancelled(),
+        "a call started after the press is not reached by it"
+    );
 }
 
 /// SN.3d owns `<C-g>` in Visual. Binding cancel there would have
@@ -227,7 +246,8 @@ fn arming_through_the_service_supersedes_the_previous_operation() {
 #[test]
 fn ctrl_g_still_toggles_visual_to_select() {
     let mut a = app_with("hello world\nsecond line\n", 10);
-    let token = a.editor.arm_cancel();
+    let task = running(&a);
+    let token = task.token().clone();
     press_chars(&mut a, "v");
 
     press(&mut a, ctrl_g());
@@ -248,7 +268,8 @@ fn ctrl_g_still_toggles_visual_to_select() {
 #[test]
 fn cancelling_from_visual_takes_esc_then_ctrl_g() {
     let mut a = app_with("hello world\nsecond line\n", 10);
-    let token = a.editor.arm_cancel();
+    let task = running(&a);
+    let token = task.token().clone();
     press_chars(&mut a, "v");
 
     press(&mut a, esc());
@@ -335,7 +356,8 @@ fn ctrl_c_g_still_reaches_the_magit_dispatch_prefix() {
 fn ctrl_g_dismisses_the_command_line() {
     let mut a = app_with("hello\n", 10);
     let before = a.editor.document_buffer_id;
-    let token = a.editor.arm_cancel();
+    let task = running(&a);
+    let token = task.token().clone();
     a.apply(crate::app::Action::EnterCommandLine);
     press_chars(&mut a, "e foo");
     assert!(a.editor.command_line_active());

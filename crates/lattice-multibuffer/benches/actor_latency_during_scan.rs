@@ -91,6 +91,7 @@ fn one_iter(root: &PathBuf) -> Duration {
             service.clone(),
             events.clone(),
             lattice_protocol::CancellationToken::never(),
+            None,
         );
 
         let probe_iters = 100;

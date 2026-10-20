@@ -72,6 +72,14 @@ is foreground.
 
 ### 4.1 `ForegroundCancel` — the shared slot
 
+> **CG.12 retired `arm()` and the single armed slot** described in §4.1–§4.2
+> below. Arming cancelled whatever was armed before, *whatever it was* — a
+> search in one view stopped the search in another, and a plugin call that
+> had adopted the slot's token. Its users moved onto keyed tasks (§9), and
+> the plugin host's per-call token became an **interrupt token** that only
+> `<C-g>` flips (§9.4). `enrol()` (§4.2.1) and `cancel()` are unchanged in
+> spirit. The text below is kept as the record of how CG.2–CG.4 worked.
+
 ```rust
 // lattice-mode/src/foreground_cancel.rs
 pub struct ForegroundCancel { armed: Mutex<Option<CancellationToken>> }
@@ -327,6 +335,10 @@ The CG.1 special case (`cancel_foreground` reaching into
 left the other eleven user-triggered commands unreachable.
 
 ## 5. Async entry-point contract
+
+> **Superseded by §9 (CG.6–CG.12).** A spawn site begins a keyed task —
+> `begin(TaskKey)` — rather than `arm()`ing the shared slot; the shape
+> below is the CG.2 original.
 
 Every user-initiated long-running spawn follows this pattern:
 
@@ -585,8 +597,21 @@ and stamps too.
 - **Queue** the second trigger — a double press would run a mutation
   twice, and a stuck first run would stall the queue.
 - **Keep `arm()` and add keys beside it** — two supersede rules, one of
-  which contradicts the other. `arm()`'s users move onto keys (CG.12),
-  then it goes.
+  which contradicts the other. Its users moved onto keys and it went
+  (CG.12).
+
+### 9.5 What cancels a plugin call (CG.12)
+
+Only `<C-g>`. `ForegroundCancel` keeps an **interrupt token**: a guest call
+snapshots it as it starts, and `cancel()` flips it and installs a fresh one.
+So a press stops the call running *then*; a press before a call started
+does not reach it; and no task — keyed, enrolled, superseding — can ever
+cancel a plugin call. Decided with Dhruva, 2026-10-20, over making plugin
+calls uncancellable: a stuck plugin command should stop when the user
+asks, not when its budget runs out. The accepted cost: an *automatic*
+plugin call running at the instant of the press stops too — it reports
+`Cancelled` (no quarantine) and recomputes on its next trigger, and
+decorations update in place, so nothing visible is lost.
 
 ## 10. Cross-references
 

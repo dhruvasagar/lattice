@@ -163,6 +163,14 @@
   the older one. The same scan again is now refused while one runs (it keeps
   what it has walked); a different one replaces it, and the stopped scan
   adds nothing more. `<C-g>` stops a scan.
+- **A search no longer stops another search, or a plugin command.**
+  Starting a project search cancelled whatever search was already running —
+  in another view too — and any plugin call that happened to be tied to it.
+  Each search view now runs on its own: `gr` with the same query while it is
+  still searching is refused (*"search: already running"*), a new query or
+  a `:cd` then `gr` replaces it. `<C-g>` stops a running search, and now also
+  stops whatever plugin command is running — previously only possible while
+  a search was underway.
 - **Committing, saving a note, confirming a rebase and `:magit-branch-create`
   report how they went** and refresh open magit views, like every other
   magit operation. A failure used to reach only the log, and an open status

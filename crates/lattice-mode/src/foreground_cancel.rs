@@ -22,22 +22,24 @@
 //!
 //! # Contract
 //!
-//! One token armed at a time. [`ForegroundCancel::arm`] cancels its
-//! predecessor before handing out the new one, which means **supersede
-//! is the same mechanism as cancel** — a second `:search` before the
-//! first finishes abandons the first scan, and `gr` refreshing a view
-//! no longer needs a private flag to do it.
+//! `<C-g>` ([`ForegroundCancel::cancel`]) reaches three things:
 //!
-//! v1 is deliberately single-slot: a second user-initiated op cancels
-//! whatever was running. `cancellation.md` §8 records why (and what a
-//! stack would change) — the user pressed cancel, or started something
-//! new, and either way the old work is unwanted.
+//! - **keyed tasks** that may be killed ([`ForegroundCancel::begin`]);
+//! - **enrolled** tokens — work with a supersede discipline of its own,
+//!   such as LSP's per-feature requests ([`ForegroundCancel::enrol`]);
+//! - **the interrupt token** ([`ForegroundCancel::current_token`]), which
+//!   the plugin host snapshots per guest call: `<C-g>` flips it and installs
+//!   a fresh one, so it stops whatever plugin call is running then — and
+//!   nothing else ever cancels a plugin call (CG.12, decided with Dhruva
+//!   2026-10-20).
+//!
+//! CG.12 retired the single armed slot (`arm()`), which superseded
+//! *across* tasks: arming a search cancelled whatever was armed before,
+//! whatever it was, and a plugin call that had adopted it.
 //!
 //! # Keyed supersede (CG.6)
 //!
-//! [`arm`](ForegroundCancel::arm) supersedes *across* tasks: a second
-//! search in another view cancels the first. The editor-wide rule is
-//! narrower and depends on what the re-trigger asks for
+//! The editor-wide rule depends on what the re-trigger asks for
 //! (`cancellation.md` §9): **the same task with the same inputs leaves the
 //! run in flight alone** — restarting would throw its progress away — and
 //! **the same task with new inputs supersedes it**, since the run in
@@ -45,7 +47,7 @@
 //! [`ForegroundCancel::begin`]: a [`TaskKey`] names the task and its
 //! inputs, a refused trigger is [`AlreadyRunning`], and the returned
 //! [`TaskTicket`] tells the delivery path whether its run is still the
-//! one that counts. `arm` stays until its users move onto keys (CG.12).
+//! one that counts.
 //!
 //! # Registration
 //!
@@ -236,17 +238,20 @@ impl Drop for TaskTicket {
     }
 }
 
-/// The armed foreground token, shared between the host (which cancels)
-/// and every subsystem that spawns cancellable work (which arms).
+/// What `<C-g>` reaches, shared between the host (which cancels) and every
+/// subsystem that spawns cancellable work (which begins or enrols).
 ///
-/// `Mutex` rather than `ArcSwap` because arming is a compare-and-swap
-/// in spirit — cancel the old, install the new — and it happens once
-/// per user-initiated operation, not per keystroke or per frame. There
-/// is no hot-path read: the *token* is what gets polled in tight loops,
-/// and that is a plain atomic the caller already holds by then.
+/// `Mutex` rather than `ArcSwap`: each change is a compare-and-swap in
+/// spirit — cancel the old, install the new — and happens once per user
+/// action, not per keystroke or per frame. There is no hot-path read: the
+/// *token* is what gets polled in tight loops, and that is a plain atomic
+/// the caller already holds by then.
 #[derive(Debug, Default)]
 pub struct ForegroundCancel {
-    armed: Mutex<Option<CancellationToken>>,
+    /// CG.12: what a running plugin call is cancelled by. `cancel` flips it
+    /// and installs a fresh one, so a call snapshots the token current when
+    /// it starts and only a `<C-g>` pressed while it runs reaches it.
+    interrupt: Mutex<CancellationToken>,
     enrolled: Mutex<Vec<CancellationToken>>,
     /// CG.6: the in-flight run of each keyed task. Entries leave when
     /// their ticket drops, so this holds what is running, not what ran.
@@ -333,62 +338,26 @@ impl ForegroundCancel {
         }
     }
 
-    /// A clone of the currently-armed token, if any (CG.4).
+    /// The interrupt token, for a plugin call to snapshot as it starts
+    /// (CG.4, CG.12).
     ///
-    /// For callers that must poll cancellation from a context the arming
-    /// caller never reached — the plugin host's epoch callback, which
-    /// fires every millisecond inside a running guest call and cannot
-    /// take a lock there. It takes the lock ONCE per guest call and
-    /// polls the returned token (a plain atomic) thereafter, which is
-    /// the split this module's own docs describe: "the *token* is what
-    /// gets polled in tight loops".
+    /// The plugin host's epoch callback fires every millisecond inside a
+    /// running guest call and cannot take a lock there, so it takes this
+    /// ONCE per call and polls the returned token (a plain atomic)
+    /// thereafter. `<C-g>` flips it and installs a fresh one: the call that
+    /// was running stops, and a call started afterwards is not reached by
+    /// that earlier press. No other task can cancel a plugin call.
     ///
-    /// `None` when nothing is armed — no foreground operation is
-    /// running, so there is nothing for the caller to be cancelled by.
+    /// Always `Some`; an `Option` because the plugin host stores it as one.
     pub fn current_token(&self) -> Option<CancellationToken> {
-        match self.armed.lock() {
-            Ok(slot) => slot.clone(),
-            // Same posture as `arm`: losing cancellability for one
-            // operation beats taking the editor down.
-            Err(poisoned) => poisoned.into_inner().clone(),
-        }
-    }
-
-    /// Arm a fresh token for a user-initiated operation, cancelling any
-    /// predecessor, and hand back the clone the spawned task holds.
-    ///
-    /// Takes `&self` on purpose: the callers that need it most are
-    /// action-handler closures and event subscriptions, which never see
-    /// `&mut Editor`.
-    ///
-    /// A poisoned lock is treated as "nothing was armed" rather than a
-    /// panic — losing the ability to cancel one operation is a far
-    /// smaller failure than taking the editor down, and the fresh token
-    /// this returns is still valid for the caller about to spawn.
-    #[must_use = "the returned token must be handed to the spawned task, \
-                  or the operation is unstoppable"]
-    pub fn arm(&self) -> CancellationToken {
-        let token = CancellationToken::new();
-        match self.armed.lock() {
-            Ok(mut slot) => {
-                if let Some(previous) = slot.take() {
-                    previous.cancel();
-                }
-                *slot = Some(token.clone());
+        Some(
+            match self.interrupt.lock() {
+                Ok(token) => token,
+                // Losing cancellability for one call beats a panic.
+                Err(poisoned) => poisoned.into_inner(),
             }
-            Err(poisoned) => {
-                tracing::warn!(
-                    "foreground-cancel: lock poisoned; the previous operation \
-                     cannot be cancelled, arming the new one anyway"
-                );
-                let mut slot = poisoned.into_inner();
-                if let Some(previous) = slot.take() {
-                    previous.cancel();
-                }
-                *slot = Some(token.clone());
-            }
-        }
-        token
+            .clone(),
+        )
     }
 
     /// Join the foreground set **without** superseding anything (CG.3).
@@ -400,10 +369,9 @@ impl ForegroundCancel {
     /// that is the right granularity — a hover has no business
     /// cancelling a rename.
     ///
-    /// [`arm`](Self::arm) would be wrong here. `K` is a reflexive
-    /// inspect key; making it supersede would mean glancing at a symbol
-    /// silently kills the project search you are waiting on, with a
-    /// half-populated buffer and nothing to say why.
+    /// A keyed [`begin`](Self::begin) would be wrong here: those
+    /// requests already supersede per feature, and `K` is a reflexive
+    /// inspect key that must not stop anything but a previous hover.
     ///
     /// **Automatic requests must not come through here at all** —
     /// completion, signature-help and the `maybe_request_*` family fire
@@ -426,9 +394,9 @@ impl ForegroundCancel {
         set.push(token);
     }
 
-    /// Cancel everything foreground: the armed slot, every enrolled
-    /// token, and every keyed task that may be killed. Clears the first
-    /// two; a keyed run's slot stays until its ticket drops, and its
+    /// Cancel everything foreground: the interrupt token (and install a
+    /// fresh one), every enrolled token, and every keyed task that may be
+    /// killed. A keyed run's slot stays until its ticket drops, and its
     /// [`TaskTicket::is_current`] is false from here on.
     ///
     /// A [`RePolicy::RunToCompletion`] task is not touched: if killing it
@@ -437,13 +405,14 @@ impl ForegroundCancel {
     /// Idempotent — cancelling nothing is the common case, since the
     /// binding is pressed far more often than an operation is running.
     pub fn cancel(&self) {
-        let taken = match self.armed.lock() {
-            Ok(mut slot) => slot.take(),
-            Err(poisoned) => poisoned.into_inner().take(),
+        let interrupted = {
+            let mut current = match self.interrupt.lock() {
+                Ok(token) => token,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            std::mem::take(&mut *current)
         };
-        if let Some(token) = taken {
-            token.cancel();
-        }
+        interrupted.cancel();
         let enrolled = match self.enrolled.lock() {
             Ok(mut set) => std::mem::take(&mut *set),
             Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
@@ -466,111 +435,12 @@ impl ForegroundCancel {
             Err(poisoned) => poisoned.into_inner().len(),
         }
     }
-
-    /// Whether an operation is currently armed. For tests and for a
-    /// future status indicator (`cancellation.md` §7).
-    pub fn is_armed(&self) -> bool {
-        match self.armed.lock() {
-            Ok(slot) => slot.is_some(),
-            Err(poisoned) => poisoned.into_inner().is_some(),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-
-    /// The predecessor must die when a new op arms. Without this, a
-    /// second `:search` before the first completes leaves two scans
-    /// racing to write the same view.
-    #[test]
-    fn arming_cancels_the_previous_operation() {
-        let fc = ForegroundCancel::default();
-        let first = fc.arm();
-        let second = fc.arm();
-
-        assert!(first.is_cancelled(), "the predecessor must be cancelled");
-        assert!(!second.is_cancelled(), "the new token starts live");
-        assert!(fc.is_armed());
-    }
-
-    #[test]
-    fn cancel_flips_and_clears() {
-        let fc = ForegroundCancel::default();
-        let token = fc.arm();
-
-        fc.cancel();
-
-        assert!(token.is_cancelled());
-        assert!(
-            !fc.is_armed(),
-            "a cancelled token must not stay armed, or the next arm() \
-             would 'cancel' it a second time"
-        );
-    }
-
-    /// The binding is pressed far more often than work is running.
-    #[test]
-    fn cancelling_when_idle_is_a_noop() {
-        let fc = ForegroundCancel::default();
-        fc.cancel();
-        fc.cancel();
-        assert!(!fc.is_armed());
-    }
-
-    /// Supersede and cancel are the SAME mechanism — this is what lets
-    /// project search drop its private `AtomicBool` rather than run a
-    /// second, parallel scheme that `<C-g>` would not reach.
-    #[test]
-    fn a_superseded_scan_and_a_cancelled_one_observe_the_same_flag() {
-        let fc = ForegroundCancel::default();
-        let scan = fc.arm();
-
-        // `gr` refresh: arming the replacement supersedes the first.
-        let refreshed = fc.arm();
-        assert!(scan.is_cancelled());
-
-        // `<C-g>` then reaches the REPLACEMENT, not just the original.
-        fc.cancel();
-        assert!(refreshed.is_cancelled());
-    }
-
-    /// CG.3: the distinction the whole slice turns on. `K` during a
-    /// project search must not kill the search.
-    #[test]
-    fn enrolling_does_not_supersede_the_armed_operation() {
-        let fc = ForegroundCancel::default();
-        let search = fc.arm();
-
-        let hover = CancellationToken::new();
-        fc.enrol(hover.clone());
-
-        assert!(
-            !search.is_cancelled(),
-            "a reflexive `K` must not cancel the search the user is \
-             waiting on — that is why LSP commands enrol rather than arm"
-        );
-        assert!(!hover.is_cancelled());
-    }
-
-    /// …and `<C-g>` still reaches both.
-    #[test]
-    fn cancel_reaches_the_armed_slot_and_every_enrolled_token() {
-        let fc = ForegroundCancel::default();
-        let search = fc.arm();
-        let hover = CancellationToken::new();
-        let rename = CancellationToken::new();
-        fc.enrol(hover.clone());
-        fc.enrol(rename.clone());
-
-        fc.cancel();
-
-        assert!(search.is_cancelled());
-        assert!(hover.is_cancelled());
-        assert!(rename.is_cancelled());
-    }
 
     /// Enrolled tokens are independent of each other — a rename does
     /// not stop a hover. Per-feature supersede stays the LSP layer's
@@ -598,6 +468,79 @@ mod tests {
         let live = CancellationToken::new();
         fc.enrol(live.clone());
         assert_eq!(fc.enrolled_len(), 1, "only the live token should remain");
+    }
+
+    /// CG.12: `<C-g>` stops the plugin call running when it is pressed —
+    /// the token that call snapshotted flips — and a call that starts
+    /// afterwards gets a fresh one that earlier press cannot reach.
+    #[test]
+    fn cancel_interrupts_the_call_running_then_and_no_later_one() {
+        let fc = ForegroundCancel::default();
+        let running = fc.current_token().unwrap();
+        assert!(!running.is_cancelled());
+        fc.cancel();
+        assert!(running.is_cancelled(), "the call in flight is stopped");
+        let later = fc.current_token().unwrap();
+        assert!(!later.is_cancelled(), "a call started after the press runs");
+    }
+
+    /// The binding is pressed far more often than work is running.
+    #[test]
+    fn cancelling_when_idle_is_a_noop() {
+        let fc = ForegroundCancel::default();
+        fc.cancel();
+        fc.cancel();
+        assert_eq!(fc.enrolled_len(), 0);
+    }
+
+    /// `<C-g>` reaches every kind of foreground work at once: the plugin
+    /// call running, enrolled requests, and keyed tasks that may be killed.
+    #[test]
+    fn cancel_reaches_the_interrupt_every_enrolled_token_and_keyed_tasks() {
+        let fc = service();
+        let plugin_call = fc.current_token().unwrap();
+        let hover = CancellationToken::new();
+        let rename = CancellationToken::new();
+        fc.enrol(hover.clone());
+        fc.enrol(rename.clone());
+        let search = fc.begin(TaskKey::supersede("search", "view 1")).unwrap();
+
+        fc.cancel();
+
+        assert!(plugin_call.is_cancelled());
+        assert!(hover.is_cancelled());
+        assert!(rename.is_cancelled());
+        assert!(search.token().is_cancelled());
+    }
+
+    /// CG.12: no task cancels a plugin call — beginning one, keyed or not,
+    /// leaves the interrupt token alone. `arm()` used to: a search armed
+    /// the shared slot and killed any call that had adopted it.
+    #[test]
+    fn beginning_a_task_never_cancels_a_plugin_call() {
+        let fc = service();
+        let plugin_call = fc.current_token().unwrap();
+        let _a = fc
+            .begin(TaskKey::supersede("search", "view 1").with_inputs("a"))
+            .unwrap();
+        let _b = fc
+            .begin(TaskKey::supersede("search", "view 1").with_inputs("b"))
+            .unwrap();
+        fc.enrol(CancellationToken::new());
+        assert!(!plugin_call.is_cancelled());
+    }
+
+    /// Shared through an `Arc` across threads, which is how the host
+    /// and a guest call actually hold it.
+    #[test]
+    fn the_handle_is_shareable_across_threads() {
+        let fc: ForegroundCancelHandle = Arc::new(ForegroundCancel::default());
+        let token = fc.current_token().unwrap();
+        let other = Arc::clone(&fc);
+        std::thread::spawn(move || other.cancel())
+            .join()
+            .expect("canceller thread");
+        assert!(token.is_cancelled());
     }
 
     fn service() -> ForegroundCancelHandle {
@@ -779,18 +722,5 @@ mod tests {
         drop(fc);
         assert!(!ticket.is_current());
         drop(ticket);
-    }
-
-    /// Shared through an `Arc` across threads, which is how the host
-    /// and a `spawn_blocking` scan actually hold it.
-    #[test]
-    fn the_handle_is_shareable_across_threads() {
-        let fc: ForegroundCancelHandle = Arc::new(ForegroundCancel::default());
-        let token = fc.arm();
-        let other = Arc::clone(&fc);
-        std::thread::spawn(move || other.cancel())
-            .join()
-            .expect("canceller thread");
-        assert!(token.is_cancelled());
     }
 }

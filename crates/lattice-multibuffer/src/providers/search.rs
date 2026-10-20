@@ -163,11 +163,10 @@ pub struct ProjectSearchState {
     ///
     /// CG.2 (2026-08-08): was a private `Arc<AtomicBool>` flipped by
     /// the refresh handler for supersede. It is now the editor's
-    /// **foreground** token, armed through `ForegroundCancelHandle`, so
-    /// `<C-g>` reaches a running scan and supersede stops being a
-    /// second, parallel mechanism that cancellation did not know about.
-    /// `ForegroundCancel::arm` cancels its predecessor, which is
-    /// exactly what the refresh handler used to do by hand.
+    /// **foreground** token — since CG.12 the scan's keyed ticket's,
+    /// begun through `ForegroundCancelHandle` — so `<C-g>` reaches a
+    /// running scan and supersede is the same mechanism as cancel rather
+    /// than a second, parallel one cancellation did not know about.
     pub cancel_token: CancellationToken,
     /// M.6.1: source `BufferId` → on-disk path. Populated by the
     /// provider-minor's forwarder as it loads files into the
@@ -567,10 +566,34 @@ impl Mode for ProjectSearchMode {
                                 options.root = current_dir.clone();
                             }
                             let view = mb_registry_for_refresh.handle(view_id_for_refresh)?;
-                            // CG.2: the prior scan is cancelled by
-                            // `arm()` below — superseding and cancelling
-                            // are one mechanism now, so there is no
-                            // separate flag to flip here.
+                            // CG.12: keyed per view (`cancellation.md` §9),
+                            // and BEFORE the view is cleared — a refused
+                            // `gr` must leave the running search its rows.
+                            // The same query, options and root still
+                            // running is refused; anything new (a `:cd`
+                            // moves the root) supersedes it. A missing
+                            // service is the test harness: degrade to an
+                            // unkeyed, uncancellable scan.
+                            let ticket = match ctx
+                                .services
+                                .get::<lattice_mode::ForegroundCancelHandle>()
+                                .map(|fc| {
+                                    fc.begin(search_key(view_id_for_refresh, &query, &options))
+                                }) {
+                                Some(Err(_)) => {
+                                    return Some(lattice_grammar::Effect::Echo {
+                                        level: lattice_grammar::EchoLevel::Info,
+                                        text: "search: already running — <C-g> stops it"
+                                            .to_string(),
+                                    });
+                                }
+                                Some(Ok(ticket)) => Some(ticket),
+                                None => None,
+                            };
+                            let cancel = ticket
+                                .as_ref()
+                                .map(|t| t.token().clone())
+                                .unwrap_or_else(CancellationToken::never);
                             // Clear + reset.
                             view.replace_excerpts(std::collections::HashMap::new(), Vec::new());
                             view.set_headerline(HeaderlineStatus::InProgress {
@@ -578,17 +601,6 @@ impl Mode for ProjectSearchMode {
                                 count: Some(0),
                                 emphasis: Some(query.clone()),
                             });
-                            // CG.2: arm through the shared foreground
-                            // slot, which cancels the scan this one
-                            // replaces. A missing service is the test
-                            // harness, not a boot failure — degrade to
-                            // an uncancellable scan rather than refuse
-                            // to refresh.
-                            let cancel = ctx
-                                .services
-                                .get::<lattice_mode::ForegroundCancelHandle>()
-                                .map(|fc| fc.arm())
-                                .unwrap_or_else(CancellationToken::never);
                             search_svc.set_state(
                                 view_id_for_refresh,
                                 ProjectSearchState::scanning(
@@ -604,6 +616,7 @@ impl Mode for ProjectSearchMode {
                                 search_svc.clone(),
                                 bus_for_refresh.clone(),
                                 cancel,
+                                ticket,
                             );
                             search_svc.attach_task(view_id_for_refresh, task);
                             // Publish refresh event so any
@@ -898,12 +911,21 @@ pub fn project_search(
         crate::FoldGrouping::SourceFile,
     );
 
-    // CG.2: arm through the shared foreground slot so `<C-g>` reaches
-    // this scan. Also supersedes whatever was running, which is what
-    // makes a second `:search` abandon the first.
-    let cancel = services
+    // CG.12: keyed per view (`cancellation.md` §9), so `<C-g>` reaches this
+    // scan and a search in ANOTHER view no longer cancels it (the retired
+    // `arm()` slot did). The same search of this view still running is
+    // refused, and the view returned as it stands.
+    let ticket = match services
         .get::<lattice_mode::ForegroundCancelHandle>()
-        .map(|fc| fc.arm())
+        .map(|fc| fc.begin(search_key(view_id, &query, &options)))
+    {
+        Some(Err(_)) => return Some(view_id),
+        Some(Ok(ticket)) => Some(ticket),
+        None => None,
+    };
+    let cancel = ticket
+        .as_ref()
+        .map(|t| t.token().clone())
         .unwrap_or_else(CancellationToken::never);
     search_svc.set_state(
         view_id,
@@ -934,6 +956,7 @@ pub fn project_search(
         search_svc.clone(),
         events.clone(),
         cancel,
+        ticket,
     );
     search_svc.attach_task(view_id, task);
 
@@ -950,10 +973,25 @@ pub fn spawn_scan_task(
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
     cancel: CancellationToken,
+    // CG.12: the scan's run of its view's key, held until the scan ends so a
+    // repeat is refused while it runs; `None` when unkeyed (tests, benches).
+    ticket: Option<lattice_mode::TaskTicket>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         run_scan(view, query, options, service, events, cancel).await;
+        drop(ticket);
     })
+}
+
+/// CG.12: the key a search of `view` runs under — the query, its options
+/// and root are its inputs, so a `:cd` then `gr` is a new search.
+fn search_key(
+    view: BufferId,
+    query: &str,
+    options: &ProjectSearchOptions,
+) -> lattice_mode::TaskKey {
+    lattice_mode::TaskKey::supersede("search", format!("{view:?}"))
+        .with_inputs(format!("{query} {options:?}"))
 }
 
 async fn run_scan(
@@ -1062,6 +1100,11 @@ fn run_scan_blocking(
         }
 
         if batch.len() >= batch_files {
+            // CG.12: stopped (superseded, `<C-g>`) between the per-file check
+            // and here — a `gr` may have cleared the view; publish nothing.
+            if cancel.is_cancelled() {
+                return;
+            }
             let add: usize = batch.iter().map(|f| f.rows.len()).sum();
             service.add_hits(view, add);
             events.publish_typed(ProjectSearchBatchReady {
@@ -1078,6 +1121,9 @@ fn run_scan_blocking(
         }
     }
 
+    if cancel.is_cancelled() {
+        return;
+    }
     if !batch.is_empty() {
         let add: usize = batch.iter().map(|f| f.rows.len()).sum();
         service.add_hits(view, add);
@@ -1491,6 +1537,7 @@ mod tests {
                 svc,
                 events,
                 cancel,
+                None,
             );
             handle.await.unwrap();
         });
@@ -1501,48 +1548,44 @@ mod tests {
         );
     }
 
-    /// CG.2: refreshing a running scan supersedes it, and the state
-    /// carries the replacement.
-    ///
-    /// This used to hand-simulate the old mechanism — flip a private
-    /// `AtomicBool`, install a fresh one. It now goes through
-    /// `ForegroundCancel::arm`, which is what the production refresh
-    /// handler calls, so supersede and `<C-g>` are provably the same
-    /// flag rather than two schemes that happen to agree.
+    /// CG.12: a refresh with NEW inputs (a `:cd` moved the root, say)
+    /// supersedes the running scan, and the state carries the replacement;
+    /// the same search again is refused while it runs. Through the same
+    /// key the production handlers build.
     #[tokio::test(flavor = "current_thread")]
     async fn refresh_supersedes_the_running_scan_and_state_carries_the_replacement() {
         let svc = InMemoryProjectSearchService::handle();
         let view = BufferId(88);
-        let fc = lattice_mode::ForegroundCancel::default();
+        let fc: lattice_mode::ForegroundCancelHandle = Arc::default();
+        let here = ProjectSearchOptions::default();
+        let elsewhere = ProjectSearchOptions {
+            root: std::path::PathBuf::from("/elsewhere"),
+            ..ProjectSearchOptions::default()
+        };
 
-        let old_cancel = fc.arm();
+        let old = fc.begin(search_key(view, "x", &here)).unwrap();
         svc.set_state(
             view,
-            ProjectSearchState::scanning(
-                "x".into(),
-                ProjectSearchOptions::default(),
-                old_cancel.clone(),
-            ),
+            ProjectSearchState::scanning("x".into(), here.clone(), old.token().clone()),
+        );
+        assert!(
+            fc.begin(search_key(view, "x", &here)).is_err(),
+            "the same search again is refused while it runs"
         );
 
-        // The refresh: arming the replacement cancels its predecessor.
-        let new_cancel = fc.arm();
+        // The refresh, with the root moved: a new question.
+        let new = fc.begin(search_key(view, "x", &elsewhere)).unwrap();
         svc.set_state(
             view,
-            ProjectSearchState::scanning(
-                "x".into(),
-                ProjectSearchOptions::default(),
-                new_cancel.clone(),
-            ),
+            ProjectSearchState::scanning("x".into(), elsewhere, new.token().clone()),
         );
 
-        assert!(old_cancel.is_cancelled(), "the superseded scan must stop");
-        assert!(!new_cancel.is_cancelled(), "the replacement runs");
+        assert!(old.token().is_cancelled(), "the superseded scan must stop");
+        assert!(!new.token().is_cancelled(), "the replacement runs");
 
-        // And `<C-g>` reaches the REPLACEMENT, not just the original —
-        // the half-wiring this slice exists to prevent.
+        // `<C-g>` reaches the REPLACEMENT, not just the original.
         fc.cancel();
-        assert!(new_cancel.is_cancelled());
+        assert!(new.token().is_cancelled());
 
         let held = svc
             .state(view)
@@ -1550,9 +1593,21 @@ mod tests {
             .expect("state present");
         assert!(
             held.is_cancelled(),
-            "the token the STATE carries must be the one that was armed, \
-             not a default `never()` the scan could never observe"
+            "the token the STATE carries must be the scan's own, not a \
+             default `never()` the scan could never observe"
         );
+    }
+
+    /// CG.12: a search in one view no longer cancels a search in another —
+    /// the retired `arm()` slot did, since arming cancelled whatever was
+    /// armed before.
+    #[test]
+    fn a_search_in_another_view_is_left_alone() {
+        let fc: lattice_mode::ForegroundCancelHandle = Arc::default();
+        let options = ProjectSearchOptions::default();
+        let first = fc.begin(search_key(BufferId(1), "foo", &options)).unwrap();
+        let _second = fc.begin(search_key(BufferId(2), "bar", &options)).unwrap();
+        assert!(!first.token().is_cancelled());
     }
 
     // ── MH.A4: search header carries path + match_count ──────────
@@ -1636,6 +1691,7 @@ mod tests {
             svc,
             events,
             CancellationToken::never(),
+            None,
         );
         handle.await.unwrap();
 

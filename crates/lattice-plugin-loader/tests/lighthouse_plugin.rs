@@ -56,17 +56,12 @@ impl PluginMetaSink for RecordingSink {
     }
 }
 
-/// Write the plugin out the way it ships: the real manifest, so `provides`
-/// ordering and the capability list are the ones under test.
+/// Write the plugin out the way it ships: the component alone, carrying its
+/// real manifest, so `provides` ordering and the capability list are the
+/// ones under test.
 fn write_plugin_dir(root: &std::path::Path, wasm: &[u8]) {
     let dir = root.join("lighthouse");
     std::fs::create_dir_all(&dir).unwrap();
-    let manifest = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/lighthouse/plugin.toml"
-    ))
-    .unwrap();
-    std::fs::write(dir.join("plugin.toml"), manifest).unwrap();
     std::fs::write(dir.join("component.wasm"), wasm).unwrap();
 }
 

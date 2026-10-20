@@ -1304,4 +1304,54 @@ mod compose_buffers {
             "the next commit must not reopen the previous one's message"
         );
     }
+
+    /// `cc` / `ca` in magit-status open the same compose buffer as
+    /// `C-c g c` / `C-c g a`: named for, and recording, the STATUS
+    /// buffer's repository.
+    ///
+    /// They used to open a fixed `*magit:commit*`, which carried no
+    /// repository, so the compose buffer resolved against the editor's
+    /// working directory — an empty staged diff and a `C-c C-c` that
+    /// committed nothing. The status buffer is opened from a file in a
+    /// throwaway repository precisely so the two are not the same.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_cc_and_ca_scope_the_compose_buffer_to_the_status_repository() {
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}");
+        }
+        let repo = unique_tempdir().join("status-cc-repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        let file = repo.join("a.txt");
+        std::fs::write(&file, "base\n").unwrap();
+
+        for (chord, view) in [("cc", "commit"), ("ca", "amend")] {
+            let mut app = app_with_path("base\n", 20, file.clone());
+            app.apply(Action::EnterCommandLine);
+            press_chars(&mut app, "magit-status");
+            app.apply(Action::CommandLineSubmit);
+            assert!(
+                settle_mode(&mut app, "magit-status-mode").await,
+                "precondition: status open"
+            );
+            press_chars(&mut app, chord);
+            assert!(
+                settle_mode(&mut app, "magit-commit-mode").await,
+                "`{chord}` must open the compose buffer"
+            );
+            let id = app.editor.active_pane_buffer_id();
+            let name = app.editor.buffers.name_of(id).expect("named");
+            assert_eq!(
+                name,
+                format!("*magit:{view}:status-cc-repo*"),
+                "`{chord}` must scope the compose buffer to the status \
+                 buffer's repository, as `C-c g` does"
+            );
+        }
+    }
 }

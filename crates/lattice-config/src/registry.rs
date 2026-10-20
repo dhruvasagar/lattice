@@ -118,6 +118,33 @@ struct Inner {
     /// [`ConfigRegistry::set_event_publisher`] -- the closure
     /// body calls `event_bus.publish(event)`.
     event_publisher: std::option::Option<EventPublisher>,
+    /// PMF.16: values the user's configuration gave options, by full name and
+    /// source — see [`ConfigRegistry::hold`].
+    held: HashMap<String, std::collections::BTreeMap<HeldSource, String>>,
+}
+
+/// PMF.16: which part of the user's configuration a held value came from.
+///
+/// The order is the precedence: values are applied in this order, so a later
+/// source wins — `lattice.toml` (and a project's `config.toml`), then
+/// `init.rs`, matching the order they are read in. Each source is cleared on
+/// its own when it is read again, so re-reading one never drops another's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HeldSource {
+    /// `lattice.toml` / a project's `.lattice/config.toml`.
+    ConfigFile,
+    /// The user's `init.rs`.
+    Init,
+}
+
+impl HeldSource {
+    /// How a report names the source.
+    pub fn label(self) -> &'static str {
+        match self {
+            HeldSource::ConfigFile => "lattice.toml",
+            HeldSource::Init => "init.rs",
+        }
+    }
 }
 
 /// What the registry's fallible operations can fail with. Kept
@@ -311,11 +338,101 @@ impl ConfigRegistry {
                 inner.by_id.len() - 1
             }
         };
-        inner.by_name.insert(name, idx);
+        let held = inner.held.get(&name).cloned();
+        inner.by_name.insert(name.clone(), idx);
         for a in aliases {
             inner.by_name.insert((*a).to_string(), idx);
         }
+        drop(inner);
+        // PMF.16: the user's configuration may have named this option before
+        // it existed (a plugin's option, set from `lattice.toml` or `init.rs`);
+        // it starts with their value, not its default. In precedence order.
+        for (source, value) in held.into_iter().flatten() {
+            if let Err(err) = self.parse_and_set_command(&format!("{name}={value}")) {
+                // User-actionable, and the only trace: the config was read
+                // long before this option appeared.
+                tracing::warn!(
+                    option = %name,
+                    %value,
+                    source = source.label(),
+                    %err,
+                    "a value your configuration set for this option does not fit it"
+                );
+            }
+        }
         Ok(OptionHandle::<T>::new(idx))
+    }
+
+    /// PMF.16: record what the user's configuration says `name` should be.
+    ///
+    /// A plugin's options exist only once it has loaded, and the user's
+    /// configuration is read before any plugin loads — `lattice.toml` at boot,
+    /// `init.rs` first among plugins. A held value is applied when the option
+    /// registers (in [`Self::try_register`]) and again whenever it registers
+    /// anew after a plugin reload, so the plugin starts with the user's value
+    /// rather than its default. Holding does not set anything: a caller whose
+    /// option is already registered sets it too.
+    pub fn hold(&self, name: &str, value: &str, source: HeldSource) {
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .held
+            .entry(name.to_string())
+            .or_default()
+            .insert(source, value.to_string());
+    }
+
+    /// PMF.16: the value the user's configuration holds for `name`, highest
+    /// precedence first — what the option will be once it registers. For a
+    /// caller that must decide before then (a plugin's file grant).
+    pub fn held_value(&self, name: &str) -> std::option::Option<String> {
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .held
+            .get(name)
+            .and_then(|by_source| by_source.values().next_back().cloned())
+    }
+
+    /// PMF.16: forget what `source` holds, before it is read again — a line the
+    /// user deleted must not keep applying. Other sources are untouched.
+    pub fn clear_held(&self, source: HeldSource) {
+        let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        for by_source in inner.held.values_mut() {
+            by_source.remove(&source);
+        }
+        inner.held.retain(|_, by_source| !by_source.is_empty());
+    }
+
+    /// PMF.16: held names no registered option answers to, with the source that
+    /// set each — once every plugin has loaded, a misspelt name or a plugin
+    /// that did not load. Sorted, for a stable report.
+    pub fn unclaimed_held(&self) -> Vec<(String, HeldSource)> {
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let mut out: Vec<(String, HeldSource)> = inner
+            .held
+            .iter()
+            .filter(|(name, _)| !inner.by_name.contains_key(name.as_str()))
+            .flat_map(|(name, by_source)| by_source.keys().map(|s| (name.clone(), *s)))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// PMF.16: is `namespace` already taken — a registered option lives under
+    /// `namespace.`, or is named `namespace` itself? Decides, for a config file
+    /// naming an unknown option, between "a plugin's, not loaded yet" (hold it)
+    /// and "a mistake about something that is here" (say so now): a typo in a
+    /// namespace that exists, or a table written at a scalar option's name
+    /// (`[tabstop]`).
+    pub fn namespace_in_use(&self, namespace: &str) -> bool {
+        let prefix = format!("{namespace}.");
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .by_name
+            .keys()
+            .any(|name| name == namespace || name.starts_with(&prefix))
     }
 
     /// Variant of [`Self::register`] that additionally records a

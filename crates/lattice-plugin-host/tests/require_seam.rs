@@ -5,7 +5,7 @@
 //! [`PluginHost::spawn_plugin_manager_plugin`], which drives its
 //! `register-plugins` export. Proves the seam end to end:
 //!
-//! - each of the three source kinds crosses the boundary intact,
+//! - each of the three source kinds, and a `require-release` (PRL.5), crosses the boundary intact,
 //! - `enable-mode` and `pinned` survive the round trip,
 //! - a path-traversal name is refused **without trapping**, so one bad entry
 //!   in a user's `init.rs` costs that entry and nothing else,
@@ -31,7 +31,7 @@ fn guest_wasm() -> Option<&'static str> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_guest_declares_plugins_across_all_three_source_kinds() {
+async fn a_guest_declares_plugins_across_every_source_kind() {
     let Some(wasm) = guest_wasm() else {
         eprintln!("SKIP: plugin-manager fixture guest not built (add the wasm32-wasip2 target)");
         return;
@@ -54,13 +54,9 @@ async fn a_guest_declares_plugins_across_all_three_source_kinds() {
         .await
         .expect("spawn plugin-manager guest");
 
-    // Three accepted; the traversal name was refused inside the guest call
-    // (the guest itself asserts `require` returned false for it).
-    assert_eq!(
-        specs.len(),
-        3,
-        "three well-formed specs recorded: {specs:?}"
-    );
+    // Four accepted; the traversal names were refused inside the guest call
+    // (the guest itself asserts `require` / `require-release` returned false).
+    assert_eq!(specs.len(), 4, "four well-formed specs recorded: {specs:?}");
 
     let local = specs.iter().find(|s| s.name == "local-demo").unwrap();
     assert_eq!(
@@ -91,6 +87,19 @@ async fn a_guest_declares_plugins_across_all_three_source_kinds() {
             url: "https://example.invalid/d.wasm".into(),
         }
     );
+
+    // PRL.5: `require-release` crosses intact — repo, tag, pin, mode.
+    let release = specs.iter().find(|s| s.name == "release-demo").unwrap();
+    assert_eq!(
+        release.source,
+        RequiredSource::Release {
+            repo: "example/release-demo".into(),
+            version: Some("v0.2.0".into()),
+            sha256: Some("ab".repeat(32)),
+        }
+    );
+    assert_eq!(release.enable_mode.as_deref(), Some("release-demo-mode"));
+    assert!(!release.pinned, "a release has no build to pin");
 
     assert!(
         !specs.iter().any(|s| s.name.contains("escape")),
@@ -131,7 +140,7 @@ async fn require_records_without_resolving_building_or_downloading() {
         .expect("spawn plugin-manager guest");
     let elapsed = started.elapsed();
 
-    assert_eq!(specs.len(), 3);
+    assert_eq!(specs.len(), 4);
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "require must not perform network or build work inline (took {elapsed:?})"

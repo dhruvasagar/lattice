@@ -69,6 +69,15 @@ pub fn to_required_spec(
             }
             Host::Git { url, rev } => PluginSource::Git { url, rev },
             Host::Prebuilt { url } => PluginSource::Prebuilt { url },
+            Host::Release {
+                repo,
+                version,
+                sha256,
+            } => PluginSource::Release {
+                repo,
+                version,
+                sha256,
+            },
         },
         enable_mode: p.enable_mode,
         pinned: p.pinned,
@@ -87,6 +96,10 @@ pub enum Install {
         /// previous build is what will load. Not a failure; a caveat the
         /// user should be able to see.
         stale: Option<String>,
+        /// PMF.14: this install produced a new artifact (a fresh build).
+        /// After boot, a loaded plugin is reloaded only when this is set —
+        /// an unchanged `require` is a no-op.
+        rebuilt: bool,
     },
     /// Nothing loadable. The plugin is absent this session.
     Skipped { name: String, error: String },
@@ -116,6 +129,15 @@ pub fn install_required(
         name: spec.name.clone(),
         error,
     };
+    // A downloaded plugin (prebuilt, release) is installed as
+    // `<name>/<name>.wasm`; whether the resolve below replaces it is whether
+    // a loaded copy has to be reloaded.
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let downloaded_before = modified(
+        &user_root
+            .join(&spec.name)
+            .join(format!("{}.wasm", spec.name)),
+    );
 
     let resolved = match resolve(
         git,
@@ -138,15 +160,25 @@ pub fn install_required(
         // all, which is the point of the kind.
         Resolved::Artifact(artifact) => {
             // PM.8a: remember where it came from, so the view can say so and
-            // a later re-download knows the URL.
-            if let Some(dir) = artifact.parent() {
+            // a later re-download knows the URL. Not for a release: the
+            // installer records the tag it resolved to, which an unpinned spec
+            // does not name (PRL.4).
+            if let Some(dir) = artifact.parent()
+                && !matches!(spec.source, PluginSource::Release { .. })
+            {
                 crate::source_record::write(dir, &spec.source);
             }
+            // Not built, but new all the same when the download replaced
+            // what was there: switching a loaded plugin to a release, or to
+            // another tag, must load the bytes just fetched. A reused file
+            // keeps its modification time, so an unchanged spec stays a no-op.
+            let rebuilt = modified(&artifact) != downloaded_before;
             return Install::Ready {
                 name: spec.name.clone(),
                 artifact,
                 enable_mode: spec.enable_mode.clone(),
                 stale: None,
+                rebuilt,
             };
         }
         Resolved::Source(dir) => dir,
@@ -162,17 +194,26 @@ pub fn install_required(
         crate::source_record::write(dir, &spec.source);
     }
     match outcome {
-        BuildOutcome::Cached { artifact } | BuildOutcome::Fresh { artifact } => Install::Ready {
+        BuildOutcome::Cached { artifact } => Install::Ready {
             name: spec.name.clone(),
             artifact,
             enable_mode: spec.enable_mode.clone(),
             stale: None,
+            rebuilt: false,
+        },
+        BuildOutcome::Fresh { artifact } => Install::Ready {
+            name: spec.name.clone(),
+            artifact,
+            enable_mode: spec.enable_mode.clone(),
+            stale: None,
+            rebuilt: true,
         },
         BuildOutcome::StaleKept { artifact, error } => Install::Ready {
             name: spec.name.clone(),
             artifact,
             enable_mode: spec.enable_mode.clone(),
             stale: Some(error),
+            rebuilt: false,
         },
         BuildOutcome::Failed { error } => {
             tracing::warn!(plugin = %spec.name, error = %error, "require: build failed; skipping");
@@ -357,6 +398,7 @@ mod tests {
                 artifact,
                 enable_mode,
                 stale,
+                ..
             } => {
                 assert_eq!(name, "demo");
                 assert!(artifact.is_file());
@@ -394,6 +436,41 @@ mod tests {
             builder.calls.load(Ordering::SeqCst),
             0,
             "a prebuilt must skip the build entirely"
+        );
+    }
+
+    /// A download that replaces the installed file is new, so a loaded copy
+    /// is reloaded after boot; one that reuses it is not. Switching a loaded
+    /// plugin to a different source used to leave the old build running
+    /// until a restart.
+    #[test]
+    fn a_download_is_new_only_when_it_replaced_the_installed_file() {
+        let root = tempdir("prebuilt-fresh");
+        let install = |url: &str| match install_required(
+            &NoGit,
+            &StubFetch,
+            &StubBuild::ok(),
+            &RequiredSpec {
+                name: "pre".into(),
+                source: PluginSource::Prebuilt { url: url.into() },
+                enable_mode: None,
+                pinned: false,
+            },
+            &root.join("cache"),
+            &root.join("user"),
+            RefreshPolicy::UseCache,
+        ) {
+            Install::Ready { rebuilt, .. } => rebuilt,
+            Install::Skipped { error, .. } => panic!("skipped: {error}"),
+        };
+        assert!(install("https://example.invalid/a.wasm"), "first install");
+        assert!(
+            !install("https://example.invalid/a.wasm"),
+            "unchanged: reused"
+        );
+        assert!(
+            install("https://example.invalid/b.wasm"),
+            "a new source: fetched"
         );
     }
 

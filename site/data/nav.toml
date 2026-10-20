@@ -350,6 +350,7 @@ docs = [
   "problems-minor-mode",
   "plugin-trace-mode",
   "plugin-output-mode",
+  "version-mode",
 ]
 
 [[section.group]]

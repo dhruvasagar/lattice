@@ -59,8 +59,9 @@ impl Mode for ClaudeCodeMode {
 
     /// K.2.4 path: the `<C-c>` interrupt chord, contributed by the mode
     /// itself and picked up by `translate_mode_keymaps` at boot. Resolves
-    /// `"ex:claude-interrupt"` against the `CommandRegistry` (registered in
-    /// `crate::mcp::commands`). K.1.c gates it to `claude-code-mode` buffers, and —
+    /// `"claude-interrupt"` against the `CommandRegistry` (registered under
+    /// that name in `crate::mcp::commands`; it was `ex:claude-interrupt`
+    /// here, which never resolved, so the chord was dropped at boot). K.1.c gates it to `claude-code-mode` buffers, and —
     /// because it binds in `Normal` binding-mode — it only fires in
     /// Normal-in-terminal; in Terminal-Insert `<C-c>` still reaches the shell
     /// as SIGINT. This is the one-key complement to the `:claude-interrupt`
@@ -107,7 +108,7 @@ fn claude_code_keymap_entries() -> &'static [lattice_mode::KeymapEntry] {
         vec![lattice_mode::keymap_entry! {
             mode: Normal, chord: "<C-c>",
             doc: "Interrupt the running Claude agent (sends <Esc> to the terminal)",
-            cmd: "ex:claude-interrupt"
+            cmd: "claude-interrupt"
         }]
     })
 }
@@ -134,6 +135,6 @@ mod keymap_tests {
             .iter()
             .map(|e| (e.chord, e.command))
             .collect();
-        assert_eq!(pairs, vec![("<C-c>", Some("ex:claude-interrupt"))]);
+        assert_eq!(pairs, vec![("<C-c>", Some("claude-interrupt"))]);
     }
 }

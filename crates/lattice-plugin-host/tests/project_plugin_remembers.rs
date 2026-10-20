@@ -36,7 +36,7 @@ use lattice_protocol::ids::DocumentId;
 use lattice_runtime::EventBus;
 use tempfile::TempDir;
 
-/// Must match `plugins/project/plugin.toml`'s `id` — the store is keyed by it,
+/// Must match the `id` in `plugins/project/src/lib.rs`'s `manifest!` — the store is keyed by it,
 /// so a mismatch would read an empty store and the test would fail for the
 /// wrong reason.
 const PLUGIN_ID: &str = "project";

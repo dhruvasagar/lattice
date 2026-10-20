@@ -67,16 +67,16 @@ fn validate_inactive_pane_opacity(n: &i64) -> Result<(), String> {
     }
 }
 
+// `ui.dim_inactive` is declared in `lattice-config` (`core_options`) so a
+// mode can override it for its own buffers — `hover-mode` does — and is
+// re-exported here so its long-standing path keeps working.
+pub use lattice_config::core_options::UiDimInactive;
+
 // Group binding: TUI-specific UI options under the `appearance`
 // group (theme / colors / sprite icons). User customizes via
 // `:customize appearance`.
 lattice_config::options! {
     group = lattice_config::Appearance;
-
-    /// Apply a `DIM` overlay on inactive panes' syntax-highlighted
-    /// text so the active pane stands out without losing color.
-    #[name("ui.dim_inactive")]
-    pub UiDimInactive: bool = true;
 
     /// Opacity of the buffer content in inactive panes, as a
     /// percentage in `[0, 100]`. Renderers that support alpha

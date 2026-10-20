@@ -20,6 +20,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wit-bindgen = "0.58"
+# PMF.11: for `manifest!` only. Nothing of the SDK (or its serde / rmp-serde)
+# is reachable at run time; linking the crate still costs ~1.9 KB of code
+# without LTO and ~0.1 KB with it (measured on `project`).
+lattice-plugin-sdk = { path = "../../crates/lattice-plugin-sdk" }
 
 [profile.release]
 opt-level = "s"

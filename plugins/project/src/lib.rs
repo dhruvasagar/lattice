@@ -32,6 +32,37 @@
 //! the verbs and the switch-commands menu are PC.5–PC.7; this slice is the state
 //! they all read.
 
+// PC.4 — the `project` bundled plugin manifest.
+//
+// A `project.el`-style command layer: choose the project first, then the verb.
+// Design: docs/dev/architecture/project-commands.md.
+//
+// `capabilities` is `state:write` and NOTHING else, which is a design constraint
+// rather than a minimal starting point. This plugin never reads the filesystem:
+// the host resolves project roots (`wit/project.wit`), the native pickers do
+// every walk, and the store holds the remembered list. The absent `fs:` grant is
+// why a remembered project whose directory has been deleted is not auto-pruned —
+// the plugin cannot tell a deleted tree from an unmounted volume, so it offers
+// `:project-forget` instead of guessing.
+//
+// `provides` grows with the slices: PC.5 adds `picker-source`, PC.6 adds
+// `modes`, `config` and `transient-source`, PC.8 adds `help`.
+//
+// PC.6: `project-mode` must be ENABLED out of the box, or it registers
+// correctly and stays permanently inert — a plugin minor is filtered on
+// enablement, and `default_modes` is what triggers it. The loader auto-registers
+// `project.enabled` (default true) as the gate.
+//
+// The manifest is embedded in the component (PMF.11) — no `plugin.toml`.
+lattice_plugin_sdk::manifest!(
+    r#"
+id = "project"
+provides = ["grammar", "events", "picker-source", "modes", "config", "transient-source", "help"]
+capabilities = ["state:write"]
+default_modes = ["project-mode"]
+"#
+);
+
 wit_bindgen::generate!({
     world: "project-plugin",
     path: "../../crates/lattice-wit/wit",

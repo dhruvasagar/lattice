@@ -35,7 +35,7 @@ Contributions from a required plugin therefore appear a frame or two after
 boot — the eventual consistency the UX contract already permits for plugin
 cold-start.
 
-## Functions (1)
+## Functions (2)
 
 ### `require`
 
@@ -73,7 +73,37 @@ plugin_manager::require(&PluginSpec {
 });
 ```
 
-## Types (3)
+### `require-release`
+
+```wit
+require-release: func(spec: release-spec) -> bool
+```
+
+Declare a plugin installed from a release. Records the spec exactly as
+`require` does — the download runs off-thread after the calling export
+returns; nothing is fetched at boot once it is installed. Returns
+`false` when the spec is rejected outright (an unsafe `name`).
+
+A function beside `require` rather than a fourth `plugin-source` case:
+a variant's shape is part of the component type, so a grown variant
+would stop every compiled `init.rs` linking; a new function leaves a
+guest that does not import it untouched.
+
+**Example — Install a plugin from its GitHub release, pinned to a tag and its bytes, without building it** · [`crates/lattice-plugin-host/tests/fixtures/plugin-manager-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/plugin-manager-guest/src/lib.rs)
+
+```rust
+// PRL.5: a released component — downloaded, never built, so the user
+// needs no Rust toolchain.
+let ok = plugin_manager::require_release(&ReleaseSpec {
+    name: "release-demo".to_string(),
+    repo: "example/release-demo".to_string(),
+    version: Some("v0.2.0".to_string()),
+    sha256: Some("ab".repeat(32)),
+    enable_mode: Some("release-demo-mode".to_string()),
+});
+```
+
+## Types (4)
 
 ### record `git-source`
 
@@ -131,4 +161,36 @@ One declared plugin.
 - `pinned`: `bool` — Skip the rebuild-on-change check; build only if the artifact is
   absent. The escape hatch for a known-good build that should stay
   put regardless of what the source tree does.
+
+### record `release-spec`
+
+```wit
+record release-spec {
+    name: string,
+    repo: string,
+    version: option<string>,
+    sha256: option<string>,
+    enable-mode: option<string>,
+}
+```
+
+A plugin published as a GitHub release — installed without building it,
+so it needs no Rust toolchain (plugin-distribution.md §3).
+
+The host downloads the release asset built for its own plugin API
+generation (`<name>-<version>-api<M>.<m>.wasm`), checks it against the
+release's published `.sha256` — and against `sha256` when given — and
+requires the component's embedded manifest to name `name`. A release
+with no build for this editor is refused by name in `:plugins`, saying
+what it ships instead.
+
+**Fields**
+
+- `name`: `string` — The plugin's id, as for `plugin-spec.name`.
+- `repo`: `string` — The GitHub repository, `owner/name`.
+- `version`: `option<string>` — A release tag (`v0.2.0`). Omitted: the newest non-draft,
+  non-prerelease release with a build for this editor, looked up once
+  and kept until an update asks again.
+- `sha256`: `option<string>` — Pin the bytes, not just the tag: a re-published tag is refused.
+- `enable-mode`: `option<string>` — As `plugin-spec.enable-mode`.
 

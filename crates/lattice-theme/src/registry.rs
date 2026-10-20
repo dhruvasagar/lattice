@@ -545,12 +545,21 @@ fn apply_overlay(inner: &RegistryInner, style: &mut Style, spec: &StyleSpec) {
 
 fn resolve_color(inner: &RegistryInner, cref: &ColorRef) -> Option<Color> {
     match cref {
+        // A colour named in a spec is a palette key first — so a theme decides
+        // what `green` means — and otherwise anything `parse_color` accepts:
+        // the ANSI names and `#rrggbb`. Without the fallback a word that
+        // `:set ui.*` takes (`magenta`) was silently dropped from a style
+        // spec, such as an org TODO keyword's colour set in `init.rs`, with a
+        // warning on every theme rebuild.
         ColorRef::Palette(key) => match inner.palette.get(key) {
             Some(c) => Some(c),
-            None => {
-                tracing::warn!("theme: unknown palette key `{}`", key.as_str());
-                None
-            }
+            None => match crate::parse_color(key.as_str()) {
+                Ok(c) => Some(c),
+                Err(_) => {
+                    tracing::warn!("theme: unknown palette key `{}`", key.as_str());
+                    None
+                }
+            },
         },
         ColorRef::Literal(c) => Some(*c),
         ColorRef::Default => Some(Color::Default),
@@ -2834,6 +2843,49 @@ mod tests {
         );
         // Missing key logs + leaves fg None (no panic, no garbage).
         assert_eq!(reg.resolved().get(id).fg, None);
+    }
+
+    /// A colour word `:set ui.*` accepts also works in a style spec: an org
+    /// TODO keyword styled `fg: "magenta"` in `init.rs` was dropped (no
+    /// palette has a bare `magenta`) with a warning on every rebuild.
+    #[test]
+    fn a_colour_name_that_is_no_palette_key_still_resolves() {
+        let reg = InMemoryThemeRegistry::new(Palette::new()); // empty palette
+        let named = reg.register(
+            ElementName::from_static("named"),
+            ElementOwner::Core,
+            StyleSpec::new().fg("magenta"),
+            "",
+        );
+        let hex = reg.register(
+            ElementName::from_static("hex"),
+            ElementOwner::Core,
+            StyleSpec::new().fg("#cba6f7"),
+            "",
+        );
+        assert_eq!(
+            reg.resolved().get(named).fg,
+            Some(Color::Named(crate::NamedColor::Magenta))
+        );
+        assert_eq!(
+            reg.resolved().get(hex).fg,
+            Some(Color::Rgb(0xcb, 0xa6, 0xf7))
+        );
+    }
+
+    /// The fallback is only a fallback: a palette that defines the key decides
+    /// what it means, so a theme's `green` is not replaced by ANSI green.
+    #[test]
+    fn a_palette_key_wins_over_the_colour_name_it_shadows() {
+        let palette = Palette::new().with("green", Color::Rgb(1, 2, 3));
+        let reg = InMemoryThemeRegistry::new(palette);
+        let id = reg.register(
+            ElementName::from_static("themed"),
+            ElementOwner::Core,
+            StyleSpec::new().fg("green"),
+            "",
+        );
+        assert_eq!(reg.resolved().get(id).fg, Some(Color::Rgb(1, 2, 3)));
     }
 
     #[test]

@@ -65,8 +65,10 @@ Three things that are easy to get wrong:
   package it separately — or use rustup instead.
 
 The same requirements apply to any plugin you install **from source**
-(`plugins::require(...)`, or a `--scaffold-plugin` project). A plugin that
-ships a prebuilt `.wasm` needs none of it.
+(`plugin_manager::require(...)`, or a `--scaffold-plugin` project). A plugin
+installed from its release (`plugin_manager::require_release(...)`, see
+[installing plugins](#installing-plugins)) is downloaded ready-built and needs
+none of it — though the `init.rs` that names it is still compiled.
 
 When a config does not load, **`:plugins` says why**: `init` appears under
 *Failed to load* (or *Build failed*, if a previous build is still running)
@@ -82,9 +84,8 @@ Your compiled config is a plugin directory at:
 
 ```
 <config>/lattice/init/
-├── plugin.toml      # the manifest (id = "init", provides = [...])
 ├── Cargo.toml       # your config is a small cargo crate…
-├── src/lib.rs       # …and this is the file you edit
+├── src/lib.rs       # …and this is the file you edit (its manifest at the top)
 ├── wit/             # the editor's API, written for you — do not edit
 └── init.wasm        # the compiled component (built for you, cached)
 ```
@@ -131,20 +132,25 @@ native editor subsystem:
 | declare a typed option (`:set my.opt=…`) | `config` | `config-plugin` |
 | observe editor events (save, mode change, …) | `events` | `events-plugin` |
 | define a minor mode | `modes` | `modes-plugin` |
+| install plugins (`require`, `require_release`) | `plugin-manager` | `plugin-manager-plugin` |
 
-> **One component implements one seam world today.** A WebAssembly component has
-> a single world type, so a single `init.wasm` targets one `wit_bindgen::generate!`
-> world. If your config spans several seams (say, custom commands **and** event
-> handlers), ship the extra concerns as additional plugins under
-> `<data>/lattice/plugins/<name>/` — each a one-seam component — alongside the
-> `init/` dir. A unified `init` world that lets one component register across
-> every seam at once is planned; until then, one component = one seam.
+> **One component, one world — spanning as many seams as you use.** A component
+> has a single world type, so your config writes one: `wit/init.wit`'s
+> `world init`, which imports the host APIs you call and exports the
+> `register-*` functions of the seams you register into. The scaffold's covers
+> `config`, `keymap`, `events` and `plugin-manager`; add a seam by adding its
+> imports and exports there and its name to the manifest's `provides` (the
+> [annotated example](#a-complete-annotated-init-rs) shows one such world).
+> The per-seam worlds in the table are what a one-seam plugin uses instead.
 >
-> The good news: **commands, motions, text objects, operators, and ex-commands
-> are all the _same_ seam** (`grammar`), so a single grammar component can define
-> all of them together (the big example below).
+> **Commands, motions, text objects, operators, and ex-commands are all the
+> _same_ seam** (`grammar`), so one component can define all of them together
+> (the big example below).
 
-`plugin.toml` declares which seam(s) the component provides:
+The manifest at the top of `src/lib.rs` declares which seam(s) the component
+provides — it is embedded in the component, so there is no separate file. (A
+config scaffolded before 0.9.10 has it in a `plugin.toml` beside `Cargo.toml`
+instead; that keeps working.)
 
 ```toml
 id = "init"                 # required; the :reload-config target
@@ -204,7 +210,7 @@ Subscribe with an `EventFilter` — any combination of event **kinds**, path
 ### A worked event-handler config
 
 ```rust
-// init.rs — an events-plugin. plugin.toml: provides = ["events"]
+// init.rs — an events-plugin. Manifest: provides = ["events"]
 wit_bindgen::generate!({ world: "events-plugin", path: "wit" });
 
 use lattice::plugin_host::events;
@@ -275,7 +281,7 @@ impl Guest for Component {
 
 // The only side effect a handler can have without extra capabilities: write to
 // its own private, always-writable `/data` dir. (An `fs:read:<prefix>` grant in
-// plugin.toml also lets a handler read outside it via the gated `walk`.)
+// the manifest also lets a handler read outside it via the gated `walk`.)
 fn log(line: &str) {
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/data/events.log") {
@@ -318,9 +324,32 @@ plugin's options.
 ### Configuring *user* plugins that load after you
 
 Your `init.rs` loads **first** — before the *user* plugins in
-`~/.config/lattice/plugins/`. So config that targets a user plugin (enable its
-mode, set its options, bind keys to its commands) can't run at the top level: the
-plugin isn't there yet. Instead, **subscribe and react when it arrives** — the
+`~/.config/lattice/plugins/`. That splits what you configure in two.
+
+**A plugin's options: set them anywhere, at the top level included** — or
+in `lattice.toml` (`[org]` / `directory = "~/notes"`), which does the same for
+a value that needs no code. An
+option a plugin will declare does not exist yet when your `init.rs` runs, so
+lattice holds the value and applies it when the plugin registers the option —
+and again if the plugin reloads. Setting them up front, from `register_options`,
+is the simplest place, and the best one for an option a plugin's file access
+follows (`org.directory`): the plugin's very first load is already granted your
+directory, where setting it later costs a reload.
+
+```rust
+fn register_options() {
+    config::set_option("org.directory", "~/notes");
+    config::set_option("org.roam-directory", "~/notes/roam");
+}
+```
+
+Full names (`org.directory`): a bare `directory` would mean an option of
+`init`'s own. A name no plugin ends up declaring — usually a typo — is reported
+in `*messages*` once every plugin has loaded. (This is `init.rs` only: another
+plugin setting an option that does not exist is still refused.)
+
+**Everything else — enable its mode, bind keys to its commands — needs the
+plugin there.** Subscribe and react when it arrives — the
 `with-eval-after-load` / lazy-autocmd pattern. There are two moments, and which
 one you want depends on what you are doing:
 
@@ -341,15 +370,18 @@ fn on_event(handler: u32, ev: Event) {
 }
 ```
 
-**`PrePluginLoaded` for options, `PluginLoaded` for everything else.** A plugin
-may read its own options *while it is loading* — org builds a theme element and a
-highlight-query rule per TODO keyword out of `org.todo-keywords` before its load
-finishes — and by `PluginLoaded` those reads have already happened. So an option
-set there is set too late, silently: the plugin keeps its default and nothing
-reports a problem. `PrePluginLoaded` fires after the plugin has declared its
-options and before it reads any, and **the load waits for your handler**, so the
-value is in place when the plugin looks for it. Conversely `enable-mode` cannot
-go there — the mode is not registered yet.
+**`PrePluginLoaded` for options you must compute, `PluginLoaded` for everything
+else.** Most options are just set up front, as above. `PrePluginLoaded` is for a
+value you can only work out once the plugin is there — one that depends on
+another of its options, say. A plugin may read its own options *while it is
+loading* — org builds a theme element and a highlight-query rule per TODO keyword
+out of `org.todo-keywords` before its load finishes — and by `PluginLoaded` those
+reads have already happened. So an option set there is set too late, silently:
+the plugin keeps its default and nothing reports a problem. `PrePluginLoaded`
+fires after the plugin has declared its options and before it reads any, and
+**the load waits for your handler**, so the value is in place when the plugin
+looks for it. Conversely `enable-mode` cannot go there — the mode is not
+registered yet.
 
 Both fire for *every* plugin, so check the name.
 
@@ -361,8 +393,8 @@ Why a handler at all, rather than a top-level `enable_mode(...)`:
   your open buffers immediately. (Core plugins differ: their `<id>.enabled` gate
   turns their default mode on for you — see above.)
 - **The target must exist when you configure it.** `PluginLoaded` fires *after*
-  the plugin's seams all registered, so `enable-mode` / `set-option` always hit a
-  present target.
+  the plugin's seams all registered, so `enable-mode` always hits a present
+  target. (`set-option` is the exception, above: it waits for its option.)
 - **Graceful by construction.** If a plugin never loads (not installed, failed to
   compile), its `PluginLoaded` never fires and your handler never runs — no error,
   no guard to write. Config for a plugin you removed simply goes dormant.
@@ -396,7 +428,7 @@ You implement two halves of the `grammar-plugin` world:
 ### One config with several grammar contributions
 
 ```rust
-// init.rs — a grammar-plugin. plugin.toml: provides = ["grammar"]
+// init.rs — a grammar-plugin. Manifest: provides = ["grammar"]
 wit_bindgen::generate!({ world: "grammar-plugin", path: "wit" });
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as Callbacks;
@@ -562,7 +594,7 @@ your grammar config added), landing in the user keymap layer — above the built
 vim grammar, so your bindings win.
 
 ```rust
-// init.rs — a keymap-plugin. plugin.toml: provides = ["keymap"]
+// init.rs — a keymap-plugin. Manifest: provides = ["keymap"]
 wit_bindgen::generate!({ world: "keymap-plugin", path: "wit" });
 
 use lattice::plugin_host::keymap;
@@ -598,7 +630,7 @@ for values you compute or set conditionally (per filetype, on a plugin loading).
 value — it never mis-sets.
 
 ```rust
-// init.rs — a config-plugin. plugin.toml: provides = ["config"]
+// init.rs — a config-plugin. Manifest: provides = ["config"]
 wit_bindgen::generate!({ world: "config-plugin", path: "wit" });
 
 use lattice::plugin_host::config;
@@ -616,6 +648,36 @@ impl Guest for Component {
 
 export!(Component);
 ```
+
+## Installing plugins
+
+`register_plugins` names the plugins your config wants; lattice installs them
+after `init.rs` loads and loads them at every start. Ready-built, from a
+plugin's GitHub release:
+
+```rust
+fn register_plugins() {
+    use lattice::plugin_host::plugin_manager::{self, ReleaseSpec};
+    plugin_manager::require_release(&ReleaseSpec {
+        name: "org".to_string(),
+        repo: "dhruvasagar/lattice-org-plugin".to_string(),
+        version: None,      // the newest release built for this editor; or Some("v0.2.0")
+        sha256: None,       // optionally pin the exact bytes
+        enable_mode: None,
+    });
+}
+```
+
+or built from source with `plugin_manager::require` and a git or local
+`PluginSource`. `:reload-config` applies a change; `:plugin-update <name>`
+moves an unpinned plugin to its newest release or commit.
+
+The scaffold already has this seam, with the example commented out. A config
+scaffolded before 0.9.10 needs `import plugin-manager;` and
+`export register-plugins: func();` in `wit/init.wit`, and `"plugin-manager"`
+in its manifest's `provides`. Every field, pinning, updating, removing and
+the messages you may see are in
+[`plugins`](help:plugins#installing-plugins-from-init-rs).
 
 ---
 
@@ -641,7 +703,7 @@ world init {
 }
 ```
 
-`plugin.toml`: `provides = ["config", "keymap", "events"]` — the seams you
+The manifest: `provides = ["config", "keymap", "events"]` — the seams you
 register into. (`modes` is *not* listed: you don't declare a mode, you only call
 `enable-mode` on one another plugin declared.) Read the guest top to bottom —
 **immediate** config runs when `init.rs` loads; a plugin's **options** run from
@@ -755,8 +817,8 @@ lattice --scaffold-init
 ```
 
 This creates `~/.config/lattice/init/` with a complete WASM-component config crate
-— `Cargo.toml`, `plugin.toml`, `src/lib.rs` (a minimal config: an option, a
-keybinding, an event handler), and a `wit/` copy of *this editor's* API (so it
+— `Cargo.toml`, `src/lib.rs` (its manifest, and a minimal config: an option, a
+keybinding, an event handler, and a plugin install to uncomment), and a `wit/` copy of *this editor's* API (so it
 builds with no separate checkout, matched to your version). It refuses to
 overwrite an existing config.
 
@@ -814,7 +876,7 @@ Build and install:
 rustup target add wasm32-wasip2                    # once
 cargo build --target wasm32-wasip2 --release
 cp target/wasm32-wasip2/release/lattice_init.wasm \
-   ~/.config/lattice/init/init.wasm                # place beside plugin.toml
+   ~/.config/lattice/init/init.wasm                # place beside Cargo.toml
 ```
 
 Then in a running editor, `:reload-config` — no restart. (Or start the editor;
@@ -831,7 +893,7 @@ dump scaffolding with `:export-plugin-api markdown`.
 tier (it's your own config):
 
 - **Capabilities are deny-by-default.** No filesystem beyond your private `/data`
-  dir unless `plugin.toml` requests an `fs:` prefix; no network, no process spawn.
+  dir unless its manifest requests an `fs:` prefix; no network, no process spawn.
 - **Fuel + deadline bounded.** Every call has a budget; a runaway loop is trapped,
   not hung. The synchronous `grammar` seam has the tightest budget — keep `apply`
   cheap.

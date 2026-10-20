@@ -32,38 +32,22 @@ imports and exports, is on the [worlds page](../reference/plugin-api/worlds.md).
 at load, and the plugin declares what it contributes by calling host imports
 from inside them. Work happens later, in the callbacks the host invokes.
 
-**A manifest.** `plugin.toml` names the plugin, lists the seams it `provides`,
-and requests capabilities. This is `comment`'s — every comment in it is there
-for a reason worth reading:
+**A manifest.** It names the plugin, lists the seams it `provides`, and
+requests capabilities. It lives in the component — `manifest!` at the top of
+`plugins/comment/src/lib.rs`, where every comment above it is there for a
+reason worth reading. What it declares:
 
-<!-- include: plugins/comment/plugin.toml -->
+<!-- manifest -->
 ```toml
-# CM.3 — the `comment` bundled plugin manifest.
-#
-# `capabilities = ["grammar:chord"]` is the CM.2 capability: permission to bind
-# an operator's chord into the universal operator-pending grammar. It is
-# declared rather than assumed because claiming keys in the grammar every
-# buffer shares is the most user-visible power a plugin can take — the claim
-# belongs in the manifest, in `:plugins`' capability column, and in the grant
-# the trust tier computes. Withheld, the operator still registers and stays
-# reachable by name; only `gc` stops working.
-#
-# No `fs:` or `state:write`: the operator reads the buffer through the
-# `borrow<document>` handle it is handed and returns edits. It touches nothing
-# else.
 id = "comment"
 provides = ["grammar", "modes", "config", "help"]
 capabilities = ["grammar:chord"]
-
-# CM.2: the chord is scoped to this mode's keymap layer, never `Builtin`. A
-# chord at `Builtin` would outlive `:set comment.enabled=false` and point at a
-# handler that is gone. The loader refuses to bind a chord for a plugin with no
-# `default_modes` for exactly that reason.
 default_modes = ["comment-mode"]
 ```
 
 Its `Cargo.toml` is the minimal component crate: a `cdylib`, `wit-bindgen`,
-and a standalone `[workspace]` so it never inherits the host's target or lints:
+the SDK for `manifest!`, and a standalone `[workspace]` so it never inherits
+the host's target or lints:
 
 <!-- include: plugins/comment/Cargo.toml -->
 ```toml
@@ -89,6 +73,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wit-bindgen = "0.58"
+# PMF.11: for `manifest!` only. Nothing of the SDK (or its serde / rmp-serde)
+# is reachable at run time; linking the crate still costs ~1.9 KB of code
+# without LTO and ~0.1 KB with it (measured on `project`).
+lattice-plugin-sdk = { path = "../../crates/lattice-plugin-sdk" }
 
 [profile.release]
 opt-level = "s"

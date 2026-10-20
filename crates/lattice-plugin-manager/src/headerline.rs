@@ -396,6 +396,7 @@ mod tests {
             tier,
             granted: Vec::new(),
             denied: Vec::new(),
+            option_bound: Vec::new(),
             health,
             source: SourceRecord::Unknown,
             build: BuildState::NotBuilt,

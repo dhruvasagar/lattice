@@ -861,19 +861,37 @@ def core_plugin_ids():
     return set(re.findall(r'"([^"]+)"', m.group(1)))
 
 
+def plugin_manifest(pid):
+    """plugins/<id>'s manifest, found where the loader finds it.
+
+    The embedded one first — `lattice_plugin_sdk::manifest!(r#"…"#)` in
+    src/lib.rs, which the loader prefers over a `plugin.toml` (PMF.11 removed
+    the bundled plugins' `plugin.toml`s) — then a `plugin.toml`, for a plugin
+    that still ships one.
+    """
+    root = os.path.join(PLUGINS_SRC, pid)
+    lib = os.path.join(root, 'src', 'lib.rs')
+    if os.path.isfile(lib):
+        m = re.search(r'manifest!\(\s*r#"(.*?)"#', open(lib, encoding='utf-8').read(), re.S)
+        if m:
+            return tomllib.loads(m.group(1))
+    toml_path = os.path.join(root, 'plugin.toml')
+    if os.path.isfile(toml_path):
+        with open(toml_path, 'rb') as fh:
+            return tomllib.load(fh)
+    die(f'no manifest for plugins/{pid}/ — neither a `manifest!(r#"…"#)` in '
+        f'src/lib.rs nor a plugin.toml; site/data/plugins.toml lists {pid!r} '
+        'as bundled, but there is no such plugin in this tree')
+
+
 def plugin_at_a_glance(pid):
     """The "Getting it" block, read out of the plugin's OWN manifest.
 
-    Enable gate, seams and capability grants are all declared in
-    plugins/<id>/plugin.toml. Deriving them means the page cannot claim a
-    plugin asks for a capability it no longer asks for.
+    Enable gate, seams and capability grants are all declared in the
+    plugin's manifest. Deriving them means the page cannot claim a plugin
+    asks for a capability it no longer asks for.
     """
-    manifest = os.path.join(PLUGINS_SRC, pid, 'plugin.toml')
-    if not os.path.isfile(manifest):
-        die(f'no plugin.toml at plugins/{pid}/ — site/data/plugins.toml lists '
-            f'{pid!r} as bundled, but there is no such plugin in this tree')
-    with open(manifest, 'rb') as fh:
-        man = tomllib.load(fh)
+    man = plugin_manifest(pid)
 
     modes = man.get('default_modes') or (
         [man['default_mode']] if 'default_mode' in man else []

@@ -12,7 +12,7 @@
 //!   `dispatch_chord` harness cannot compose an operator: `g` `c` `c` would
 //!   fire bare, the buffer would not change, and a test asserting "unchanged"
 //!   would pass for the wrong reason (`dispatch-chord-cannot-compose-operators`).
-//! - **It loads the shipped component with the shipped `plugin.toml`, and
+//! - **It loads the shipped component, whose manifest is embedded in it, and
 //!   never enables `comment-mode` by hand.** The manifest's `default_modes` is
 //!   what turns the mode on in production; a harness that hand-writes the
 //!   manifest or flips the mode itself passes against a plugin whose manifest
@@ -60,11 +60,6 @@ mod tests {
         let base = unique_tempdir();
         let plugin_dir = base.join("plugins").join("comment");
         std::fs::create_dir_all(&plugin_dir).unwrap();
-        std::fs::copy(
-            format!("{PLUGIN_DIR}/plugin.toml"),
-            plugin_dir.join("plugin.toml"),
-        )
-        .unwrap();
         std::fs::write(plugin_dir.join("component.wasm"), wasm).unwrap();
 
         let mut app = app_with_path(text, 20, base.join(file));

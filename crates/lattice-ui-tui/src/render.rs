@@ -122,6 +122,12 @@ pub struct FrameView<'a> {
     /// `app.ad().option_cache` directly so the resolver is always
     /// in one place.
     pub wrap_lines: bool,
+    /// Whether this pane's content dims while it is not focused
+    /// (`ui.dim_inactive`), resolved for ITS buffer: a mode can turn the
+    /// dim off for the buffers it owns — `hover-mode` does, so a hover
+    /// read while the cursor stays in the document is not greyed out.
+    /// GPUI resolves the same option per buffer for its opacity.
+    pub dim_inactive: bool,
     /// PU.1b-1a (`signcolumn`): whether to reserve this pane's gutter
     /// sign columns (diagnostics severity + diff sign). Resolved
     /// per-buffer like every other view option — `from_app` reads the
@@ -188,6 +194,7 @@ impl<'a> FrameView<'a> {
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(doc_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
             wrap_lines: ad.option_cache.wrap_lines,
+            dim_inactive: app.theme.dim_inactive_panes,
             sign_column: ad.option_cache.sign_column,
             content_left_pad: ad.option_cache.content_left_pad,
         }
@@ -247,6 +254,7 @@ impl<'a> FrameView<'a> {
             // ITS mode stack — e.g. help-mode's `Wrap = true` /
             // `signcolumn = no` — not the active buffer's settings.
             wrap_lines: *rs.resolved_option_for::<lattice_config::Wrap>(buffer_id),
+            dim_inactive: *rs.resolved_option_for::<lattice_config::UiDimInactive>(buffer_id),
             sign_column: rs
                 .resolved_option_for::<lattice_config::SignColumnOption>(buffer_id)
                 .reserved(),
@@ -5742,7 +5750,7 @@ pub(crate) fn compose_pane_lines(
         // skips this entirely (opacity 1.0 → byte-identical). The
         // gutter/severity/diff-sign prefix keeps its own styling, as
         // it did on the pre-merge inactive path.
-        let body = if ctx.is_active || !view.app.theme.dim_inactive_panes {
+        let body = if ctx.is_active || !view.dim_inactive {
             body
         } else {
             let overlay = view.app.theme.inactive_pane_overlay;
@@ -7490,8 +7498,32 @@ fn cursor_screen_position_at(
     let inlay_hints = &rs_st.syntax.inlay_hints;
     // Display column of the cursor within its (unwrapped) line —
     // tab-expanded + inlay-shifted.
-    let display_col =
-        display_col_for_byte(&snap.buffer, cursor, inlay_hints, ad.option_cache.tabstop);
+    //
+    // Conceal removes columns where inlays add them: a hidden range is
+    // absent from the painted row, so the caret must not count it. The
+    // ranges come from this pane's display matrix — the same row the
+    // compose loop paints — and the clamp is `lattice_cells`'s, shared
+    // with GPUI and the host's horizontal clamp so the three cannot
+    // disagree about where a caret inside or past a link sits.
+    let conceals = view
+        .app
+        .render_state
+        .load()
+        .cells
+        .load_full()
+        .display_matrix_for_pane(pane_id)
+        .and_then(|cell| {
+            cell.load_full()
+                .row_at_source_line(cursor.line)
+                .map(|row| row.conceals.clone())
+        });
+    let display_col = display_col_for_byte(
+        &snap.buffer,
+        cursor,
+        inlay_hints,
+        conceals.as_deref().unwrap_or(&[]),
+        ad.option_cache.tabstop,
+    );
     // W.4.t: split that column across wrap segments. The cursor's
     // own segment index (`display_col / wrap_width`) adds to the
     // row; the remainder (`display_col % wrap_width`) is the column
@@ -7567,6 +7599,7 @@ fn display_col_for_byte(
     buffer: &lattice_core::Buffer,
     pos: lattice_protocol::Position,
     inlay_hints: &[lattice_host::render_state::InlayHintRow],
+    conceals: &[lattice_cells::ConcealRange],
     tabstop: u32,
 ) -> u32 {
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -7608,7 +7641,10 @@ fn display_col_for_byte(
         .filter(|h| h.line == pos.line && (h.byte as usize) <= byte)
         .map(|h| UnicodeWidthStr::width(h.text.as_str()) as u32)
         .sum();
-    base + inlay_shift
+    // Conceal ranges are in the source line's CHAR space, so the clamp
+    // is told the cursor's char index, not its tab-expanded column.
+    let source_col = line[..byte].chars().count() as u32;
+    lattice_cells::subtract_conceals(base + inlay_shift, source_col, conceals)
 }
 
 #[cfg(test)]
@@ -10509,6 +10545,7 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 4),
             &inlays,
+            &[],
             4,
         );
         assert_eq!(before, 4, "shift must not apply before inlay anchor");
@@ -10518,6 +10555,7 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 5),
             &inlays,
+            &[],
             4,
         );
         assert_eq!(at, 5 + 5, "shift applies at the inlay anchor");
@@ -10527,6 +10565,7 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 9),
             &inlays,
+            &[],
             4,
         );
         assert_eq!(eol, 9 + 5, "shift carries through to EOL");
@@ -10535,9 +10574,37 @@ mod tests {
             &app.ad().snapshot.buffer,
             lattice_protocol::Position::new(0, 9),
             &[],
+            &[],
             4,
         );
         assert_eq!(no_inlay, 9);
+    }
+
+    /// A concealed range is absent from the painted row, so the caret must
+    /// not count it. `$` on `see [a](b.md)` lands on the hidden `)`, which
+    /// sits — like every byte of its range — at the range's start: just
+    /// past the label, where GPUI's caret already was. Without the
+    /// subtraction the TUI caret drew seven columns right of the text.
+    #[test]
+    fn display_col_for_byte_subtracts_concealed_ranges() {
+        let app = app_with("see [a](b.md) x\n", 5);
+        let buf = &app.ad().snapshot.buffer;
+        // `[` is char 4; `](b.md)` is chars 6..13 — what markdown's rules
+        // hide, in the char space the display matrix stores them in.
+        let conceals = [(4u32, 5u32), (6u32, 13u32)];
+        let at = |byte: u32| {
+            display_col_for_byte(
+                buf,
+                lattice_protocol::Position::new(0, byte),
+                &[],
+                &conceals,
+                4,
+            )
+        };
+        assert_eq!(at(3), 3, "before the link: untouched");
+        assert_eq!(at(5), 4, "the label sits where the hidden `[` was");
+        assert_eq!(at(12), 5, "`$`-style `)` clamps to just past the label");
+        assert_eq!(at(14), 6, "past the link: both ranges' widths removed");
     }
 
     #[test]
@@ -10685,8 +10752,9 @@ mod tests {
         // tab-stop, matching the cells builder's expansion.
         let app = app_with("\tab", 5);
         let buf = &app.ad().snapshot.buffer;
-        let col =
-            |byte: u32| display_col_for_byte(buf, lattice_protocol::Position::new(0, byte), &[], 4);
+        let col = |byte: u32| {
+            display_col_for_byte(buf, lattice_protocol::Position::new(0, byte), &[], &[], 4)
+        };
         assert_eq!(col(0), 0, "cursor on the tab sits at its start column");
         assert_eq!(col(1), 4, "'a' after a tab lands at column tabstop");
         assert_eq!(col(2), 5, "'b' follows at column tabstop+1");
@@ -14134,6 +14202,97 @@ mod transient_palette_tests {
                  standing in for several roles cannot distinguish them.",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod hover_popup_dimming_tests {
+    //! A hover popup is read while the cursor stays in the document, so it is
+    //! never the focused pane — and an unfocused popup is composed as an
+    //! inactive pane. `hover-mode` turns `ui.dim_inactive` off for its buffer,
+    //! so the documentation being read is not greyed out until focused.
+
+    use super::*;
+    use crate::app::App;
+    use lattice_core::Document;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn app_with_unfocused_hover() -> (App, lattice_core::BufferId) {
+        let text = (0..20)
+            .map(|n| format!("line {n} of the document\n"))
+            .collect::<String>();
+        let mut a = App::new(Document::from_text(&text));
+        a.set_viewport_height(20);
+        let popup = a.mutate_editor_with(|e| {
+            e.cursor.line = 5;
+            let content = lattice_help::parse_help_lines(
+                "hover",
+                vec!["fn thing() -> u32".to_string(), "the docs".to_string()],
+            );
+            let _ = e.open_floating_popup(content, crate::popup::PopupPlacement::CursorAnchored);
+            e.publish_render_state();
+            e.popup_buffer.expect("the popup opens")
+        });
+        (a, popup)
+    }
+
+    /// Whether `cell` carries the inactive-pane overlay — whatever the theme
+    /// makes it: a modifier (`DIM`), a foreground, or both.
+    fn dimmed(cell: &ratatui::buffer::Cell, overlay: ratatui::style::Style) -> bool {
+        (!overlay.add_modifier.is_empty() && cell.modifier.contains(overlay.add_modifier))
+            || overlay.fg.is_some_and(|fg| cell.fg == fg)
+            || overlay.bg.is_some_and(|bg| cell.bg == bg)
+    }
+
+    #[test]
+    fn an_unfocused_hover_popup_is_not_dimmed() {
+        let (a, popup) = app_with_unfocused_hover();
+        assert!(
+            !a.ad().popup_focused,
+            "precondition: the popup is unfocused"
+        );
+
+        let (w, h) = (80u16, 24u16);
+        let snap = a.ad().snapshot.clone();
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &a, &snap);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let overlay = a.theme.inactive_pane_overlay;
+        assert_ne!(
+            overlay,
+            ratatui::style::Style::default(),
+            "precondition: the theme's inactive-pane overlay changes something, \
+             or this test cannot see a dim"
+        );
+        let row = (0..h)
+            .find(|&y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("the docs")
+            })
+            .expect("the popup body is drawn");
+        let line: String = (0..w).map(|x| buf[(x, row)].symbol()).collect();
+        let start = line.find("the docs").unwrap() as u16;
+        for x in start..start + "the docs".len() as u16 {
+            assert!(
+                !dimmed(&buf[(x, row)], overlay),
+                "hover text at column {x} carries the inactive-pane dim"
+            );
+        }
+        assert!(
+            !FrameView::for_buffer(&a, popup).dim_inactive,
+            "hover-mode resolves `ui.dim_inactive` off for the popup's buffer"
+        );
+        assert!(
+            FrameView::for_buffer(&a, a.active_buffer_id()).dim_inactive,
+            "the document keeps the user's setting"
+        );
     }
 }
 

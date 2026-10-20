@@ -50,7 +50,7 @@ use lattice_runtime::EventBus;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-/// Must match `plugins/lighthouse/plugin.toml` — the store and the data
+/// Must match the `id` in `plugins/lighthouse/src/lib.rs`'s `manifest!` — the store and the data
 /// directory are keyed by it.
 const PLUGIN_ID: &str = "lighthouse";
 

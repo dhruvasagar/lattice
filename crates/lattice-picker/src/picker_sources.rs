@@ -443,6 +443,44 @@ fn explicit_root_or(args: &[String], workspace_root: &std::path::Path) -> std::p
     }
 }
 
+/// The `:files` rows for a walked root: each path shown relative to the root,
+/// with its metadata as marginalia, accepting to the absolute path. Shared by
+/// [`FilesSource::init`] and its refresh so a refreshed list cannot differ
+/// from an opened one in anything but its contents.
+fn files_batch(
+    canonical_root: &std::path::Path,
+    entries: Vec<WalkedFile>,
+) -> crate::CandidateBatch {
+    // MARG §8: the marginalia (perms / size / mtime) is attached as typed
+    // `Annotation::Styled` cells — the renderer color-codes each per its
+    // theme slot (per-bit permission colors, gold size, green mtime). The
+    // metadata was gathered by `walk_files_for_picker` DURING the parallel
+    // walk (reusing the walk's own stat), so there is no separate ≤5000-stat
+    // pass here — that eager pass was the bulk of the first-open latency.
+    // The candidate `display` is just the path (so fuzzy matching runs on
+    // the path, not the metadata text); column alignment comes from
+    // `AnnotationColumns`. A file whose metadata could not be read carries
+    // no annotations → blank cells, the path still shows.
+    entries
+        .into_iter()
+        .map(|(abs, meta)| {
+            let rel = abs
+                .strip_prefix(canonical_root)
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|_| abs.clone());
+            let rel_display = rel.display().to_string();
+            let annotations = meta.as_ref().map(metadata_annotations).unwrap_or_default();
+            let mut cand = RawCandidate::plain(rel_display, CandidateKind::Plain);
+            cand.annotations = annotations;
+            // Slice 7b.2: typed accept payload.
+            cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::OpenFile {
+                path: abs.clone(),
+            }));
+            (cand, RoutingPayload::OpenFile { path: abs })
+        })
+        .collect()
+}
+
 pub struct FilesSource {
     pub spec: PickerSourceSpec,
 }
@@ -506,19 +544,14 @@ impl PickerSourceGenerator for FilesSource {
         let root = explicit_root_or(args, &ctx.workspace_root);
         let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
         // Slice C: serve the warmed session cache instantly when present. A
-        // stale entry (older than the TTL) is still served immediately, with a
-        // background re-walk kicked off so the NEXT open reflects on-disk
-        // changes — the open never blocks on the walk once warmed. A cold cache
-        // walks now and populates it. All of this is off the UI thread (init
-        // runs on a picker worker); the refresh thread keeps it that way.
+        // stale entry (older than the TTL) is still served — the open never
+        // blocks on a walk once warmed — and the host then asks
+        // [`Self::refresh`], which re-walks and replaces the rows in the
+        // picker already on screen. (It used to re-walk only for the NEXT
+        // open, so the first reopen after a file appeared outside the editor
+        // still missed it.) A cold cache walks now and populates it.
         let entries = match cached_files(&canonical_root) {
-            Some((cached, stale)) => {
-                if stale {
-                    let refresh_root = canonical_root.clone();
-                    std::thread::spawn(move || warm_files_cache(&refresh_root));
-                }
-                cached
-            }
+            Some((cached, _stale)) => cached,
             None => {
                 let walked = walk_files_for_picker(&canonical_root);
                 if let Ok(mut cache) = file_walk_cache().lock() {
@@ -536,35 +569,41 @@ impl PickerSourceGenerator for FilesSource {
                 canonical_root.display()
             ));
         }
-        // MARG §8: the marginalia (perms / size / mtime) is attached as typed
-        // `Annotation::Styled` cells — the renderer color-codes each per its
-        // theme slot (per-bit permission colors, gold size, green mtime). The
-        // metadata was gathered by `walk_files_for_picker` DURING the parallel
-        // walk (reusing the walk's own stat), so there is no separate ≤5000-stat
-        // pass here — that eager pass was the bulk of the first-open latency.
-        // The candidate `display` is just the path (so fuzzy matching runs on
-        // the path, not the metadata text); column alignment comes from
-        // `AnnotationColumns`. A file whose metadata could not be read carries
-        // no annotations → blank cells, the path still shows.
-        let pairs = entries
-            .into_iter()
-            .map(|(abs, meta)| {
-                let rel = abs
-                    .strip_prefix(&canonical_root)
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|_| abs.clone());
-                let rel_display = rel.display().to_string();
-                let annotations = meta.as_ref().map(metadata_annotations).unwrap_or_default();
-                let mut cand = RawCandidate::plain(rel_display, CandidateKind::Plain);
-                cand.annotations = annotations;
-                // Slice 7b.2: typed accept payload.
-                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::OpenFile {
-                    path: abs.clone(),
-                }));
-                (cand, RoutingPayload::OpenFile { path: abs })
-            })
-            .collect();
-        Ok(PickerInitResult::Inline(pairs))
+        Ok(PickerInitResult::Inline(files_batch(
+            &canonical_root,
+            entries,
+        )))
+    }
+
+    fn refresh(
+        &self,
+        ctx: &PickerContext<'_>,
+        args: &[String],
+        force: bool,
+    ) -> Option<crate::CandidateFuture> {
+        let root = explicit_root_or(args, &ctx.workspace_root);
+        let canonical_root = std::fs::canonicalize(&root).unwrap_or(root);
+        // After an open, only a stale (or missing) cache is worth a walk: a
+        // fresh one is what the picker already shows, and re-walking it on
+        // every rapid reopen is the cost the TTL exists to avoid.
+        if !force && matches!(cached_files(&canonical_root), Some((_, false))) {
+            return None;
+        }
+        // The walk is blocking filesystem work, so it runs on its own thread
+        // and the future only waits for it — the same reason the boot-time
+        // warm-up spawns a thread.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            warm_files_cache(&canonical_root);
+            let entries = cached_files(&canonical_root)
+                .map(|(entries, _)| entries)
+                .unwrap_or_default();
+            let _ = tx.send(files_batch(&canonical_root, entries));
+        });
+        Some(Box::pin(async move {
+            rx.await
+                .map_err(|_| "files: the refresh walk ended without a result".to_string())
+        }))
     }
 
     fn accept(

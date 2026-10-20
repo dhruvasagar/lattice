@@ -57,11 +57,9 @@ fn every_core_plugin_is_staged_into_the_deb() {
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
     let mut missing = Vec::new();
     for name in core_plugins() {
-        for file in [
-            format!("{name}.wasm"),
-            "plugin.toml".into(),
-            ".source".into(),
-        ] {
+        // PMF.11: no `plugin.toml` — a core plugin's manifest is embedded in
+        // its component.
+        for file in [format!("{name}.wasm"), ".source".into()] {
             let asset = format!("usr/share/lattice/plugins/{name}/{file}");
             if !manifest.contains(&asset) {
                 missing.push(asset);

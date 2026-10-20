@@ -92,7 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           for pl in auto-pair treesitter-context project comment lighthouse; do
-            for f in "$pl.wasm" plugin.toml .source; do
+            for f in "$pl.wasm" .source; do
               if [[ ! -f "runtime/plugins/$pl/$f" ]]; then
                 echo "::error::missing runtime/plugins/$pl/$f"
                 exit 1
@@ -115,6 +115,13 @@ jobs:
     name: dist (${{ matrix.build }})
     needs: [prepare, core-plugins]
     runs-on: ${{ matrix.os }}
+    # The `:version` build stamp (crates/lattice-cli/build.rs). The commit and
+    # its date come from this checkout; "dirty" does not, because the step
+    # below deletes the tracked `rust-toolchain.toml` before building, which
+    # would stamp every release binary as built from modified sources. The
+    # code built IS the tagged commit, so the stamp says so.
+    env:
+      LATTICE_GIT_DIRTY: clean
     strategy:
       fail-fast: false
       matrix:
@@ -229,7 +236,7 @@ jobs:
           check_tar() {
             local listing; listing="$(tar tJf "$1")"
             for pl in auto-pair treesitter-context project comment lighthouse; do
-              for f in "$pl.wasm" plugin.toml .source; do
+              for f in "$pl.wasm" .source; do
                 echo "$listing" | grep -q "share/lattice/plugins/$pl/$f" \
                   || { echo "::error::$1 is missing $pl/$f"; exit 1; }
               done
@@ -245,7 +252,7 @@ jobs:
             # on some versions and `bin\lattice.exe` on others, and `.`
             # matches either single character.
             for pl in auto-pair treesitter-context project comment lighthouse; do
-              for f in "$pl.wasm" plugin.toml .source; do
+              for f in "$pl.wasm" .source; do
                 echo "$listing" | grep -q "$pl.$f" \
                   || { echo "::error::$1 is missing $pl/$f"; exit 1; }
               done
@@ -328,7 +335,7 @@ jobs:
           check_paths() {
             local listing="$1" label="$2"
             for pl in auto-pair treesitter-context project comment lighthouse; do
-              for f in "$pl.wasm" plugin.toml .source; do
+              for f in "$pl.wasm" .source; do
                 echo "$listing" | grep -q "usr/share/lattice/plugins/$pl/$f" \
                   || { echo "::error::$label is missing $pl/$f"; exit 1; }
               done

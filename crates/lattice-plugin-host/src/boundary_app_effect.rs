@@ -381,6 +381,26 @@ impl WitBoundary for NativeAppEffect {
             // that wants an argument picker declares one in its
             // `args_schema` (`ArgSpec.picker`, which DOES cross) rather
             // than emitting this effect.
+            // The `:files-refresh` command's effect. Host-internal like the
+            // picker openers beside it; a plugin refreshes its own source by
+            // re-running its picker.
+            NativeAppEffect::RefreshPickerSource { .. } => {
+                return Err(
+                    "refresh-picker-source is host-internal (`:files-refresh`), \
+                     not representable over WIT"
+                        .into(),
+                );
+            }
+            // Emitted only by the grammar's own blockwise dispatch, about
+            // an Insert session the host holds; a plugin operator that
+            // runs blockwise gets it from that dispatch, not by sending it.
+            NativeAppEffect::BeginBlockInsert { .. } => {
+                return Err(
+                    "begin-block-insert is host-internal (the blockwise `c` replay), \
+                     not representable over WIT"
+                        .into(),
+                );
+            }
             NativeAppEffect::InsertRegister(_)
             | NativeAppEffect::OpenYankPicker
             | NativeAppEffect::OpenArgPicker => {

@@ -101,8 +101,8 @@ async fn loading_a_plugin_manager_guest_queues_its_required_specs() {
     let specs = loader.take_required();
     assert_eq!(
         specs.len(),
-        3,
-        "the guest's three well-formed requires are queued: {specs:?}"
+        4,
+        "the guest's four well-formed requires (one a `require-release`) are queued: {specs:?}"
     );
 
     // The traversal-named one never reaches the queue — the host's name gate
@@ -125,6 +125,21 @@ async fn loading_a_plugin_manager_guest_queues_its_required_specs() {
     );
     let local = specs.iter().find(|s| s.name == "local-demo").unwrap();
     assert_eq!(local.enable_mode.as_deref(), Some("demo-mode"));
+    // PRL.5: `require-release` reaches the loader as a `Release` source.
+    let release = specs.iter().find(|s| s.name == "release-demo").unwrap();
+    assert_eq!(
+        release,
+        &RequiredSpec {
+            name: "release-demo".into(),
+            source: PluginSource::Release {
+                repo: "example/release-demo".into(),
+                version: Some("v0.2.0".into()),
+                sha256: Some("ab".repeat(32)),
+            },
+            enable_mode: Some("release-demo-mode".into()),
+            pinned: false,
+        }
+    );
 }
 
 /// The queue drains, it does not merely read.
@@ -148,7 +163,7 @@ async fn the_required_queue_drains_exactly_once() {
         .await
         .expect("init loads");
 
-    assert_eq!(loader.take_required().len(), 3);
+    assert_eq!(loader.take_required().len(), 4);
     assert!(
         loader.take_required().is_empty(),
         "a second drain must be empty, or every declared plugin installs twice"

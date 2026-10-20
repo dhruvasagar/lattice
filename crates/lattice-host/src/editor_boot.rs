@@ -703,6 +703,10 @@ impl Editor {
         // A pure provider crate: the mode resolves `PluginLoaderHandle` at
         // activation, so this needs no ordering vs the loader install below.
         lattice_plugin_manager::install(&mut boot);
+        // `:version` and the `*version*` buffer. The page itself is assembled
+        // by the binary before boot (`set_version_report`); the mode owns the
+        // buffer, the command and `Y`.
+        lattice_mode::modes::version::install(&mut boot);
         // PO.4.1: the plugin boundary-trace views — registers `plugin-trace-mode`
         // (major, read-only) + the `:plugin-trace` ex-command (returns
         // `Effect::OpenSyntheticBuffer`). A pure provider crate: the mode resolves
@@ -915,6 +919,14 @@ impl Editor {
         let (lsp_detach_tx, lsp_detach_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
         event_bus.subscribe_typed(lsp_detach_tx);
+        // `LspBufferAttached`: published once the buffer's server has
+        // finished `initialize`. The per-tick drain marks the buffer's
+        // semantic tokens and inlay hints for a refetch — a request made
+        // before the server was ready cached an empty answer at the current
+        // text version, which nothing else would ever replace.
+        let (lsp_attach_tx, lsp_attach_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferAttached>();
+        event_bus.subscribe_typed(lsp_attach_tx);
         // M-async.3: mode lifecycle events for `ModeActivationFailed`
         // (and aborted cascade parents); the per-tick drain calls
         // `deactivate_mode_by_id` on each.
@@ -2612,6 +2624,7 @@ impl Editor {
             // the host receiver field.
             pending_show_message_request_rx: Some(lsp_show_message_request_rx),
             pending_lsp_detach_rx: Some(lsp_detach_rx),
+            pending_lsp_attach_rx: Some(lsp_attach_rx),
             pending_mode_lifecycle_rx: Some(mode_lifecycle_rx),
             pending_major_entered_rx: Some(major_entered_rx),
             pending_mode_enablement_rx: Some(mode_enablement_rx),

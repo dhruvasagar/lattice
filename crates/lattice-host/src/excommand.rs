@@ -618,6 +618,7 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     // memory and route through their dedicated effect.
     ("picker", "ex:picker"),
     ("files", "ex:files"),
+    ("files-refresh", "ex:files-refresh"),
     ("recent", "ex:recent"),
     ("history", "ex:history"),
     ("Tree", "ex:filetree"),

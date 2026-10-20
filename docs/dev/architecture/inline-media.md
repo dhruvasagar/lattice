@@ -365,6 +365,18 @@ produced by the mode's own `AsyncMediaSource` — the same registry, pump,
 sizing and decode path org's inline blocks use. The mode's whole rendering
 is that producer.
 
+**The picture fits the window, not just its width.** An inline block uses
+`MediaFit::Contain` — scale down to the pane's width — because it sits among
+text and its height is the document's business. A buffer whose whole content
+is the picture is different: fitted to the width alone, a portrait image runs
+past the bottom of the pane and is never seen whole. So the producer asks for
+`MediaFit::Window`, which bounds both axes (still never upscaling), and the
+host's sizing geometry carries the pane's height — less the one row the
+block's anchor line occupies — beside its width. The height is in the
+refresh key with the width, so a resize re-fits it the same way. `Window` is
+host-native, not on the WIT surface: an inline block sized to the window
+would let one diagram crowd out the document around it.
+
 **`Mode::presents_extensions` is the new seam**, and the general one: a
 major names the file types it PRESENTS rather than edits, and the open
 path consults it *before* reading. A match builds a buffer with the real

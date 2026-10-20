@@ -37,6 +37,41 @@
 //! the state machine, written against a [`install::Host`] trait and tested
 //! with a fake. This file is the adapter between that trait and the editor.
 
+// LH.1 — the `lighthouse` bundled plugin manifest: the language-server manager.
+// Design: docs/dev/architecture/lighthouse.md.
+//
+// What is asked for, and what is conspicuously not:
+//
+//   - `net:http:<host>` for exactly the hosts the bundled registry downloads
+//     from. GitHub release assets are served by redirect, and every hop is
+//     checked against this list, so the asset host is named beside `github.com`.
+//     Adding a server from a new host means adding its host here.
+//   - `proc:spawn` — `register-server` is gated on it (registering a command is
+//     running it one buffer-open later). Bundled-tier only, which is why this
+//     plugin ships with the editor rather than being installed.
+//   - `state:write` — the record of what is installed, and of what is in
+//     flight, which the ex-command instance and the events instance share.
+//
+//   - NO `fs:` capability. Servers install under the plugin's own data
+//     directory, which host-side calls reach without one (design §3.6).
+// `grammar` before `modes`: the mode's chords name this plugin's own actions,
+// which have to exist when the bindings are made.
+//
+// The manifest is embedded in the component (PMF.11) — no `plugin.toml`.
+lattice_plugin_sdk::manifest!(
+    r#"
+id = "lighthouse"
+provides = ["grammar", "events", "modes", "help"]
+capabilities = [
+    "net:http:github.com",
+    "net:http:release-assets.githubusercontent.com",
+    "net:http:objects.githubusercontent.com",
+    "proc:spawn",
+    "state:write",
+]
+"#
+);
+
 wit_bindgen::generate!({
     world: "lighthouse-plugin",
     path: "../../crates/lattice-wit/wit",

@@ -571,6 +571,8 @@ impl App {
             // PH.1: `<C-h>` — the host picks the page and returns the same
             // `DisplayBuffer` signal `:help` does.
             | Action::PickerHelp
+            // `<C-o>` — re-read the list; the host replaces the rows.
+            | Action::PickerRefresh
             // PP.5: `<Tab>` — drills in where the source has depth, selects
             // next everywhere else. Host-side like its two neighbours; an
             // action missing from THIS list is a key that silently does

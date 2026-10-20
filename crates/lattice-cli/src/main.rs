@@ -39,13 +39,24 @@ use clap::Parser;
 
 use lattice_core::Document;
 
+mod build_info;
 mod renderer;
 mod scaffold;
 mod wit_sync;
 
 #[derive(Debug, Parser)]
-#[command(name = "lattice", version, about = "lattice editor", long_about = None)]
+// Clap's own `--version` prints and exits during parsing, before any other
+// flag is read — so `--version --verbose` could never reach the long form.
+// The flag is ours instead (`version` below); plain `--version` prints exactly
+// what clap printed.
+#[command(name = "lattice", disable_version_flag = true, about = "lattice editor", long_about = None)]
 struct Cli {
+    /// Print the version and exit. With `--verbose`, print the whole build
+    /// report `:version` shows — commit, toolchain, target, plugin API and
+    /// paths — for a bug report, or when the editor will not start.
+    #[arg(short = 'V', long = "version")]
+    version: bool,
+
     /// Path to the file to open. If omitted, an empty buffer is opened.
     file: Option<PathBuf>,
 
@@ -186,6 +197,19 @@ fn compute_log_level(cli: &Cli) -> String {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    if cli.version {
+        if cli.verbose > 0 {
+            // Nothing launches, so say what a bare `lattice` here would run in.
+            print!(
+                "{}",
+                build_info::report(&renderer_label(choose_renderer(&cli))).render()
+            );
+        } else {
+            println!("lattice {}", build_info::VERSION);
+        }
+        return Ok(());
+    }
+
     // `--scaffold-*`: write a starter project and exit — never opens the editor.
     if cli.scaffold_init {
         return scaffold::scaffold_init();
@@ -252,15 +276,11 @@ async fn main() -> Result<()> {
     // stays unconditionally enabled there.
     // GD.9: the window is the default. `--tui`, a build with no window
     // renderer, or no reachable display each make it the terminal.
-    let use_gui = renderer::choose(renderer::Launch {
-        gui_flag: cli.gui,
-        tui_flag: cli.tui,
-        gui_compiled: cfg!(feature = "gui"),
-        in_app_bundle: running_in_bundle,
-        display_reachable: renderer::display_reachable(renderer::Platform::current(), |name| {
-            std::env::var(name).ok()
-        }),
-    }) == renderer::Renderer::Gui;
+    let chosen = choose_renderer_in(&cli, running_in_bundle);
+    let use_gui = chosen == renderer::Renderer::Gui;
+    // `:version`'s page, handed over before the editor boots (the
+    // `set_boot_log_level` precedent): this is where the renderer is known.
+    lattice_mode::set_version_report(build_info::report(&renderer_label(chosen)));
     let stderr_is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let stderr_enabled = use_gui || (cli.stderr_logs && !stderr_is_tty);
     lattice_runtime::set_boot_stderr_enabled(stderr_enabled);
@@ -327,4 +347,31 @@ fn run_gui(_document: Document, _startup_lesson: Option<u32>) -> Result<()> {
          build, or rebuild with `cargo build --features gui` \
          (Linux: requires `libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev`)."
     )
+}
+
+/// The renderer a launch with these flags gets. Shared by the real launch and
+/// by `--version --verbose`, which describes that launch without making it.
+fn choose_renderer_in(cli: &Cli, in_app_bundle: bool) -> renderer::Renderer {
+    renderer::choose(renderer::Launch {
+        gui_flag: cli.gui,
+        tui_flag: cli.tui,
+        gui_compiled: cfg!(feature = "gui"),
+        in_app_bundle,
+        display_reachable: renderer::display_reachable(renderer::Platform::current(), |name| {
+            std::env::var(name).ok()
+        }),
+    })
+}
+
+/// `--version --verbose` runs from a terminal, so it is never inside an app
+/// bundle's launch.
+fn choose_renderer(cli: &Cli) -> renderer::Renderer {
+    choose_renderer_in(cli, false)
+}
+
+fn renderer_label(chosen: renderer::Renderer) -> String {
+    match chosen {
+        renderer::Renderer::Gui => "window (GPUI)".to_string(),
+        renderer::Renderer::Tui => "terminal (TUI)".to_string(),
+    }
 }

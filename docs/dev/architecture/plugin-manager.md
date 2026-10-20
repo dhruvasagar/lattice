@@ -8,7 +8,9 @@
 > `on-plugin-loaded` deferred-config pattern the enablement reuses),
 > [`plugin-auto-pair.md`](plugin-auto-pair.md) (the first consumer).
 >
-> **Status: 📝 designed, not built.** A redesign of the existing loader
+> **Status: ✅ built** (PM.1–PM.9; slice plan archived). Release installs —
+> `require-release`, a downloaded component instead of a build — are
+> [`plugin-distribution.md`](plugin-distribution.md). Originally a redesign of the existing loader
 > (`lattice-plugin-loader`) + `:plugins` view (`lattice-plugin-manager`) to add
 > what they lack: **where a plugin comes from** (a git/local *source*) and **how a
 > missing artifact is produced** (*build-on-boot*). The load / unload / reload /

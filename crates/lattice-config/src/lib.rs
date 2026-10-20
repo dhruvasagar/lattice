@@ -215,7 +215,7 @@ pub use core_options::{
     ModelineSeparator, MouseEnabled, NoFile, Number, PickerResultDisplay, ProjectRootMarkers,
     ReadOnly, RelativeNumber, Scroll, Scrollbind, Scrolloff, Shiftwidth, Sidescroll, Sidescrolloff,
     SignColumnOption, SignatureDisplay, StartOfLine, TablineShowOption, Tabstop, TerminalEscExits,
-    TerminalScrollbackLines, TextWidth, TransientMaxRows, Whitespace, WhitespaceEol,
+    TerminalScrollbackLines, TextWidth, TransientMaxRows, UiDimInactive, Whitespace, WhitespaceEol,
     WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;
@@ -273,6 +273,6 @@ pub use schema::{ConfigSchema, ConfigValue, ScalarKind, SchemaError, SchemaField
 pub use origin::OptionOrigin;
 pub use overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use parse::{ParsedSet, parse_set};
-pub use registry::{ConfigError, ConfigRegistry, EventPublisher, plugin_option_groups};
+pub use registry::{ConfigError, ConfigRegistry, EventPublisher, HeldSource, plugin_option_groups};
 pub use resolved::ResolvedOptions;
 pub use resolver::Resolver;

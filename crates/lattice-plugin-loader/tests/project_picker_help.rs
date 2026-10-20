@@ -74,17 +74,12 @@ impl PluginMetaSink for AliasSink {
     }
 }
 
-/// The real manifest, so every seam the plugin `provides` is wired — an
-/// unwired seam fails the WHOLE load and this would silently load nothing.
+/// The component alone, carrying its real manifest, so every seam the plugin
+/// `provides` is wired — an unwired seam fails the WHOLE load and this would
+/// silently load nothing.
 fn write_plugin_dir(root: &std::path::Path, wasm: &[u8]) {
     let dir = root.join("project");
     std::fs::create_dir_all(&dir).unwrap();
-    let manifest = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/project/plugin.toml"
-    ))
-    .unwrap();
-    std::fs::write(dir.join("plugin.toml"), manifest).unwrap();
     std::fs::write(dir.join("component.wasm"), wasm).unwrap();
 }
 

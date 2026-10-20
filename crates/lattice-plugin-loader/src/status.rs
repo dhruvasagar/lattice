@@ -116,6 +116,9 @@ pub struct PluginStatus {
     /// Requested-but-withheld capabilities (tier-gated, e.g. `proc:spawn` for a
     /// user-installed plugin). Never fatal — the plugin loaded degraded.
     pub denied: Vec<Capability>,
+    /// PMF.6: how each grant that follows an option resolved — what `:plugins`
+    /// shows in place of the `{option|default}` template.
+    pub option_bound: Vec<lattice_plugin_host::capability::OptionBoundGrant>,
     /// Whether the plugin is running or quarantined after a crash.
     pub health: PluginHealth,
     /// PM.8a: where the plugin came from, read from its on-disk `.source`

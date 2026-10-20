@@ -48,6 +48,21 @@ pub enum SourceRecord {
     Git { url: String, rev: Option<String> },
     /// Downloaded ready-built.
     Prebuilt { url: String },
+    /// PRL.3: a component published as a GitHub release asset — what
+    /// `require-release` installs. `api` is the plugin API generation it was
+    /// installed for: an editor speaking another one needs another build, so a
+    /// mismatch means "download again", not "use what is there".
+    Release {
+        repo: String,
+        version: String,
+        sha256: Option<String>,
+        api: String,
+        /// The spec named no version: `version` is the tag it resolved to,
+        /// and an update looks for a newer one. Without this the record of
+        /// an unpinned install reads back as pinned to that tag, and
+        /// `:plugin-update` would fetch the same release again.
+        latest: bool,
+    },
     /// Present on disk with no marker — hand-installed, or installed by a
     /// lattice older than PM.8. Explicitly a *state*, not a fallback to
     /// `Local`: claiming a source we do not know would make the column lie.
@@ -67,6 +82,7 @@ impl SourceRecord {
             }
             SourceRecord::Git { rev: None, .. } => "git".to_string(),
             SourceRecord::Prebuilt { .. } => "prebuilt".to_string(),
+            SourceRecord::Release { repo, version, .. } => format!("release {repo}@{version}"),
             SourceRecord::Unknown => "—".to_string(),
         }
     }
@@ -87,6 +103,17 @@ impl SourceRecord {
                 rev: rev.clone(),
             }),
             SourceRecord::Prebuilt { url } => Some(PluginSource::Prebuilt { url: url.clone() }),
+            SourceRecord::Release {
+                repo,
+                version,
+                sha256,
+                latest,
+                ..
+            } => Some(PluginSource::Release {
+                repo: repo.clone(),
+                version: (!latest).then(|| version.clone()),
+                sha256: sha256.clone(),
+            }),
             SourceRecord::Bundled | SourceRecord::Unknown => None,
         }
     }
@@ -99,6 +126,20 @@ impl SourceRecord {
                 rev: rev.clone(),
             },
             PluginSource::Prebuilt { url } => SourceRecord::Prebuilt { url: url.clone() },
+            // An unpinned spec is recorded as the tag it resolved to — the
+            // installer writes the record once it knows it (PRL.4); until then
+            // there is nothing to record a version of.
+            PluginSource::Release {
+                repo,
+                version,
+                sha256,
+            } => SourceRecord::Release {
+                repo: repo.clone(),
+                version: version.clone().unwrap_or_default(),
+                sha256: sha256.clone(),
+                api: lattice_wit::api_generation().to_string(),
+                latest: version.is_none(),
+            },
         }
     }
 
@@ -114,6 +155,23 @@ impl SourceRecord {
                 s
             }
             SourceRecord::Prebuilt { url } => format!("kind = prebuilt\nurl = {url}\n"),
+            SourceRecord::Release {
+                repo,
+                version,
+                sha256,
+                api,
+                latest,
+            } => {
+                let mut s = format!("kind = release\nrepo = {repo}\nversion = {version}\n");
+                if let Some(sha256) = sha256 {
+                    s.push_str(&format!("sha256 = {sha256}\n"));
+                }
+                s.push_str(&format!("api = {api}\n"));
+                if *latest {
+                    s.push_str("latest = true\n");
+                }
+                s
+            }
             SourceRecord::Unknown => "kind = unknown\n".to_string(),
         }
     }
@@ -123,6 +181,11 @@ impl SourceRecord {
         let mut path = "";
         let mut url = "";
         let mut rev: Option<String> = None;
+        let mut repo = "";
+        let mut version = "";
+        let mut sha256: Option<String> = None;
+        let mut api = "";
+        let mut latest = false;
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else {
                 continue;
@@ -133,6 +196,11 @@ impl SourceRecord {
                 "path" => path = v,
                 "url" => url = v,
                 "rev" if !v.is_empty() => rev = Some(v.to_string()),
+                "repo" => repo = v,
+                "version" => version = v,
+                "sha256" if !v.is_empty() => sha256 = Some(v.to_string()),
+                "api" => api = v,
+                "latest" => latest = v == "true",
                 _ => {}
             }
         }
@@ -146,6 +214,13 @@ impl SourceRecord {
             "prebuilt" if !url.is_empty() => SourceRecord::Prebuilt {
                 url: url.to_string(),
             },
+            "release" if !repo.is_empty() && !version.is_empty() => SourceRecord::Release {
+                repo: repo.to_string(),
+                version: version.to_string(),
+                sha256,
+                api: api.to_string(),
+                latest,
+            },
             // A `kind` we do not know, or one missing the field that makes it
             // usable, is unknown rather than a guess.
             _ => SourceRecord::Unknown,
@@ -157,7 +232,12 @@ impl SourceRecord {
 /// the install still counts — losing the marker costs a column cell and a
 /// rebuild, not the plugin.
 pub fn write(plugin_dir: &Path, source: &PluginSource) {
-    let record = SourceRecord::from_plugin_source(source);
+    write_record(plugin_dir, &SourceRecord::from_plugin_source(source));
+}
+
+/// [`write`] for a record built by hand — the release installer's, which
+/// knows the tag an unpinned spec resolved to.
+pub(crate) fn write_record(plugin_dir: &Path, record: &SourceRecord) {
     if let Err(e) = std::fs::write(plugin_dir.join(SOURCE_FILE), record.to_file()) {
         tracing::debug!(
             dir = %plugin_dir.display(),
@@ -322,5 +402,30 @@ mod tests {
             rev: Some("v1".into()),
         };
         assert_eq!(rec.label(), "git@v1");
+    }
+
+    /// PRL.3: a release round-trips — pinned or not — with the API generation
+    /// it was installed for, and labels itself for `:plugins`.
+    #[test]
+    fn a_release_round_trips_and_is_labelled() {
+        for sha256 in [None, Some("ab".repeat(32))] {
+            let got = roundtrip(PluginSource::Release {
+                repo: "dhruvasagar/lattice-org-plugin".into(),
+                version: Some("v0.2.0".into()),
+                sha256: sha256.clone(),
+            });
+            assert_eq!(
+                got,
+                SourceRecord::Release {
+                    repo: "dhruvasagar/lattice-org-plugin".into(),
+                    version: "v0.2.0".into(),
+                    sha256,
+                    api: lattice_wit::api_generation().to_string(),
+                    latest: false,
+                }
+            );
+            assert_eq!(got.label(), "release dhruvasagar/lattice-org-plugin@v0.2.0");
+            assert!(!got.is_buildable(), "downloaded, not built");
+        }
     }
 }

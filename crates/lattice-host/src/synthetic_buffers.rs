@@ -176,6 +176,23 @@ impl Editor {
         let _ = lattice_runtime::block_on(handle.apply_edit_batch(vec![edit]));
     }
 
+    /// Seed a buffer this call just created with its first content: an append
+    /// into the empty document, then marked clean.
+    ///
+    /// GD.7d: what an owner writes is the baseline, not a modification — the
+    /// two replace paths already say so with `mark_clean`. A seed did not, so
+    /// a buffer whose mode labels it (the dashboard) showed ` [+]` from the
+    /// moment it opened until something redrew it. Only for a buffer created
+    /// here: a later append to a buffer someone may have edited must not
+    /// clear their edits' marker, which is why `append_to_owned_buffer` itself
+    /// leaves the flag alone.
+    fn seed_owned_buffer(&mut self, buffer_id: BufferId, text: &str) {
+        self.append_to_owned_buffer(buffer_id, text);
+        if let Some(handle) = self.buffers.document_handle(buffer_id) {
+            let _ = lattice_runtime::block_on(handle.mark_clean());
+        }
+    }
+
     /// Replace the ENTIRE content of an owner-written buffer with `text` (one
     /// full-range edit). The idempotent counterpart to
     /// [`Self::append_to_owned_buffer`]: a synthetic buffer opened by name is
@@ -344,7 +361,7 @@ impl Editor {
         // seed) lands the text at the top.
         let text = buffer.content.as_string();
         if !text.is_empty() {
-            self.append_to_owned_buffer(id, &text);
+            self.seed_owned_buffer(id, &text);
         }
         // PU.1b-2b: the markdown `SyntaxHandle` (path `help.md` ⇒
         // `Lang::Markdown`) + the link `ExtraHighlights` are both
@@ -382,7 +399,7 @@ impl Editor {
         self.seed_empty_document_locals(id);
         let text = buffer.content.as_string();
         if !text.is_empty() {
-            self.append_to_owned_buffer(id, &text);
+            self.seed_owned_buffer(id, &text);
         }
         self.seed_help_metadata_locals(id, metadata);
         id

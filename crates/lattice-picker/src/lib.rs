@@ -1008,6 +1008,38 @@ impl Picker {
         self.refilter();
     }
 
+    /// Replace the candidate list of a picker that is on screen — a source's
+    /// refreshed list landing — keeping what the user was doing: the query
+    /// is untouched, and the selection follows the same item (by
+    /// [`mru::routing_identity`]) to wherever it now sits. A selection whose
+    /// item is gone, or that has no identity, falls back to the top.
+    ///
+    /// The point is that the list may change under the user's cursor without
+    /// the cursor jumping: a new file appearing above the selected one must
+    /// not move the highlight onto a different file.
+    ///
+    /// Returns `false` when the selection had to fall back — the caller's cue
+    /// that whatever it shows for the selected row (a preview) is now stale.
+    pub fn replace_candidates_keeping_selection(
+        &mut self,
+        items: Vec<(RawCandidate, RoutingPayload)>,
+        bonuses: Vec<f64>,
+    ) -> bool {
+        let kept = self
+            .candidates
+            .get(self.selected)
+            .and_then(|c| self.routing_for(c))
+            .and_then(mru::routing_identity);
+        self.set_raw_candidates_with_routing_and_bonuses(items, bonuses);
+        let found = kept.as_ref().and_then(|id| {
+            self.candidates.iter().position(|c| {
+                self.routing_for(c).and_then(mru::routing_identity).as_ref() == Some(id)
+            })
+        });
+        self.selected = found.unwrap_or(0);
+        kept.is_none() || found.is_some()
+    }
+
     /// Borrow the candidate's MRU bonus by its routing-payload
     /// index. Returns 0.0 for candidates without a registered
     /// bonus (slice 12 pickers, legacy LSP pickers, anything
@@ -2507,6 +2539,55 @@ mod tests {
     /// Slice 14a: MRU bonuses tilt ranking within a match
     /// tier. Two candidates with equal match scores -- the one
     /// with the higher bonus floats to the top.
+    fn file_rows(names: &[&str]) -> Vec<(RawCandidate, RoutingPayload)> {
+        names
+            .iter()
+            .map(|n| {
+                (
+                    RawCandidate::plain(n.to_string(), CandidateKind::Plain),
+                    RoutingPayload::OpenFile {
+                        path: PathBuf::from(format!("/tmp/{n}")),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn selected_name(p: &Picker) -> String {
+        p.candidates[p.selected].raw.display.clone()
+    }
+
+    /// A refreshed list may add rows above the selection; the highlight
+    /// follows the file it was on, and the query is untouched.
+    #[test]
+    fn replacing_candidates_keeps_the_selected_item_selected() {
+        let mut p = Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
+        p.set_raw_candidates_with_routing(file_rows(&["b.rs", "c.rs"]));
+        p.query = String::new();
+        p.selected = 1;
+        assert_eq!(selected_name(&p), "c.rs");
+
+        let kept = p
+            .replace_candidates_keeping_selection(file_rows(&["a.rs", "b.rs", "c.rs"]), Vec::new());
+        assert!(kept);
+        assert_eq!(p.candidates.len(), 3);
+        assert_eq!(selected_name(&p), "c.rs");
+    }
+
+    /// When the selected file is gone from the new list, the selection falls
+    /// back to the top and the caller is told, so it can re-preview.
+    #[test]
+    fn replacing_candidates_falls_back_when_the_selected_item_is_gone() {
+        let mut p = Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
+        p.set_raw_candidates_with_routing(file_rows(&["a.rs", "b.rs"]));
+        p.selected = 1;
+
+        let kept = p.replace_candidates_keeping_selection(file_rows(&["a.rs"]), Vec::new());
+        assert!(!kept);
+        assert_eq!(p.selected, 0);
+        assert_eq!(selected_name(&p), "a.rs");
+    }
+
     #[test]
     fn mru_bonus_breaks_match_score_ties() {
         let pairs = vec![

@@ -29,6 +29,9 @@ lattice-plugin-loader = { path = "../lattice-plugin-loader" }
 # `lattice --init` resolves the config home (`~/.config/lattice/init/`) via the
 # canonical `config_home()` — the same tree the loader discovers init.rs from.
 lattice-config = { path = "../lattice-config" }
+# `:version`: the report the CLI assembles at startup is handed to
+# `version-mode` (`set_version_report`) before the editor boots.
+lattice-mode = { path = "../lattice-mode" }
 # 5.9 / 5.8.M: optional GPUI peer renderer. Off by default so
 # `cargo build -p lattice-cli` and `cargo test -p lattice-cli` stay
 # headless-friendly (no system-display-lib link required). Enable
@@ -129,19 +132,14 @@ assets = [
     # require_literal_leading_dot defaulting to false to catch `.source`,
     # which is too subtle for a gate that exists to stop silent absence.
     ["../../runtime/plugins/auto-pair/auto-pair.wasm", "usr/share/lattice/plugins/auto-pair/auto-pair.wasm", "644"],
-    ["../../runtime/plugins/auto-pair/plugin.toml", "usr/share/lattice/plugins/auto-pair/plugin.toml", "644"],
     ["../../runtime/plugins/auto-pair/.source", "usr/share/lattice/plugins/auto-pair/.source", "644"],
     ["../../runtime/plugins/treesitter-context/treesitter-context.wasm", "usr/share/lattice/plugins/treesitter-context/treesitter-context.wasm", "644"],
-    ["../../runtime/plugins/treesitter-context/plugin.toml", "usr/share/lattice/plugins/treesitter-context/plugin.toml", "644"],
     ["../../runtime/plugins/treesitter-context/.source", "usr/share/lattice/plugins/treesitter-context/.source", "644"],
     ["../../runtime/plugins/project/project.wasm", "usr/share/lattice/plugins/project/project.wasm", "644"],
-    ["../../runtime/plugins/project/plugin.toml", "usr/share/lattice/plugins/project/plugin.toml", "644"],
     ["../../runtime/plugins/project/.source", "usr/share/lattice/plugins/project/.source", "644"],
     ["../../runtime/plugins/comment/comment.wasm", "usr/share/lattice/plugins/comment/comment.wasm", "644"],
-    ["../../runtime/plugins/comment/plugin.toml", "usr/share/lattice/plugins/comment/plugin.toml", "644"],
     ["../../runtime/plugins/comment/.source", "usr/share/lattice/plugins/comment/.source", "644"],
     ["../../runtime/plugins/lighthouse/lighthouse.wasm", "usr/share/lattice/plugins/lighthouse/lighthouse.wasm", "644"],
-    ["../../runtime/plugins/lighthouse/plugin.toml", "usr/share/lattice/plugins/lighthouse/plugin.toml", "644"],
     ["../../runtime/plugins/lighthouse/.source", "usr/share/lattice/plugins/lighthouse/.source", "644"],
 ]
 

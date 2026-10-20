@@ -1420,6 +1420,22 @@ mod tests {
         assert_eq!(a.editor.document.text(), "aXbcd\n1X234\nWXXYZ");
     }
 
+    /// Vim `:h v_b_I`: the text goes in front of the block "provided
+    /// the line extends into the block" — a row exactly as long as the
+    /// block's left column does not, and is left alone.
+    #[test]
+    fn block_visual_capital_i_leaves_rows_that_do_not_reach_the_block() {
+        let mut a = enter_block_visual(
+            "abcd\n1234\nW\nwxyz",
+            Position::new(0, 1),
+            Position::new(3, 2),
+        );
+        a.apply(Action::EnterBlockVisualInsert);
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.editor.document.text(), "aXbcd\n1X234\nW\nwXxyz");
+    }
+
     #[test]
     fn block_visual_capital_a_appends_after_block_right_column() {
         // Block cols 1..=2 across 3 rows; `A` lands at col 3 on each row.
@@ -1500,6 +1516,28 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.document.text(), "ad\n14\nWZ");
         assert!(matches!(a.editor.modal, ModalState::Insert));
+    }
+
+    /// Vim `:h v_b_c`: the text typed after a block `c` replaces the
+    /// block on EVERY row, as block `I` does — not only the top one.
+    /// Rows the block does not reach are left alone, as in vim.
+    #[test]
+    fn block_change_replicates_typed_text_on_every_row() {
+        let mut a = enter_block_visual(
+            "abcd\n1234\nW\nwxyz",
+            Position::new(0, 1),
+            Position::new(3, 2),
+        );
+        let inv = CommandInvocation::of(a.editor.builtins.change.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.editor.document.text(), "ad\n14\nW\nwz");
+        a.apply(Action::Insert("XY".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.editor.document.text(), "aXYd\n1XY4\nW\nwXYz");
+        // One `u` takes the replicated text back off every row.
+        let _ = a.undo_blocking();
+        assert_eq!(a.editor.document.text(), "ad\n14\nW\nwz");
     }
 
     #[test]

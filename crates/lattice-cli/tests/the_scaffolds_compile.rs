@@ -22,7 +22,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use lattice_plugin_loader::{BuildOutcome, CargoComponentBuilder, Toolchain, build_plugin};
+use lattice_plugin_loader::{
+    BuildOutcome, CargoComponentBuilder, Toolchain, build_plugin, discover_one,
+};
 
 /// Whether this machine can build a component. Without the toolchain there
 /// is nothing to test, so a developer's run skips — but CI has the target
@@ -78,9 +80,15 @@ fn the_init_scaffold_compiles() {
         return;
     }
     scaffold(tmp.path(), &["--scaffold-init"]);
-    let wasm = assert_builds(&tmp.path().join("lattice").join("init"));
+    let dir = tmp.path().join("lattice").join("init");
+    let wasm = assert_builds(&dir);
     // Staged where the loader looks for it.
     assert_eq!(wasm.file_name().and_then(|n| n.to_str()), Some("init.wasm"));
+    // PMF.12: no `plugin.toml` — the loader reads the manifest the scaffold
+    // embedded, and finds the id `:reload-config` targets.
+    assert!(!dir.join("plugin.toml").exists());
+    let found = discover_one(&dir).expect("the built component carries its manifest");
+    assert_eq!(found.manifest.id, "init");
 }
 
 #[test]
@@ -90,5 +98,12 @@ fn the_plugin_scaffold_compiles() {
         return;
     }
     scaffold(tmp.path(), &["--scaffold-plugin", "my-plugin"]);
-    assert_builds(&tmp.path().join("lattice").join("plugins").join("my-plugin"));
+    let dir = tmp.path().join("lattice").join("plugins").join("my-plugin");
+    assert_builds(&dir);
+    let found = discover_one(&dir).expect("the built component carries its manifest");
+    assert_eq!(found.manifest.id, "my-plugin");
+    assert_eq!(
+        found.manifest.default_modes,
+        vec!["my-plugin-mode".to_string()]
+    );
 }

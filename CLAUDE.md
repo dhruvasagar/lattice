@@ -156,10 +156,10 @@ These rules emerged from prior architectural debates and corrections. They are L
 
   Decided 2026-09-16, after per-slice gating consumed most of a session's wall clock across nine slices and left the machine unusable. Prior to that this section read as though the scoped gate were the per-commit default; it is not.
 
-- **A commit is fmt-clean, warning-clean and green — verified BEFORE committing, not after.** Three gates, in this order, every time:
+- **A commit is fmt-clean, warning-clean and green — verified BEFORE committing, not after.** Four gates, in this order, every time:
 
   ```
-  scripts/precommit.sh <touched-crate>...   # runs all three, scoped
+  scripts/precommit.sh <touched-crate>...   # runs all four, scoped
   scripts/precommit.sh                      # whole workspace (slow)
   ```
 
@@ -174,6 +174,7 @@ These rules emerged from prior architectural debates and corrections. They are L
   cargo fmt --all                       # then --check must pass
   cargo clippy -p <touched> --all-targets
   cargo test -p <touched>
+  scripts/docs-check.sh <touched>       # the docs gate, alone
   ```
 
   What each gate means, because they are not the same standard:
@@ -181,6 +182,7 @@ These rules emerged from prior architectural debates and corrections. They are L
   1. **`cargo fmt --all -- --check` must pass.** CI gates on this strictly and nothing else about style. Run `cargo fmt --all` before staging; drift is never intentional.
   2. **ZERO rustc warnings in code you touched.** `unused_macros`, `dead_code`, `unused_variables`, `unused_mut` are always real — they mean something you edited left an orphan behind. A conversion that leaves its old helper unused is not finished. Do not `#[allow]` these; delete the dead thing, or `#[cfg(test)]` it if it is genuinely a test fixture.
   3. **No NEW clippy warnings in code you touched.** Not "zero clippy warnings in the workspace" — that is a different and much larger job, and attempting it mid-slice buries the actual change. The workspace carries a known residue (`type_complexity`, `too_many_arguments`, `result_large_err` and peers) that needs real refactors of hot-path code; leaving those visible is deliberate.
+  4. **The docs CI checks pass** (`scripts/docs-check.sh`): the generated references and help (`xtask`, `lattice-plugin-api`, `lattice-help` — the crate map, the plugin-API reference, `:help` topics and anchors), rustdoc for the touched crates plus the doc-coverage ratchet, and the site (`sync-docs.sh` + `zola build`, which fails on a broken anchor). It runs **whatever the scope**, because docs break from changes that are not to docs — a new dependency staled the crate map, a manifest moving into a plugin's source broke the site sync. A missing `zola` fails the gate; `DOCS_CHECK_SKIP_SITE=1` skips the site on purpose and says so.
 
   **Do NOT try to zero the `unwrap_used` / `panic` / `todo` warnings.** `[workspace.lints]` sets them to `warn` ON PURPOSE and they are overwhelmingly test code (~650 of them). CI deliberately does not pass `-D warnings` — see the comment block at the top of `.github/workflows/ci.yml`, which explains that a toolchain bump adding new stylistic lints must not fail the build. The authoritative blocking gate is `[workspace.lints]`'s **deny** level: `unsafe_code` and `unused_must_use`. Those must always be zero.
 

@@ -828,6 +828,35 @@ pub fn install(boot: &mut impl lattice_mode::SubsystemBoot) {
         },
     );
     let _ = boot.modes_mut().register(mode::NotificationsMode);
+    // The mode's `<CR>` / `d` / `gr` resolve their `cmd:` names against the
+    // command registry when its keymap is installed, and a name that is not
+    // there is skipped with a warning — the chord simply does nothing. The
+    // handler bodies are the mode's (`action_handlers`); these dead-body
+    // registrations exist only so the names resolve (the `plugins-mode`
+    // precedent). Without them all three chords were dead.
+    for (name, doc) in [
+        (
+            "action:notification-run",
+            "notifications: run the action of the notification at the cursor (mode-owned).",
+        ),
+        (
+            "action:notification-dismiss",
+            "notifications: dismiss the notification at the cursor (mode-owned).",
+        ),
+        (
+            "action:notification-refresh",
+            "notifications: re-render the notification list (mode-owned).",
+        ),
+    ] {
+        boot.commands_mut().register_action(
+            name,
+            doc,
+            lattice_grammar::registry::ActionSpec {
+                apply: Arc::new(|_| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
+        );
+    }
 
     let for_handler = store.clone();
     let bus = boot.inbound::<NotifyInbound, _>(move |item| {

@@ -360,12 +360,52 @@ pub struct MissingArgPrompt {
 /// per-line insert column at entry time, then replay the
 /// recorded text to all lines except the top one (the top row
 /// was edited live during the Insert session).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PendingBlockInsert {
     pub start_line: u32,
     pub end_line: u32,
     pub insert_col: u32,
     pub live_edits: u32,
+    /// The rows that receive the text, when the producer knows them
+    /// better than line lengths do: block `c` deletes the block first,
+    /// after which a row the block never reached looks like one it
+    /// emptied, and block `I` excludes a row that ends exactly at the
+    /// block's left column. `None` (block `A`) decides by line length.
+    pub rows: Option<Vec<u32>>,
+}
+
+/// An in-flight refresh of a picker source's list
+/// (`PickerSourceGenerator::refresh`). Applied by
+/// `drain_pending_picker_refresh` on the async-landed wake: into the open
+/// picker when it is still that source's, keeping its query and selection.
+pub struct PendingPickerRefresh {
+    pub source_id: String,
+    pub cancel: CancellationToken,
+    pub rx: tokio::sync::mpsc::UnboundedReceiver<
+        lattice_picker::SourceResult<lattice_picker::CandidateBatch>,
+    >,
+    /// Report the result even with no picker of this source on screen — set
+    /// when the user asked by command (`:files-refresh`), clear for the
+    /// refresh that quietly follows an open.
+    pub announce: bool,
+}
+
+impl std::fmt::Debug for PendingPickerRefresh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingPickerRefresh")
+            .field("source_id", &self.source_id)
+            .field("announce", &self.announce)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The source and arguments the open picker was opened with, so `<C-o>`
+/// re-reads the same list: `:files ~/notes` refreshes `~/notes`, not the
+/// project.
+#[derive(Debug, Clone)]
+pub struct PickerOpenArgs {
+    pub source_id: String,
+    pub args: Vec<String>,
 }
 
 /// In-flight async picker init. The future from

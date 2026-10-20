@@ -616,6 +616,31 @@ pub trait PickerSourceGenerator: Send + Sync {
         None
     }
 
+    /// Re-produce this source's list for a picker that is already open, so
+    /// the host can replace its rows in place (query and selection kept).
+    ///
+    /// Called two ways, told apart by `force`:
+    ///
+    /// - `false` — right after the picker opened. A source that seated from a
+    ///   cache returns the work to bring it current, or `None` when the cache
+    ///   is fresh. This is what makes a cached list self-correcting instead of
+    ///   one open behind the disk.
+    /// - `true` — the user asked (`<C-o>`, or a command such as
+    ///   `:files-refresh`). Return the work whenever there is anything to
+    ///   re-read.
+    ///
+    /// The future runs off the UI thread; anything blocking belongs on a
+    /// thread it spawns. `None` — the default — means the source has nothing
+    /// to refresh, and the host says so when the user asked.
+    fn refresh(
+        &self,
+        _ctx: &PickerContext<'_>,
+        _args: &[String],
+        _force: bool,
+    ) -> Option<CandidateFuture> {
+        None
+    }
+
     /// T.12: live-preview hook — invoked as the picker SELECTION moves to
     /// a candidate (before accept). Default None = no preview. A source
     /// returns an outcome the host applies immediately for a live preview;

@@ -205,6 +205,13 @@ struct LoadedRecord {
     default_modes: Vec<String>,
     /// PM.8a: where the plugin came from (its `.source` marker at load time).
     source: crate::source_record::SourceRecord,
+    /// PMF.4: the manifest it loaded from, so a change to an option one of its
+    /// grants follows can be re-resolved without re-reading the plugin.
+    manifest: lattice_plugin_host::PluginManifest,
+    /// PMF.3/PMF.4: how its option-bound grants resolved at load — compared
+    /// against a fresh resolution when such an option changes, and shown in
+    /// `:plugins` (PMF.6).
+    option_bound: Vec<lattice_plugin_host::capability::OptionBoundGrant>,
 }
 
 /// PM.8b: what a build for one plugin is doing right now.
@@ -411,6 +418,13 @@ fn update_refusal(name: &str, source: Option<&resolve::PluginSource>) -> Option<
         Some(resolve::PluginSource::Git { rev: Some(rev), .. }) => {
             Some(format!("`{name}` is pinned to {rev}; nothing to update"))
         }
+        // A release named by its tag in `init.rs`: the tag is the answer, as
+        // a git pin is. Change the `version` there to move it.
+        Some(resolve::PluginSource::Release {
+            version: Some(tag), ..
+        }) => Some(format!(
+            "`{name}` is pinned to release {tag}; change its `version` in init.rs to update it"
+        )),
         _ => None,
     }
 }
@@ -477,8 +491,13 @@ fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> Bu
         // the same question the same way.
         return in_place_build_state(record);
     };
-    if matches!(source, crate::resolve::PluginSource::Prebuilt { .. }) {
-        // A prebuilt is downloaded, never built, so it has no staleness.
+    if matches!(
+        source,
+        crate::resolve::PluginSource::Prebuilt { .. }
+            | crate::resolve::PluginSource::Release { .. }
+    ) {
+        // A prebuilt or a release is downloaded, never built, so it has no
+        // staleness.
         return BuildState::NotBuilt;
     }
     let Some(dir) = record.source_dir.as_ref() else {
@@ -516,6 +535,16 @@ fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> Bu
         // distinguish them, and the build log says which it was.
         BuildState::Stale
     }
+}
+
+/// PMF.14: when the plugins `init.rs` `require`s are reconciled — see
+/// [`PluginLoader::apply_required`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequirePhase {
+    /// At startup, before the user-root scan: install only; the scan loads.
+    Boot,
+    /// After startup: load what is new, reload what was rebuilt.
+    AfterBoot,
 }
 
 /// The editor-side runtime environment the loader drives seams against —
@@ -750,6 +779,16 @@ pub struct PluginLoader {
     /// `std::sync::Mutex` (not `tokio`): taken only to push / read the loaded
     /// set *after* the async load work completes, never across an `.await`.
     loaded: Mutex<Vec<LoadedRecord>>,
+    /// Loads, reloads and the scan's "already loaded?" check run one at a
+    /// time. `tokio`, not `std`: held across the whole async load.
+    ///
+    /// Without it, "is `org` loaded?" could be answered from the middle of
+    /// someone else's reload. Boot did exactly that: a `require`d plugin whose
+    /// grant moved during its own load (PMF.4) was being reloaded — unloaded,
+    /// not yet loaded again — when the user-root scan reached its directory,
+    /// saw nothing loaded, and loaded a second copy. Two `org`s in `:plugins`,
+    /// or one and a failure, depending on which won.
+    load_ops: tokio::sync::Mutex<()>,
     /// PM.8b: builds running (or failed) **this session**, keyed by plugin
     /// name.
     ///
@@ -970,6 +1009,7 @@ impl PluginLoader {
             host,
             env: LoaderServices::default(),
             loaded: Mutex::new(Vec::new()),
+            load_ops: tokio::sync::Mutex::new(()),
             building: Mutex::new(std::collections::HashMap::new()),
             building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
@@ -997,6 +1037,7 @@ impl PluginLoader {
             host,
             env: services,
             loaded: Mutex::new(Vec::new()),
+            load_ops: tokio::sync::Mutex::new(()),
             building: Mutex::new(std::collections::HashMap::new()),
             building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
@@ -1142,6 +1183,8 @@ impl PluginLoader {
             // always skip what is already in, whereas an explicit
             // `:plugin-load` is a request the user made and `reload` unloads
             // before loading again.
+            // The check and the load are one step: see `load_ops`.
+            let _serial = self.load_ops.lock().await;
             if self.is_loaded(&plugin.manifest.id) {
                 tracing::debug!(
                     plugin = %plugin.manifest.id,
@@ -1191,7 +1234,7 @@ impl PluginLoader {
         // `grant` is pure (manifest + tier), so this mirrors exactly what each
         // seam spawn computes internally — `denied` is the tier-withheld set,
         // `granted` the requested capabilities that survived it.
-        let outcome = lattice_plugin_host::grant(manifest, tier);
+        let outcome = self.host.grant_for(manifest, tier);
         let denied = outcome.denied.clone();
         let granted: Vec<Capability> = manifest
             .requested
@@ -1222,6 +1265,8 @@ impl PluginLoader {
             health: PluginHealth::Healthy,
             default_modes: manifest.default_modes.clone(),
             source: plugin.source.clone(),
+            manifest: manifest.clone(),
+            option_bound: outcome.option_bound.clone(),
         };
         // EVERY host id this load issued, in DRAIN order (see the sort below —
         // no longer the order `provides` lists them in).
@@ -1483,6 +1528,19 @@ impl PluginLoader {
         // <id>.enabled=false`. Subsequent changes are handled by
         // `subscribe_mode_gates`.
         self.apply_default_mode_gate(&manifest.id, &manifest.default_modes);
+        // PMF.4: the plugin has registered its options by now; a grant default
+        // that disagrees with the option's own default is a plugin bug the user
+        // would otherwise meet as a refusal.
+        self.warn_grant_default_mismatch(manifest);
+        // PMF.4: the grant was resolved before the plugin registered its
+        // options. A value set up front (`lattice.toml`, `init.rs`'s
+        // `register_options`) is held by the registry and was already in that
+        // grant (PMF.15/16); one `init.rs` set mid-load, from its
+        // `pre-plugin-loaded` handler, was not. Re-resolve now; anything that
+        // moved is announced through `OptionChanged`, which
+        // `subscribe_grant_options` turns into a reload — rather than
+        // reloading from inside this load.
+        self.announce_moved_grants(manifest, tier, &outcome.option_bound);
         // LA.1: the mode/language CATALOG changed. Separate from `PluginLoaded`
         // above because the subscriber is different and much more expensive —
         // it re-resolves the major mode of every open buffer
@@ -1634,6 +1692,7 @@ impl PluginLoader {
                 tier: r.tier,
                 granted: r.granted.clone(),
                 denied: r.denied.clone(),
+                option_bound: r.option_bound.clone(),
                 health: r.health.clone(),
                 source: r.source.clone(),
                 build: build_state_of(r, activity.get(&r.name)),
@@ -1805,6 +1864,155 @@ impl PluginLoader {
     /// option back to the loaded plugin's `default_mode` and request the mode's
     /// enablement to match, so the toggle activates / deactivates it live. Mirrors
     /// [`Self::subscribe_health`]; a no-op when no bus/runtime was wired.
+    /// PMF.4: warn when an option-bound grant's default (`{org.directory|~/org}`)
+    /// disagrees with the default the plugin registered for that option.
+    ///
+    /// The template states its own default because the grant is made before the
+    /// plugin registers its options — so the two can drift, and a plugin that
+    /// looks in one place by default while being allowed to write in another
+    /// fails every write until the user sets the option.
+    fn warn_grant_default_mismatch(&self, manifest: &lattice_plugin_host::PluginManifest) {
+        let Some(registry) = self.env.config_registry.as_ref() else {
+            return;
+        };
+        for cap in &manifest.requested {
+            let (Capability::FsReadOption(op) | Capability::FsWriteOption(op)) = cap else {
+                continue;
+            };
+            let Some(registered) = registry.lookup(&op.option) else {
+                tracing::warn!(
+                    plugin = %manifest.id,
+                    option = %op.option,
+                    "a capability follows `{}`, which the plugin never registered; \
+                     its grant stays at the manifest default",
+                    op.option
+                );
+                continue;
+            };
+            let registered = std::path::PathBuf::from(lattice_core::home::expand_tilde(
+                registered.default_formatted(),
+            ));
+            if op.default.as_ref() != Some(&registered) && !registered.as_os_str().is_empty() {
+                tracing::warn!(
+                    plugin = %manifest.id,
+                    option = %op.option,
+                    grant_default = ?op.default,
+                    option_default = %registered.display(),
+                    "the manifest grants a different default directory than the option uses"
+                );
+            }
+        }
+    }
+
+    /// PMF.4: reload a plugin when an option one of its grants follows changes
+    /// — `:set org.directory=…`, a config reload, or `init.rs` setting it while
+    /// the plugin loads.
+    ///
+    /// A grant is fixed for an instance's life (WASI pre-opened directories and
+    /// host-side checks), so following a new value means a new instance. Only
+    /// when the resolved paths actually differ: a reload re-registers the
+    /// plugin's options, which may announce a change again, and comparing paths
+    /// is what stops that becoming a loop. A change that resolves to the same
+    /// paths (a default becoming the user's identical value) only updates what
+    /// `:plugins` reports.
+    /// PMF.4: after a load, publish `OptionChanged` for each option-bound grant
+    /// whose resolution differs from the one the plugin was instantiated with.
+    fn announce_moved_grants(
+        &self,
+        manifest: &lattice_plugin_host::PluginManifest,
+        tier: TrustTier,
+        at_load: &[lattice_plugin_host::capability::OptionBoundGrant],
+    ) {
+        let Some(bus) = self.env.bus.as_ref() else {
+            return;
+        };
+        let now = self.host.grant_for(manifest, tier).option_bound;
+        for (then, now) in at_load.iter().zip(now.iter()) {
+            if then.path != now.path {
+                let new = now
+                    .path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                bus.publish(Event::OptionChanged {
+                    name: now.option.clone(),
+                    old: then.path.as_ref().map(|p| p.display().to_string()),
+                    new,
+                });
+            }
+        }
+    }
+
+    /// PMF.5: name the user's `init.rs` (by manifest id) as the one plugin that
+    /// may set an option another plugin's file access follows.
+    pub fn set_config_authority(&self, plugin_id: &str) {
+        self.host.set_config_authority(plugin_id);
+    }
+
+    pub fn subscribe_grant_options(self: &Arc<Self>) {
+        let (Some(bus), Some(runtime)) = (self.env.bus.as_ref(), self.env.runtime.as_ref()) else {
+            return;
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        bus.subscribe(
+            EventFilter::kind(EventKind::OptionChanged),
+            SubscriptionTarget::Channel(tx),
+        );
+        let weak = Arc::downgrade(self);
+        runtime.spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let Event::OptionChanged { name, .. } = event else {
+                    continue;
+                };
+                let Some(loader) = weak.upgrade() else { break };
+                let affected: Vec<(String, TrustTier, lattice_plugin_host::PluginManifest)> = {
+                    let loaded = loader
+                        .loaded
+                        .lock()
+                        .expect("plugin-loader loaded-set mutex poisoned");
+                    loaded
+                        .iter()
+                        .filter(|r| r.option_bound.iter().any(|g| g.option == name))
+                        .map(|r| (r.name.clone(), r.tier, r.manifest.clone()))
+                        .collect()
+                };
+                for (plugin, tier, manifest) in affected {
+                    let fresh = loader.host.grant_for(&manifest, tier).option_bound;
+                    let changed = {
+                        let mut loaded = loader
+                            .loaded
+                            .lock()
+                            .expect("plugin-loader loaded-set mutex poisoned");
+                        let Some(record) = loaded.iter_mut().find(|r| r.name == plugin) else {
+                            continue;
+                        };
+                        let paths = |g: &[lattice_plugin_host::capability::OptionBoundGrant]| {
+                            g.iter()
+                                .map(|g| (g.option.clone(), g.path.clone(), g.write))
+                                .collect::<Vec<_>>()
+                        };
+                        let changed = paths(&record.option_bound) != paths(&fresh);
+                        if !changed {
+                            record.option_bound = fresh;
+                        }
+                        changed
+                    };
+                    if !changed {
+                        continue;
+                    }
+                    tracing::info!(
+                        plugin = %plugin,
+                        option = %name,
+                        "an option this plugin's file access follows changed; reloading it"
+                    );
+                    if let Err(err) = loader.reload(&plugin, tier).await {
+                        tracing::warn!(plugin = %plugin, error = %err, "reload after a grant change failed");
+                    }
+                }
+            }
+        });
+    }
+
     pub fn subscribe_mode_gates(self: &Arc<Self>) {
         let (Some(bus), Some(runtime)) = (self.env.bus.as_ref(), self.env.runtime.as_ref()) else {
             return;
@@ -2013,7 +2221,7 @@ impl PluginLoader {
                 if let Some(why) = update_refusal(name, source.as_plugin_source().as_ref()) {
                     return BulkLeg::Skipped(why);
                 }
-                if !source.is_buildable() && !matches!(source, SourceRecord::Prebuilt { .. }) {
+                if source.as_plugin_source().is_none() {
                     return BulkLeg::Skipped(format!("no updatable source ({})", source.label()));
                 }
                 match self.update(name).await {
@@ -2145,12 +2353,40 @@ impl PluginLoader {
         dir: &std::path::Path,
         tier: TrustTier,
     ) -> Result<PluginId, PluginLoaderError> {
-        let plugin = discovery::discover_one(dir).map_err(PluginLoaderError::Discovery)?;
-        // WT.4: a `discover_one` failure is deliberately NOT recorded above —
-        // that is "this directory is not a plugin", which the caller asked about
-        // and gets as an error. Past this point the directory *is* a plugin, so
-        // a failure is a plugin that should be here and is not, and it belongs
-        // in `:plugins` however the load was triggered.
+        let _serial = self.load_ops.lock().await;
+        self.load_path_serialised(dir, tier).await
+    }
+
+    /// [`load_path`](Self::load_path)'s body, for a caller already holding
+    /// `load_ops` (a reload holds it across its unload and load).
+    async fn load_path_serialised(
+        &self,
+        dir: &std::path::Path,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        // WT.4: "this directory is not a plugin" is deliberately NOT recorded —
+        // the caller asked about it and gets the error. But a directory that IS
+        // a plugin and is refused while being read (a malformed manifest, one
+        // that needs a newer editor) is a plugin that should be here and is
+        // not, and belongs in `:plugins` however the load was triggered. PMF.1's
+        // `min_lattice` refusal is raised here, and a `require`d plugin reaches
+        // the editor only through this path — so recording only past discovery
+        // made the refusal invisible exactly where it mattered.
+        let plugin = match discovery::load_one(dir) {
+            Ok(Some(plugin)) => plugin,
+            Ok(None) => {
+                return Err(PluginLoaderError::Discovery(
+                    discovery::discover_one(dir)
+                        .err()
+                        .unwrap_or_else(|| "not a plugin directory".to_string()),
+                ));
+            }
+            Err(reason) => {
+                self.record_failure(&plugin_name(dir), dir, tier, &reason);
+                return Err(PluginLoaderError::Discovery(reason));
+            }
+        };
+        // Past this point a failure is likewise a plugin that should be here.
         let outcome = self.load_discovered(&plugin, tier).await;
         match &outcome {
             Ok(_) => self.clear_failure(&plugin.manifest.id),
@@ -2350,8 +2586,8 @@ impl PluginLoader {
     /// it is the whole verb: rebuild compiles the source you already have,
     /// update goes and gets a newer one first.
     ///
-    /// What "newer" means is the source's to answer, and three of the four
-    /// kinds answer it without any work here:
+    /// What "newer" means is the source's to answer, and each kind
+    /// answers it without any work here:
     ///
     /// | source | update |
     /// |---|---|
@@ -2359,6 +2595,8 @@ impl PluginLoader {
     /// | `Git { rev: Some(_) }` | **declines** — a pin is the answer already |
     /// | `Local(_)` | rebuild; the directory IS the source, so it is always current |
     /// | `Prebuilt { url }` | re-download (the resolver fetches unconditionally) |
+    /// | `Release { version: None }` | install the newest compatible release, if newer |
+    /// | `Release { version: Some(_) }` | **declines** — the tag is a pin |
     ///
     /// The pinned arm declines rather than silently rebuilding, because those
     /// are different outcomes and a user who pinned a plugin and then pressed
@@ -2387,16 +2625,22 @@ impl PluginLoader {
         let (source, dir) = self
             .source_of(name)
             .ok_or_else(|| format!("`{name}` is not loaded"))?;
-        if !source.is_buildable() {
-            // Bundled ships prebuilt and Unknown has nowhere to build from.
-            // Saying so beats running a build that cannot work.
+        // Rebuilding compiles the source you have, so a downloaded plugin
+        // (prebuilt, release) has nothing to rebuild. Updating fetches it
+        // again, so for an update the gate is "has a source" instead.
+        // Bundled ships with the editor and Unknown has nowhere to come
+        // from: neither verb has anything to do for those.
+        if policy == resolve::RefreshPolicy::UseCache && !source.is_buildable() {
             return Err(format!(
                 "`{name}` has no buildable source ({})",
                 source.label()
             ));
         }
         let Some(plugin_source) = source.as_plugin_source() else {
-            return Err(format!("`{name}` has no recorded source"));
+            return Err(format!(
+                "`{name}` has no source to update from ({})",
+                source.label()
+            ));
         };
         let Some(user_root) = default_plugins_dir() else {
             return Err("no config directory for the plugin cache".to_string());
@@ -2452,6 +2696,126 @@ impl PluginLoader {
                     .await
                     .map(|_| ())
                     .map_err(|e| format!("rebuilt, but reload failed: {e}"))
+            }
+        }
+    }
+
+    /// PMF.14: act on the results of installing what `init.rs` `require`s.
+    ///
+    /// `require` declares the plugins the user wants; this reconciles that
+    /// with what is loaded rather than loading every spec, which loaded each
+    /// `require`d plugin by a second path into the directory the boot scan
+    /// also walks.
+    ///
+    /// - [`RequirePhase::Boot`]: nothing is loaded here. The user-root scan
+    ///   runs next and is the one loader for the directory; the `enable_mode`
+    ///   requests come back to be applied after it
+    ///   ([`enable_required_modes`](Self::enable_required_modes)).
+    /// - [`RequirePhase::AfterBoot`] (a `:reload-config`, or init's watcher):
+    ///   a plugin not loaded yet is loaded; a loaded one is reloaded only if
+    ///   this install rebuilt it; anything else is left alone.
+    ///
+    /// A spec that produced nothing loadable is recorded for `:plugins`
+    /// either way.
+    pub async fn apply_required(
+        &self,
+        installs: Vec<pipeline::Install>,
+        user_root: &std::path::Path,
+        phase: RequirePhase,
+    ) -> Vec<(String, String)> {
+        let mut pending_modes = Vec::new();
+        for install in installs {
+            match install {
+                pipeline::Install::Ready {
+                    name,
+                    stale,
+                    enable_mode,
+                    rebuilt,
+                    ..
+                } => {
+                    if let Some(error) = stale {
+                        tracing::warn!(
+                            plugin = %name,
+                            %error,
+                            "plugin is running a previous build (rebuild failed)"
+                        );
+                        self.note_build_failure(&name, &error);
+                    }
+                    if phase == RequirePhase::Boot {
+                        if let Some(mode) = enable_mode {
+                            pending_modes.push((name, mode));
+                        }
+                        continue;
+                    }
+                    let dir = user_root.join(&name);
+                    let tier = TrustTier::UserInstalled;
+                    let outcome = if !self.is_loaded(&name) {
+                        Some(self.load_path(&dir, tier).await)
+                    } else if rebuilt {
+                        Some(self.reload(&name, tier).await)
+                    } else {
+                        None
+                    };
+                    match outcome {
+                        Some(Ok(id)) => {
+                            tracing::info!(plugin = %name, id = id.0, "required plugin loaded");
+                            // use-package's `enable-mode` sugar, only after a
+                            // load that succeeded.
+                            if let Some(mode) = enable_mode {
+                                self.request_mode_enablement(&mode);
+                            }
+                        }
+                        Some(Err(err)) => tracing::warn!(
+                            plugin = %name,
+                            error = %err,
+                            "required plugin built but failed to load"
+                        ),
+                        None => tracing::debug!(
+                            plugin = %name,
+                            "required plugin already loaded and unchanged"
+                        ),
+                    }
+                }
+                pipeline::Install::Skipped { name, error } => {
+                    tracing::warn!(plugin = %name, %error, "required plugin skipped");
+                    // A plugin that never produced an artifact never reaches
+                    // `load_path`, so nothing else records it.
+                    self.record_failure(
+                        &name,
+                        &user_root.join(&name),
+                        TrustTier::UserInstalled,
+                        &error,
+                    );
+                }
+            }
+        }
+        pending_modes
+    }
+
+    /// PMF.15/16: report, once every plugin has loaded, the options your
+    /// configuration (`lattice.toml`, `init.rs`) set that no plugin registered — a misspelt name, or a plugin that did not
+    /// load. `warn!`, so it reaches `*messages*`: without it the setting would
+    /// simply never take effect, which is the silent failure holding them
+    /// replaced (the unknown-option warning at the time of the set).
+    pub fn report_unclaimed_options(&self) {
+        for (name, source) in self.host.unclaimed_held_options() {
+            let source = source.label();
+            tracing::warn!(
+                option = %name,
+                source,
+                "{source} sets `{name}`, but no loaded plugin declares that option \
+                 — check the name, and `:plugins` for a plugin that failed to load"
+            );
+        }
+    }
+
+    /// PMF.14: apply the `enable_mode` requests [`apply_required`](Self::apply_required)
+    /// deferred at boot, once the scan has loaded the plugins they belong to.
+    /// A plugin that did not load gets none: there is no mode to enable.
+    pub fn enable_required_modes(&self, pending: Vec<(String, String)>) {
+        for (plugin, mode) in pending {
+            if self.is_loaded(&plugin) {
+                self.request_mode_enablement(&mode);
             }
         }
     }
@@ -2536,6 +2900,8 @@ impl PluginLoader {
         target: &str,
         tier: TrustTier,
     ) -> Result<PluginId, PluginLoaderError> {
+        // Unload and load as one step, so no scan sees the gap between them.
+        let _serial = self.load_ops.lock().await;
         // Capture the source dir before unloading (unload removes the record).
         let dir = {
             let loaded = self
@@ -2560,10 +2926,10 @@ impl PluginLoader {
             let failed = self
                 .failed_load(target)
                 .ok_or_else(|| PluginLoaderError::NotLoaded(target.to_string()))?;
-            return self.load_path(&failed.dir, failed.tier).await;
+            return self.load_path_serialised(&failed.dir, failed.tier).await;
         };
         self.unload(target);
-        self.load_path(&dir, tier).await
+        self.load_path_serialised(&dir, tier).await
     }
 
     /// Load the `init` config if it isn't loaded, or reload it if it is — the
@@ -2579,11 +2945,20 @@ impl PluginLoader {
         init_dir: &std::path::Path,
         tier: TrustTier,
     ) -> Result<PluginId, PluginLoaderError> {
-        if self.is_loaded(INIT_PLUGIN_ID) {
+        // PMF.15: init.rs declares the values it holds for plugins' options
+        // afresh as it loads; a line the user deleted must not keep applying.
+        self.host.clear_held_options();
+        let loaded = if self.is_loaded(INIT_PLUGIN_ID) {
             self.reload(INIT_PLUGIN_ID, tier).await
         } else {
             self.load_path(init_dir, tier).await
-        }
+        }?;
+        // PMF.14: the reloaded init.rs has declared its `require`s again.
+        // Reconcile them now — a plugin added since boot is installed and
+        // loaded, a rebuilt one reloaded, an unchanged one left alone —
+        // rather than leaving them recorded and unread until the next restart.
+        crate::install::run_required(self, RequirePhase::AfterBoot).await;
+        Ok(loaded)
     }
 
     /// The `source_dir` of the loaded `init` plugin, if it is loaded — the dir
@@ -3075,7 +3450,7 @@ impl PluginLoader {
         // BOUNDARY, where provenance is still known; by the time an excerpt
         // reaches `lattice-multibuffer` the host no longer knows which plugin
         // asked, exactly as `EffectAuthorizer` documents for `WriteToFile`.
-        let grant = lattice_plugin_host::capability::grant(manifest, tier).grant;
+        let grant = self.host.grant_for(manifest, tier).grant;
 
         for spec in specs {
             let native = lattice_multibuffer::providers::plugin_view::PluginViewSpec {
@@ -3517,10 +3892,7 @@ impl PluginLoader {
             // user's decision, and `register-binding`'s standing contract is
             // that a plugin never silently mis-binds. The operator stays
             // registered and reachable by name.
-            if !lattice_plugin_host::grant(manifest, tier)
-                .grant
-                .grammar_chord
-            {
+            if !self.host.grant_for(manifest, tier).grant.grammar_chord {
                 tracing::info!(
                     plugin = %manifest.id,
                     "operator chord(s) not bound: `grammar:chord` was not \
@@ -4686,6 +5058,12 @@ mod update_refusal_tests {
             resolve::PluginSource::Prebuilt {
                 url: "https://example.invalid/demo.wasm".into(),
             },
+            // An unpinned release: an update looks for a newer one.
+            resolve::PluginSource::Release {
+                repo: "example/demo".into(),
+                version: None,
+                sha256: None,
+            },
         ] {
             assert_eq!(
                 update_refusal("demo", Some(&source)),
@@ -4695,8 +5073,28 @@ mod update_refusal_tests {
         }
     }
 
+    /// A release named by its tag is pinned, as a git rev is: the message
+    /// says where to change it.
+    #[test]
+    fn update_declines_a_release_pinned_to_a_tag() {
+        let reason = update_refusal(
+            "org",
+            Some(&resolve::PluginSource::Release {
+                repo: "dhruvasagar/lattice-org-plugin".into(),
+                version: Some("v0.2.0".into()),
+                sha256: None,
+            }),
+        )
+        .expect("a tagged release is pinned");
+        assert!(reason.contains("pinned to release v0.2.0"), "{reason}");
+        assert!(
+            reason.contains("init.rs"),
+            "says where to change it: {reason}"
+        );
+    }
+
     /// A record with no recorded source falls through to `rebuild_with`, which
-    /// owns the "no buildable source" message — two functions must not both
+    /// owns the "no source to update from" message — two functions must not both
     /// answer the same question differently.
     #[test]
     fn update_leaves_a_sourceless_record_to_the_rebuild_path() {

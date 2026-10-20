@@ -106,6 +106,25 @@ pub struct GrantOutcome {
     /// Requested-but-not-granted capabilities (e.g. `proc:spawn` for a
     /// user-installed plugin). Never fatal — the plugin loads degraded.
     pub denied: Vec<Capability>,
+    /// PMF.3: how each option-bound filesystem grant resolved — the option,
+    /// the path it gave (or `None` for an explicit empty value), and whether
+    /// that path was the manifest's default. What `:plugins` shows, and what a
+    /// refusal names, so a user can see which setting decides a plugin's reach.
+    pub option_bound: Vec<OptionBoundGrant>,
+}
+
+/// PMF.3: one option-bound grant, as resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionBoundGrant {
+    /// The option the grant follows (`org.directory`).
+    pub option: String,
+    /// The granted path, `~`-expanded; `None` when the option is set to empty
+    /// or has no value and no default.
+    pub path: Option<PathBuf>,
+    /// `true` when `path` is the manifest's default rather than the user's.
+    pub from_default: bool,
+    /// `fs:write` (`true`) or `fs:read`.
+    pub write: bool,
 }
 
 /// Compute the effective grant for `manifest` under `tier`.
@@ -116,6 +135,20 @@ pub struct GrantOutcome {
 /// here in a later slice — the [`GrantOutcome::denied`] channel already carries
 /// the "requested but withheld" set that a consent step would populate.
 pub fn grant(manifest: &PluginManifest, tier: TrustTier) -> GrantOutcome {
+    grant_with(manifest, tier, &|_| None)
+}
+
+/// [`grant`], resolving option-bound grants (PMF.3) through `option_value`:
+/// the named option's current value, or `None` when it has none. With no
+/// value the manifest's default applies; an explicitly empty value grants
+/// nothing. [`crate::PluginHost::grant_for`] supplies the editor's config, so
+/// every caller resolves a plugin's grant the same way.
+pub fn grant_with(
+    manifest: &PluginManifest,
+    tier: TrustTier,
+    option_value: &dyn Fn(&str) -> Option<String>,
+) -> GrantOutcome {
+    let mut option_bound = Vec::new();
     let mut g = CapabilityGrant {
         editor: manifest.editor_capabilities,
         ..CapabilityGrant::default()
@@ -132,6 +165,29 @@ pub fn grant(manifest: &PluginManifest, tier: TrustTier) -> GrantOutcome {
                 prefix: p.clone(),
                 write: true,
             }),
+            Capability::FsReadOption(op) | Capability::FsWriteOption(op) => {
+                let write = matches!(cap, Capability::FsWriteOption(_));
+                let (path, from_default) = match option_value(&op.option) {
+                    Some(v) if v.trim().is_empty() => (None, false),
+                    Some(v) => (
+                        Some(PathBuf::from(lattice_core::home::expand_tilde(v.trim()))),
+                        false,
+                    ),
+                    None => (op.default.clone(), true),
+                };
+                if let Some(prefix) = &path {
+                    g.fs.push(FsGrant {
+                        prefix: prefix.clone(),
+                        write,
+                    });
+                }
+                option_bound.push(OptionBoundGrant {
+                    option: op.option.clone(),
+                    path,
+                    from_default,
+                    write,
+                });
+            }
             Capability::NetHttp(h) => g.net_http.push(h.clone()),
             // OR.1: granted at either tier. The store reaches only the
             // plugin's own data dir, which every plugin already has mounted
@@ -153,7 +209,11 @@ pub fn grant(manifest: &PluginManifest, tier: TrustTier) -> GrantOutcome {
         }
     }
 
-    GrantOutcome { grant: g, denied }
+    GrantOutcome {
+        grant: g,
+        denied,
+        option_bound,
+    }
 }
 
 /// A resolved directory preopen: which host dir maps to which guest path, and
@@ -202,9 +262,11 @@ impl CapabilityGrant {
 /// `data_dir`. Only filesystem preopens are wired (see the module note);
 /// sockets and subprocess spawning stay disabled at the WASI layer.
 ///
-/// **Graceful degradation:** a granted prefix that cannot be opened (missing
-/// dir, permission error) is skipped with a `warn!`, never a panic or a failed
-/// load — the plugin runs with that one capability degraded (fragment §6). The
+/// **Graceful degradation:** a granted prefix that cannot be opened is skipped,
+/// never a panic or a failed load — the plugin runs with that one capability
+/// degraded (fragment §6). A directory that does not exist is logged at
+/// `debug!` (an option-bound grant's default often does not); one that exists
+/// but will not open (permissions) at `warn!`. The
 /// caller must have created `data_dir` before this runs (the host does).
 pub fn build_wasi_ctx(grant: &CapabilityGrant, data_dir: &Path) -> WasiCtx {
     let mut builder = WasiCtxBuilder::new();
@@ -243,6 +305,18 @@ pub fn build_wasi_ctx(grant: &CapabilityGrant, data_dir: &Path) -> WasiCtx {
         } else {
             (DirPerms::READ, FilePerms::READ)
         };
+        // PMF.3: a grant that follows an option starts on the plugin's default
+        // (org's `~/org-roam`), which most users never create. A directory that
+        // does not exist is therefore the normal case, not a fault: it is simply
+        // not mounted, and the plugin treats the feature as off. Only a path
+        // that exists and still cannot be opened is worth a warning.
+        if !spec.host_path.exists() {
+            tracing::debug!(
+                host_path = %spec.host_path.display(),
+                "granted directory does not exist; not mounted"
+            );
+            continue;
+        }
         if let Err(err) =
             builder.preopened_dir(&spec.host_path, &spec.guest_path, dir_perms, file_perms)
         {
@@ -263,7 +337,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
-    use crate::manifest::Capability;
+    use crate::manifest::{Capability, OptionPath};
 
     fn manifest(caps: Vec<Capability>) -> PluginManifest {
         PluginManifest::new("test-plugin", caps, CapabilitySet::empty())
@@ -375,5 +449,108 @@ mod tests {
         };
         // Must not panic; returns a usable WasiCtx.
         let _ctx = build_wasi_ctx(&g, &cwd);
+    }
+
+    // ── PMF.3: option-bound grants ───────────────────────────────────────
+
+    fn org_manifest() -> PluginManifest {
+        PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.directory|~/org}\", \"state:write\"]\n",
+        )
+        .unwrap()
+    }
+
+    fn home() -> PathBuf {
+        PathBuf::from(lattice_core::home::expand_tilde("~"))
+    }
+
+    #[test]
+    fn an_option_bound_grant_parses_and_round_trips() {
+        let m = org_manifest();
+        let Capability::FsWriteOption(op) = &m.requested[0] else {
+            panic!("an option-bound write grant: {:?}", m.requested[0]);
+        };
+        assert_eq!(op.option, "org.directory");
+        assert_eq!(op.default.as_deref(), Some(home().join("org").as_path()));
+        let reparsed: Capability = m.requested[0].to_string().parse().unwrap();
+        assert_eq!(reparsed, m.requested[0], "Display is the wire form");
+
+        let no_default: Capability = "fs:read:{org.archive}".parse().unwrap();
+        assert!(matches!(
+            no_default,
+            Capability::FsReadOption(OptionPath { default: None, .. })
+        ));
+    }
+
+    #[test]
+    fn a_malformed_option_template_is_an_error_not_a_path() {
+        for bad in [
+            "fs:write:{org.directory",
+            "fs:write:{}",
+            "fs:write:{ |~/x}",
+            "fs:write:{a b}",
+        ] {
+            assert!(bad.parse::<Capability>().is_err(), "`{bad}` must not parse");
+        }
+    }
+
+    #[test]
+    fn a_grant_may_only_follow_the_plugins_own_options() {
+        let err = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{roam.directory|~/x}\"]\n",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, crate::manifest::ManifestError::ForeignOption { ref option, .. } if option == "roam.directory"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_unset_option_grants_the_manifest_default() {
+        let out = grant_with(&org_manifest(), TrustTier::UserInstalled, &|_| None);
+        assert_eq!(
+            out.grant.fs,
+            vec![FsGrant {
+                prefix: home().join("org"),
+                write: true
+            }]
+        );
+        assert_eq!(out.option_bound.len(), 1);
+        assert!(out.option_bound[0].from_default);
+        assert!(out.option_bound[0].write);
+    }
+
+    #[test]
+    fn the_users_value_replaces_the_default() {
+        let out = grant_with(&org_manifest(), TrustTier::UserInstalled, &|name| {
+            (name == "org.directory").then(|| "~/notes".to_string())
+        });
+        assert_eq!(out.grant.fs[0].prefix, home().join("notes"));
+        assert!(!out.option_bound[0].from_default);
+    }
+
+    #[test]
+    fn an_empty_value_grants_nothing() {
+        let out = grant_with(&org_manifest(), TrustTier::UserInstalled, &|_| {
+            Some("  ".to_string())
+        });
+        assert!(out.grant.fs.is_empty(), "explicit empty = no access");
+        assert_eq!(out.option_bound[0].path, None);
+        assert!(
+            out.grant.state_write,
+            "the other capabilities are unaffected"
+        );
+    }
+
+    #[test]
+    fn no_value_and_no_default_grants_nothing() {
+        let m = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.directory}\"]\n",
+        )
+        .unwrap();
+        let out = grant_with(&m, TrustTier::UserInstalled, &|_| None);
+        assert!(out.grant.fs.is_empty());
+        assert_eq!(out.option_bound[0].path, None);
     }
 }

@@ -1,5 +1,218 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Install a plugin from its release, without building it.** `init.rs` can
+  `require_release` a plugin published on GitHub — `repo`, an optional tag
+  and an optional `sha256` pin — and lattice downloads the build for its own
+  plugin API instead of cloning and compiling, so no Rust toolchain is
+  needed. The download is checked against the release's published checksum
+  (and your pin), must carry its own manifest naming the plugin, and only
+  then replaces what is installed; once installed, startup makes no network
+  request. Without a tag it takes the newest release built for your editor,
+  and `:plugin-update <name>` (or `:plugin-update-all`) installs a newer one
+  when there is one; with a tag it stays on that release until you change
+  the tag. A release with no build for your editor is refused by name in `:plugins`,
+  saying what it ships instead. `:plugins` shows the source as
+  `release owner/name@v0.2.0`. A new function in the plugin API, so plugins
+  built from source rebuild once.
+- **A plugin's options can go in `lattice.toml`.** `[org]` /
+  `directory = "~/notes"` used to be reported as an unknown option at
+  startup and ignored: the file is read before any plugin has declared its
+  options. Such a value is now held and applied when the plugin declares the
+  option (and again if it reloads), and a plugin's file access sees it from
+  its first load. A typo in a namespace that is already registered
+  (`ui.nerd_fontz`) still warns at startup; one in a plugin's namespace is
+  reported once every plugin has loaded. Where `lattice.toml` and `init.rs`
+  both set an option, `init.rs` wins.
+- **`init.rs` can set a plugin's options before the plugin loads.** Your
+  config loads first, so a user plugin's options did not exist yet and
+  `set_option` on them was rejected — they could only be set from the
+  plugin's `pre-plugin-loaded` handler. Now the value is held and applied
+  when the plugin declares the option, and again if it reloads, so plain
+  `config::set_option("org.directory", "~/notes")` in `register_options`
+  works. For an option a plugin's file access follows, that also saves a
+  full reload of the plugin at every start. A name no plugin declares —
+  usually a typo — is reported in `*messages*`. Only `init.rs` can do this;
+  another plugin naming an option that does not exist is still refused.
+  The plugin API's documentation of `set-option` changed with it, so
+  plugins built from source rebuild once.
+- **A plugin's file access can follow your configuration.** A plugin may
+  declare `fs:write:{org.directory|~/org}` instead of a fixed path: it gets
+  the directory you set in that option, or its default until you do, so no
+  plugin ships with a path of its own (or its author's) baked in. The option
+  must be the plugin's own. Changing the option reloads that plugin with the
+  new access — setting it to the value it already has does nothing — and a
+  plugin cannot change such an option itself, so it cannot widen its own
+  access; only your configuration can. `:plugins` shows each grant as
+  resolved, with where it came from (`fs:write ~/notes (org.directory)`, or
+  `…, default`), and a write refused for falling outside it names the option
+  to change.
+- **A plugin can be a single `.wasm` file.** Its manifest — what
+  `plugin.toml` holds — can be embedded in the component itself, as a
+  `lattice-manifest` custom section; a plugin directory with the component
+  alone loads. `plugin.toml` still works, and when both are present the
+  embedded one is used. A manifest may also say which editor it needs
+  (`min_lattice = "0.9.10"`): an older Lattice refuses it by name in
+  `:plugins` — *"org needs lattice ≥ 0.9.10; this is 0.9.9"* — rather than
+  failing on a field it doesn't understand.
+  A plugin's source directory no longer needs a `plugin.toml` either: a
+  cargo project under `~/.config/lattice/plugins/` (or your `init/`) is
+  built in place and named from the manifest its component embeds.
+  `--scaffold-init` and `--scaffold-plugin` now write the manifest into
+  `src/lib.rs` instead of a `plugin.toml`; a config scaffolded earlier keeps
+  its `plugin.toml` and keeps working.
+- **Publish a plugin as a release users install without building it.**
+  For plugin authors: `scripts/build-plugin.sh` builds a plugin, checks it
+  carries its manifest, and packages `<id>-<version>-api<M>.<m>.wasm` with
+  its `.sha256` — the API generation read from the plugin's locked
+  `lattice-wit`. A plugin repository publishes on a version tag by calling
+  lattice's reusable `plugin-release.yml` workflow, which checks the tag is
+  the crate version and attaches both files to a GitHub release. The plugin
+  authoring guide's "Publishing a release" walks through it.
+- **`lattice_plugin_sdk::manifest!`** (plugin API crates 0.3.1) embeds a plugin's
+  manifest in its component, so a Rust plugin needs no `plugin.toml`. It
+  builds in a crate that denies unsafe code.
+- **`:version`** opens a `*version*` page with what a bug report needs: the
+  version, the commit it was built from (and whether the tree was modified),
+  debug or release, the Rust toolchain and target, the renderer you are in,
+  the plugin API generation, and where Lattice keeps its config, plugins and
+  cache. `Y` copies the whole page to the clipboard as markdown.
+  `lattice --version --verbose` prints the same page without starting the
+  editor; plain `--version` is unchanged.
+- **`<C-o>` re-reads an open `:files` list, and `:files-refresh` does it from
+  anywhere.** For files created or removed while the picker is open; your
+  query and the selected file stay put.
+
+### Changed
+- **`lattice --scaffold-init` writes a config that can install plugins.** Its
+  world imports `plugin-manager` and it has a `register_plugins` with a
+  `require_release` example commented out, so installing a plugin is
+  uncommenting one block. A config scaffolded earlier needs the seam added by
+  hand; `:help plugins` says how.
+- **A plugin you add with `require` loads on `:reload-config`.** It used to
+  be recorded and not installed until the next restart. A reload now
+  installs new ones, reloads one whose build changed — or whose download
+  did, as when you switch a plugin to a release or to another tag — and
+  leaves the rest alone; at startup each required plugin is loaded once, by the scan of your
+  plugins directory, rather than by `require` and then again by the scan.
+- **The core plugins are one file each.** auto-pair, treesitter-context,
+  project, comment and lighthouse carry their manifests inside their
+  components; a release no longer ships a `plugin.toml` beside each.
+- **Unfocused popups dim in the GUI, as they do in the terminal.** A
+  `:help` or `:describe-*` popup you have not focused into is drawn dimmed,
+  like any pane without focus — the GUI never dimmed popups before. Hover and
+  signature-help popups are the exception in both, and stay undimmed.
+
+### Fixed
+- **`:plugin-update` updates a plugin installed from a URL.** A `Prebuilt`
+  plugin was refused with "has no buildable source" instead of being
+  downloaded again; `:plugin-rebuild` still says that, since there is nothing
+  to build.
+- **Magit pushes a branch that has no upstream yet.** `C-c g p`, `-u`, `p`
+  (and `:magit-push`) ran `git push --set-upstream` with nowhere to push, which
+  git refuses for a new branch — so a branch could only be pushed the first
+  time from a shell. Lattice now names the destination: the push remote git is
+  configured with, or the repository's only remote; `-u` then sets the
+  upstream. With several remotes and none configured it says so and points you
+  at `e` (push elsewhere) rather than guessing.
+- **A `Prebuilt` plugin is not downloaded again at every start.** A plugin
+  `require`d from a URL was fetched on each boot even when it was already on
+  disk; it is now fetched only when missing, when the URL in your config
+  changed, or on update. The download also has timeouts and a size limit, so
+  a server that stops answering cannot hang plugin installation.
+- **The dashboard no longer shows `[+]`.** Its modeline marked it modified
+  from the moment it opened — its own content counted as an edit — until
+  something redrew it.
+- **A plugin whose file access follows your settings no longer reloads
+  forever.** With `org.directory` or `org.roam-directory` set from `init.rs`,
+  org loaded, reloaded onto your directory, and reloaded again, endlessly:
+  each reload dropped org's options, so the next copy started on the
+  defaults and your setting moved it once more. It now reloads once and
+  stays loaded.
+- **A plugin is loaded once, not twice.** At startup a plugin your
+  `init.rs` requires could appear twice in `:plugins` — or once beside a
+  failure reading "plugin declares no loadable seam". When a setting that
+  decides the plugin's file access changed while it loaded, it was reloaded,
+  and the startup scan of your plugins directory could look in the moment
+  between unload and load, find nothing, and load a second copy. Loads and
+  reloads now take turns.
+- **A plugin refused at startup shows in `:plugins`.** One that needs a newer
+  Lattice, or whose manifest does not parse, was listed nowhere when it came
+  from `require`; it now appears under *Failed to load* with the reason.
+- **A colour name works in a style even when no palette defines it.** An org
+  TODO keyword styled `fg: "magenta"` in `init.rs` showed no colour — no
+  built-in palette has a `magenta` role — and logged "unknown palette key"
+  on every theme rebuild. A name that isn't a palette role now falls back to
+  the terminal colour of that name, or a `#rrggbb` value; palette roles still
+  win, so a theme's own `green` is unchanged.
+- **`*notifications*` keys work.** `<CR>` (run a notification's action), `d`
+  (dismiss) and `gr` (refresh) did nothing: the actions they name were never
+  registered, so they were dropped at startup with a warning in the log.
+- **`<C-c>` interrupts Claude again** in a Claude Code terminal (Normal mode).
+  It named a command that no longer exists under that name.
+- **Semantic highlighting appears without `:e!`.** Opening a file sometimes
+  asked the language server for semantic tokens and inlay hints before it had
+  finished starting; the empty answer was kept, and nothing asked again until
+  you edited the file or ran `:e!`. Whether you hit it depended on startup
+  timing. Both are now requested again as soon as the server is ready for the
+  file, and still update when it finishes indexing.
+- **Hover documentation is no longer dimmed.** A hover popup (`K`, LSP hover)
+  is read while the cursor stays in your file, so it never has focus — and it
+  was dimmed like any unfocused pane until you focused it. `ui.dim_inactive`
+  is now resolved per buffer, and hover popups turn it off, in the terminal
+  and the GUI alike (see *Changed* for the other popups).
+- **`:files` shows files created outside the editor the next time you open
+  it.** The list is remembered for speed, and a stale one used to be corrected
+  only for the open *after* next, so the first `:files` after a build or a
+  `git checkout` still missed the new files. It now opens on the remembered
+  list at once and replaces the rows a moment later, when the re-read lands.
+- **Visual-block `c` changes every row.** After `<C-v>` and `c`, the text you
+  typed replaced the block on the top row only; the rows below were left with
+  the block deleted and nothing in its place. It now lands on every row the
+  block covers, as `I` already did, and one `u` takes it back off all of them.
+  Rows too short to reach the block are left alone, as in Vim.
+- **Visual-block `I` skips rows that end where the block starts.** A row
+  exactly as long as the block's left column got the inserted text added to
+  its end; Vim leaves it alone, and now so does Lattice.
+- **`cc` in magit-status commits in the status buffer's repository.** The
+  commit buffer it opened showed nothing staged and `C-c C-c` committed
+  nothing, unless the editor had been started in that same repository.
+  `cc` and `ca` now open the same commit buffer as `C-c g c` / `C-c g a`.
+- **An image opened directly fits the window.** `:e photo.png` in the GUI
+  scaled a large picture to the pane's width only, so a tall screenshot or
+  portrait photo ran off the bottom of the window. It is now scaled down to
+  fit both the width and the height, and re-fitted when the pane is resized.
+  Small images still show at their own size.
+- **The cursor ignored hidden link markup in the terminal.** With markdown
+  links shown as their text, `$` on a line ending in a link put the terminal
+  cursor where the hidden URL would have been, and on a line with wrapping
+  off it could scroll the view sideways past the text. The cursor now lands
+  just past the link's text, in the terminal and the GUI alike, and the GUI's
+  block cursor no longer shows the hidden `)` under it.
+
+### Documentation
+- **The org plugin installs by release.** `org.md` leads with
+  `require_release`, which installs a published org without a Rust
+  toolchain; building it yourself now checks out a release tag (the README
+  names the current one) and copies one `.wasm` — no `plugin.toml`. A new
+  section says where org may write (`org.directory`, `org.roam-directory`)
+  and that setting those options is the permission.
+- **Installing plugins from `init.rs`** is documented in `:help plugins` —
+  a released build with `require_release`, or building from source with
+  `require` — which lattice's own docs had never shown.
+- **Plugin options in `lattice.toml`** — `options.md` documents setting a
+  plugin's options there, when it is held until the plugin loads, how typos
+  are reported, and that `init.rs` wins over it.
+- **`:help plugins` explains grants that follow your configuration**
+  ("Capabilities and your configuration"): that setting an option like
+  `org.directory` is also what decides where the plugin may write, how to
+  see the resolved paths in `:plugins`, and why a plugin cannot change them
+  itself. The plugin authoring guide documents `manifest!`, option-bound
+  grants, `min_lattice`, and the `lattice-manifest` section format for
+  toolchains other than Rust.
+
 ## 0.9.9 — 2026-10-15
 
 ### Added

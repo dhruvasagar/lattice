@@ -45,6 +45,10 @@ pub struct PaneOptions {
     pub sign_column: bool,
     /// `ui.indent-guides.active` — whether the cursor's block is emphasised.
     pub indent_guides_active: bool,
+    /// `ui.dim_inactive` — whether this pane's content dims while it is not
+    /// focused. Per buffer so a mode can opt its buffers out: `hover-mode`
+    /// does. The TUI peer reads the same option as `FrameView::dim_inactive`.
+    pub dim_inactive: bool,
 }
 
 impl PaneOptions {
@@ -65,6 +69,7 @@ impl PaneOptions {
                 .reserved(),
             indent_guides_active: *rs
                 .resolved_option_for::<lattice_config::core_options::IndentGuidesActive>(buffer_id),
+            dim_inactive: *rs.resolved_option_for::<lattice_config::UiDimInactive>(buffer_id),
         }
     }
 }
@@ -100,12 +105,14 @@ mod tests {
         off.insert::<lattice_config::CursorLine>(false);
         off.insert::<lattice_config::SignColumnOption>(lattice_config::SignColumn::No);
         off.insert::<lattice_config::core_options::IndentGuidesActive>(false);
+        off.insert::<lattice_config::UiDimInactive>(false);
         let mut on = ResolvedOptions::new();
         on.insert::<lattice_config::Number>(true);
         on.insert::<lattice_config::RelativeNumber>(true);
         on.insert::<lattice_config::CursorLine>(true);
         on.insert::<lattice_config::SignColumnOption>(lattice_config::SignColumn::Yes);
         on.insert::<lattice_config::core_options::IndentGuidesActive>(true);
+        on.insert::<lattice_config::UiDimInactive>(true);
 
         // The absent-buffer fallback is `resolved_option_for`'s own contract
         // and is left to that seam's tests rather than half-asserted here.
@@ -136,6 +143,11 @@ mod tests {
         assert!(
             !a.relative_line_numbers && b.relative_line_numbers,
             "and so is relativenumber"
+        );
+        assert!(
+            !a.dim_inactive && b.dim_inactive,
+            "and the inactive dim: a hover popup's buffer opts out (hover-mode), \
+             the document behind it keeps the user's setting"
         );
         assert_ne!(a, b, "two buffers, two answers — the whole point");
     }

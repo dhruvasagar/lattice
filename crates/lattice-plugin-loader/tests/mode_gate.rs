@@ -239,7 +239,13 @@ async fn two_default_modes_are_both_enabled_by_the_one_gate() {
          default_modes = [\"auto-pair-global-mode\"]\n",
     )
     .unwrap();
-    std::fs::write(dir.join("component.wasm"), &wasm).unwrap();
+    // auto-pair embeds its real manifest (one default mode), which wins over a
+    // file (PMF.11); take it out so this two-mode one is what loads.
+    std::fs::write(
+        dir.join("component.wasm"),
+        lattice_plugin_host::manifest::without_embedded_manifest(&wasm),
+    )
+    .unwrap();
 
     let bus = Arc::new(EventBus::new());
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

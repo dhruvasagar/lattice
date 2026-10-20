@@ -55,6 +55,8 @@ pub struct EffectAuthorizer {
     /// walk only reads, and this is the other half of that distinction.
     write_prefixes: Vec<PathBuf>,
     plugin: String,
+    /// PMF.6: the option-bound write grants, for naming the option in a refusal.
+    option_bound: Vec<crate::capability::OptionBoundGrant>,
 }
 
 impl EffectAuthorizer {
@@ -67,7 +69,46 @@ impl EffectAuthorizer {
                 .map(|g| g.prefix.clone())
                 .collect(),
             plugin: plugin.into(),
+            option_bound: Vec::new(),
         }
+    }
+
+    /// PMF.6: the option-bound write grants behind `write_prefixes`, so a
+    /// refusal names the option that decides where the plugin may write —
+    /// *outside org.directory (~/notes) — set org.directory …* — instead of a
+    /// generic "outside the granted paths" the user cannot act on.
+    pub fn with_option_bound(mut self, bound: Vec<crate::capability::OptionBoundGrant>) -> Self {
+        self.option_bound = bound.into_iter().filter(|g| g.write).collect();
+        self
+    }
+
+    /// The refusal text for a write to `path` outside every grant.
+    fn refusal(&self, path: &Path) -> String {
+        if self.option_bound.is_empty() {
+            return format!(
+                "{}: write denied — {} is outside the plugin's granted paths",
+                self.plugin,
+                path.display()
+            );
+        }
+        let shown = |p: &Option<std::path::PathBuf>| match p {
+            Some(p) => lattice_core::home::contract_tilde(p),
+            None => "not set".to_string(),
+        };
+        let where_ = self
+            .option_bound
+            .iter()
+            .map(|g| format!("{} ({})", g.option, shown(&g.path)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "{}: write denied — {} is outside {} — set {} to change where {} may write",
+            self.plugin,
+            lattice_core::home::contract_tilde(path),
+            where_,
+            self.option_bound[0].option,
+            self.plugin
+        )
     }
 
     /// True when `path` lies within one of the plugin's `fs:write` prefixes.
@@ -135,11 +176,7 @@ impl EffectAuthorizer {
                 (
                     NativeEffect::Echo {
                         level: EchoLevel::Warn,
-                        text: format!(
-                            "{}: write denied — {} is outside the plugin's granted paths",
-                            self.plugin,
-                            path.display()
-                        ),
+                        text: self.refusal(path),
                     },
                     true,
                 )
@@ -515,5 +552,41 @@ mod tests {
             auth.authorize(NativeEffect::Declined),
             NativeEffect::Declined
         ));
+    }
+
+    /// PMF.6: a refusal names the option that decides where the plugin may
+    /// write, so the user knows what to change.
+    #[test]
+    fn a_refusal_names_the_option_behind_the_grant() {
+        let granted = tmp("pmf6-granted");
+        let grant = CapabilityGrant {
+            fs: vec![crate::capability::FsGrant {
+                prefix: granted.clone(),
+                write: true,
+            }],
+            ..CapabilityGrant::default()
+        };
+        let auth = EffectAuthorizer::new(&grant, "org").with_option_bound(vec![
+            crate::capability::OptionBoundGrant {
+                option: "org.directory".into(),
+                path: Some(granted.clone()),
+                from_default: false,
+                write: true,
+            },
+        ]);
+        let text = auth.refusal(std::path::Path::new("/elsewhere/x.org"));
+        assert!(text.contains("is outside org.directory ("), "{text}");
+        assert!(
+            text.contains("set org.directory to change where org may write"),
+            "{text}"
+        );
+
+        let plain = EffectAuthorizer::new(&grant, "org");
+        assert!(
+            plain
+                .refusal(std::path::Path::new("/elsewhere/x.org"))
+                .contains("granted paths"),
+            "a fixed-path grant keeps the generic wording"
+        );
     }
 }

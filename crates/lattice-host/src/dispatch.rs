@@ -3329,6 +3329,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             let signals = editor.do_picker_help();
             _out.renderer_signals.extend(signals);
         }
+        Action::PickerRefresh => {
+            let signals = editor.do_picker_refresh();
+            _out.renderer_signals.extend(signals);
+        }
         Action::PickerDescendOrSelectNext => {
             let signals = editor.do_picker_tab();
             _out.renderer_signals.extend(signals);
@@ -7498,6 +7502,34 @@ impl Editor {
     /// falls back to a tab-expanded scan of the line text when the
     /// row is outside the built window.
     fn cursor_display_col(&self) -> u32 {
+        let col = self.cursor_display_col_unconcealed();
+        // Conceal removes columns where inlays add them, and the cell rows
+        // read above carry no conceal ranges — the display matrix does.
+        // Without this, `$` on a line ending in a concealed link measured
+        // the hidden URL and scrolled `leftcol` past text that is not
+        // there. The clamp is `lattice_cells`'s, shared with both renderers'
+        // carets so the three agree on where the cursor is.
+        let bid = self.active_buffer_id();
+        let matrix = self.display_matrix_for(bid).load_full();
+        let Some(row) = matrix.row_at_source_line(self.cursor.line) else {
+            return col;
+        };
+        if row.conceals.is_empty() {
+            return col;
+        }
+        let snap = self.document.snapshot();
+        let text = snap.buffer.line(self.cursor.line).unwrap_or_default();
+        let mut byte = (self.cursor.byte as usize).min(text.len());
+        while byte > 0 && !text.is_char_boundary(byte) {
+            byte -= 1;
+        }
+        let source_col = text[..byte].chars().count() as u32;
+        lattice_cells::subtract_conceals(col, source_col, &row.conceals)
+    }
+
+    /// [`Self::cursor_display_col`] before conceal: tab- and
+    /// inlay-expanded only.
+    fn cursor_display_col_unconcealed(&self) -> u32 {
         let bid = self.active_buffer_id();
         if let Some(col) = self
             .cells_matrix_for(bid)
@@ -11160,6 +11192,28 @@ impl Editor {
             AppEffect::StartMacroRecord(c) => out.next_actions.push(Action::StartMacroRecord(c)),
             AppEffect::PlayMacro(c) => out.next_actions.push(Action::PlayMacro(c)),
             AppEffect::PlayLastMacro => out.next_actions.push(Action::PlayLastMacro),
+            AppEffect::RefreshPickerSource { source } => {
+                if !self.start_picker_refresh(&source, Vec::new(), true, true) {
+                    self.set_message(EchoLevel::Info, format!("{source}: nothing to refresh"));
+                }
+            }
+            // `:h v_b_c`: the grammar's block `c` deleted the rectangle
+            // and entered Insert; park the block so `<Esc>` replays what
+            // was typed onto every row — the state block `I` parks.
+            AppEffect::BeginBlockInsert {
+                start_line,
+                end_line,
+                col,
+                rows,
+            } => {
+                self.pending_block_insert = Some(crate::state::PendingBlockInsert {
+                    start_line,
+                    end_line,
+                    insert_col: col,
+                    live_edits: 0,
+                    rows: Some(rows),
+                });
+            }
             AppEffect::AbsorbOperatorPrefix(op) => {
                 // Slice 8.i.4.c: arm operator-pending via the
                 // partial_chord mechanism. Two atomic effects:
@@ -14798,36 +14852,43 @@ impl Editor {
         self.seat_picker_from_pairs(source, pairs)
     }
 
-    pub fn seat_picker_from_pairs(
-        &mut self,
-        source: String,
-        pairs: lattice_picker::CandidateBatch,
-    ) -> Vec<RendererSignal> {
-        let title = source.clone();
+    /// Each candidate's recently-used ranking bonus for `source`, or all zero
+    /// with `picker.mru-enabled` off. Shared by a picker's seating and by a
+    /// refresh replacing its rows, so a refreshed list ranks as an opened one
+    /// does.
+    fn picker_mru_bonuses(&self, source: &str, pairs: &lattice_picker::CandidateBatch) -> Vec<f64> {
         let mru_enabled = self
             .config
             .get_typed::<lattice_config::core_options::PickerMruEnabled>()
             .map(|b| *b)
             .unwrap_or(true);
+        if !mru_enabled {
+            return vec![0.0; pairs.len()];
+        }
         let now = std::time::SystemTime::now();
         let half_life = self
             .config
             .get_typed::<lattice_config::core_options::PickerMruRecencyHalfLifeDays>()
             .map(|d| std::time::Duration::from_secs((*d).max(1) as u64 * 24 * 60 * 60))
             .unwrap_or(lattice_picker::DEFAULT_HALF_LIFE);
-        let bonuses: Vec<f64> = if mru_enabled {
-            pairs
-                .iter()
-                .map(
-                    |(_cand, routing)| match lattice_picker::routing_identity(routing) {
-                        Some(id) => self.picker_mru.frecency_bonus(&source, &id, now, half_life),
-                        None => 0.0,
-                    },
-                )
-                .collect()
-        } else {
-            vec![0.0; pairs.len()]
-        };
+        pairs
+            .iter()
+            .map(
+                |(_cand, routing)| match lattice_picker::routing_identity(routing) {
+                    Some(id) => self.picker_mru.frecency_bonus(source, &id, now, half_life),
+                    None => 0.0,
+                },
+            )
+            .collect()
+    }
+
+    pub fn seat_picker_from_pairs(
+        &mut self,
+        source: String,
+        pairs: lattice_picker::CandidateBatch,
+    ) -> Vec<RendererSignal> {
+        let title = source.clone();
+        let bonuses = self.picker_mru_bonuses(&source, &pairs);
         let mut picker = lattice_picker::Picker::new(
             title,
             picker_source_for(&source),
@@ -15005,6 +15066,12 @@ impl Editor {
             return Vec::new();
         };
 
+        // Remembered for `<C-o>`, which re-reads the list this open asked
+        // for (an explicit root included), not the source's default.
+        self.picker_open_args = Some(crate::state::PickerOpenArgs {
+            source_id: source.clone(),
+            args: args.clone(),
+        });
         // Sync prelude: build the context against a fresh
         // snapshot, call init, drop the borrow.
         let snap = self.document.snapshot();
@@ -15064,7 +15131,14 @@ impl Editor {
         }
         match init_result {
             lattice_picker::PickerInitResult::Inline(pairs) => {
-                self.seat_picker_from_pairs(source, pairs)
+                let signals = self.seat_picker_from_pairs(source.clone(), pairs);
+                // A source that seated from a cache brings it current now,
+                // replacing the rows on screen when the re-read lands. Without
+                // this a file created outside the editor was missing from the
+                // first `:files` after it appeared and only showed on the one
+                // after that.
+                self.start_picker_refresh(&source, args, false, false);
+                signals
             }
             lattice_picker::PickerInitResult::Future(fut) => {
                 if let Some(prev) = self.pending_picker_init.take() {
@@ -15129,6 +15203,134 @@ impl Editor {
                         "picker: streaming sources not yet wired (source `{source}` returned a Stream)"
                     ),
                 );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Ask `source`'s generator to re-read its list off the UI thread
+    /// (`PickerSourceGenerator::refresh`); the result lands through
+    /// [`Self::drain_pending_picker_refresh`] on the async-landed wake, so it
+    /// reaches the screen without a keystroke. Supersedes any refresh still
+    /// in flight. Returns `false` when the source had nothing to re-read.
+    pub fn start_picker_refresh(
+        &mut self,
+        source: &str,
+        args: Vec<String>,
+        force: bool,
+        announce: bool,
+    ) -> bool {
+        let registry = self.picker_registry.load_full();
+        let Some(generator) = registry.entry(source).and_then(|e| e.generator.clone()) else {
+            return false;
+        };
+        let snap = self.document.snapshot();
+        let ctx = self.build_picker_context(&snap);
+        let work = generator.refresh(&ctx, &args, force);
+        drop(ctx);
+        drop(snap);
+        let Some(work) = work else {
+            return false;
+        };
+        if let Some(prev) = self.pending_picker_refresh.take() {
+            prev.cancel.cancel();
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = lattice_protocol::CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let async_landed = self.async_landed.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let result = work.await;
+            if !cancel_clone.is_cancelled() {
+                let _ = tx.send(result);
+                async_landed.notify_one();
+            }
+        });
+        self.pending_picker_refresh = Some(crate::state::PendingPickerRefresh {
+            source_id: source.to_string(),
+            cancel,
+            rx,
+            announce,
+        });
+        true
+    }
+
+    /// `<C-o>` in a picker: re-read the list it shows, with the arguments it
+    /// was opened with. `searching…` shows until the rows are replaced.
+    pub fn do_picker_refresh(&mut self) -> Vec<RendererSignal> {
+        let Some(source) = self.picker.as_ref().and_then(|p| p.source_id.clone()) else {
+            return Vec::new();
+        };
+        let args = self
+            .picker_open_args
+            .as_ref()
+            .filter(|open| open.source_id == source)
+            .map(|open| open.args.clone())
+            .unwrap_or_default();
+        if self.start_picker_refresh(&source, args, true, false) {
+            if let Some(p) = self.picker.as_mut() {
+                p.loading = true;
+            }
+        } else {
+            self.set_message(EchoLevel::Info, format!("{source}: nothing to refresh"));
+        }
+        Vec::new()
+    }
+
+    /// Apply a refreshed list that has landed. Into the open picker when it
+    /// is still the refreshed source's — query kept, selection following its
+    /// item — and reported in the echo area when the user asked by command.
+    /// A refresh whose picker has since closed, and that nobody asked to hear
+    /// about, is dropped: the source's cache is already current.
+    pub fn drain_pending_picker_refresh(&mut self) -> Vec<RendererSignal> {
+        let Some(pending) = self.pending_picker_refresh.as_mut() else {
+            return Vec::new();
+        };
+        let result = match pending.rx.try_recv() {
+            Ok(r) => r,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return Vec::new(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                self.pending_picker_refresh = None;
+                return Vec::new();
+            }
+        };
+        let pending = self.pending_picker_refresh.take().expect("guarded above");
+        let on_screen = self
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.source_id.as_deref() == Some(pending.source_id.as_str()));
+        match result {
+            Ok(pairs) => {
+                let count = pairs.len();
+                let mut signals = Vec::new();
+                if on_screen {
+                    let bonuses = self.picker_mru_bonuses(&pending.source_id, &pairs);
+                    let mut kept = true;
+                    if let Some(p) = self.picker.as_mut() {
+                        p.loading = false;
+                        kept = p.replace_candidates_keeping_selection(pairs, bonuses);
+                    }
+                    // The preview tracks the selected row; it only goes stale
+                    // when the selection had to move off a vanished item.
+                    if !kept {
+                        signals = self.preview_picker_selection();
+                    }
+                }
+                if pending.announce {
+                    self.set_message(
+                        EchoLevel::Info,
+                        format!("{}: re-read, {count} entries", pending.source_id),
+                    );
+                }
+                signals
+            }
+            Err(e) => {
+                if on_screen && let Some(p) = self.picker.as_mut() {
+                    p.loading = false;
+                }
+                if on_screen || pending.announce {
+                    self.set_message(EchoLevel::Error, e);
+                }
                 Vec::new()
             }
         }
@@ -19024,6 +19226,33 @@ impl Editor {
     /// Drain `LspBufferDetached` events; fire didClose + clear
     /// per-buffer URI mapping via `lsp_close_buffer` (already
     /// host). Phase 5.8.AA.d: hoisted from TUI App.
+    /// A buffer's language server has finished `initialize` and has the
+    /// file open: refetch the results that could not be had before.
+    ///
+    /// Semantic tokens and inlay hints are requested on the first ticks
+    /// after a file opens, which can be before its server is ready. That
+    /// request is answered with nothing and cached at the current text
+    /// version, so every later tick sees "already fetched" — and the server,
+    /// never asked, has no reason to send a `refresh`. The colour then came
+    /// only from an edit or `:e!`, and whether you saw it depended on boot
+    /// timing. Marking both refresh-pending here (the flags a server
+    /// `refresh` sets) refetches them now, while whatever is cached keeps
+    /// rendering until the answer replaces it.
+    pub fn drain_lsp_attach_events(&mut self) {
+        let Some(mut rx) = self.pending_lsp_attach_rx.take() else {
+            return;
+        };
+        let mut buffer_ids: Vec<lattice_core::BufferId> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            buffer_ids.push(lattice_core::BufferId(event.id.raw() as u32));
+        }
+        self.pending_lsp_attach_rx = Some(rx);
+        for buffer_id in buffer_ids {
+            self.semantic_tokens_refresh_pending.insert(buffer_id);
+            self.inlay_refresh_pending.insert(buffer_id);
+        }
+    }
+
     pub fn drain_lsp_detach_events(&mut self) {
         let Some(mut rx) = self.pending_lsp_detach_rx.take() else {
             return;
@@ -19369,6 +19598,9 @@ impl Editor {
         self.drain_diagnostic_refresh();
         self.drain_inlay_hint_refresh();
         self.drain_semantic_tokens_refresh();
+        // Before the request pumps below, so a server that just became ready
+        // is asked on this same tick.
+        self.drain_lsp_attach_events();
         self.drain_code_lens_refresh();
         self.drain_pending_insert_completion_lsp();
         self.drain_pending_completion_resolve();
@@ -19418,6 +19650,9 @@ impl Editor {
         self.refresh_overlay_folds();
         self.drain_pending_selection_range();
         signals.extend(self.drain_pending_picker_init());
+        // A picker source's refreshed list (after an open, `<C-o>`,
+        // `:files-refresh`) — same async-landed wake as init.
+        signals.extend(self.drain_pending_picker_refresh());
         // PH7.4c.2: commit any async plugin-source accept whose outcome landed
         // (same async-landed wake as init; no renderer-specific wiring needed).
         signals.extend(self.drain_pending_picker_accept());
@@ -26333,7 +26568,11 @@ impl Editor {
         ));
         for line in (spec.start_line + 1)..=spec.end_line {
             let line_len = buffer.line_byte_len(line);
-            if line_len < spec.insert_col {
+            let reached = match &spec.rows {
+                Some(rows) => rows.contains(&line),
+                None => line_len >= spec.insert_col,
+            };
+            if !reached {
                 continue;
             }
             edits.push(lattice_protocol::edit::Edit::insert(
@@ -26362,11 +26601,22 @@ impl Editor {
         let left_col = sel.anchor.byte.min(sel.head.byte);
         let right_col = sel.anchor.byte.max(sel.head.byte);
         let insert_col = if append { right_col + 1 } else { left_col };
+        // `:h v_b_I`: `I` inserts "provided the line extends into the
+        // block", so a row exactly as long as the left column is left
+        // alone — the length rule below would admit it. `A` keeps that
+        // rule: it appends after the block on rows that reach its end.
+        let rows = (!append).then(|| {
+            let buffer = &self.document.snapshot().buffer;
+            (start_line..=end_line)
+                .filter(|&line| buffer.line_byte_len(line) > left_col)
+                .collect()
+        });
         self.pending_block_insert = Some(crate::state::PendingBlockInsert {
             start_line,
             end_line,
             insert_col,
             live_edits: 0,
+            rows,
         });
         let line_len = self.document.snapshot().buffer.line_byte_len(start_line);
         let cursor_col = insert_col.min(line_len);
@@ -56160,6 +56410,50 @@ mod tests {
     /// than the pane behind it — must scroll the popup sideways. The
     /// horizontal clamp measured the pane, saw the cursor inside it, and
     /// left `leftcol` at 0 with the caret past the popup's right edge.
+    /// `$` on a `nowrap` line ending in a concealed link must measure the
+    /// line as painted. The horizontal clamp read cell rows, which carry no
+    /// conceal ranges, so it counted the hidden URL and scrolled `leftcol`
+    /// to a column past the visible text — the caret jumped away from the
+    /// end of the label it should sit beside.
+    #[test]
+    fn dollar_on_a_concealed_link_does_not_scroll_past_the_label() {
+        use crate::display_matrix::{DisplayChunk, DisplayLine, DisplayMatrix, DisplayRun};
+        let url = format!("{}.md", "x".repeat(60));
+        let text = format!("see [a]({url})");
+        let mut editor = Editor::boot(lattice_core::Document::from_text(&format!("{text}\n")));
+        editor.option_cache.wrap_lines = false;
+        editor.pane_tree.active_mut().viewport_width = 40;
+        editor.viewport_height = 10;
+        // What markdown's rules hide: `[` and `](…)`, in char space.
+        let len = text.chars().count() as u32;
+        let conceals = [(4u32, 5u32), (6u32, len)];
+        let row = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from("see a"),
+            runs: std::sync::Arc::from([] as [DisplayRun; 0]),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from(conceals),
+            col_count: 5,
+            fold: None,
+        };
+        let chunk = DisplayChunk::new(0, vec![row], lattice_cells::MatrixVersion::default());
+        editor
+            .display_matrix_for(editor.active_buffer_id())
+            .store(std::sync::Arc::new(DisplayMatrix::whole_doc(
+                std::sync::Arc::new(chunk),
+                1,
+            )));
+
+        editor.cursor = lattice_protocol::Position::new(0, len - 1);
+        editor.ensure_cursor_horizontally_visible();
+        assert_eq!(
+            editor.cursor_display_col(),
+            5,
+            "the hidden `)` sits just past the label, as on both renderers"
+        );
+        assert_eq!(editor.leftcol, 0, "a five-column line needs no scroll");
+    }
+
     #[test]
     fn dollar_in_a_focused_popup_scrolls_it_horizontally() {
         use crate::popup::PopupPlacement;

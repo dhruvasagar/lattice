@@ -1,0 +1,93 @@
+# PRL.7: publish a lattice plugin as a GitHub release a user can install
+# without building it — `require-release` in their `init.rs`
+# (docs/dev/architecture/plugin-distribution.md §8).
+#
+# A plugin repository calls this from its own workflow on a version tag:
+#
+#   on:
+#     push:
+#       tags: ['v*']
+#   jobs:
+#     release:
+#       uses: dhruvasagar/lattice/.github/workflows/plugin-release.yml@main
+#       permissions:
+#         contents: write
+#
+# It checks the tag is the crate's version, builds the plugin with lattice's
+# `scripts/build-plugin.sh` — the same recipe the loader's round-trip test
+# installs from — and creates the release with the tag's message as its body
+# and two files attached: `<id>-<version>-api<M>.<m>.wasm` and its `.sha256`.
+# The API generation in the name comes from the plugin's locked `lattice-wit`,
+# never from a hand-written value.
+name: plugin-release
+
+on:
+  workflow_call:
+    inputs:
+      plugin-dir:
+        description: The plugin's cargo project, relative to the repository root.
+        type: string
+        default: "."
+      lattice-ref:
+        description: The lattice revision whose build script is used.
+        type: string
+        default: main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+          fetch-depth: 0
+
+      - uses: actions/checkout@v4
+        with:
+          repository: dhruvasagar/lattice
+          ref: ${{ inputs.lattice-ref }}
+          path: lattice
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-wasip2
+          rustflags: ""
+
+      - name: The tag is the crate's version
+        shell: bash
+        working-directory: plugin/${{ inputs.plugin-dir }}
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME is not the crate version v$version"
+            exit 1
+          fi
+
+      - name: Build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          lattice/scripts/build-plugin.sh "plugin/${{ inputs.plugin-dir }}" dist
+          ls -l dist
+
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          # `actions/checkout` can leave an annotated tag lightweight; fetch it
+          # as itself so its message — the release notes — is there to read.
+          git -C plugin fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+          git -C plugin tag -l --format='%(contents)' "$tag" > notes.md
+          [ -s notes.md ] || echo "Release $tag" > notes.md
+          gh release create "$tag" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$tag" \
+            --notes-file notes.md

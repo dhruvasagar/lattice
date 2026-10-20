@@ -333,6 +333,70 @@ impl std::fmt::Display for OptionParseError {
 
 impl std::error::Error for OptionParseError {}
 
+/// The name of the wasm custom section a plugin's manifest is embedded in.
+/// The loader reads it before instantiating anything; see
+/// `docs/dev/architecture/plugin-manifest.md` §1.
+pub const MANIFEST_SECTION: &str = "lattice-manifest";
+
+/// Embed this plugin's manifest in the component, so the `.wasm` is the whole
+/// plugin and no `plugin.toml` ships beside it.
+///
+/// The argument is the manifest's TOML text — the same schema `plugin.toml`
+/// uses (`id`, `provides`, `capabilities`, `min_lattice`, …). It is stored as
+/// the [`MANIFEST_SECTION`] custom section and parsed by the loader at load
+/// time, so a malformed manifest is a named load error in `:plugins`, not a
+/// compile error.
+///
+/// Invoke it once, at the crate root. A second invocation is a compile error
+/// (`LATTICE_MANIFEST` defined twice): a component has one manifest.
+///
+/// ```
+/// #![deny(unsafe_code)]
+///
+/// lattice_plugin_sdk::manifest!(
+///     r#"
+///     id = "org"
+///     provides = ["grammar", "config"]
+///     capabilities = ["fs:write:{org.directory|~/org}", "state:write"]
+///     min_lattice = "0.9.10"
+///     "#
+/// );
+/// # fn main() {
+/// # assert!(std::str::from_utf8(&LATTICE_MANIFEST).unwrap().contains("id = \"org\""));
+/// # }
+/// ```
+///
+/// Placing a static in a named link section is an `unsafe` attribute, which
+/// the expansion allows on its own item, so a crate that `deny`s unsafe code
+/// still builds. One that `forbid`s it cannot: `forbid` cannot be allowed
+/// locally — write `plugin.toml` instead, or relax it to `deny`.
+#[macro_export]
+macro_rules! manifest {
+    ($toml:expr $(,)?) => {
+        // The copy is spelled out rather than calling a helper here, so the
+        // expansion needs nothing from this crate but its name, and nothing
+        // from it is reachable at run time.
+        #[doc(hidden)]
+        #[allow(unsafe_code)]
+        // Only a wasm component carries the section. On a native target —
+        // where only tests and doctests build this — the name is not even
+        // valid everywhere: Mach-O wants `segment,section`.
+        #[cfg_attr(target_family = "wasm", unsafe(link_section = "lattice-manifest"))]
+        #[used]
+        static LATTICE_MANIFEST: [u8; { $toml }.len()] = {
+            const TEXT: &str = $toml;
+            let bytes = TEXT.as_bytes();
+            let mut out = [0u8; TEXT.len()];
+            let mut i = 0;
+            while i < out.len() {
+                out[i] = bytes[i];
+                i += 1;
+            }
+            out
+        };
+    };
+}
+
 /// Implementation detail used by the generated `#[derive(PluginEvent)]` code so a
 /// consumer depends only on `lattice-plugin-sdk` (the SDK owns the `rmp-serde`
 /// dependency, not every plugin). Not part of the stable API.

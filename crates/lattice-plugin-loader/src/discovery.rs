@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use lattice_plugin_host::PluginManifest;
 
+use crate::source_record::SourceRecord;
+
 /// The manifest filename inside a plugin directory.
 const MANIFEST_FILE: &str = "plugin.toml";
 
@@ -231,15 +233,19 @@ pub fn discover_reporting(dir: &Path) -> (Vec<DiscoveredPlugin>, Vec<MalformedPl
 }
 
 /// The manifest id of the plugin in `plugin_dir`, when it has a manifest that
-/// parses — without requiring a component beside it. For naming a plugin
-/// that cannot be loaded yet (its build is about to run, or just failed).
+/// parses — for naming a plugin that cannot be loaded yet (its build is about
+/// to run, or just failed). A `plugin.toml` answers without a component; a
+/// manifest embedded in the component answers once one has been built.
 pub fn manifest_id(plugin_dir: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(plugin_dir.join(MANIFEST_FILE)).ok()?;
-    Some(PluginManifest::from_toml_str(&text).ok()?.id)
+    if let Ok(text) = std::fs::read_to_string(plugin_dir.join(MANIFEST_FILE)) {
+        return Some(PluginManifest::from_toml_str(&text).ok()?.id);
+    }
+    let bytes = std::fs::read(sole_wasm(plugin_dir).ok()?).ok()?;
+    Some(PluginManifest::from_component_bytes(&bytes).ok()??.id)
 }
 
 /// Is `plugin_dir` a plugin whose **source lives in the directory itself** —
-/// a manifest beside a cargo project?
+/// a cargo project in the plugins directory?
 ///
 /// That is what `--scaffold-plugin` writes and what a plugin under
 /// development looks like. It is the same shape as the user's `init/`
@@ -247,8 +253,13 @@ pub fn manifest_id(plugin_dir: &Path) -> Option<String> {
 /// with no resolver and no network. A plugin *installed* by `require` is
 /// staged without its source (that stays in the source cache), so this never
 /// matches one.
+///
+/// PMF.10: the cargo project alone decides it. A plugin whose manifest is
+/// embedded (`manifest!`) has no `plugin.toml` until it is built — and not
+/// after either — so requiring one would leave a fresh scaffold unbuilt and
+/// invisible.
 pub fn is_in_place_project(plugin_dir: &Path) -> bool {
-    plugin_dir.join(MANIFEST_FILE).is_file() && plugin_dir.join("Cargo.toml").is_file()
+    plugin_dir.join("Cargo.toml").is_file()
 }
 
 /// Parse a single explicitly-named plugin directory — the `:plugin-load <path>`
@@ -259,35 +270,83 @@ pub fn discover_one(plugin_dir: &Path) -> Result<DiscoveredPlugin, String> {
     match load_one(plugin_dir) {
         Ok(Some(plugin)) => Ok(plugin),
         Ok(None) => Err(format!(
-            "no `{MANIFEST_FILE}` in {} (not a plugin directory)",
+            "no `{MANIFEST_FILE}` and no component in {} (not a plugin directory)",
             plugin_dir.display()
         )),
         Err(reason) => Err(reason),
     }
 }
 
-/// Parse a single plugin directory. `Ok(None)` if it has no manifest (not a
-/// plugin dir); `Err(reason)` if it has a manifest but is otherwise malformed
-/// (bad TOML, missing/ambiguous component) — the caller logs the reason.
-fn load_one(plugin_dir: &Path) -> Result<Option<DiscoveredPlugin>, String> {
+/// Parse a single plugin directory. `Ok(None)` if it is not a plugin dir (no
+/// manifest file and no component); `Err(reason)` if it is one but cannot load
+/// (bad manifest, missing/ambiguous component, needs a newer editor) — the
+/// caller logs the reason.
+///
+/// PMF.1: the manifest is the component's embedded `lattice-manifest` section
+/// when it has one, else `plugin.toml` beside it. When both exist the embedded
+/// one wins — the component is what was built, the file only what was copied.
+pub(crate) fn load_one(plugin_dir: &Path) -> Result<Option<DiscoveredPlugin>, String> {
     let manifest_path = plugin_dir.join(MANIFEST_FILE);
-    if !manifest_path.exists() {
-        return Ok(None);
-    }
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("cannot read {MANIFEST_FILE}: {e}"))?;
-    let manifest = PluginManifest::from_toml_str(&manifest_text)
-        .map_err(|e| format!("invalid manifest: {e}"))?;
-
-    let component_path = sole_wasm(plugin_dir)?;
+    let has_file = manifest_path.exists();
+    let component_path = match sole_wasm(plugin_dir) {
+        Ok(path) => path,
+        // No manifest file and no single component: not a plugin directory.
+        Err(_) if !has_file => return Ok(None),
+        Err(reason) => return Err(reason),
+    };
     let component_bytes = std::fs::read(&component_path)
         .map_err(|e| format!("cannot read component {}: {e}", component_path.display()))?;
+    let embedded = PluginManifest::from_component_bytes(&component_bytes)
+        .map_err(|e| format!("invalid embedded manifest: {e}"))?;
+    let source = crate::source_record::read(plugin_dir);
+    // A `Prebuilt` download is the least-known code the editor runs, and its
+    // install gives it a synthesised manifest with no capabilities on purpose
+    // (`resolve_prebuilt`). A component's own manifest must not undo that by
+    // winning over the file: the file stays authoritative, and without one the
+    // embedded manifest loads with its capability requests dropped.
+    let prebuilt = matches!(source, SourceRecord::Prebuilt { .. });
+    let embedded = match embedded {
+        Some(_) if prebuilt && has_file => None,
+        Some(mut manifest) if prebuilt => {
+            manifest.requested.clear();
+            Some(manifest)
+        }
+        other => other,
+    };
+    let manifest = match embedded {
+        Some(manifest) => {
+            if has_file {
+                tracing::debug!(
+                    dir = %plugin_dir.display(),
+                    "component carries its own manifest; {MANIFEST_FILE} ignored"
+                );
+            }
+            manifest
+        }
+        None if has_file => {
+            let manifest_text = std::fs::read_to_string(&manifest_path)
+                .map_err(|e| format!("cannot read {MANIFEST_FILE}: {e}"))?;
+            PluginManifest::from_toml_str(&manifest_text)
+                .map_err(|e| format!("invalid manifest: {e}"))?
+        }
+        None => {
+            return Err(format!(
+                "no manifest: neither a {MANIFEST_FILE} nor one embedded in {}",
+                component_path.display()
+            ));
+        }
+    };
+    // PMF.1: refuse by name a plugin that needs a newer editor, rather than
+    // failing on the first manifest feature this one does not understand.
+    if let Some(reason) = manifest.requires_newer_lattice(env!("CARGO_PKG_VERSION")) {
+        return Err(reason);
+    }
 
     Ok(Some(DiscoveredPlugin {
         manifest,
         component_bytes,
         dir: plugin_dir.to_path_buf(),
-        source: crate::source_record::read(plugin_dir),
+        source,
     }))
 }
 
@@ -314,7 +373,7 @@ fn sole_wasm(plugin_dir: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::{core_plugins_dir_from, invoked_exe_from};
+    use super::{core_plugins_dir_from, invoked_exe_from, is_in_place_project};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -503,5 +562,15 @@ mod tests {
     fn got_matches(exe: &Path, expected_existing: &Path) -> bool {
         let got = core_plugins_dir_from(None, None, &[exe]).unwrap();
         got.canonicalize().ok() == expected_existing.canonicalize().ok()
+    }
+
+    /// PMF.10: a fresh `manifest!` scaffold has a `Cargo.toml` and no
+    /// `plugin.toml`, and must still be built in place.
+    #[test]
+    fn a_cargo_project_without_a_plugin_toml_is_an_in_place_project() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_in_place_project(dir.path()), "an empty dir is not");
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        assert!(is_in_place_project(dir.path()));
     }
 }

@@ -155,6 +155,24 @@ Dotted names need quoting in TOML (`"lsp.log.display"`).
 Unknown keys produce a startup warning rather than an error —
 the editor still launches.
 
+**A plugin's options go here too**, though the plugin has not
+loaded when this file is read. A key under a namespace nothing
+has registered yet is held, and applied when the plugin declares
+the option (and again if the plugin reloads):
+
+```toml
+[org]
+directory = "~/notes"
+roam-directory = "~/notes/roam"
+```
+
+So `[org]` is not an unknown-option warning at startup. If no
+plugin turns out to declare a held name — usually a typo in the
+plugin's namespace — `*messages*` says so once every plugin has
+loaded. A typo in a namespace that *is* registered
+(`ui.nerd_fontz`) still warns at startup. When `lattice.toml` and
+`init.rs` both set an option, `init.rs` wins: it is read later.
+
 ### Runtime tweaks: `:set`
 
 Use `:set` for mid-session changes. The change applies for the

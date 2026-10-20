@@ -1121,6 +1121,28 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // `:files-refresh`: re-read the project's file list now, rather than on
+    // the next `:files` — after creating files outside the editor. Inside the
+    // picker the same thing is `<C-o>`.
+    let _files_refresh = registry.register_ex_command(
+        "ex:files-refresh",
+        "Re-read the project's file list for `:files` now (`:files-refresh`) — after files were created or removed outside the editor. `<C-o>` does the same inside the picker.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| {
+                Ok(Effect::AppAction(
+                    crate::app_effect::AppEffect::RefreshPickerSource {
+                        source: "files".into(),
+                    },
+                ))
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     // `:files [root]` and `:recent` are short aliases for
     // `:picker files [root]` / `:picker recent`. They emit
     // the canonical `Effect::OpenPicker` so they go through

@@ -788,10 +788,25 @@ fn stage(
                 .map_err(|e| format!("stage manifest → {}: {e}", manifest_dst.display()))?;
         }
     } else {
-        return Err(format!(
-            "source has no plugin.toml at {}",
-            manifest_src.display()
-        ));
+        // PMF.10: a source that dropped its `plugin.toml` for an embedded
+        // manifest must not leave the copy staged by an earlier build behind.
+        // The embedded one would win anyway; a stale file is only confusing.
+        // It cannot be the source's own: the source has none, which is how we
+        // got here.
+        let _ = std::fs::remove_file(dir.join("plugin.toml"));
+        // PMF.1: no `plugin.toml` is fine when the component carries its
+        // manifest — discovery reads it from the artifact.
+        let embedded = std::fs::read(artifact).ok().and_then(|bytes| {
+            lattice_plugin_host::PluginManifest::from_component_bytes(&bytes)
+                .ok()
+                .flatten()
+        });
+        if embedded.is_none() {
+            return Err(format!(
+                "source has no plugin.toml at {}, and its component embeds no manifest",
+                manifest_src.display()
+            ));
+        }
     }
     std::fs::write(stamp_path(user_root, name), stamp.render())
         .map_err(|e| format!("write build stamp: {e}"))?;
@@ -810,6 +825,9 @@ mod tests {
     struct FakeBuilder {
         calls: AtomicUsize,
         fail: bool,
+        /// Produce a component that embeds `id = "demo"` (PMF.1), instead
+        /// of a stub with no manifest.
+        embed: bool,
     }
 
     impl FakeBuilder {
@@ -817,12 +835,21 @@ mod tests {
             Self {
                 calls: AtomicUsize::new(0),
                 fail: false,
+                embed: false,
             }
         }
         fn failing() -> Self {
             Self {
                 calls: AtomicUsize::new(0),
                 fail: true,
+                embed: false,
+            }
+        }
+        fn embedding() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                fail: false,
+                embed: true,
             }
         }
         fn calls(&self) -> usize {
@@ -844,7 +871,21 @@ mod tests {
                 .parent()
                 .unwrap_or(source_dir)
                 .join("fake-build-out.wasm");
-            std::fs::write(&out, b"\0asm-stub").unwrap();
+            if self.embed {
+                // A component header, then a top-level `lattice-manifest`
+                // custom section — all the manifest reader looks at.
+                let mut bytes = b"\0asm\x0d\x00\x01\x00".to_vec();
+                let name = b"lattice-manifest";
+                let payload = b"id = \"demo\"\n";
+                bytes.push(0);
+                bytes.push((1 + name.len() + payload.len()) as u8);
+                bytes.push(name.len() as u8);
+                bytes.extend_from_slice(name);
+                bytes.extend_from_slice(payload);
+                std::fs::write(&out, bytes).unwrap();
+            } else {
+                std::fs::write(&out, b"\0asm-stub").unwrap();
+            }
             Ok(out)
         }
     }
@@ -1464,6 +1505,35 @@ mod tests {
         let out = build_plugin(&b, &src, "demo", &user, true);
         assert!(matches!(out, BuildOutcome::Fresh { .. }));
         assert_eq!(b.calls(), 1);
+    }
+
+    /// PMF.10: a source that moves its manifest into the component (and
+    /// drops `plugin.toml`) builds, and the copy staged by the last build is
+    /// removed rather than left to contradict it.
+    #[test]
+    fn a_source_that_embeds_its_manifest_stages_no_plugin_toml() {
+        let root = tempdir("embedded");
+        let src = source(&root);
+        let user = root.join("user");
+        assert!(matches!(
+            build_plugin(&FakeBuilder::ok(), &src, "demo", &user, false),
+            BuildOutcome::Fresh { .. }
+        ));
+        assert!(user.join("demo").join("plugin.toml").is_file());
+
+        std::fs::remove_file(src.join("plugin.toml")).unwrap();
+        std::fs::write(src.join("src").join("lib.rs"), "// v2: manifest!").unwrap();
+        let out = build_plugin(&FakeBuilder::embedding(), &src, "demo", &user, false);
+        assert!(matches!(out, BuildOutcome::Fresh { .. }), "{out:?}");
+        assert!(
+            !user.join("demo").join("plugin.toml").exists(),
+            "the stale staged manifest is gone"
+        );
+        assert_eq!(
+            crate::discovery::manifest_id(&user.join("demo")).as_deref(),
+            Some("demo"),
+            "the plugin is still named, from the component"
+        );
     }
 
     #[test]

@@ -42,13 +42,44 @@ fn tier_label(tier: TrustTier) -> &'static str {
 /// The capability cell: granted capabilities in wire form (`Capability`'s
 /// `Display`), then any denied ones in a trailing `(denied: …)` note. Empty
 /// grant renders as `—` so the column never looks blank-by-accident.
-fn caps_cell(granted: &[Capability], denied: &[Capability]) -> String {
-    let join = |caps: &[Capability]| {
-        caps.iter()
-            .map(|c| c.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
+///
+/// PMF.6: a grant that follows an option is shown resolved — the path it gave
+/// and the option that decides it (`fs:write ~/notes (org.directory)`, or
+/// `(org.directory, default)` while the user has not set it) — because the
+/// `{org.directory|~/org}` template says what the plugin *asked*, not what it
+/// can touch.
+fn caps_cell(
+    granted: &[Capability],
+    denied: &[Capability],
+    option_bound: &[lattice_plugin_host::capability::OptionBoundGrant],
+) -> String {
+    let show = |c: &Capability| match c {
+        Capability::FsReadOption(op) | Capability::FsWriteOption(op) => {
+            let kind = if matches!(c, Capability::FsWriteOption(_)) {
+                "fs:write"
+            } else {
+                "fs:read"
+            };
+            match option_bound.iter().find(|g| g.option == op.option) {
+                Some(g) => match &g.path {
+                    Some(path) if g.from_default => format!(
+                        "{kind} {} ({}, default)",
+                        lattice_core::home::contract_tilde(path),
+                        g.option
+                    ),
+                    Some(path) => format!(
+                        "{kind} {} ({})",
+                        lattice_core::home::contract_tilde(path),
+                        g.option
+                    ),
+                    None => format!("{kind} — ({} not set)", g.option),
+                },
+                None => c.to_string(),
+            }
+        }
+        _ => c.to_string(),
     };
+    let join = |caps: &[Capability]| caps.iter().map(show).collect::<Vec<_>>().join(", ");
     let mut cell = if granted.is_empty() {
         "—".to_string()
     } else {
@@ -333,7 +364,7 @@ pub fn render_status_styled(
         // Capabilities and the crash suffix keep the default foreground: the
         // cell is variable-length prose, and the crash text is already the
         // longest thing on the row.
-        line.push_str(&caps_cell(&p.granted, &p.denied));
+        line.push_str(&caps_cell(&p.granted, &p.denied, &p.option_bound));
         line.push_str(&crash_suffix(&p.health));
         out.push_str(&line);
         out.push('\n');
@@ -588,6 +619,7 @@ mod tests {
             tier,
             granted: vec![],
             denied: vec![],
+            option_bound: vec![],
             health,
             source: SourceRecord::Unknown,
             build: BuildState::NotBuilt,
@@ -1179,6 +1211,69 @@ mod tests {
             "granted cap in wire form"
         );
         assert!(row.contains("(denied: proc:spawn)"), "denied cap noted");
+    }
+
+    /// PMF.6: a grant that follows an option shows the path it resolved to and
+    /// the option that decides it, not the `{option|default}` template.
+    #[test]
+    fn option_bound_grants_show_their_path_and_option() {
+        use lattice_plugin_host::capability::OptionBoundGrant;
+        let home = std::path::PathBuf::from(lattice_core::home::expand_tilde("~"));
+        let template = |o: &str| {
+            Capability::FsWriteOption(lattice_plugin_host::OptionPath {
+                option: o.into(),
+                default: Some(home.join("org")),
+            })
+        };
+        let mut s = status("org", TrustTier::UserInstalled, PluginHealth::Healthy);
+        s.granted = vec![
+            template("org.directory"),
+            template("org.roam-directory"),
+            template("org.archive-directory"),
+        ];
+        s.option_bound = vec![
+            OptionBoundGrant {
+                option: "org.directory".into(),
+                path: Some(home.join("notes")),
+                from_default: false,
+                write: true,
+            },
+            OptionBoundGrant {
+                option: "org.roam-directory".into(),
+                path: Some(home.join("org").join("roam")),
+                from_default: true,
+                write: true,
+            },
+            OptionBoundGrant {
+                option: "org.archive-directory".into(),
+                path: None,
+                from_default: false,
+                write: true,
+            },
+        ];
+        let out = render_status(&[s]);
+        let row = out.lines().find(|l| l.contains("org.directory")).unwrap();
+        // `contract_tilde` shows the platform's separator (`~\notes` on
+        // Windows), as everywhere else a path is displayed.
+        let sep = std::path::MAIN_SEPARATOR;
+        assert!(
+            row.contains(&format!("fs:write ~{sep}notes (org.directory)")),
+            "{row}"
+        );
+        assert!(
+            row.contains(&format!(
+                "fs:write ~{sep}org{sep}roam (org.roam-directory, default)"
+            )),
+            "{row}"
+        );
+        assert!(
+            row.contains("fs:write — (org.archive-directory not set)"),
+            "{row}"
+        );
+        assert!(
+            !row.contains('{'),
+            "the template is not what the user sees: {row}"
+        );
     }
 
     #[test]

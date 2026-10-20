@@ -611,6 +611,10 @@ fn translate_picker(chord: KeyChord) -> Action {
             // prefix in Normal mode (`<C-h>k`, `<C-h>m`) and emacs's in the
             // minibuffer, so it means the same thing here.
             KeyKind::Char('h') => Action::PickerHelp,
+            // Re-read the list. Not `<C-r>` (yank-history insert, vim's
+            // `c_CTRL-R`), `<C-l>` (descend) or `<C-g>` (the editor-wide
+            // cancel); `<C-o>` has no competing meaning in a prompt.
+            KeyKind::Char('o') => Action::PickerRefresh,
             _ => Action::None,
         };
     }

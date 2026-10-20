@@ -32,6 +32,25 @@ The derive produces both the *schema* the editor reads to type-check and
 document your options, and the flattening into the arena representation the
 config seam takes across the component boundary.
 
+### One file: `manifest!`
+
+```rust
+lattice_plugin_sdk::manifest!(
+    r#"
+    id = "my-plugin"
+    provides = ["config"]
+    capabilities = ["fs:write:{my-plugin.directory|~/notes}"]
+    min_lattice = "0.9.10"
+    "#
+);
+```
+
+The manifest — the same TOML a `plugin.toml` holds — is embedded in the
+component as the `lattice-manifest` custom section, so the `.wasm` is the
+whole plugin. It builds under `#![deny(unsafe_code)]`. Embedded manifests are
+read by lattice 0.9.10 and later; declare `min_lattice` so an older editor
+refuses the plugin by name rather than not finding it.
+
 ## The version is the ABI generation
 
 This crate shares one version with `lattice-wit` and

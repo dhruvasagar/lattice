@@ -88,12 +88,71 @@ pub enum Capability {
     /// (`register-binding`'s contract), and a refused chord is a decision
     /// rather than a broken wire.
     GrammarChord,
+    /// PMF.3: read access to the path one of the plugin's own options names
+    /// (`fs:read:{<option>|<default>}`), resolved when the grant is made.
+    FsReadOption(OptionPath),
+    /// PMF.3: read + write access to the path one of the plugin's own options
+    /// names (`fs:write:{org.directory|~/org}`). See [`OptionPath`].
+    FsWriteOption(OptionPath),
+}
+
+/// PMF.3: a filesystem grant that follows a configuration option rather than
+/// naming a path (`plugin-manifest.md` §2).
+///
+/// A path in a manifest is the user's data in a plugin-owned file — org's
+/// shipped grant was its author's notes directory. A user who sets
+/// `org.directory` has already said where their notes are; naming the option
+/// makes that the grant too, so no path ships in the plugin.
+///
+/// Resolved when the grant is made: the option's value if it has one, else
+/// [`Self::default`]; `~` expands; an explicitly empty value grants nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionPath {
+    /// The option, fully named (`org.directory`). Must be in the plugin's own
+    /// namespace (`<id>.`), checked when the manifest is parsed.
+    pub option: String,
+    /// The path to use while the option has no value — the plugin's default,
+    /// stated here because the grant is made before the plugin registers its
+    /// options. `None` (`{org.directory}`) grants nothing until it is set.
+    pub default: Option<PathBuf>,
+}
+
+impl OptionPath {
+    /// `{name}` or `{name|default}` — the part after `fs:read:` / `fs:write:`.
+    fn parse(p: &str) -> Option<Self> {
+        let inner = p.strip_prefix('{')?.strip_suffix('}')?;
+        let (name, default) = match inner.split_once('|') {
+            Some((n, d)) => (n, Some(d)),
+            None => (inner, None),
+        };
+        let name = name.trim();
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return None;
+        }
+        let default = default
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(|d| PathBuf::from(expand_tilde(d)));
+        Some(Self {
+            option: name.to_string(),
+            default,
+        })
+    }
+}
+
+impl std::fmt::Display for OptionPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.default {
+            Some(d) => write!(f, "{{{}|{}}}", self.option, d.display()),
+            None => write!(f, "{{{}}}", self.option),
+        }
+    }
 }
 
 /// The string `s` was not a recognised capability form.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` / `net:http:<host>` / `proc:spawn` / `state:write` / `grammar:chord`)"
+    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` (a path, or `{{<option>|<default>}}`) / `net:http:<host>` / `proc:spawn` / `state:write` / `grammar:chord`)"
 )]
 pub struct CapabilityParseError(pub String);
 
@@ -111,6 +170,17 @@ impl FromStr for Capability {
             // an unexpanded tilde does not narrow the grant, it VOIDS it, and
             // every write is refused with a message that says the path is
             // outside the granted paths. Which is true, and useless.
+            // PMF.3: `{option|default}` names an option instead of a path. A
+            // `{` that does not parse as one is an error, not a path that
+            // happens to start with a brace.
+            (Some("fs"), Some(kind @ ("read" | "write")), Some(p)) if p.starts_with('{') => {
+                let op = OptionPath::parse(p).ok_or_else(|| CapabilityParseError(s.to_string()))?;
+                Ok(if kind == "read" {
+                    Capability::FsReadOption(op)
+                } else {
+                    Capability::FsWriteOption(op)
+                })
+            }
             (Some("fs"), Some("read"), Some(p)) if !p.is_empty() => {
                 Ok(Capability::FsRead(PathBuf::from(expand_tilde(p))))
             }
@@ -137,6 +207,8 @@ impl std::fmt::Display for Capability {
             Capability::ProcSpawn => f.write_str("proc:spawn"),
             Capability::StateWrite => f.write_str("state:write"),
             Capability::GrammarChord => f.write_str("grammar:chord"),
+            Capability::FsReadOption(op) => write!(f, "fs:read:{op}"),
+            Capability::FsWriteOption(op) => write!(f, "fs:write:{op}"),
         }
     }
 }
@@ -424,6 +496,13 @@ pub struct PluginManifest {
     /// place that would have explained it. The singular `default_mode` key is
     /// still accepted and folds in here; a manifest may use either or both.
     pub default_modes: Vec<String>,
+    /// PMF.1: the oldest editor this plugin runs on (`min_lattice = "0.9.10"`),
+    /// as `(major, minor, patch)`. A manifest-format change (an embedded
+    /// manifest, an option-bound grant) is not a plugin-API change, so the WIT
+    /// version cannot say an older editor will misread the plugin; this does.
+    /// `None` — every plugin written before it existed — means any editor that
+    /// can read the manifest.
+    pub min_lattice: Option<(u64, u64, u64)>,
 }
 
 /// The on-disk manifest shape. Deserialised first, then validated into
@@ -452,6 +531,9 @@ struct RawManifest {
     /// on-by-default mode. Merged with `default_mode`; either key alone works.
     #[serde(default)]
     default_modes: Vec<String>,
+    /// PMF.1: the oldest editor version the plugin runs on (`"0.9.10"`).
+    #[serde(default)]
+    min_lattice: Option<String>,
 }
 
 /// Why a manifest failed to parse. Every failure is a value — the host logs +
@@ -492,6 +574,30 @@ pub enum ManifestError {
         "unrecognised plugin seam `{0}` (expected picker-source / completion-source / grammar / events / modes / config / decorations / keymap)"
     )]
     Seam(String),
+
+    /// PMF.1: `min_lattice` was not a `major.minor.patch` version.
+    #[error("`min_lattice` `{0}` is not a version (expected `major.minor.patch`, e.g. `0.9.10`)")]
+    MinLattice(String),
+
+    /// PMF.1: an embedded `lattice-manifest` section was not UTF-8 text.
+    #[error("the component's embedded `lattice-manifest` section is not UTF-8 text")]
+    EmbeddedNotUtf8,
+
+    /// PMF.3: an option-bound grant named an option outside the plugin's own
+    /// namespace. A plugin's grant may follow ITS configuration only — naming
+    /// another plugin's option (or a core one) would let that setting widen
+    /// this plugin's reach without the user knowing the two were linked.
+    #[error(
+        "capability `{capability}` names option `{option}`, which is not one of plugin `{id}`'s own (`{id}.…`)"
+    )]
+    ForeignOption {
+        /// The plugin's id.
+        id: String,
+        /// The option it named.
+        option: String,
+        /// The capability as written.
+        capability: String,
+    },
 }
 
 /// Is `id` a single, safe path component — usable as a directory name that
@@ -531,6 +637,7 @@ impl PluginManifest {
             provides: Vec::new(),
             doc: None,
             default_modes: Vec::new(),
+            min_lattice: None,
         }
     }
 
@@ -552,6 +659,19 @@ impl PluginManifest {
             .iter()
             .map(|c| Capability::from_str(c))
             .collect::<Result<Vec<_>, _>>()?;
+        // PMF.3: an option-bound grant follows the plugin's own configuration.
+        let own = format!("{}.", raw.id);
+        for cap in &requested {
+            if let Capability::FsReadOption(op) | Capability::FsWriteOption(op) = cap
+                && !op.option.starts_with(&own)
+            {
+                return Err(ManifestError::ForeignOption {
+                    id: raw.id.clone(),
+                    option: op.option.clone(),
+                    capability: cap.to_string(),
+                });
+            }
+        }
         let mut editor = CapabilitySet::empty();
         for name in &raw.editor_capabilities {
             editor |= parse_editor_capability(name)
@@ -562,7 +682,14 @@ impl PluginManifest {
             .iter()
             .map(|s| PluginSeam::from_str(s).map_err(|()| ManifestError::Seam(s.clone())))
             .collect::<Result<Vec<_>, _>>()?;
+        let min_lattice = match raw.min_lattice.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(v) => {
+                Some(parse_version(v).ok_or_else(|| ManifestError::MinLattice(v.to_string()))?)
+            }
+        };
         Ok(Self {
+            min_lattice,
             id: raw.id,
             requested,
             editor_capabilities: editor,
@@ -586,6 +713,170 @@ impl PluginManifest {
                 }),
         })
     }
+
+    /// PMF.1: the manifest a component carries in its `lattice-manifest`
+    /// custom section, if it carries one.
+    ///
+    /// `Ok(None)` — the component has no such section, and its manifest is a
+    /// `plugin.toml` beside it, as every plugin before PMF. `Err` — it has one
+    /// that does not parse, which is a named load error like a bad
+    /// `plugin.toml`, never a panic.
+    pub fn from_component_bytes(bytes: &[u8]) -> Result<Option<Self>, ManifestError> {
+        let Some(payload) = embedded_manifest(bytes) else {
+            return Ok(None);
+        };
+        let text = std::str::from_utf8(payload).map_err(|_| ManifestError::EmbeddedNotUtf8)?;
+        Self::from_toml_str(text).map(Some)
+    }
+
+    /// PMF.1: the refusal when this plugin needs a newer editor than
+    /// `running` (`"0.9.9"`), or `None` when it runs here.
+    pub fn requires_newer_lattice(&self, running: &str) -> Option<String> {
+        let need = self.min_lattice?;
+        let have = parse_version(running)?;
+        (need > have).then(|| {
+            format!(
+                "{} needs lattice ≥ {}.{}.{}; this is {running}",
+                self.id, need.0, need.1, need.2
+            )
+        })
+    }
+}
+
+/// `major.minor.patch`, ignoring any `-pre` / `+build` suffix on the patch.
+fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = v.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch_raw = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let patch_digits: String = patch_raw.chars().take_while(char::is_ascii_digit).collect();
+    if patch_digits.is_empty() {
+        return None;
+    }
+    Some((major, minor, patch_digits.parse().ok()?))
+}
+
+/// PMF.1: the custom section a component's manifest is embedded in.
+pub const MANIFEST_SECTION: &str = "lattice-manifest";
+
+/// The payload of the first `lattice-manifest` custom section in `bytes` — a
+/// core module, or a component, where it sits inside the wrapped core module
+/// (`#[link_section]` puts it there) or at the component's top level (a
+/// post-build tool may put it there). `None` when absent or the bytes are not
+/// wasm.
+///
+/// A walk over section headers only: an id byte and a LEB128 length, skipping
+/// each body, descending only into a component's core-module sections. Every
+/// read is bounds-checked, so malformed input ends the walk rather than
+/// panicking.
+fn embedded_manifest(bytes: &[u8]) -> Option<&[u8]> {
+    const MAGIC: &[u8] = b"\0asm";
+    if bytes.len() < 8 || &bytes[..4] != MAGIC {
+        return None;
+    }
+    // Bytes 4..8: version + layer. Layer 1 (bytes 6..8 = 01 00) is a component.
+    let is_component = bytes[6] == 1 && bytes[7] == 0;
+    let mut at = 8usize;
+    while at < bytes.len() {
+        let id = bytes[at];
+        let (len, body) = read_leb_u32(bytes, at + 1)?;
+        let end = body.checked_add(len as usize)?;
+        if end > bytes.len() {
+            return None;
+        }
+        let section = &bytes[body..end];
+        if id == 0 {
+            // A custom section: a name (LEB length + UTF-8), then its payload.
+            if let Some((name_len, name_at)) = read_leb_u32(section, 0) {
+                let name_end = name_at.checked_add(name_len as usize)?;
+                if name_end <= section.len()
+                    && &section[name_at..name_end] == MANIFEST_SECTION.as_bytes()
+                {
+                    return Some(&section[name_end..]);
+                }
+            }
+        } else if is_component && id == 1 {
+            // A component's core-module section holds a whole core module.
+            if let Some(found) = embedded_manifest(section) {
+                return Some(found);
+            }
+        }
+        at = end;
+    }
+    None
+}
+
+/// An unsigned LEB128 `u32` at `at`, and the offset just past it.
+/// `bytes` with every `lattice-manifest` custom section removed — at the top
+/// level and inside a component's core modules — so a `plugin.toml` beside
+/// it is the manifest that applies, as for a component built before 0.9.10.
+///
+/// For tests and tools that load a real component under a manifest of their
+/// own (a narrower `provides`, a grant on a temporary directory). The
+/// embedded manifest always wins over a file, so overriding it means taking
+/// it out. Bytes that are not a wasm module or component come back unchanged.
+pub fn without_embedded_manifest(bytes: &[u8]) -> Vec<u8> {
+    strip_manifest_sections(bytes).unwrap_or_else(|| bytes.to_vec())
+}
+
+fn strip_manifest_sections(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 8 || &bytes[..4] != b"\0asm" {
+        return None;
+    }
+    let is_component = bytes[6] == 1 && bytes[7] == 0;
+    let mut out = bytes[..8].to_vec();
+    let mut at = 8usize;
+    while at < bytes.len() {
+        let id = bytes[at];
+        let (len, body) = read_leb_u32(bytes, at + 1)?;
+        let end = body.checked_add(len as usize)?;
+        let section = bytes.get(body..end)?;
+        let is_manifest = id == 0
+            && read_leb_u32(section, 0).is_some_and(|(name_len, name_at)| {
+                section.get(name_at..name_at + name_len as usize)
+                    == Some(MANIFEST_SECTION.as_bytes())
+            });
+        if is_manifest {
+            // Dropped.
+        } else if is_component && id == 1 {
+            let inner = strip_manifest_sections(section)?;
+            out.push(id);
+            write_leb_u32(&mut out, u32::try_from(inner.len()).ok()?);
+            out.extend_from_slice(&inner);
+        } else {
+            out.extend_from_slice(&bytes[at..end]);
+        }
+        at = end;
+    }
+    Some(out)
+}
+
+fn write_leb_u32(out: &mut Vec<u8>, mut n: u32) {
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+fn read_leb_u32(bytes: &[u8], mut at: usize) -> Option<(u32, usize)> {
+    let mut result: u32 = 0;
+    for shift in (0..35).step_by(7) {
+        let byte = *bytes.get(at)?;
+        at += 1;
+        result |= u32::from(byte & 0x7f).checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            return Some((result, at));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -593,6 +884,169 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
+
+    // ── PMF.1: the embedded manifest and `min_lattice` ─────────────────
+
+    fn leb(mut n: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(byte);
+                return out;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    fn section(id: u8, body: &[u8]) -> Vec<u8> {
+        let mut out = vec![id];
+        out.extend(leb(body.len()));
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn custom(name: &str, payload: &[u8]) -> Vec<u8> {
+        let mut body = leb(name.len());
+        body.extend_from_slice(name.as_bytes());
+        body.extend_from_slice(payload);
+        section(0, &body)
+    }
+
+    #[test]
+    fn stripping_removes_the_embedded_manifest_everywhere_it_can_sit() {
+        let toml = "id = \"x\"\n";
+        // A component whose core module carries the section, plus one at the
+        // top level: both go, and the rest is byte-for-byte what it was.
+        let mut module = b"\0asm\x01\x00\x00\x00".to_vec();
+        module.extend(custom(MANIFEST_SECTION, toml.as_bytes()));
+        module.extend(custom("producers", b"keep"));
+        let mut component = b"\0asm\x0d\x00\x01\x00".to_vec();
+        component.push(1);
+        component.extend(leb(module.len()));
+        component.extend(&module);
+        component.extend(custom(MANIFEST_SECTION, toml.as_bytes()));
+        assert!(
+            PluginManifest::from_component_bytes(&component)
+                .unwrap()
+                .is_some()
+        );
+
+        let stripped = without_embedded_manifest(&component);
+        assert!(
+            PluginManifest::from_component_bytes(&stripped)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            stripped.windows(4).any(|w| w == b"keep"),
+            "other custom sections survive"
+        );
+        assert_eq!(without_embedded_manifest(b"not wasm"), b"not wasm".to_vec());
+    }
+
+    const CORE: &[u8] = b"\0asm\x01\0\0\0";
+    const COMPONENT: &[u8] = b"\0asm\x0d\0\x01\0";
+    const TOML: &str = "id = \"org\"\nmin_lattice = \"0.9.10\"\n";
+
+    #[test]
+    fn a_core_module_carries_its_manifest_in_a_custom_section() {
+        let mut module = CORE.to_vec();
+        module.extend(custom("name", b"ignored"));
+        module.extend(custom(MANIFEST_SECTION, TOML.as_bytes()));
+        let m = PluginManifest::from_component_bytes(&module)
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.id, "org");
+        assert_eq!(m.min_lattice, Some((0, 9, 10)));
+    }
+
+    #[test]
+    fn a_component_carries_it_inside_its_core_module_or_at_top_level() {
+        let mut module = CORE.to_vec();
+        module.extend(custom(MANIFEST_SECTION, TOML.as_bytes()));
+        let mut nested = COMPONENT.to_vec();
+        nested.extend(section(1, &module));
+        assert_eq!(
+            PluginManifest::from_component_bytes(&nested)
+                .unwrap()
+                .unwrap()
+                .id,
+            "org",
+            "#[link_section] puts it in the wrapped core module"
+        );
+
+        let mut top = COMPONENT.to_vec();
+        top.extend(custom(MANIFEST_SECTION, TOML.as_bytes()));
+        assert_eq!(
+            PluginManifest::from_component_bytes(&top)
+                .unwrap()
+                .unwrap()
+                .id,
+            "org",
+            "a post-build tool may put it at the top level"
+        );
+    }
+
+    #[test]
+    fn no_section_or_garbage_is_none_never_a_panic() {
+        let mut plain = COMPONENT.to_vec();
+        plain.extend(custom("producers", b"x"));
+        assert!(
+            PluginManifest::from_component_bytes(&plain)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            PluginManifest::from_component_bytes(b"not wasm")
+                .unwrap()
+                .is_none()
+        );
+        // A section header claiming more bytes than exist.
+        let mut truncated = CORE.to_vec();
+        truncated.extend([0u8, 0xff, 0xff, 0x03, 1, 2]);
+        assert!(
+            PluginManifest::from_component_bytes(&truncated)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_malformed_embedded_manifest_is_a_named_error() {
+        let mut module = CORE.to_vec();
+        module.extend(custom(MANIFEST_SECTION, b"id = \"\"\n"));
+        assert!(matches!(
+            PluginManifest::from_component_bytes(&module),
+            Err(ManifestError::EmptyId)
+        ));
+    }
+
+    #[test]
+    fn min_lattice_refuses_an_older_editor_by_name() {
+        let m = PluginManifest::from_toml_str(TOML).unwrap();
+        assert_eq!(
+            m.requires_newer_lattice("0.9.9").as_deref(),
+            Some("org needs lattice ≥ 0.9.10; this is 0.9.9")
+        );
+        assert_eq!(m.requires_newer_lattice("0.9.10"), None, "equal runs");
+        assert_eq!(m.requires_newer_lattice("0.10.0"), None, "newer runs");
+        assert_eq!(m.requires_newer_lattice("1.0.0-rc.1"), None);
+
+        let any = PluginManifest::from_toml_str("id = \"x\"\n").unwrap();
+        assert_eq!(any.min_lattice, None);
+        assert_eq!(
+            any.requires_newer_lattice("0.1.0"),
+            None,
+            "absent = any editor"
+        );
+
+        assert!(matches!(
+            PluginManifest::from_toml_str("id = \"x\"\nmin_lattice = \"soon\"\n"),
+            Err(ManifestError::MinLattice(v)) if v == "soon"
+        ));
+    }
 
     /// PI.4: the optional `doc` field parses (the `:describe-plugin` fallback
     /// doc source); absent or blank → `None`.
@@ -676,15 +1130,24 @@ mod tests {
 
     /// PM.4: the SHIPPED `auto-pair` manifest declares its `default_mode` (+ the
     /// `tree-sitter` capability), so it enables out of the box via the gate. Reads
-    /// the real manifest from the repo — a regression guard on the shipped file.
+    /// the real manifest from the repo — a regression guard on the shipped
+    /// source. PMF.11: it lives in `manifest!` in the plugin's `lib.rs`; read
+    /// from the source rather than a built component, so the guard does not
+    /// depend on a `wasm32-wasip2` build having run.
     #[test]
     fn shipped_auto_pair_manifest_declares_the_gate() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/auto-pair/plugin.toml"
+            "/../../plugins/auto-pair/src/lib.rs"
         );
-        let text = std::fs::read_to_string(path).expect("the auto-pair manifest exists");
-        let m = PluginManifest::from_toml_str(&text).expect("it parses");
+        let source = std::fs::read_to_string(path).expect("the auto-pair source exists");
+        let text = source
+            .split_once("lattice_plugin_sdk::manifest!(")
+            .and_then(|(_, rest)| rest.split_once("r#\""))
+            .and_then(|(_, rest)| rest.split_once("\"#"))
+            .map(|(toml, _)| toml)
+            .expect("auto-pair embeds its manifest with `manifest!`");
+        let m = PluginManifest::from_toml_str(text).expect("it parses");
         assert_eq!(m.id, "auto-pair");
         assert_eq!(
             m.default_modes,

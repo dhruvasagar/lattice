@@ -230,7 +230,7 @@ through to `App.theme`. Available:
 
 | Option                          | Type   | Default      | Effect                                                       |
 |---------------------------------|--------|--------------|--------------------------------------------------------------|
-| `ui.dim_inactive`               | bool   | `true`       | Apply DIM modifier on inactive panes' content.               |
+| `ui.dim_inactive`               | bool   | `true`       | Dim the content of panes without focus. Per buffer: hover popups turn it off, so documentation you are reading is not dimmed. |
 | `ui.separator`                  | string | `│`          | Single character drawn in the vertical-split separator col.  |
 | `ui.separator_color`            | string | `darkgray`   | Foreground color name for the separator.                     |
 | `ui.statusline_active_fg`       | string | `default`    | Foreground for the active pane's status line.                |

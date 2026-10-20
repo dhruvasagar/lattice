@@ -196,6 +196,8 @@ docs = [
   "architecture/contributable-registries",
   "architecture/plugin-languages",
   "architecture/plugin-manager",
+  "architecture/plugin-distribution",
+  "architecture/plugin-manifest",
   "architecture/plugin-data-location",
   "architecture/plugin-observability",
   "architecture/plugin-treesitter-seam",

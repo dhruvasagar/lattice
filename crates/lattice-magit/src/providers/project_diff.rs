@@ -1175,6 +1175,31 @@ pub fn open_project_diff(
         };
     };
 
+    // CG.11 (`cancellation.md` §9): keyed per view, and BEFORE the view is
+    // reset below. The scan appends batch by batch, so two in flight
+    // interleaved their rows; the same comparison again is refused (the
+    // scan in flight keeps its view), a new one supersedes, and the old
+    // scan's token stops it before its next batch can land.
+    let ticket = match services
+        .get::<lattice_mode::ForegroundCancelHandle>()
+        .map(|cancel| {
+            cancel.begin(
+                lattice_mode::TaskKey::supersede("magit:project-diff", format!("{view:?}"))
+                    .with_inputs(format!("{} {}", workdir.display(), comparison.label())),
+            )
+        }) {
+        Some(Err(_)) => {
+            return ProviderViewOutcome::Opened {
+                view,
+                message: Some(
+                    "magit: the project diff is already computing — <C-g> stops it".to_string(),
+                ),
+            };
+        }
+        Some(Ok(ticket)) => Some(ticket),
+        None => None,
+    };
+
     if let Some(svc) = services.get::<ProjectDiffServiceHandle>() {
         svc.set_state(
             view,
@@ -1258,6 +1283,7 @@ pub fn open_project_diff(
         synthetic_highlights,
         deletion_rows,
         service,
+        ticket,
     );
 
     ProviderViewOutcome::Opened {
@@ -1301,7 +1327,13 @@ fn spawn_project_diff_scan(
     synthetic_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
     deletion_rows: Option<Arc<ProjectDiffDeletionRows>>,
     service: Option<ProjectDiffServiceHandle>,
+    // CG.11: this scan's run of the view's key; `None` when unkeyed.
+    ticket: Option<lattice_mode::TaskTicket>,
 ) {
+    let token = ticket
+        .as_ref()
+        .map(|t| t.token().clone())
+        .unwrap_or_else(lattice_protocol::CancellationToken::never);
     let editable_note = if comparison.is_editable() {
         ""
     } else {
@@ -1325,9 +1357,13 @@ fn spawn_project_diff_scan(
         // The view may have been closed while the scan ran. Every
         // handle lookup below re-checks, so a closed view ends the task
         // instead of appending into a registry entry nobody reads.
+        // CG.11: likewise a scan superseded, or stopped with `<C-g>`.
         let Some(handle) = mb_registry.handle(view) else {
             return;
         };
+        if token.is_cancelled() {
+            return;
+        }
 
         if files.is_empty() {
             handle.set_headerline(HeaderlineStatus::Complete {
@@ -1365,6 +1401,11 @@ fn spawn_project_diff_scan(
             let Some(handle) = mb_registry.handle(view) else {
                 return;
             };
+            // CG.11: a superseded scan attaches nothing more — its rows
+            // would interleave with the new scan's.
+            if token.is_cancelled() {
+                return;
+            }
             hunks += attach_batch(&handle, &built);
             // PD.7a: repaint the whole view after each batch. Rebuilding
             // every row rather than appending is what keeps the spans
@@ -1422,6 +1463,9 @@ fn spawn_project_diff_scan(
         let Some(handle) = mb_registry.handle(view) else {
             return;
         };
+        if ticket.as_ref().is_some_and(|t| !t.is_current()) {
+            return;
+        }
         // The file count is the number of files that actually produced
         // hunks, which can be lower than the scanned count: a file can be
         // edited back to its baseline between `git status` and the read.
@@ -1442,6 +1486,7 @@ fn spawn_project_diff_scan(
         if let Some(events) = &events {
             events.publish_typed(MultibufferExcerptsReady { view });
         }
+        drop(ticket);
     });
 }
 
@@ -2023,6 +2068,75 @@ mod tests {
             tracked.text,
             std::fs::read_to_string(&tracked.path).unwrap(),
             "byte-identical to the file on disk"
+        );
+    }
+
+    /// CG.11: a re-trigger supersedes the scan in flight, and the old scan
+    /// attaches nothing more. Two scans used to append into the same view
+    /// together, so the rows came out duplicated. Driven without clearing
+    /// between them, so an old scan that still attached would double the
+    /// count.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_superseded_scan_attaches_nothing() {
+        let dir = repo_with_changes();
+        let registry: lattice_grammar::CommandRegistryHandle =
+            Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
+        // What ONE scan puts in a view.
+        let expected = {
+            let files = scan_changed_files(dir.path(), ProjectDiffComparison::WorkingTree);
+            let scratch = MultibufferDocumentHandle::new(
+                std::collections::HashMap::new(),
+                Vec::new(),
+                registry.clone(),
+            )
+            .expect("empty view");
+            attach_batch(&scratch, &read_and_diff(&files));
+            scratch.excerpt_count()
+        };
+        assert!(expected > 0, "the fixture has hunks");
+
+        let handle = Arc::new(
+            MultibufferDocumentHandle::new(std::collections::HashMap::new(), Vec::new(), registry)
+                .expect("empty view"),
+        );
+        let view = handle.buffer_id();
+        let mb_registry = lattice_multibuffer::registry::InMemoryMultibufferRegistry::handle();
+        mb_registry.insert(view, handle.clone());
+        let mb_registry = Arc::new(mb_registry);
+
+        let cancel: lattice_mode::ForegroundCancelHandle = Arc::default();
+        let key = |inputs: &str| {
+            lattice_mode::TaskKey::supersede("magit:project-diff", format!("{view:?}"))
+                .with_inputs(inputs.to_string())
+        };
+        for inputs in ["first", "second"] {
+            let ticket = cancel
+                .begin(key(inputs))
+                .expect("new inputs are let through");
+            spawn_project_diff_scan(
+                view,
+                dir.path().to_path_buf(),
+                ProjectDiffComparison::WorkingTree,
+                mb_registry.clone(),
+                None,
+                None,
+                None,
+                None,
+                Some(ticket),
+            );
+        }
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !matches!(*handle.headerline(), HeaderlineStatus::Complete { .. })
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            handle.excerpt_count(),
+            expected,
+            "one scan's hunks, not two scans' interleaved"
         );
     }
 

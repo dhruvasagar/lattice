@@ -156,6 +156,13 @@
   updated"*) and the build carries on; `:plugin-update-all` and its
   siblings skip a plugin already building, and refuse to start while
   another bulk run is going.
+- **The agenda and the magit project diff no longer mix two scans.** A
+  project diff opened again while it was still computing could end up with
+  every hunk listed twice — both scans appended into the view — and an
+  agenda refreshed during a scan showed whichever scan finished last, even
+  the older one. The same scan again is now refused while one runs (it keeps
+  what it has walked); a different one replaces it, and the stopped scan
+  adds nothing more. `<C-g>` stops a scan.
 - **Committing, saving a note, confirming a rebase and `:magit-branch-create`
   report how they went** and refresh open magit views, like every other
   magit operation. A failure used to reach only the log, and an open status

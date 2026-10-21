@@ -40,7 +40,7 @@ fn register_plugins() {
 
 Then `:reload-config`, and org appears in `:plugins` as
 `release dhruvasagar/lattice-org-plugin@v…`. `:plugin-update org` installs a
-newer release when there is one; set `version: Some("v0.2.0".to_string())`
+newer release when there is one; set `version: Some("v0.1.2".to_string())`
 instead to stay on one. A config scaffolded before 0.9.11 needs the
 `plugin-manager` seam added first, and pinning, removing and the messages you
 may see are covered in

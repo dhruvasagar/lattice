@@ -40,7 +40,7 @@ lattice_plugin_sdk::manifest!(
     id = "my-plugin"
     provides = ["config"]
     capabilities = ["fs:write:{my-plugin.directory|~/notes}"]
-    min_lattice = "0.9.10"
+    min_lattice = "0.9.11"
     "#
 );
 ```
@@ -48,7 +48,7 @@ lattice_plugin_sdk::manifest!(
 The manifest — the same TOML a `plugin.toml` holds — is embedded in the
 component as the `lattice-manifest` custom section, so the `.wasm` is the
 whole plugin. It builds under `#![deny(unsafe_code)]`. Embedded manifests are
-read by lattice 0.9.10 and later; declare `min_lattice` so an older editor
+read by lattice 0.9.11 and later; declare `min_lattice` so an older editor
 refuses the plugin by name rather than not finding it.
 
 ## The version is the ABI generation

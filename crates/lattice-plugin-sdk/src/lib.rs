@@ -358,7 +358,7 @@ pub const MANIFEST_SECTION: &str = "lattice-manifest";
 ///     id = "org"
 ///     provides = ["grammar", "config"]
 ///     capabilities = ["fs:write:{org.directory|~/org}", "state:write"]
-///     min_lattice = "0.9.10"
+///     min_lattice = "0.9.11"
 ///     "#
 /// );
 /// # fn main() {

@@ -54,8 +54,8 @@
   `lattice-manifest` custom section; a plugin directory with the component
   alone loads. `plugin.toml` still works, and when both are present the
   embedded one is used. A manifest may also say which editor it needs
-  (`min_lattice = "0.9.10"`): an older Lattice refuses it by name in
-  `:plugins` — *"org needs lattice ≥ 0.9.10; this is 0.9.9"* — rather than
+  (`min_lattice = "0.9.11"`): an older Lattice refuses it by name in
+  `:plugins` — *"org needs lattice ≥ 0.9.11; this is 0.9.9"* — rather than
   failing on a field it doesn't understand.
   A plugin's source directory no longer needs a `plugin.toml` either: a
   cargo project under `~/.config/lattice/plugins/` (or your `init/`) is

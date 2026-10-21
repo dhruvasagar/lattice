@@ -149,7 +149,7 @@ native editor subsystem:
 
 The manifest at the top of `src/lib.rs` declares which seam(s) the component
 provides — it is embedded in the component, so there is no separate file. (A
-config scaffolded before 0.9.10 has it in a `plugin.toml` beside `Cargo.toml`
+config scaffolded before 0.9.11 has it in a `plugin.toml` beside `Cargo.toml`
 instead; that keeps working.)
 
 ```toml
@@ -673,7 +673,7 @@ or built from source with `plugin_manager::require` and a git or local
 moves an unpinned plugin to its newest release or commit.
 
 The scaffold already has this seam, with the example commented out. A config
-scaffolded before 0.9.10 needs `import plugin-manager;` and
+scaffolded before 0.9.11 needs `import plugin-manager;` and
 `export register-plugins: func();` in `wit/init.wit`, and `"plugin-manager"`
 in its manifest's `provides`. Every field, pinning, updating, removing and
 the messages you may see are in

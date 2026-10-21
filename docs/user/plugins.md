@@ -80,7 +80,7 @@ Everything below applies to both; the difference is only *where they come from* 
 
 A plugin is a `wasm32-wasip2` component carrying a manifest that declares its
 id, the seams it provides, and the capabilities it requests — embedded in the
-`.wasm` itself, or (for plugins built before 0.9.10) in a `plugin.toml` beside
+`.wasm` itself, or (for plugins built before 0.9.11) in a `plugin.toml` beside
 it. A single `.wasm` file in its own directory is a complete plugin. Load one explicitly
 with `:plugin-load <path>`, or drop it into the plugins directory for automatic
 discovery at startup. On load the host computes the plugin's capability grant
@@ -118,7 +118,7 @@ installs into `~/.config/lattice/plugins/<name>/` and loads from there at every
 start; the network is used to install and to update, never to start.
 
 **Your config needs the `plugin-manager` seam.** A config made by
-`lattice --scaffold-init` (0.9.10 or later) has it: `register_plugins` is
+`lattice --scaffold-init` (0.9.11 or later) has it: `register_plugins` is
 there, with the release example below commented out. A config made earlier
 needs three additions:
 
@@ -198,7 +198,7 @@ with the reason:
 |---|---|
 | *no release of `owner/name` has a build for plugin API 0.3 (newest: v0.3.0)* | The plugin has not released a build for your editor. Update lattice, or wait for a release. |
 | *org v0.2.0 has no build for plugin API 0.3 (it ships: api0.2)* | That tag was built for another editor; pick a tag that ships yours, or `None`. |
-| *org needs lattice ≥ 0.9.10; this is 0.9.9* | The plugin needs a newer lattice. |
+| *org needs lattice ≥ 0.9.11; this is 0.9.9* | The plugin needs a newer lattice. |
 | *the release publishes …, not the pinned …* | The tag was re-published with different bytes than your `sha256`. Check before you change the pin. |
 | *cannot list the releases of `owner/name`* | GitHub could not be reached, or its API rate limit (60 requests an hour without signing in) is spent. `None` asks the API to find the newest release, when it installs or updates; a pinned `version` downloads directly. |
 

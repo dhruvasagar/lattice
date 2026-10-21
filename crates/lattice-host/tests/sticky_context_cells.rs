@@ -92,6 +92,33 @@ async fn settle(editor: &mut Editor, pane_id: lattice_host::pane::PaneId) {
     }
 }
 
+/// The pane's published matrix once it holds `line`, or whatever matrix is
+/// published when the wait gives up — the caller's assertion then says why.
+///
+/// `settle` returns when the STRIP has landed, and the strip and the matrix
+/// come from different workers, so a test that reads the matrix waits for it
+/// too. Proof 1 read it straight after `settle` and failed on a slow CI runner
+/// whose matrix had not caught up.
+async fn settled_matrix(
+    editor: &mut Editor,
+    pane_id: lattice_host::pane::PaneId,
+    line: u32,
+) -> Option<Arc<lattice_cells::CellMatrix>> {
+    let matrix_of = |editor: &Editor| {
+        let cells = editor.render_state.load().cells.load_full();
+        cells.matrix_for_pane(pane_id).map(|c| c.load_full())
+    };
+    for _ in 0..500 {
+        if matrix_of(editor).is_some_and(|m| m.row_at_source_line(line).is_some()) {
+            break;
+        }
+        editor.run_tick_pending();
+        editor.publish_render_state();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    matrix_of(editor)
+}
+
 /// Proof 1: a pinned row's cells are IDENTICAL to the document's own row for
 /// the same line — same codepoints, same colours — not merely similar.
 ///
@@ -129,10 +156,8 @@ async fn a_pinned_row_is_cell_for_cell_the_documents_own_row() {
     let pinned = &strip.rows[0];
     assert_eq!(pinned.source_line, 1);
 
-    let cells = editor.render_state.load().cells.load_full();
-    let matrix = cells
-        .matrix_for_pane(pane_id)
-        .map(|c| c.load_full())
+    let matrix = settled_matrix(&mut editor, pane_id, 1)
+        .await
         .expect("the pane has a built matrix");
     let document_row = matrix
         .row_at_source_line(1)
@@ -193,22 +218,11 @@ async fn a_header_outside_every_chunk_is_still_syntax_coloured() {
     }
     settle(&mut editor, pane_id).await;
 
-    // `settle` returns when the STRIP has landed, and the strip and the
-    // matrix come from different workers. Wait for the matrix as well, so
-    // the precondition is a statement about a matrix that exists.
-    let matrix_of = |editor: &Editor| {
-        let cells = editor.render_state.load().cells.load_full();
-        cells.matrix_for_pane(pane_id).map(|c| c.load_full())
-    };
-    for _ in 0..500 {
-        if matrix_of(&editor).is_some_and(|m| m.row_at_source_line(CURSOR).is_some()) {
-            break;
-        }
-        editor.run_tick_pending();
-        editor.publish_render_state();
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let matrix = matrix_of(&editor).expect("the pane has a built matrix");
+    // Wait for the matrix too, so the precondition is a statement about a
+    // matrix that exists.
+    let matrix = settled_matrix(&mut editor, pane_id, CURSOR)
+        .await
+        .expect("the pane has a built matrix");
     assert!(
         matrix.row_at_source_line(CURSOR).is_some(),
         "the matrix around the scrolled viewport never arrived"

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.11 — 2026-10-21
 
 ### Added
 - **Install a plugin from its release, without building it.** `init.rs` can

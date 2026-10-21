@@ -28,6 +28,28 @@ fn config_guest_wasm() -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
+/// Waits for a reload to finish: a `PluginUnloaded` followed by a
+/// `PluginLoaded`. `false` if `deadline` passes first.
+///
+/// A fixed sleep is not this. It measures how long the reload took on the
+/// machine that wrote it; on a slower one the count lands in the reload's own
+/// gap — unloaded, not yet loaded again — and reads zero copies (CI did).
+async fn reloaded(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Event>,
+    deadline: Duration,
+) -> bool {
+    let until = tokio::time::Instant::now() + deadline;
+    let mut unloaded = false;
+    loop {
+        match tokio::time::timeout_at(until, rx.recv()).await {
+            Ok(Some(Event::PluginUnloaded { .. })) => unloaded = true,
+            Ok(Some(Event::PluginLoaded { .. })) if unloaded => return true,
+            Ok(Some(_)) => {}
+            _ => return false,
+        }
+    }
+}
+
 /// The next `PluginLoaded`, or `None` if none arrives in `wait`.
 async fn next_load(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<Event>,
@@ -162,6 +184,13 @@ async fn a_scan_during_a_grant_reload_does_not_load_a_second_copy() {
         let config = Arc::new(ConfigRegistry::default());
         let publish_to = bus.clone();
         config.set_event_publisher(Arc::new(move |event| publish_to.publish(event)));
+        let (tx, mut lifecycle) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        for kind in [EventKind::PluginLoaded, EventKind::PluginUnloaded] {
+            bus.subscribe(
+                EventFilter::kind(kind),
+                SubscriptionTarget::Channel(tx.clone()),
+            );
+        }
         // `init.rs` on `pre-plugin-loaded`: point the option somewhere else.
         let init_config = config.clone();
         let init_value = format!(
@@ -200,8 +229,13 @@ async fn a_scan_during_a_grant_reload_does_not_load_a_second_copy() {
         loader
             .discover_and_load(&plugins, TrustTier::UserInstalled)
             .await;
-        // Let the reload finish.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // The scan has returned, so any second copy it made is loaded already.
+        // Wait for the reload — its unload, then its load — and the count is
+        // final either way.
+        assert!(
+            reloaded(&mut lifecycle, Duration::from_secs(30)).await,
+            "round {round}: the grant's reload finished"
+        );
 
         let copies = loader
             .plugin_status()

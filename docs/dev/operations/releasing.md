@@ -14,10 +14,16 @@ Design: `docs/dev/architecture/release-pipeline.md`.
    dated stub and stops.
 2. **Cut it.**
    ```bash
-   scripts/release.sh              # current version, and what each bump gives
+   scripts/release.sh              # last release, Cargo.toml, and what each bump gives
    scripts/release.sh minor --dry-run
    scripts/release.sh minor        # 0.9.0 -> 0.10.0
    ```
+   Bumps count from the **last release** (the highest `vX.Y.Z` tag), not from
+   `Cargo.toml`. When `Cargo.toml` was bumped ahead of a release — a plugin's
+   `min_lattice` naming the editor before it ships — `patch` releases that
+   version as is rather than skipping past it (0.9.9 → 0.9.11 happened that
+   way). A bump that would lower `Cargo.toml`, or name a version already
+   released, is refused with the command that does what you meant.
    The script checks you are on `main`, clean (bar `CHANGELOG.md`) and in sync
    with `origin/main`; that the tag is free locally and on the remote; and that
    the changelog section exists and is not still the stub. Then it rewrites the

@@ -3,12 +3,19 @@
 # tag. See docs/dev/architecture/release-pipeline.md for what the tag then
 # triggers.
 #
-#   scripts/release.sh                  # current version + what each bump gives
+#   scripts/release.sh                  # last release + what each bump gives
 #   scripts/release.sh patch            # 0.9.0 -> 0.9.1
 #   scripts/release.sh minor            # 0.9.0 -> 0.10.0
 #   scripts/release.sh major            # 0.9.0 -> 1.0.0
 #   scripts/release.sh 0.11.0           # an explicit version
 #   scripts/release.sh minor --dry-run  # print every step, change nothing
+#
+# Bumps count from the LAST RELEASE — the highest `vX.Y.Z` tag — not from
+# `Cargo.toml`. The two differ when `Cargo.toml` was bumped ahead of a release
+# (a plugin's `min_lattice` naming the editor before it ships), and counting
+# from `Cargo.toml` then skipped a version: 0.9.9 was released, `Cargo.toml`
+# said 0.9.10, and `patch` cut 0.9.11. Now `patch` after 0.9.9 is 0.9.10, and
+# a `Cargo.toml` already there is released as is.
 #
 # 38 of the 41 crates are `version.workspace = true`, so a bump is ONE line in
 # Cargo.toml plus the workspace entries in Cargo.lock. The `prepare` job in
@@ -61,20 +68,42 @@ extract_section() {
 }
 
 current="$(read_version)"
-[[ "$current" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] \
+[[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
     || die "cannot parse workspace version '$current' out of Cargo.toml"
-cur_major="${BASH_REMATCH[1]}"
-cur_minor="${BASH_REMATCH[2]}"
-cur_patch="${BASH_REMATCH[3]}"
+
+# The highest released version: the greatest `vX.Y.Z` tag. Empty before the
+# first release, when bumps count from `Cargo.toml` instead.
+last_release() {
+    git tag --list 'v[0-9]*.[0-9]*.[0-9]*' \
+        | sed 's/^v//' \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+        | sort -V | tail -1 || true
+}
+# Whether version $1 sorts strictly before $2.
+version_lt() {
+    [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]
+}
+
+released="$(last_release)"
+base="${released:-$current}"
+[[ "$base" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || die "cannot parse version '$base'"
+base_major="${BASH_REMATCH[1]}"
+base_minor="${BASH_REMATCH[2]}"
+base_patch="${BASH_REMATCH[3]}"
 
 if [ "$#" -eq 0 ]; then
+    pending=""
+    if [ -n "$released" ] && version_lt "$released" "$current"; then
+        pending="   (ahead of the last release — scripts/release.sh $current releases it as is)"
+    fi
     cat <<USAGE
 
-  current   v$current   (scripts/release.sh $current releases it as is, if untagged)
+  released  v${released:-none}
+  Cargo     v$current$pending
 
-  patch     v$cur_major.$cur_minor.$((cur_patch + 1))
-  minor     v$cur_major.$((cur_minor + 1)).0
-  major     v$((cur_major + 1)).0.0
+  patch     v$base_major.$base_minor.$((base_patch + 1))
+  minor     v$base_major.$((base_minor + 1)).0
+  major     v$((base_major + 1)).0.0
 
   scripts/release.sh <patch|minor|major|X.Y.Z> [--dry-run]
 
@@ -95,12 +124,23 @@ done
 [ -n "$bump" ] || die "no bump given (patch|minor|major|X.Y.Z)"
 
 case "$bump" in
-    patch) next="$cur_major.$cur_minor.$((cur_patch + 1))" ;;
-    minor) next="$cur_major.$((cur_minor + 1)).0" ;;
-    major) next="$((cur_major + 1)).0.0" ;;
+    patch) next="$base_major.$base_minor.$((base_patch + 1))" ;;
+    minor) next="$base_major.$((base_minor + 1)).0" ;;
+    major) next="$((base_major + 1)).0.0" ;;
     *)     next="$bump" ;;
 esac
 [[ "$next" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "'$next' is not an X.Y.Z version"
+
+# Never backwards, and never a version already released.
+if [ -n "$released" ] && ! version_lt "$released" "$next"; then
+    die "v$next is not newer than the last release, v$released"
+fi
+# `Cargo.toml` already ahead of the bump asked for: releasing would LOWER it.
+if version_lt "$next" "$current"; then
+    die "Cargo.toml is already at $current, ahead of the $bump bump (v$next) from v${released:-$current}.
+  Release it as is:   scripts/release.sh $current
+  or go past it:      scripts/release.sh <X.Y.Z newer than $current>"
+fi
 
 # The version may already be the one being released: `Cargo.toml` is bumped
 # ahead of the release when something in the tree needs to say which editor it
@@ -134,6 +174,13 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
 fi
 [ -z "$(git ls-remote --tags origin "refs/tags/$tag")" ] \
     || die "tag $tag already exists on origin"
+
+# Tags were just fetched: re-check against the newest release anyone has cut,
+# not only the ones this clone knew about when the version was computed.
+released_now="$(last_release)"
+if [ -n "$released_now" ] && ! version_lt "$released_now" "$next"; then
+    die "v$next is not newer than the last release on origin, v$released_now"
+fi
 
 echo "  on main, in sync with origin/main, $tag is free"
 

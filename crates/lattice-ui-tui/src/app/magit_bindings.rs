@@ -1354,4 +1354,111 @@ mod compose_buffers {
             );
         }
     }
+
+    /// `]f` / `[f` in magit-status move between FILES from anywhere inside an
+    /// expanded diff.
+    ///
+    /// `=` puts a file's diff into the status buffer under its row, and the
+    /// view had no file rows of its own: `]f` fell back to "every row
+    /// indented two spaces", which every context line of indented code also
+    /// is — so it stepped through the diff line by line instead of reaching
+    /// the next file.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_navigation_in_status_jumps_out_of_an_expanded_diff() {
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}");
+        }
+        let repo = unique_tempdir().join("status-file-nav-repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "t@example.invalid"]);
+        git(&repo, &["config", "user.name", "t"]);
+        // Indented code, so the diff's context lines are indented too.
+        let code = "fn main() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n}\n";
+        std::fs::write(repo.join("a.rs"), code).unwrap();
+        std::fs::write(repo.join("b.rs"), code).unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "init"]);
+        let changed = code.replace("let b = 2;", "let b = 20;");
+        std::fs::write(repo.join("a.rs"), &changed).unwrap();
+        std::fs::write(repo.join("b.rs"), &changed).unwrap();
+
+        let mut app = app_with_path(code, 30, repo.join("a.rs"));
+        app.apply(Action::EnterCommandLine);
+        press_chars(&mut app, "magit-status");
+        app.apply(Action::CommandLineSubmit);
+        assert!(settle_mode(&mut app, "magit-status-mode").await);
+
+        let text = |app: &crate::app::App| -> Vec<String> {
+            let id = app.editor.active_pane_buffer_id();
+            let Some(h) = app.editor.buffers.document_handle(id) else {
+                return vec![];
+            };
+            let snap = h.snapshot();
+            (0..snap.buffer.content_line_count())
+                .map(|l| snap.buffer.line(l).unwrap_or_default())
+                .collect()
+        };
+        async fn until(app: &mut crate::app::App, f: impl Fn(&crate::app::App) -> bool) -> bool {
+            for _ in 0..500 {
+                if f(app) {
+                    return true;
+                }
+                app.editor.run_tick_pending();
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            false
+        }
+        let row_of = |app: &crate::app::App, path: &str| {
+            text(app)
+                .iter()
+                .position(|l| l.starts_with("  modified") && l.ends_with(path))
+                .map(|i| i as u32)
+        };
+        assert!(
+            until(&mut app, |a| row_of(a, "b.rs").is_some()).await,
+            "precondition: both entries listed"
+        );
+
+        // Expand a.rs's diff in place.
+        let a_row = row_of(&app, "a.rs").unwrap();
+        app.editor.cursor = lattice_protocol::position::Position::new(a_row, 0);
+        app.editor.snapshot_active_pane();
+        press_chars(&mut app, "=");
+        assert!(
+            until(&mut app, |a| text(a)
+                .iter()
+                .any(|l| l.starts_with("diff --git a/a.rs")))
+            .await,
+            "precondition: `=` expanded a.rs"
+        );
+
+        // Stand on an indented line of code inside that diff.
+        let lines = text(&app);
+        let inside = lines
+            .iter()
+            .position(|l| l.starts_with("     let a = 1;"))
+            .expect("a context line of a.rs's diff") as u32;
+        let b_row = row_of(&app, "b.rs").unwrap();
+        assert!(
+            inside > a_row && inside < b_row,
+            "the line is inside a.rs's diff"
+        );
+        app.editor.cursor = lattice_protocol::position::Position::new(inside, 0);
+        app.editor.snapshot_active_pane();
+
+        press_chars(&mut app, "]f");
+        assert_eq!(
+            app.editor.cursor.line, b_row,
+            "`]f` inside a.rs's diff goes to the next FILE, b.rs — not to \
+             the next indented line of code"
+        );
+        press_chars(&mut app, "[f");
+        assert_eq!(app.editor.cursor.line, a_row, "`[f` comes back to a.rs");
+    }
 }

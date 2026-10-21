@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **`]f` / `[f` in magit-status jump out of an expanded diff.** With a file's
+  diff open under it (`=`), `]f` from inside the diff stepped through its
+  indented lines of code one at a time instead of moving to the next entry.
+  It now goes straight to the next file, stash or commit row — and `[f`
+  back to the previous — wherever in the diff the cursor is.
+
 ## 0.9.11 — 2026-10-21
 
 ### Added

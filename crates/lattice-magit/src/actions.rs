@@ -277,6 +277,45 @@ pub(crate) fn diff_source_for_header(header: &str) -> Option<DiffSource> {
     }
 }
 
+/// The rows `]f` / `[f` stop on in a status buffer: its entries — files,
+/// stashes, commits — and nothing inside an expanded diff.
+///
+/// The trait default is "every row indented two spaces". Entries are, but
+/// once one is expanded (`=` on a file, `<CR>` on a stash) its diff is IN the
+/// buffer, and every context line of indented code is indented too: `]f`
+/// walked through the code instead of jumping to the next entry. So rows are
+/// classified by the same [`classify_line_text`] `s` / `u` / `<CR>` use, and
+/// each expansion is stepped over by the line count `expanded` holds for it.
+///
+/// A patch's own `diff --git` headers are not stops. A file entry's diff
+/// starts with that file's header, a second stop for the same file; and a
+/// stash's patch can be folded shut (`<CR>` again), hiding its rows — a stop
+/// on a hidden row puts the cursor where nobody can see it, and these rows
+/// have no view of fold state.
+///
+/// Pure over the text and the map, so it is testable without a repository.
+pub(crate) fn status_file_lines(lines: &[String], expanded: &HashMap<String, usize>) -> Vec<u32> {
+    let mut rows = Vec::new();
+    let mut header: Option<String> = None;
+    let mut l = 0;
+    while l < lines.len() {
+        let text = &lines[l];
+        if crate::sections::is_section_header(text.trim()) {
+            header = Some(text.trim().to_string());
+            l += 1;
+            continue;
+        }
+        let Some(entry) = classify_line_text(text, || header.clone()) else {
+            l += 1;
+            continue;
+        };
+        rows.push(l as u32);
+        let span = expanded.get(&entry_key(&entry)).copied().unwrap_or(0);
+        l = (l + 1 + span).min(lines.len()).max(l + 1);
+    }
+    rows
+}
+
 /// Run the git command that shows `sl`'s content: a file's diff
 /// (staged-aware), a stash's patch, or a commit's patch.
 pub(crate) fn run_show(workdir: &Path, sl: &StatusLine, context: i64) -> Option<String> {
@@ -1679,6 +1718,20 @@ impl crate::buffer_state::MagitView for StatusView {
         Some(self.0.lock().ok()?.workdir.clone())
     }
 
+    /// `]f` / `[f`: see [`status_file_lines`].
+    fn file_lines(
+        &self,
+        store: &lattice_mode::BufferStoreHandle,
+        buffer: BufferId,
+    ) -> Option<Vec<u32>> {
+        let expanded = self.0.lock().ok()?.expanded.clone();
+        let snap = store.handle_for(buffer)?.snapshot();
+        let lines: Vec<String> = (0..snap.buffer.content_line_count())
+            .map(|l| snap.buffer.line(l).unwrap_or_default())
+            .collect();
+        Some(status_file_lines(&lines, &expanded))
+    }
+
     /// MG.18c: the section an inline diff was expanded under says
     /// which tree it was diffed against — `run_show` passes
     /// `--cached` for a Staged entry and nothing for an Unstaged one,
@@ -2784,5 +2837,110 @@ mod batch_discard_tests {
             lattice_grammar::ArgValue::String("/etc/passwd".to_string()),
         ]);
         assert_eq!(carried_batch(&args), vec![f("a.rs", false)]);
+    }
+}
+
+/// `]f` / `[f` in magit-status: the rows [`status_file_lines`] answers.
+#[cfg(test)]
+mod status_file_rows {
+    use super::*;
+
+    fn lines(text: &str) -> Vec<String> {
+        text.lines().map(str::to_string).collect()
+    }
+
+    fn row(label: &str, path: &str) -> String {
+        format!("  {label:<12} {path}")
+    }
+
+    /// Every entry is a stop — files in each change section, stashes,
+    /// commits — and section headers and blank rows are not.
+    #[test]
+    fn every_entry_is_a_stop() {
+        let text = [
+            "Unstaged changes (2)".to_string(),
+            row("modified", "a.txt"),
+            row("deleted", "b.txt"),
+            String::new(),
+            "Untracked files (1)".to_string(),
+            row("untracked", "c.txt"),
+            String::new(),
+            "Stashes (1)".to_string(),
+            "  stash@{0} WIP on main: 83cb40c init".to_string(),
+            String::new(),
+            "Recent commits (1)".to_string(),
+            "  83cb40c init".to_string(),
+        ];
+        assert_eq!(
+            status_file_lines(&text, &HashMap::new()),
+            vec![1, 2, 5, 8, 11]
+        );
+    }
+
+    /// The reported bug: with `a.txt` expanded, `]f` from anywhere inside
+    /// its diff must reach `b.txt` — not the next indented line of code.
+    /// The diff's own `diff --git` is the same file, so not a second stop,
+    /// and a context line shaped exactly like a status row is code.
+    #[test]
+    fn an_expanded_files_diff_is_stepped_over() {
+        let diff = lines(
+            "diff --git a/a.txt b/a.txt\n\
+             index 1111111..2222222 100644\n\
+             --- a/a.txt\n\
+             +++ b/a.txt\n\
+             @@ -1,3 +1,4 @@\n\
+             \x20fn main() {\n\
+             \x20    let x = 1;\n\
+             \x20 modified     looks-like-a-row.txt\n\
+             +    let y = 2;\n\
+             \x20}",
+        );
+        let mut text = vec!["Unstaged changes (2)".to_string(), row("modified", "a.txt")];
+        text.extend(diff.iter().cloned());
+        text.push(row("modified", "b.txt"));
+        let a = classify_line_text(&text[1], || Some("Unstaged changes (2)".into()))
+            .expect("a.txt's row classifies as a file");
+        let expanded = HashMap::from([(entry_key(&a), diff.len())]);
+
+        let b_row = (text.len() - 1) as u32;
+        assert_eq!(status_file_lines(&text, &expanded), vec![1, b_row]);
+    }
+
+    /// A stash or commit patch is stepped over whole — the entry row is the
+    /// stop, nothing inside it. Its rows can be folded shut, and a stop on a
+    /// hidden row hides the cursor.
+    #[test]
+    fn an_expanded_stash_or_commit_patch_is_stepped_over() {
+        let patch = lines(
+            "diff --git a/x.rs b/x.rs\n\
+             @@ -1 +1 @@\n\
+             \x20 modified     looks-like-a-row.txt\n\
+             diff --git a/y.rs b/y.rs\n\
+             @@ -1 +1 @@\n\
+             \x20 indented context",
+        );
+        let mut text = vec!["Stashes (1)".to_string()];
+        text.push("  stash@{0} WIP on main: 83cb40c init".to_string());
+        text.extend(patch.iter().cloned());
+        text.push("Recent commits (1)".to_string());
+        text.push("  83cb40c init".to_string());
+        text.extend(patch.iter().cloned());
+        text.push(String::new());
+        text.push("Unstaged changes (1)".to_string());
+        text.push(row("modified", "a.txt"));
+        let expanded = HashMap::from([
+            (entry_key(&StatusLine::Stash { index: 0 }), patch.len()),
+            (
+                entry_key(&StatusLine::Commit {
+                    sha: "83cb40c".into(),
+                }),
+                patch.len(),
+            ),
+        ]);
+        let commit_row = 2 + patch.len() + 1;
+        assert_eq!(
+            status_file_lines(&text, &expanded),
+            vec![1, commit_row as u32, (text.len() - 1) as u32]
+        );
     }
 }

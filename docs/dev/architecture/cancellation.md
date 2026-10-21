@@ -72,6 +72,14 @@ is foreground.
 
 ### 4.1 `ForegroundCancel` — the shared slot
 
+> **CG.12 retired `arm()` and the single armed slot** described in §4.1–§4.2
+> below. Arming cancelled whatever was armed before, *whatever it was* — a
+> search in one view stopped the search in another, and a plugin call that
+> had adopted the slot's token. Its users moved onto keyed tasks (§9), and
+> the plugin host's per-call token became an **interrupt token** that only
+> `<C-g>` flips (§9.4). `enrol()` (§4.2.1) and `cancel()` are unchanged in
+> spirit. The text below is kept as the record of how CG.2–CG.4 worked.
+
 ```rust
 // lattice-mode/src/foreground_cancel.rs
 pub struct ForegroundCancel { armed: Mutex<Option<CancellationToken>> }
@@ -328,6 +336,10 @@ left the other eleven user-triggered commands unreachable.
 
 ## 5. Async entry-point contract
 
+> **Superseded by §9 (CG.6–CG.12).** A spawn site begins a keyed task —
+> `begin(TaskKey)` — rather than `arm()`ing the shared slot; the shape
+> below is the CG.2 original.
+
 Every user-initiated long-running spawn follows this pattern:
 
 ```rust
@@ -419,9 +431,193 @@ This is intentionally not sliced yet. The single-token v1 is the
 right foundation; the stack is a drop-in replacement once the
 consumer callsites are established.
 
-## 9. Cross-references
+## 9. Keyed supersede: the same task, triggered again (CG.6+)
+
+**The rule.** Triggering a task that is already running is decided by
+what the re-trigger asks for:
+
+- **the same inputs** — the run in flight carries on, and the re-trigger
+  says "*push is already running in lattice*". Restarting would only throw
+  its progress away; a long build pressed twice should not start over.
+- **new inputs** — the run in flight is computing an answer nobody wants
+  (a search for the old query, a format of text that has since changed, a
+  push re-run with `-f`), so it is cancelled and the new one runs.
+
+*Only* that task, either way: a push never touches a fetch, a search or a
+push to another remote. Decided with Dhruva, 2026-10-20, after two
+simultaneous pushes both ran and the first was rejected by the remote —
+first as "always restart", then narrowed to this when restarting a long
+task on a double press turned out to waste exactly the time it was meant
+to save. Convention agrees on the identical case: VS Code answers "Task is
+already active" and makes restart a choice; emacs `compile` asks before
+killing a running compilation.
+
+**Why neither existing verb is it.** `arm()` (§4.2) supersedes *across*
+tasks — the slot holds one token, so a search in one view cancels the
+search in another. `enrol()` (§4.2.1) supersedes nothing. LSP's
+per-feature `pending_*_token`s are the right granularity, written out by
+hand 21 times. And most background work cannot be stopped at all: git,
+cargo, grep and the external formatter run through `Command::output()`,
+which hands back no child to kill.
+
+### 9.1 `TaskKey` and `TaskTicket`
+
+```rust
+// lattice-mode/src/foreground_cancel.rs
+pub struct TaskKey { kind: &'static str, scope: String, inputs: String, policy: RePolicy }
+pub enum RePolicy { Supersede, RunToCompletion }
+
+impl ForegroundCancel {
+    pub fn begin(self: &Arc<Self>, key: TaskKey) -> Result<TaskTicket, AlreadyRunning>;
+}
+impl TaskTicket {
+    pub fn token(&self) -> &CancellationToken;
+    pub fn is_current(&self) -> bool;   // still this key's newest run
+}
+```
+
+Two triggers are *the same task* when `kind` (the operation,
+`"magit:push"`) and `scope` (what it acts on: the repository and the
+destination) are equal. `inputs` fingerprints what this trigger asks for —
+the push's arguments, the query, the buffer version — and is what the
+rule above compares. The producer that spawns the work owns the key, so
+identity and inputs are decided where the work is understood, never by a
+host guessing from a label.
+
+With a run of the same task in flight, `begin` returns `AlreadyRunning`
+when the inputs are equal, or when the task is `RunToCompletion`; the
+producer reports it in words instead of starting a second copy. With new
+inputs and a `Supersede` task it cancels the run in flight and returns a
+fresh ticket; the old run sees its token flip and stops.
+
+**Restarting identical work** is `<C-g>`, then trigger again. A cancelled
+run counts as gone while it unwinds, so the re-trigger is not refused by
+the run just stopped. That is also the answer for work whose real inputs
+live outside its arguments — `:compile` after editing a file has the same
+command line — and it keeps a restart a deliberate act, as the convention
+has it.
+
+The ticket carries a **generation**. Delivery checks `is_current()` —
+the result of a run that has since been superseded is dropped, not
+applied. That one check is what closes the stale-overwrite class: a
+magit refresh that started first and finished last, a format result
+landing in a buffer that moved on.
+
+A ticket removes its slot entry when dropped, if it is still the
+current one, so finished tasks leave nothing behind — `enrol()`'s set
+can rely on `<C-g>` to empty it, a map of every task ever run cannot.
+
+### 9.2 Which tasks may be killed
+
+Not every task survives being killed partway. Killing a push, a fetch, a
+cargo build, a scan, a search or a formatter is harmless: their effects
+are atomic or redone by the run that replaces them. Killing `git
+commit`, `rebase`, `stash`, `reset`, `cherry-pick` or the merge half of
+`pull` can leave `.git/index.lock` behind, or a half-applied change.
+
+So the policy is part of the key, declared by the producer, and the
+unsafe kinds are `RunToCompletion`: a second trigger is **refused** even
+with new inputs — not queued (a double-pressed stash would stash twice)
+and not superseded. Decided with Dhruva, 2026-10-20, over
+supersede-everything and queueing.
+
+**Different mutations of one repository take turns** (CG.7b, decided
+with Dhruva 2026-10-20). git allows one writer to a repository's index at
+once, so two *different* tasks — staging one file, then another — raced
+on `.git/index.lock` and the second failed. Every magit mutation takes a
+turn on a per-repository gate, reserved when it is triggered and waited
+for on the blocking pool, so they run one after another **in trigger
+order**: `s` then `u` on one file must not unstage first. This is not the
+queueing rejected below — that was queueing the *same* task, which runs a
+double-pressed mutation twice; here the same task is still refused, and
+only different ones wait.
+
+The same reason keeps a `RunToCompletion` task out of `<C-g>`'s reach
+once it has started: if killing it is unsafe on a re-trigger, it is
+unsafe on a key press too. A `Supersede` ticket's token is enrolled, so
+`<C-g>` stops it like any other foreground work.
+
+### 9.3 Stopping a process
+
+```rust
+// lattice-core/src/process.rs
+pub fn run_cancellable(command: Command, input: Option<Vec<u8>>,
+    group: ProcessGroup, token: &CancellationToken)
+    -> io::Result<RunOutcome>;          // Finished(Output) | Cancelled
+```
+
+The child starts as the leader of its own process group and is waited
+on with a short poll of the token; output is drained on two reader
+threads so a full pipe cannot wedge it. On cancel the **whole group** is
+killed — `kill -KILL -- -<pgid>` through `kill(1)` on Unix (the
+workspace denies `unsafe`, so not `libc::kill`), `taskkill /T /F` on
+Windows — because a shell's grandchildren otherwise outlive it and keep
+its pipes open. The plugin host's process job and compilation each
+carry a private version of this; they move onto the shared one.
+
+**Unless the child may need the terminal.** `ssh` under `git push` asks
+for a key's passphrase on the terminal lattice was started from; from a
+process group of its own that read is a background read, which the
+terminal answers by suspending it (`SIGTTIN`) — a push that hangs
+silently instead of asking. So the group is the caller's choice
+(`ProcessGroup::Own` / `Shared`): git's remote operations share the
+editor's group and a cancel kills git alone, leaving an `ssh` mid-prompt
+to end on its own. Either way a cancel does not wait for the output
+readers, so a grandchild still holding a pipe cannot delay it.
+
+A superseded run ends quietly: one line in `*messages*`, no error
+notification. The user did not fail at anything — they asked again.
+
+### 9.3a Refreshes: a generation, not a key (CG.7c)
+
+A view's refresh fits the rule with one twist: its real input is the
+repository's state, which every mutation changes, so each refresh is a
+new question and supersedes the one in flight — keeping the older one
+would paint the state from before the newest change. But a refresh is
+mostly *automatic* (an operation finishing re-renders every open view),
+and by §3 automatic work is not foreground: if refreshes held keyed
+tickets, any `<C-g>` would drop every pending repaint and leave views
+stale. So a refresh takes a per-buffer generation stamp when it starts
+and paints only if it is still the latest when its text is ready — the
+same latest-wins shape the editor already uses for wasm media and
+multibuffer publishes. A first load at open is the view's first refresh
+and stamps too.
+
+### 9.4 Rejected
+
+- **Always restart** on a re-trigger (the first version of this rule) — a
+  long task pressed twice loses all its progress for nothing.
+- **Never restart** — a re-trigger with new inputs would wait for an
+  answer to the old question, then have to run anyway.
+- **Ask on an identical re-trigger** ("restart it? y/n", as VS Code does)
+  — a prompt on every double press; `<C-g>` and re-trigger is already a
+  deliberate restart.
+- **Supersede everything**, repository mutations included — a killed
+  stash or rebase can corrupt the very state the user is acting on.
+- **Queue** the second trigger — a double press would run a mutation
+  twice, and a stuck first run would stall the queue.
+- **Keep `arm()` and add keys beside it** — two supersede rules, one of
+  which contradicts the other. Its users moved onto keys and it went
+  (CG.12).
+
+### 9.5 What cancels a plugin call (CG.12)
+
+Only `<C-g>`. `ForegroundCancel` keeps an **interrupt token**: a guest call
+snapshots it as it starts, and `cancel()` flips it and installs a fresh one.
+So a press stops the call running *then*; a press before a call started
+does not reach it; and no task — keyed, enrolled, superseding — can ever
+cancel a plugin call. Decided with Dhruva, 2026-10-20, over making plugin
+calls uncancellable: a stuck plugin command should stop when the user
+asks, not when its budget runs out. The accepted cost: an *automatic*
+plugin call running at the instant of the press stops too — it reports
+`Cancelled` (no quarantine) and recomputes on its next trigger, and
+decorations update in place, so nothing visible is lost.
+
+## 10. Cross-references
 
 - `lattice-protocol/src/cancel.rs` — `CancellationToken` definition.
+- `lattice-mode/src/foreground_cancel.rs` — `ForegroundCancel`, and (CG.6) `TaskKey` / `TaskTicket`.
+- `lattice-core/src/process.rs` — (CG.6) `run_cancellable`.
 - `lattice-core/src/search.rs` — per-chunk cancel check in the
   search loop.
 - `lattice-lsp/src/features.rs` — `Pending<T>` futures; token plumbing.

@@ -526,14 +526,16 @@ pub(crate) fn arm_store(
         .set_fuel(budget.fuel)
         .map_err(|e| PluginHostError::Instantiate(e.into()))?;
 
-    // CG.4: refresh the token this call may be cancelled by, ONCE, here.
+    // CG.4/CG.12: refresh the token this call may be cancelled by, ONCE, here.
     // The registry is behind a mutex; the token is a plain atomic. Taking
     // the lock per call and polling the atomic per tick is the split
     // `foreground_cancel`'s own docs prescribe.
     //
-    // Snapshotting also fixes the semantics: a call is cancelled by the
-    // operation armed when it STARTED. A later `arm()` (a different user
-    // action) must not reach back and kill a call already in flight.
+    // The token is `ForegroundCancel`'s interrupt token (CG.12): `<C-g>`
+    // flips it and installs a fresh one, so a call is stopped by a press
+    // made WHILE it runs — not by one made before it started, and never by
+    // another task beginning (the retired `arm()` let a new search kill a
+    // call that had adopted its predecessor's token).
     let state = store.data_mut();
     state.epoch_spent = 0;
     state.epoch_started = Some(std::time::Instant::now());

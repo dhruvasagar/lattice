@@ -137,18 +137,28 @@ impl Mode for MagitNotesMode {
                     //
                     // Off the actor thread, and the buffer closes
                     // optimistically — the same shape magit-commit's
-                    // confirm uses, including the `error!` for a failure
-                    // that has no synchronous path back to a buffer
-                    // which is already gone.
-                    tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                        let Ok(repo) = Repository::discover(&workdir) else {
-                            tracing::error!(target: "lattice_magit", "note: repo discover failed");
-                            return;
-                        };
-                        if let Err(e) = Note::set(&repo, &sha, &text) {
-                            tracing::error!(target: "lattice_magit", "note save {sha}: {e}");
-                        }
-                    }));
+                    // confirm uses, including (CG.7b) its turn with every
+                    // other change to the repository and its report
+                    // through `finish_task`.
+                    let label = format!(
+                        "save the note on {}",
+                        crate::magit_global_mode::short_rev(&sha)
+                    );
+                    let identity = label.clone();
+                    if let Err(refused) = crate::magit_global_mode::spawn_repo_task(
+                        workdir,
+                        &identity,
+                        label,
+                        move |workdir| {
+                            let repo = Repository::discover(workdir)
+                                .map_err(|e| format!("not a git repository: {e}"))?;
+                            Note::set(&repo, &sha, &text)
+                                .map(|()| String::new())
+                                .map_err(|e| e.to_string())
+                        },
+                    ) {
+                        return Some(refused);
+                    }
                     Some(Effect::KillBuffer)
                 }),
             },

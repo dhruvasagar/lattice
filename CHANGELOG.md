@@ -106,6 +106,81 @@
   signature-help popups are the exception in both, and stay undimmed.
 
 ### Fixed
+- **A git operation pressed twice runs once.** Pushing (or fetching,
+  pulling, `rebase --continue`, …) again while the first is still running
+  used to start a second copy — two pushes raced, and one was rejected by
+  the remote. Now the second press says *"push is already running in
+  lattice"* and the first carries on. Re-running it with different flags —
+  a push with `-f` after a rejection — stops the first and runs the new
+  one. Operations a kill could leave half-done (pull, stash, the rebase /
+  merge / cherry-pick / revert / `am` steps) are never interrupted: a
+  second press is refused until they finish. To restart identical work on
+  purpose, press `<C-g>`, then run it again.
+- **Magit operations on one repository take turns.** Different operations
+  pressed in quick succession — `s` on one hunk then the next, `s` then `u`,
+  a branch created then checked out, a stash dropped then another — used to
+  run at once and could fail with *"Unable to create '.git/index.lock': File
+  exists"*, or land out of order. They now run one after another, in the
+  order you pressed them, in the status buffer and every magit view; the
+  same operation pressed again while it runs is refused, as above.
+- **Magit views no longer go back to an older state.** When two refreshes
+  of a view overlapped — a `gr` while the view was rebuilding after a stage,
+  or two operations finishing close together — the one that started first
+  could finish last and repaint what the repository looked like before the
+  newer change. A view now shows only its most recent refresh, and the
+  "refreshing" mark in its header stays up until the last one is done.
+- **Re-running a build no longer mixes two runs.** `:compile` with a new
+  command while a build was running killed only its shell: the build's
+  child processes kept going, their output streamed into the new run's
+  buffer, and the new run could end up reported as "terminated". The whole
+  process tree is stopped now, and nothing of the old run reaches the new
+  one.
+- **`:recompile` while the same build is running is refused** rather than
+  restarting it — *"compilation is already running — <C-g> stops it"* — so
+  a stray `gr` does not throw away a long build. A different command still
+  replaces the running one; `<C-g>` then `:recompile` restarts on purpose,
+  and `<C-g>` alone stops a build. `:!cmd` behaves the same way.
+- **`:format` never applies its edits to text that moved on.** A format
+  result was applied to whichever buffer was active when it arrived — even
+  if you had switched buffers or kept typing while it ran — and its edits,
+  positions in the old text, landed in the wrong places. A result now
+  applies only to the buffer and version it was computed for; otherwise the
+  echo says it was not applied. `:format` twice on unchanged text is refused
+  while the first runs, a format of changed text replaces the one in
+  flight, and `<C-g>` stops a slow external formatter.
+- **A plugin is built once at a time.** `:plugin-update`, `:plugin-rebuild`
+  and the plugins view's `u` / `b` pressed again while that plugin is still
+  building used to start a second build of it — and whichever finished
+  first cleared its "building…" mark while the other was still going. A
+  second press is now refused (*"`org` is already being rebuilt or
+  updated"*) and the build carries on; `:plugin-update-all` and its
+  siblings skip a plugin already building, and refuse to start while
+  another bulk run is going.
+- **The agenda and the magit project diff no longer mix two scans.** A
+  project diff opened again while it was still computing could end up with
+  every hunk listed twice — both scans appended into the view — and an
+  agenda refreshed during a scan showed whichever scan finished last, even
+  the older one. The same scan again is now refused while one runs (it keeps
+  what it has walked); a different one replaces it, and the stopped scan
+  adds nothing more. `<C-g>` stops a scan.
+- **A search no longer stops another search, or a plugin command.**
+  Starting a project search cancelled whatever search was already running —
+  in another view too — and any plugin call that happened to be tied to it.
+  Each search view now runs on its own: `gr` with the same query while it is
+  still searching is refused (*"search: already running"*), a new query or
+  a `:cd` then `gr` replaces it. `<C-g>` stops a running search, and now also
+  stops whatever plugin command is running — previously only possible while
+  a search was underway.
+- **A live grep picker stops searching for what you typed before.** Each
+  keystroke in a grep picker started a search over the whole project, and a
+  newer keystroke only discarded the older search's answer — the search
+  itself ran to the end. A superseded search, and a picker's first load
+  once the picker is closed or replaced, is now stopped, backend process
+  and all.
+- **Committing, saving a note, confirming a rebase and `:magit-branch-create`
+  report how they went** and refresh open magit views, like every other
+  magit operation. A failure used to reach only the log, and an open status
+  buffer kept showing the state from before the commit.
 - **`:plugin-update` updates a plugin installed from a URL.** A `Prebuilt`
   plugin was refused with "has no buildable source" instead of being
   downloaded again; `:plugin-rebuild` still says that, since there is nothing

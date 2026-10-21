@@ -202,7 +202,8 @@ impl Mode for MagitRefsMode {
                         });
                     }
                     let name = entry.name.clone();
-                    spawn_mutation_and_refresh(s, move || {
+                    let label = format!("check out {name}");
+                    spawn_mutation_and_refresh(s, &label, move || {
                         // NC.5: reported, not discarded — a refused
                         // checkout (dirty tree) used to vanish.
                         let result = Repository::discover(&workdir)
@@ -272,17 +273,22 @@ impl Mode for MagitRefsMode {
             }
 
             let wd = workdir.clone();
+            // CG.7c: the first load is this view's first refresh — it paints
+            // only if no refresh that started after it has painted since.
+            let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
             let built = tokio::task::spawn_blocking(move || build_refs_buffer(&wd))
                 .await
                 .unwrap_or_default();
-            headerline::publish(&hl, built.header.clone());
-            let spans = built.spans;
-            if let Ok(mut g) = state.lock() {
-                g.rows = built.rows;
-            }
-            crate::buffer_io::replace_buffer_text(&handle, built.text).await;
-            if let Some(ref ph) = pending_highlights {
-                ph.store_and_wake(buffer_id, spans);
+            if stamp.is_latest() {
+                headerline::publish(&hl, built.header.clone());
+                let spans = built.spans;
+                if let Ok(mut g) = state.lock() {
+                    g.rows = built.rows;
+                }
+                crate::buffer_io::replace_buffer_text(&handle, built.text).await;
+                if let Some(ref ph) = pending_highlights {
+                    ph.store_and_wake(buffer_id, spans);
+                }
             }
 
             Ok(guard)
@@ -292,20 +298,30 @@ impl Mode for MagitRefsMode {
 
 /// `gr` — re-walk the refs.
 fn refresh(s: Arc<Mutex<RefsState>>) -> Option<Effect> {
-    respawn(s, || {})
+    respawn(s, None)
 }
 
 /// Run `mutate` (a blocking git call) off the actor thread, then
 /// re-walk — the shape every mutating handler uses instead of calling
 /// git inline. Paramount goal #1: no `git` on the actor thread, ever.
+/// CG.7b: keyed by `label` — the same checkout again is refused — and
+/// one writer at a time on the repository.
 fn spawn_mutation_and_refresh(
     s: Arc<Mutex<RefsState>>,
+    label: &str,
     mutate: impl FnOnce() + Send + 'static,
 ) -> Option<Effect> {
-    respawn(s, mutate)
+    let wd = s.lock().ok()?.workdir.clone();
+    match crate::magit_global_mode::RepoMutation::begin(&wd, label, label) {
+        Ok(mutation) => respawn(s, Some(Box::new(move || mutation.run(mutate)))),
+        Err(refused) => Some(refused),
+    }
 }
 
-fn respawn(s: Arc<Mutex<RefsState>>, mutate: impl FnOnce() + Send + 'static) -> Option<Effect> {
+fn respawn(
+    s: Arc<Mutex<RefsState>>,
+    mutate: Option<Box<dyn FnOnce() + Send + 'static>>,
+) -> Option<Effect> {
     let (handle, wd, pending, buffer_id, hl) = {
         let g = s.lock().ok()?;
         (
@@ -319,12 +335,19 @@ fn respawn(s: Arc<Mutex<RefsState>>, mutate: impl FnOnce() + Send + 'static) -> 
     // MG.27: the headerline says "refreshing" until the guard drops,
     // including on every early exit inside the task.
     let busy = headerline::busy(&hl);
+    // CG.7c: paint only if no newer refresh of this view started since.
+    let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
     tokio::task::spawn(async move {
         let _busy = busy;
-        let _ = tokio::task::spawn_blocking(mutate).await;
+        if let Some(mutate) = mutate {
+            let _ = tokio::task::spawn_blocking(mutate).await;
+        }
         let built = tokio::task::spawn_blocking(move || build_refs_buffer(&wd))
             .await
             .unwrap_or_default();
+        if !stamp.is_latest() {
+            return;
+        }
         headerline::publish(&hl, built.header.clone());
         let spans = built.spans;
         // The row index is replaced BEFORE the text, so there is no

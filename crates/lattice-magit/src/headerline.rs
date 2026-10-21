@@ -173,6 +173,12 @@ pub struct MagitHeaderline {
     /// MG.27: a refresh is running. Orthogonal to `fields` — see
     /// [`Self::set_busy`].
     busy: std::sync::atomic::AtomicBool,
+    /// CG.7c: how many refreshes hold the busy flag. Refreshes of one view
+    /// overlap — a newer one supersedes an older one that is still
+    /// finishing — and the first to finish must not clear "refreshing" while
+    /// another is still at it. A mutex, not an atomic pair, so a guard
+    /// entering as another leaves cannot race the flag to the wrong value.
+    busy_holders: std::sync::Mutex<usize>,
     /// MG.56: a one-line notice about the LAST action, cleared by the
 
     /// next refresh.
@@ -214,6 +220,7 @@ impl MagitHeaderline {
             fields: RwLock::new(Vec::new()),
             version: AtomicU64::new(0),
             busy: std::sync::atomic::AtomicBool::new(false),
+            busy_holders: std::sync::Mutex::new(0),
             notice: RwLock::new(None),
             elements: theme.map(|t| resolve_elements(t, mode_id)),
         })
@@ -261,6 +268,28 @@ impl MagitHeaderline {
         }
         self.version.fetch_add(1, Ordering::Release);
         true
+    }
+
+    /// CG.7c: one more refresh holds the busy flag.
+    fn enter_busy(&self) {
+        let mut holders = match self.busy_holders.lock() {
+            Ok(h) => h,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *holders += 1;
+        self.set_busy(true);
+    }
+
+    /// CG.7c: one refresh lets go; the flag clears with the last.
+    fn leave_busy(&self) {
+        let mut holders = match self.busy_holders.lock() {
+            Ok(h) => h,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *holders = holders.saturating_sub(1);
+        if *holders == 0 {
+            self.set_busy(false);
+        }
     }
 
     pub fn is_busy(&self) -> bool {
@@ -554,7 +583,7 @@ pub(crate) fn publish_notice(handle: &Option<MagitHeaderlineHandle>, text: Optio
 #[must_use = "the row stays busy until this guard drops"]
 pub(crate) fn busy(handle: &Option<MagitHeaderlineHandle>) -> BusyGuard {
     if let Some(h) = handle {
-        h.set_busy(true);
+        h.enter_busy();
     }
     BusyGuard(handle.clone())
 }
@@ -564,7 +593,7 @@ pub(crate) struct BusyGuard(Option<MagitHeaderlineHandle>);
 impl Drop for BusyGuard {
     fn drop(&mut self) {
         if let Some(h) = &self.0 {
-            h.set_busy(false);
+            h.leave_busy();
         }
     }
 }
@@ -962,6 +991,22 @@ pub(crate) fn rebase_fields(upstream: &str, commits: usize, in_progress: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CG.7c: overlapping refreshes share the busy flag. The first to
+    /// finish — a superseded one, typically — must not clear
+    /// "refreshing" while another is still at it.
+    #[test]
+    fn busy_stays_up_until_the_last_refresh_lets_go() {
+        let hl = Some(bare(Vec::new()));
+        let first = busy(&hl);
+        let second = busy(&hl);
+        let h = hl.as_ref().unwrap();
+        assert!(h.is_busy());
+        drop(first);
+        assert!(h.is_busy(), "another refresh still holds it");
+        drop(second);
+        assert!(!h.is_busy(), "cleared with the last");
+    }
 
     fn bare(fields: Vec<Field>) -> MagitHeaderlineHandle {
         let hl = MagitHeaderline::new(None, "test");

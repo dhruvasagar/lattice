@@ -213,15 +213,20 @@ impl Mode for MagitLogMode {
             // edit on the current task (no Runtime::new()).
             let wd = workdir.clone();
             let path_for_task = path.clone();
+            // CG.7c: the first load is this view's first refresh — it paints
+            // only if no refresh that started after it has painted since.
+            let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
             let text =
                 tokio::task::spawn_blocking(move || run_log(&wd, path_for_task.as_deref(), &[]))
                     .await
                     .unwrap();
-            headerline::publish(&hl, log_header_fields(&text, path.as_deref()));
-            let spans = crate::highlight::log_styled_spans(&text);
-            crate::buffer_io::replace_buffer_text(&handle, text).await;
-            if let Some(ref ph) = pending_highlights {
-                ph.store_and_wake(buffer_id, spans);
+            if stamp.is_latest() {
+                headerline::publish(&hl, log_header_fields(&text, path.as_deref()));
+                let spans = crate::highlight::log_styled_spans(&text);
+                crate::buffer_io::replace_buffer_text(&handle, text).await;
+                if let Some(ref ph) = pending_highlights {
+                    ph.store_and_wake(buffer_id, spans);
+                }
             }
 
             Ok(guard)
@@ -246,12 +251,17 @@ fn refresh(s: Arc<Mutex<LogState>>) -> Option<Effect> {
     // guard drops — including on every early exit inside the
     // task, which is why it is a guard and not a matching pair.
     let busy = headerline::busy(&hl);
+    // CG.7c: paint only if no newer refresh of this view started since.
+    let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
     tokio::task::spawn(async move {
         let _busy = busy;
         let for_task = path.clone();
         let text = tokio::task::spawn_blocking(move || run_log(&wd, for_task.as_deref(), &extra))
             .await
             .unwrap_or_default();
+        if !stamp.is_latest() {
+            return;
+        }
         headerline::publish(&hl, log_header_fields(&text, path.as_deref()));
         let spans = crate::highlight::log_styled_spans(&text);
         crate::buffer_io::replace_buffer_text(&handle, text).await;

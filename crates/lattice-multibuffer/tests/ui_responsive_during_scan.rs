@@ -108,6 +108,7 @@ fn actor_runtime_stays_responsive_during_scan() {
             service.clone(),
             events.clone(),
             lattice_protocol::CancellationToken::never(),
+            None,
         );
 
         // Probe: sleep in a tight loop, measure realised

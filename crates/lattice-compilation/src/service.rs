@@ -61,7 +61,16 @@ pub trait CompilationService: Send + Sync + std::fmt::Debug {
     /// returns without spawning.
     ///
     /// `cwd`: working directory for the child process.
-    fn run(&self, cmdline: Option<String>, cwd: Option<PathBuf>);
+    ///
+    /// CG.8 (`cancellation.md` §9): with a run in flight, the same
+    /// command in the same directory is refused — `Err` says so, and the
+    /// run carries on — while a different one stops it (its whole process
+    /// group) and starts. `<C-g>`, then run again, restarts identical work.
+    ///
+    /// # Errors
+    ///
+    /// The message to show when the same command is already running.
+    fn run(&self, cmdline: Option<String>, cwd: Option<PathBuf>) -> Result<(), String>;
     /// Kill the currently running compilation child process, if any.
     /// No-op when no child is running. The reader pipes will EOF on
     /// the closed child, and the drain will publish a Finished chunk
@@ -100,7 +109,11 @@ struct RunState {
     /// Lives beside `last_cmdline` for the same reason it does: this
     /// state's lifetime is the service's, not the editor's.
     last_cwd: Option<PathBuf>,
-    child: Option<Child>,
+    /// The live child, with the run it belongs to. CG.8: tagged so a
+    /// coordinator reaps only ITS run's child — it used to take whatever
+    /// was in the slot, which after a re-run was the new run's, and the
+    /// new run then reported "terminated".
+    child: Option<(u64, Child)>,
 }
 
 /// Default [`CompilationService`]: `sh -c <cmd>`, pipe-captured,
@@ -147,6 +160,13 @@ pub struct DefaultCompilationService {
     /// empty in the common case where no `error-parser` plugin is
     /// loaded. Either way every native parser still runs.
     parser_factories: Option<crate::CompilationParserFactoriesHandle>,
+    /// CG.8: the run in flight. Readers and the coordinator of an older run
+    /// stop publishing once this has moved on, so nothing from a stopped
+    /// build lands in the next one's buffer.
+    current_run: Arc<std::sync::atomic::AtomicU64>,
+    /// CG.8: keys runs (`cancellation.md` §9). `None` in a harness that
+    /// registered none: every run then restarts, as before.
+    foreground_cancel: Option<lattice_mode::ForegroundCancelHandle>,
 }
 
 impl std::fmt::Debug for DefaultCompilationService {
@@ -172,7 +192,17 @@ impl DefaultCompilationService {
             qf_bus,
             ansi: None,
             parser_factories: None,
+            current_run: Arc::default(),
+            foreground_cancel: None,
         }
+    }
+
+    /// CG.8: key runs on the foreground-cancel service, so the same command
+    /// pressed again is refused, a different one supersedes, and `<C-g>`
+    /// stops a build.
+    pub fn with_foreground_cancel(mut self, cancel: lattice_mode::ForegroundCancelHandle) -> Self {
+        self.foreground_cancel = Some(cancel);
+        self
     }
 
     /// CM.5: read the ANSI palette from `slot` when a run starts.
@@ -214,16 +244,16 @@ impl DefaultCompilationService {
 }
 
 impl CompilationService for DefaultCompilationService {
-    fn run(&self, cmdline: Option<String>, cwd: Option<PathBuf>) {
+    fn run(&self, cmdline: Option<String>, cwd: Option<PathBuf>) -> Result<(), String> {
         // Resolve the cmdline AND the directory, record both for
         // `:recompile`, and kill any prior child — all under one lock so
         // a rapid recompile can't race two live children.
-        let (cmd, cwd) = {
+        let ((cmd, cwd), ticket, run) = {
             let mut st = match self.state.lock() {
                 Ok(guard) => guard,
                 Err(_) => {
                     tracing::warn!("compilation: run-state lock poisoned; skipping run");
-                    return;
+                    return Ok(());
                 }
             };
             let resolved = match cmdline {
@@ -253,15 +283,42 @@ impl CompilationService for DefaultCompilationService {
                                 }
                             },
                         });
-                        return;
+                        return Ok(());
                     }
                 },
             };
-            if let Some(mut prior) = st.child.take() {
-                let _ = prior.kill();
+            // CG.8: the same command in the same directory, still running,
+            // is refused and carries on; a different one supersedes it.
+            let key = lattice_mode::TaskKey::supersede(
+                match self.events.target {
+                    lattice_grammar::RunTarget::Compilation => "compilation",
+                    lattice_grammar::RunTarget::Shell => "shell-command",
+                },
+                "",
+            )
+            .with_inputs(format!("{:?} {}", resolved.1, resolved.0));
+            let ticket = match self.foreground_cancel.as_ref().map(|fc| fc.begin(key)) {
+                Some(Err(_)) => {
+                    return Err(format!(
+                        "{} is already running — <C-g> stops it",
+                        noun(self.events.target).to_lowercase()
+                    ));
+                }
+                Some(Ok(ticket)) => Some(ticket),
+                None => None,
+            };
+            // The run in flight (superseded, or unkeyed) stops — its whole
+            // process group, or its grandchildren keep the pipes open and
+            // its readers stream into this run.
+            if let Some((_, mut prior)) = st.child.take() {
+                kill_group(&mut prior);
                 let _ = prior.wait();
             }
-            resolved
+            let run = self
+                .current_run
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+                + 1;
+            (resolved, ticket, run)
         };
 
         // Clear + seed the buffer with the run header (the drain's
@@ -295,7 +352,18 @@ impl CompilationService for DefaultCompilationService {
             .as_ref()
             .map(|h| h.load_full())
             .filter(|set| !set.is_empty());
+        let current_run = self.current_run.clone();
         self.runtime.spawn_blocking(move || {
+            // CG.8: whether this run is still the one in flight. Everything
+            // it publishes checks first, so a stopped build stays silent.
+            let live = {
+                let current_run = current_run.clone();
+                move || current_run.load(std::sync::atomic::Ordering::Acquire) == run
+            };
+            let token = ticket
+                .as_ref()
+                .map(|t| t.token().clone())
+                .unwrap_or_else(lattice_protocol::CancellationToken::never);
             let mut command = Command::new("sh");
             command
                 .arg("-c")
@@ -337,7 +405,7 @@ impl CompilationService for DefaultCompilationService {
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
             if let Ok(mut st) = state.lock() {
-                st.child = Some(child);
+                st.child = Some((run, child));
             }
 
             // CM.3a+. Shared
@@ -365,6 +433,7 @@ impl CompilationService for DefaultCompilationService {
             let out_qf = qf_bus.clone();
             let out_shared = shared.clone();
             let out_factories = factories.clone();
+            let out_live = live.clone();
             let out_reader = std::thread::spawn(move || {
                 read_parsed_pipe(
                     stdout,
@@ -373,12 +442,14 @@ impl CompilationService for DefaultCompilationService {
                     &out_shared,
                     ansi.as_ref(),
                     out_factories.as_deref(),
+                    &out_live,
                 )
             });
             let err_events = events.clone();
             let err_qf = qf_bus.clone();
             let err_shared = shared.clone();
             let err_factories = factories.clone();
+            let err_live = live.clone();
             let err_reader = std::thread::spawn(move || {
                 read_parsed_pipe(
                     stderr,
@@ -387,15 +458,45 @@ impl CompilationService for DefaultCompilationService {
                     &err_shared,
                     ansi.as_ref(),
                     err_factories.as_deref(),
+                    &err_live,
                 )
             });
+            // CG.8: watch the token while the readers run. A supersede has
+            // already killed this run's child; `<C-g>` is noticed here and
+            // kills it — the whole group, so the readers reach EOF.
+            let mut stopped = false;
+            while !(out_reader.is_finished() && err_reader.is_finished()) {
+                if token.is_cancelled() && !stopped {
+                    stopped = true;
+                    // Taken out of the slot, as `kill` does, so the reap
+                    // below reports "terminated" rather than a SIGKILL exit.
+                    let mine = state.lock().ok().and_then(|mut st| match st.child.take() {
+                        Some((owner, child)) if owner == run => Some(child),
+                        other => {
+                            st.child = other;
+                            None
+                        }
+                    });
+                    if let Some(mut child) = mine {
+                        kill_group(&mut child);
+                        let _ = child.wait();
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             let _ = out_reader.join();
             let _ = err_reader.join();
 
-            // Reap the child — unless a concurrent recompile already
-            // took + killed it (then `child` is gone and the readers
-            // EOF'd on the closed pipes).
-            let waited = state.lock().ok().and_then(|mut st| st.child.take());
+            // Reap THIS run's child — unless a re-run already took and
+            // killed it, or a newer run's child is in the slot (CG.8:
+            // taking that one made the new run report "terminated").
+            let waited = state.lock().ok().and_then(|mut st| match st.child.take() {
+                Some((owner, child)) if owner == run => Some(child),
+                other => {
+                    st.child = other;
+                    None
+                }
+            });
             let summary = match waited {
                 Some(mut child) => match child.wait() {
                     Ok(status) => {
@@ -411,13 +512,18 @@ impl CompilationService for DefaultCompilationService {
                 },
                 None => format!("\n{} terminated\n", noun(events.target)),
             };
-            publish(&events, OutputChunk::Finished { summary });
+            // A superseded run says nothing: its buffer is the new run's now.
+            if live() {
+                publish(&events, OutputChunk::Finished { summary });
+            }
+            drop(ticket);
         });
+        Ok(())
     }
 
     fn kill(&self) {
         if let Ok(mut st) = self.state.lock()
-            && let Some(mut child) = st.child.take()
+            && let Some((_, mut child)) = st.child.take()
         {
             // Unix: kill the entire process group, not just the
             // shell PID. The shell was put in its own process
@@ -503,6 +609,7 @@ fn read_parsed_pipe<R: std::io::Read>(
     shared: &Mutex<Vec<ErrorEntry>>,
     ansi: Option<&crate::ansi::AnsiPalette>,
     factories: Option<&crate::CompilationParserFactories>,
+    live: &dyn Fn() -> bool,
 ) {
     let Some(pipe) = pipe else {
         return;
@@ -530,6 +637,10 @@ fn read_parsed_pipe<R: std::io::Read>(
     let mut sgr = crate::ansi::SgrState::default();
     let mut reading = crate::DiagnosticHighlighter::new();
     for line in reader.lines() {
+        // CG.8: a stopped run's output never reaches the next run's buffer.
+        if !live() {
+            return;
+        }
         let raw = match line {
             Ok(l) => l,
             Err(e) => {
@@ -566,7 +677,7 @@ fn read_parsed_pipe<R: std::io::Read>(
             lines_in_batch = 0;
         }
     }
-    if !batch.is_empty() {
+    if !batch.is_empty() && live() {
         publish(
             events,
             OutputChunk::Append {
@@ -574,6 +685,22 @@ fn read_parsed_pipe<R: std::io::Read>(
                 spans: batch_spans,
             },
         );
+    }
+}
+
+/// Kill a run's whole process group (CG.8). The shell leads its own group
+/// (`setpgid` at spawn), so this takes its pipeline's children with it —
+/// `Child::kill` alone left them alive, holding the pipes open, and the
+/// stopped run's readers kept streaming into the next run.
+fn kill_group(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pgid = child.id();
+        unsafe { libc::kill(-(pgid as i32), libc::SIGKILL) };
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
     }
 }
 
@@ -655,7 +782,7 @@ mod tests {
         if let Some(handle) = factories {
             svc = svc.with_parser_factories(handle);
         }
-        svc.run(cmdline, None);
+        svc.run(cmdline, None).unwrap();
 
         // Drain until quiescent (no new chunk within a short window)
         // or the overall deadline elapses.
@@ -832,6 +959,7 @@ mod tests {
             &shared,
             palette,
             None,
+            &|| true,
         );
         let mut lines = Vec::new();
         while let Ok(event) = rx.try_recv() {
@@ -1120,7 +1248,8 @@ mod tests {
         };
 
         // A real run, in `dir`.
-        svc.run(Some("pwd".to_string()), Some(canonical.clone()));
+        svc.run(Some("pwd".to_string()), Some(canonical.clone()))
+            .unwrap();
         let first = tokio::task::spawn_blocking({
             let mut rx = rx;
             move || {
@@ -1138,7 +1267,7 @@ mod tests {
 
         // `:recompile` — no cmdline, and a DIFFERENT cwd, standing in for
         // the pathless `*compilation*` buffer resolving to somewhere else.
-        svc.run(None, Some(std::env::temp_dir()));
+        svc.run(None, Some(std::env::temp_dir())).unwrap();
         let second = tokio::task::spawn_blocking(move || collect(&mut rx))
             .await
             .unwrap();
@@ -1155,5 +1284,156 @@ mod tests {
         // Trait bound sanity: the handle stays object-safe + Debug.
         fn assert_debug<T: std::fmt::Debug + Send + Sync>() {}
         assert_debug::<DefaultCompilationService>();
+    }
+
+    /// CG.8: a service keyed on a fresh foreground-cancel slot, and its
+    /// output stream.
+    #[cfg(unix)]
+    fn keyed_service() -> (
+        DefaultCompilationService,
+        lattice_mode::ForegroundCancelHandle,
+        tokio::sync::mpsc::UnboundedReceiver<CompilationOutputPushed>,
+        lattice_mode::tick_callback::TickCallback,
+    ) {
+        let bus = Arc::new(EventBus::new());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CompilationOutputPushed>();
+        bus.subscribe_typed::<CompilationOutputPushed>(tx);
+        let (qf_bus, drain, _latest) = qf_capture();
+        let fc: lattice_mode::ForegroundCancelHandle = Arc::default();
+        let svc = DefaultCompilationService::new(bus, tokio::runtime::Handle::current(), qf_bus)
+            .with_foreground_cancel(fc.clone());
+        (svc, fc, rx, drain)
+    }
+
+    /// Every chunk until a `Finished`, or `wait` elapses.
+    #[cfg(unix)]
+    async fn until_finished(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<CompilationOutputPushed>,
+        wait: Duration,
+    ) -> Vec<OutputChunk> {
+        let mut chunks = Vec::new();
+        let deadline = tokio::time::Instant::now() + wait;
+        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+            let done = matches!(event.chunk, OutputChunk::Finished { .. });
+            chunks.push(event.chunk);
+            if done {
+                break;
+            }
+        }
+        chunks
+    }
+
+    /// CG.8, the re-run bug: a pipeline's grandchildren outlived a
+    /// `Child::kill` of the shell, held the pipes open, and the stopped
+    /// run's readers streamed into the next run's buffer — and its
+    /// coordinator could take the new child, which then reported
+    /// "terminated". After a different command starts, nothing of the
+    /// first reaches the stream, and the new run finishes normally.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_new_command_stops_the_old_run_and_nothing_of_it_leaks_in() {
+        let (svc, _fc, mut rx, _drain) = keyed_service();
+        svc.run(
+            // Bounded (~3 s), so a regression fails this test rather than
+            // hanging it: unbounded, a leaked pipeline never ends and the
+            // runtime waits on it forever.
+            Some("for i in $(seq 300); do echo old; sleep 0.01; done | cat".to_string()),
+            None,
+        )
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        svc.run(Some("sleep 0.3; echo new".to_string()), None)
+            .unwrap();
+
+        // Skip to the new run's header, then read it to its end.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let event = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("the new run's header arrives")
+                .unwrap();
+            if matches!(&event.chunk, OutputChunk::Reset { header } if header.contains("echo new"))
+            {
+                break;
+            }
+        }
+        let chunks = until_finished(&mut rx, Duration::from_secs(5)).await;
+        for chunk in &chunks {
+            if let OutputChunk::Append { text, .. } = chunk {
+                assert!(!text.contains("old"), "the stopped run leaked: {text:?}");
+            }
+        }
+        match chunks.last() {
+            Some(OutputChunk::Finished { summary }) => {
+                assert!(
+                    summary.contains("finished"),
+                    "the new run finished: {summary}"
+                );
+            }
+            other => panic!("the new run reports once, finished: {other:?}"),
+        }
+        assert!(
+            chunks
+                .iter()
+                .any(|c| matches!(c, OutputChunk::Append { text, .. } if text.contains("new"))),
+            "{chunks:?}"
+        );
+    }
+
+    /// The same command in the same directory, still running, is refused
+    /// and carries on.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_same_command_again_is_refused_and_the_first_carries_on() {
+        let (svc, _fc, mut rx, _drain) = keyed_service();
+        svc.run(Some("sleep 0.5; echo done".to_string()), None)
+            .unwrap();
+        let refused = svc
+            .run(Some("sleep 0.5; echo done".to_string()), None)
+            .unwrap_err();
+        assert!(refused.contains("already running"), "{refused}");
+        let chunks = until_finished(&mut rx, Duration::from_secs(5)).await;
+        assert!(
+            chunks
+                .iter()
+                .any(|c| matches!(c, OutputChunk::Append { text, .. } if text.contains("done"))),
+            "the first run was not restarted: {chunks:?}"
+        );
+        let resets = chunks
+            .iter()
+            .filter(|c| matches!(c, OutputChunk::Reset { .. }))
+            .count();
+        assert_eq!(resets, 1, "one run, one header");
+    }
+
+    /// `<C-g>` stops a build — promptly, and the whole of it.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_stops_a_running_build() {
+        let (svc, fc, mut rx, _drain) = keyed_service();
+        svc.run(Some("sleep 30 | cat".to_string()), None).unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let started = std::time::Instant::now();
+        fc.cancel();
+        let chunks = until_finished(&mut rx, Duration::from_secs(10)).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "stopped promptly, not after the sleep"
+        );
+        match chunks.last() {
+            Some(OutputChunk::Finished { summary }) => {
+                assert!(summary.contains("terminated"), "{summary}");
+            }
+            other => panic!("a stopped build says so: {other:?}"),
+        }
+        // Stopped, it can run again — and is stopped the same way.
+        assert!(svc.run(Some("sleep 30 | cat".to_string()), None).is_ok());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        fc.cancel();
+        let again = until_finished(&mut rx, Duration::from_secs(10)).await;
+        assert!(
+            matches!(again.last(), Some(OutputChunk::Finished { summary }) if summary.contains("terminated")),
+            "{again:?}"
+        );
     }
 }

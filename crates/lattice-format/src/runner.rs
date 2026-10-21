@@ -5,6 +5,7 @@
 //! keeping the spawn itself synchronous makes it testable without a
 //! runtime.
 
+use lattice_protocol::CancellationToken;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -43,6 +44,9 @@ pub enum FormatError {
     /// Spawning or piping failed for a reason other than the program
     /// being absent.
     Io { program: String, message: String },
+    /// CG.9: stopped before it finished — superseded by a newer `:format`,
+    /// or `<C-g>`. The user asked for that; not worth interrupting them.
+    Cancelled { program: String },
 }
 
 impl FormatError {
@@ -63,6 +67,7 @@ impl FormatError {
             }
             Self::NotUtf8 { program } => format!("{program} produced invalid UTF-8"),
             Self::Io { program, message } => format!("{program}: {message}"),
+            Self::Cancelled { program } => format!("{program} stopped"),
         }
     }
 
@@ -73,7 +78,7 @@ impl FormatError {
     /// describe something that went wrong during work the user asked
     /// for.
     pub fn is_noteworthy(&self) -> bool {
-        !matches!(self, Self::NotFound { .. })
+        !matches!(self, Self::NotFound { .. } | Self::Cancelled { .. })
     }
 }
 
@@ -82,12 +87,24 @@ impl FormatError {
 /// Blocking, bounded by [`FORMAT_TIMEOUT`]. On timeout the child is
 /// killed rather than left to leak.
 pub fn run(spec: &FormatterSpec, input: &str, path: Option<&Path>) -> Result<String, FormatError> {
+    run_cancellable(spec, input, path, &CancellationToken::never())
+}
+
+/// [`run`], stopped early when `cancel` is (CG.9, `cancellation.md` §9) —
+/// a newer `:format` superseding this one, or `<C-g>`. Returns
+/// [`FormatError::Cancelled`] then; the child is killed, as on timeout.
+pub fn run_cancellable(
+    spec: &FormatterSpec,
+    input: &str,
+    path: Option<&Path>,
+    cancel: &CancellationToken,
+) -> Result<String, FormatError> {
     let mut command = Command::new(spec.program);
     command.args(spec.args);
     if let (Some(flag), Some(p)) = (spec.filename_flag, path) {
         command.arg(format!("{flag}={}", p.display()));
     }
-    run_command(command, spec.program, input, FORMAT_TIMEOUT)
+    run_command(command, spec.program, input, FORMAT_TIMEOUT, cancel)
 }
 
 /// Wall-clock ceiling for a `:{range}!cmd` filter.
@@ -120,7 +137,13 @@ pub fn run_shell(
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
-    run_command(command, command_line, input, timeout)
+    run_command(
+        command,
+        command_line,
+        input,
+        timeout,
+        &CancellationToken::never(),
+    )
 }
 
 /// Feed `input` to `command`'s stdin and collect its stdout.
@@ -138,6 +161,7 @@ fn run_command(
     label: &str,
     input: &str,
     timeout: Duration,
+    cancel: &CancellationToken,
 ) -> Result<String, FormatError> {
     let program = label.to_string();
     command
@@ -191,6 +215,11 @@ fn run_command(
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
+                if cancel.is_cancelled() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(FormatError::Cancelled { program });
+                }
                 if started.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -383,5 +412,27 @@ mod tests {
         std::fs::write(dir.path().join("here.txt"), "").expect("write");
         let out = run_shell("ls", "", Some(dir.path()), Duration::from_secs(20));
         assert_eq!(out.as_deref(), Ok("here.txt\n"));
+    }
+
+    /// CG.9: a cancelled run stops the formatter promptly — superseded by a
+    /// newer `:format`, or `<C-g>` — instead of running out its timeout.
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_format_stops_the_formatter() {
+        let (_dir, spec) = fake("slow", "sleep 30; cat");
+        let token = CancellationToken::new();
+        let canceller = token.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            canceller.cancel();
+        });
+        let started = Instant::now();
+        let got = run_cancellable(&spec, "x\n", None, &token);
+        assert!(matches!(got, Err(FormatError::Cancelled { .. })), "{got:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "stopped promptly"
+        );
+        assert!(!got.unwrap_err().is_noteworthy(), "the user asked for it");
     }
 }

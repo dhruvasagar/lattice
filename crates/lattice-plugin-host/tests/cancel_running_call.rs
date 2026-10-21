@@ -44,27 +44,27 @@ async fn a_running_guest_call_is_cancelled_mid_flight() {
     let (host, cancel, _dirs) = host_with_cancel();
     let spin = host.compile(SPIN_WAT.as_bytes()).unwrap();
 
-    // Armed BEFORE the call: `arm_store` snapshots what is armed when the
-    // call starts.
-    let _token = cancel.arm();
-
-    // Instantiate FIRST, then start the clock on the cancel. The 50 ms used
-    // to start before instantiation, and on a busy machine instantiation
-    // alone can outlast it: the cancel then fired — and cleared the armed
-    // token — before `activate` began, the call started with nothing armed,
-    // and by design ran to its budget. That is ~16 minutes of one core, a
-    // failed assertion, and (cargo stops at the first failing binary) every
-    // later test binary unrun. Seen three times in one day under load.
+    // CG.12: the call snapshots the interrupt token as it starts; nothing
+    // needs arming. Instantiate FIRST, then press.
     let mut plugin = host
         .instantiate_with_budget(&spin, unbounded_ish())
         .await
         .expect("spin instantiates");
 
+    // Pressed REPEATEDLY until the call returns. A single press can land
+    // before `activate` begins on a busy machine; the call then snapshots
+    // the fresh token and, by design, runs to its budget — ~16 minutes of
+    // one core and (cargo stops at the first failing binary) every later
+    // test binary unrun. Seen three times in one day under load with the
+    // single press this used to make.
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let firing = {
-        let cancel = cancel.clone();
+        let (cancel, done) = (cancel.clone(), done.clone());
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            cancel.cancel();
+            while !done.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(50));
+                cancel.cancel();
+            }
         })
     };
 
@@ -74,6 +74,7 @@ async fn a_running_guest_call_is_cancelled_mid_flight() {
         .await
         .expect_err("the spin loop must trap");
     let elapsed = started.elapsed();
+    done.store(true, std::sync::atomic::Ordering::Release);
     firing.join().unwrap();
 
     assert!(
@@ -97,28 +98,35 @@ async fn a_running_guest_call_is_cancelled_mid_flight() {
     );
 }
 
-/// A call started when nothing is armed is not cancellable, and must not
-/// be affected by a *later* arm+cancel belonging to a different
-/// operation. The snapshot in `arm_store` is what guarantees this.
+/// CG.12: only `<C-g>` pressed WHILE a call runs reaches it. A press before
+/// it started does not — the interrupt token was replaced — and no task
+/// beginning or superseding during the call cancels it. Before CG.12 a call
+/// adopted whatever was armed, so a new project search killed it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_call_started_with_nothing_armed_runs_to_its_budget() {
+async fn only_a_press_during_the_call_reaches_it() {
     let (host, cancel, _dirs) = host_with_cancel();
     let spin = host.compile(SPIN_WAT.as_bytes()).unwrap();
 
-    // Nothing armed. A short epoch budget so the test finishes: the point
-    // is WHICH outcome, not how long.
+    // A short epoch budget so the test finishes: the point is WHICH
+    // outcome, not how long.
     let budget = PluginBudget {
         fuel: u64::MAX,
         epoch_deadline: 50,
     };
+    // Pressed before the call: it must not carry over.
+    cancel.cancel();
 
     let firing = {
         let cancel = cancel.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(5));
-            // Arms and cancels AFTER the call is already running.
-            let _t = cancel.arm();
-            cancel.cancel();
+            // Tasks starting and superseding while the call runs.
+            let _a = cancel
+                .begin(lattice_mode::TaskKey::supersede("search", "view").with_inputs("a"))
+                .unwrap();
+            let _b = cancel
+                .begin(lattice_mode::TaskKey::supersede("search", "view").with_inputs("b"))
+                .unwrap();
         })
     };
 
@@ -140,7 +148,7 @@ async fn a_call_started_with_nothing_armed_runs_to_its_budget() {
                 ..
             }
         ),
-        "an operation armed after this call started must not reach back \
-         into it; the call ends on its own budget. Got: {err}"
+        "neither an earlier press nor other tasks reach a running call; it \
+         ends on its own budget. Got: {err}"
     );
 }

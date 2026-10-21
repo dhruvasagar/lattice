@@ -120,6 +120,10 @@ pub mod on_disk;
 // `lattice-host` (no subsystem crate depends on the host, so terminal /
 // compilation / magit / multibuffer would each be a cycle away).
 pub mod project;
+// CG.6: `Command::output()` with a way out — the process runner keyed
+// supersede and `<C-g>` stop git, cargo and formatters through. Here
+// because every producer that spawns a process already depends on core.
+pub mod process;
 pub mod search;
 pub mod ui;
 pub mod undo;

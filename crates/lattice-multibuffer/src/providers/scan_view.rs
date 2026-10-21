@@ -508,7 +508,7 @@ pub fn open_scan_view(
     let events = services.get::<Arc<EventBus>>().map(|b| (*b).clone());
     let sources_for_scan = snapshot.sources();
     drop(snapshot);
-    spawn_scan_view_scan(
+    let scanning = spawn_scan_view_scan(
         view,
         options,
         sources_for_scan,
@@ -519,7 +519,13 @@ pub fn open_scan_view(
 
     ProviderViewOutcome::Opened {
         view,
-        message: Some(format!("{name}: scanning…")),
+        // CG.11: refused when the same scan is still running — the view is
+        // shown, and it says why no new scan started.
+        message: Some(
+            scanning
+                .err()
+                .unwrap_or_else(|| format!("{name}: scanning…")),
+        ),
     }
 }
 
@@ -594,7 +600,31 @@ pub fn spawn_scan_view_scan(
     // registry rather than two handles: the scan runs long after the opener
     // returned, and a third consumer would otherwise mean a third parameter.
     services: Option<Arc<lattice_mode::ServiceRegistry>>,
-) {
+) -> Result<(), String> {
+    // CG.11 (`cancellation.md` §9): keyed per view. The same scan still
+    // running refuses — it carries on with what it has walked, which on a
+    // large tree is most of the cost — and new options supersede it. The
+    // token stops a superseded scan, or one `<C-g>` reached, at its next
+    // batch; `is_current` keeps a stale one from replacing the rows.
+    let ticket = match services
+        .as_deref()
+        .and_then(|s| s.get::<lattice_mode::ForegroundCancelHandle>())
+        .map(|cancel| {
+            cancel.begin(
+                lattice_mode::TaskKey::supersede("agenda:scan", format!("{view:?}"))
+                    .with_inputs(format!("{options:?}")),
+            )
+        }) {
+        Some(Err(_)) => {
+            return Err("this view is already scanning — <C-g> stops it".to_string());
+        }
+        Some(Ok(ticket)) => Some(ticket),
+        None => None,
+    };
+    let token = ticket
+        .as_ref()
+        .map(|t| t.token().clone())
+        .unwrap_or_else(lattice_protocol::CancellationToken::never);
     tokio::spawn(async move {
         // `begin` first, and a source that refuses is dropped from THIS scan
         // rather than failing it: its per-scan state is now unknown, so its
@@ -710,8 +740,9 @@ pub fn spawn_scan_view_scan(
         let mut skipped_files = 0usize;
 
         for chunk in candidates.chunks(READ_BATCH) {
-            // The view may have been closed while the scan ran.
-            if mb_registry.handle(view).is_none() {
+            // The view may have been closed while the scan ran — or the scan
+            // superseded, or stopped with `<C-g>` (CG.11).
+            if mb_registry.handle(view).is_none() || token.is_cancelled() {
                 return;
             }
             let owned: Vec<PathBuf> = chunk.to_vec();
@@ -799,6 +830,11 @@ pub fn spawn_scan_view_scan(
             }
         }
 
+        // CG.11: a scan that is no longer the view's current one publishes
+        // nothing — not its clock spans, not its rows.
+        if ticket.as_ref().is_some_and(|t| !t.is_current()) {
+            return;
+        }
         let outcome = ScanOutcome {
             files_scanned: scanned,
             skipped_files,
@@ -834,7 +870,9 @@ pub fn spawn_scan_view_scan(
                 services.as_deref(),
             );
         }
+        drop(ticket);
     });
+    Ok(())
 }
 
 /// How many consecutive files a source may fail before the scan stops asking.
@@ -2362,6 +2400,9 @@ mod tests {
         /// view's arguments reached the producer rather than only that the
         /// scan ran.
         begin_args: Arc<std::sync::Mutex<Vec<String>>>,
+        /// CG.11: the first scan's `begin` takes this long, so a test can
+        /// re-trigger while it is in flight.
+        slow_first: Option<std::time::Duration>,
     }
 
     impl FakeSource {
@@ -2372,6 +2413,7 @@ mod tests {
                 begins: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 offered: Arc::new(std::sync::Mutex::new(Vec::new())),
                 begin_args: Arc::new(std::sync::Mutex::new(Vec::new())),
+                slow_first: None,
             }
         }
     }
@@ -2384,12 +2426,20 @@ mod tests {
             &self.exts
         }
         fn begin(&self, args: &[String]) -> lattice_mode::ScanBeginFuture<'_> {
-            self.begins
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let first = self
+                .begins
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0;
             if let Ok(mut a) = self.begin_args.lock() {
                 *a = args.to_vec();
             }
-            Box::pin(async { Ok(()) })
+            let delay = self.slow_first.filter(|_| first);
+            Box::pin(async move {
+                if let Some(delay) = delay {
+                    tokio::time::sleep(delay).await;
+                }
+                Ok(())
+            })
         }
         fn scan(&self, path: PathBuf, text: String) -> lattice_mode::ScanFuture<'_> {
             if let Ok(mut o) = self.offered.lock() {
@@ -2608,7 +2658,8 @@ mod tests {
             registry.clone(),
             None,
             Some(services),
-        );
+        )
+        .unwrap();
         settle_agenda(&registry, view).await;
 
         let state = svc.state(view).expect("the view has state");
@@ -2684,7 +2735,8 @@ mod tests {
             registry.clone(),
             None,
             None,
-        );
+        )
+        .unwrap();
         settle_agenda(&registry, view).await;
 
         assert_eq!(
@@ -2726,7 +2778,8 @@ mod tests {
             registry.clone(),
             None,
             None,
-        );
+        )
+        .unwrap();
 
         let status = settle_agenda(&registry, view).await;
         let handle = registry.handle(view).unwrap();
@@ -2784,7 +2837,8 @@ mod tests {
             registry.clone(),
             None,
             None,
-        );
+        )
+        .unwrap();
 
         settle_agenda(&registry, view).await;
         let excerpts = registry.handle(view).unwrap().excerpts();
@@ -2814,7 +2868,8 @@ mod tests {
             registry.clone(),
             None,
             None,
-        );
+        )
+        .unwrap();
 
         match settle_agenda(&registry, view).await {
             HeaderlineStatus::Complete { summary, .. } => {
@@ -2849,7 +2904,8 @@ mod tests {
             registry.clone(),
             None,
             None,
-        );
+        )
+        .unwrap();
 
         settle_agenda(&registry, view).await;
         assert_eq!(begins.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -2916,7 +2972,8 @@ mod tests {
             registry.clone(),
             None,
             None,
-        );
+        )
+        .unwrap();
 
         let status = settle_agenda(&registry, view).await;
         assert_eq!(
@@ -2972,7 +3029,8 @@ mod tests {
             registry.clone(),
             None,
             None,
-        );
+        )
+        .unwrap();
 
         let status = settle_agenda(&registry, view).await;
         assert_eq!(
@@ -3090,6 +3148,106 @@ mod tests {
         assert_eq!(got.read().unwrap().options.roots, vec![PathBuf::from("/p")]);
         svc.clear(view);
         assert!(svc.state(view).is_none());
+    }
+
+    /// CG.11: services with the foreground-cancel slot, which keys scans.
+    fn keyed_services() -> Arc<lattice_mode::ServiceRegistry> {
+        let mut services = lattice_mode::ServiceRegistry::new();
+        services.register::<lattice_mode::ForegroundCancelHandle>(Arc::default());
+        Arc::new(services)
+    }
+
+    fn slow_source() -> Arc<FakeSource> {
+        let mut source = FakeSource::new(7, &["org"]);
+        source.slow_first = Some(std::time::Duration::from_millis(500));
+        Arc::new(source)
+    }
+
+    /// CG.11: the same scan of a view again — `gr` pressed twice — is
+    /// refused, and the scan in flight carries on to completion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_same_scan_again_is_refused_and_the_first_completes() {
+        let dir = tempdir();
+        write(&dir, "a.org", "* TODO 1\n");
+        let (registry, view) = view_handle();
+        let services = keyed_services();
+        let options = ScanViewOptions {
+            roots: vec![dir.clone()],
+            ..Default::default()
+        };
+        let source = slow_source();
+        spawn_scan_view_scan(
+            view,
+            options.clone(),
+            vec![source.clone()],
+            registry.clone(),
+            None,
+            Some(services.clone()),
+        )
+        .unwrap();
+        let refused = spawn_scan_view_scan(
+            view,
+            options,
+            vec![source],
+            registry.clone(),
+            None,
+            Some(services),
+        )
+        .unwrap_err();
+        assert!(refused.contains("already scanning"), "{refused}");
+        assert!(matches!(
+            settle_agenda(&registry, view).await,
+            HeaderlineStatus::Complete { .. }
+        ));
+        assert_eq!(registry.handle(view).unwrap().excerpt_count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CG.11: a scan with new options supersedes the one in flight, and the
+    /// superseded scan never replaces the newer rows — the last scan to
+    /// finish used to win, even when it started first.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_superseded_scan_never_overwrites_the_newer_rows() {
+        let (old, new) = (tempdir(), tempdir());
+        write(&old, "a.org", "* TODO 1\n");
+        write(&new, "b.org", "* TODO 1\n* TODO 2\n");
+        let (registry, view) = view_handle();
+        let services = keyed_services();
+        let source = slow_source();
+        spawn_scan_view_scan(
+            view,
+            ScanViewOptions {
+                roots: vec![old.clone()],
+                ..Default::default()
+            },
+            vec![source.clone()],
+            registry.clone(),
+            None,
+            Some(services.clone()),
+        )
+        .unwrap();
+        spawn_scan_view_scan(
+            view,
+            ScanViewOptions {
+                roots: vec![new.clone()],
+                ..Default::default()
+            },
+            vec![source],
+            registry.clone(),
+            None,
+            Some(services),
+        )
+        .expect("new options are not refused");
+        settle_agenda(&registry, view).await;
+        // Past the slow scan's wake-up: it must not land on top.
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+        assert_eq!(
+            registry.handle(view).unwrap().excerpt_count(),
+            2,
+            "the newer scan's rows stand"
+        );
+        let _ = std::fs::remove_dir_all(&old);
+        let _ = std::fs::remove_dir_all(&new);
     }
 }
 

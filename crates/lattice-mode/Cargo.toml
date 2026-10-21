@@ -111,6 +111,12 @@ harness = false
 name = "tick_callback"
 harness = false
 
+# CG.6: per-trigger cost of keyed supersede (`ForegroundCancel::begin` and
+# the ticket's drop), flat across how many unrelated tasks are in flight.
+[[bench]]
+name = "task_key"
+harness = false
+
 # TB.4: what a table realign costs, so "can it run per keystroke?" is answered
 # with a number. The answer is no on the UX contract rather than on cost (see
 # table-mode.md §8), and these are the baseline the field-exit realign — which

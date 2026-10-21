@@ -3262,7 +3262,9 @@ mod background_task_tests {
     fn every_spawner_reports_completion() {
         let src = include_str!("magit_global_mode.rs");
         // Spawners that delegate to another spawner inherit its
-        // reporting; the rest must call `finish_task` themselves.
+        // reporting; the rest must call `finish_task` themselves — or go
+        // through `spawn_repo_task` (CG.7b), which is itself one of the
+        // spawners this loop checks for `finish_task`.
         let delegating = ["spawn_note_remove", "spawn_note_prune"];
         let mut checked = 0;
         for (idx, _) in src.match_indices("fn spawn_") {
@@ -3283,7 +3285,7 @@ mod background_task_tests {
                 );
             } else {
                 assert!(
-                    body.contains("finish_task"),
+                    body.contains("finish_task") || body.contains("spawn_repo_task("),
                     "{name} does not report completion — a background op that \
                      finishes invisibly is the bug MG.41g fixed",
                 );
@@ -3359,7 +3361,27 @@ mod background_task_tests {
                  nothing says whether it worked — on failure the buffer \
                  just refreshes as though it had.",
             );
+            // CG.7b: and it takes its turn. A helper that skips the gate
+            // races every other change to the repository on
+            // `.git/index.lock`, and a double press runs twice.
+            assert!(
+                body.contains("RepoMutation::begin"),
+                "{file}: `{helper}` mutates the repository without taking a \
+                 turn (`RepoMutation::begin`) — it would race other writers \
+                 on `.git/index.lock` and run twice on a double press.",
+            );
         }
+        // The refs view's helper reports through its caller's closure, so
+        // it is not in the table above; it still has to take a turn.
+        let refs = include_str!("magit_refs_mode.rs");
+        let idx = refs
+            .find("fn spawn_mutation_and_refresh")
+            .expect("magit_refs_mode.rs: `spawn_mutation_and_refresh` — renamed?");
+        let end = refs[idx..].find("\nfn ").map_or(refs.len(), |e| idx + e);
+        assert!(
+            refs[idx..end].contains("RepoMutation::begin"),
+            "magit_refs_mode.rs: `spawn_mutation_and_refresh` does not take a turn"
+        );
     }
 }
 

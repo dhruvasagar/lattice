@@ -240,16 +240,21 @@ impl Mode for MagitCherryMode {
 
             let wd = workdir.clone();
             let (u, h) = (upstream.clone(), head.clone());
+            // CG.7c: the first load is this view's first refresh — it paints
+            // only if no refresh that started after it has painted since.
+            let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
             let built = tokio::task::spawn_blocking(move || build_cherry_buffer(&wd, &u, &h))
                 .await
                 .unwrap_or_default();
-            headerline::publish(&hl, built.header.clone());
-            if let Ok(mut g) = state.lock() {
-                g.rows = built.rows;
-            }
-            crate::buffer_io::replace_buffer_text(&handle, built.text).await;
-            if let Some(ref ph) = pending_highlights {
-                ph.store_and_wake(buffer_id, built.spans);
+            if stamp.is_latest() {
+                headerline::publish(&hl, built.header.clone());
+                if let Ok(mut g) = state.lock() {
+                    g.rows = built.rows;
+                }
+                crate::buffer_io::replace_buffer_text(&handle, built.text).await;
+                if let Some(ref ph) = pending_highlights {
+                    ph.store_and_wake(buffer_id, built.spans);
+                }
             }
 
             Ok(guard)
@@ -272,11 +277,16 @@ fn refresh(s: Arc<Mutex<CherryState>>) -> Option<Effect> {
         )
     };
     let busy = headerline::busy(&hl);
+    // CG.7c: paint only if no newer refresh of this view started since.
+    let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
     tokio::task::spawn(async move {
         let _busy = busy;
         let built = tokio::task::spawn_blocking(move || build_cherry_buffer(&wd, &upstream, &head))
             .await
             .unwrap_or_default();
+        if !stamp.is_latest() {
+            return;
+        }
         headerline::publish(&hl, built.header.clone());
         if let Ok(mut g) = s.lock() {
             g.rows = built.rows;

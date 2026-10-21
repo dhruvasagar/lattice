@@ -151,20 +151,24 @@ const COMPILATION_BUFFER_FLAGS: BufferFlags = BufferFlags {
 /// (reuses the buffer; the drain from the first activation stays live).
 ///
 /// Returns the buffer id (so the host can activate the buffer + repaint),
-/// or `None` when the compilation service is not registered.
+/// or `None` when the compilation service is not registered. CG.8: with the
+/// id, the message saying the same command is already running when it
+/// was refused — the buffer is still worth showing: it is that run's.
 pub fn start_compilation(
     activator: &mut dyn ModeActivator,
     target: RunTarget,
     cmdline: Option<String>,
     cwd: Option<PathBuf>,
-) -> Option<BufferId> {
+) -> Option<(BufferId, Option<String>)> {
     let id = activator.ensure_named_document(
         buffer_name(target),
         CompilationMode::mode_id_for(target),
         COMPILATION_BUFFER_FLAGS,
     );
-    service_for(&activator.services(), target)?.run(cmdline, cwd);
-    Some(id)
+    let refused = service_for(&activator.services(), target)?
+        .run(cmdline, cwd)
+        .err();
+    Some((id, refused))
 }
 
 /// The synthetic name of `target`'s output buffer.
@@ -290,15 +294,26 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.register_service::<CompilationParserFactoriesHandle>(parser_factories.clone());
 
     let shell_ansi_slot = ansi_slot.clone();
-    let svc: CompilationServiceHandle = Arc::new(
-        DefaultCompilationService::new(
-            boot.event_bus().clone(),
-            boot.runtime_handle().clone(),
-            qf_bus,
-        )
-        .with_ansi_slot(ansi_slot.clone())
-        .with_parser_factories(parser_factories),
-    );
+    // CG.8: runs are keyed on the foreground-cancel service (registered in
+    // Phase A, before any install).
+    let foreground_cancel = boot.service::<lattice_mode::ForegroundCancelHandle>();
+    if foreground_cancel.is_none() {
+        tracing::warn!(
+            "compilation: no foreground-cancel service at install; a build \
+             started again will restart rather than be refused"
+        );
+    }
+    let mut svc = DefaultCompilationService::new(
+        boot.event_bus().clone(),
+        boot.runtime_handle().clone(),
+        qf_bus,
+    )
+    .with_ansi_slot(ansi_slot.clone())
+    .with_parser_factories(parser_factories);
+    if let Some(cancel) = &foreground_cancel {
+        svc = svc.with_foreground_cancel((**cancel).clone());
+    }
+    let svc: CompilationServiceHandle = Arc::new(svc);
     boot.register_service::<CompilationServiceHandle>(svc);
 
     // `:!cmd`'s runner: the same service type, a second instance, so it has
@@ -315,6 +330,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     )
     .for_target(RunTarget::Shell)
     .with_ansi_slot(shell_ansi_slot);
+    let shell = match &foreground_cancel {
+        Some(cancel) => shell.with_foreground_cancel((**cancel).clone()),
+        None => shell,
+    };
     boot.register_service::<ShellCommandService>(ShellCommandService(Arc::new(shell)));
 
     // Streamed output arrives off-keystroke; wake the editor so the

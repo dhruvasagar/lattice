@@ -322,18 +322,23 @@ impl Mode for MagitSubmoduleMode {
             }
 
             let wd = workdir.clone();
+            // CG.7c: the first load is this view's first refresh — it paints
+            // only if no refresh that started after it has painted since.
+            let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
             let (text, header, entries) =
                 tokio::task::spawn_blocking(move || build_submodule_list(&wd))
                     .await
                     .unwrap_or_else(|_| (String::new(), Vec::new(), Vec::new()));
-            if let Ok(mut g) = state.lock() {
-                g.entries = entries;
-            }
-            headerline::publish(&hl, header);
-            let spans = crate::highlight::submodule_styled_spans(&text);
-            crate::buffer_io::replace_buffer_text(&handle, text).await;
-            if let Some(ref ph) = pending_highlights {
-                ph.store_and_wake(buffer_id, spans);
+            if stamp.is_latest() {
+                if let Ok(mut g) = state.lock() {
+                    g.entries = entries;
+                }
+                headerline::publish(&hl, header);
+                let spans = crate::highlight::submodule_styled_spans(&text);
+                crate::buffer_io::replace_buffer_text(&handle, text).await;
+                if let Some(ref ph) = pending_highlights {
+                    ph.store_and_wake(buffer_id, spans);
+                }
             }
 
             Ok(guard)
@@ -356,6 +361,8 @@ fn refresh(s: Arc<Mutex<SubmoduleState>>) -> Option<Effect> {
     // guard drops — including on every early exit inside the
     // task, which is why it is a guard and not a matching pair.
     let busy = headerline::busy(&hl);
+    // CG.7c: paint only if no newer refresh of this view started since.
+    let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
     tokio::task::spawn(async move {
         let _busy = busy;
         let (text, header, entries) =
@@ -364,6 +371,9 @@ fn refresh(s: Arc<Mutex<SubmoduleState>>) -> Option<Effect> {
                 .unwrap_or_else(|_| (String::new(), Vec::new(), Vec::new()));
         if let Ok(mut g) = s.lock() {
             g.entries = entries;
+        }
+        if !stamp.is_latest() {
+            return;
         }
         headerline::publish(&hl, header);
         let spans = crate::highlight::submodule_styled_spans(&text);
@@ -395,14 +405,26 @@ fn spawn_submodule_mutation(
     // clears the busy flag on its OWN row. Marking busy here
     // too would need a second guard per target and would clear
     // on a different schedule.
+    // CG.7b: keyed, and one writer at a time. These are prompt-driven (a
+    // name typed, then confirmed), so a repeat while one runs is rare and
+    // the handler has no echo to return through: a refusal is logged.
+    let mutation = match crate::magit_global_mode::RepoMutation::begin(&workdir, &what, &what) {
+        Ok(mutation) => mutation,
+        Err(_) => {
+            tracing::info!(target: "lattice_magit", "magit: {what} is already running");
+            return Some(());
+        }
+    };
     tokio::task::spawn(async move {
         let wd = workdir.clone();
-        let outcome = tokio::task::spawn_blocking(move || match Repository::discover(&wd) {
-            Ok(repo) => mutate(&repo),
-            Err(e) => Err(lattice_vcs::VcsError::Submodule(format!(
-                "no repository at {}: {e}",
-                wd.display()
-            ))),
+        let outcome = tokio::task::spawn_blocking(move || {
+            mutation.run(|| match Repository::discover(&wd) {
+                Ok(repo) => mutate(&repo),
+                Err(e) => Err(lattice_vcs::VcsError::Submodule(format!(
+                    "no repository at {}: {e}",
+                    wd.display()
+                ))),
+            })
         })
         .await;
         // MG.54: publish, don't just log — same migration onto

@@ -496,6 +496,29 @@ impl HeadingHeights {
     }
 }
 
+/// CG.13: run a picker source's future until it completes or `cancel` flips,
+/// whichever is first — `None` when cancelled, with the future DROPPED.
+///
+/// Dropping is what stops a source's work: grep's future kills its backend
+/// process when dropped. Awaiting a superseded future to the end and then
+/// discarding its answer — what the picker used to do — left a full-tree
+/// search running for every keystroke a live picker had moved past. The
+/// token is polled (it has no waker); every 20 ms is invisible next to the
+/// work it stops.
+async fn until_cancelled<F: std::future::Future>(
+    fut: F,
+    cancel: &lattice_protocol::CancellationToken,
+) -> Option<F::Output> {
+    tokio::select! {
+        result = fut => Some(result),
+        () = async {
+            while !cancel.is_cancelled() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        } => None,
+    }
+}
+
 impl Editor {
     /// Renderer-neutral dispatch entry point.
     ///
@@ -2463,26 +2486,8 @@ impl Editor {
         self.pending_register = None;
     }
 
-    /// CG.1: arm a foreground cancellation token for a user-initiated
-    /// async operation, returning the clone the spawned task holds.
-    ///
-    /// Cancels the predecessor first, so a second `:search` before the
-    /// first completes abandons the first scan instead of leaving a
-    /// zombie task racing the new one for the same buffer.
-    ///
-    /// CG.2: a convenience over
-    /// [`ForegroundCancel::arm`](lattice_mode::ForegroundCancel::arm)
-    /// for the paths that already hold `&mut Editor`. Providers reach
-    /// the same slot through `services.get::<ForegroundCancelHandle>()`
-    /// — most spawn sites are `&self` closures and cannot come through
-    /// here.
-    #[must_use = "the returned token must be handed to the spawned task, \
-                  or the operation is unstoppable"]
-    pub fn arm_cancel(&mut self) -> lattice_protocol::CancellationToken {
-        self.foreground_cancel.arm()
-    }
-
-    /// CG.1: the `<C-g>` body. Flip the armed foreground token(s), then
+    /// CG.1: the `<C-g>` body. Flip every foreground token — keyed tasks,
+    /// enrolled requests, the plugin interrupt (CG.12) — then
     /// [`reset_to_normal`](Self::reset_to_normal) — emacs
     /// `keyboard-quit`, which is defined as doing both.
     ///
@@ -2506,9 +2511,9 @@ impl Editor {
     /// already gets right. What was missing is only that `<C-g>` had no
     /// way to reach any of them.
     ///
-    /// Enrol rather than [`arm_cancel`](Self::arm_cancel): `K` is a
-    /// reflexive inspect key, and arming would mean glancing at a
-    /// symbol silently kills the project search you are waiting on.
+    /// Enrol rather than begin a keyed task: these requests already
+    /// supersede per feature, and `K` is a reflexive inspect key that must
+    /// stop nothing but a previous hover.
     ///
     /// **Only user-triggered requests.** `lsp_completion_request`,
     /// `lsp_signature_help_request`, `do_lsp_on_type_formatting_request`
@@ -11476,9 +11481,15 @@ impl Editor {
                     }
                 };
                 match lattice_compilation::start_compilation(self, target, cmdline, cwd) {
-                    Some(id) => {
+                    Some((id, refused)) => {
                         let _ = self.activate_buffer(id);
-                        self.set_message(EchoLevel::Info, started.to_string());
+                        // CG.8: refused when the same command is running —
+                        // its buffer is shown, and the echo says why no new
+                        // run started.
+                        self.set_message(
+                            EchoLevel::Info,
+                            refused.unwrap_or_else(|| started.to_string()),
+                        );
                     }
                     None => self.set_message(EchoLevel::Warn, missing.to_string()),
                 }
@@ -15157,7 +15168,11 @@ impl Editor {
                 // invisible until the next key. See lsp-architecture §12.
                 let async_landed = self.async_landed.clone();
                 lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
-                    let result = fut.await;
+                    // CG.13: dropped, not awaited out, once superseded —
+                    // see `until_cancelled`.
+                    let Some(result) = until_cancelled(fut, &cancel_clone).await else {
+                        return;
+                    };
                     if !cancel_clone.is_cancelled() {
                         let _ = tx.send(result);
                         async_landed.notify_one();
@@ -16263,6 +16278,9 @@ impl Editor {
             return;
         };
         self.pending_format_token = None;
+        if !self.format_result_applies() {
+            return;
+        }
         use lattice_lsp::cache::FormatOutcome;
         match outcome {
             FormatOutcome::NoProvider { is_range } => {
@@ -27839,7 +27857,11 @@ impl Editor {
                 // GPUI). See lsp-architecture §12.
                 let async_landed = self.async_landed.clone();
                 lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
-                    let result = fut.await;
+                    // CG.13: dropped, not awaited out, once superseded —
+                    // see `until_cancelled`.
+                    let Some(result) = until_cancelled(fut, &cancel_clone).await else {
+                        return;
+                    };
                     if !cancel_clone.is_cancelled() {
                         let _ = tx.send(result.map(lattice_picker::PickerInitResult::Inline));
                         async_landed.notify_one();
@@ -31484,6 +31506,51 @@ impl Editor {
     /// being hard-wired to an LSP-only path; `:format` **is** the
     /// LSP-independent cascade, and `:lsp-format` remains the LSP-only
     /// command, unchanged.
+    /// CG.9: key a user `:format` of the active buffer (`cancellation.md`
+    /// §9) and record what it is computed for. `None` — with the echo said —
+    /// when the same format of the same text is already running; it carries
+    /// on. A format of changed text supersedes the one in flight.
+    fn begin_format_task(&mut self, what: &str) -> Option<lattice_protocol::CancellationToken> {
+        let buffer = self.active_buffer_id();
+        let version = self.document.version();
+        let key = lattice_mode::TaskKey::supersede("format", format!("{buffer:?}"))
+            .with_inputs(format!("{version} {what}"));
+        match self.foreground_cancel.begin(key) {
+            Ok(ticket) => {
+                let token = ticket.token().clone();
+                self.pending_format_ticket = Some(ticket);
+                self.pending_format_target = Some((buffer, version));
+                Some(token)
+            }
+            Err(_) => {
+                self.set_message(EchoLevel::Info, "format: already running".to_string());
+                None
+            }
+        }
+    }
+
+    /// CG.9: whether a format result may be applied — still the current
+    /// run, for the buffer and version it was computed for. Says why when
+    /// not. Consumes the run's ticket and target either way.
+    fn format_result_applies(&mut self) -> bool {
+        let ticket = self.pending_format_ticket.take();
+        let target = self.pending_format_target.take();
+        if ticket.as_ref().is_some_and(|t| !t.is_current()) {
+            // Superseded by a newer `:format`, or stopped with `<C-g>`.
+            return false;
+        }
+        if let Some((buffer, version)) = target
+            && (self.active_buffer_id() != buffer || self.document.version() != version)
+        {
+            self.set_message(
+                EchoLevel::Info,
+                "format: the buffer changed while it was formatting — not applied".to_string(),
+            );
+            return false;
+        }
+        true
+    }
+
     pub fn do_format_request(&mut self) {
         let buffer = self.active_buffer_id();
         let lang = self.active_lang();
@@ -31528,6 +31595,9 @@ impl Editor {
             }
         };
 
+        let Some(token) = self.begin_format_task(spec.program) else {
+            return;
+        };
         let text = self.active_text().as_string();
         let path = self.document.path();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ExternalFormatOutcome>();
@@ -31538,13 +31608,14 @@ impl Editor {
         let async_landed = self.async_landed.clone();
 
         lattice_runtime::runtime::spawn_blocking_on_lsp_runtime(move || {
-            let outcome = match lattice_format::run(&spec, &text, path.as_deref()) {
-                Ok(formatted) => {
-                    ExternalFormatOutcome::Edits(lattice_format::minimal_edits(&text, &formatted))
-                }
-                Err(e) if e.is_noteworthy() => ExternalFormatOutcome::Failed(e.message()),
-                Err(e) => ExternalFormatOutcome::Skipped(e.message()),
-            };
+            let outcome =
+                match lattice_format::run_cancellable(&spec, &text, path.as_deref(), &token) {
+                    Ok(formatted) => ExternalFormatOutcome::Edits(lattice_format::minimal_edits(
+                        &text, &formatted,
+                    )),
+                    Err(e) if e.is_noteworthy() => ExternalFormatOutcome::Failed(e.message()),
+                    Err(e) => ExternalFormatOutcome::Skipped(e.message()),
+                };
             let _ = tx.send(outcome);
             async_landed.notify_one();
         });
@@ -31683,6 +31754,9 @@ impl Editor {
         let Some(outcome) = latest else {
             return false;
         };
+        if !self.format_result_applies() {
+            return true;
+        }
         match outcome {
             ExternalFormatOutcome::Skipped(msg) => {
                 // Not installed / not configured. Informational, never
@@ -31796,12 +31870,18 @@ impl Editor {
             );
             return;
         };
+        // CG.9: keyed — refused while the same format runs, superseding one
+        // of older text. The ticket's token is reachable by `<C-g>`.
+        let what = match range_lines {
+            Some((s, e)) => format!("lsp {s}-{e}"),
+            None => "lsp".to_string(),
+        };
+        let Some(token) = self.begin_format_task(&what) else {
+            return;
+        };
         let snapshot = self.document.snapshot();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
         self.pending_format_rx = Some(rx);
-        self.pending_format_token = Some(token.clone());
-        self.enrol_foreground(&token);
         let lsp = self.lsp.clone();
         let lsp_range = range_lines.map(|(s, e)| {
             let end_line_text_len = snapshot.buffer.line_byte_len(e);
@@ -33508,6 +33588,12 @@ impl Editor {
         if let Some(token) = self.pending_format_token.take() {
             token.cancel();
         }
+        // CG.9: on-type formatting is automatic and not keyed. It replaces
+        // the shared receiver, so a user `:format` waiting on it is dropped
+        // with its ticket and target, rather than leaving a stale target for
+        // this result to be checked against.
+        self.pending_format_ticket = None;
+        self.pending_format_target = None;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_format_rx = Some(rx);
@@ -47290,54 +47376,31 @@ mod tests {
     // covered in `lattice_ui_tui::app::cancel`. These pin the method
     // contracts the async slices CG.2–CG.4 will build on.
 
-    /// The predecessor must die when a new op arms. Without this, a
-    /// second `:search` before the first completes leaves two scans
-    /// racing to write the same buffer, and only one of them is the one
-    /// the user asked for.
-    #[test]
-    fn arm_cancel_kills_the_previous_token() {
-        let mut ed = Editor::default();
-        let first = ed.arm_cancel();
-        assert!(!first.is_cancelled());
-
-        let second = ed.arm_cancel();
-
-        assert!(
-            first.is_cancelled(),
-            "arming a new op must cancel its predecessor"
-        );
-        assert!(!second.is_cancelled(), "the new token starts live");
-        assert!(ed.foreground_cancel.is_armed());
-    }
-
     /// Cancel is bound universally, so the overwhelmingly common press
     /// is one with nothing armed. It must be a no-op, not a panic and
     /// not a state change.
     #[test]
     fn cancel_foreground_is_a_noop_when_idle() {
         let mut ed = Editor::default();
-        assert!(!ed.foreground_cancel.is_armed());
-
         ed.cancel_foreground();
         ed.cancel_foreground();
-
-        assert!(!ed.foreground_cancel.is_armed());
         assert!(matches!(ed.modal, ModalState::Normal));
     }
 
+    /// CG.12: `<C-g>` stops a keyed task and the plugin call running.
     #[test]
-    fn cancel_foreground_flips_and_clears_the_armed_token() {
+    fn cancel_foreground_stops_keyed_work_and_the_running_plugin_call() {
         let mut ed = Editor::default();
-        let token = ed.arm_cancel();
+        let search = ed
+            .foreground_cancel
+            .begin(lattice_mode::TaskKey::supersede("search", "view 1"))
+            .unwrap();
+        let plugin_call = ed.foreground_cancel.current_token().unwrap();
 
         ed.cancel_foreground();
 
-        assert!(token.is_cancelled());
-        assert!(
-            !ed.foreground_cancel.is_armed(),
-            "a cancelled token must not stay armed — the next \
-             `arm_cancel` would otherwise 'cancel' it a second time"
-        );
+        assert!(search.token().is_cancelled());
+        assert!(plugin_call.is_cancelled());
     }
 
     /// CG.3: a user-triggered LSP request reaches `<C-g>` by enrolling.
@@ -47361,12 +47424,41 @@ mod tests {
         assert!(rename.is_cancelled());
     }
 
-    /// The reason enrolment exists rather than a second `arm`: `K`
-    /// during a project search must leave the search running.
+    /// CG.13: a picker source's future is dropped once cancelled — not
+    /// awaited out — and a finished one passes its result through.
+    #[test]
+    fn until_cancelled_drops_a_superseded_future_and_passes_a_finished_one() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let cancel = lattice_protocol::CancellationToken::new();
+            let flip = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                flip.cancel();
+            });
+            let started = std::time::Instant::now();
+            let never = std::future::pending::<u32>();
+            assert_eq!(until_cancelled(never, &cancel).await, None);
+            assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+            let live = lattice_protocol::CancellationToken::new();
+            assert_eq!(until_cancelled(async { 7 }, &live).await, Some(7));
+        });
+    }
+
+    /// The reason enrolment exists rather than a keyed begin: `K` during
+    /// a project search must leave the search running.
     #[test]
     fn enrolling_an_lsp_request_does_not_cancel_a_running_search() {
-        let mut ed = Editor::default();
-        let search = ed.arm_cancel();
+        let ed = Editor::default();
+        let search = ed
+            .foreground_cancel
+            .begin(lattice_mode::TaskKey::supersede("search", "view 1"))
+            .unwrap();
+        let search = search.token().clone();
 
         let hover = lattice_protocol::CancellationToken::new();
         ed.enrol_foreground(&hover);
@@ -58091,6 +58183,56 @@ mod tests {
         editor.do_format_request();
         settle_format(&mut editor);
         assert_eq!(editor.active_text().as_string(), before);
+    }
+
+    /// CG.9: a format computed for text that has since changed lands
+    /// nowhere. Its edits are positions in the OLD text; applied to the new
+    /// one they used to land in the wrong places.
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_made_while_formatting_is_not_overwritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prg = fake_formatter(dir.path(), "slow", "sleep 0.5; sed 's/^ *//; s/^/    /'");
+        let mut editor = editor_with_formatter("fn f() {\nx();\n}\n", &prg);
+        editor.do_format_request();
+        editor
+            .apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+                lattice_protocol::position::Position::new(1, 0),
+                "y",
+            ))
+            .expect("edit while formatting");
+        settle_format(&mut editor);
+        assert_eq!(
+            line_at(&editor, 1),
+            "yx();",
+            "the user's edit stands, unformatted"
+        );
+        let msg = editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        assert!(msg.contains("changed while it was formatting"), "{msg}");
+    }
+
+    /// CG.9: `:format` twice on unchanged text — the second is refused and
+    /// the first carries on (`cancellation.md` §9).
+    #[cfg(unix)]
+    #[test]
+    fn the_same_format_again_is_refused_and_the_first_lands() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prg = fake_formatter(dir.path(), "slow", "sleep 0.3; sed 's/^ *//; s/^/    /'");
+        let mut editor = editor_with_formatter("fn f() {\nx();\n}\n", &prg);
+        editor.do_format_request();
+        editor.do_format_request();
+        let msg = editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        assert!(msg.contains("already running"), "{msg}");
+        settle_format(&mut editor);
+        assert_eq!(line_at(&editor, 1), "    x();", "the first format landed");
     }
 
     #[test]

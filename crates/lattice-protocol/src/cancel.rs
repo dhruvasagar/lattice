@@ -17,8 +17,9 @@
 //!   the user can interrupt by pressing Esc. The TUI input loop
 //!   flips the token of the in-flight invocation.
 //! - **Deadline timer** (NOT YET WIRED). Per `LatencyClass` budget.
-//! - **Supersede** (NOT YET WIRED). A newer same-event request
-//!   invalidates the in-flight one.
+//! - **Supersede** (CG.6). Re-triggering a task with new inputs cancels
+//!   the run in flight — `lattice_mode::ForegroundCancel::begin` with a
+//!   `TaskKey` (`docs/dev/architecture/cancellation.md` §9).
 //!
 //! # Default token
 //!

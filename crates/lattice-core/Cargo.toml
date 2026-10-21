@@ -24,9 +24,13 @@ memchr = { workspace = true }
 fancy-regex = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+# CG.6: `process::run_cancellable` notes, at debug, a platform with no
+# process-tree kill.
+tracing = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+tempfile = { workspace = true }
 criterion = { workspace = true }
 
 [[bench]]

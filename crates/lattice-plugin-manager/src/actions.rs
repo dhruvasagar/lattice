@@ -225,6 +225,10 @@ pub fn rebuild_handler() -> ActionHandler {
             }
             match result {
                 Ok(()) => tracing::info!(plugin = %name_c, "plugin rebuilt"),
+                // CG.10: refused, not failed — a build of it is running.
+                Err(error) if error.contains(lattice_plugin_loader::ALREADY_BUILDING) => {
+                    tracing::info!(plugin = %name_c, "{error}")
+                }
                 Err(error) => tracing::warn!(plugin = %name_c, %error, "plugin rebuild failed"),
             }
         });
@@ -270,6 +274,9 @@ pub fn update_handler() -> ActionHandler {
             }
             match result {
                 Ok(()) => tracing::info!(plugin = %name_c, "plugin updated"),
+                Err(error) if error.contains(lattice_plugin_loader::ALREADY_BUILDING) => {
+                    tracing::info!(plugin = %name_c, "{error}")
+                }
                 Err(error) => tracing::warn!(plugin = %name_c, %error, "plugin update failed"),
             }
         });

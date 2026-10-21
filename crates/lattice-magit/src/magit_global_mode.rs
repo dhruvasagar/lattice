@@ -1495,18 +1495,17 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     let (workdir, rel) = active_target(ctx)?;
                     let shown = rel.display().to_string();
                     let label = format!("{} {shown}", $verb);
-                    tokio::task::spawn(async move {
-                        let scope_dir = workdir.clone();
-                        let result = tokio::task::spawn_blocking(move || {
-                            let repo = Repository::discover(&workdir)
+                    let identity = label.clone();
+                    if let Err(refused) =
+                        spawn_repo_task(workdir, &identity, label, move |workdir| {
+                            let repo = Repository::discover(workdir)
                                 .map_err(|e| format!("not a git repository: {e}"))?;
                             #[allow(clippy::redundant_closure_call)]
-                            ($body)(&repo, &rel)
+                            ($body)(&repo, &rel).map(|()| String::new())
                         })
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()));
-                        finish_task(&scope_dir, &label, result.map(|()| String::new()));
-                    });
+                    {
+                        return Some(refused);
+                    }
                     Some(Effect::Echo {
                         level: lattice_grammar::EchoLevel::Info,
                         text: format!(concat!("magit: ", $doing, " {}\u{2026}"), shown),
@@ -2259,9 +2258,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             let workdir = crate::repo_scope::action_workdir(ctx);
             let label = format!("create and check out branch {name} from {base}");
             let echo = format!("magit: creating branch {name}\u{2026}");
-            spawn_repo_op(workdir, label, move |repo| {
+            if let Err(refused) = spawn_repo_op(workdir, label, move |repo| {
                 lattice_vcs::Branch::create(repo, &name, true, Some(&base))
-            });
+            }) {
+                return Some(refused);
+            }
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
                 text: echo,
@@ -2327,9 +2328,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             let workdir = crate::repo_scope::action_workdir(ctx);
             let label = format!("check out {}", short_rev(&rev));
             let echo = format!("magit: checking out {rev}\u{2026}");
-            spawn_repo_op(workdir, label, move |repo| {
+            if let Err(refused) = spawn_repo_op(workdir, label, move |repo| {
                 lattice_vcs::Branch::checkout(repo, &rev)
-            });
+            }) {
+                return Some(refused);
+            }
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
                 text: echo,
@@ -2374,9 +2377,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             let workdir = crate::repo_scope::action_workdir(ctx);
             let label = format!("create branch {name} from {base}");
             let echo = format!("magit: creating branch {name}\u{2026}");
-            spawn_repo_op(workdir, label, move |repo| {
+            if let Err(refused) = spawn_repo_op(workdir, label, move |repo| {
                 lattice_vcs::Branch::create(repo, &name, false, Some(&base))
-            });
+            }) {
+                return Some(refused);
+            }
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
                 text: echo,
@@ -2429,9 +2434,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             let workdir = crate::repo_scope::action_workdir(ctx);
             let label = format!("rename branch {old} to {new_name}");
             let echo = format!("magit: renaming branch {old}\u{2026}");
-            spawn_repo_op(workdir, label, move |repo| {
+            if let Err(refused) = spawn_repo_op(workdir, label, move |repo| {
                 lattice_vcs::Branch::rename(repo, &old, &new_name)
-            });
+            }) {
+                return Some(refused);
+            }
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
                 text: echo,
@@ -2466,9 +2473,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             let workdir = crate::repo_scope::action_workdir(ctx);
             let label = format!("delete branch {name}");
             let echo = format!("magit: deleting branch {name}\u{2026}");
-            spawn_repo_op(workdir, label, move |repo| {
+            if let Err(refused) = spawn_repo_op(workdir, label, move |repo| {
                 lattice_vcs::Branch::delete(repo, &name)
-            });
+            }) {
+                return Some(refused);
+            }
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
                 text: echo,
@@ -2486,22 +2495,20 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
 /// `tracing::error!`, so success was invisible, failure reached only
 /// `*messages*`, and — publishing nothing — open magit views stayed
 /// stale until `gr`.
+///
+/// CG.7b: `Err` is the echo for a trigger refused because the same
+/// operation is still running ([`spawn_repo_task`]).
 fn spawn_repo_op(
     workdir: std::path::PathBuf,
     label: String,
     op: impl FnOnce(&Repository) -> lattice_vcs::Result<()> + Send + 'static,
-) {
-    tokio::task::spawn(async move {
-        let scope_dir = workdir.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let repo =
-                Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
-            op(&repo).map(|()| String::new()).map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(&scope_dir, &label, result);
-    });
+) -> Result<(), Effect> {
+    let identity = label.clone();
+    spawn_repo_task(workdir, &identity, label, move |workdir| {
+        let repo =
+            Repository::discover(workdir).map_err(|e| format!("not a git repository: {e}"))?;
+        op(&repo).map(|()| String::new()).map_err(|e| e.to_string())
+    })
 }
 
 /// Resolve the active buffer's file to `(repo-workdir,
@@ -2811,7 +2818,10 @@ pub fn resolve_push_destination(workdir: &std::path::Path) -> Result<Option<Stri
             }
         }
     };
-    Ok(Some(format!("{remote} HEAD")))
+    // The branch by name, not `HEAD`: the same push (`HEAD` resolves to it)
+    // and the same upstream with `-u`, but the report reads
+    // "push to origin/feature" rather than "origin/HEAD".
+    Ok(Some(format!("{remote} {branch}")))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2829,11 +2839,21 @@ pub struct RemoteOp {
     pub args: &'static [&'static str],
     /// Toggleable flags, in `args_schema` order.
     pub flags: &'static [RemoteFlag],
+    /// CG.7: what triggering this op again while a run is in flight does
+    /// (`cancellation.md` §9). `Supersede` only where a kill is harmless —
+    /// push, fetch, notes prune: their ref updates are atomic and the next
+    /// run redoes them. Everything that changes the working tree, the index
+    /// or a sequencer's state — pull's merge half, continue/skip/abort,
+    /// stage-all, stash — is `RunToCompletion`: a kill partway can leave
+    /// `.git/index.lock` or a half-applied change. A field, not a match on
+    /// `what`, so a new op cannot forget to say.
+    pub retrigger: lattice_mode::RePolicy,
 }
 
 impl RemoteOp {
     pub const PULL: Self = Self {
         what: "pull",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "pulling",
         // `--ff-only` stays the default: a pull that can create a merge
         // commit behind your back is the wrong default. `--rebase`
@@ -2859,6 +2879,7 @@ impl RemoteOp {
     };
     pub const PUSH: Self = Self {
         what: "push",
+        retrigger: lattice_mode::RePolicy::Supersede,
         doing: "pushing",
         args: &["push"],
         flags: &[
@@ -2908,6 +2929,7 @@ impl RemoteOp {
     };
     pub const FETCH: Self = Self {
         what: "fetch",
+        retrigger: lattice_mode::RePolicy::Supersede,
         doing: "fetching",
         args: &["fetch"],
         flags: &[
@@ -2958,36 +2980,42 @@ impl RemoteOp {
     // different commands and each errors during the other's sequence.
     pub const CHERRY_PICK_CONTINUE: Self = Self {
         what: "continue cherry-pick",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "continuing cherry-pick",
         args: &["cherry-pick", "--continue"],
         flags: &[],
     };
     pub const CHERRY_PICK_SKIP: Self = Self {
         what: "skip commit in cherry-pick",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "skipping commit in cherry-pick",
         args: &["cherry-pick", "--skip"],
         flags: &[],
     };
     pub const CHERRY_PICK_ABORT: Self = Self {
         what: "abort cherry-pick",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting cherry-pick",
         args: &["cherry-pick", "--abort"],
         flags: &[],
     };
     pub const REVERT_CONTINUE: Self = Self {
         what: "continue revert",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "continuing revert",
         args: &["revert", "--continue"],
         flags: &[],
     };
     pub const REVERT_SKIP: Self = Self {
         what: "skip commit in revert",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "skipping commit in revert",
         args: &["revert", "--skip"],
         flags: &[],
     };
     pub const REVERT_ABORT: Self = Self {
         what: "abort revert",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting revert",
         args: &["revert", "--abort"],
         flags: &[],
@@ -2998,6 +3026,7 @@ impl RemoteOp {
     /// answer and is reported rather than swallowed.
     pub const MERGE_CONTINUE: Self = Self {
         what: "conclude merge",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "concluding merge",
         args: &["merge", "--continue"],
         flags: &[],
@@ -3005,18 +3034,21 @@ impl RemoteOp {
     /// Throw the merge away and restore the branch.
     pub const MERGE_ABORT: Self = Self {
         what: "abort merge",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting merge",
         args: &["merge", "--abort"],
         flags: &[],
     };
     pub const REBASE_CONTINUE: Self = Self {
         what: "continue rebase",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "continuing rebase",
         args: &["rebase", "--continue"],
         flags: &[],
     };
     pub const REBASE_SKIP: Self = Self {
         what: "skip commit in rebase",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "skipping commit in rebase",
         args: &["rebase", "--skip"],
         flags: &[],
@@ -3025,6 +3057,7 @@ impl RemoteOp {
     /// open — which is the case once the rebase has actually started.
     pub const REBASE_ABORT: Self = Self {
         what: "abort rebase",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting rebase",
         args: &["rebase", "--abort"],
         flags: &[],
@@ -3035,6 +3068,7 @@ impl RemoteOp {
     /// same reason it fits the rebase sequencer.
     pub const NOTES_PRUNE: Self = Self {
         what: "prune notes",
+        retrigger: lattice_mode::RePolicy::Supersede,
         doing: "pruning notes",
         args: &["notes", "prune"],
         flags: &[RemoteFlag {
@@ -3047,12 +3081,14 @@ impl RemoteOp {
     };
     pub const NOTES_MERGE_COMMIT: Self = Self {
         what: "conclude notes merge",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "concluding notes merge",
         args: &["notes", "merge", "--commit"],
         flags: &[],
     };
     pub const NOTES_MERGE_ABORT: Self = Self {
         what: "abort notes merge",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting notes merge",
         args: &["notes", "merge", "--abort"],
         flags: &[],
@@ -3066,18 +3102,21 @@ impl RemoteOp {
     /// repository in a state the editor cannot finish.
     pub const AM_CONTINUE: Self = Self {
         what: "continue applying patches",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "continuing to apply patches",
         args: &["am", "--continue"],
         flags: &[],
     };
     pub const AM_SKIP: Self = Self {
         what: "skip patch",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "skipping patch",
         args: &["am", "--skip"],
         flags: &[],
     };
     pub const AM_ABORT: Self = Self {
         what: "abort applying patches",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "aborting patch application",
         args: &["am", "--abort"],
         flags: &[],
@@ -3094,6 +3133,7 @@ impl RemoteOp {
     /// magit-status is the explicit path.
     pub const STAGE_ALL: Self = Self {
         what: "stage all tracked changes",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "staging all tracked changes",
         args: &["add", "--update"],
         flags: &[],
@@ -3107,6 +3147,7 @@ impl RemoteOp {
     /// than one file but it is still fully reversible.
     pub const UNSTAGE_ALL: Self = Self {
         what: "unstage everything",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "unstaging everything",
         args: &["reset", "--quiet"],
         flags: &[],
@@ -3115,6 +3156,7 @@ impl RemoteOp {
     /// staged, so a partially-staged commit can be tried in isolation.
     pub const STASH_KEEP_INDEX: Self = Self {
         what: "stash, keeping the index",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "stashing, keeping the index",
         args: &["stash", "push", "--keep-index"],
         flags: &[],
@@ -3122,12 +3164,14 @@ impl RemoteOp {
     /// MG.41d: magit's `i` — stash only what is staged.
     pub const STASH_STAGED: Self = Self {
         what: "stash staged changes",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "stashing staged changes",
         args: &["stash", "push", "--staged"],
         flags: &[],
     };
     pub const STASH: Self = Self {
         what: "stash changes",
+        retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "stashing changes",
         args: &["stash", "push"],
         flags: &[
@@ -3411,6 +3455,241 @@ pub(crate) fn set_event_bus(bus: std::sync::Arc<lattice_runtime::EventBus>) {
     let _ = EVENT_BUS.set(bus);
 }
 
+/// CG.7: the foreground-cancel service, captured at install for the same
+/// reason as [`EVENT_BUS`] — a spawner has no context to look it up
+/// through, and a parameter is the thing a spawner forgets. `None` in a
+/// harness that never installed one: work then runs as before, unkeyed.
+static FOREGROUND_CANCEL: std::sync::OnceLock<lattice_mode::ForegroundCancelHandle> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn set_foreground_cancel(cancel: lattice_mode::ForegroundCancelHandle) {
+    let _ = FOREGROUND_CANCEL.set(cancel);
+}
+
+/// CG.7: begin a keyed run of a git operation (`cancellation.md` §9).
+///
+/// `Ok(None)` with no service installed — the run proceeds unkeyed, as
+/// every git operation did before. `Err` is the refusal the caller
+/// echoes: the same operation with the same arguments is already running
+/// (it carries on), or one that is unsafe to kill is.
+pub(crate) fn begin_task(
+    key: lattice_mode::TaskKey,
+) -> Result<Option<lattice_mode::TaskTicket>, lattice_mode::AlreadyRunning> {
+    match FOREGROUND_CANCEL.get() {
+        Some(cancel) => cancel.begin(key).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// What a refused trigger says: the operation, and the repository it is
+/// running in.
+pub(crate) fn already_running(what: &str, workdir: &std::path::Path) -> Effect {
+    let place = task_scope(workdir).unwrap_or_else(|| "this repository".to_string());
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {what} is already running in {place}"),
+    }
+}
+
+/// CG.7b: one git writer per repository at a time, in the order they
+/// were triggered.
+///
+/// git allows one writer to a repository's index at once: a second
+/// `git add` while the first holds `.git/index.lock` fails with "Unable to
+/// create '.git/index.lock': File exists". Pressing `s` on one file and
+/// then another raced exactly so. Every mutation that writes the index,
+/// the working tree or a sequencer's state takes a turn here, so different
+/// operations on one repository run one after another (decided with
+/// Dhruva, 2026-10-20).
+///
+/// **First come, first served.** A turn is reserved when the operation is
+/// triggered — synchronously, on the actor — and waited for on the
+/// blocking pool. Without that, two queued writers race for the lock and
+/// `s` then `u` on one file could unstage before it stages. A reservation
+/// dropped unused (its task died before its turn) is skipped, so the
+/// queue cannot stall behind it.
+pub(crate) struct RepoTurn {
+    gate: RepoGate,
+    number: u64,
+    used: bool,
+}
+
+/// A held turn: the repository is this operation's until it drops.
+pub(crate) struct RepoWriter {
+    gate: RepoGate,
+}
+
+type RepoGate = std::sync::Arc<(std::sync::Mutex<GateState>, std::sync::Condvar)>;
+
+#[derive(Default)]
+struct GateState {
+    next: u64,
+    serving: u64,
+    abandoned: std::collections::BTreeSet<u64>,
+}
+
+impl GateState {
+    /// Move to the next turn, past any that were given up.
+    fn advance(&mut self) {
+        self.serving += 1;
+        while self.abandoned.remove(&self.serving) {
+            self.serving += 1;
+        }
+    }
+}
+
+fn lock_gate(gate: &RepoGate) -> std::sync::MutexGuard<'_, GateState> {
+    match gate.0.lock() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+impl RepoTurn {
+    /// Take the next turn on `workdir`'s repository. Cheap and
+    /// non-blocking: call it where the operation is triggered, so turns
+    /// follow trigger order.
+    pub(crate) fn reserve(workdir: &std::path::Path) -> Self {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+        static GATES: OnceLock<Mutex<HashMap<std::path::PathBuf, RepoGate>>> = OnceLock::new();
+        let repo = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+        let gate = {
+            let mut gates = match GATES.get_or_init(Default::default).lock() {
+                Ok(gates) => gates,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            gates.entry(repo).or_default().clone()
+        };
+        let number = {
+            let mut state = lock_gate(&gate);
+            let number = state.next;
+            state.next += 1;
+            number
+        };
+        Self {
+            gate,
+            number,
+            used: false,
+        }
+    }
+
+    /// Wait for this turn. Blocks — call it on the blocking pool.
+    pub(crate) fn wait(mut self) -> RepoWriter {
+        self.used = true;
+        let gate = self.gate.clone();
+        let mut state = lock_gate(&gate);
+        while state.serving != self.number {
+            state = match gate.1.wait(state) {
+                Ok(state) => state,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+        }
+        drop(state);
+        RepoWriter { gate }
+    }
+}
+
+impl Drop for RepoTurn {
+    fn drop(&mut self) {
+        if self.used {
+            return;
+        }
+        let mut state = lock_gate(&self.gate);
+        if state.serving == self.number {
+            state.advance();
+            drop(state);
+            self.gate.1.notify_all();
+        } else {
+            state.abandoned.insert(self.number);
+        }
+    }
+}
+
+impl Drop for RepoWriter {
+    fn drop(&mut self) {
+        lock_gate(&self.gate).advance();
+        self.gate.1.notify_all();
+    }
+}
+
+/// CG.7b: a mutation of one repository that has been let through — keyed
+/// (the same one is not already running) and holding its turn
+/// ([`RepoTurn`]). For the call sites that drive their own spawn and
+/// refresh: [`begin`](Self::begin) where the operation is triggered,
+/// [`run`](Self::run) on the blocking pool. [`spawn_repo_task`] is the
+/// whole shape for the ones that do not.
+pub(crate) struct RepoMutation {
+    ticket: Option<lattice_mode::TaskTicket>,
+    turn: RepoTurn,
+}
+
+impl RepoMutation {
+    /// Key the operation and take its turn. `identity` is what makes two
+    /// triggers the same operation; `label` names it in the refusal.
+    ///
+    /// # Errors
+    ///
+    /// The echo saying the same operation is still running.
+    pub(crate) fn begin(
+        workdir: &std::path::Path,
+        identity: &str,
+        label: &str,
+    ) -> Result<Self, Effect> {
+        let key = lattice_mode::TaskKey::run_to_completion(
+            "magit:repo",
+            format!("{} {identity}", workdir.display()),
+        );
+        let ticket = begin_task(key).map_err(|_| already_running(label, workdir))?;
+        Ok(Self {
+            ticket,
+            turn: RepoTurn::reserve(workdir),
+        })
+    }
+
+    /// Wait for this operation's turn, then do it. Blocks — call it on the
+    /// blocking pool. The operation stays "running" (a repeat is refused)
+    /// until `work` returns.
+    pub(crate) fn run<R>(self, work: impl FnOnce() -> R) -> R {
+        let Self { ticket, turn } = self;
+        let writer = turn.wait();
+        let result = work();
+        drop(writer);
+        drop(ticket);
+        result
+    }
+}
+
+/// CG.7b: start one git mutation of `workdir`'s repository — keyed, and
+/// one writer at a time (`cancellation.md` §9.2).
+///
+/// `identity` is what makes two triggers the same operation: the git
+/// command, or the label naming the operation and its target. The same
+/// operation still running refuses the trigger — `Err` is the echo that
+/// says so. A different one waits its turn ([`RepoTurn`]) and runs.
+/// Every one of these is `RunToCompletion`: a kill partway through a
+/// stage, a stash or a rebase step is what leaves `.git/index.lock`
+/// behind.
+pub(crate) fn spawn_repo_task<R>(
+    workdir: std::path::PathBuf,
+    identity: &str,
+    label: String,
+    work: impl FnOnce(&std::path::Path) -> R + Send + 'static,
+) -> Result<(), Effect>
+where
+    R: Into<TaskResult> + Send + 'static,
+{
+    let mutation = RepoMutation::begin(&workdir, identity, &label)?;
+    let scope_dir = workdir.clone();
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || mutation.run(|| work(&workdir).into()))
+            .await
+            .unwrap_or_else(|e| TaskResult::Failed(e.to_string()));
+        finish_task(&scope_dir, &label, result);
+    });
+    Ok(())
+}
+
 /// The bus `finish_task` publishes on, for modes that need to LISTEN
 /// to it. `None` in a harness that never installed one.
 pub(crate) fn event_bus() -> Option<std::sync::Arc<lattice_runtime::EventBus>> {
@@ -3591,25 +3870,25 @@ pub fn spawn_git_sequence(
         .first()
         .map(|s| format!("git {}", s.argv.join(" ")))
         .unwrap_or_else(|| label.clone());
-    let scope_dir = workdir.clone();
-    tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
-            let mut last = String::new();
-            for step in steps {
-                match run_remote_op(&workdir, &step.argv) {
-                    Ok(out) => last = out,
-                    // The step name, not the argv: a notification is one
-                    // line and "fixup commit failed" localises the
-                    // problem better than a truncated command.
-                    Err(e) => return Err(format!("{}: {e}", step.name)),
-                }
+    let identity = std::iter::once(label.clone())
+        .chain(steps.iter().map(|s| s.argv.join(" ")))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if let Err(refused) = spawn_repo_task(workdir, &identity, label, move |workdir| {
+        let mut last = String::new();
+        for step in steps {
+            match run_remote_op(workdir, &step.argv) {
+                Ok(out) => last = out,
+                // The step name, not the argv: a notification is one
+                // line and "fixup commit failed" localises the
+                // problem better than a truncated command.
+                Err(e) => return Err(format!("{}: {e}", step.name)),
             }
-            Ok(last)
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(&scope_dir, &label, result);
-    });
+        }
+        Ok(last)
+    }) {
+        return refused;
+    }
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         text: format!("magit: {shown}"),
@@ -3644,24 +3923,22 @@ pub fn spawn_rebase_verb_with(
     let label = rebase_verb_label(verb, commit);
     let commit = commit.to_string();
     let shown = format!("git rebase ({verb} {commit})");
-    let scope_dir = workdir.clone();
-    tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
-            crate::magit_rebase_mode::rebase_one_commit(&workdir, &commit, verb, message.as_deref())
-                .map(|()| String::new())
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()));
+    let identity = label.clone();
+    if let Err(refused) = spawn_repo_task(workdir, &identity, label, move |workdir| {
+        let result =
+            crate::magit_rebase_mode::rebase_one_commit(workdir, &commit, verb, message.as_deref())
+                .map(|()| String::new());
         // NC.4: an `edit` that worked has STOPPED, by design — the user
         // is meant to amend and continue. "Done" would say otherwise.
-        let result = match result {
+        match result {
             Ok(_) if verb == "edit" => {
                 TaskResult::Stopped("amend, then continue the rebase".to_string())
             }
             other => other.into(),
-        };
-        finish_task(&scope_dir, &label, result);
-    });
+        }
+    }) {
+        return refused;
+    }
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         text: format!("magit: {shown}"),
@@ -3681,13 +3958,12 @@ pub fn spawn_computed<F>(workdir: std::path::PathBuf, label: String, shown: Stri
 where
     F: FnOnce(&std::path::Path) -> Result<(), String> + Send + 'static,
 {
-    let scope_dir = workdir.clone();
-    tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || f(&workdir).map(|()| String::new()))
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
-        finish_task(&scope_dir, &label, result);
-    });
+    let identity = label.clone();
+    if let Err(refused) = spawn_repo_task(workdir, &identity, label, move |workdir| {
+        f(workdir).map(|()| String::new())
+    }) {
+        return refused;
+    }
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         text: format!("magit: {shown}"),
@@ -3696,18 +3972,14 @@ where
 
 pub fn spawn_git(workdir: std::path::PathBuf, argv: Vec<String>, what: &str) -> Effect {
     let shown = format!("git {}", argv.join(" "));
-    let logged = shown.clone();
-    let what = what.to_string();
-    let scope_dir = workdir.clone();
-    tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
-        // MG.41g: was log-only, so every `spawn_git` caller finished
-        // invisibly.
-        let _ = logged;
-        finish_task(&scope_dir, &what, result);
-    });
+    let identity = argv.join(" ");
+    // MG.41g: was log-only, so every `spawn_git` caller finished
+    // invisibly; `spawn_repo_task` reports through `finish_task`.
+    if let Err(refused) = spawn_repo_task(workdir, &identity, what.to_string(), move |workdir| {
+        run_remote_op(workdir, &argv)
+    }) {
+        return refused;
+    }
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         text: format!("magit: {shown}"),
@@ -3887,14 +4159,14 @@ pub fn spawn_subtree_op(workdir: std::path::PathBuf, op: SubtreeOp, line: &str) 
         .and_then(|a| a.strip_prefix("--prefix="))
         .unwrap_or_default();
     let label = format!("{} subtree {prefix}", op.sub);
-    let scope_dir = workdir.clone();
-    tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
-        // MG.41g: publish rather than hold a notification handle.
-        finish_task(&scope_dir, &label, result);
-    });
+    let identity = argv.join(" ");
+    // MG.41g: publish (through `spawn_repo_task`) rather than hold a
+    // notification handle.
+    if let Err(refused) = spawn_repo_task(workdir, &identity, label, move |workdir| {
+        run_remote_op(workdir, &argv)
+    }) {
+        return refused;
+    }
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         text: format!("magit: {what}…"),
@@ -3964,14 +4236,12 @@ pub(crate) fn spawn_note_merge(workdir: std::path::PathBuf, spec: &str) -> Effec
             text: "magit: usage — <notes-ref> [manual|ours|theirs|union|cat_sort_uniq]".to_string(),
         };
     };
-    let scope_dir = workdir.clone();
-    tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
-        // MG.41g: publish rather than post.
-        finish_task(&scope_dir, &label, result);
-    });
+    let identity = argv.join(" ");
+    if let Err(refused) = spawn_repo_task(workdir, &identity, label, move |workdir| {
+        run_remote_op(workdir, &argv)
+    }) {
+        return refused;
+    }
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         text: format!("magit: merging notes from {spec}…"),
@@ -4032,6 +4302,14 @@ pub fn spawn_clone(url: String, dest: String) -> Effect {
     let argv = clone_argv(&url, &dest);
     let label = format!("clone into {dest}");
     let scope_dir = std::path::PathBuf::from(&dest);
+    // CG.7b: keyed (a second clone into the same place is refused), but no
+    // `RepoWriter` — it writes a repository that does not exist yet.
+    let key = lattice_mode::TaskKey::run_to_completion("magit:clone", dest.clone())
+        .with_inputs(argv.join(" "));
+    let ticket = match begin_task(key) {
+        Ok(ticket) => ticket,
+        Err(_) => return already_running(&label, &scope_dir),
+    };
     tokio::task::spawn(async move {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let result = tokio::task::spawn_blocking(move || run_remote_op(&cwd, &argv))
@@ -4039,6 +4317,7 @@ pub fn spawn_clone(url: String, dest: String) -> Effect {
             .unwrap_or_else(|e| Err(e.to_string()));
         // MG.41g: publish rather than post.
         finish_task(&scope_dir, &label, result);
+        drop(ticket);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -4060,29 +4339,26 @@ pub fn spawn_clone(url: String, dest: String) -> Effect {
 pub fn spawn_gitignore(workdir: std::path::PathBuf, pattern: String) -> Effect {
     let shown = pattern.clone();
     let label = format!("ignore {pattern}");
-    let scope_dir = workdir.clone();
-    tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
-            // MR.4: `.gitignore` is written in the repository the buffer
-            // belongs to. This discovered from `"."` — a cwd site the
-            // `magit_workdir()` sweep did not catch, because it spelled
-            // the discovery out rather than calling the helper.
-            if workdir.as_os_str().is_empty() {
-                return Err("not a git repository".to_string());
-            }
-            let path = workdir.join(".gitignore");
-            let existing = std::fs::read_to_string(&path).unwrap_or_default();
-            let Some(out) = gitignore_append(&existing, &pattern) else {
-                return Ok("it was already ignored".to_string());
-            };
-            std::fs::write(&path, out).map_err(|e| e.to_string())?;
-            Ok(String::new())
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()));
-        // MG.41g: was log-only.
-        finish_task(&scope_dir, &label, result);
-    });
+    let identity = label.clone();
+    // MG.41g: was log-only; `spawn_repo_task` reports it.
+    if let Err(refused) = spawn_repo_task(workdir, &identity, label, move |workdir| {
+        // MR.4: `.gitignore` is written in the repository the buffer
+        // belongs to. This discovered from `"."` — a cwd site the
+        // `magit_workdir()` sweep did not catch, because it spelled
+        // the discovery out rather than calling the helper.
+        if workdir.as_os_str().is_empty() {
+            return Err("not a git repository".to_string());
+        }
+        let path = workdir.join(".gitignore");
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let Some(out) = gitignore_append(&existing, &pattern) else {
+            return Ok("it was already ignored".to_string());
+        };
+        std::fs::write(&path, out).map_err(|e| e.to_string())?;
+        Ok(String::new())
+    }) {
+        return refused;
+    }
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         text: format!("magit: ignoring {shown}"),
@@ -4178,17 +4454,35 @@ fn spawn_bisect(
         return;
     };
     let workdir = crate::repo_scope::action_workdir(ctx);
+    // CG.7b: keyed and one writer at a time, as `spawn_repo_task` — inline
+    // because the views refresh after the report. A refused mark is logged
+    // (this handler has no echo to return); the mark in flight carries on.
+    let key = lattice_mode::TaskKey::run_to_completion(
+        "magit:repo",
+        format!("{} bisect {what}", workdir.display()),
+    );
+    let ticket = match begin_task(key) {
+        Ok(ticket) => ticket,
+        Err(refused) => {
+            tracing::info!(target: "lattice_magit", "magit: {refused}");
+            return;
+        }
+    };
+    let turn = RepoTurn::reserve(&workdir);
     tokio::task::spawn(async move {
         let wd = workdir.clone();
-        let outcome =
-            tokio::task::spawn_blocking(move || match lattice_vcs::Repository::discover(&wd) {
+        let outcome = tokio::task::spawn_blocking(move || {
+            let _writer = turn.wait();
+            match lattice_vcs::Repository::discover(&wd) {
                 Ok(repo) => op(&repo),
                 Err(e) => Err(lattice_vcs::VcsError::Bisect(format!(
                     "no repository at {}: {e}",
                     wd.display()
                 ))),
-            })
-            .await;
+            }
+        })
+        .await;
+        drop(ticket);
         // MG.41g: bisect marks check out a different commit — a
         // completion the user very much wants to see. NC.6: git's own
         // report says which, or that the search is over.
@@ -4695,6 +4989,18 @@ pub fn spawn_remote_op_to(
     let base = op.argv(args);
     let shown = base.join(" ");
     let scope_dir = workdir.clone();
+    let key = remote_task_key(op, &workdir, target, prompted.as_deref(), &base);
+    let ticket = match begin_task(key) {
+        Ok(ticket) => ticket,
+        Err(_) => return already_running(op.what, &workdir),
+    };
+    let token = ticket
+        .as_ref()
+        .map(|t| t.token().clone())
+        .unwrap_or_else(lattice_protocol::CancellationToken::never);
+    // CG.7b: a writer's turn is taken here, in trigger order.
+    let turn = (op.retrigger == lattice_mode::RePolicy::RunToCompletion)
+        .then(|| RepoTurn::reserve(&workdir));
     tokio::task::spawn(async move {
         // The label names the resolved destination, so it is built
         // where the destination resolves; a resolution failure is
@@ -4707,15 +5013,20 @@ pub fn spawn_remote_op_to(
                     None => {
                         return (
                             op.label(&base),
-                            Err("no upstream configured for this branch — set one, \
-                                 or pick a destination explicitly"
-                                .to_string()),
+                            Some(Err("no upstream configured for this branch — set one, \
+                                      or pick a destination explicitly"
+                                .to_string())),
                         );
                     }
                 },
                 RemoteTarget::Prompted => match prompted.as_deref() {
                     Some(v) if !v.trim().is_empty() => Some(v.to_string()),
-                    _ => return (op.label(&base), Err("no destination given".to_string())),
+                    _ => {
+                        return (
+                            op.label(&base),
+                            Some(Err("no destination given".to_string())),
+                        );
+                    }
                 },
                 _ => None,
             };
@@ -4729,14 +5040,21 @@ pub fn spawn_remote_op_to(
                         argv.extend(destination.split_whitespace().map(str::to_string));
                     }
                     Ok(None) => {}
-                    Err(why) => return (op.label(&argv), Err(why)),
+                    Err(why) => return (op.label(&argv), Some(Err(why))),
                 }
             }
-            (op.label(&argv), run_remote_op(&workdir, &argv))
+            // CG.7b: an op that writes the index or working tree (pull,
+            // stash, a sequencer step) takes its turn with every other
+            // writer to this repository.
+            let _writer = turn.map(RepoTurn::wait);
+            (
+                op.label(&argv),
+                run_remote_op_until(&workdir, &argv, &token),
+            )
         })
         .await
-        .unwrap_or_else(|e| (fallback, Err(e.to_string())));
-        finish_task(&scope_dir, &label, result);
+        .unwrap_or_else(|e| (fallback, Some(Err(e.to_string()))));
+        finish_remote_op(&scope_dir, &label, result, ticket.as_ref());
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -4760,10 +5078,26 @@ pub fn spawn_remote_op(
     let shown = argv.join(" ");
     let label = op.label(&argv);
     let scope_dir = workdir.clone();
+    let key = remote_task_key(op, &workdir, RemoteTarget::Configured, None, &argv);
+    let ticket = match begin_task(key) {
+        Ok(ticket) => ticket,
+        Err(_) => return already_running(op.what, &workdir),
+    };
+    let token = ticket
+        .as_ref()
+        .map(|t| t.token().clone())
+        .unwrap_or_else(lattice_protocol::CancellationToken::never);
+    // CG.7b: a writer's turn is taken here, in trigger order.
+    let turn = (op.retrigger == lattice_mode::RePolicy::RunToCompletion)
+        .then(|| RepoTurn::reserve(&workdir));
     tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
+        let result = tokio::task::spawn_blocking(move || {
+            // CG.7b: as in `spawn_remote_op_to` — writers take turns.
+            let _writer = turn.map(RepoTurn::wait);
+            run_remote_op_until(&workdir, &argv, &token)
+        })
+        .await
+        .unwrap_or_else(|e| Some(Err(e.to_string())));
         // NOTIF.1d / MG.41g: the completion the echo could never
         // carry — the echo is written at *fire* time, so before this
         // the operation succeeded invisibly and failed only into
@@ -4774,7 +5108,7 @@ pub fn spawn_remote_op(
         // `debug!`-on-success / `error!`-on-failure split (the failure
         // log carries git's FULL stderr; the published message is the
         // one line a notification can show).
-        finish_task(&scope_dir, &label, result);
+        finish_remote_op(&scope_dir, &label, result, ticket.as_ref());
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -4989,14 +5323,13 @@ pub fn spawn_commit_op(op: CommitOp, workdir: std::path::PathBuf, commit: &str) 
     let argv = op.argv(commit);
     let shown = argv.join(" ");
     let label = format!("{} {}", op.label, short_rev(commit));
-    let scope_dir = workdir.clone();
-    tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
-        // MG.41g: was log-only.
-        finish_task(&scope_dir, &label, result);
-    });
+    let identity = argv.join(" ");
+    // MG.41g: was log-only; `spawn_repo_task` reports it.
+    if let Err(refused) = spawn_repo_task(workdir, &identity, label, move |workdir| {
+        run_remote_op(workdir, &argv)
+    }) {
+        return refused;
+    }
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         // Name the commit: these operations are indistinguishable from
@@ -5023,7 +5356,25 @@ pub(crate) fn short_rev(rev: &str) -> &str {
 /// of hanging. `git push`'s human-readable progress goes to stderr
 /// even on success, so both streams are checked.
 fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, String> {
-    let output = std::process::Command::new("git")
+    run_remote_op_until(workdir, args, &lattice_protocol::CancellationToken::never())
+        .unwrap_or_else(|| Err("cancelled".to_string()))
+}
+
+/// [`run_remote_op`], stopped when `token` is cancelled (CG.7) — `None`
+/// then, since a stopped run has no result to report.
+///
+/// `ProcessGroup::Shared`: a cancel kills git alone. Its `ssh` may be
+/// asking for a key's passphrase on the terminal lattice was started from,
+/// and from a process group of its own that read would suspend it — a push
+/// that hangs silently instead of prompting (`lattice_core::process`).
+fn run_remote_op_until(
+    workdir: &std::path::Path,
+    args: &[String],
+    token: &lattice_protocol::CancellationToken,
+) -> Option<Result<String, String>> {
+    use lattice_core::process::{ProcessGroup, RunOutcome, run_cancellable};
+    let mut command = std::process::Command::new("git");
+    command
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         // MG.34: `rebase --continue` opens `$EDITOR` on the commit
@@ -5040,17 +5391,17 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
         // this an instant-fixup hangs the same way `--continue` would
         // without `GIT_EDITOR`.
         .env("GIT_SEQUENCE_EDITOR", "true")
-        .current_dir(workdir)
-        .output();
+        .current_dir(workdir);
     // NC.3: the line that says what happened goes FIRST, git's full
     // output after it — `finish_task` publishes the first line and
     // logs the rest. Taking stdout-then-stderr as it came made a push
     // read `To <url>` and a conflicted merge read nothing at all.
-    match output {
-        Ok(o) => {
+    match run_cancellable(command, None, ProcessGroup::Shared, token) {
+        Ok(RunOutcome::Cancelled) => None,
+        Ok(RunOutcome::Finished(o)) => {
             let out = String::from_utf8_lossy(&o.stdout);
             let err = String::from_utf8_lossy(&o.stderr);
-            if o.status.success() {
+            Some(if o.status.success() {
                 Ok(crate::git_report::success_report(args, &out, &err))
             } else {
                 Err(crate::git_report::failure_report(
@@ -5058,9 +5409,55 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
                     &err,
                     o.status.code(),
                 ))
-            }
+            })
         }
-        Err(e) => Err(e.to_string()),
+        Err(e) => Some(Err(e.to_string())),
+    }
+}
+
+/// CG.7: the key a remote op runs under. Identity is the op, the
+/// repository and the destination as the user chose it (the row, and a
+/// prompted name) — resolving the actual remote needs git, and the
+/// decision to refuse has to be made before anything is spawned. The
+/// inputs are git's arguments, flags included: a push re-run with `-f`
+/// is a new question, a second press of the same push is not.
+fn remote_task_key(
+    op: RemoteOp,
+    workdir: &std::path::Path,
+    target: RemoteTarget,
+    prompted: Option<&str>,
+    argv: &[String],
+) -> lattice_mode::TaskKey {
+    let scope = format!(
+        "{} {target:?} {}",
+        workdir.display(),
+        prompted.unwrap_or_default()
+    );
+    let key = match op.retrigger {
+        lattice_mode::RePolicy::Supersede => lattice_mode::TaskKey::supersede(op.what, scope),
+        lattice_mode::RePolicy::RunToCompletion => {
+            lattice_mode::TaskKey::run_to_completion(op.what, scope)
+        }
+    };
+    key.with_inputs(argv.join(" "))
+}
+
+/// CG.7: how a remote op's run ended, for [`finish_task`] — or not. A run
+/// that was cancelled, or has since been superseded, reports nothing: the
+/// user asked again (or pressed `<C-g>`), and the run that replaced it
+/// will report. One quiet line says it happened.
+fn finish_remote_op(
+    workdir: &std::path::Path,
+    label: &str,
+    result: Option<Result<String, String>>,
+    ticket: Option<&lattice_mode::TaskTicket>,
+) {
+    let current = ticket.is_none_or(lattice_mode::TaskTicket::is_current);
+    match result {
+        Some(result) if current => finish_task(workdir, label, result),
+        _ => {
+            tracing::info!(target: "lattice_magit", "magit: {label} stopped — superseded or cancelled")
+        }
     }
 }
 
@@ -6334,7 +6731,7 @@ mod task_labels {
 
 #[cfg(test)]
 mod run_remote_op_reports {
-    use super::{resolve_push_destination, resolve_upstream, run_remote_op};
+    use super::{RemoteOp, resolve_push_destination, resolve_upstream, run_remote_op};
     use std::path::Path;
     use std::process::Command;
 
@@ -6420,12 +6817,17 @@ mod run_remote_op_reports {
         let (_root, work) = new_branch_without_upstream();
         assert_eq!(
             resolve_push_destination(&work),
-            Ok(Some("origin HEAD".to_string()))
+            Ok(Some("origin feature".to_string()))
         );
         // The argv the `p` row now runs, with `-u`: it pushes, and the
         // branch has an upstream afterwards.
         let mut push = argv(&["push", "--set-upstream"]);
-        push.extend(argv(&["origin", "HEAD"]));
+        push.extend(argv(&["origin", "feature"]));
+        assert_eq!(
+            RemoteOp::PUSH.label(&push),
+            "push to origin/feature",
+            "the report names the branch, not `HEAD`"
+        );
         run_remote_op(&work, &push).expect("the push succeeds");
         assert_eq!(resolve_upstream(&work).as_deref(), Some("origin feature"));
         // Now it has one, git resolves the destination itself again.
@@ -6451,12 +6853,12 @@ mod run_remote_op_reports {
         git(&work, &["config", "remote.pushDefault", "fork"]);
         assert_eq!(
             resolve_push_destination(&work),
-            Ok(Some("fork HEAD".to_string()))
+            Ok(Some("fork feature".to_string()))
         );
         git(&work, &["config", "branch.feature.pushRemote", "origin"]);
         assert_eq!(
             resolve_push_destination(&work),
-            Ok(Some("origin HEAD".to_string())),
+            Ok(Some("origin feature".to_string())),
             "the branch's own pushRemote outranks remote.pushDefault, as in git"
         );
     }
@@ -6551,5 +6953,436 @@ mod reactive_refresh {
                 "{source:?} must not trigger a magit refresh"
             );
         }
+    }
+}
+
+/// CG.7: a remote op triggered again is decided by what the re-trigger asks
+/// for (`cancellation.md` §9), proven against real git. A `pre-receive`
+/// hook that sleeps makes the push slow enough to re-trigger into.
+#[cfg(all(test, unix))]
+mod keyed_remote_ops {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use lattice_grammar::{ArgValue, Args};
+    use lattice_protocol::event::{Event, EventKind, TaskOutcome};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::Duration;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The cancel service and the bus are process-wide in magit (set once,
+    /// at install); every test in this binary shares them, and tells its
+    /// own events apart by repository.
+    fn installed() -> Arc<lattice_runtime::EventBus> {
+        set_foreground_cancel(Arc::new(lattice_mode::ForegroundCancel::default()));
+        if event_bus().is_none() {
+            set_event_bus(Arc::new(lattice_runtime::EventBus::new()));
+        }
+        event_bus().unwrap()
+    }
+
+    /// A clone named `name` with an unpushed commit, whose origin takes
+    /// `secs` to accept a push. Named per test: the bus labels a repository
+    /// by its directory name, qualified once two share one, so two tests
+    /// cloning into `work` would see each other's label change under them.
+    fn slow_origin(name: &str, secs: u32) -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        git(root.path(), &["init", "-q", "--bare", "origin.git"]);
+        git(root.path(), &["clone", "-q", "origin.git", name]);
+        let work = root.path().join(name);
+        // The local branch is named `main` explicitly, to match the upstream
+        // below. Left to git it takes `init.defaultBranch` — `master` on CI
+        // — and git's default `push.default=simple` then refuses the plain
+        // push this fixture exists to make: "The upstream branch of your
+        // current branch does not match the name of your current branch".
+        git(&work, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(&work, &["config", "user.email", "t@example.invalid"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(&work, &["push", "-q", "-u", "origin", "HEAD:main"]);
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "unpushed"]);
+        let hook = root.path().join("origin.git/hooks/pre-receive");
+        std::fs::write(&hook, format!("#!/bin/sh\nsleep {secs}\n")).unwrap();
+        Command::new("chmod")
+            .args(["+x"])
+            .arg(&hook)
+            .status()
+            .unwrap();
+        (root, work)
+    }
+
+    /// Every `BackgroundTaskFinished` for `work`'s repository within `wait`.
+    async fn finished(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Event>,
+        work: &Path,
+        wait: Duration,
+    ) -> Vec<TaskOutcome> {
+        let scope = task_scope(work);
+        let mut seen = Vec::new();
+        let deadline = tokio::time::Instant::now() + wait;
+        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+            if let Event::BackgroundTaskFinished {
+                scope: s, outcome, ..
+            } = event
+                && s == scope
+            {
+                seen.push(outcome);
+            }
+        }
+        seen
+    }
+
+    fn subscribe(bus: &lattice_runtime::EventBus) -> tokio::sync::mpsc::UnboundedReceiver<Event> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        bus.subscribe(
+            lattice_runtime::EventFilter::kind(EventKind::BackgroundTaskFinished),
+            lattice_runtime::SubscriptionTarget::Channel(tx),
+        );
+        rx
+    }
+
+    fn echo_text(effect: &Effect) -> &str {
+        match effect {
+            Effect::Echo { text, .. } => text,
+            other => panic!("expected an echo, got {other:?}"),
+        }
+    }
+
+    /// The case that started CG: a double-pressed push. The second press
+    /// is refused and says so; the first carries on and is the only one
+    /// to report — no restart, no rejected ref race.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_double_pressed_push_runs_once() {
+        let bus = installed();
+        let mut rx = subscribe(&bus);
+        let (_root, work) = slow_origin("cg7-double-press", 2);
+
+        let first = spawn_remote_op_to(
+            work.clone(),
+            RemoteOp::PUSH,
+            &Args::None,
+            RemoteTarget::Configured,
+            None,
+        );
+        assert!(!echo_text(&first).contains("already running"));
+        let second = spawn_remote_op_to(
+            work.clone(),
+            RemoteOp::PUSH,
+            &Args::None,
+            RemoteTarget::Configured,
+            None,
+        );
+        assert!(
+            echo_text(&second).contains("push is already running in"),
+            "{}",
+            echo_text(&second)
+        );
+
+        let outcomes = finished(&mut rx, &work, Duration::from_secs(8)).await;
+        assert_eq!(outcomes.len(), 1, "one push ran: {outcomes:?}");
+        assert!(
+            matches!(outcomes[0], TaskOutcome::Succeeded { .. }),
+            "{outcomes:?}"
+        );
+    }
+
+    /// A push re-run with a new flag is a new question: the run in flight
+    /// is stopped without reporting, and the new one is what reports.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_push_re_run_with_a_new_flag_supersedes_the_first() {
+        let bus = installed();
+        let mut rx = subscribe(&bus);
+        let (_root, work) = slow_origin("cg7-new-flag", 2);
+
+        let _first = spawn_remote_op_to(
+            work.clone(),
+            RemoteOp::PUSH,
+            &Args::None,
+            RemoteTarget::Configured,
+            None,
+        );
+        let forced = spawn_remote_op_to(
+            work.clone(),
+            RemoteOp::PUSH,
+            &Args::List(vec![ArgValue::Bool(true), ArgValue::Bool(false)]),
+            RemoteTarget::Configured,
+            None,
+        );
+        assert!(!echo_text(&forced).contains("already running"));
+
+        let outcomes = finished(&mut rx, &work, Duration::from_secs(8)).await;
+        assert_eq!(
+            outcomes.len(),
+            1,
+            "the superseded push reports nothing: {outcomes:?}"
+        );
+        // …and the one report is the new push's, which succeeded. Counting
+        // alone passed on CI while every push in this fixture was failing.
+        assert!(
+            matches!(outcomes[0], TaskOutcome::Succeeded { .. }),
+            "{outcomes:?}"
+        );
+    }
+
+    /// Pull is unsafe to kill (its merge half): a re-trigger is refused
+    /// even when its flags differ.
+    #[test]
+    fn pull_refuses_a_re_trigger_even_with_new_flags() {
+        installed();
+        let dir = tempfile::tempdir().unwrap();
+        let key = |args: &Args| {
+            remote_task_key(
+                RemoteOp::PULL,
+                dir.path(),
+                RemoteTarget::Configured,
+                None,
+                &RemoteOp::PULL.argv(args),
+            )
+        };
+        let _running = begin_task(key(&Args::None)).unwrap();
+        let rebase = Args::List(vec![ArgValue::Bool(true), ArgValue::Bool(false)]);
+        assert!(begin_task(key(&rebase)).is_err());
+    }
+
+    /// Different destinations are different tasks: a push to a prompted
+    /// remote does not refuse, or stop, a push to the configured one.
+    #[test]
+    fn a_push_elsewhere_is_another_task() {
+        installed();
+        let dir = tempfile::tempdir().unwrap();
+        let argv = RemoteOp::PUSH.argv(&Args::None);
+        let configured = begin_task(remote_task_key(
+            RemoteOp::PUSH,
+            dir.path(),
+            RemoteTarget::Configured,
+            None,
+            &argv,
+        ))
+        .unwrap()
+        .unwrap();
+        let elsewhere = begin_task(remote_task_key(
+            RemoteOp::PUSH,
+            dir.path(),
+            RemoteTarget::Prompted,
+            Some("fork main"),
+            &argv,
+        ));
+        assert!(elsewhere.is_ok());
+        assert!(configured.is_current());
+    }
+}
+
+/// CG.7b: magit's repository mutations — the same one again is refused;
+/// different ones on one repository run one after another, never at once
+/// (decided with Dhruva, 2026-10-20: git allows one index writer, and
+/// rapid `s s s` across files raced on `.git/index.lock`).
+#[cfg(test)]
+mod keyed_repo_tasks {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    fn installed() {
+        set_foreground_cancel(Arc::new(lattice_mode::ForegroundCancel::default()));
+    }
+
+    type Spans = Arc<Mutex<Vec<(&'static str, Instant, Instant)>>>;
+
+    /// Work that records when it ran, and takes long enough to overlap
+    /// with anything that ran beside it.
+    fn timed(
+        spans: &Spans,
+        name: &'static str,
+    ) -> impl FnOnce(&std::path::Path) -> Result<String, String> + use<> {
+        let spans = spans.clone();
+        move |_| {
+            let start = Instant::now();
+            std::thread::sleep(Duration::from_millis(150));
+            spans.lock().unwrap().push((name, start, Instant::now()));
+            Ok(String::new())
+        }
+    }
+
+    async fn settle(spans: &Spans, n: usize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while spans.lock().unwrap().len() < n && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn different_operations_on_one_repository_take_turns() {
+        installed();
+        let repo = tempfile::tempdir().unwrap();
+        let spans: Spans = Arc::default();
+        for (identity, name) in [("add a.rs", "a"), ("add b.rs", "b"), ("add c.rs", "c")] {
+            assert!(
+                spawn_repo_task(
+                    repo.path().to_path_buf(),
+                    identity,
+                    format!("stage {name}"),
+                    timed(&spans, name)
+                )
+                .is_ok(),
+                "a different operation is not refused"
+            );
+        }
+        settle(&spans, 3).await;
+        let mut spans = spans.lock().unwrap().clone();
+        assert_eq!(spans.len(), 3, "all three ran");
+        spans.sort_by_key(|s| s.1);
+        assert_eq!(
+            spans.iter().map(|s| s.0).collect::<Vec<_>>(),
+            ["a", "b", "c"],
+            "in the order they were triggered — `s` then `u` must not unstage first"
+        );
+        for pair in spans.windows(2) {
+            assert!(
+                pair[1].1 >= pair[0].2,
+                "{} started before {} finished — the index has one writer",
+                pair[1].0,
+                pair[0].0
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn other_repositories_do_not_wait() {
+        installed();
+        let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let spans: Spans = Arc::default();
+        spawn_repo_task(
+            one.path().to_path_buf(),
+            "add a.rs",
+            "stage a".into(),
+            timed(&spans, "one"),
+        )
+        .unwrap();
+        spawn_repo_task(
+            two.path().to_path_buf(),
+            "add a.rs",
+            "stage a".into(),
+            timed(&spans, "two"),
+        )
+        .unwrap();
+        settle(&spans, 2).await;
+        let spans = spans.lock().unwrap().clone();
+        let (a, b) = (spans[0], spans[1]);
+        assert!(
+            b.1 < a.2 || a.1 < b.2,
+            "two repositories run side by side: {spans:?}"
+        );
+    }
+
+    /// The same operation again is refused — while it runs, and while it
+    /// is still waiting its turn — and the one in flight carries on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_same_operation_again_is_refused() {
+        installed();
+        let repo = tempfile::tempdir().unwrap();
+        let spans: Spans = Arc::default();
+        spawn_repo_task(
+            repo.path().to_path_buf(),
+            "add a.rs",
+            "stage a.rs".into(),
+            timed(&spans, "a"),
+        )
+        .unwrap();
+        // Queued behind `a`, not yet running.
+        spawn_repo_task(
+            repo.path().to_path_buf(),
+            "add b.rs",
+            "stage b.rs".into(),
+            timed(&spans, "b"),
+        )
+        .unwrap();
+        for identity in ["add a.rs", "add b.rs"] {
+            let refused = spawn_repo_task(
+                repo.path().to_path_buf(),
+                identity,
+                format!("stage {}", &identity[4..]),
+                timed(&spans, "again"),
+            )
+            .unwrap_err();
+            let Effect::Echo { text, .. } = refused else {
+                panic!("a refusal is an echo");
+            };
+            assert!(text.contains("is already running in"), "{text}");
+        }
+        settle(&spans, 2).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let names: Vec<_> = spans.lock().unwrap().iter().map(|s| s.0).collect();
+        assert_eq!(
+            names,
+            ["a", "b"],
+            "each ran once; the refused triggers never did"
+        );
+
+        // Finished, it can run again.
+        let again: Spans = Arc::default();
+        spawn_repo_task(
+            repo.path().to_path_buf(),
+            "add a.rs",
+            "stage a.rs".into(),
+            timed(&again, "a"),
+        )
+        .unwrap();
+        settle(&again, 1).await;
+        assert_eq!(again.lock().unwrap().len(), 1);
+    }
+
+    /// The view helpers' piece (CG.7b-ii): `begin` refuses the same
+    /// operation while it is let through, admits a different one, and
+    /// `run` does the work — after which the same one may begin again.
+    #[test]
+    fn a_repo_mutation_refuses_its_repeat_until_it_has_run() {
+        installed();
+        let repo = tempfile::tempdir().unwrap();
+        let stage = RepoMutation::begin(repo.path(), "stage hunk A", "stage hunk A").unwrap();
+        let refused = RepoMutation::begin(repo.path(), "stage hunk A", "stage hunk A");
+        assert!(refused.is_err(), "the same hunk again is refused");
+        let other = RepoMutation::begin(repo.path(), "stage hunk B", "stage hunk B")
+            .expect("a different hunk is let through, to wait its turn");
+
+        assert_eq!(stage.run(|| 1), 1);
+        assert_eq!(other.run(|| 2), 2, "its turn comes once the first has run");
+        assert!(
+            RepoMutation::begin(repo.path(), "stage hunk A", "stage hunk A").is_ok(),
+            "done, it can run again"
+        );
+    }
+
+    /// A turn given up unused never stalls the ones behind it — whether
+    /// it was being served when dropped, or still waiting.
+    #[test]
+    fn an_abandoned_turn_is_skipped() {
+        let repo = tempfile::tempdir().unwrap();
+        let first = RepoTurn::reserve(repo.path());
+        let second = RepoTurn::reserve(repo.path());
+        let third = RepoTurn::reserve(repo.path());
+        drop(second); // waiting, not serving: marked to skip
+        drop(first); // serving: hands on, past `second`
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _writer = third.wait();
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the third turn runs: neither abandoned turn stalled it");
     }
 }

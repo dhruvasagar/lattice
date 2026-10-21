@@ -235,7 +235,18 @@ pub fn install(boot: &mut impl SubsystemBoot) {
 
     // Capture the editor environment from the generic boot seams. `service`
     // returns `Arc<Handle-alias>` (double-Arc); unwrap one layer to the handle.
+    // CG.10: registered in Phase A, before every install.
+    let foreground_cancel = boot
+        .service::<lattice_mode::ForegroundCancelHandle>()
+        .map(|h| (*h).clone());
+    if foreground_cancel.is_none() {
+        tracing::warn!(
+            "plugin loader: no foreground-cancel service at install; a plugin \
+             rebuilt or updated again will build twice rather than be refused"
+        );
+    }
     let services = LoaderServices {
+        foreground_cancel,
         media_registry: boot
             .service::<lattice_mode::MediaSourceRegistryHandle>()
             .map(|h| (*h).clone()),

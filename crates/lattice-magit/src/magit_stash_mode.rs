@@ -345,14 +345,19 @@ impl Mode for MagitStashMode {
             // Populate stash list: blocking I/O on spawn_blocking, then
             // apply edit on the current task (no Runtime::new()).
             let wd = workdir.clone();
+            // CG.7c: the first load is this view's first refresh — it paints
+            // only if no refresh that started after it has painted since.
+            let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
             let (text, header) = tokio::task::spawn_blocking(move || build_stash_list(&wd))
                 .await
                 .unwrap();
-            headerline::publish(&hl, header);
-            let spans = crate::highlight::stash_styled_spans(&text);
-            crate::buffer_io::replace_buffer_text(&handle, text).await;
-            if let Some(ref ph) = pending_highlights {
-                ph.store_and_wake(buffer_id, spans);
+            if stamp.is_latest() {
+                headerline::publish(&hl, header);
+                let spans = crate::highlight::stash_styled_spans(&text);
+                crate::buffer_io::replace_buffer_text(&handle, text).await;
+                if let Some(ref ph) = pending_highlights {
+                    ph.store_and_wake(buffer_id, spans);
+                }
             }
 
             Ok(guard)
@@ -376,11 +381,16 @@ fn refresh(s: Arc<Mutex<StashState>>) -> Option<Effect> {
     // guard drops — including on every early exit inside the
     // task, which is why it is a guard and not a matching pair.
     let busy = headerline::busy(&hl);
+    // CG.7c: paint only if no newer refresh of this view started since.
+    let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
     tokio::task::spawn(async move {
         let _busy = busy;
         let (text, header) = tokio::task::spawn_blocking(move || build_stash_list(&wd))
             .await
             .unwrap_or_default();
+        if !stamp.is_latest() {
+            return;
+        }
         headerline::publish(&hl, header);
         let spans = crate::highlight::stash_styled_spans(&text);
         crate::buffer_io::replace_buffer_text(&handle, text).await;
@@ -419,16 +429,27 @@ fn spawn_mutation_and_refresh(
     // MG.27: the row says "refreshing" from here until the
     // guard drops — including on every early exit inside the
     // task, which is why it is a guard and not a matching pair.
+    // CG.7b: the same operation again is refused; another change to this
+    // repository waits its turn.
+    let mutation = match crate::magit_global_mode::RepoMutation::begin(&wd, &label, &label) {
+        Ok(mutation) => mutation,
+        Err(refused) => return Some(refused),
+    };
     let busy = headerline::busy(&hl);
+    // CG.7c: paint only if no newer refresh of this view started since.
+    let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
     tokio::task::spawn(async move {
         let _busy = busy;
-        let result = tokio::task::spawn_blocking(mutate)
+        let result = tokio::task::spawn_blocking(move || mutation.run(mutate))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         crate::magit_global_mode::finish_task(&wd, &label, result);
         let (text, header) = tokio::task::spawn_blocking(move || build_stash_list(&wd))
             .await
             .unwrap_or_default();
+        if !stamp.is_latest() {
+            return;
+        }
         headerline::publish(&hl, header);
         let spans = crate::highlight::stash_styled_spans(&text);
         crate::buffer_io::replace_buffer_text(&handle, text).await;

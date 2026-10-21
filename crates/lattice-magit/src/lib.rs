@@ -94,6 +94,20 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // completion. magit publishes `BackgroundTaskFinished`; the
     // notification layer subscribes. No dependency either way.
     magit_global_mode::set_event_bus(boot.event_bus().clone());
+    // CG.7: capture the foreground-cancel service the same way, so a git
+    // operation triggered again is keyed (`cancellation.md` §9). Looked up
+    // under `ForegroundCancelHandle`, the type boot registers it as; the
+    // registry hands back an `Arc` around it.
+    match boot.service::<lattice_mode::ForegroundCancelHandle>() {
+        Some(cancel) => magit_global_mode::set_foreground_cancel((*cancel).clone()),
+        // Boot registers the service before any install; reaching this
+        // means that order regressed, and every git operation would run
+        // unkeyed — double pushes and all — with nothing else to say so.
+        None => tracing::warn!(
+            "magit: no foreground-cancel service at install; git operations \
+             triggered again will not be refused or superseded"
+        ),
+    }
 
     // ── Modes ──────────────────────────────────────────────
 
@@ -2945,30 +2959,40 @@ fn register_ex_commands(
                     let store = store.clone();
                     let scopes = scopes.clone();
                     Arc::new(move |ctx| {
-                    let Args::String(ref name) = ctx.args else {
-                        return Ok(Effect::Echo {
-                            level: lattice_grammar::EchoLevel::Error,
-                            text: "magit-branch-create: branch name required".to_string(),
-                        });
-                    };
-                    let name = name.clone();
-                    // MR.5: the branch is created in the repository the
-                    // command came from, not the process's.
-                    let workdir = repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id);
-                    tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                        let Ok(repo) = lattice_vcs::Repository::discover(&workdir) else {
-                            tracing::error!(target: "lattice_magit", "branch create: repo discover failed");
-                            return;
+                        let Args::String(ref name) = ctx.args else {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: "magit-branch-create: branch name required".to_string(),
+                            });
                         };
-                        if let Err(e) = lattice_vcs::Branch::create(&repo, &name, true, None) {
-                            tracing::error!(target: "lattice_magit", "branch create {name}: {e}");
+                        let name = name.clone();
+                        // MR.5: the branch is created in the repository the
+                        // command came from, not the process's.
+                        let workdir = repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id);
+                        // CG.7b: keyed, one writer at a time, and reported
+                        // through `finish_task` (it used to reach only
+                        // `tracing::error!`).
+                        let label = format!("create and check out branch {name}");
+                        let identity = label.clone();
+                        if let Err(refused) = magit_global_mode::spawn_repo_task(
+                            workdir,
+                            &identity,
+                            label,
+                            move |workdir| {
+                                let repo = lattice_vcs::Repository::discover(workdir)
+                                    .map_err(|e| format!("not a git repository: {e}"))?;
+                                lattice_vcs::Branch::create(&repo, &name, true, None)
+                                    .map(|()| String::new())
+                                    .map_err(|e| e.to_string())
+                            },
+                        ) {
+                            return Ok(refused);
                         }
-                    }));
-                    Ok(Effect::Echo {
-                        level: lattice_grammar::EchoLevel::Info,
-                        text: "magit: creating branch…".to_string(),
+                        Ok(Effect::Echo {
+                            level: lattice_grammar::EchoLevel::Info,
+                            text: "magit: creating branch…".to_string(),
+                        })
                     })
-                })
                 },
                 args_schema: vec![ArgSpec::required(
                     "name",

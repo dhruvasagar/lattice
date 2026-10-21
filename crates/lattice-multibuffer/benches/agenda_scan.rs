@@ -140,7 +140,8 @@ fn bench_agenda_scan(c: &mut Criterion) {
                     // OA.5: no span sink in a bench — the scan
                     // publishes nothing and the walk is what is timed.
                     None,
-                );
+                )
+                .unwrap();
                 loop {
                     if let Some(h) = registry.handle(view_id)
                         && matches!(*h.headerline(), HeaderlineStatus::Complete { .. })

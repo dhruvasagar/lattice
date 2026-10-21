@@ -22,9 +22,11 @@
 //!   Display < 10ms). NOT YET WIRED in v1 -- the token type is in
 //!   place so deadline plumbing layers on without touching
 //!   evaluators. v1 uses user-Esc cancellation only.
-//! - **Supersede.** A newer same-event request invalidates the
-//!   in-flight one (e.g. a newer `CompletionRequested` cancels the
-//!   prior LSP request). NOT YET WIRED.
+//! - **Supersede.** Re-triggering a task with new inputs cancels the
+//!   run in flight: per-feature LSP tokens (a newer completion request
+//!   cancels the prior one), and editor-wide `ForegroundCancel::begin`
+//!   with a `TaskKey` in `lattice-mode` (CG.6,
+//!   `docs/dev/architecture/cancellation.md` §9).
 //!
 //! # Cancellation semantics (§5.2.5)
 //!

@@ -71,6 +71,26 @@ target rather than just a slower number.
 
 ---
 
+## CG.6 — keyed supersede, per trigger (2026-10-20)
+
+`ForegroundCancel::begin` runs once per user-triggered task — a push, a
+search, a format — and the ticket's drop once per finished run. Not a
+keystroke path, but every producer shares its one lock, so the cost must
+not grow with unrelated tasks in flight. Bench:
+`crates/lattice-mode/benches/task_key.rs`.
+
+| Case | Median |
+|---|---|
+| begin + drop, 0 other tasks in flight | 145 ns |
+| begin + drop, 8 in flight | 158 ns |
+| begin + drop, 64 in flight | 144 ns |
+| supersede (new inputs cancel the run in flight) | 110 ns |
+| refuse (same inputs: the run in flight carries on) | 40 ns |
+
+Flat across 0/8/64: one hash-map lookup under a mutex, as designed
+(`cancellation.md` §9.1). Each is a few hundred nanoseconds against a
+task that spawns a process or a scan — invisible.
+
 ## PC.9 — listing a directory, per keystroke (2026-09-10)
 
 ⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** `cargo bench -p

@@ -51,11 +51,13 @@ responsive while output streams in. `*compilation*` shows the raw log
 the tool printed it. A run **replaces** the previous one: the buffer is
 cleared and the error list reset.
 
-`:recompile` (or `gr` inside the buffer) re-runs the last command;
-starting a new run kills the previous process first. To stop a runaway
-build without starting a new one, press **`<C-c>`** in `*compilation*`
-(or run `:compilation-kill`) — the process is killed, the pipes close,
-and a "terminated" line is appended.
+`:recompile` (or `gr` inside the buffer) re-runs the last command. While
+a build runs, the **same** command again is refused (*"already running"*)
+and the build carries on; a **different** command stops it — its whole
+process tree — and starts. To restart the same build, press **`<C-g>`**
+and run it again. To just stop it, press **`<C-g>`**, or **`<C-c>`** in
+`*compilation*` (`:compilation-kill`): a "terminated" line is appended.
+`:!cmd` follows the same rules.
 
 A **status headerline** sits at the top of `*compilation*` — a sticky
 bar showing a state icon, the quoted command, and a status badge:

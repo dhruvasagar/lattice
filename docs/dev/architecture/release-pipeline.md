@@ -166,7 +166,14 @@ AppImage + .deb. Their icon must match the existing desktop entry
    binary; build GUI binary (`continue-on-error` on the two unproven ARM legs);
    assemble TUI + GUI archives; (Linux) build AppImage + .deb for the GUI
    binary; `upload-artifact` per leg.
-2. **`publish`** (`ubuntu-latest`, `needs: dist`) — download all leg artefacts;
+2. **`ci`** — the whole `ci.yml`, called as a reusable workflow
+   (`workflow_call`) against the tagged commit, beside `dist`. A release goes
+   out green or not at all: before this the tag's pipeline and main's CI ran
+   unconnected, and v0.9.11 was published while main's CI on the same commit
+   was red. Waiting on the push's own CI run was rejected — any newer push to
+   main cancels it, and a tag on a commit that never had a run would have
+   nothing to wait for. Shorter than `dist`, so releases take no longer.
+3. **`publish`** (`ubuntu-latest`, `needs: [prepare, dist, ci]`) — download all leg artefacts;
    create the clean source archive via `git archive`; generate `SHA256SUMS`
    over every artefact; verify the expected-artefact manifest and **log any
    missing** (the best-effort ARM GUI legs); run
@@ -180,7 +187,9 @@ Permissions: `dist` needs only `contents: read`; `publish` needs
 (provenance).
 
 Concurrency group keyed on the workflow + ref, `cancel-in-progress: false`
-(don't cancel a half-published release).
+(don't cancel a half-published release). `ci.yml`'s group is
+`ci-<workflow>-<ref>`: called from here, `github.workflow` is the caller's
+name, and its old `<workflow>-<ref>` key matched this group and deadlocked.
 
 ## Version safety
 

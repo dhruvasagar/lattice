@@ -38,7 +38,9 @@ Design: `docs/dev/architecture/release-pipeline.md`.
    To undo before pushing: `git tag -d v0.10.0 && git reset --hard HEAD~1`.
 4. The pipeline builds 6 platform legs, packages TUI + GUI archives, Linux
    AppImage/.deb, a source archive, `SHA256SUMS`, attests provenance, and
-   creates the GitHub Release.
+   creates the GitHub Release — **only if the full CI passes on the tagged
+   commit**. The release runs `ci.yml` itself beside the builds; a red CI
+   means no release, and the tag is fixed forward with a new patch release.
 
 ### Why a script rather than `cargo-release`
 

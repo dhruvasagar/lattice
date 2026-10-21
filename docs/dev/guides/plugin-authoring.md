@@ -312,7 +312,7 @@ with a `<same name>.sha256` beside it whose first word is the asset's hex
 SHA-256. The installer:
 
 1. picks the asset whose `api<M>.<m>` is the editor's own plugin API
-   generation — the `major.minor` of `lattice-wit` (0.3 for lattice 0.9.10);
+   generation — the `major.minor` of `lattice-wit` (0.3 for lattice 0.9.11);
 2. downloads the `.sha256`, then the asset, and refuses a mismatch — or a
    mismatch with the user's own `sha256` pin;
 3. reads the component's embedded `lattice-manifest` section and refuses one
@@ -330,7 +330,7 @@ fix a release, publish a new version.
 
 1. **Embed the manifest** with `lattice_plugin_sdk::manifest!`
    ([above](#manifest-world-and-entry-points)), and declare
-   [`min_lattice`](#manifest-world-and-entry-points) — `"0.9.10"` or later, since `require_release`
+   [`min_lattice`](#manifest-world-and-entry-points) — `"0.9.11"` or later, since `require_release`
    and embedded manifests are new there. An older editor then refuses your
    plugin by name instead of failing on it.
 2. **Add a release workflow** that calls lattice's reusable one:
@@ -341,14 +341,24 @@ fix a release, publish a new version.
      push:
        tags: ['v*']
    jobs:
+     ci:
+       uses: ./.github/workflows/ci.yml   # your CI; add `workflow_call:` to its `on:`
+       secrets: inherit
      release:
+       needs: ci                          # publish only if CI passes on the tag
        uses: dhruvasagar/lattice/.github/workflows/plugin-release.yml@main
        permissions:
          contents: write
        # with:
        #   plugin-dir: crates/my-plugin   # if the plugin is not at the repo root
-       #   lattice-ref: v0.9.10           # pin the build script to a lattice release
+       #   lattice-ref: v0.9.11           # pin the build script to a lattice release
    ```
+
+   `needs: ci` is what keeps a red build from being published: the tag push
+   and your branch's CI otherwise run unconnected. If your CI's
+   `concurrency` group uses `github.workflow`, give it a fixed prefix
+   (`ci-${{ github.workflow }}-${{ github.ref }}`) — called from here that
+   is the *caller's* name, and a group shared with the release deadlocks.
 
 3. **Tag `vX.Y.Z`, where `X.Y.Z` is your crate's version**, and push the tag.
    The workflow checks the two agree, builds with lattice's
@@ -395,13 +405,13 @@ lattice_plugin_sdk::manifest!(
     id = "my-plugin"
     provides = ["grammar", "config"]
     capabilities = ["fs:write:{my-plugin.directory|~/notes}"]
-    min_lattice = "0.9.10"
+    min_lattice = "0.9.11"
     "#
 );
 ```
 
 The same TOML can instead sit beside the component as `plugin.toml`, which is
-what every editor before 0.9.10 reads; when both exist the embedded one wins.
+what every editor before 0.9.11 reads; when both exist the embedded one wins.
 A malformed manifest is a typed error — the host logs it, lists it under
 *Failed to load* in `:plugins`, and skips the plugin, never panics.
 
@@ -418,7 +428,7 @@ capabilities = [                         # OS + editor powers it requests
 ]
 editor_capabilities = ["tree-sitter"]    # subsystems a declared mode needs
 default_modes = ["my-plugin-mode"]       # on by default, gated by my-plugin.enabled
-min_lattice = "0.9.10"                   # oldest editor that can load it
+min_lattice = "0.9.11"                   # oldest editor that can load it
 ```
 
 | Key | Meaning |
@@ -429,7 +439,7 @@ min_lattice = "0.9.10"                   # oldest editor that can load it
 | `capabilities` | `fs:read:<prefix>`, `fs:write:<prefix>`, `net:http:<host>`, `proc:spawn` (bundled plugins only), `state:write` (the plugin store), `grammar:chord` (bind an operator's chord). Deny-by-default: the grant is the intersection of the request and the trust tier. |
 | `editor_capabilities` | `buffer-uri`, `lsp`, `tree-sitter`, `folds`, `writable`, `diagnostics` — what a mode the plugin declares requires of the buffers it activates on. |
 | `default_modes` / `default_mode` | Minor modes enabled by default. The loader registers a `<id>.enabled` option that gates them; either spelling works. |
-| `min_lattice` | The oldest editor version that can load this plugin, `"major.minor.patch"`. An older editor refuses it by name (*"my-plugin needs lattice ≥ 0.9.10; this is 0.9.9"*). Declare `0.9.10` or later if the manifest is embedded or a grant names an option — earlier editors understand neither. |
+| `min_lattice` | The oldest editor version that can load this plugin, `"major.minor.patch"`. An older editor refuses it by name (*"my-plugin needs lattice ≥ 0.9.11; this is 0.9.9"*). Declare `0.9.11` or later if the manifest is embedded or a grant names an option — earlier editors understand neither. |
 
 The manifest above is parsed by the real parser in a test
 (`lattice-plugin-host/tests/documented_manifests_parse.rs`), so every key and

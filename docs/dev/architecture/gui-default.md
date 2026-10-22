@@ -2,7 +2,7 @@
 
 > **Design fragment.** Contracts, rationale, rejected alternatives,
 > paramount-goal alignment. Slice sequencing lives in
-> [`../operations/slice-plans/gui-default.md`](../operations/slice-plans/gui-default.md).
+> [`../operations/slice-plans/archive/gui-default.md`](../operations/slice-plans/archive/gui-default.md).
 > Related: [`input-pipeline.md`](input-pipeline.md) (latency),
 > [`boot-composition.md`](boot-composition.md) (boot, the inbound wake).
 

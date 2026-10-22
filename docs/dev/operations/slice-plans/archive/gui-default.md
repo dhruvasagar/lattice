@@ -1,15 +1,15 @@
 # GUI by default — slice plan
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
-> Design contract: [`../../architecture/gui-default.md`](../../architecture/gui-default.md)
+> Design contract: [`../../architecture/gui-default.md`](../../../architecture/gui-default.md)
 > (the peer contract; GD.9 extends it with the flip).
-> Closes the ledger's `5.last` row in [`../implementation.md`](../implementation.md).
+> Closes the ledger's `5.last` row in [`../implementation.md`](../../implementation.md).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 Every non-trivial slice ships the four artefacts (doc + bench-where-perf-relevant
 + test incl. failure modes + graceful error handling).
 
-**Status: 🚧 GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅, GD.5c ✅, GD.8c ✅, GD.7c ✅, GD.4 ✅; GD.9b ❌.** Target release: **0.9.8**.
+**Status: ✅ COMPLETE — archived 2026-10-22; shipped in 0.9.8.** GD.0 ✅, GD.0b ✅, GD.1 ✅, GD.2 ✅, GD.3 ✅, GD.6a ✅, GD.6b ✅, GD.5a ✅, GD.7a ✅, GD.7b ✅, GD.8a ✅, GD.5b ✅, GD.6d ✅, GD.7d ✅, GD.9a ✅, GD.8b ✅, GD.6c ✅, GD.5c ✅, GD.8c ✅, GD.7c ✅, GD.4 ✅; GD.9b ❌.** Target release: **0.9.8**.
 
 ## What this is
 
@@ -66,7 +66,7 @@ order given is by user-visible severity. GD.9 depends on all of them.
 GPUI's `dispatch_action` adopts `Editor::dispatch_fused`.
 
 - Fused path: one actor crossing per plain key (was two or more). Retires the
-  "GPUI parity — deferred" note in [`input-latency.md`](input-latency.md) § I.7.
+  "GPUI parity — deferred" note in [`input-latency.md`](../input-latency.md) § I.7.
 - Non-fused path: effects, then queued + returned signals, then each follow-up
   action through the full `dispatch_action` (so an effect lands before the next
   action runs — macro replay, autopilot chains), then the tail in ONE crossing:
@@ -216,7 +216,7 @@ the bundle's `Info.plist` are a packaging change — GD.9.
 ### GD.4 ✅ — text input
 
 (2026-10-13.) Dead keys, the accent picker, the emoji panel, input methods,
-and `Option` + a key. Design: [`gui-default.md`](../../architecture/gui-default.md)
+and `Option` + a key. Design: [`gui-default.md`](../../../architecture/gui-default.md)
 § "Text input in the window".
 
 Established by running it first. Dhruva captured ~220 key-downs on a Mac with

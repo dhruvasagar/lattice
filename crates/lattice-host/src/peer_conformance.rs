@@ -85,7 +85,19 @@ fn boot<P: PeerUnderTest>(text: &str) -> P {
     // Before the boot spawns plugin discovery: a developer's installed
     // plugins (auto-pair, an `init.rs`) must not reach a scenario.
     crate::disable_autoload();
-    P::boot(text)
+    let peer = P::boot(text);
+    // Nor may their language servers. The builtin configs name whatever is
+    // on `PATH`, so a scenario opening a `.rs` file started rust-analyzer on
+    // a machine that has it: an async completion round the scenario did not
+    // ask for, and a different code path than on a machine without it. A
+    // scenario that wants a server attaches an in-process one.
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(peer.editor().lsp.set_configs(Vec::new()))
+        .expect("the supervisor takes the empty set");
+    peer
 }
 
 /// Press a vim-notation key sequence (`"ihello<Esc>"`, `":q<CR>"`).

@@ -363,7 +363,9 @@ system-clipboard = ["dep:arboard"]
 # behaviour tests each renderer peer runs through its own entry points.
 # Test-only — the peers enable it from `[dev-dependencies]`, so it is never
 # in a shipped build.
-peer-conformance = []
+# The completion scenarios attach an in-process language server over a
+# `tokio::io::duplex` pipe, on a runtime of their own.
+peer-conformance = ["tokio/io-util", "tokio/rt-multi-thread"]
 
 [lints]
 workspace = true

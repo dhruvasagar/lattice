@@ -36,6 +36,9 @@ use crate::action::Action;
 use crate::chord::KeyChord;
 use crate::editor::Editor;
 
+mod completion;
+pub use completion::*;
+
 /// A renderer peer, as the scenarios see it.
 ///
 /// Every method must go through the peer's REAL path. `press_chord` is the
@@ -380,6 +383,12 @@ macro_rules! peer_conformance_tests {
             a_queued_renderer_effect_is_applied_on_an_idle_wake,
             quitting_is_published,
             a_declined_chord_falls_through_to_the_layer_below,
+            ctrl_space_completes_from_buffer_words,
+            ctrl_space_completes_from_tree_sitter_symbols,
+            ctrl_space_completes_paths_inside_a_string,
+            ctrl_space_completes_from_snippets,
+            ctrl_space_completes_from_a_background_source,
+            ctrl_space_completes_from_a_language_server,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

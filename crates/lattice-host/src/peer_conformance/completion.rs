@@ -191,6 +191,10 @@ struct ListSource {
     /// The priority the source declares (`CompletionSourceContribution::
     /// default_priority`), as a plugin's spec does.
     priority: u32,
+    /// The source id the rows themselves carry, as a guest writes it:
+    /// `Some(id)` names the source, `None` leaves it unset (the WIT does not
+    /// require it), anything else names a different source.
+    rows_name: Option<&'static str>,
 }
 
 impl lattice_completion::AsyncCompletionSource for ListSource {
@@ -200,17 +204,18 @@ impl lattice_completion::AsyncCompletionSource for ListSource {
         sink: Arc<dyn lattice_completion::CandidateSink>,
         _token: lattice_protocol::CancellationToken,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        let id = lattice_completion::SourceId::new(self.id);
+        let name = self.rows_name.map(lattice_completion::SourceId::new);
         let items = self.items.clone();
         Box::pin(async move {
             for text in items {
-                sink.push(
-                    lattice_completion::RawCandidate::plain(
-                        text.to_string(),
-                        lattice_completion::CandidateKind::Plain,
-                    )
-                    .with_source(id.clone()),
+                let row = lattice_completion::RawCandidate::plain(
+                    text.to_string(),
+                    lattice_completion::CandidateKind::Plain,
                 );
+                sink.push(match &name {
+                    Some(name) => row.with_source(name.clone()),
+                    None => row,
+                });
             }
         })
     }
@@ -270,6 +275,7 @@ pub fn ctrl_space_completes_from_a_background_source<P: PeerUnderTest>() {
             id: "gen:conformance-list",
             items: vec!["asyncword"],
             priority: 100,
+            rows_name: Some("gen:conformance-list"),
         })),
     );
 
@@ -427,6 +433,7 @@ pub fn a_slow_source_lands_after_an_empty_one_answered<P: PeerUnderTest>() {
             id: "gen:conformance-list",
             items: Vec::new(),
             priority: 100,
+            rows_name: Some("gen:conformance-list"),
         })),
     );
 
@@ -466,6 +473,7 @@ pub fn an_empty_round_says_no_completions<P: PeerUnderTest>() {
             id: "gen:conformance-list",
             items: Vec::new(),
             priority: 100,
+            rows_name: Some("gen:conformance-list"),
         })),
     );
 
@@ -545,6 +553,7 @@ pub fn every_source_keeps_its_priority<P: PeerUnderTest>() {
             id: "gen:conformance-list",
             items: vec!["qzzz_list"],
             priority: 100,
+            rows_name: Some("gen:conformance-list"),
         })),
     );
     let order = |p: &P| rendered(p).into_iter().map(|(t, _)| t).collect::<Vec<_>>();
@@ -562,4 +571,136 @@ pub fn every_source_keeps_its_priority<P: PeerUnderTest>() {
     // re-ranking the same two.
     press(&mut peer, "z");
     assert_eq!(order(&peer), expected, "after typing");
+}
+
+/// IC.4: a background source's rows carry the source's own id, whatever the
+/// source wrote on them.
+///
+/// The drain replaces a source's rows by that id. Rows left unnamed — the
+/// WIT does not require a name — were never replaced and piled up a copy per
+/// round; rows naming another source would have replaced THAT source's.
+pub fn a_background_sources_rows_carry_its_own_id<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    activate(
+        &mut peer,
+        ListSourceMode(Arc::new(ListSource {
+            id: "gen:conformance-list",
+            items: vec!["qz_unnamed", "qz_spoofed"],
+            priority: 100,
+            rows_name: None,
+        })),
+    );
+    activate(
+        &mut peer,
+        SecondListSourceMode(Arc::new(ListSource {
+            id: "gen:conformance-second",
+            items: vec!["qz_claims_lsp"],
+            priority: 100,
+            rows_name: Some(lattice_completion::LSP_COMPLETION_SOURCE_ID),
+        })),
+    );
+
+    press(&mut peer, "iqz<C-Space>");
+    assert!(
+        settle(&mut peer, |p| rendered(p).len() == 3),
+        "precondition: three rows: {:?}",
+        rendered(&peer)
+    );
+    let mut rows = rendered(&peer);
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "qz_claims_lsp".to_string(),
+                "gen:conformance-second".to_string()
+            ),
+            ("qz_spoofed".to_string(), "gen:conformance-list".to_string()),
+            ("qz_unnamed".to_string(), "gen:conformance-list".to_string()),
+        ]
+    );
+}
+
+/// A second carrier, so one scenario can run two background sources.
+struct SecondListSourceMode(Arc<ListSource>);
+
+impl lattice_mode::Mode for SecondListSourceMode {
+    type Guard = ();
+    fn id(&self) -> lattice_mode::ModeId {
+        lattice_mode::ModeId::new("conformance-second-list-source-mode")
+    }
+    fn kind(&self) -> lattice_mode::ModeKind {
+        lattice_mode::ModeKind::Minor
+    }
+    fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
+        ListSourceMode(self.0.clone()).completion_sources()
+    }
+    fn on_activate(
+        &self,
+        _ctx: lattice_mode::ModeContext,
+    ) -> lattice_mode::LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A plugin's completion carrier as the loader registers one: universal,
+/// and registered — not activated — once the plugin has loaded.
+struct LateCarrierMode(Arc<ListSource>);
+
+impl lattice_mode::Mode for LateCarrierMode {
+    type Guard = ();
+    fn id(&self) -> lattice_mode::ModeId {
+        lattice_mode::ModeId::new("conformance-late-carrier-mode")
+    }
+    fn kind(&self) -> lattice_mode::ModeKind {
+        lattice_mode::ModeKind::Minor
+    }
+    fn activation_policy(&self) -> lattice_mode::ActivationPolicy {
+        lattice_mode::ActivationPolicy::Universal
+    }
+    fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
+        ListSourceMode(self.0.clone()).completion_sources()
+    }
+    fn on_activate(
+        &self,
+        _ctx: lattice_mode::ModeContext,
+    ) -> lattice_mode::LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// IC.4: a source registered after the buffer opened still completes there.
+///
+/// Policy minors activated on `MajorEntered` only, so a plugin that finished
+/// loading after a file was open — argv's files always are — never reached
+/// it: its completion source was simply absent from that buffer.
+pub fn a_source_registered_after_the_buffer_opened_completes_there<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    {
+        let editor = peer.editor_mut();
+        let mut registry = (**editor.mode_registry.load()).clone();
+        registry
+            .register(LateCarrierMode(Arc::new(ListSource {
+                id: "gen:conformance-late",
+                items: vec!["qz_late_item"],
+                priority: 100,
+                rows_name: Some("gen:conformance-late"),
+            })))
+            .expect("register the carrier");
+        editor.mode_registry.store(Arc::new(registry));
+    }
+    // A tick, as the plugin's load wakes the editor.
+    let _ = peer.editor_mut().run_tick_pending();
+    peer.republish();
+
+    press(&mut peer, "iqz<C-Space>");
+    assert!(
+        settle(&mut peer, |p| shows(
+            p,
+            "qz_late_item",
+            "gen:conformance-late"
+        )),
+        "the late source never reached the open buffer: {:?}",
+        rendered(&peer)
+    );
 }

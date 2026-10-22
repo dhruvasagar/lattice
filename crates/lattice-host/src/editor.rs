@@ -2321,6 +2321,13 @@ pub struct Editor {
     /// empty source answering quickly closed the popup and every later
     /// outcome — LSP's, typically — was dropped.
     pub pending_insert_completion_async_remaining: usize,
+    /// IC.4: the mode registry as the late-minor sweep last saw it, and the
+    /// ids it held. `run_tick_pending` compares the live registry's pointer
+    /// against this — one compare per tick — and, when a registration has
+    /// replaced it, activates the NEW policy minors on the documents already
+    /// open (`Editor::activate_late_registered_minors`).
+    pub late_minor_registry: Option<std::sync::Arc<lattice_mode::ModeRegistry>>,
+    pub late_minor_seen: std::collections::HashSet<lattice_mode::ModeId>,
     pub pending_completion_resolve_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
     pub pending_completion_resolve_token: Option<CancellationToken>,

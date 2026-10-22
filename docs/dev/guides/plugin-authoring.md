@@ -538,6 +538,10 @@ In the editor, `:describe-plugin-api <seam>` shows the same reference and
 > the async linker and may use `std::fs` directly. The distinction is invisible
 > until it panics, so when in doubt use `read-file`.
 
+A `completion-source` need not set a candidate's `source`: the host names every
+row your source returns with your spec's `id`, whatever you write there. Your
+spec's priority is what ranks the rows, and the popup labels them by that id.
+
 ### Sync or async, and why it matters
 
 Most seams are async and off the keystroke path. **Three are synchronous**,

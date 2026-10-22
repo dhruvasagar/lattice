@@ -841,17 +841,6 @@ fn gpui_render_filter_chord_footer(entries: &[GpuiFilterChordEntry], width_cols:
     compact.chars().take(w).collect()
 }
 
-fn gpui_source_display_label(id: &str) -> &'static str {
-    match id {
-        "gen:buffer-words" => "buffer-words",
-        "gen:lsp-completion" => "lsp",
-        "gen:path" => "path",
-        "gen:tree-sitter-symbol" => "tree-sitter",
-        "gen:snippet" => "snippet",
-        _ => "source",
-    }
-}
-
 /// Slice `3c.unify.gpui-annotation-render`: shared candidate-row
 /// builder for the picker (minibuffer + overlay) and cmdline-
 /// completion (minibuffer + overlay) surfaces. Replaces four
@@ -4681,7 +4670,7 @@ impl Render for EditorView {
                 // Also surface the active filter when set.
                 let approx_cols: u16 = 45;
                 let footer_text = if let Some(active) = ic.source_filter.as_ref() {
-                    let label = gpui_source_display_label(active.as_str());
+                    let label = lattice_completion::source_label(active.as_str());
                     let raw = format!(" source: {label} │ <C-Space> all ");
                     if raw.chars().count() > approx_cols as usize {
                         raw.chars().take(approx_cols as usize).collect::<String>()

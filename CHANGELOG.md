@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **A plugin's completion source reaches files that were already open.**
+  A completion plugin (org-roam's link targets) that finished loading after
+  a file was open — as files given on the command line always are — never
+  offered completions in that file. Its rows are also named after the
+  plugin's source in the popup's footer, instead of the word "source", and
+  can no longer pile up or overwrite another source's rows.
 - **Completion keeps its order and its filter.** Suggestions from
   tree-sitter and paths sank to the bottom as soon as you typed or a
   language server answered, and plugin sources (org-roam's link targets)

@@ -297,7 +297,24 @@ async overhead.
 | `gen:buffer-words` | sync (bridged) | 100 | yes | Walks visible buffers' rope text; words >= 3 chars; deduped. |
 | `gen:path` | sync (bridged) | 90 | trigger-char `'/'` in string contexts | Filesystem walk capped at 200 entries. |
 | `gen:tree-sitter-symbol` | sync (bridged) | 80 | yes | Local symbols from the buffer's syntax tree (functions, vars in scope). |
-| `gen:plugin-*` | async | as configured | as configured | Reserved for the WASM plugin host (Phase 7). |
+| `gen:plugin-*` | async | as declared | as declared | A plugin's `completion-source`, on a universal carrier mode. Ranked by the priority its contribution declares; labelled by its id. |
+
+**The host names a background source's rows** (IC.4). Every
+candidate an async source produces is stamped with that source's
+contribution id when its round reports, whatever the source wrote
+on it: the drain replaces a source's rows by that id, so a row left
+unnamed (the WIT does not require a name) was never replaced and
+piled up a copy per round, and one naming another source would have
+replaced that source's rows.
+
+**A source registered late reaches the buffers already open.**
+Policy minors activate on `MajorEntered`; a plugin's carrier mode
+registers once the plugin has loaded — after argv's files are open.
+`run_tick_pending` compares the live mode registry against the one
+it last saw (a pointer compare) and activates newly registered
+policy minors on the documents their policy admits. Only new ids:
+re-offering every admitted minor would switch back on one the user
+turned off in a buffer.
 
 ### 3.5 Matcher
 

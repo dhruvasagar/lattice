@@ -903,7 +903,7 @@ fn insert_completion_footer_line(
     use ratatui::style::{Modifier, Style};
     use ratatui::text::Span;
     if let Some(active) = state.source_filter.as_ref() {
-        let label = source_display_label(active.as_str());
+        let label = lattice_completion::source_label(active.as_str());
         let text = format!(" source: {label} │ <C-Space> all ");
         let text = clip_to_width(&text, width);
         return Line::from(Span::styled(
@@ -1020,17 +1020,6 @@ pub(crate) fn render_filter_chord_footer(entries: &[FilterChordEntry], width: u1
     }
     // Single chord still doesn't fit — hard truncate.
     clip_to_width(&compact, width)
-}
-
-fn source_display_label(id: &str) -> &'static str {
-    match id {
-        "gen:buffer-words" => "buffer-words",
-        "gen:lsp-completion" => "lsp",
-        "gen:path" => "path",
-        "gen:tree-sitter-symbol" => "tree-sitter",
-        "gen:snippet" => "snippet",
-        _ => "source",
-    }
 }
 
 fn clip_to_width(s: &str, width: u16) -> String {

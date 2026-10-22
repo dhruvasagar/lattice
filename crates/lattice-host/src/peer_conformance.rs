@@ -406,6 +406,8 @@ macro_rules! peer_conformance_tests {
             an_empty_round_says_no_completions,
             a_source_filter_survives_a_late_answer,
             every_source_keeps_its_priority,
+            a_background_sources_rows_carry_its_own_id,
+            a_source_registered_after_the_buffer_opened_completes_there,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

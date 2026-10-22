@@ -2772,6 +2772,10 @@ impl Editor {
                 });
             }
         }
+        // IC.4: everything registered so far activates the usual way, on
+        // `MajorEntered`. Only what registers after this — a plugin's carrier
+        // mode, most often — is the late-minor sweep's business.
+        editor.seed_late_minor_registry();
         editor
     }
 }

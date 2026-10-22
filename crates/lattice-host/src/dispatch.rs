@@ -6839,6 +6839,69 @@ impl Editor {
         }
     }
 
+    /// IC.4: record the registry as it stands, so the sweep below treats
+    /// only later registrations as new.
+    pub(crate) fn seed_late_minor_registry(&mut self) {
+        let registry = self.mode_registry.load_full();
+        self.late_minor_seen = registry.iter_meta().map(|(id, _)| id).collect();
+        self.late_minor_registry = Some(registry);
+    }
+
+    /// IC.4: activate minors registered after a document opened on that
+    /// document, when their activation policy admits it.
+    ///
+    /// Policy minors activate on `MajorEntered`. One registered later — a
+    /// plugin's completion carrier, registered once the plugin has loaded,
+    /// which is after argv's files are open — never reached the documents
+    /// already open: the source was simply absent from them.
+    ///
+    /// Only ids the sweep has not seen before: re-offering every admitted
+    /// minor would switch back on one the user turned off in a buffer. The
+    /// gate is a pointer compare, so an unchanged registry costs one load.
+    #[must_use]
+    pub fn activate_late_registered_minors(&mut self) -> Vec<RendererSignal> {
+        let registry = self.mode_registry.load_full();
+        if self
+            .late_minor_registry
+            .as_ref()
+            .is_some_and(|seen| std::sync::Arc::ptr_eq(seen, &registry))
+        {
+            return Vec::new();
+        }
+        let new_minors: Vec<lattice_mode::ModeId> = registry
+            .iter_meta()
+            .filter(|(id, kind)| {
+                *kind == lattice_mode::ModeKind::Minor && !self.late_minor_seen.contains(id)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        self.late_minor_seen = registry.iter_meta().map(|(id, _)| id).collect();
+        self.late_minor_registry = Some(registry.clone());
+        if new_minors.is_empty() {
+            return Vec::new();
+        }
+        let mut to_activate: Vec<(BufferId, lattice_mode::ModeId)> = Vec::new();
+        for buffer in self.buffers.document_ids_sorted() {
+            let Some(major) = self.active_modes.get(&buffer).and_then(|a| a.major()) else {
+                continue;
+            };
+            let Some(kind) = self.buffers.kind_of(buffer) else {
+                continue;
+            };
+            let admitted = registry.auto_activatable_minors(major.as_str(), kind);
+            for id in &new_minors {
+                if admitted.contains(id) && !self.minor_mode_enabled_for(buffer, *id) {
+                    to_activate.push((buffer, *id));
+                }
+            }
+        }
+        let mut signals = Vec::new();
+        for (buffer, id) in to_activate {
+            signals.extend(self.activate_mode_by_id(buffer, id));
+        }
+        signals
+    }
+
     pub(crate) fn reresolve_majors_after_catalog_change(&mut self) {
         // Collect first: the loop below needs `&mut self`, and both
         // `document_handle` and `mode_registry.load()` borrow it.
@@ -19486,6 +19549,7 @@ impl Editor {
         // else; the O(major-modes × open buffers) walk runs on plugin load /
         // reload only.
         self.drain_catalog_changes();
+        signals.extend(self.activate_late_registered_minors());
         self.maybe_refold_after_async_population();
         // OA.4d: folds must follow the document, including when the document
         // filled in without anyone typing.
@@ -34256,6 +34320,14 @@ impl Editor {
                 let fut = source.produce_async(ctx_snapshot, sink_for_fut, token_for_fut);
                 fut.await;
                 let (candidates, is_incomplete) = sink.drain();
+                // IC.4: the host names a row's source, not the source. A
+                // guest that left it unset made rows the drain could never
+                // replace (they piled up a copy per round); one that named
+                // another source's id would have replaced THAT source's rows.
+                let candidates = candidates
+                    .into_iter()
+                    .map(|c| c.with_source(id.clone()))
+                    .collect();
                 let _ = tx.send(lattice_completion::AsyncCompletionOutcome::Items {
                     candidates,
                     sources: vec![id],

@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- **`:describe-buffer` lists the buffer's completion sources** — how the
+  popup opens there, each source's priority, and which are off for the
+  file's language or waiting on a language server — so "why doesn't X
+  complete here" has an answer.
 - **Completion can open by itself as you type.** `:set
   completion.auto_trigger` opens the popup once the word before the
   cursor is `completion.min_chars` (2) characters long, or on a character

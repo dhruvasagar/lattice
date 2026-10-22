@@ -37,7 +37,8 @@ list, ranked together.
 ## Triggering
 
 `<C-Space>` in Insert mode opens the popup. That is the
-default: completion opens when you ask.
+default: completion opens when you ask. `:describe-buffer` lists
+the sources a buffer completes from, and why any is off.
 
 `:set completion.auto_trigger` opens it as you type instead:
 once the word before the cursor is `completion.min_chars` (2)

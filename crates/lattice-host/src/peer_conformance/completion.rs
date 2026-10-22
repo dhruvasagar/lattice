@@ -888,3 +888,38 @@ pub fn a_language_can_turn_auto_trigger_on_alone<P: PeerUnderTest>() {
         "Rust, which turned it on, opens automatically"
     );
 }
+
+// ── IC.7: which sources a buffer has ────────────────────────────────────────
+
+/// IC.7: `:describe-buffer` lists the buffer's completion sources — each
+/// with its priority — and says when one is off for the buffer's language.
+pub fn describe_buffer_lists_the_completion_sources<P: PeerUnderTest>() {
+    let dir = temp_dir("describe-sources");
+    let path = dir.join("notes.md");
+    std::fs::write(&path, "# notes\n").expect("write");
+    let mut peer = boot::<P>("\n");
+    open(&mut peer, &path);
+
+    let text = peer
+        .editor()
+        .build_describe_buffer_content()
+        .buffer
+        .content
+        .as_string();
+    let section = text
+        .split("## Completion sources")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no completion section:\n{text}"));
+    assert!(
+        section.contains("Opens: on `<C-Space>`"),
+        "manual by default:\n{section}"
+    );
+    assert!(
+        section.contains("- buffer-words — `gen:buffer-words`, priority 100"),
+        "buffer words with its priority:\n{section}"
+    );
+    assert!(
+        section.contains("- path — `gen:path`, priority 90 — off for `markdown`"),
+        "Markdown narrows its sources to snippets and buffer words:\n{section}"
+    );
+}

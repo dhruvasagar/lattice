@@ -40279,7 +40279,83 @@ impl Editor {
                 lines.push(format!("    - {}", lattice_help::mode_link(id.as_str())));
             }
         }
+        lines.push(String::new());
+        lines.extend(self.describe_completion_sources_lines());
         lattice_help::HelpContent::from_lines("describe-buffer", lines)
+    }
+
+    /// IC.7: the `## Completion sources` section of `:describe-buffer` —
+    /// how the popup opens here, and every source the buffer's modes
+    /// contribute, each with its priority and what limits it.
+    ///
+    /// The answer to "why does X not complete here", which nothing showed:
+    /// the source set is assembled from mode contributions per buffer, then
+    /// narrowed by language, so neither the modes list nor the options say it.
+    fn describe_completion_sources_lines(&self) -> Vec<String> {
+        let mut lines = vec!["## Completion sources".to_string()];
+        let buffer = self.document_buffer_id;
+        if !self.completion_mode_active_for(buffer) {
+            lines.push("(completion is off in this buffer)".to_string());
+            return lines;
+        }
+        let language = self.active_language_id();
+        let effective = self.effective_completion_for(&language);
+        let shown_language = if language.is_empty() {
+            "this buffer".to_string()
+        } else {
+            format!("`{language}`")
+        };
+        lines.push(if effective.auto_trigger {
+            let min = *self
+                .config
+                .get_typed::<lattice_config::CompletionMinChars>()
+                .expect("CompletionMinChars");
+            format!(
+                "Opens: as you type ({min} characters, or a trigger character), or on `<C-Space>`"
+            )
+        } else {
+            "Opens: on `<C-Space>` (`completion.auto_trigger` is off)".to_string()
+        });
+        let contributions = self
+            .buffer_locals
+            .get(&buffer)
+            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
+            .map(|active| active.0.clone())
+            .unwrap_or_default();
+        if contributions.is_empty() {
+            lines.push("(no mode contributes a source)".to_string());
+            return lines;
+        }
+        let lsp_attached = self
+            .buffer_uris
+            .get(&buffer)
+            .is_some_and(|uri| !self.lsp.servers_for(uri).is_empty());
+        for contribution in &contributions {
+            let id = contribution.id.as_str();
+            let mut notes: Vec<String> = Vec::new();
+            if !effective.source_enabled(&contribution.id) {
+                notes.push(format!("off for {shown_language}"));
+            } else if id == lattice_completion::LSP_COMPLETION_SOURCE_ID && !lsp_attached {
+                notes.push("no language server attached".to_string());
+            } else if id == lattice_completion::PATH_SOURCE_ID {
+                notes.push("answers inside a string literal".to_string());
+            }
+            if !contribution.trigger_chars.is_empty() {
+                let chars: String = contribution.trigger_chars.iter().collect();
+                notes.push(format!("trigger characters `{chars}`"));
+            }
+            let notes = if notes.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", notes.join("; "))
+            };
+            lines.push(format!(
+                "- {} — `{id}`, priority {}{notes}",
+                lattice_completion::source_label(id),
+                self.priority_for_source(&contribution.id),
+            ));
+        }
+        lines
     }
 
     /// 5.5.F.2: build the `:describe-command` content.

@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
-**Status: 🚧 in progress (2026-10-22).**
+**Status: 🚧 — IC.1–IC.7 ✅ (2026-10-22); IC.8 📝 (rank indices instead of cloned candidates, a performance slice).**
 
 ## Why
 
@@ -54,5 +54,5 @@ every source's tests call `do_completion_trigger()` directly. An audit
 | IC.4 | Plugin source identity: the host stamps the spec id on plugin rows; popup label and filter chord come from the contribution; policy minors registered late activate on open buffers (findings 6, 7) | tests: unstamped rows replaced not accumulated; a carrier registered after open reaches the buffer | ✅ — filter chords stay the five builtins: a plugin's contribution declares no chord (the WIT has no field for one), so deriving them from contributions would change nothing; the footer label does come from the source |
 | IC.5 | `.txt` maps to `text`; stale comments (`options.rs`, TUI `App::apply`, `completion.rs` "stub", `source.rs` module doc) (finding 5) | test: a `.txt` buffer gets the `text` source set | ✅ |
 | IC.6 | Auto-trigger, opt-in (§4.2): `completion.auto_trigger` (default `false`) + per-language override, trigger chars (sources' and LSP's `triggerCharacters`), identifier threshold `completion.min_chars` (default 2); `rust`'s per-language default stops forcing it on (finding 8) | tests: off by default; on → trigger char and threshold open it; the typed char lands first; bench: per-keystroke cost with auto-trigger on | ✅ |
-| IC.7 | `:describe-buffer` lists the buffer's completion sources: each one's id, priority, whether its language enables it, and the condition it answers under (LSP: a server attached; paths: inside a string) | test: the section names every active source, and a disabled one as disabled | 📝 |
+| IC.7 | `:describe-buffer` lists the buffer's completion sources: each one's id, priority, whether its language enables it, and the condition it answers under (LSP: a server attached; paths: inside a string) | test: the section names every active source, and a disabled one as disabled | ✅ |
 | IC.8 | Rank indices into `raw` instead of cloning each candidate twice (into `ScoredCandidate`, then `RenderedCandidate`) — the bulk of the re-rank's cost per keystroke (benchmarks.md, IC.3: 554 µs at 2000 rows); `ScoredCandidate` is shared with the picker | bench: the IC.3 rows drop; picker benches unchanged or better | 📝 |

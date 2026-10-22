@@ -413,6 +413,7 @@ macro_rules! peer_conformance_tests {
             auto_trigger_opens_once_the_word_is_long_enough,
             a_trigger_character_opens_the_sources_that_declared_it,
             a_language_can_turn_auto_trigger_on_alone,
+            describe_buffer_lists_the_completion_sources,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

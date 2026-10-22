@@ -215,7 +215,11 @@ repository calls on a tag push:
 		push:
 			tags: ["v*"]
 	jobs:
+		ci:
+			uses: ./.github/workflows/ci.yml
+			secrets: inherit
 		release:
+			needs: ci
 			uses: dhruvasagar/lattice/.github/workflows/plugin-release.yml@<ref>
 
 It checks out the tag; refuses unless the tag equals `Cargo.toml`'s version;
@@ -223,6 +227,12 @@ builds `wasm32-wasip2` with clang available (org's grammar); refuses an empty
 artefact; reads the API generation from the build's locked `lattice-wit`;
 packs, hashes and attaches both files to a GitHub release whose body is the
 tag message.
+
+`needs: ci` gates it on the plugin's own CI, run against the tagged commit.
+This workflow cannot see that CI — it belongs to the plugin — so the caller
+joins the two; otherwise the tag push and the branch push run unconnected
+and a release can publish beside a red build. Lattice gates its own releases
+the same way (`release-pipeline.md`).
 
 Its build step is the core-plugin job's recipe in `release.yml`. The two stay
 one recipe — a script both call — because two copies of "how a plugin is built

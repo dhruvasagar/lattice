@@ -147,7 +147,7 @@ fn register_plugins() {
     plugin_manager::require_release(&ReleaseSpec {
         name: "org".to_string(),
         repo: "dhruvasagar/lattice-org-plugin".to_string(),
-        version: Some("v0.2.0".to_string()), // or None: the newest
+        version: Some("v0.1.2".to_string()), // or None: the newest
         sha256: None,
         enable_mode: None,
     });
@@ -158,7 +158,7 @@ fn register_plugins() {
 |---|---|
 | `name` | The plugin's id. The release must carry a plugin of that id, and it installs into `plugins/<name>/`. |
 | `repo` | The GitHub repository, `owner/name`. |
-| `version` | A release tag (`"v0.2.0"`), or `None` for the newest release built for your editor. |
+| `version` | A release tag (`"v0.1.2"`), or `None` for the newest release built for your editor. |
 | `sha256` | Optional. The exact bytes you expect, as a hex SHA-256 — see below. |
 | `enable_mode` | A minor mode to switch on once it loads, or `None`. A plugin whose mode activates by file type (org's is a major mode) needs none. |
 
@@ -175,7 +175,7 @@ fails leaves the version you had installed and loading.
 | `version` | First install | At startup | `:plugin-update <name>` |
 |---|---|---|---|
 | `None` | The newest release that is not a draft or prerelease and has a build for your editor | Keeps what is installed; no network | Looks for a newer release and installs it; offline, keeps what you have |
-| `Some("v0.2.0")` | That release | Keeps what is installed; no network | Declines — *"pinned to release v0.2.0; change its `version` in init.rs"* |
+| `Some("v0.1.2")` | That release | Keeps what is installed; no network | Declines — *"pinned to release v0.1.2; change its `version` in init.rs"* |
 
 `u` on the plugin's row in `:plugins` is `:plugin-update`; `U` and
 `:plugin-update-all` update every plugin, skipping pinned ones. To move a
@@ -187,7 +187,7 @@ release's `.sha256` file (its first word) — together with a pinned
 `version`, since every new release has a new digest:
 
 ```rust
-version: Some("v0.2.0".to_string()),
+version: Some("v0.1.2".to_string()),
 sha256: Some("3f0c…".to_string()), // from org-0.2.0-api0.3.wasm.sha256
 ```
 
@@ -213,7 +213,7 @@ plugin_manager::require(&PluginSpec {
     name: "org".to_string(),
     source: PluginSource::Git(GitSource {
         url: "https://github.com/dhruvasagar/lattice-org-plugin".to_string(),
-        rev: Some("v0.2.0".to_string()), // a tag or commit; None: the default branch
+        rev: Some("v0.1.2".to_string()), // a tag or commit; None: the default branch
     }),
     enable_mode: None,
     pinned: false,
@@ -238,7 +238,7 @@ plugins directory, which lattice loads at every start. To remove it, delete
 the call, then `:plugin-unload <name>` and `:plugin-clean!` (`:plugin-clean`
 first lists what it would delete).
 
-`:plugins` shows where each plugin came from: `release owner/name@v0.2.0`,
+`:plugins` shows where each plugin came from: `release owner/name@v0.1.2`,
 `git@abc1234`, `local`.
 
 ---

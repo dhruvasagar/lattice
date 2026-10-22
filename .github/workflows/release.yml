@@ -375,9 +375,24 @@ jobs:
           path: dist
           if-no-files-found: error
 
+  # A release goes out green or not at all. The tag push starts this workflow
+  # and the push to main starts `ci` separately, and nothing joined them:
+  # v0.9.11 was published while main's CI on the very same commit was red.
+  # So the whole CI runs here, against the tagged commit, and `publish` needs
+  # it. It runs beside `dist` — shorter than it — so a release takes no
+  # longer; only the publishing waits.
+  #
+  # Waiting on the push's own CI run instead was rejected: that run is
+  # cancelled by any newer push to main (concurrency), and a tag on a commit
+  # that never had a run would have nothing to wait for.
+  ci:
+    name: ci
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
   publish:
     name: publish
-    needs: [prepare, dist]
+    needs: [prepare, dist, ci]
     runs-on: ubuntu-latest
     permissions:
       contents: write       # upload to the release

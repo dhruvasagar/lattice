@@ -8,10 +8,23 @@
 #     push:
 #       tags: ['v*']
 #   jobs:
+#     ci:
+#       uses: ./.github/workflows/ci.yml   # the plugin's own CI, with
+#       secrets: inherit                   # `workflow_call:` among its triggers
 #     release:
+#       needs: ci
 #       uses: dhruvasagar/lattice/.github/workflows/plugin-release.yml@main
 #       permissions:
 #         contents: write
+#
+# `needs: ci` is what makes a release go out green or not at all. This
+# workflow cannot see the plugin's CI — it is the plugin's, not lattice's —
+# so the caller runs it against the tagged commit and gates on it. Without
+# it, the tag push and the main push run unconnected and the release can
+# publish before (or despite) a red build. A CI with a concurrency group
+# keyed on `github.workflow` needs a fixed prefix too: called from here,
+# that is the CALLER's name, and the shared group deadlocks (see lattice's
+# own `ci.yml`).
 #
 # It checks the tag is the crate's version, builds the plugin with lattice's
 # `scripts/build-plugin.sh` — the same recipe the loader's round-trip test

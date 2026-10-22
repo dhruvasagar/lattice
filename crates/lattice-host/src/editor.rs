@@ -2315,6 +2315,12 @@ pub struct Editor {
     pub pending_insert_completion_async_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_completion::AsyncCompletionOutcome>>,
     pub pending_insert_completion_async_token: Option<CancellationToken>,
+    /// IC.2: how many of the current round's async sources have not
+    /// answered yet. The round is over at zero, and only then may an empty
+    /// popup close: before this, the FIRST outcome ended the round, so an
+    /// empty source answering quickly closed the popup and every later
+    /// outcome — LSP's, typically — was dropped.
+    pub pending_insert_completion_async_remaining: usize,
     pub pending_completion_resolve_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
     pub pending_completion_resolve_token: Option<CancellationToken>,

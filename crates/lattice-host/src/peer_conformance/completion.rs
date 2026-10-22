@@ -278,12 +278,13 @@ pub fn ctrl_space_completes_from_a_background_source<P: PeerUnderTest>() {
 }
 
 /// An in-process language server answering `textDocument/completion` with
-/// `items`, over a pipe — nothing is spawned. Its runtime is returned so it
-/// outlives the scenario's keys.
+/// `items` after `delay`, over a pipe — nothing is spawned. Its runtime is
+/// returned so it outlives the scenario's keys.
 fn attach_mock_lsp<P: PeerUnderTest>(
     peer: &mut P,
     path: &Path,
     items: &[&str],
+    delay: Duration,
 ) -> tokio::runtime::Runtime {
     use lattice_lsp::{LspReader, LspWriter, Message, Response};
 
@@ -320,6 +321,7 @@ fn attach_mock_lsp<P: PeerUnderTest>(
                             "serverInfo": { "name": "conformance-mock" }
                         }),
                         "textDocument/completion" => {
+                            tokio::time::sleep(delay).await;
                             serde_json::json!({ "isIncomplete": false, "items": items })
                         }
                         _ => serde_json::Value::Null,
@@ -382,7 +384,7 @@ pub fn ctrl_space_completes_from_a_language_server<P: PeerUnderTest>() {
     std::fs::write(&path, "fn main() {}\n").expect("write");
     let mut peer = boot::<P>("\n");
     open(&mut peer, &path);
-    let _server = attach_mock_lsp(&mut peer, &path, &["lsp_only_item"]);
+    let _server = attach_mock_lsp(&mut peer, &path, &["lsp_only_item"], Duration::ZERO);
 
     press(&mut peer, "Golsp<C-Space>");
     let id = lattice_completion::LSP_COMPLETION_SOURCE_ID;
@@ -391,4 +393,81 @@ pub fn ctrl_space_completes_from_a_language_server<P: PeerUnderTest>() {
         "language server: {:?}",
         rendered(&peer)
     );
+}
+
+/// A file with a language server, for the round scenarios: nothing in it
+/// matches `qz`, so the popup's rows can only come from the server.
+fn open_with_slow_server<P: PeerUnderTest>(
+    tag: &str,
+    items: &[&str],
+) -> (P, tokio::runtime::Runtime) {
+    let dir = temp_dir(tag);
+    let path = dir.join("main.rs");
+    std::fs::write(&path, "fn main() {}\n").expect("write");
+    let mut peer = boot::<P>("\n");
+    open(&mut peer, &path);
+    let server = attach_mock_lsp(&mut peer, &path, items, Duration::from_millis(300));
+    (peer, server)
+}
+
+/// IC.2: a slow source's rows land after a fast one answered empty.
+///
+/// The round used to end at the FIRST answer. An empty source answering at
+/// once — org's carrier does, in every non-org buffer — left an empty popup
+/// that the drain closed, and the language server's rows were then dropped.
+pub fn a_slow_source_lands_after_an_empty_one_answered<P: PeerUnderTest>() {
+    let (mut peer, _server) = open_with_slow_server::<P>("slow-after-empty", &["qz_lsp_item"]);
+    activate(
+        &mut peer,
+        ListSourceMode(Arc::new(ListSource {
+            id: "gen:conformance-list",
+            items: Vec::new(),
+        })),
+    );
+
+    press(&mut peer, "Goqz<C-Space>");
+    let lsp = lattice_completion::LSP_COMPLETION_SOURCE_ID;
+    assert!(
+        settle(&mut peer, |p| shows(p, "qz_lsp_item", lsp)),
+        "the server's rows were dropped: {:?}",
+        rendered(&peer)
+    );
+}
+
+/// IC.2: typing while a source is still answering keeps its rows.
+///
+/// The after-typing refresh closed an empty popup whether or not a source
+/// was pending, so typing during a slow server's reply lost the reply.
+pub fn typing_while_a_source_answers_keeps_its_rows<P: PeerUnderTest>() {
+    let (mut peer, _server) = open_with_slow_server::<P>("typing-while-pending", &["qzx_lsp_item"]);
+
+    press(&mut peer, "Goqz<C-Space>x");
+    let lsp = lattice_completion::LSP_COMPLETION_SOURCE_ID;
+    assert!(
+        settle(&mut peer, |p| shows(p, "qzx_lsp_item", lsp)),
+        "the server's rows were dropped: {:?}",
+        rendered(&peer)
+    );
+}
+
+/// IC.2: when every source answers empty, the popup closes and says so —
+/// as it does when nothing was pending at open. It used to vanish without
+/// a word.
+pub fn an_empty_round_says_no_completions<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    activate(
+        &mut peer,
+        ListSourceMode(Arc::new(ListSource {
+            id: "gen:conformance-list",
+            items: Vec::new(),
+        })),
+    );
+
+    press(&mut peer, "iqz<C-Space>");
+    assert!(
+        settle(&mut peer, |p| p.editor().insert_completion.is_none()),
+        "the popup closes once every source answered empty"
+    );
+    let message = peer.editor().last_message.as_ref().map(|m| m.text.clone());
+    assert_eq!(message.as_deref(), Some("no completions"));
 }

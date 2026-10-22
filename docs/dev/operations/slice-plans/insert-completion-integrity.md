@@ -49,7 +49,7 @@ every source's tests call `do_completion_trigger()` directly. An audit
 | Slice | What | Gate | Status |
 |---|---|---|---|
 | IC.1 | End-to-end: a real `<C-Space>` through each renderer's dispatch, per source — buffer words, tree-sitter, path, snippet, LSP (in-process mock server via `attach_handle`), an async non-LSP source | each source's candidate is in the popup the key opened | ✅ |
-| IC.2 | A round is not over until every source has answered: the popup stays while any is pending, "no completions" only when all answered empty, the after-edit refresh does not close mid-round (finding 1) | test: an empty async source landing before LSP fails without the fix | 📝 |
+| IC.2 | A round is not over until every source has answered: the popup stays while any is pending, "no completions" only when all answered empty, the after-edit refresh does not close mid-round (finding 1) | test: an empty async source landing before LSP fails without the fix | ✅ |
 | IC.3 | One match / rank / dedup path for open, refresh and drain; the bonus reads every source's priority (contribution default, option override); the drain honours the filter (findings 2, 3, 4) | tests per finding, each failing without the fix; bench: refilter cost per keystroke | 📝 |
 | IC.4 | Plugin source identity: the host stamps the spec id on plugin rows; popup label and filter chord come from the contribution; policy minors registered late activate on open buffers (findings 6, 7) | tests: unstamped rows replaced not accumulated; a carrier registered after open reaches the buffer | 📝 |
 | IC.5 | `.txt` maps to `text`; stale comments (`options.rs`, TUI `App::apply`, `completion.rs` "stub", `source.rs` module doc) (finding 5) | test: a `.txt` buffer gets the `text` source set | 📝 |

@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **Completion no longer loses a slow source's results.** A completion
+  round ended at the first source to answer, so a source that answered
+  empty at once — org's, in any non-org file — could close the popup before
+  your language server replied, and the server's suggestions never
+  appeared. Typing while a source was still answering lost its results the
+  same way. The popup now waits for every source, and when all of them
+  come back empty it says "no completions" instead of vanishing.
 - **`]f` / `[f` in magit-status jump out of an expanded diff.** With a file's
   diff open under it (`=`), `]f` from inside the diff stepped through its
   indented lines of code one at a time instead of moving to the next entry.

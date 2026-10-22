@@ -13004,6 +13004,8 @@ impl Editor {
         // Resolved before the `&mut` borrow of `insert_completion`: it reads
         // `buffer_locals`, and the two borrows would otherwise overlap.
         let phrase_sources = self.completion_sources_accept_non_word_query();
+        // IC.2: a source still answering may yet match what was typed.
+        let round_pending = self.pending_insert_completion_async_remaining > 0;
         let Some(state) = self.insert_completion.as_mut() else {
             return;
         };
@@ -13089,8 +13091,10 @@ impl Editor {
             state.selected = state.rendered.len().saturating_sub(1);
         }
         // If nothing matches, close the popup -- unless the last LSP
-        // response said `isIncomplete`, in which case we re-fire LSP.
-        if state.rendered.is_empty() && !was_incomplete {
+        // response said `isIncomplete`, in which case we re-fire LSP, or a
+        // source of this round has not answered yet (IC.2): closing then
+        // dropped its rows when they landed.
+        if state.rendered.is_empty() && !was_incomplete && !round_pending {
             self.insert_completion = None;
             return;
         }
@@ -19140,7 +19144,24 @@ impl Editor {
         if outcomes.is_empty() {
             return;
         }
-        self.pending_insert_completion_async_token = None;
+        // IC.2: count the round down BEFORE looking for a popup, so a round
+        // always finishes — even one whose popup the user has closed.
+        for outcome in &outcomes {
+            match outcome {
+                lattice_completion::AsyncCompletionOutcome::Nothing => {
+                    self.pending_insert_completion_async_remaining = 0;
+                }
+                lattice_completion::AsyncCompletionOutcome::Items { .. } => {
+                    self.pending_insert_completion_async_remaining = self
+                        .pending_insert_completion_async_remaining
+                        .saturating_sub(1);
+                }
+            }
+        }
+        let round_over = self.pending_insert_completion_async_remaining == 0;
+        if round_over {
+            self.pending_insert_completion_async_token = None;
+        }
         let Some(state) = self.insert_completion.as_mut() else {
             return;
         };
@@ -19215,8 +19236,15 @@ impl Editor {
         if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
             state.selected = state.rendered.len() - 1;
         }
-        if state.rendered.is_empty() {
+        // IC.2: empty is final only once every source has answered. A
+        // manual trigger says so, as it does when nothing is pending at
+        // open; before, the popup vanished without a word.
+        if state.rendered.is_empty() && round_over {
+            let manual = matches!(state.trigger, lattice_completion::CompletionTrigger::Manual);
             self.insert_completion = None;
+            if manual {
+                self.set_message(EchoLevel::Info, "no completions");
+            }
         }
     }
 
@@ -34278,9 +34306,13 @@ impl Editor {
             // clears the "loading…" state instead of leaving the popup
             // waiting on a round that will never answer.
             self.pending_insert_completion_async_token = None;
+            self.pending_insert_completion_async_remaining = 0;
             let _ = tx.send(lattice_completion::AsyncCompletionOutcome::Nothing);
             return;
         }
+        // IC.2: the round is over when every source has answered, not when
+        // the first one has.
+        self.pending_insert_completion_async_remaining = sources.len();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_insert_completion_async_token = Some(token.clone());
         // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).

@@ -358,6 +358,15 @@ Coalescing the run on a tick (rather than per-receive) keeps
 the renderer from thrashing during a flurry of source pushes
 (e.g. tree-sitter walk emitting 100 symbols at once).
 
+**A round ends when every source has answered**, not when the
+first one has. The aggregator counts the async sources a round
+started and counts each answer off; an empty popup may close only
+at zero, and a manually triggered one then says "no completions".
+Typing while a source is still answering re-filters but does not
+close the popup either. Ending at the first answer let an empty
+source that answered quickly close the popup and drop every later
+answer — LSP's, typically (IC.2).
+
 ### 3.8 Completion-popup minor mode
 
 While the popup is open, lattice activates a transient

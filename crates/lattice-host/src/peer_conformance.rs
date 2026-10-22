@@ -409,6 +409,10 @@ macro_rules! peer_conformance_tests {
             a_background_sources_rows_carry_its_own_id,
             a_source_registered_after_the_buffer_opened_completes_there,
             a_text_file_completes_from_its_plain_text_sources,
+            typing_does_not_open_completion_by_default,
+            auto_trigger_opens_once_the_word_is_long_enough,
+            a_trigger_character_opens_the_sources_that_declared_it,
+            a_language_can_turn_auto_trigger_on_alone,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

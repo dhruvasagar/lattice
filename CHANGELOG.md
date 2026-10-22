@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+- **Completion can open by itself as you type.** `:set
+  completion.auto_trigger` opens the popup once the word before the
+  cursor is `completion.min_chars` (2) characters long, or on a character
+  a source declares as its trigger — `.` after an object asks your
+  language server, not every word in the buffer. Off by default:
+  completion still opens when you press `<C-Space>`. Markdown and plain
+  text stay manual even with it on, and `[completion.per-language.<lang>]
+  auto_trigger = true` turns it on for one language alone.
+
 ### Fixed
 - **Plain-text files complete from their own sources.** `.txt` files
   were meant to complete from snippets and buffer words only, like

@@ -13024,9 +13024,13 @@ impl Editor {
         if let Some(spec) = self.pending_block_insert.as_mut() {
             spec.live_edits = spec.live_edits.saturating_add(1);
         }
-        // Insert-mode completion live-refresh.
+        // Insert-mode completion live-refresh; or, with the popup closed,
+        // IC.6's automatic open — single typed characters only, so paste,
+        // snippet expansion and dot-repeat never open it.
         if self.insert_completion.is_some() {
             self.maybe_refresh_insert_completion_after_edit(out);
+        } else if matches!(self.modal, ModalState::Insert) && s.chars().count() == 1 {
+            self.maybe_auto_trigger_completion(s.chars().next().unwrap_or('\0'));
         }
         // SignatureHelp + OnTypeFormatting trigger autopilots fire
         // only for single-character inserts in Insert mode. Paste /
@@ -34122,6 +34126,17 @@ impl Editor {
     /// `<C-Space>` -- manual trigger / refresh of the insert-
     /// completion popup. Phase 5.8.AD.4.
     pub fn do_completion_trigger(&mut self) {
+        self.open_insert_completion(None);
+    }
+
+    /// Open (or re-open) the Insert-mode completion popup at the cursor.
+    ///
+    /// `requested` is `None` for a manual trigger (`<C-Space>`), which keeps
+    /// an open popup's trigger and says "no completions" when nothing
+    /// answers; `Some` for an automatic open (IC.6) — a trigger character or
+    /// the identifier threshold — which closes quietly when nothing does.
+    fn open_insert_completion(&mut self, requested: Option<lattice_completion::CompletionTrigger>) {
+        let manual = requested.is_none();
         if !matches!(self.modal, lattice_grammar::ModalState::Insert) {
             return;
         }
@@ -34166,7 +34181,9 @@ impl Editor {
             .get(start..cursor_byte.min(line_text.len()))
             .unwrap_or("")
             .to_string();
-        let trigger = if self.insert_completion.is_some() {
+        let trigger = if let Some(requested) = requested {
+            requested
+        } else if self.insert_completion.is_some() {
             self.insert_completion
                 .as_ref()
                 .map(|s| s.trigger.clone())
@@ -34191,9 +34208,101 @@ impl Editor {
             && let Some(state) = self.insert_completion.as_ref()
             && state.rendered.is_empty()
         {
-            self.set_message(EchoLevel::Info, "no completions");
+            if manual {
+                self.set_message(EchoLevel::Info, "no completions");
+            }
             self.insert_completion = None;
         }
+    }
+
+    /// IC.6: with `completion.auto_trigger` on for this buffer's language,
+    /// open the popup after the single character `c` was typed: on a
+    /// character an active source declares as its trigger, or once the word
+    /// before the cursor is `completion.min_chars` long.
+    fn maybe_auto_trigger_completion(&mut self, c: char) {
+        let language = self.active_language_id();
+        if !self.auto_trigger_for(&language) {
+            return;
+        }
+        let lsp_chars = self.lsp_completion_trigger_chars();
+        let declared = self
+            .buffer_locals
+            .get(&self.document_buffer_id)
+            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
+            .is_some_and(|active| {
+                active.0.iter().any(|contribution| {
+                    contribution_answers_trigger_char(contribution, c, &lsp_chars)
+                })
+            });
+        if declared {
+            self.open_insert_completion(Some(lattice_completion::CompletionTrigger::TriggerChar(
+                c,
+            )));
+            return;
+        }
+        if !c.is_ascii() || !is_word_char_byte(c as u8) {
+            return;
+        }
+        let min_chars = (*self
+            .config
+            .get_typed::<lattice_config::CompletionMinChars>()
+            .expect("CompletionMinChars"))
+        .max(1) as usize;
+        let line = self
+            .document
+            .snapshot()
+            .buffer
+            .line(self.cursor.line)
+            .unwrap_or_default();
+        let before = line
+            .as_bytes()
+            .get(..self.cursor.byte as usize)
+            .unwrap_or_default();
+        let word_len = before
+            .iter()
+            .rev()
+            .take_while(|b| is_word_char_byte(**b))
+            .count();
+        if word_len >= min_chars {
+            self.open_insert_completion(Some(
+                lattice_completion::CompletionTrigger::IdentifierThreshold,
+            ));
+        }
+    }
+
+    /// Whether `language` opens completion by itself: its per-language
+    /// `auto_trigger`, else `completion.auto_trigger`. Read on every typed
+    /// character, so it does not build the whole effective config.
+    fn auto_trigger_for(&self, language: &str) -> bool {
+        self.per_language_completion
+            .get(language)
+            .and_then(|o| o.auto_trigger)
+            .unwrap_or_else(|| {
+                *self
+                    .config
+                    .get_typed::<lattice_config::CompletionAutoTrigger>()
+                    .expect("CompletionAutoTrigger")
+            })
+    }
+
+    /// The completion trigger characters of every language server attached
+    /// to the active document, when `lsp-completion-mode` is on for it.
+    fn lsp_completion_trigger_chars(&self) -> Vec<char> {
+        if !self.lsp_completion_mode_enabled_for(self.document_buffer_id) {
+            return Vec::new();
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return Vec::new();
+        };
+        let mut chars: Vec<char> = Vec::new();
+        for handle in self.lsp.servers_for(uri) {
+            for c in handle.capabilities().completion_trigger_chars() {
+                if !chars.contains(&c) {
+                    chars.push(c);
+                }
+            }
+        }
+        chars
     }
 
     /// `<C-Space>` (or auto-trigger) -- run the **async completion
@@ -34248,6 +34357,7 @@ impl Editor {
         // LSP's own preconditions, resolved once. `None` ⇒ LSP sits this
         // round out; the rest of the fan-out is unaffected.
         let lsp_ctx = self.lsp_completion_round_context();
+        let lsp_trigger_chars = self.lsp_completion_trigger_chars();
         let uri_string = lsp_ctx.as_ref().map(|(uri, _)| uri.clone());
         let lsp_position = lsp_ctx.as_ref().map(|(_, pos)| *pos);
 
@@ -34265,6 +34375,7 @@ impl Editor {
                 active
                     .0
                     .iter()
+                    .filter(|c| source_joins_round(c, &trigger, &lsp_trigger_chars))
                     .filter_map(|c| match &c.kind {
                         lattice_completion::CompletionSourceKind::Async(src) => {
                             Some((c.id.clone(), src.clone()))
@@ -34546,7 +34657,7 @@ impl Editor {
         let overrides = self.per_language_completion.get(language);
         EffectiveCompletionConfig {
             sources: overrides.and_then(|o| o.sources.clone()),
-            auto_trigger: overrides.and_then(|o| o.auto_trigger).unwrap_or(false),
+            auto_trigger: self.auto_trigger_for(language),
             auto_insert_single: overrides
                 .and_then(|o| o.auto_insert_single)
                 .unwrap_or_else(|| self.completion_auto_insert_single()),
@@ -34722,6 +34833,9 @@ impl Editor {
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
         {
             for contribution in &active_sources.0 {
+                if !source_joins_round(contribution, trigger, &[]) {
+                    continue;
+                }
                 if !effective.source_enabled(&contribution.id) {
                     continue;
                 }
@@ -44779,6 +44893,36 @@ pub fn prefer_aliases_for_command_candidates(
         c.match_ranges = new_ranges;
         true
     });
+}
+
+/// IC.6: whether a source takes part in a completion round opened by
+/// `trigger`. A manual open (or an `isIncomplete` refresh) asks every
+/// source; the identifier threshold asks the sources that opt into
+/// automatic opening; a trigger character asks the sources that declared
+/// it — a language server's characters come from its capabilities, so
+/// they are passed in.
+fn source_joins_round(
+    contribution: &lattice_completion::CompletionSourceContribution,
+    trigger: &lattice_completion::CompletionTrigger,
+    lsp_trigger_chars: &[char],
+) -> bool {
+    match trigger {
+        lattice_completion::CompletionTrigger::IdentifierThreshold => contribution.auto_trigger,
+        lattice_completion::CompletionTrigger::TriggerChar(c) => {
+            contribution_answers_trigger_char(contribution, *c, lsp_trigger_chars)
+        }
+        _ => true,
+    }
+}
+
+fn contribution_answers_trigger_char(
+    contribution: &lattice_completion::CompletionSourceContribution,
+    c: char,
+    lsp_trigger_chars: &[char],
+) -> bool {
+    contribution.trigger_chars.contains(&c)
+        || (contribution.id.as_str() == lattice_completion::LSP_COMPLETION_SOURCE_ID
+            && lsp_trigger_chars.contains(&c))
 }
 
 /// 5.5.G.23.insert-prep: cross-source visual dedup for the

@@ -746,3 +746,145 @@ pub fn a_text_file_completes_from_its_plain_text_sources<P: PeerUnderTest>() {
         "a source outside the plain-text set stays out: {rows:?}"
     );
 }
+
+// ── IC.6: automatic opening, opt-in (insert-completion.md §4.2) ─────────────
+
+fn popup_open<P: PeerUnderTest>(peer: &P) -> bool {
+    peer.editor().insert_completion.is_some()
+}
+
+fn line<P: PeerUnderTest>(peer: &P, n: usize) -> String {
+    super::text(peer)
+        .lines()
+        .nth(n)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// IC.6: completion opens only when asked, out of the box.
+pub fn typing_does_not_open_completion_by_default<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("alphabet\n");
+    press(&mut peer, "Goalph");
+    assert!(!popup_open(&peer), "manual is the default");
+}
+
+/// IC.6: with `completion.auto_trigger` on, the popup opens once the word
+/// reaches `completion.min_chars` (2) — and the typed character is in the
+/// buffer first.
+pub fn auto_trigger_opens_once_the_word_is_long_enough<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("alphabet\n");
+    press(&mut peer, ":set completion.auto_trigger<CR>");
+
+    press(&mut peer, "Goa");
+    assert!(!popup_open(&peer), "one character is below the threshold");
+    press(&mut peer, "l");
+    assert_eq!(line(&peer, 1), "al", "the typed characters landed");
+    assert!(
+        shows(&peer, "alphabet", lattice_completion::BufferWordsSource::ID),
+        "two characters open it: {:?}",
+        rendered(&peer)
+    );
+}
+
+/// A background source that declares a trigger character.
+#[derive(Debug)]
+struct TriggerSource;
+
+impl lattice_completion::AsyncCompletionSource for TriggerSource {
+    fn produce_async(
+        &self,
+        _ctx: lattice_completion::InsertContextSnapshot,
+        sink: Arc<dyn lattice_completion::CandidateSink>,
+        _token: lattice_protocol::CancellationToken,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            sink.push(lattice_completion::RawCandidate::plain(
+                "after_dot".to_string(),
+                lattice_completion::CandidateKind::Plain,
+            ));
+        })
+    }
+}
+
+struct TriggerSourceMode;
+
+impl lattice_mode::Mode for TriggerSourceMode {
+    type Guard = ();
+    fn id(&self) -> lattice_mode::ModeId {
+        lattice_mode::ModeId::new("conformance-trigger-source-mode")
+    }
+    fn kind(&self) -> lattice_mode::ModeKind {
+        lattice_mode::ModeKind::Minor
+    }
+    fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
+        vec![lattice_completion::CompletionSourceContribution {
+            accepts_non_word_query: false,
+            id: lattice_completion::SourceId::new("gen:conformance-trigger"),
+            default_priority: 100,
+            auto_trigger: true,
+            trigger_chars: vec!['.'],
+            popup_filter_chord: None,
+            kind: lattice_completion::CompletionSourceKind::Async(Arc::new(TriggerSource)),
+        }]
+    }
+    fn on_activate(
+        &self,
+        _ctx: lattice_mode::ModeContext,
+    ) -> lattice_mode::LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// IC.6: a trigger character opens the popup with the sources that
+/// declared it — not every buffer word, which an empty query would list.
+pub fn a_trigger_character_opens_the_sources_that_declared_it<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("alphabet\n");
+    activate(&mut peer, TriggerSourceMode);
+    press(&mut peer, ":set completion.auto_trigger<CR>");
+
+    press(&mut peer, "Gox.");
+    assert_eq!(line(&peer, 1), "x.", "the trigger character landed");
+    assert!(
+        settle(&mut peer, |p| shows(
+            p,
+            "after_dot",
+            "gen:conformance-trigger"
+        )),
+        "the declaring source answers: {:?}",
+        rendered(&peer)
+    );
+    assert!(
+        !rendered(&peer)
+            .iter()
+            .any(|(_, s)| s == lattice_completion::BufferWordsSource::ID),
+        "buffer words did not declare `.`: {:?}",
+        rendered(&peer)
+    );
+}
+
+/// IC.6: a language can turn automatic opening on by itself — the global
+/// option stays off, and other buffers stay manual.
+pub fn a_language_can_turn_auto_trigger_on_alone<P: PeerUnderTest>() {
+    let dir = temp_dir("auto-per-language");
+    let path = dir.join("main.rs");
+    std::fs::write(&path, "fn compute_total() {}\n").expect("write");
+    let mut peer = boot::<P>("compute\n");
+    peer.editor_mut().per_language_completion.insert(
+        "rust".to_string(),
+        lattice_completion::PerLanguageOverrides {
+            auto_trigger: Some(true),
+            ..Default::default()
+        },
+    );
+
+    press(&mut peer, "Goco");
+    assert!(!popup_open(&peer), "a buffer with no language stays manual");
+    press(&mut peer, "<Esc>");
+
+    open(&mut peer, &path);
+    press(&mut peer, "Goco");
+    assert!(
+        popup_open(&peer),
+        "Rust, which turned it on, opens automatically"
+    );
+}

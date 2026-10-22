@@ -489,6 +489,18 @@ Auto-trigger can be enabled per-language via
 users who want noise-free prose typing but live completion
 in code buffers.
 
+**Shipped defaults** (decided 2026-10-22): `completion.auto_trigger`
+is `false` and `completion.min_chars` is 2; Markdown and plain text
+set `auto_trigger = false` so prose stays manual even with the
+global option on; no code language sets it, so code follows the
+global option. The `rust` block in §9's example `lattice.toml` is
+what a user would write, not a default. Only single-character
+inserts in Insert mode open the popup — paste, snippet expansion
+and dot-repeat insert many characters at once and do not. A
+trigger character opens the popup with the sources that declared
+it (a language server's `triggerCharacters` included), not every
+source: an empty query would otherwise list every buffer word.
+
 ### 4.3 Once-open behaviour
 
 The popup, once open, stays open across non-trigger chars and

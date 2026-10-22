@@ -657,17 +657,23 @@ pub fn per_language_defaults() -> std::collections::HashMap<String, PerLanguageO
             ..Default::default()
         },
     );
+    // Prose stays manual even with `completion.auto_trigger` on: a popup
+    // after every two letters of English is noise.
     m.insert(
         "text".into(),
         PerLanguageOverrides {
             sources: Some(prose_sources),
+            auto_trigger: Some(false),
             ..Default::default()
         },
     );
+    // No code language forces `auto_trigger` on: completion is manual by
+    // default (decided 2026-10-22), and a user turns it on globally or per
+    // language. Rust used to ship with it on — from the design's example
+    // `lattice.toml` — which had no effect only because nothing read it.
     m.insert(
         "rust".into(),
         PerLanguageOverrides {
-            auto_trigger: Some(true),
             auto_insert_single: Some(true),
             ..Default::default()
         },
@@ -1231,8 +1237,13 @@ mod tests {
             "markdown drops LSP per spec",
         );
         let rust = m.get("rust").expect("rust default");
-        assert_eq!(rust.auto_trigger, Some(true));
+        assert_eq!(
+            rust.auto_trigger, None,
+            "no code language forces auto-trigger; it inherits the global option"
+        );
         assert_eq!(rust.auto_insert_single, Some(true));
+        let text = m.get("text").expect("text default");
+        assert_eq!(text.auto_trigger, Some(false), "prose stays manual");
     }
 
     #[test]

@@ -11,6 +11,11 @@
 //! priority, the five builtins from options and any other from its
 //! contribution — a lookup per candidate.
 //!
+//! IC.6 adds what an AUTOMATIC open costs. With `completion.auto_trigger`
+//! on, a keystroke that does not open the popup adds a map lookup and an
+//! option read; one that does pays a whole open — every sync source, buffer
+//! words walking the document — which is what `open/<lines>` measures.
+//!
 //! Run:
 //!
 //!   cargo bench -p lattice-host --bench insert_completion
@@ -69,5 +74,43 @@ fn refilter(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, refilter);
+/// A document of `lines` lines of distinct words, in Insert mode, the
+/// cursor after `al` on a fresh last line — where an automatic open fires.
+fn editor_typing_al(lines: usize) -> Editor {
+    let mut text = String::new();
+    for i in 0..lines {
+        text.push_str(&format!("alpha_{i} beta_{i} gamma_{i} delta_{i}\n"));
+    }
+    text.push_str("al");
+    let mut editor = Editor::boot(Document::from_text(text));
+    // What a peer does once at start: activate the document's modes
+    // (completion's among them), then let the minor cascade run.
+    let _ = editor.activate_buffer_state();
+    let _ = editor.run_tick_pending();
+    editor.modal = lattice_grammar::ModalState::Insert;
+    editor.cursor = Position::new(lines as u32, 2);
+    editor
+}
+
+fn open(c: &mut Criterion) {
+    let mut group = c.benchmark_group("insert_completion_open");
+    for lines in [100usize, 1_000, 10_000] {
+        let mut editor = editor_typing_al(lines);
+        editor.do_completion_trigger();
+        assert!(
+            editor.insert_completion.is_some(),
+            "precondition: the popup opens over {lines} lines"
+        );
+        group.bench_with_input(BenchmarkId::from_parameter(lines), &lines, |b, _| {
+            b.iter(|| {
+                editor.insert_completion = None;
+                editor.do_completion_trigger();
+                black_box(editor.insert_completion.as_ref().map(|s| s.rendered.len()))
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, refilter, open);
 criterion_main!(benches);

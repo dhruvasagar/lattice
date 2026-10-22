@@ -36,21 +36,16 @@ list, ranked together.
 
 ## Triggering
 
-Three paths open the popup:
+`<C-Space>` in Insert mode opens the popup. That is the
+default: completion opens when you ask.
 
-- `<C-x><C-o>` — vim's omni-completion chord. Vim-native
-  muscle memory.
-- `<C-Space>` — modern-editor muscle memory (VS Code, IntelliJ,
-  Helix).
-- Smart-tab — `<Tab>` triggers completion when the cursor is
-  right after a word character; `<Tab>` inserts a literal
-  tab when the cursor is on whitespace or at line start.
-  (Phase 4.2.g.5.)
-
-All three resolve to the same `cmd:completion-trigger`
-ex-command. Manual trigger is the default; auto-trigger as
-you type is opt-in via `:set completion.auto_trigger=true`
-(coming with 4.2.g.5).
+`:set completion.auto_trigger` opens it as you type instead:
+once the word before the cursor is `completion.min_chars` (2)
+characters long, or on a character a source declares as its
+trigger — `.` for a language server, say, which then asks only
+the sources that declared it. Markdown and plain text stay
+manual even with it on; turn it on for one language with
+`[completion.per-language.<lang>] auto_trigger = true`.
 
 ## Navigating the popup
 
@@ -368,17 +363,12 @@ prose typing.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `completion.auto_trigger` | bool | `false` | Open the popup automatically as you type. (4.2.g.5) |
-| `completion.min_chars` | int | `2` | Identifier-threshold characters before auto-trigger fires. |
-| `completion.debounce_ms` | int | `50` | Per-keystroke debounce for refilter passes. |
-| `completion.docs_auto` | bool | `false` | Auto-show docs popup on selection change. (4.2.g.3) |
+| `completion.auto_trigger` | bool | `false` | Open the popup automatically as you type. |
+| `completion.min_chars` | int | `2` | With `auto_trigger`, how many characters of a word open the popup. |
 | `completion.extra_commit_chars` | string | `""` | Editor-side commit characters unioned with each LSP server's per-item `commitCharacters`. Typing one of these while the popup is open accepts the focused candidate then inserts the character (e.g. `:set completion.extra_commit_chars=.,;` to accept on `.`, `,`, or `;` globally). (4.2.g.7) |
 | `completion.ghost_text` | bool | `false` | Render the top-ranked candidate's suffix as a dimmed inline overlay after the cursor while the popup is open. Off by default; flip on for vscode-style preview. Only fires when the cursor is at end-of-line and the top candidate is a case-insensitive prefix of the typed query. Suppressed in path-completion mode (filenames are already shown in full). (4.2.g.7) |
 | `completion.auto_insert_single` | bool | `true` | Auto-accept when only one candidate matches. |
-| `completion.fuzzy_threshold` | int | `5` | Minimum match score to render. |
-| `completion.suppress_in` | string list | `[]` | Tree-sitter scopes where completion is suppressed (e.g. `["string", "comment"]`). |
-| `completion.source.<id>.enabled` | bool | `true` | Toggle a source on/off. |
-| `completion.source.<id>.priority` | int | source-default | Per-source ranker priority. |
+| `completion.source.<name>.priority` | int | source-default | Ranker priority of `lsp`, `snippet`, `buffer-words`, `path` or `tree-sitter`. A plugin's source ranks by the priority it declares. |
 
 See `:help completion-options` for the full list with
 explanations and examples (`:help` topic auto-rendered from
@@ -397,8 +387,8 @@ at startup.
 | Language | `sources` | `auto_trigger` | `auto_insert_single` |
 |---|---|---|---|
 | `markdown` | `snippet`, `buffer-words` (no LSP for prose) | `false` | inherits global |
-| `text` | `snippet`, `buffer-words` | inherits | inherits |
-| `rust` | inherits (all enabled sources) | `true` | `true` |
+| `text` | `snippet`, `buffer-words` | `false` | inherits |
+| `rust` | inherits (all enabled sources) | inherits | `true` |
 
 Other languages inherit every global option.
 
@@ -426,14 +416,15 @@ sources = ["lsp", "snippet"]    # LSP-led; skip noisy buffer words
   contributes. Sources outside this list short-circuit at
   emit time, so an LSP-disabled language never even fires
   the `textDocument/completion` request.
-- **`auto_trigger`** (`bool`) — whether typing identifier
-  characters opens the popup automatically. Plumbed today;
-  the auto-fire feature itself lands in a future slice.
+- **`auto_trigger`** (`bool`) — whether typing opens the popup
+  automatically in this language. Inherits the global
+  `completion.auto_trigger` when unset.
 - **`auto_insert_single`** (`bool`) — whether the popup
   auto-accepts when only one candidate matches. Inherits
   the global `completion.auto_insert_single` when unset.
 - **`suppress_in`** (`string[]`) — tree-sitter scopes where
   the popup should not fire (e.g. `["string", "comment"]`).
+  Parsed, not yet applied.
   Plumbed today; scope-detect enforcement awaits the
   tree-sitter scope-query slice.
 

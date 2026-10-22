@@ -71,6 +71,25 @@ target rather than just a slower number.
 
 ---
 
+## IC.6 — what an automatic completion open costs (2026-10-22)
+
+With `completion.auto_trigger` on, a keystroke that does not open the
+popup adds a map lookup and an option read. One that does pays a whole
+open — every sync source, buffer words walking the document. Bench:
+`insert_completion_open/<lines>` in
+`crates/lattice-host/benches/insert_completion.rs`, typing `al` on the last
+line of a document of distinct words.
+
+| Document | Open |
+|---|---|
+| 100 lines | 62.3 µs |
+| 1 000 lines | 59.6 µs |
+| 10 000 lines | 72.3 µs |
+
+Flat in the document's size — buffer words caps its own walk — at about
+60–70 µs, paid once per word that reaches `completion.min_chars`, not per
+keystroke. Typing on in an open popup is the re-rank below.
+
 ## IC.3 — re-ranking an open completion popup (2026-10-22)
 
 `refilter_insert_completion` is the one match / rank / dedup path: the

@@ -202,6 +202,14 @@ fn validate_terminal_scrollback_lines(i: &i64) -> Result<(), String> {
     }
 }
 
+fn validate_completion_min_chars(i: &i64) -> Result<(), String> {
+    if (1..=32).contains(i) {
+        Ok(())
+    } else {
+        Err(format!("min_chars out of range [1, 32]: {i}"))
+    }
+}
+
 fn validate_completion_priority(i: &i64) -> Result<(), String> {
     if (0..=9999).contains(i) {
         Ok(())
@@ -669,6 +677,21 @@ crate::options! {
     /// to always require an explicit confirm.
     #[name("completion.auto_insert_single")]
     pub CompletionAutoInsertSingle: bool = true;
+
+    /// Open the completion popup by itself while typing in Insert mode:
+    /// once the word before the cursor is `completion.min_chars` long, or
+    /// on a character a source declares as its trigger (`.` for a
+    /// language server, say). Off by default — completion opens when you
+    /// ask (`<C-Space>`). `[completion.per-language.<lang>] auto_trigger`
+    /// turns it on or off for one language.
+    #[name("completion.auto_trigger")]
+    pub CompletionAutoTrigger: bool = false;
+
+    /// With `completion.auto_trigger`, how many characters of a word open
+    /// the popup.
+    #[name("completion.min_chars")]
+    #[validate(validate_completion_min_chars)]
+    pub CompletionMinChars: i64 = 2;
 
     /// Priority bucket for the `gen:lsp-completion` insert-mode
     /// completion source. Higher numbers float that source's items

@@ -29509,6 +29509,9 @@ impl Editor {
             Some("json") => "json".into(),
             Some("sh") => "shellscript".into(),
             Some("lua") => "lua".into(),
+            // IC.5: the plain-text defaults (`per_language_defaults`) are
+            // keyed `text`; `.txt` fell through as `txt` and never met them.
+            Some("txt") => "text".into(),
             Some(other) => other.to_string(),
             None => String::new(),
         }

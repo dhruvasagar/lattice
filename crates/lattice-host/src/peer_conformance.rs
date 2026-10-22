@@ -408,6 +408,7 @@ macro_rules! peer_conformance_tests {
             every_source_keeps_its_priority,
             a_background_sources_rows_carry_its_own_id,
             a_source_registered_after_the_buffer_opened_completes_there,
+            a_text_file_completes_from_its_plain_text_sources,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

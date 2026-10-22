@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Fixed
+- **Plain-text files complete from their own sources.** `.txt` files
+  were meant to complete from snippets and buffer words only, like
+  Markdown, but the setting never matched them, so every source — a
+  plugin's included — contributed.
 - **A plugin's completion source reaches files that were already open.**
   A completion plugin (org-roam's link targets) that finished loading after
   a file was open — as files given on the command line always are — never

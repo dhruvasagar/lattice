@@ -704,3 +704,45 @@ pub fn a_source_registered_after_the_buffer_opened_completes_there<P: PeerUnderT
         rendered(&peer)
     );
 }
+
+/// IC.5: a `.txt` file completes from its plain-text sources only —
+/// snippets and buffer words, as `per_language_defaults` says for `text`.
+///
+/// The defaults are keyed `text` and a `.txt` file's language came back as
+/// `txt`, so they never applied: every source contributed, a plugin's
+/// included.
+pub fn a_text_file_completes_from_its_plain_text_sources<P: PeerUnderTest>() {
+    let dir = temp_dir("plain-text");
+    let path = dir.join("notes.txt");
+    std::fs::write(&path, "alphabet\n").expect("write");
+    let mut peer = boot::<P>("\n");
+    // No syntax tree to wait for: plain text has no grammar.
+    press(&mut peer, &format!(":e {}<CR>", path.display()));
+    activate(
+        &mut peer,
+        ListSourceMode(Arc::new(ListSource {
+            id: "gen:conformance-list",
+            items: vec!["alpha_list"],
+            priority: 100,
+            rows_name: Some("gen:conformance-list"),
+        })),
+    );
+
+    press(&mut peer, "Goalp<C-Space>");
+    assert!(
+        settle(&mut peer, |p| p
+            .editor()
+            .pending_insert_completion_async_remaining
+            == 0),
+        "the round finishes"
+    );
+    let rows = rendered(&peer);
+    assert!(
+        rows.iter().any(|(t, _)| t == "alphabet"),
+        "buffer words complete: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|(_, s)| s == "gen:conformance-list"),
+        "a source outside the plain-text set stays out: {rows:?}"
+    );
+}

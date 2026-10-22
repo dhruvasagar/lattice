@@ -101,9 +101,9 @@ pub fn decode_meta(payload: &[u8]) -> Option<LspCompletionMeta> {
     serde_json::from_slice(payload).ok()
 }
 
-/// CSM.8a stub. Holds the supervisor handle so CSM.8b can move
-/// the fan-out into `produce_async` without changing the mode's
-/// public surface. Today the future is a no-op.
+/// The LSP completion source: `produce_async` fans the request out to
+/// every server attached to the buffer that supports completion, and
+/// marks the round incomplete when any server says `isIncomplete`.
 #[derive(Debug, Clone)]
 pub struct LspCompletionSource {
     pub lsp: LspSupervisorHandle,

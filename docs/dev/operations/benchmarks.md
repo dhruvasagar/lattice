@@ -71,6 +71,31 @@ target rather than just a slower number.
 
 ---
 
+## IC.3 — re-ranking an open completion popup (2026-10-22)
+
+`refilter_insert_completion` is the one match / rank / dedup path: the
+popup's open, every keystroke while it is open, and every async answer
+landing all run it over the popup's whole raw set, on the actor, inside the
+keystroke. Bench: `crates/lattice-host/benches/insert_completion.rs` —
+candidates spread over four sources (a plugin's among them); `it` matches
+every row, `item_01` about one in twenty.
+
+| Candidates | `it` (all match) | `item_01` (~5% match) |
+|---|---|---|
+| 200 | 58.6 µs | 50.6 µs |
+| 700 | 205 µs | 155 µs |
+| 2000 | 554 µs | 392 µs |
+
+Linear, about 0.28 µs a candidate. Resolving each source's priority once
+per re-rank instead of per candidate took 10–15% off (2000 rows: 650 →
+554 µs). What remains is matching and copying: each match clones its
+`RawCandidate` into a `ScoredCandidate` and again into a
+`RenderedCandidate`. A realistic popup — buffer words and symbols plus
+one server's capped 500 items — is 200–700 rows, 50–200 µs: within a frame,
+but a real share of a 0.7 ms keystroke. **Follow-up:** rank indices into
+`raw` instead of cloning candidates; it touches `ScoredCandidate`, which the
+picker shares, so it is its own slice.
+
 ## CG.6 — keyed supersede, per trigger (2026-10-20)
 
 `ForegroundCancel::begin` runs once per user-triggered task — a push, a

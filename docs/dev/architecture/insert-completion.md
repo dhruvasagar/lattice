@@ -331,8 +331,14 @@ final_score = base_score
 ```
 
 - `base_score`: from the matcher.
-- `per_source_priority`: from `AsyncCandidateGenerator::default_priority`,
-  overridable per-buffer.
+- `per_source_priority`: the five builtin sources read
+  `completion.source.<name>.priority`; any other source — a
+  plugin's — ranks by the `default_priority` its contribution
+  declares. One function computes it, and one path ranks: the
+  popup's open, every keystroke while it is open, and every async
+  answer landing all re-rank through it, honouring the popup's
+  source filter. (Three copies of this, each knowing a different
+  set of priorities and only one the filter, were IC.3's defect.)
 - `frequency_bonus`: 0–50, based on how many times the user
   has accepted this exact `(label, kind)` pair in the
   current session. In-memory only for v1; persisted later.

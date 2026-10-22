@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **Completion keeps its order and its filter.** Suggestions from
+  tree-sitter and paths sank to the bottom as soon as you typed or a
+  language server answered, and plugin sources (org-roam's link targets)
+  always ranked last whatever priority they declared. Narrowing the popup
+  to one source (`<C-b>`, `<C-o>`, …) was undone when a late answer
+  arrived. The popup now ranks the same way when it opens, as you type and
+  when results land, and a filter stays put.
 - **Completion no longer loses a slow source's results.** A completion
   round ended at the first source to answer, so a source that answered
   empty at once — org's, in any non-org file — could close the popup before

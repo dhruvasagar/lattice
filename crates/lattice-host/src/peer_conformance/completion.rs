@@ -188,6 +188,9 @@ pub fn ctrl_space_completes_from_snippets<P: PeerUnderTest>() {
 struct ListSource {
     id: &'static str,
     items: Vec<&'static str>,
+    /// The priority the source declares (`CompletionSourceContribution::
+    /// default_priority`), as a plugin's spec does.
+    priority: u32,
 }
 
 impl lattice_completion::AsyncCompletionSource for ListSource {
@@ -229,7 +232,7 @@ impl lattice_mode::Mode for ListSourceMode {
         vec![lattice_completion::CompletionSourceContribution {
             accepts_non_word_query: false,
             id: lattice_completion::SourceId::new(self.0.id),
-            default_priority: 100,
+            default_priority: self.0.priority,
             auto_trigger: false,
             trigger_chars: Vec::new(),
             popup_filter_chord: None,
@@ -266,6 +269,7 @@ pub fn ctrl_space_completes_from_a_background_source<P: PeerUnderTest>() {
         ListSourceMode(Arc::new(ListSource {
             id: "gen:conformance-list",
             items: vec!["asyncword"],
+            priority: 100,
         })),
     );
 
@@ -422,6 +426,7 @@ pub fn a_slow_source_lands_after_an_empty_one_answered<P: PeerUnderTest>() {
         ListSourceMode(Arc::new(ListSource {
             id: "gen:conformance-list",
             items: Vec::new(),
+            priority: 100,
         })),
     );
 
@@ -460,6 +465,7 @@ pub fn an_empty_round_says_no_completions<P: PeerUnderTest>() {
         ListSourceMode(Arc::new(ListSource {
             id: "gen:conformance-list",
             items: Vec::new(),
+            priority: 100,
         })),
     );
 
@@ -470,4 +476,90 @@ pub fn an_empty_round_says_no_completions<P: PeerUnderTest>() {
     );
     let message = peer.editor().last_message.as_ref().map(|m| m.text.clone());
     assert_eq!(message.as_deref(), Some("no completions"));
+}
+
+/// IC.3: a source filter survives a late answer.
+///
+/// `<C-b>` narrows the popup to buffer words. The drain re-ranked without the
+/// filter, so a server answering afterwards put its rows back under a footer
+/// still reading "buffer-words".
+pub fn a_source_filter_survives_a_late_answer<P: PeerUnderTest>() {
+    let dir = temp_dir("filter-late");
+    let path = dir.join("main.rs");
+    std::fs::write(&path, "fn main() { let qzalpha = 1; }\n").expect("write");
+    let mut peer = boot::<P>("\n");
+    open(&mut peer, &path);
+    let _server = attach_mock_lsp(
+        &mut peer,
+        &path,
+        &["qz_lsp_item"],
+        Duration::from_millis(300),
+    );
+
+    press(&mut peer, "Goqz<C-Space><C-b>");
+    assert!(
+        settle(&mut peer, |p| p
+            .editor()
+            .pending_insert_completion_async_remaining
+            == 0),
+        "the round finishes"
+    );
+    let words = lattice_completion::BufferWordsSource::ID;
+    let rows = rendered(&peer);
+    assert!(
+        !rows.is_empty() && rows.iter().all(|(_, s)| s == words),
+        "filtered to buffer words, the server's rows must stay out: {rows:?}"
+    );
+}
+
+/// IC.3: every source keeps its priority, at open, when a late answer lands,
+/// and after typing.
+///
+/// Three copies of the ranking knew different priorities: open knew five
+/// builtins, the drain and the after-typing refresh knew three, and none
+/// read a source's own declared priority — so a plugin source ranked 0, and
+/// tree-sitter dropped to 0 once anything landed or anyone typed.
+pub fn every_source_keeps_its_priority<P: PeerUnderTest>() {
+    let dir = temp_dir("priorities");
+    let path = dir.join("main.rs");
+    std::fs::write(&path, "fn qzts_def() {}\n").expect("write");
+    let mut peer = boot::<P>("\n");
+    open(&mut peer, &path);
+    // Just the two sources under test, so both rows are visible: buffer
+    // words would otherwise take `qzts_def`'s row.
+    peer.editor_mut().per_language_completion.insert(
+        "rust".to_string(),
+        lattice_completion::PerLanguageOverrides {
+            sources: Some(vec![
+                lattice_completion::SourceId::new(lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID),
+                lattice_completion::SourceId::new("gen:conformance-list"),
+            ]),
+            ..Default::default()
+        },
+    );
+    // Declares 100, above tree-sitter's 80; and sorts after it by text, so
+    // a tie would put it second.
+    activate(
+        &mut peer,
+        ListSourceMode(Arc::new(ListSource {
+            id: "gen:conformance-list",
+            items: vec!["qzzz_list"],
+            priority: 100,
+        })),
+    );
+    let order = |p: &P| rendered(p).into_iter().map(|(t, _)| t).collect::<Vec<_>>();
+    let expected = vec!["qzzz_list".to_string(), "qzts_def".to_string()];
+
+    press(&mut peer, "Goq<C-Space>");
+    assert!(
+        settle(&mut peer, |p| shows(p, "qzzz_list", "gen:conformance-list")),
+        "precondition: the source answered: {:?}",
+        rendered(&peer)
+    );
+    assert_eq!(order(&peer), expected, "after the answer landed");
+
+    // Both rows still match `qz`, so this is the after-typing refresh
+    // re-ranking the same two.
+    press(&mut peer, "z");
+    assert_eq!(order(&peer), expected, "after typing");
 }

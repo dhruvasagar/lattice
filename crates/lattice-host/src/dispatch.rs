@@ -13036,60 +13036,12 @@ impl Editor {
         state.query = query;
         state.cursor = self.cursor;
         let was_incomplete = state.lsp_incomplete;
-        let ranker = lattice_completion::InsertRanker::new();
-        let matcher = lattice_completion::FuzzyInsertMatcher::new();
-        let source_filter = state.source_filter.clone();
-        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
-            .raw
-            .iter()
-            .filter(|raw| match source_filter.as_ref() {
-                Some(id) => raw.source.as_ref() == Some(id),
-                None => true,
-            })
-            .filter_map(|raw| {
-                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
-                    |(score, ranges)| lattice_completion::ScoredCandidate {
-                        raw: raw.clone(),
-                        score,
-                        match_ranges: ranges,
-                    },
-                )
-            })
-            .collect();
-        // Disjoint-field borrows: `state` aliases
-        // `self.insert_completion` mutably, so the bonus closure
-        // captures `freq` / `config` through direct field refs.
-        let freq = &self.completion_accept_freq;
-        let config = &self.config;
-        ranker.rank_with_bonus(&mut scored, |raw| {
-            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
-                Some("gen:lsp-completion") => *config
-                    .get_typed::<lattice_config::CompletionSourceLspPriority>()
-                    .expect("CompletionSourceLspPriority"),
-                Some("gen:snippet") => *config
-                    .get_typed::<lattice_config::CompletionSourceSnippetPriority>()
-                    .expect("CompletionSourceSnippetPriority"),
-                Some("gen:buffer-words") => *config
-                    .get_typed::<lattice_config::CompletionSourceBufferWordsPriority>()
-                    .expect("CompletionSourceBufferWordsPriority"),
-                _ => 0,
-            }
-            .clamp(0, u32::MAX as i64) as u32;
-            let freq_bonus = freq
-                .get(&(raw.text.clone(), raw.kind))
-                .copied()
-                .unwrap_or(0)
-                .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
-            priority.saturating_add(freq_bonus)
-        });
-        state.rendered = scored
-            .into_iter()
-            .map(lattice_completion::RenderedCandidate::from_scored)
-            .collect();
-        dedup_rendered_by_text(&mut state.rendered);
-        if state.selected >= state.rendered.len() {
-            state.selected = state.rendered.len().saturating_sub(1);
-        }
+        // IC.3: the one ranking path — the filter, every source's priority.
+        // This used to be a copy that knew three priorities of five.
+        let mut taken = self.insert_completion.take().expect("checked above");
+        self.refilter_insert_completion(&mut taken);
+        self.insert_completion = Some(taken);
+        let state = self.insert_completion.as_mut().expect("just restored");
         // If nothing matches, close the popup -- unless the last LSP
         // response said `isIncomplete`, in which case we re-fire LSP, or a
         // source of this round has not answered yet (IC.2): closing then
@@ -19190,52 +19142,13 @@ impl Editor {
                 }
             }
         }
-        let matcher = lattice_completion::FuzzyInsertMatcher::new();
-        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
-            .raw
-            .iter()
-            .filter_map(|raw| {
-                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
-                    |(score, ranges)| lattice_completion::ScoredCandidate {
-                        raw: raw.clone(),
-                        score,
-                        match_ranges: ranges,
-                    },
-                )
-            })
-            .collect();
-        let ranker = lattice_completion::InsertRanker::new();
-        let freq = &self.completion_accept_freq;
-        let config = &self.config;
-        ranker.rank_with_bonus(&mut scored, |raw| {
-            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
-                Some("gen:lsp-completion") => *config
-                    .get_typed::<lattice_config::CompletionSourceLspPriority>()
-                    .expect("CompletionSourceLspPriority"),
-                Some("gen:snippet") => *config
-                    .get_typed::<lattice_config::CompletionSourceSnippetPriority>()
-                    .expect("CompletionSourceSnippetPriority"),
-                Some("gen:buffer-words") => *config
-                    .get_typed::<lattice_config::CompletionSourceBufferWordsPriority>()
-                    .expect("CompletionSourceBufferWordsPriority"),
-                _ => 0,
-            }
-            .clamp(0, u32::MAX as i64) as u32;
-            let freq_bonus = freq
-                .get(&(raw.text.clone(), raw.kind))
-                .copied()
-                .unwrap_or(0)
-                .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
-            priority.saturating_add(freq_bonus)
-        });
-        state.rendered = scored
-            .into_iter()
-            .map(lattice_completion::RenderedCandidate::from_scored)
-            .collect();
-        dedup_rendered_by_text(&mut state.rendered);
-        if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
-            state.selected = state.rendered.len() - 1;
-        }
+        // IC.3: the one ranking path. The copy here knew three priorities
+        // of five and no source filter, so a late answer undid `<C-b>` and
+        // sank tree-sitter's rows.
+        let mut taken = self.insert_completion.take().expect("checked above");
+        self.refilter_insert_completion(&mut taken);
+        self.insert_completion = Some(taken);
+        let state = self.insert_completion.as_mut().expect("just restored");
         // IC.2: empty is final only once every source has answered. A
         // manual trigger says so, as it does when nothing is pending at
         // open; before, the popup vanished without a word.
@@ -34596,26 +34509,24 @@ impl Editor {
                 .config
                 .get_typed::<CompletionSourcePathPriority>()
                 .expect("CompletionSourcePathPriority"),
-            _ => 0,
+            // IC.3: any other source ranks by the priority it declares — a
+            // plugin's spec says it. This was a flat 0, so every plugin
+            // source sank below every builtin.
+            _ => return self.declared_priority(source).unwrap_or(0),
         };
         raw.max(0) as u32
     }
 
-    /// Total ranker bonus for a candidate (per-source priority +
-    /// capped frequency lift). Phase 5.8.AD.4.
-    fn completion_total_bonus(&self, raw: &lattice_completion::RawCandidate) -> u32 {
-        let priority = raw
-            .source
-            .as_ref()
-            .map(|s| self.priority_for_source(s))
-            .unwrap_or(0);
-        let freq = self
-            .completion_accept_freq
-            .get(&(raw.text.clone(), raw.kind))
-            .copied()
-            .unwrap_or(0)
-            .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
-        priority.saturating_add(freq)
+    /// The `default_priority` the active buffer's contribution for `source`
+    /// declares, if one is active.
+    fn declared_priority(&self, source: &lattice_completion::SourceId) -> Option<u32> {
+        self.buffer_locals
+            .get(&self.document_buffer_id)?
+            .get::<lattice_mode::ActiveCompletionSources>()?
+            .0
+            .iter()
+            .find(|c| &c.id == source)
+            .map(|c| c.default_priority)
     }
 
     /// Re-run matcher + ranker over `state.raw` against the
@@ -34643,8 +34554,36 @@ impl Editor {
                 )
             })
             .collect();
+        // Each source's priority, resolved once per re-rank rather than per
+        // candidate: a popup holds a handful of sources and hundreds of rows,
+        // and this runs on every keystroke while it is open (IC.3 bench).
+        let mut priorities: Vec<(&lattice_completion::SourceId, u32)> = Vec::new();
+        for source in state.raw.iter().filter_map(|raw| raw.source.as_ref()) {
+            if !priorities.iter().any(|(id, _)| *id == source) {
+                priorities.push((source, self.priority_for_source(source)));
+            }
+        }
+        let freq = &self.completion_accept_freq;
         let ranker = lattice_completion::InsertRanker::new();
-        ranker.rank_with_bonus(&mut scored, |raw| self.completion_total_bonus(raw));
+        ranker.rank_with_bonus(&mut scored, |raw| {
+            let priority = raw
+                .source
+                .as_ref()
+                .and_then(|s| priorities.iter().find(|(id, _)| *id == s))
+                .map(|(_, p)| *p)
+                .unwrap_or(0);
+            // Keyed by an owned `(String, kind)`, so a lookup clones the
+            // text; nothing to find until something has been accepted.
+            let freq_bonus = if freq.is_empty() {
+                0
+            } else {
+                freq.get(&(raw.text.clone(), raw.kind))
+                    .copied()
+                    .unwrap_or(0)
+                    .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP)
+            };
+            priority.saturating_add(freq_bonus)
+        });
         state.rendered = scored
             .into_iter()
             .map(lattice_completion::RenderedCandidate::from_scored)

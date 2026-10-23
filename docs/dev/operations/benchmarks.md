@@ -71,6 +71,28 @@ target rather than just a slower number.
 
 ---
 
+## SI.7 — snippet mirrors on the keystroke path (2026-10-23)
+
+A keystroke inside a placeholder with mirrors makes the `Document` copy
+the placeholder's text into each copy, in the same commit. Bench:
+`document_edit_p99_us::insert_into_linked_range/<copies>` in
+`crates/lattice-core/benches/document_hotpath.rs` — one character typed
+into a linked range in a 1 000-line document, its copies on the lines
+after.
+
+| Copies | Insert |
+|---|---|
+| 0 (tracked, not linked) | 2.14 µs |
+| 1 | 4.77 µs |
+| 3 | 7.81 µs |
+| 8 | 16.5 µs |
+
+About 2.5 µs a copy — each is a slice of the source range plus a rope
+edit and the tracked-set transform. Snippets rarely mirror a placeholder
+more than two or three times; even eight copies stay two orders of
+magnitude under a frame. Edits outside a linked range pay one
+`has_links` scan of the tracked set.
+
 ## SI.2 — tracked ranges on the keystroke path (2026-10-23)
 
 A snippet's placeholders are ranges the `Document` moves across every edit,

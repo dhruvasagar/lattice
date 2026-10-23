@@ -3741,6 +3741,7 @@ fn snapshot_from_composed_doc(
         dirty: doc.dirty(),
         selections,
         tracked_ranges: Default::default(),
+        linked_edits: None,
     }
 }
 
@@ -3785,6 +3786,7 @@ fn compose_snapshot(
         // `set_selections` (Document trait).
         selections,
         tracked_ranges: Default::default(),
+        linked_edits: None,
     }
 }
 

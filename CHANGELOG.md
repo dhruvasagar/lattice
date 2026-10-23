@@ -17,6 +17,10 @@
   auto_trigger = true` turns it on for one language alone.
 
 ### Fixed
+- **Repeated snippet placeholders update together.** In a snippet like
+  `let ${1:x} = $1;` the second `x` started empty and never followed
+  what you typed. Every copy now shows the placeholder's text and changes
+  as you type in any of them; one undo takes back the change everywhere.
 - **Multi-line snippets keep your indentation.** A snippet expanded
   inside a block put its second and later lines at column 0, and its
   indentation stayed tabs with `expandtab` on. Each line now starts at the

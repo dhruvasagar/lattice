@@ -195,12 +195,63 @@ fn insert_with_tracked_ranges(c: &mut Criterion) {
     g.finish();
 }
 
+/// A keystroke typed into a linked range (snippet-integrity SI.7: a
+/// placeholder with mirrors) in a 1k-line document: the document applies the
+/// edit and then copies the range's text into each of `copies` siblings.
+/// `copies = 0` is a linked-free insert with the same tracked set, the
+/// baseline the mirroring cost sits on.
+fn insert_into_linked_range(c: &mut Criterion) {
+    use lattice_core::tracked::{Stickiness, TrackedRangeChange, TrackedRangeId};
+    let mut g = c.benchmark_group("document_edit_p99_us::insert_into_linked_range");
+    for copies in [0usize, 1, 3, 8] {
+        g.throughput(Throughput::Elements(1));
+        g.bench_with_input(
+            BenchmarkId::from_parameter(copies),
+            &copies,
+            |bencher, &copies| {
+                bencher.iter_with_setup(
+                    || {
+                        let mut d = build_doc(1_000);
+                        // The source on line 500, its copies on the lines after.
+                        let ids: Vec<TrackedRangeId> =
+                            (0..=copies).map(|_| TrackedRangeId::next()).collect();
+                        let starts: Vec<usize> = (0..=copies)
+                            .map(|i| {
+                                d.buffer()
+                                    .position_to_byte(Position::new(500 + i as u32, 5))
+                                    .unwrap()
+                            })
+                            .collect();
+                        d.update_tracked_ranges(|t| {
+                            for (id, at) in ids.iter().zip(&starts) {
+                                t.insert(*id, *at..*at + 3, Stickiness::GrowsAtEdges);
+                            }
+                            if copies > 0 {
+                                t.apply(TrackedRangeChange::Link(ids.clone()));
+                            }
+                        });
+                        let held = std::sync::Arc::clone(d.tracked_ranges());
+                        (d, held)
+                    },
+                    |(mut d, held)| {
+                        d.apply_edit(Edit::insert(black_box(Position::new(500, 6)), "x"))
+                            .unwrap();
+                        black_box(held);
+                    },
+                );
+            },
+        );
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     viewport_walk,
     insert_at_middle,
     delete_at_middle,
     set_selections_motion,
-    insert_with_tracked_ranges
+    insert_with_tracked_ranges,
+    insert_into_linked_range
 );
 criterion_main!(benches);

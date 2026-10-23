@@ -154,6 +154,14 @@ impl ActiveSnippet {
                 is_choice: false,
             });
         }
+        // Every occurrence of a `$N` is linked: typing in one is copied
+        // into the others by the document itself (SI.7), whatever made the
+        // edit, and in the same undo entry.
+        for group in &groups {
+            if group.ranges.len() > 1 {
+                changes.push(TrackedRangeChange::Link(group.ranges.clone()));
+            }
+        }
         let active = Self {
             extent,
             groups,

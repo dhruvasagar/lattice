@@ -534,3 +534,41 @@ pub fn without_expandtab_a_snippet_indents_with_tabs<P: PeerUnderTest>() {
 
     assert_eq!(text(&peer), "{\n\tif cond {\n\t\t\n\t}\n}\n");
 }
+
+// ---- SI.7: mirrors ----
+
+/// Every copy of a placeholder shows its default, and the first is selected.
+pub fn mirrors_show_the_placeholder_text<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(&mut peer, "conformance-let", "zzlet", "let ${1:x} = $1;");
+
+    press(&mut peer, "izzlet<C-x><C-s>");
+
+    assert_eq!(text(&peer), "let x = x;\n");
+    assert_selects(&peer, "the first copy", 4, 5);
+}
+
+/// Typing in a placeholder updates its copies as you type, not on `<Tab>`.
+pub fn typing_in_a_placeholder_updates_its_mirrors<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(&mut peer, "conformance-let", "zzlet", "let ${1:x} = $1;");
+
+    press(&mut peer, "izzlet<C-x><C-s>v");
+    assert_eq!(text(&peer), "let v = v;\n", "the overtype is copied");
+
+    press(&mut peer, "al");
+    assert_eq!(text(&peer), "let val = val;\n", "and every key after it");
+}
+
+/// Typing in a later copy grows the earlier one too, and the cursor stays
+/// where the user is typing rather than where the text used to be.
+pub fn typing_in_a_later_copy_keeps_the_cursor_in_place<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(&mut peer, "conformance-eq", "zzeq", "${1:x} = $1");
+    press(&mut peer, "izzeq<C-x><C-s>a");
+    assert_eq!(text(&peer), "a = a\n", "precondition");
+
+    press(&mut peer, "<End>yz");
+
+    assert_eq!(text(&peer), "ayz = ayz\n");
+}

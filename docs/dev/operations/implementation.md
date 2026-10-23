@@ -1418,6 +1418,9 @@ overrides on a shared prefix; one path→language-id resolver
 snippet picker.
 **SI.6 ✅**: multi-line bodies follow the trigger line's indentation; the
 body's `\t` levels become the buffer's indent unit.
+**SI.7 ✅**: mirrors are linked tracked ranges the `Document` keeps equal
+as you type (same undo entry); the copies ride the snapshot as
+`linked_edits` and the host publishes them.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

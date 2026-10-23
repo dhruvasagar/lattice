@@ -958,6 +958,21 @@ being that span, is collapsed: the text it named is gone. Overtyping
 no live occurrence. A range exactly equal to the replaced span — the
 overtype of a selected default — becomes the new text instead.
 
+**Mirrors are linked ranges.** Every occurrence of a `$N` is tracked and
+the occurrences are *linked* into one group. When an edit lands inside a
+linked range, the `Document` copies that range's text into its siblings in
+the same commit and the same undo entry — so a typed character, a `cw`, a
+language server's edit all mirror alike, and one `u` takes back the edit
+with its copies. Undo and redo replay the recorded copies; they never
+mirror. The edit's caller gets its own `AppliedEdit` back unchanged; the
+copies are the commit's `linked_edits`, carried on the published snapshot,
+and the host's edit chokepoints (`apply_edit_blocking`, its batch peer,
+`handle_edits`) publish them to language servers, syntax and the renderer
+with the edit, and move the cursor across them (a copy earlier in the text
+shifts it). Mirrors render with their placeholder's text, so
+`$1 + $1 = ${1:two}` expands to `two + two = two`. The same primitive is
+what LSP linked editing (renaming a tag pair) needs.
+
 A document kind with no text of its own (the multibuffer) tracks nothing:
 its `update_tracked_ranges` resolves at once, its snapshot's set stays
 empty, and an expansion there stands as plain text.

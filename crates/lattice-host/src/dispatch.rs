@@ -22443,14 +22443,39 @@ impl Editor {
         if self.read_only_edit_rejected(&edit) {
             return Err(lattice_runtime::RuntimeError::ReadOnly);
         }
-        let result = block_on(self.document.apply_edit(edit));
-        if let Ok(applied) = result.as_ref() {
+        let mut result = block_on(self.document.apply_edit(edit));
+        if let Ok(applied) = result.as_mut() {
             // OWC: record the text version so the host knows it issued
             // this edit (not an owner write).
             let snap = self.document.snapshot();
             self.last_seen_text_version
                 .insert(self.document_buffer_id, snap.text_version);
-            self.publish_document_changed(std::slice::from_ref(applied));
+            // SI.7: an edit inside a linked range (a snippet mirror) was
+            // copied into its siblings by the document. Publish the copies
+            // with it, and hand callers the edit's range as it stands after
+            // them — they place the cursor at `inserted_range.end`, which a
+            // copy earlier in the text has moved.
+            match snap.linked_edits.as_deref() {
+                Some(linked) => {
+                    let mut all = Vec::with_capacity(linked.len() + 1);
+                    all.push(applied.clone());
+                    all.extend_from_slice(linked);
+                    self.publish_document_changed(&all);
+                    for copy in linked {
+                        applied.inserted_range = lattice_protocol::position::Range::new(
+                            lattice_core::buffer::transform_position(
+                                applied.inserted_range.start,
+                                copy,
+                            ),
+                            lattice_core::buffer::transform_position(
+                                applied.inserted_range.end,
+                                copy,
+                            ),
+                        );
+                    }
+                }
+                None => self.publish_document_changed(std::slice::from_ref(applied)),
+            }
             // MB.1: `self.document` is the `*command-line*` buffer while
             // the `:` line is open. This is the ONE place a `:` line edit
             // actually changes text (the buffer is the single source of
@@ -22517,7 +22542,15 @@ impl Editor {
             let snap = self.document.snapshot();
             self.last_seen_text_version
                 .insert(self.document_buffer_id, snap.text_version);
-            self.publish_document_changed(applied);
+            // SI.7: and the copies the document made into linked ranges.
+            match snap.linked_edits.as_deref() {
+                Some(linked) => {
+                    let mut all = applied.clone();
+                    all.extend_from_slice(linked);
+                    self.publish_document_changed(&all);
+                }
+                None => self.publish_document_changed(applied),
+            }
         }
         result
     }
@@ -22863,12 +22896,28 @@ impl Editor {
     ///   instead of falling back to full).
     /// - `visible_highlights` stays line- and byte-aligned via
     ///   `shift_highlights_for_edit`.
+    ///
+    /// SI.7: an operator edit inside a linked range (a snippet mirror) was
+    /// copied into its siblings by the document; the copies are published
+    /// too, and the cursor moved across them.
     pub fn handle_edits(&mut self, edits: &[lattice_core::buffer::AppliedEdit]) {
         if let Some(first) = edits.first() {
             self.cursor = first.original_range.start;
         }
-        if !edits.is_empty() {
-            self.publish_document_changed(edits);
+        if edits.is_empty() {
+            return;
+        }
+        let snap = self.document.snapshot();
+        match snap.linked_edits.as_deref() {
+            Some(linked) => {
+                let mut all = edits.to_vec();
+                all.extend_from_slice(linked);
+                self.publish_document_changed(&all);
+                for copy in linked {
+                    self.cursor = lattice_core::buffer::transform_position(self.cursor, copy);
+                }
+            }
+            None => self.publish_document_changed(edits),
         }
     }
 

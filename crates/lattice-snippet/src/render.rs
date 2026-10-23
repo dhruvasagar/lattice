@@ -144,7 +144,9 @@ impl RenderedSnippet {
 pub fn render(body: &SnippetBody, vars: &VariableContext) -> RenderedSnippet {
     let mut out = String::new();
     let mut tabstops: Vec<TabstopRange> = Vec::new();
-    walk(&body.tokens, vars, &mut out, &mut tabstops);
+    let mut defaults = BTreeMap::new();
+    collect_defaults(&body.tokens, &mut defaults);
+    walk(&body.tokens, vars, &defaults, &mut out, &mut tabstops);
     let exit_index = tabstops.iter().position(|t| t.index == 0);
     RenderedSnippet {
         text: out,
@@ -153,9 +155,44 @@ pub fn render(body: &SnippetBody, vars: &VariableContext) -> RenderedSnippet {
     }
 }
 
+/// What a mirror of `$N` shows: the text of the first placeholder or
+/// choice that gives `$N` one.
+enum MirrorText<'a> {
+    Body(&'a SnippetBody),
+    Text(&'a str),
+}
+
+/// The first default each tabstop index is given anywhere in the body
+/// (nested placeholders included), so its bare `$N` mirrors can show it:
+/// `$1 + $1 = ${1:two}` renders `two + two = two`, as in VS Code. Before
+/// snippet-integrity SI.7 the mirrors rendered empty.
+fn collect_defaults<'a>(tokens: &'a [SnippetToken], out: &mut BTreeMap<u32, MirrorText<'a>>) {
+    for token in tokens {
+        match token {
+            SnippetToken::Placeholder { idx, default } => {
+                if !default.is_empty() {
+                    out.entry(*idx).or_insert(MirrorText::Body(default));
+                }
+                collect_defaults(&default.tokens, out);
+            }
+            SnippetToken::Choice { idx, options } => {
+                if let Some(first) = options.first() {
+                    out.entry(*idx).or_insert(MirrorText::Text(&first.text));
+                }
+            }
+            SnippetToken::Variable {
+                default: Some(default),
+                ..
+            } => collect_defaults(&default.tokens, out),
+            _ => {}
+        }
+    }
+}
+
 fn walk(
     tokens: &[SnippetToken],
     vars: &VariableContext,
+    defaults: &BTreeMap<u32, MirrorText<'_>>,
     out: &mut String,
     tabstops: &mut Vec<TabstopRange>,
 ) {
@@ -165,17 +202,28 @@ fn walk(
                 out.push_str(s);
             }
             SnippetToken::Tabstop(idx) => {
+                // A mirror shows its placeholder's text — as plain text: the
+                // stops nested in that default belong to the placeholder,
+                // not to each copy of it.
                 let start = out.len();
+                match defaults.get(idx) {
+                    Some(MirrorText::Body(body)) => {
+                        walk(&body.tokens, vars, defaults, out, &mut Vec::new());
+                    }
+                    Some(MirrorText::Text(text)) => out.push_str(text),
+                    None => {}
+                }
+                let end = out.len();
                 tabstops.push(TabstopRange {
                     index: *idx,
-                    range: start..start,
-                    has_default: false,
+                    range: start..end,
+                    has_default: end > start,
                     is_choice: false,
                 });
             }
             SnippetToken::Placeholder { idx, default } => {
                 let start = out.len();
-                walk(&default.tokens, vars, out, tabstops);
+                walk(&default.tokens, vars, defaults, out, tabstops);
                 let end = out.len();
                 tabstops.push(TabstopRange {
                     index: *idx,
@@ -201,7 +249,7 @@ fn walk(
                 if let Some(value) = vars.resolve(name) {
                     out.push_str(&value);
                 } else if let Some(default) = default {
-                    walk(&default.tokens, vars, out, tabstops);
+                    walk(&default.tokens, vars, defaults, out, tabstops);
                 }
                 // else: variable unknown + no default -> emit
                 // nothing. Matches VS Code behaviour.
@@ -270,6 +318,18 @@ mod reindent_tests {
         let r = rendered("a\n$1\nb").reindented("  ", "  ");
         assert_eq!(r.text, "a\n  \n  b");
         assert_eq!(r.tabstops[0].range, 4..4, "the stop is after the indent");
+    }
+
+    /// SI.7: a bare `$N` mirror shows its placeholder's text, wherever the
+    /// placeholder is, and is a stop of its own range.
+    #[test]
+    fn mirrors_show_their_placeholders_text() {
+        let r = rendered("$1 + $1 = ${1:two}");
+        assert_eq!(r.text, "two + two = two");
+        assert_eq!(stops(&r), vec![(1, "two"), (1, "two"), (1, "two")]);
+        assert!(r.tabstops.iter().all(|t| t.has_default));
+        let r = rendered("${1|yes,no|} or $1");
+        assert_eq!(r.text, "yes or yes");
     }
 
     #[test]

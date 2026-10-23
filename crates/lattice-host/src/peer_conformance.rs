@@ -440,6 +440,9 @@ macro_rules! peer_conformance_tests {
             a_ruby_file_expands_ruby_snippets,
             a_multi_line_snippet_follows_the_lines_indentation,
             without_expandtab_a_snippet_indents_with_tabs,
+            mirrors_show_the_placeholder_text,
+            typing_in_a_placeholder_updates_its_mirrors,
+            typing_in_a_later_copy_keeps_the_cursor_in_place,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

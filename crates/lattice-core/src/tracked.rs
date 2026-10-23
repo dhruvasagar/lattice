@@ -14,6 +14,10 @@
 //! and the rest not to, so typing at the boundary between `${1:a}${2:b}` lands
 //! in the placeholder the user is in.
 //!
+//! Ranges can be **linked** into a group: an edit inside one is copied into the
+//! others by the document, in the same undo entry (snippet mirrors, `$1 … $1`;
+//! later LSP linked editing). See `Document::apply_edit`.
+//!
 //! A range lying wholly inside a span that an edit replaced, without being that
 //! span, is **collapsed**: the text it named is gone. It stays in the set,
 //! flagged, so its owner can tell "deleted" from "never tracked"; a snippet
@@ -61,6 +65,9 @@ pub struct TrackedRange {
     /// than the range. A collapsed range keeps moving with later edits but
     /// no longer names anything.
     pub collapsed: bool,
+    /// The linked group the range belongs to, if any: an edit inside it is
+    /// copied into every other live range of the group.
+    pub link: Option<u64>,
 }
 
 impl TrackedRange {
@@ -145,6 +152,8 @@ pub enum TrackedRangeChange {
     },
     /// Stop tracking `id` ([`TrackedRanges::remove`]).
     Untrack(TrackedRangeId),
+    /// Link these ranges into one group ([`TrackedRanges::link`]).
+    Link(Vec<TrackedRangeId>),
     /// Change how `id` treats text typed at its edges
     /// ([`TrackedRanges::set_stickiness`]).
     Restick {
@@ -192,8 +201,57 @@ impl TrackedRanges {
                 end,
                 stickiness,
                 collapsed: false,
+                link: None,
             },
         );
+    }
+
+    /// Link `ids` into one group: from now on an edit inside any of them is
+    /// copied into the others. Unknown ids are skipped; fewer than two known
+    /// ids link nothing.
+    pub fn link(&mut self, ids: &[TrackedRangeId]) {
+        let known: Vec<TrackedRangeId> = ids
+            .iter()
+            .copied()
+            .filter(|id| self.ranges.contains_key(id))
+            .collect();
+        let Some(group) = known.first().map(|id| id.0) else {
+            return;
+        };
+        if known.len() < 2 {
+            return;
+        }
+        for id in known {
+            if let Some(r) = self.ranges.get_mut(&id) {
+                r.link = Some(group);
+            }
+        }
+    }
+
+    /// Whether any range is linked — the document skips mirroring entirely
+    /// when none is.
+    pub fn has_links(&self) -> bool {
+        self.ranges.values().any(|r| r.link.is_some())
+    }
+
+    /// The live linked range an edit landed in, if any: the edit's
+    /// replacement (`start_byte..new_end_byte`, post-edit) lies within it.
+    /// Returns the range's id and its group.
+    pub fn linked_source(&self, delta: &EditDelta) -> Option<(TrackedRangeId, u64)> {
+        let (s, e) = (delta.start_byte as usize, delta.new_end_byte as usize);
+        self.ranges.iter().find_map(|(id, r)| {
+            let group = r.link?;
+            (!r.collapsed && r.start <= s && e <= r.end).then_some((*id, group))
+        })
+    }
+
+    /// The live ranges of `group` other than `except`.
+    pub fn linked_siblings(&self, group: u64, except: TrackedRangeId) -> Vec<TrackedRangeId> {
+        self.ranges
+            .iter()
+            .filter(|(id, r)| **id != except && r.link == Some(group) && !r.collapsed)
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// Stop tracking `id`. A no-op for an unknown id.
@@ -223,6 +281,7 @@ impl TrackedRanges {
                 stickiness,
             } => self.insert(id, bytes, stickiness),
             TrackedRangeChange::Untrack(id) => self.remove(id),
+            TrackedRangeChange::Link(ids) => self.link(&ids),
             TrackedRangeChange::Restick { id, stickiness } => self.set_stickiness(id, stickiness),
         }
     }
@@ -258,6 +317,7 @@ mod tests {
             end,
             stickiness,
             collapsed: false,
+            link: None,
         }
     }
 
@@ -371,5 +431,40 @@ mod tests {
         let id = TrackedRangeId::next();
         set.insert(id, std::ops::Range { start: 9, end: 3 }, N);
         assert_eq!(set.get(id).map(|r| r.bytes()), Some(3..9));
+    }
+
+    #[test]
+    fn linked_ranges_name_the_source_an_edit_landed_in_and_its_siblings() {
+        let mut set = TrackedRanges::default();
+        let (a, b, c) = (
+            TrackedRangeId::next(),
+            TrackedRangeId::next(),
+            TrackedRangeId::next(),
+        );
+        set.insert(a, 0..3, G);
+        set.insert(b, 6..9, G);
+        set.insert(c, 12..14, N);
+        assert!(!set.has_links());
+        set.apply(TrackedRangeChange::Link(vec![a, b]));
+        assert!(set.has_links());
+        // A one-byte insert inside `b`, already applied: 7..8 post-edit.
+        let group = set.get(a).and_then(|r| r.link).expect("linked");
+        let hit = set.linked_source(&edit(7, 7, 1));
+        assert_eq!(hit, Some((b, group)));
+        assert_eq!(set.linked_siblings(group, b), vec![a]);
+        assert_eq!(
+            set.linked_source(&edit(13, 13, 1)),
+            None,
+            "`c` is not linked"
+        );
+    }
+
+    #[test]
+    fn linking_one_known_range_links_nothing() {
+        let mut set = TrackedRanges::default();
+        let a = TrackedRangeId::next();
+        set.insert(a, 0..3, G);
+        set.link(&[a, TrackedRangeId::next()]);
+        assert!(!set.has_links());
     }
 }

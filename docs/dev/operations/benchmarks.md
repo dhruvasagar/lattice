@@ -71,6 +71,26 @@ target rather than just a slower number.
 
 ---
 
+## SI.2 — tracked ranges on the keystroke path (2026-10-23)
+
+A snippet's placeholders are ranges the `Document` moves across every edit,
+in the same loop as its selections. Bench:
+`document_edit_p99_us::insert_with_tracked_ranges/<n>` in
+`crates/lattice-core/benches/document_hotpath.rs` — one character inserted
+in a 1 000-line document with `n` ranges tracked after it, holding a clone
+of the set as the actor's last-published snapshot does (so the edit also
+copies the set).
+
+| Ranges tracked | Insert |
+|---|---|
+| 0 (no snippet) | 2.14 µs |
+| 8 (a typical snippet) | 2.17 µs |
+| 64 | 2.64 µs |
+
+`insert_at_middle/1000`, the same edit before tracked ranges existed:
+1.98 µs. With nothing tracked the set is not touched (an `is_empty` check);
+a snippet's handful of ranges is ~30 ns a keystroke.
+
 ## IC.6 — what an automatic completion open costs (2026-10-22)
 
 With `completion.auto_trigger` on, a keystroke that does not open the

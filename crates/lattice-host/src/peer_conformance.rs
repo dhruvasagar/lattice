@@ -421,6 +421,10 @@ macro_rules! peer_conformance_tests {
             typing_over_a_placeholder_replaces_its_default,
             tab_and_shift_tab_walk_the_placeholders,
             esc_leaves_the_snippet,
+            typing_in_a_placeholder_then_tab_lands_on_the_next,
+            a_newline_in_a_placeholder_moves_the_later_ones_down,
+            an_edit_above_the_snippet_moves_its_placeholders,
+            overtyping_a_placeholder_drops_the_ones_nested_in_it,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

@@ -17,6 +17,12 @@
   auto_trigger = true` turns it on for one language alone.
 
 ### Fixed
+- **`<Tab>` in a snippet goes to the next placeholder after you type in
+  one.** Typing in a placeholder, or any edit while a snippet was live —
+  a new line, a language server adding an import above — left the later
+  placeholders where they were when the snippet expanded, so `<Tab>`
+  selected the wrong text. Placeholders now move with the text, and
+  overtyping one removes the placeholders nested inside it.
 - **Plain-text files complete from their own sources.** `.txt` files
   were meant to complete from snippets and buffer words only, like
   Markdown, but the setting never matched them, so every source — a

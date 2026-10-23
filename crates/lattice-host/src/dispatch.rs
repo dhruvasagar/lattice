@@ -29578,8 +29578,9 @@ impl Editor {
             .buffer
             .position_to_byte(applied.inserted_range.start)
             .unwrap_or_default();
-        if !rendered.tabstops.is_empty() {
-            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
+        if !rendered.tabstops.is_empty()
+            && let Some(first) = self.start_snippet_session(&rendered, origin)
+        {
             // SN.3d.3: focus the first tabstop. A non-empty placeholder
             // default is SELECTED (charwise Select) so the next printable
             // key overtypes it — same UX as the `<Tab>` nav path
@@ -29589,36 +29590,60 @@ impl Editor {
             // would be invasive). An empty tabstop keeps the bare Insert
             // cursor.
             let mut entered_select = false;
-            if let Some(group) = active.focus_first()
-                && let Some(first) = group.ranges.first().cloned()
-            {
-                let buffer = self.document.snapshot().buffer.clone();
-                if let Ok(start) = buffer.byte_to_position(first.start) {
-                    if first.end > first.start
-                        && let Ok(head) = buffer.byte_to_position(first.end - 1)
-                    {
-                        self.set_selections_blocking(SelectionSet::single(Selection {
-                            anchor: start,
-                            head,
-                            visual: Some(VisualMode::Charwise),
-                        }));
-                        self.visual_anchor = Some(start);
-                        self.cursor = head;
-                        self.modal = ModalState::Select(VisualKind::Charwise);
-                        entered_select = true;
-                    }
-                    if !entered_select {
-                        self.cursor = start;
-                    }
+            let buffer = self.document.snapshot().buffer.clone();
+            if let Ok(start) = buffer.byte_to_position(first.start) {
+                if first.end > first.start
+                    && let Ok(head) = buffer.byte_to_position(first.end - 1)
+                {
+                    self.set_selections_blocking(SelectionSet::single(Selection {
+                        anchor: start,
+                        head,
+                        visual: Some(VisualMode::Charwise),
+                    }));
+                    self.visual_anchor = Some(start);
+                    self.cursor = head;
+                    self.modal = ModalState::Select(VisualKind::Charwise);
+                    entered_select = true;
+                }
+                if !entered_select {
+                    self.cursor = start;
                 }
             }
-            self.snippet_session.set(self.document_buffer_id, active);
             if !entered_select {
                 self.modal = ModalState::Insert;
             }
         } else {
             self.cursor = applied.inserted_range.end;
         }
+    }
+
+    /// Start a snippet session for `rendered`, whose text now starts at
+    /// byte `origin` of the active document: track its placeholders in the
+    /// document (snippet-integrity SI.2 — the document moves them across
+    /// every edit from here on) and install the session. Returns where the
+    /// first stop is now, or `None` when the document tracks nothing — a
+    /// kind without text of its own, such as the multibuffer — in which case
+    /// the expansion stands as plain text.
+    fn start_snippet_session(
+        &mut self,
+        rendered: &lattice_snippet::render::RenderedSnippet,
+        origin: usize,
+    ) -> Option<std::ops::Range<usize>> {
+        let (active, changes) = lattice_snippet::ActiveSnippet::from_render(rendered, origin);
+        if let Err(e) = block_on(self.document.update_tracked_ranges(changes)) {
+            tracing::debug!(error = ?e, "snippet: tracking placeholders failed; plain expansion");
+            return None;
+        }
+        let snapshot = self.document.snapshot();
+        let Some(first) = active
+            .current_group()
+            .and_then(|g| g.live_ranges(&snapshot.tracked_ranges).into_iter().next())
+        else {
+            tracing::debug!("snippet: the document tracks no ranges; plain expansion");
+            return None;
+        };
+        self.snippet_session.set(self.document_buffer_id, active);
+        Some(first)
     }
 
     /// SN.3c.1: host-owned snippet resolution + expansion for a
@@ -33940,19 +33965,17 @@ impl Editor {
             .buffer
             .position_to_byte(main_applied.inserted_range.start)
             .unwrap_or(0);
-        if !rendered.tabstops.is_empty() {
-            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
-            if let Some(group) = active.focus_first()
-                && let Some(first) = group.ranges.first()
-                && let Ok(pos) = self
-                    .document
-                    .snapshot()
-                    .buffer
-                    .byte_to_position(first.start)
+        if !rendered.tabstops.is_empty()
+            && let Some(first) = self.start_snippet_session(&rendered, origin)
+        {
+            if let Ok(pos) = self
+                .document
+                .snapshot()
+                .buffer
+                .byte_to_position(first.start)
             {
                 self.cursor = pos;
             }
-            self.snippet_session.set(self.document_buffer_id, active);
             self.modal = lattice_grammar::ModalState::Insert;
         } else {
             self.cursor = main_applied.inserted_range.end;

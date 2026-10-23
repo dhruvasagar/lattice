@@ -912,37 +912,65 @@ lattice-snippet/
 
 ### 8.5 Active-snippet state
 
-When a snippet expands:
+When a snippet expands, the host splices the rendered text and starts a
+session (`lattice-snippet`'s `ActiveSnippet`): the placeholder groups in
+`$1, $2, …, $0` order, the focused one, and an id per placeholder
+occurrence. **The positions are not the session's.** Each occurrence is a
+*tracked range* of the `Document` (`lattice_core::tracked`), which moves it
+across every edit in the same loop that moves its selections:
 
 ```rust
-pub struct ActiveSnippet {
-	/// Buffer position the snippet was inserted at.
-	pub origin: Position,
-	/// Per-tabstop ranges in the buffer; mirrored entries
-	/// share an index so editing one updates all.
-	pub tabstops: Vec<TabstopGroup>,
-	/// Currently focused tabstop index (1-based; `$0` is the
-	/// final position).
-	pub current: usize,
-	/// `$N -> ranges` map for fast jump.
-	pub by_index: HashMap<u32, Vec<Range>>,
+pub struct TrackedRange {
+	pub start: usize,              // absolute bytes
+	pub end: usize,
+	pub stickiness: Stickiness,    // GrowsAtEdges | NeverGrows
+	pub collapsed: bool,           // its text was removed around it
 }
 ```
 
-Edits inside a tabstop range shift the matching ranges in
-its mirror group; ranges in adjacent tabstops shift too as
-the buffer text grows. Buffer events from outside the
-snippet (LSP didChange, format-on-save) flow through
-unchanged — the snippet ranges adjust via the same
-position-update path the rest of the editor uses.
+The session reads where a placeholder is now from the snapshot's
+`tracked_ranges` whenever it needs it — on `<Tab>`, on `<S-Tab>`.
+
+Why the document, and not the session or the host:
+
+- **Every edit path, by construction.** Typing, an operator, undo, a
+  language server's `applyEdit`, a formatter, a plugin: all apply through
+  `Document`, so none can forget to shift the ranges. The session once held
+  byte offsets itself and nothing moved them; the first keystroke inside a
+  placeholder sent every later `<Tab>` to the wrong place.
+- **Synchronously.** The transform runs inside the edit, so by the time the
+  edit's caller sees the result the ranges have moved. An event-bus
+  subscriber (`Event::DocumentChanged`) is delivered asynchronously and
+  would race a fast `x<Tab>`.
+- **Not the host.** Shifting at the host's post-edit chokepoint would put
+  snippet logic in the host and miss edits to a buffer that is not active.
+
+**Stickiness** decides text typed exactly at a range's edge. The focused
+placeholder's occurrences grow; every other range does not. Typing at the
+boundary of `${1:a}${2:b}` therefore lands in the placeholder the user is
+in, and text typed at an empty `$2` becomes `$2`'s. The session resticks
+on every move (fire-and-forget: the mailbox is FIFO, so the next edit sees
+it).
+
+**Collapse.** A range lying wholly inside a span an edit replaced, without
+being that span, is collapsed: the text it named is gone. Overtyping
+`${1:name${2:_x}}`'s default collapses `$2`, and `<Tab>` skips groups with
+no live occurrence. A range exactly equal to the replaced span — the
+overtype of a selected default — becomes the new text instead.
+
+A document kind with no text of its own (the multibuffer) tracks nothing:
+its `update_tracked_ranges` resolves at once, its snapshot's set stays
+empty, and an expansion there stands as plain text.
+
+Cost: an `is_empty` check per edit with no snippet live; ~30 ns per
+keystroke for a typical snippet (benchmarks.md, SI.2).
 
 Exit triggers:
 
-- `$0` reached.
+- Walking past `$0` (or past the last stop).
 - `<Esc>` (also exits Insert, vim convention).
-- Cursor moved outside any tabstop range.
-- New snippet expanded (the prior snippet exits before the
-  new one begins).
+- Cursor moved outside the snippet, leaving Insert/Select, or the buffer —
+  see the [snippet-integrity slice plan](../operations/slice-plans/snippet-integrity.md), SI.4.
 
 ### 8.6 Snippets in the unified popup
 

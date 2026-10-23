@@ -291,6 +291,25 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
     /// no-op; see that method.
     fn end_undo_group(&self) {}
 
+    /// Change the ranges this document keeps in place across its edits
+    /// ([`lattice_core::tracked`]): track new ones, stop tracking, or change
+    /// a range's stickiness. The change is in [`Self::snapshot`] once the
+    /// returned `Pending` resolves. An edit sent after this call sees it
+    /// whether or not the caller waited — the mailbox is FIFO — so a restick
+    /// that only shapes the next edit can be sent and dropped.
+    ///
+    /// Default: tracks nothing and resolves at once. A kind without text of
+    /// its own (the multibuffer, which composes its sources') has nothing to
+    /// anchor a range to; its snapshot's set stays empty, which a caller
+    /// reads as "not tracked".
+    fn update_tracked_ranges(
+        &self,
+        changes: Vec<lattice_core::tracked::TrackedRangeChange>,
+    ) -> Pending<()> {
+        let _ = changes;
+        Pending::ready(Ok(()))
+    }
+
     // ---- Grammar dispatch ----
 
     /// Dispatch a [`CommandInvocation`] through the impl's

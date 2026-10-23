@@ -19,6 +19,7 @@ use lattice_protocol::selection::{Selection, SelectionSet};
 
 use crate::buffer::{AppliedEdit, Buffer, transform_position};
 use crate::error::{CoreError, CoreResult};
+use crate::tracked::TrackedRanges;
 use crate::undo::{UndoEntry, UndoStack};
 
 /// An editable document: a [`Buffer`] plus the bookkeeping every edit needs
@@ -100,6 +101,10 @@ pub struct Document {
     /// to decide whether to reparse.
     text_version: u64,
     selections: SelectionSet,
+    /// Ranges kept in place across edits ([`crate::tracked`]). Behind an
+    /// `Arc` so a published snapshot shares them for the cost of a bump; an
+    /// edit copies only when something is tracked.
+    tracked: Arc<TrackedRanges>,
     undo: UndoStack,
     /// Undo-stack depth at which the buffer last matched its on-disk state
     /// (or its initial-load state, for a fresh `open` / `from_text`). The
@@ -213,6 +218,7 @@ impl DocumentBuilder {
             version: 0,
             text_version: 0,
             selections: SelectionSet::default(),
+            tracked: Arc::default(),
             undo: UndoStack::new(),
             // A freshly built document is "clean" at undo depth 0 -- the
             // initial buffer (whether empty, from_text, or just-loaded
@@ -370,6 +376,19 @@ impl Document {
         &self.selections
     }
 
+    /// The ranges this document keeps in place across its edits.
+    pub fn tracked_ranges(&self) -> &Arc<TrackedRanges> {
+        &self.tracked
+    }
+
+    /// Change the tracked ranges: start or stop tracking, or change a
+    /// range's stickiness. Bumps [`Self::version`] (a published snapshot
+    /// must show the change) but not [`Self::text_version`].
+    pub fn update_tracked_ranges(&mut self, f: impl FnOnce(&mut TrackedRanges)) {
+        f(Arc::make_mut(&mut self.tracked));
+        self.version += 1;
+    }
+
     /// Replace the selections. Bumps [`Self::version`] but not
     /// [`Self::text_version`]. Positions are not validated against the
     /// buffer.
@@ -398,7 +417,7 @@ impl Document {
     /// Those of [`Buffer::apply_edit`]; the document is unchanged on error.
     pub fn apply_edit(&mut self, edit: Edit) -> CoreResult<AppliedEdit> {
         let applied = self.buffer.apply_edit(&edit)?;
-        self.transform_selections(&applied);
+        self.transform_for_edit(&applied);
         let inverse = inverse_edit(&applied);
         self.record_inverses(vec![inverse]);
         self.version += 1;
@@ -447,7 +466,7 @@ impl Document {
         let mut inverses = Vec::with_capacity(edits.len());
         for edit in edits {
             let applied = self.buffer.apply_edit(&edit)?;
-            self.transform_selections(&applied);
+            self.transform_for_edit(&applied);
             inverses.push(inverse_edit(&applied));
             applied_set.push(applied);
         }
@@ -479,10 +498,20 @@ impl Document {
         self.group_has_entry = false;
     }
 
+    /// Move everything the document anchors to its text across one applied
+    /// edit: the selections and the [tracked ranges](crate::tracked). Called
+    /// for every edit — `apply_edit`, `apply_edit_batch`, `undo`, `redo` — so
+    /// nothing anchored here can miss one.
+    fn transform_for_edit(&mut self, applied: &AppliedEdit) {
+        self.transform_selections(applied);
+        if !self.tracked.is_empty() {
+            Arc::make_mut(&mut self.tracked).transform(&applied.delta);
+        }
+    }
+
     /// Transform this document's selections across an applied edit.
     /// Every selection's anchor and head are independently transformed
-    /// so the caret survives owner writes. Called from `apply_edit`
-    /// and `apply_edit_batch`.
+    /// so the caret survives owner writes.
     fn transform_selections(&mut self, applied: &AppliedEdit) {
         let all: Vec<Selection> = self
             .selections
@@ -538,7 +567,7 @@ impl Document {
         let mut redo_inverses = Vec::with_capacity(entry.inverse_edits.len());
         for edit in &entry.inverse_edits {
             let a = self.buffer.apply_edit(edit)?;
-            self.transform_selections(&a);
+            self.transform_for_edit(&a);
             redo_inverses.push(inverse_edit(&a));
             applied.push(a);
         }
@@ -565,7 +594,7 @@ impl Document {
         let mut undo_inverses = Vec::with_capacity(entry.inverse_edits.len());
         for edit in &entry.inverse_edits {
             let a = self.buffer.apply_edit(edit)?;
-            self.transform_selections(&a);
+            self.transform_for_edit(&a);
             undo_inverses.push(inverse_edit(&a));
             applied.push(a);
         }
@@ -667,6 +696,49 @@ mod tests {
     use super::*;
     use lattice_protocol::position::Position;
     use lattice_protocol::selection::Selection;
+
+    /// Tracked ranges follow every edit path — a single edit, a batch, undo
+    /// and redo — because the document moves them itself.
+    #[test]
+    fn tracked_ranges_follow_edits_batches_undo_and_redo() {
+        use crate::tracked::{Stickiness, TrackedRangeId};
+        let mut d = Document::from_text("for idx in iter {}");
+        let one = TrackedRangeId::next();
+        let two = TrackedRangeId::next();
+        d.update_tracked_ranges(|t| {
+            t.insert(one, 4..7, Stickiness::GrowsAtEdges);
+            t.insert(two, 11..15, Stickiness::NeverGrows);
+        });
+        let bytes = |d: &Document, id| d.tracked_ranges().get(id).map(|r| r.bytes());
+
+        d.apply_edit(Edit::insert(Position::new(0, 7), "es"))
+            .unwrap();
+        assert_eq!(bytes(&d, one), Some(4..9), "typing at `$1`'s end grows it");
+        assert_eq!(bytes(&d, two), Some(13..17), "and pushes `$2` along");
+
+        d.apply_edit_batch(vec![Edit::insert(Position::new(0, 0), "  ")])
+            .unwrap();
+        assert_eq!(bytes(&d, two), Some(15..19), "a batch moves them too");
+
+        d.undo().unwrap();
+        d.undo().unwrap();
+        assert_eq!(bytes(&d, one), Some(4..7), "undo moves them back");
+        assert_eq!(bytes(&d, two), Some(11..15));
+
+        d.redo().unwrap();
+        assert_eq!(bytes(&d, one), Some(4..9), "and redo forward again");
+    }
+
+    /// With nothing tracked, an edit does not touch the shared set — a
+    /// snapshot taken before still points at the same allocation.
+    #[test]
+    fn an_edit_with_nothing_tracked_leaves_the_set_shared() {
+        let mut d = Document::from_text("abc");
+        let before = Arc::clone(d.tracked_ranges());
+        d.apply_edit(Edit::insert(Position::new(0, 1), "x"))
+            .unwrap();
+        assert!(Arc::ptr_eq(&before, d.tracked_ranges()));
+    }
 
     #[test]
     fn empty_document_has_empty_buffer_and_no_path() {

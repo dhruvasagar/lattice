@@ -125,6 +125,7 @@ pub mod project;
 // because every producer that spawns a process already depends on core.
 pub mod process;
 pub mod search;
+pub mod tracked;
 pub mod ui;
 pub mod undo;
 // RF.0: `autowrap` — wrap-while-typing. Peer of `IndentMethod`; see

@@ -7,7 +7,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
-**Status: 🚧 — SI.1 ✅ (2026-10-23).**
+**Status: 🚧 — SI.1–SI.2 ✅ (2026-10-23).**
 
 ## Why
 
@@ -68,7 +68,7 @@ Both renderers share the host's expansion code, so every finding is in both.
 | Slice | What | Gate | Status |
 |---|---|---|---|
 | SI.1 | Conformance scenarios for both peers, through real keys: accept → expand → first stop selected; `<C-x><C-s>`; `<Tab>` / `<S-Tab>` walk; `<Esc>` leaves | pins today's passing behaviour in both renderers | ✅ |
-| SI.2 | Tracked ranges in `Document` with per-end gravity; the session holds them; overtyping a parent drops its nested stops (finding 1) | test: type in `$1`, `<Tab>` lands on `$2` — fails without; edits outside, multi-line, an operator, undo; bench: per-edit cost with N tracked ranges | 📝 |
+| SI.2 | Tracked ranges in `Document` with per-end gravity; the session holds them; overtyping a parent drops its nested stops (finding 1) | test: type in `$1`, `<Tab>` lands on `$2` — fails without; edits outside, multi-line, an operator, undo; bench: per-edit cost with N tracked ranges | ✅ — `lattice_core::tracked`; the `Document` moves the ranges in `transform_for_edit` beside the selections; bench: +30 ns a keystroke for 8 ranges |
 | SI.3 | Navigation: Select `<Tab>`/`<S-Tab>` onto empty and one-char stops; char-boundary Select head; implicit final stop without `$0`; landing on `$0` ends the session so the next `<Tab>` inserts (finding 6) | tests per case, each failing without | 📝 |
 | SI.4 | Lifecycle: the session ends on leaving Insert/Select, the cursor leaving the snippet, buffer switch or close, undo past the expansion; expanding inside a session | tests per exit path | 📝 |
 | SI.5 | Registry identity + language: key by `(language, name)`; user overrides builtin on a shared prefix; one language resolver for completion, `<C-x><C-s>`, the picker, with VS Code ids (`typescriptreact`, `shellscript`, `ruby`); the picker lists `*` (findings 3, 5) | tests: same name in two languages expands the buffer's; override; `.rb` reaches `ruby` | 📝 |

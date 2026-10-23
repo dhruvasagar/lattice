@@ -21,14 +21,19 @@ const FOR_PREFIX: &str = "zzfor";
 /// Register [`FOR_BODY`] under [`FOR_PREFIX`] in the any-language bucket, so
 /// a pathless buffer reaches it.
 fn install_for_snippet<P: PeerUnderTest>(peer: &mut P) {
+    install_snippet(peer, "conformance-for", FOR_PREFIX, FOR_BODY);
+}
+
+/// Register `body` under `prefix` in the any-language bucket.
+fn install_snippet<P: PeerUnderTest>(peer: &mut P, name: &str, prefix: &str, body: &str) {
     let editor = peer.editor_mut();
     let mut next = (**editor.snippet_registry.load()).clone();
     next.insert(
         "*",
         lattice_snippet::Snippet {
-            name: "conformance-for".into(),
-            prefixes: vec![FOR_PREFIX.into()],
-            body: lattice_snippet::parse::parse(FOR_BODY).expect("snippet parses"),
+            name: name.into(),
+            prefixes: vec![prefix.into()],
+            body: lattice_snippet::parse::parse(body).expect("snippet parses"),
             description: None,
             scope: String::new(),
         },
@@ -48,9 +53,14 @@ fn selection<P: PeerUnderTest>(peer: &P) -> (Position, Position) {
     (sel.anchor, sel.head)
 }
 
-/// Assert the peer is selecting a placeholder default: charwise Select, the
-/// anchor on its first byte and the head on its last.
+/// Assert the peer is selecting a placeholder default on line 0: charwise
+/// Select, the anchor on its first byte and the head on its last.
 fn assert_selects<P: PeerUnderTest>(peer: &P, what: &str, start: u32, end: u32) {
+    assert_selects_on(peer, what, 0, start, end);
+}
+
+/// [`assert_selects`] on `line`.
+fn assert_selects_on<P: PeerUnderTest>(peer: &P, what: &str, line: u32, start: u32, end: u32) {
     assert!(
         matches!(
             peer.editor().modal,
@@ -61,7 +71,7 @@ fn assert_selects<P: PeerUnderTest>(peer: &P, what: &str, start: u32, end: u32) 
     );
     assert_eq!(
         selection(peer),
-        (Position::new(0, start), Position::new(0, end - 1)),
+        (Position::new(line, start), Position::new(line, end - 1)),
         "{what}: the selection covers the default; the buffer is {:?}",
         text(peer)
     );
@@ -147,4 +157,79 @@ pub fn esc_leaves_the_snippet<P: PeerUnderTest>() {
         peer.editor().modal
     );
     assert_eq!(text(&peer), "for idx in iter {  }\n", "the text stays");
+}
+
+// ---- SI.2: placeholders follow edits ----
+
+/// Typing in the first placeholder, then `<Tab>`, selects the second where
+/// it now is. Before SI.2 the session held the offsets it was expanded at
+/// and nothing moved them: `<Tab>` here selected `" in "`-shifted bytes.
+pub fn typing_in_a_placeholder_then_tab_lands_on_the_next<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_for_snippet(&mut peer);
+
+    press(&mut peer, "izzfor<C-x><C-s>name<Tab>");
+
+    assert_eq!(text(&peer), "for name in iter {  }\n");
+    assert_selects(&peer, "`<Tab>` after typing `name`", 12, 16);
+
+    press(&mut peer, "<S-Tab>");
+    assert_selects(&peer, "`<S-Tab>` back onto what was typed", 4, 8);
+}
+
+/// A newline typed inside the first placeholder moves the second to the
+/// next line.
+pub fn a_newline_in_a_placeholder_moves_the_later_ones_down<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_for_snippet(&mut peer);
+
+    // `ab<CR>cd` for `idx` changes the byte count (+2), so stale offsets
+    // could not land on `iter` by accident.
+    press(&mut peer, "izzfor<C-x><C-s>ab<CR>cd<Tab>");
+
+    let text = text(&peer);
+    let second = text.lines().nth(1).expect("a second line");
+    let iter = second.find("iter").expect("`iter` is on the second line") as u32;
+    assert_selects_on(&peer, "`<Tab>` onto the moved `$2`", 1, iter, iter + 4);
+}
+
+/// An edit made to the document outside the snippet — a language server's
+/// `applyEdit`, a formatter, a plugin, none of which go through the cursor —
+/// moves the placeholders with it.
+pub fn an_edit_above_the_snippet_moves_its_placeholders<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_for_snippet(&mut peer);
+    press(&mut peer, "izzfor<C-x><C-s>");
+
+    peer.editor_mut()
+        .apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+            Position::new(0, 0),
+            "use x;\n",
+        ))
+        .expect("the edit applies");
+    peer.republish();
+    press(&mut peer, "<Tab>");
+
+    assert_eq!(text(&peer), "use x;\nfor idx in iter {  }\n");
+    assert_selects_on(&peer, "`<Tab>` after a line was added above", 1, 11, 15);
+}
+
+/// Overtyping a placeholder removes the placeholders nested in its default:
+/// `<Tab>` goes past them to the next one that still exists.
+pub fn overtyping_a_placeholder_drops_the_ones_nested_in_it<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    // `fn name(arg) -> T`: `$2` sits inside `$1`'s default.
+    install_snippet(
+        &mut peer,
+        "conformance-nested",
+        "zzfn",
+        "fn ${1:name${2:_x}}(${3:arg})",
+    );
+    press(&mut peer, "izzfn<C-x><C-s>");
+    assert_selects(&peer, "precondition: `$1` selected", 3, 9);
+
+    press(&mut peer, "go<Tab>");
+
+    assert_eq!(text(&peer), "fn go(arg)\n");
+    assert_selects(&peer, "`<Tab>` skips the removed `$2` to `$3`", 6, 9);
 }

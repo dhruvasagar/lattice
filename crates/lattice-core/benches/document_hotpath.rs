@@ -158,11 +158,49 @@ fn set_selections_motion(c: &mut Criterion) {
     g.finish();
 }
 
+/// A keystroke insert in a 1k-line document while `n` ranges are tracked
+/// (snippet-integrity SI.2: a snippet's placeholders). The document moves
+/// each tracked range across the edit. A published snapshot shares the set,
+/// so the edit also copies it — the bench holds a clone, as the actor's
+/// last-published snapshot does, to price that copy in. `n = 0` is the
+/// no-snippet case and must sit within noise of `insert_at_middle/1000`.
+fn insert_with_tracked_ranges(c: &mut Criterion) {
+    use lattice_core::tracked::{Stickiness, TrackedRangeId};
+    let mut g = c.benchmark_group("document_edit_p99_us::insert_with_tracked_ranges");
+    for n in [0usize, 8, 64] {
+        g.throughput(Throughput::Elements(1));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &n, |bencher, &n| {
+            bencher.iter_with_setup(
+                || {
+                    let mut d = build_doc(1_000);
+                    // Ranges after the edit point, so every one shifts.
+                    let base = d.buffer().position_to_byte(Position::new(600, 0)).unwrap();
+                    d.update_tracked_ranges(|t| {
+                        for i in 0..n {
+                            let at = base + i * 8;
+                            t.insert(TrackedRangeId::next(), at..at + 4, Stickiness::NeverGrows);
+                        }
+                    });
+                    let held = std::sync::Arc::clone(d.tracked_ranges());
+                    (d, held)
+                },
+                |(mut d, held)| {
+                    d.apply_edit(Edit::insert(black_box(Position::new(500, 0)), "x"))
+                        .unwrap();
+                    black_box(held);
+                },
+            );
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     viewport_walk,
     insert_at_middle,
     delete_at_middle,
-    set_selections_motion
+    set_selections_motion,
+    insert_with_tracked_ranges
 );
 criterion_main!(benches);

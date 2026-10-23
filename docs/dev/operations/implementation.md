@@ -1401,6 +1401,10 @@ tests walk: placeholder ranges never follow an edit, LSP never advertises
 `snippetSupport`, names collide across languages, bodies are not
 re-indented. **SI.1 ✅**: conformance scenarios for both peers drive
 expansion, overtype, `<Tab>` / `<S-Tab>` and `<Esc>` through real keys.
+**SI.2 ✅**: placeholders are `Document`-tracked ranges
+(`lattice_core::tracked`), moved across every edit — typing, operators,
+undo, LSP, plugins — in the loop that moves selections; per-end stickiness
+follows focus; overtyping a parent collapses its nested stops.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

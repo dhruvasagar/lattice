@@ -106,6 +106,14 @@ pub(crate) enum ActorMsg {
     /// to await these.
     BeginUndoGroup,
     EndUndoGroup,
+    /// Track, untrack or restick ranges the document keeps in place across
+    /// its edits (`lattice_core::tracked`). Publishes, so the snapshot shows
+    /// the change once the reply lands; edits enqueued after it see it
+    /// regardless (FIFO), which is all a restick needs.
+    UpdateTrackedRanges {
+        changes: Vec<lattice_core::tracked::TrackedRangeChange>,
+        reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
     /// Run a [`lattice_grammar::execute`] dispatch against the
     /// document. The actor holds the only `&mut Document` so all
     /// invocation-driven mutations route here. Returns the
@@ -241,6 +249,15 @@ impl DocumentActor {
             // stack changes).
             ActorMsg::BeginUndoGroup => self.document.begin_undo_group(),
             ActorMsg::EndUndoGroup => self.document.end_undo_group(),
+            ActorMsg::UpdateTrackedRanges { changes, reply } => {
+                self.document.update_tracked_ranges(|tracked| {
+                    for change in changes {
+                        tracked.apply(change);
+                    }
+                });
+                self.publish();
+                let _ = reply.send(Ok(()));
+            }
             ActorMsg::Dispatch {
                 buffer_id,
                 invocation,

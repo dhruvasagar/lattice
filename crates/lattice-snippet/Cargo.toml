@@ -39,10 +39,10 @@ lattice-grammar = { path = "../lattice-grammar" }
 # doesn't depend back on lattice-snippet.
 lattice-picker = { path = "../lattice-picker" }
 
-[dev-dependencies]
-# SN.2b handler-level dispatch test: building a `ModeContext` to
-# drive `SnippetActiveMode::on_activate` needs `EventBus` (not
-# re-exported by `lattice-mode`). Test-only.
+# SI.2: the active-snippet handlers read placeholder positions from
+# the document snapshot's tracked ranges and send restick / untrack
+# changes through the `Document` trait. Already transitive through
+# `lattice-mode`; the direct edge is cycle-free.
 lattice-runtime = { path = "../lattice-runtime" }
 
 [lints]

@@ -320,3 +320,96 @@ pub fn visual_delete_takes_a_whole_multibyte_character<P: PeerUnderTest>() {
 
     assert_eq!(text(&peer), "!\n");
 }
+
+// ---- SI.4: lifecycle ----
+
+/// How many ranges the active document tracks — a snippet's extent and one
+/// per placeholder occurrence while a session is live, none after.
+fn tracked<P: PeerUnderTest>(peer: &P) -> usize {
+    peer.editor().document.snapshot().tracked_ranges.len()
+}
+
+/// Wait for the document to have released every tracked range. A session
+/// ends synchronously, but the untrack it sends the document is
+/// fire-and-forget — nothing waits on cleanup — so the snapshot shows it
+/// once the actor has run the message, which under a parallel test run is
+/// not immediately.
+fn releases_its_ranges<P: PeerUnderTest>(peer: &P) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while tracked(peer) != 0 {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    true
+}
+
+/// Leaving Insert by any route ends the snippet — not only the `<Esc>` the
+/// mode binds — and stops tracking its placeholders.
+pub fn leaving_insert_ends_the_snippet<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_for_snippet(&mut peer);
+    press(&mut peer, "izzfor<C-x><C-s>n");
+    assert!(session_active(&peer), "precondition");
+
+    peer.apply(crate::action::Action::EnterMode(ModalState::Normal));
+
+    assert!(!session_active(&peer), "Normal mode ends the snippet");
+    assert!(
+        releases_its_ranges(&peer),
+        "its ranges are released; {} still tracked",
+        tracked(&peer)
+    );
+}
+
+/// Moving the cursor out of the snippet ends it: a later `<Tab>` is a plain
+/// `<Tab>`, not a jump back into text the user has left.
+pub fn moving_out_of_the_snippet_ends_it<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("x \n");
+    install_for_snippet(&mut peer);
+    press(&mut peer, "Azzfor<C-x><C-s>n");
+    assert!(session_active(&peer), "precondition");
+
+    // To the start of the line, before the snippet. (`<Down>` would be
+    // the obvious key, but Insert does not bind it yet.)
+    press(&mut peer, "<Home>");
+
+    assert!(
+        !session_active(&peer),
+        "the cursor left the snippet: cursor {:?}, mode {:?}, text {:?}",
+        peer.editor().cursor,
+        peer.editor().modal,
+        text(&peer)
+    );
+    assert!(releases_its_ranges(&peer), "its ranges are released");
+}
+
+/// Moving inside the snippet keeps it.
+pub fn moving_inside_the_snippet_keeps_it<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_for_snippet(&mut peer);
+    press(&mut peer, "izzfor<C-x><C-s>name<Left><Left>");
+    assert!(session_active(&peer), "still inside `$1`");
+
+    press(&mut peer, "<Tab>");
+    assert_selects(&peer, "`<Tab>` still reaches `$2`", 12, 16);
+}
+
+/// Expanding a snippet inside a live one replaces it, and the outer
+/// snippet's ranges are released rather than tracked forever.
+pub fn expanding_inside_a_snippet_replaces_it<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_for_snippet(&mut peer);
+    press(&mut peer, "izzfor<C-x><C-s>");
+
+    press(&mut peer, "zzfor<C-x><C-s>");
+
+    assert_eq!(text(&peer), "for for idx in iter {  } in iter {  }\n");
+    assert_selects(&peer, "the inner snippet's `$1`", 8, 11);
+    assert_eq!(
+        tracked(&peer),
+        4,
+        "only the inner snippet's extent, `$1`, `$2` and `$0` are tracked"
+    );
+}

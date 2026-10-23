@@ -431,6 +431,10 @@ macro_rules! peer_conformance_tests {
             a_multibyte_default_is_overtyped_whole,
             without_a_final_stop_the_last_tab_goes_to_the_end,
             visual_delete_takes_a_whole_multibyte_character,
+            leaving_insert_ends_the_snippet,
+            moving_out_of_the_snippet_ends_it,
+            moving_inside_the_snippet_keeps_it,
+            expanding_inside_a_snippet_replaces_it,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

@@ -7,7 +7,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
-**Status: 🚧 — SI.1–SI.3 ✅ (2026-10-23).**
+**Status: 🚧 — SI.1–SI.4 ✅ (2026-10-23).**
 
 ## Why
 
@@ -70,7 +70,7 @@ Both renderers share the host's expansion code, so every finding is in both.
 | SI.1 | Conformance scenarios for both peers, through real keys: accept → expand → first stop selected; `<C-x><C-s>`; `<Tab>` / `<S-Tab>` walk; `<Esc>` leaves | pins today's passing behaviour in both renderers | ✅ |
 | SI.2 | Tracked ranges in `Document` with per-end gravity; the session holds them; overtyping a parent drops its nested stops (finding 1) | test: type in `$1`, `<Tab>` lands on `$2` — fails without; edits outside, multi-line, an operator, undo; bench: per-edit cost with N tracked ranges | ✅ — `lattice_core::tracked`; the `Document` moves the ranges in `transform_for_edit` beside the selections; bench: +30 ns a keystroke for 8 ranges |
 | SI.3 | Navigation: Select `<Tab>`/`<S-Tab>` onto empty and one-char stops; char-boundary Select head; implicit final stop without `$0`; landing on `$0` ends the session so the next `<Tab>` inserts (finding 6) | tests per case, each failing without | ✅ — empty stops enter Insert before moving; a `SelectionChange` naming its `visual` kind is an explicit span (one-char defaults); `placeholder_selection` ends on a char boundary, and Visual/Select's extent (host `selection_extent`, grammar `Range::Selection`) covers the head's whole character — `vd` on `é` had deleted nothing |
-| SI.4 | Lifecycle: the session ends on leaving Insert/Select, the cursor leaving the snippet, buffer switch or close, undo past the expansion; expanding inside a session | tests per exit path | 📝 |
+| SI.4 | Lifecycle: the session ends on leaving Insert/Select, the cursor leaving the snippet, buffer switch or close, undo past the expansion; expanding inside a session | tests per exit path | ✅ — the session-backed-minor predicate takes a `SessionProbe` (buffer, modal, cursor, document); `SnippetSession::reconcile` ends the session outside Insert/Select or with the cursor outside the snippet, untracking its ranges; a nested expansion releases the outer one. Undo and buffer switches are covered by the same rule (both leave Insert); a closed buffer's session dies with its document. Found on the way: Insert binds no `<Up>`/`<Down>` |
 | SI.5 | Registry identity + language: key by `(language, name)`; user overrides builtin on a shared prefix; one language resolver for completion, `<C-x><C-s>`, the picker, with VS Code ids (`typescriptreact`, `shellscript`, `ruby`); the picker lists `*` (findings 3, 5) | tests: same name in two languages expands the buffer's; override; `.rb` reaches `ruby` | 📝 |
 | SI.6 | Indentation: continuation lines take the trigger line's indent; `\t` follows `expandtab` / `shiftwidth` (finding 4) | tests: nested expansion, expandtab on/off | 📝 |
 | SI.7 | Mirrors: placeholder text copied to mirrors; focus the copy holding it; typing updates mirrors live in one undo group | tests: render, focus, live update, one `u` | 📝 |

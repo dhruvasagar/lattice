@@ -196,6 +196,7 @@ pub mod plugin_meta_sink;
 pub mod provider_view;
 pub mod registry;
 pub mod services;
+pub mod session_probe;
 // DB.5 (design.md §9.1): the generic `Startup` boot-completion typed event.
 // Declared here (alongside `ModeEvent`) so subsystem `install(&mut boot)`
 // fns can subscribe without a `lattice-host` dependency.
@@ -289,6 +290,7 @@ pub use crate::scanned_excerpt_source::{
     ScannedExcerptSourceRegistryHandle,
 };
 pub use crate::services::ServiceRegistry;
+pub use crate::session_probe::{SessionPredicate, SessionProbe};
 pub use crate::startup::Startup;
 pub use crate::subsystem_boot::SubsystemBoot;
 pub use crate::tick_callback::{

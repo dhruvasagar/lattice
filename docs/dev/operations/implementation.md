@@ -1409,6 +1409,9 @@ follows focus; overtyping a parent collapses its nested stops.
 multi-byte defaults select exactly; a body without `$0` exits at its end;
 landing on `$0` ends the session, so the next `<Tab>` is a plain one.
 Visual's charwise extent covers the head's whole character.
+**SI.4 ✅**: the session ends when the user leaves it — any mode but
+Insert/Select, or the cursor outside the snippet — via the generic
+`SessionProbe` the host hands session-backed minors each dispatch.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

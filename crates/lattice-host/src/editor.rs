@@ -186,11 +186,12 @@ impl std::fmt::Debug for CellsWake {
 /// `feedback_mode_owns_its_surface`.
 #[derive(Clone)]
 pub struct SessionBackedMinor {
-    /// `true` ⇒ the mode should be active on the **given buffer**.
-    /// SN.3e: the predicate is buffer-scoped so a session live in one
-    /// buffer never activates the mode in another; `sync_keymap_overlays`
-    /// passes the buffer it is reconciling.
-    pub active: std::sync::Arc<dyn Fn(lattice_core::BufferId) -> bool + Send + Sync>,
+    /// `true` ⇒ the mode should be active on the probed buffer.
+    /// SN.3e: buffer-scoped, so a session live in one buffer never
+    /// activates the mode in another. SI.4: the probe also carries the
+    /// modal state, cursor and document, so the mode's own policy can end
+    /// its session when the user leaves it — the host stays generic.
+    pub active: lattice_mode::SessionPredicate,
     /// The minor mode toggled by `active`.
     pub mode_id: lattice_mode::ModeId,
 }

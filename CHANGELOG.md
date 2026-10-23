@@ -17,6 +17,10 @@
   auto_trigger = true` turns it on for one language alone.
 
 ### Fixed
+- **A snippet ends when you leave it.** Leaving Insert mode any way but
+  `<Esc>`, or moving the cursor out of the snippet, left it live, and a
+  later `<Tab>` jumped back into it. Expanding a snippet inside another
+  replaces the outer one.
 - **Moving between snippet placeholders no longer overwrites text.**
   `<Tab>` onto an empty placeholder kept the previous one selected, so the
   next key replaced everything between them; `<S-Tab>` back onto a

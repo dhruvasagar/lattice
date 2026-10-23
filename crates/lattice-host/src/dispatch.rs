@@ -20566,7 +20566,12 @@ impl Editor {
             // SN.3e: scope the predicate to the buffer being reconciled
             // (`buffer_id == self.document_buffer_id`), so a snippet live
             // in another buffer never activates the mode here.
-            let want = (minor.active)(buffer_id);
+            let want = (minor.active)(&lattice_mode::SessionProbe {
+                buffer: buffer_id,
+                modal: self.modal,
+                cursor: self.cursor,
+                document: &*self.document,
+            });
             let have = active.has_minor(minor.mode_id);
             if want && !have {
                 if let Err(e) = self.mode_registry.load_full().activate_minor(
@@ -29629,6 +29634,14 @@ impl Editor {
         rendered: &lattice_snippet::render::RenderedSnippet,
         origin: usize,
     ) -> Option<std::ops::Range<usize>> {
+        // A snippet expanded inside a live one replaces it; release the
+        // outer one's ranges, or the document would move them forever.
+        if let Some(outer) = self
+            .snippet_session
+            .with_mut(self.document_buffer_id, |s| s.take())
+        {
+            drop(self.document.update_tracked_ranges(outer.untrack_changes()));
+        }
         let (active, changes) = lattice_snippet::ActiveSnippet::from_render(rendered, origin);
         if let Err(e) = block_on(self.document.update_tracked_ranges(changes)) {
             tracing::debug!(error = ?e, "snippet: tracking placeholders failed; plain expansion");

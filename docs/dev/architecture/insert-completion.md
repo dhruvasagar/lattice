@@ -967,10 +967,16 @@ keystroke for a typical snippet (benchmarks.md, SI.2).
 
 Exit triggers:
 
-- Walking past `$0` (or past the last stop).
+- Landing on `$0` — or on the snippet's end, when the body has no `$0`.
 - `<Esc>` (also exits Insert, vim convention).
-- Cursor moved outside the snippet, leaving Insert/Select, or the buffer —
-  see the [snippet-integrity slice plan](../operations/slice-plans/snippet-integrity.md), SI.4.
+- Leaving Insert/Select by any route, or the cursor leaving the snippet's
+  text. The host reconciles session-backed minor modes on the active
+  buffer at the end of every dispatch, handing each a `SessionProbe`
+  (buffer, modal state, cursor, document); `active-snippet-mode`'s
+  predicate ends its own session there. The host stays generic — the rule
+  is the mode's.
+- A new snippet expanded inside it (the outer session's ranges are
+  released first).
 
 ### 8.6 Snippets in the unified popup
 

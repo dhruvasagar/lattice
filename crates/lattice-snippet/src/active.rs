@@ -205,6 +205,14 @@ impl ActiveSnippet {
         self.current_group().map(|g| g.index)
     }
 
+    /// `byte` lies within the snippet's text (its end included, where the
+    /// cursor sits after typing at the last placeholder).
+    pub fn contains(&self, tracked: &TrackedRanges, byte: usize) -> bool {
+        tracked
+            .get(self.extent)
+            .is_some_and(|r| !r.collapsed && r.start <= byte && byte <= r.end)
+    }
+
     /// Focus is on `$0`, the exit: the session is over once the cursor is
     /// there (VS Code's rule), so the next `<Tab>` is a plain `<Tab>`.
     pub fn at_exit(&self) -> bool {

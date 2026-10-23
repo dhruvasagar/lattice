@@ -487,3 +487,50 @@ pub fn a_ruby_file_expands_ruby_snippets<P: PeerUnderTest>() {
 
     assert_eq!(text(&peer), "def name\nend\n");
 }
+
+// ---- SI.6: indentation ----
+
+/// A multi-line snippet expanded on an indented line keeps that indentation
+/// on every line, and its `\t` levels follow `expandtab` / `shiftwidth`
+/// (here the defaults: four spaces).
+pub fn a_multi_line_snippet_follows_the_lines_indentation<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("fn main() {\n    \n}\n");
+    install_snippet(
+        &mut peer,
+        "conformance-if",
+        "zzif",
+        "if ${1:cond} {\n\t$0\n}",
+    );
+
+    press(&mut peer, "jAzzif<C-x><C-s>");
+
+    assert_eq!(
+        text(&peer),
+        "fn main() {\n    if cond {\n        \n    }\n}\n"
+    );
+    assert_selects_on(&peer, "`$1` on the first line", 1, 7, 11);
+
+    press(&mut peer, "<Tab>x");
+    assert_eq!(
+        text(&peer),
+        "fn main() {\n    if cond {\n        x\n    }\n}\n",
+        "`$0` sits after the body's indentation"
+    );
+}
+
+/// With `noexpandtab`, the body's levels stay tabs and the line's own tab
+/// indentation carries onto each new line.
+pub fn without_expandtab_a_snippet_indents_with_tabs<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("{\n\t\n}\n");
+    install_snippet(
+        &mut peer,
+        "conformance-if",
+        "zzif",
+        "if ${1:cond} {\n\t$0\n}",
+    );
+    press(&mut peer, ":set noexpandtab<CR>");
+
+    press(&mut peer, "jAzzif<C-x><C-s>");
+
+    assert_eq!(text(&peer), "{\n\tif cond {\n\t\t\n\t}\n}\n");
+}

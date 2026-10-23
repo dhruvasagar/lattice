@@ -67,6 +67,77 @@ impl RenderedSnippet {
         }
         out
     }
+
+    /// This snippet laid out for a line indented by `base`, with `level`
+    /// as one indent step — the shape VS Code and the LSP's
+    /// `adjustIndentation` give a body (snippet-integrity SI.6).
+    ///
+    /// Snippet bodies are written flush-left with `\t` for each nesting
+    /// level, for whichever editor reads them. So every line after the
+    /// first gets `base` (the trigger line's indentation) in front, and
+    /// each leading `\t` becomes `level` (spaces under `expandtab`). The
+    /// first line is not touched: it continues the trigger line.
+    ///
+    /// Placeholder ranges are remapped with the text. A placeholder at
+    /// the start of a continuation line lands after the new indentation,
+    /// where the cursor belongs. An empty continuation line stays empty —
+    /// no trailing whitespace — unless a placeholder sits on it.
+    pub fn reindented(&self, base: &str, level: &str) -> RenderedSnippet {
+        if !self.text.contains('\n') && !self.text.starts_with('\t')
+            || base.is_empty() && level == "\t"
+        {
+            return self.clone();
+        }
+        let has_stop_at = |offset: usize| self.tabstops.iter().any(|t| t.range.start == offset);
+        // One entry per line: (old start, new start of its content after
+        // the added indentation, leading tabs, the prefix length added).
+        let mut lines: Vec<(usize, usize, usize, usize)> = Vec::new();
+        let mut text = String::with_capacity(self.text.len() + base.len() * 4);
+        let mut old_start = 0usize;
+        for (i, line) in self.text.split('\n').enumerate() {
+            if i > 0 {
+                text.push('\n');
+            }
+            let tabs = line.bytes().take_while(|b| *b == b'\t').count();
+            let indent = i > 0 && (!line.is_empty() || has_stop_at(old_start));
+            let prefix_start = text.len();
+            if indent {
+                text.push_str(base);
+            }
+            for _ in 0..tabs {
+                text.push_str(level);
+            }
+            lines.push((old_start, prefix_start, tabs, text.len() - prefix_start));
+            text.push_str(&line[tabs..]);
+            old_start += line.len() + 1;
+        }
+        let map = |offset: usize| -> usize {
+            let idx = lines
+                .partition_point(|(start, ..)| *start <= offset)
+                .saturating_sub(1);
+            let (start, new_start, tabs, added) = lines[idx];
+            let rel = offset - start;
+            if rel <= tabs {
+                // In the leading tabs (or at the line start): after the
+                // base indentation and `rel` levels.
+                new_start + (added - tabs * level.len()) + rel * level.len()
+            } else {
+                new_start + added + (rel - tabs)
+            }
+        };
+        RenderedSnippet {
+            text,
+            tabstops: self
+                .tabstops
+                .iter()
+                .map(|t| TabstopRange {
+                    range: map(t.range.start)..map(t.range.end),
+                    ..t.clone()
+                })
+                .collect(),
+            exit_index: self.exit_index,
+        }
+    }
 }
 
 /// Render the parsed body to text + tabstop ranges.
@@ -155,6 +226,56 @@ fn walk(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod reindent_tests {
+    use super::*;
+    use crate::parse;
+
+    fn rendered(body: &str) -> RenderedSnippet {
+        render(&parse::parse(body).unwrap(), &VariableContext::default())
+    }
+
+    /// Each stop's text in `r`.
+    fn stops(r: &RenderedSnippet) -> Vec<(u32, &str)> {
+        r.tabstops
+            .iter()
+            .map(|t| (t.index, &r.text[t.range.clone()]))
+            .collect()
+    }
+
+    #[test]
+    fn continuation_lines_take_the_base_indent_and_tabs_become_levels() {
+        let r = rendered("if ${1:cond} {\n\t$0\n}").reindented("    ", "    ");
+        assert_eq!(r.text, "if cond {\n        \n    }");
+        assert_eq!(stops(&r), vec![(1, "cond"), (0, "")]);
+        // `$0` sits after the two levels of indentation on line 2.
+        let zero = r.tabstops.iter().find(|t| t.index == 0).unwrap();
+        assert_eq!(zero.range.start, "if cond {\n        ".len());
+    }
+
+    #[test]
+    fn with_tabs_kept_only_the_base_is_added() {
+        let r = rendered("fn ${1:f}() {\n\t${2:todo!()}\n}").reindented("\t", "\t");
+        assert_eq!(r.text, "fn f() {\n\t\ttodo!()\n\t}");
+        assert_eq!(stops(&r), vec![(1, "f"), (2, "todo!()")]);
+    }
+
+    #[test]
+    fn an_empty_line_stays_empty_unless_a_stop_is_on_it() {
+        let r = rendered("a\n\nb").reindented("  ", "  ");
+        assert_eq!(r.text, "a\n\n  b");
+        let r = rendered("a\n$1\nb").reindented("  ", "  ");
+        assert_eq!(r.text, "a\n  \n  b");
+        assert_eq!(r.tabstops[0].range, 4..4, "the stop is after the indent");
+    }
+
+    #[test]
+    fn a_single_line_body_is_untouched() {
+        let r = rendered("for ${1:i} in ${2:iter}");
+        assert_eq!(r.reindented("        ", "    ").text, r.text);
     }
 }
 

@@ -1416,6 +1416,8 @@ Insert/Select, or the cursor outside the snippet — via the generic
 overrides on a shared prefix; one path→language-id resolver
 (`lattice_core::language`) serves snippets, completion settings and the
 snippet picker.
+**SI.6 ✅**: multi-line bodies follow the trigger line's indentation; the
+body's `\t` levels become the buffer's indent unit.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

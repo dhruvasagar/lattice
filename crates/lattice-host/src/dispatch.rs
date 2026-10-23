@@ -29549,7 +29549,7 @@ impl Editor {
         anchor: lattice_protocol::position::Position,
     ) {
         let vars = self.snippet_variable_context();
-        let rendered = lattice_snippet::render::render(body, &vars);
+        let rendered = self.indent_snippet(lattice_snippet::render::render(body, &vars), anchor);
         let range = lattice_protocol::position::Range::new(anchor, self.cursor);
         let edit = lattice_protocol::edit::Edit::replace(range, rendered.text.clone());
         let applied = match self.apply_edit_blocking(edit) {
@@ -29597,6 +29597,26 @@ impl Editor {
         } else {
             self.cursor = applied.inserted_range.end;
         }
+    }
+
+    /// `rendered` laid out for the line it expands on (SI.6): continuation
+    /// lines take that line's indentation, and the body's `\t` levels the
+    /// buffer's indent unit (`shiftwidth` spaces under `expandtab`).
+    fn indent_snippet(
+        &self,
+        rendered: lattice_snippet::RenderedSnippet,
+        anchor: lattice_protocol::position::Position,
+    ) -> lattice_snippet::RenderedSnippet {
+        let line = self
+            .document
+            .snapshot()
+            .buffer
+            .line(anchor.line)
+            .unwrap_or_default();
+        let indent_end = lattice_core::IndentUnit::indent_len(&line).min(anchor.byte as usize);
+        let base = line.get(..indent_end).unwrap_or_default();
+        let unit = self.indent_unit(self.document_buffer_id);
+        rendered.reindented(base, &unit.render(unit.step()))
     }
 
     /// Start a snippet session for `rendered`, whose text now starts at
@@ -33923,7 +33943,7 @@ impl Editor {
         additional: Vec<lattice_lsp::lsp_types::TextEdit>,
     ) -> Result<(), String> {
         let vars = self.snippet_variable_context();
-        let rendered = lattice_snippet::render::render(body, &vars);
+        let rendered = self.indent_snippet(lattice_snippet::render::render(body, &vars), anchor);
         let main_range = lattice_protocol::position::Range::new(anchor, self.cursor);
         let main_edit = lattice_protocol::edit::Edit::replace(main_range, rendered.text.clone());
         let snap = self.document.snapshot();

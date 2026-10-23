@@ -438,6 +438,8 @@ macro_rules! peer_conformance_tests {
             the_buffers_language_owns_a_shared_snippet_name,
             a_later_snippet_on_a_prefix_is_the_one_expanded,
             a_ruby_file_expands_ruby_snippets,
+            a_multi_line_snippet_follows_the_lines_indentation,
+            without_expandtab_a_snippet_indents_with_tabs,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

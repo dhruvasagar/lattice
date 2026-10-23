@@ -17,6 +17,10 @@
   auto_trigger = true` turns it on for one language alone.
 
 ### Fixed
+- **Multi-line snippets keep your indentation.** A snippet expanded
+  inside a block put its second and later lines at column 0, and its
+  indentation stayed tabs with `expandtab` on. Each line now starts at the
+  line's indentation and nests with your `shiftwidth`.
 - **Snippets come from your file's language.** Two languages' snippets
   with the same name — friendly-snippets has an "if" in most — could
   expand the wrong one from the completion popup. Your own snippets now

@@ -7,7 +7,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
-**Status: 🚧 — SI.1–SI.5 ✅ (2026-10-23).**
+**Status: 🚧 — SI.1–SI.6 ✅ (2026-10-23).**
 
 ## Why
 
@@ -72,7 +72,7 @@ Both renderers share the host's expansion code, so every finding is in both.
 | SI.3 | Navigation: Select `<Tab>`/`<S-Tab>` onto empty and one-char stops; char-boundary Select head; implicit final stop without `$0`; landing on `$0` ends the session so the next `<Tab>` inserts (finding 6) | tests per case, each failing without | ✅ — empty stops enter Insert before moving; a `SelectionChange` naming its `visual` kind is an explicit span (one-char defaults); `placeholder_selection` ends on a char boundary, and Visual/Select's extent (host `selection_extent`, grammar `Range::Selection`) covers the head's whole character — `vd` on `é` had deleted nothing |
 | SI.4 | Lifecycle: the session ends on leaving Insert/Select, the cursor leaving the snippet, buffer switch or close, undo past the expansion; expanding inside a session | tests per exit path | ✅ — the session-backed-minor predicate takes a `SessionProbe` (buffer, modal, cursor, document); `SnippetSession::reconcile` ends the session outside Insert/Select or with the cursor outside the snippet, untracking its ranges; a nested expansion releases the outer one. Undo and buffer switches are covered by the same rule (both leave Insert); a closed buffer's session dies with its document. Found on the way: Insert binds no `<Up>`/`<Down>` |
 | SI.5 | Registry identity + language: key by `(language, name)`; user overrides builtin on a shared prefix; one language resolver for completion, `<C-x><C-s>`, the picker, with VS Code ids (`typescriptreact`, `shellscript`, `ruby`); the picker lists `*` (findings 3, 5) | tests: same name in two languages expands the buffer's; override; `.rb` reaches `ruby` | ✅ — `SnippetRegistry` keyed by `(language, name)`, candidate and picker payloads carry `snippet_key`; later packs go first on a prefix and replace a same-named snippet; `lattice_core::language::language_id_for_path` (LSP ids) is the one resolver, `lookup_languages` adds the React→base fallback |
-| SI.6 | Indentation: continuation lines take the trigger line's indent; `\t` follows `expandtab` / `shiftwidth` (finding 4) | tests: nested expansion, expandtab on/off | 📝 |
+| SI.6 | Indentation: continuation lines take the trigger line's indent; `\t` follows `expandtab` / `shiftwidth` (finding 4) | tests: nested expansion, expandtab on/off | ✅ — `RenderedSnippet::reindented(base, level)` rewrites the text and remaps every stop; the host passes the trigger line's indentation and one `IndentUnit` step for both the snippet and the LSP expansion paths |
 | SI.7 | Mirrors: placeholder text copied to mirrors; focus the copy holding it; typing updates mirrors live in one undo group | tests: render, focus, live update, one `u` | 📝 |
 | SI.8 | Parser: format transforms parse and apply; UTF-8 choices; linear-time malformed nesting + depth cap; per-entry load errors with a user-visible count; unknown variable → tabstop; local `CURRENT_*` | tests per item | 📝 |
 | SI.9 | LSP: advertise completion capabilities; honour `textEdit`; tabstops correct after `additionalTextEdits`; Select on a default; run `command` (finding 2) | tests with the in-process server | 📝 |

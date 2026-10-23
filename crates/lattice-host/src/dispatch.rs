@@ -29617,34 +29617,38 @@ impl Editor {
         if !rendered.tabstops.is_empty()
             && let Some(first) = self.start_snippet_session(&rendered, origin)
         {
-            // SN.3d.3: focus the first tabstop. A non-empty placeholder
-            // default is SELECTED (charwise Select) so the next printable
-            // key overtypes it — same UX as the `<Tab>` nav path
-            // (`snippet_group_cursor_effect`), but here the host mutates
-            // state directly (the expansion callers don't thread a
-            // `DispatchOutcome`, so routing through the effect pipeline
-            // would be invasive). An empty tabstop keeps the bare Insert
-            // cursor.
-            let buffer = self.document.snapshot().buffer.clone();
-            if let Some((anchor, head)) =
-                lattice_snippet::placeholder_selection(&buffer, first.clone())
-            {
-                self.set_selections_blocking(SelectionSet::single(Selection {
-                    anchor,
-                    head,
-                    visual: Some(VisualMode::Charwise),
-                }));
-                self.visual_anchor = Some(anchor);
-                self.cursor = head;
-                self.modal = ModalState::Select(VisualKind::Charwise);
-            } else {
-                if let Ok(start) = buffer.byte_to_position(first.start) {
-                    self.cursor = start;
-                }
-                self.modal = ModalState::Insert;
-            }
+            self.focus_first_snippet_stop(first);
         } else {
             self.cursor = applied.inserted_range.end;
+        }
+    }
+
+    /// SN.3d.3: focus a freshly expanded snippet's first stop, whose text is
+    /// at `first`. A non-empty placeholder default is SELECTED (charwise
+    /// Select) so the next printable key overtypes it — same UX as the
+    /// `<Tab>` nav path (`snippet_group_cursor_effect`), but here the host
+    /// mutates state directly (the expansion callers don't thread a
+    /// `DispatchOutcome`, so routing through the effect pipeline would be
+    /// invasive). An empty stop keeps the bare Insert cursor. Every
+    /// expansion path — a snippet, a language server's — focuses through
+    /// here (SI.9: the LSP path had left defaults unselected).
+    fn focus_first_snippet_stop(&mut self, first: std::ops::Range<usize>) {
+        let buffer = self.document.snapshot().buffer.clone();
+        if let Some((anchor, head)) = lattice_snippet::placeholder_selection(&buffer, first.clone())
+        {
+            self.set_selections_blocking(SelectionSet::single(Selection {
+                anchor,
+                head,
+                visual: Some(VisualMode::Charwise),
+            }));
+            self.visual_anchor = Some(anchor);
+            self.cursor = head;
+            self.modal = ModalState::Select(VisualKind::Charwise);
+        } else {
+            if let Ok(start) = buffer.byte_to_position(first.start) {
+                self.cursor = start;
+            }
+            self.modal = ModalState::Insert;
         }
     }
 
@@ -33971,29 +33975,71 @@ impl Editor {
             );
         }
         if let Some(cmd) = meta.command.clone() {
-            let uri = self.buffer_uris.get(&self.document_buffer_id).cloned();
-            if let Some(uri) = uri {
-                let handle = self
-                    .lsp
-                    .servers_for(&uri)
-                    .into_iter()
-                    .find(|h| h.capabilities().supports_execute_command());
-                self.execute_lsp_command(handle, cmd);
-            }
+            self.run_completion_command(cmd);
         }
     }
 
+    /// Run an accepted completion item's `command` on a server of this
+    /// buffer that executes commands.
+    fn run_completion_command(&mut self, cmd: lattice_lsp::lsp_types::Command) {
+        let uri = self.buffer_uris.get(&self.document_buffer_id).cloned();
+        if let Some(uri) = uri {
+            let handle = self
+                .lsp
+                .servers_for(&uri)
+                .into_iter()
+                .find(|h| h.capabilities().supports_execute_command());
+            self.execute_lsp_command(handle, cmd);
+        }
+    }
+
+    /// The span an accepted LSP item replaces, in buffer positions: its
+    /// `textEdit` range when it has one, extended to the cursor when the
+    /// user has typed on since the request (the server's range ends where
+    /// the request was made — replacing only that much would leave the
+    /// extra characters after the insert); the popup's anchor to the cursor
+    /// otherwise (SI.9).
+    fn lsp_completion_replace_range(
+        &self,
+        meta: &lattice_lsp::completion::LspCompletionMeta,
+        anchor: lattice_protocol::position::Position,
+    ) -> lattice_protocol::position::Range {
+        let Some(r) = meta.replace_range else {
+            return lattice_protocol::position::Range::new(anchor, self.cursor);
+        };
+        let buffer = &self.document.snapshot().buffer;
+        let at = |p: lattice_lsp::lsp_types::Position| {
+            lattice_protocol::position::Position::new(
+                p.line,
+                Editor::lsp_position_to_app_byte(buffer, p.line, p.character),
+            )
+        };
+        let (start, mut end) = (at(r.start), at(r.end));
+        if end.line == self.cursor.line && self.cursor > end {
+            end = self.cursor;
+        }
+        lattice_protocol::position::Range::new(start, end)
+    }
+
     /// Expand a snippet body alongside LSP `additionalTextEdits`
-    /// as one undo unit. Phase 5.8.AD.4.
+    /// as one undo unit, replacing `replace`. Phase 5.8.AD.4; SI.9 gave it
+    /// the item's own range, placeholders that survive an import added
+    /// above, and `insertTextMode: asIs` (no re-indent).
     pub fn expand_snippet_with_lsp_edits(
         &mut self,
         body: &lattice_snippet::SnippetBody,
-        anchor: lattice_protocol::position::Position,
+        replace: lattice_protocol::position::Range,
         additional: Vec<lattice_lsp::lsp_types::TextEdit>,
+        as_is: bool,
     ) -> Result<(), String> {
         let vars = self.snippet_variable_context();
-        let rendered = self.indent_snippet(lattice_snippet::render::render(body, &vars), anchor);
-        let main_range = lattice_protocol::position::Range::new(anchor, self.cursor);
+        let raw = lattice_snippet::render::render(body, &vars);
+        let rendered = if as_is {
+            raw
+        } else {
+            self.indent_snippet(raw, replace.start)
+        };
+        let main_range = replace;
         let main_edit = lattice_protocol::edit::Edit::replace(main_range, rendered.text.clone());
         let snap = self.document.snapshot();
         let mut all_edits: Vec<lattice_protocol::edit::Edit> =
@@ -34037,26 +34083,29 @@ impl Editor {
         let main_applied = applied
             .get(main_idx)
             .ok_or_else(|| "main edit missing from applied batch".to_string())?;
+        // The batch applies bottom-up, so an edit ABOVE the snippet — an
+        // auto-import — lands after it and moves it. Its recorded range is
+        // as of its own application; carry it through the edits after it,
+        // or every placeholder is off by the import (SI.9).
+        let mut inserted = main_applied.inserted_range;
+        for later in &applied[main_idx + 1..] {
+            inserted = lattice_protocol::position::Range::new(
+                lattice_core::buffer::transform_position(inserted.start, later),
+                lattice_core::buffer::transform_position(inserted.end, later),
+            );
+        }
         let origin = self
             .document
             .snapshot()
             .buffer
-            .position_to_byte(main_applied.inserted_range.start)
+            .position_to_byte(inserted.start)
             .unwrap_or(0);
         if !rendered.tabstops.is_empty()
             && let Some(first) = self.start_snippet_session(&rendered, origin)
         {
-            if let Ok(pos) = self
-                .document
-                .snapshot()
-                .buffer
-                .byte_to_position(first.start)
-            {
-                self.cursor = pos;
-            }
-            self.modal = lattice_grammar::ModalState::Insert;
+            self.focus_first_snippet_stop(first);
         } else {
-            self.cursor = main_applied.inserted_range.end;
+            self.cursor = inserted.end;
         }
         Ok(())
     }
@@ -34167,16 +34216,25 @@ impl Editor {
             ) {
                 match lattice_snippet::parse(&meta.insert_text) {
                     Ok(body) => {
+                        let replace = self.lsp_completion_replace_range(&meta, state.anchor);
+                        let as_is = meta.original_item.insert_text_mode
+                            == Some(lattice_lsp::lsp_types::InsertTextMode::AS_IS);
                         if let Err(e) = self.expand_snippet_with_lsp_edits(
                             &body,
-                            state.anchor,
+                            replace,
                             meta.additional_text_edits.clone(),
+                            as_is,
                         ) {
                             self.set_message(
                                 EchoLevel::Error,
                                 format!("completion: apply failed: {e}"),
                             );
                             return;
+                        }
+                        // SI.9: an item's `command` runs after it is inserted,
+                        // snippet or not (the plain path already did).
+                        if let Some(cmd) = meta.command.clone() {
+                            self.run_completion_command(cmd);
                         }
                     }
                     Err(_) => {

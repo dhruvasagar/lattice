@@ -572,3 +572,153 @@ pub fn typing_in_a_later_copy_keeps_the_cursor_in_place<P: PeerUnderTest>() {
 
     assert_eq!(text(&peer), "ayz = ayz\n");
 }
+
+// ---- SI.9: a language server's snippets ----
+
+/// A `.rs` file with an in-process language server answering `items`.
+/// Returns the peer, the server's runtime (keep it alive) and its log.
+fn with_server<P: PeerUnderTest>(
+    tag: &str,
+    items: Vec<serde_json::Value>,
+    extra_capabilities: serde_json::Value,
+) -> (P, tokio::runtime::Runtime, super::completion::MockLspLog) {
+    let dir = super::completion::temp_dir(tag);
+    let path = dir.join("main.rs");
+    std::fs::write(&path, "fn main() {}\n").expect("write");
+    let mut peer = boot::<P>("\n");
+    super::completion::open(&mut peer, &path);
+    let (rt, log) = super::completion::attach_mock_lsp_with(
+        &mut peer,
+        &path,
+        items,
+        std::time::Duration::ZERO,
+        extra_capabilities,
+    );
+    (peer, rt, log)
+}
+
+/// Open the popup on `keys` and accept `label` once the server's row is in.
+fn complete_from_server<P: PeerUnderTest>(peer: &mut P, keys: &str, label: &str) {
+    press(peer, keys);
+    let lsp = lattice_completion::LSP_COMPLETION_SOURCE_ID;
+    assert!(
+        super::completion::settle(peer, |p| super::completion::shows(p, label, lsp)),
+        "the server's `{label}` reached the popup"
+    );
+    press(peer, "<C-y>");
+}
+
+/// The client tells servers it takes snippets. Without `snippetSupport`
+/// servers send plain text only, which is why no language server's
+/// snippet ever reached the snippet engine. It does not offer to resolve
+/// `additionalTextEdits` lazily: accept does not wait for a resolve, so a
+/// server that deferred them would lose its auto-imports.
+pub fn the_client_tells_servers_it_takes_snippets<P: PeerUnderTest>() {
+    let (_peer, _rt, log) = with_server::<P>("lsp-caps", Vec::new(), serde_json::json!({}));
+    let log = log.lock().expect("log");
+    let (_, params) = log
+        .iter()
+        .find(|(method, _)| method == "initialize")
+        .expect("the client initialized");
+    let item = &params["capabilities"]["textDocument"]["completion"]["completionItem"];
+    assert_eq!(item["snippetSupport"], serde_json::json!(true), "{item}");
+    let resolvable = item["resolveSupport"]["properties"].to_string();
+    assert!(!resolvable.contains("additionalTextEdits"), "{resolvable}");
+}
+
+/// A server's snippet expands through the snippet engine: its placeholder
+/// is selected for overtyping, and the session is live.
+pub fn a_server_snippet_expands_with_its_placeholders<P: PeerUnderTest>() {
+    let item = serde_json::json!({
+        "label": "push",
+        "insertTextFormat": 2,
+        "insertText": "push(${1:value})$0"
+    });
+    let (mut peer, _rt, _log) = with_server::<P>("lsp-snippet", vec![item], serde_json::json!({}));
+
+    complete_from_server(&mut peer, "Gopu<C-Space>", "push");
+
+    assert_eq!(text(&peer), "fn main() {}\npush(value)\n");
+    assert_selects_on(&peer, "the server's placeholder", 1, 5, 10);
+    assert!(session_active(&peer));
+}
+
+/// A server snippet replaces the range its `textEdit` names, not only the
+/// word the popup was opened on.
+pub fn a_server_snippet_replaces_its_own_range<P: PeerUnderTest>() {
+    let item = serde_json::json!({
+        "label": "push",
+        "insertTextFormat": 2,
+        "textEdit": {
+            "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 7 } },
+            "newText": "self.push(${1:v})"
+        }
+    });
+    let (mut peer, _rt, _log) = with_server::<P>("lsp-range", vec![item], serde_json::json!({}));
+
+    complete_from_server(&mut peer, "Goself.pu<C-Space>", "push");
+
+    assert_eq!(text(&peer), "fn main() {}\nself.push(v)\n");
+}
+
+/// An import the server adds above (`additionalTextEdits`) moves the
+/// snippet down a line; its placeholders move with it.
+pub fn an_import_above_keeps_the_snippets_placeholders<P: PeerUnderTest>() {
+    let item = serde_json::json!({
+        "label": "wr",
+        "insertTextFormat": 2,
+        "insertText": "write(${1:f})",
+        "additionalTextEdits": [{
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+            "newText": "use std::fmt;\n"
+        }]
+    });
+    let (mut peer, _rt, _log) = with_server::<P>("lsp-import", vec![item], serde_json::json!({}));
+
+    complete_from_server(&mut peer, "Gowr<C-Space>", "wr");
+
+    assert_eq!(text(&peer), "use std::fmt;\nfn main() {}\nwrite(f)\n");
+    assert_selects_on(&peer, "`f`, a line further down", 2, 6, 7);
+}
+
+/// An accepted server snippet's `command` runs, as a plain item's does.
+pub fn a_server_snippets_command_runs<P: PeerUnderTest>() {
+    let item = serde_json::json!({
+        "label": "cmd",
+        "insertTextFormat": 2,
+        "insertText": "cmd(${1:x})",
+        "command": { "title": "after", "command": "conformance.after" }
+    });
+    let (mut peer, _rt, log) = with_server::<P>(
+        "lsp-command",
+        vec![item],
+        serde_json::json!({ "executeCommandProvider": { "commands": ["conformance.after"] } }),
+    );
+
+    complete_from_server(&mut peer, "Gocm<C-Space>", "cmd");
+
+    assert!(
+        super::completion::settle(&mut peer, |_| {
+            log.lock()
+                .expect("log")
+                .iter()
+                .any(|(method, _)| method == "workspace/executeCommand")
+        }),
+        "the server was asked to run the item's command"
+    );
+}
+
+/// `insertTextMode: asIs` keeps the server's whitespace: no re-indent.
+pub fn an_as_is_server_snippet_keeps_its_whitespace<P: PeerUnderTest>() {
+    let item = serde_json::json!({
+        "label": "blk",
+        "insertTextFormat": 2,
+        "insertTextMode": 1,
+        "insertText": "blk {\n\t$0\n}"
+    });
+    let (mut peer, _rt, _log) = with_server::<P>("lsp-as-is", vec![item], serde_json::json!({}));
+
+    complete_from_server(&mut peer, "Go    bl<C-Space>", "blk");
+
+    assert_eq!(text(&peer), "fn main() {}\n    blk {\n\t\n}\n");
+}

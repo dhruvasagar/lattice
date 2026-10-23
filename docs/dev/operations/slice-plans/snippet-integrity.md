@@ -7,7 +7,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 
-**Status: 🚧 — SI.1–SI.7 ✅ (2026-10-23).**
+**Status: 🚧 — SI.1–SI.7, SI.9 ✅ (2026-10-23).**
 
 ## Why
 
@@ -62,6 +62,14 @@ Both renderers share the host's expansion code, so every finding is in both.
   `Event::DocumentChanged` (asynchronous — `x<Tab>` races the shift).
 - **Mirrors update live (2026-10-23)**, in the edit's undo group — by the `Document`, as linked tracked ranges (option A over a host post-edit hook or sync-on-`<Tab>`: every edit path mirrors, no extra actor crossing, and LSP linked editing gets the same primitive).
 - **Multi-cursor expansion is deferred** (SI.13).
+- **TUI / GPUI parity is structural, and checked per slice.** Every
+  scenario lives in `lattice-host/src/peer_conformance/snippet.rs` and runs
+  in both peers through `peer_conformance_tests!` — real keys through each
+  peer's own key path and dispatch tail. The renderer crates hold no snippet
+  logic: their `ExpandSnippet` / `ReloadSnippets` arms and startup load call
+  host functions, and selection painting reads the host's published visual
+  range. Each slice runs GPUI's whole suite (`--features window`), not only
+  the conformance subset, before it lands.
 
 ## Slices
 
@@ -75,7 +83,7 @@ Both renderers share the host's expansion code, so every finding is in both.
 | SI.6 | Indentation: continuation lines take the trigger line's indent; `\t` follows `expandtab` / `shiftwidth` (finding 4) | tests: nested expansion, expandtab on/off | ✅ — `RenderedSnippet::reindented(base, level)` rewrites the text and remaps every stop; the host passes the trigger line's indentation and one `IndentUnit` step for both the snippet and the LSP expansion paths |
 | SI.7 | Mirrors: placeholder text copied to mirrors; focus the copy holding it; typing updates mirrors live in one undo group | tests: render, focus, live update, one `u` | ✅ — option (A), decided 2026-10-23: tracked ranges can be linked; the `Document` copies an edit in one into the rest in the same commit and undo entry (never during undo/redo), reports the copies as `linked_edits` on the snapshot, and the host's edit chokepoints publish them and move the cursor across them. Mirrors render their placeholder's text |
 | SI.8 | Parser: format transforms parse and apply; UTF-8 choices; linear-time malformed nesting + depth cap; per-entry load errors with a user-visible count; unknown variable → tabstop; local `CURRENT_*` | tests per item | 📝 |
-| SI.9 | LSP: advertise completion capabilities; honour `textEdit`; tabstops correct after `additionalTextEdits`; Select on a default; run `command` (finding 2) | tests with the in-process server | 📝 |
+| SI.9 | LSP: advertise completion capabilities; honour `textEdit`; tabstops correct after `additionalTextEdits`; Select on a default; run `command` (finding 2) | tests with the in-process server | ✅ — `completion` client capabilities (snippets, insert/replace, insert-text modes, lazy `documentation`/`detail`; NOT lazy `additionalTextEdits` — accept does not await a resolve — nor label details, which the popup does not render); `textEdit` range extended to the cursor; origin carried through edits applied after it; first stop focused through the shared `focus_first_snippet_stop`; `command` run; `asIs` skips the re-indent. Found, not fixed: the plain-text LSP accept keeps the stale `textEdit` end, and `lsp_position_to_app_byte` assumes UTF-16 whatever encoding was negotiated |
 | SI.10 | Variables + surround: `TM_SELECTED_TEXT` from Visual, OS clipboard, comment strings from the major mode, `WORKSPACE_*`, `RELATIVE_FILEPATH` | tests per variable | 📝 |
 | SI.11 | Loading: `snippet.dirs` option, project `.lattice/snippets`, `.code-snippets`, friendly-snippets `package.json` layout | tests per layout | 📝 |
 | SI.12 | Feedback: placeholder highlight (theme element, both renderers); choice list on `${1\|a,b\|}`; remaining doc drift | tests: decoration present in both peers; choice list opens | 📝 |

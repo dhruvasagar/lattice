@@ -443,6 +443,12 @@ macro_rules! peer_conformance_tests {
             mirrors_show_the_placeholder_text,
             typing_in_a_placeholder_updates_its_mirrors,
             typing_in_a_later_copy_keeps_the_cursor_in_place,
+            the_client_tells_servers_it_takes_snippets,
+            a_server_snippet_expands_with_its_placeholders,
+            a_server_snippet_replaces_its_own_range,
+            an_import_above_keeps_the_snippets_placeholders,
+            a_server_snippets_command_runs,
+            an_as_is_server_snippet_keeps_its_whitespace,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

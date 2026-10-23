@@ -17,6 +17,13 @@
   auto_trigger = true` turns it on for one language alone.
 
 ### Fixed
+- **Language servers' snippets work.** The editor never told servers it
+  understands snippets, so they sent plain text: no `$1` placeholders to
+  `<Tab>` through after accepting a function. It does now, and a server's
+  snippet replaces the text it says to (not just the word before the
+  cursor), keeps its placeholders in the right place when an import is
+  added above, selects its first placeholder, and runs the server's
+  follow-up command.
 - **Repeated snippet placeholders update together.** In a snippet like
   `let ${1:x} = $1;` the second `x` started empty and never followed
   what you typed. Every copy now shows the placeholder's text and changes

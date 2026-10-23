@@ -50,7 +50,7 @@ fn raw_from<P: PeerUnderTest>(peer: &P, source: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn shows<P: PeerUnderTest>(peer: &P, text: &str, source: &str) -> bool {
+pub(super) fn shows<P: PeerUnderTest>(peer: &P, text: &str, source: &str) -> bool {
     rendered(peer).iter().any(|(t, s)| t == text && s == source)
 }
 
@@ -58,7 +58,7 @@ fn shows<P: PeerUnderTest>(peer: &P, text: &str, source: &str) -> bool {
 /// the editor actor does on its `async_landed` wake (`run_tick_pending`,
 /// then publish), followed by the peer's own idle repaint. Polls until
 /// `done` holds, for up to five seconds.
-fn settle<P: PeerUnderTest>(peer: &mut P, done: impl Fn(&P) -> bool) -> bool {
+pub(super) fn settle<P: PeerUnderTest>(peer: &mut P, done: impl Fn(&P) -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if done(peer) {
@@ -76,7 +76,7 @@ fn settle<P: PeerUnderTest>(peer: &mut P, done: impl Fn(&P) -> bool) -> bool {
 
 /// A fresh directory for one scenario, unique per process and test thread
 /// (both peers' copies of a scenario can run in one process).
-fn temp_dir(tag: &str) -> PathBuf {
+pub(super) fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "lattice-peer-conformance-{tag}-{}-{:?}",
         std::process::id(),
@@ -89,7 +89,7 @@ fn temp_dir(tag: &str) -> PathBuf {
 
 /// Open `path` with `:e`, and wait for its syntax tree — tree-sitter and
 /// path completion both read it.
-fn open<P: PeerUnderTest>(peer: &mut P, path: &Path) {
+pub(super) fn open<P: PeerUnderTest>(peer: &mut P, path: &Path) {
     press(peer, &format!(":e {}<CR>", path.display()));
     assert!(
         settle(peer, |p| p.editor().syntax.is_some()),
@@ -296,6 +296,29 @@ fn attach_mock_lsp<P: PeerUnderTest>(
     items: &[&str],
     delay: Duration,
 ) -> tokio::runtime::Runtime {
+    let items = items
+        .iter()
+        .map(|label| serde_json::json!({ "label": label }))
+        .collect();
+    attach_mock_lsp_with(peer, path, items, delay, serde_json::json!({})).0
+}
+
+/// Every message a mock server received: `(method, params)`, requests and
+/// notifications alike, in arrival order.
+pub(super) type MockLspLog = Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
+
+/// [`attach_mock_lsp`] with whole completion items (`insertTextFormat`,
+/// `textEdit`, `additionalTextEdits`, `command` …) and `extra_capabilities`
+/// merged into the server's `initialize` reply. Returns the log of what the
+/// server received, so a scenario can assert on the client's capabilities
+/// or on a request an accept should send.
+pub(super) fn attach_mock_lsp_with<P: PeerUnderTest>(
+    peer: &mut P,
+    path: &Path,
+    items: Vec<serde_json::Value>,
+    delay: Duration,
+    extra_capabilities: serde_json::Value,
+) -> (tokio::runtime::Runtime, MockLspLog) {
     use lattice_lsp::{LspReader, LspWriter, Message, Response};
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -303,10 +326,18 @@ fn attach_mock_lsp<P: PeerUnderTest>(
         .enable_all()
         .build()
         .expect("runtime");
-    let items: Vec<serde_json::Value> = items
-        .iter()
-        .map(|label| serde_json::json!({ "label": label }))
-        .collect();
+    let log: MockLspLog = Arc::default();
+    let server_log = Arc::clone(&log);
+    let mut capabilities = serde_json::json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": 2,
+        "completionProvider": {}
+    });
+    if let (Some(caps), Some(extra)) =
+        (capabilities.as_object_mut(), extra_capabilities.as_object())
+    {
+        caps.extend(extra.clone());
+    }
     let root = path.parent().expect("a parent").to_path_buf();
     let handle = rt.block_on({
         let root = root.clone();
@@ -318,16 +349,24 @@ fn attach_mock_lsp<P: PeerUnderTest>(
                 let mut reader = LspReader::new(mock_read);
                 let mut writer = LspWriter::new(mock_write);
                 while let Ok(Some(message)) = reader.read_message().await {
-                    let Message::Request(req) = message else {
-                        continue;
+                    let req = match message {
+                        Message::Request(req) => req,
+                        Message::Notification(n) => {
+                            server_log
+                                .lock()
+                                .expect("log")
+                                .push((n.method.clone(), n.params.clone().unwrap_or_default()));
+                            continue;
+                        }
+                        _ => continue,
                     };
+                    server_log
+                        .lock()
+                        .expect("log")
+                        .push((req.method.clone(), req.params.clone().unwrap_or_default()));
                     let result = match req.method.as_str() {
                         "initialize" => serde_json::json!({
-                            "capabilities": {
-                                "positionEncoding": "utf-8",
-                                "textDocumentSync": 2,
-                                "completionProvider": {}
-                            },
+                            "capabilities": capabilities,
                             "serverInfo": { "name": "conformance-mock" }
                         }),
                         "textDocument/completion" => {
@@ -384,7 +423,7 @@ fn attach_mock_lsp<P: PeerUnderTest>(
         lattice_lsp::completion::LspCompletionMode::mode_id(),
     );
     peer.republish();
-    rt
+    (rt, log)
 }
 
 /// LSP: a language server's items reach the popup.

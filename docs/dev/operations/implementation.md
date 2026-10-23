@@ -1421,6 +1421,9 @@ body's `\t` levels become the buffer's indent unit.
 **SI.7 ✅**: mirrors are linked tracked ranges the `Document` keeps equal
 as you type (same undo entry); the copies ride the snapshot as
 `linked_edits` and the host publishes them.
+**SI.9 ✅**: the client advertises completion capabilities, so servers
+send snippets; LSP snippet items replace their own range, keep their
+placeholders past an auto-import, select defaults and run their command.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

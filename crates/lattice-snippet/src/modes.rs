@@ -461,47 +461,69 @@ pub struct SnippetActiveModeGuard {
     _action_handler_registrations: Vec<ActionHandlerRegistration>,
 }
 
+/// The charwise selection that covers a placeholder's text: `(anchor, head)`
+/// with the head on the *first byte of the last character* — charwise
+/// selections are head-inclusive, so `[anchor, head]` spans exactly `range`.
+/// Taking `range.end - 1` instead puts the head inside a multi-byte last
+/// character (`${1:café}`), which the overtype then cuts in half.
+///
+/// `None` for an empty range or one that does not lie in `buffer` —
+/// `byte_to_position` panics past the end rather than erring, and a tracked
+/// range never should be past it, but a keystroke must not be what finds
+/// out.
+pub fn placeholder_selection(
+    buffer: &lattice_core::Buffer,
+    range: std::ops::Range<usize>,
+) -> Option<(Position, Position)> {
+    if range.end <= range.start || range.end as u64 > buffer.byte_len() {
+        return None;
+    }
+    let anchor = buffer.byte_to_position(range.start).ok()?;
+    let end = buffer.byte_to_position(range.end).ok()?;
+    let last = buffer.slice(Range::new(anchor, end)).ok()?.chars().last()?;
+    let head = buffer.byte_to_position(range.end - last.len_utf8()).ok()?;
+    Some((anchor, head))
+}
+
 /// Resolve the cursor effect for a newly-focused tabstop: `range` is
 /// where its first occurrence is now (read from the document snapshot's
-/// tracked ranges). A non-empty default is selected, an empty stop gets a
-/// bare cursor. `None` (no effect) when the byte offset doesn't map to a
-/// position. Takes the snapshot `buffer` (not the store) so the cursor
+/// tracked ranges). `None` (no effect) when the range doesn't lie in the
+/// buffer. Takes the snapshot `buffer` (not the store) so the cursor
 /// math is unit-testable with a plain [`lattice_core::Buffer`].
 fn snippet_group_cursor_effect(
     buffer: &lattice_core::Buffer,
     range: std::ops::Range<usize>,
 ) -> Option<Effect> {
-    // `byte_to_position` panics past the end rather than erring; a
-    // tracked range never should be past it, but a keystroke must not
-    // be what finds out.
     if range.end as u64 > buffer.byte_len() {
         return None;
     }
-    let start = buffer.byte_to_position(range.start).ok()?;
-    if range.end > range.start {
+    if let Some((anchor, head)) = placeholder_selection(buffer, range.clone()) {
         // SN.3d.3: a non-empty placeholder default is SELECTED so the
         // next printable key overtypes the whole default in one keystroke.
-        // Charwise Select with the head on the placeholder's LAST byte
-        // (inclusive-head convention) makes `selection_extent` span
-        // exactly `[start, end)`. `EnterMode` FIRST: the host's
-        // `Effect::SelectionChange` arm only adopts a span (and sets
-        // `visual_anchor`) once modal is Visual/Select, so the mode flip
-        // must land before the selection.
-        let head = buffer.byte_to_position(range.end - 1).ok()?;
+        // `EnterMode` FIRST: the host's `Effect::SelectionChange` arm only
+        // adopts a span once modal is Visual/Select. The selection carries
+        // its `visual` kind, which tells the host to adopt both endpoints
+        // even when they coincide (a one-character default) instead of
+        // extending from the previous anchor as it would for a motion.
         let sel = Selection {
-            anchor: start,
+            anchor,
             head,
             visual: Some(VisualMode::Charwise),
         };
-        Some(Effect::Many(vec![
+        return Some(Effect::Many(vec![
             Effect::EnterMode(ModalState::Select(VisualKind::Charwise)),
             Effect::SelectionChange(SelectionSet::single(sel)),
-        ]))
-    } else {
-        // Empty tabstop (`$1` / `${1:}`): nothing to overtype, so keep the
-        // bare Insert cursor — do NOT enter Select on a zero-width stop.
-        Some(Effect::CursorMove(start))
+        ]));
     }
+    // Empty tabstop (`$1` / `$0`): nothing to overtype, so a bare Insert
+    // cursor. Leave Select FIRST: a cursor move in Select extends the
+    // selection from its anchor, and the next keystroke would overtype
+    // everything from the previous placeholder to here (SI.3).
+    let start = buffer.byte_to_position(range.start).ok()?;
+    Some(Effect::Many(vec![
+        Effect::EnterMode(ModalState::Insert),
+        Effect::CursorMove(start),
+    ]))
 }
 
 /// Step the session in `buffer_id` one stop with `step` (next or prev),
@@ -524,10 +546,17 @@ fn step_session(
     let (range, changes) = session.with_mut(buffer_id, |s| {
         let active = s.as_mut()?;
         match step(active, tracked) {
-            Some(group) => Some((
-                group.live_ranges(tracked).into_iter().next(),
-                active.focus_changes(),
-            )),
+            Some(group) => {
+                let range = group.live_ranges(tracked).into_iter().next();
+                if active.at_exit() {
+                    // Landed on `$0`: the cursor goes there and the session
+                    // is over, so the next `<Tab>` is a plain `<Tab>`.
+                    let untrack = active.untrack_changes();
+                    *s = None;
+                    return Some((range, untrack));
+                }
+                Some((range, active.focus_changes()))
+            }
             None if ends_on_none => {
                 // Walked off `$0`: the session ends for this buffer. The
                 // host's overlay reconciler sees `is_active(buffer) ==
@@ -1008,21 +1037,45 @@ mod tests {
         }
     }
 
-    /// SN.3d.3: an EMPTY tabstop (`$1`, zero-width range) keeps the bare
-    /// Insert cursor — no Select, nothing to overtype.
+    /// SN.3d.3: an EMPTY tabstop (`$1`, zero-width range) gets a bare
+    /// Insert cursor — no Select, nothing to overtype. SI.3: it enters
+    /// Insert before moving, because the `<Tab>` that lands here is
+    /// usually pressed in Select, where a cursor move extends the selection.
     #[test]
     fn cursor_effect_empty_tabstop_keeps_bare_cursor() {
         let buffer = Buffer::from_text("for i in iter {}");
-        // A bare cursor is expressed as `Effect::CursorMove`, NOT as a
-        // zero-width `SelectionChange`. This assertion previously
-        // expected the latter and went stale when the bare-cursor
-        // representation changed; the test's INTENT (its name — "keeps
-        // bare cursor") was always the behaviour below, so only the
-        // encoding is updated here, not what's being guarded.
         match snippet_group_cursor_effect(&buffer, 4..4).expect("effect") {
-            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 4)),
-            other => panic!("expected a bare CursorMove, got {other:?}"),
+            Effect::Many(effects) => {
+                assert!(
+                    matches!(effects.first(), Some(Effect::EnterMode(ModalState::Insert))),
+                    "leaves Select first, or the move extends the old selection: {effects:?}"
+                );
+                assert!(
+                    matches!(effects.get(1), Some(Effect::CursorMove(p)) if *p == Position::new(0, 4)),
+                    "then a bare cursor: {effects:?}"
+                );
+            }
+            other => panic!("expected Effect::Many, got {other:?}"),
         }
+    }
+
+    /// The selection's head sits on the first byte of the last character,
+    /// so a multi-byte last character is selected whole.
+    #[test]
+    fn placeholder_selection_ends_on_a_character_boundary() {
+        let buffer = Buffer::from_text("x café y");
+        // `café` is bytes 2..7 (`é` is two bytes).
+        assert_eq!(
+            placeholder_selection(&buffer, 2..7),
+            Some((Position::new(0, 2), Position::new(0, 5)))
+        );
+        assert_eq!(
+            placeholder_selection(&buffer, 0..1),
+            Some((Position::new(0, 0), Position::new(0, 0))),
+            "a one-character default: anchor and head coincide"
+        );
+        assert_eq!(placeholder_selection(&buffer, 3..3), None, "empty");
+        assert_eq!(placeholder_selection(&buffer, 7..40), None, "off the end");
     }
 
     /// A range past the end of the buffer produces no cursor effect.
@@ -1298,8 +1351,8 @@ mod tests {
         assert_eq!(action_handlers.registered_count(), 0);
     }
 
-    /// `<Tab>` walks `$1 -> $2 -> $0`, then a fourth fire walks off
-    /// `$0` and ends the session — the migrated
+    /// `<Tab>` walks `$1 -> $2 -> $0`, and landing on `$0` ends the
+    /// session — the migrated
     /// `do_snippet_next_placeholder` behaviour.
     #[test]
     fn next_handler_walks_through_groups_and_drops_on_zero() {
@@ -1315,10 +1368,11 @@ mod tests {
         assert_eq!(idx(&session), Some(1)); // focused on $1
         fire(&handlers, next_id, &services);
         assert_eq!(idx(&session), Some(2));
-        fire(&handlers, next_id, &services);
-        assert_eq!(idx(&session), Some(0)); // $0 exit tabstop
-        fire(&handlers, next_id, &services);
-        assert!(!session.is_active(lattice_core::BufferId(1))); // walked off $0 -> session ended
+        // SI.3: landing on `$0` moves the cursor there AND ends the
+        // session, so the next `<Tab>` is a plain one.
+        let effect = fire(&handlers, next_id, &services);
+        assert!(effect.is_some(), "the cursor still moves to `$0`");
+        assert!(!session.is_active(lattice_core::BufferId(1)));
     }
 
     /// `<S-Tab>` walks back a placeholder and never ends the

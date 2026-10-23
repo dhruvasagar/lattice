@@ -233,3 +233,90 @@ pub fn overtyping_a_placeholder_drops_the_ones_nested_in_it<P: PeerUnderTest>() 
     assert_eq!(text(&peer), "fn go(arg)\n");
     assert_selects(&peer, "`<Tab>` skips the removed `$2` to `$3`", 6, 9);
 }
+
+// ---- SI.3: navigation ----
+
+/// `<Tab>` from a selected default onto the empty final stop leaves Select,
+/// so the next key types at the stop instead of overtyping everything from
+/// the previous placeholder to it — and the snippet is over.
+pub fn tab_onto_the_final_stop_types_there_and_ends_the_snippet<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_for_snippet(&mut peer);
+
+    press(&mut peer, "izzfor<C-x><C-s><Tab><Tab>x");
+
+    assert_eq!(text(&peer), "for idx in iter { x }\n");
+    assert!(!session_active(&peer), "reaching `$0` ends the snippet");
+    assert!(
+        matches!(peer.editor().modal, ModalState::Insert),
+        "typing at `$0` is Insert, the mode is {:?}",
+        peer.editor().modal
+    );
+}
+
+/// Once the snippet is over, `<Tab>` is a plain `<Tab>` again: it is not
+/// swallowed by a session with nowhere left to go.
+pub fn the_tab_after_the_final_stop_is_a_plain_tab<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_for_snippet(&mut peer);
+    press(&mut peer, "izzfor<C-x><C-s><Tab><Tab>");
+    assert_eq!(text(&peer), "for idx in iter {  }\n", "precondition");
+
+    press(&mut peer, "<Tab>");
+
+    let text = text(&peer);
+    assert!(
+        text.starts_with("for idx in iter { ") && text.ends_with(" }\n") && text.len() > 21,
+        "`<Tab>` inserted indentation at `$0`: {text:?}"
+    );
+}
+
+/// `<S-Tab>` back onto a one-character default selects just that character:
+/// the selection does not stretch back from where the user was.
+pub fn shift_tab_onto_a_one_character_default_selects_only_it<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(&mut peer, "conformance-ij", "zzij", "${1:i} + ${2:j}");
+    press(&mut peer, "izzij<C-x><C-s><Tab>");
+    assert_selects(&peer, "`<Tab>` onto `j`", 4, 5);
+
+    press(&mut peer, "<S-Tab>");
+    assert_selects(&peer, "`<S-Tab>` onto `i`", 0, 1);
+
+    press(&mut peer, "x");
+    assert_eq!(text(&peer), "x + j\n", "only `i` is overtyped");
+}
+
+/// A default ending in a multi-byte character is selected — and overtyped —
+/// whole.
+pub fn a_multibyte_default_is_overtyped_whole<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(&mut peer, "conformance-cafe", "zzcafe", "${1:café} $2");
+
+    press(&mut peer, "izzcafe<C-x><C-s>x");
+
+    assert_eq!(text(&peer), "x \n");
+}
+
+/// A snippet without `$0` exits at its end: the last `<Tab>` puts the
+/// cursor after the snippet, not inside its last placeholder.
+pub fn without_a_final_stop_the_last_tab_goes_to_the_end<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(&mut peer, "conformance-ab", "zzab", "${1:a} ${2:b}");
+
+    press(&mut peer, "izzab<C-x><C-s><Tab><Tab>!");
+
+    assert_eq!(text(&peer), "a b!\n");
+    assert!(!session_active(&peer), "the snippet is over");
+}
+
+/// The same geometry outside snippets: Visual's span ends after the whole
+/// character under the head, so `vd` on a multi-byte character deletes it.
+/// Visual and Select share the extent (select-mode.md §2), which is how the
+/// snippet case above found this.
+pub fn visual_delete_takes_a_whole_multibyte_character<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("é!\n");
+
+    press(&mut peer, "vd");
+
+    assert_eq!(text(&peer), "!\n");
+}

@@ -425,6 +425,12 @@ macro_rules! peer_conformance_tests {
             a_newline_in_a_placeholder_moves_the_later_ones_down,
             an_edit_above_the_snippet_moves_its_placeholders,
             overtyping_a_placeholder_drops_the_ones_nested_in_it,
+            tab_onto_the_final_stop_types_there_and_ends_the_snippet,
+            the_tab_after_the_final_stop_is_a_plain_tab,
+            shift_tab_onto_a_one_character_default_selects_only_it,
+            a_multibyte_default_is_overtyped_whole,
+            without_a_final_stop_the_last_tab_goes_to_the_end,
+            visual_delete_takes_a_whole_multibyte_character,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

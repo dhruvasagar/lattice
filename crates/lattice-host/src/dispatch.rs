@@ -4040,8 +4040,8 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // The SHAPE of the incoming primary is the generic
             // discriminant, with NO per-object branching (a text
             // object never gets special-cased here):
-            //   * anchor == head -> a motion (`Selection::cursor`):
-            //     keep the running visual anchor and extend the head.
+            //   * anchor == head, no `visual` kind -> a cursor: keep the
+            //     running visual anchor and extend the head.
             //   * anchor != head -> a text object resolved a full span
             //     (`viw` / `vaf` / `vaC` / `vac` ...): adopt BOTH
             //     endpoints, so the selection jumps to the object and
@@ -4060,7 +4060,12 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 _ => None,
             };
             if let Some(kind) = active_kind {
-                let anchor = if primary.anchor != primary.head {
+                // A selection that names its `visual` kind is an explicit
+                // span too, even when anchor == head: a one-character
+                // snippet default, a plugin selecting a character. Without
+                // this, `<S-Tab>` back onto `${1:i}` extended from the
+                // previous placeholder and the next key overtyped both (SI.3).
+                let anchor = if primary.anchor != primary.head || primary.visual.is_some() {
                     editor.visual_anchor = Some(primary.anchor);
                     primary.anchor
                 } else {
@@ -29589,27 +29594,22 @@ impl Editor {
             // `DispatchOutcome`, so routing through the effect pipeline
             // would be invasive). An empty tabstop keeps the bare Insert
             // cursor.
-            let mut entered_select = false;
             let buffer = self.document.snapshot().buffer.clone();
-            if let Ok(start) = buffer.byte_to_position(first.start) {
-                if first.end > first.start
-                    && let Ok(head) = buffer.byte_to_position(first.end - 1)
-                {
-                    self.set_selections_blocking(SelectionSet::single(Selection {
-                        anchor: start,
-                        head,
-                        visual: Some(VisualMode::Charwise),
-                    }));
-                    self.visual_anchor = Some(start);
-                    self.cursor = head;
-                    self.modal = ModalState::Select(VisualKind::Charwise);
-                    entered_select = true;
-                }
-                if !entered_select {
+            if let Some((anchor, head)) =
+                lattice_snippet::placeholder_selection(&buffer, first.clone())
+            {
+                self.set_selections_blocking(SelectionSet::single(Selection {
+                    anchor,
+                    head,
+                    visual: Some(VisualMode::Charwise),
+                }));
+                self.visual_anchor = Some(anchor);
+                self.cursor = head;
+                self.modal = ModalState::Select(VisualKind::Charwise);
+            } else {
+                if let Ok(start) = buffer.byte_to_position(first.start) {
                     self.cursor = start;
                 }
-            }
-            if !entered_select {
                 self.modal = ModalState::Insert;
             }
         } else {
@@ -29642,7 +29642,16 @@ impl Editor {
             tracing::debug!("snippet: the document tracks no ranges; plain expansion");
             return None;
         };
-        self.snippet_session.set(self.document_buffer_id, active);
+        if active.at_exit() {
+            // A body whose only stop is `$0` (`loop { $0 }`): the cursor goes
+            // there and there is nothing to navigate.
+            drop(
+                self.document
+                    .update_tracked_ranges(active.untrack_changes()),
+            );
+        } else {
+            self.snippet_session.set(self.document_buffer_id, active);
+        }
         Some(first)
     }
 
@@ -38093,8 +38102,8 @@ impl Editor {
             return;
         }
         let range = {
-            let sels = self.document.selections();
-            crate::visual::selection_extent(sels.primary())
+            let snapshot = self.document.snapshot();
+            crate::visual::selection_extent(snapshot.selections.primary(), &snapshot.buffer)
         };
         // `<CR>` / `<NL>` over a selection TYPES a newline (vim: "the typed
         // character is inserted" after entering Insert), and a typed newline

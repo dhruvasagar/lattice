@@ -36,11 +36,16 @@ pub struct BlockExtents {
 /// Byte range a selection spans, folding the stored `sel.visual`
 /// kind. **Visual and Select share this geometry verbatim** —
 /// select-mode.md §2 — so both modes resolve their span through this
-/// one helper (no drift). Charwise / Blockwise include the HEAD byte
-/// (vim semantics; end = `head.byte + 1`); Linewise covers full lines
-/// with a `u32::MAX` end byte the caller clamps to the line length.
-/// The `(anchor, head)` pair is normalised so `start <= end`.
-pub(crate) fn selection_extent(sel: &lattice_protocol::selection::Selection) -> Range {
+/// one helper (no drift). Charwise / Blockwise include the HEAD
+/// character (vim semantics): the end is after the whole character the
+/// head sits on, so a multi-byte one (`é`) is covered entirely rather
+/// than cut after its first byte. Linewise covers full lines with a
+/// `u32::MAX` end byte the caller clamps to the line length. The
+/// `(anchor, head)` pair is normalised so `start <= end`.
+pub(crate) fn selection_extent(
+    sel: &lattice_protocol::selection::Selection,
+    buffer: &lattice_core::Buffer,
+) -> Range {
     let (a, b) = if sel.anchor <= sel.head {
         (sel.anchor, sel.head)
     } else {
@@ -51,7 +56,11 @@ pub(crate) fn selection_extent(sel: &lattice_protocol::selection::Selection) -> 
             Range::new(Position::new(a.line, 0), Position::new(b.line, u32::MAX))
         }
         Some(VisualMode::Charwise) | Some(VisualMode::Blockwise) | None => {
-            Range::new(a, Position::new(b.line, b.byte.saturating_add(1)))
+            let head_len = buffer
+                .line(b.line)
+                .and_then(|line| line.get(b.byte as usize..)?.chars().next())
+                .map_or(1, |c| c.len_utf8() as u32);
+            Range::new(a, Position::new(b.line, b.byte.saturating_add(head_len)))
         }
     }
 }
@@ -97,8 +106,11 @@ impl Editor {
         if !matches!(self.modal, ModalState::Visual(_) | ModalState::Select(_)) {
             return None;
         }
-        let sels = self.document.selections();
-        Some(selection_extent(sels.primary()))
+        let snapshot = self.document.snapshot();
+        Some(selection_extent(
+            snapshot.selections.primary(),
+            &snapshot.buffer,
+        ))
     }
 
     /// Rectangular block of the active Visual selection when

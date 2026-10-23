@@ -1405,6 +1405,10 @@ expansion, overtype, `<Tab>` / `<S-Tab>` and `<Esc>` through real keys.
 (`lattice_core::tracked`), moved across every edit — typing, operators,
 undo, LSP, plugins — in the loop that moves selections; per-end stickiness
 follows focus; overtyping a parent collapses its nested stops.
+**SI.3 ✅**: `<Tab>` onto an empty stop leaves Select; one-char and
+multi-byte defaults select exactly; a body without `$0` exits at its end;
+landing on `$0` ends the session, so the next `<Tab>` is a plain one.
+Visual's charwise extent covers the head's whole character.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

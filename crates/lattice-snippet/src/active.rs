@@ -129,12 +129,27 @@ impl ActiveSnippet {
                 is_choice: ranges.iter().any(|r| r.is_choice),
             })
             .collect();
-        // Append `$0` last when it exists -- the snippet's
-        // exit position.
+        // Append `$0` last -- the snippet's exit position. A body without
+        // one exits at its end, as in VS Code and the LSP spec, so the last
+        // `<Tab>` always leaves the cursor somewhere sensible rather than
+        // stranding it in the last placeholder.
         if let Some(zero_ranges) = groups_map.get(&0) {
             groups.push(TabstopGroup {
                 index: 0,
                 ranges: track(zero_ranges),
+                has_default: false,
+                is_choice: false,
+            });
+        } else if !groups.is_empty() {
+            let end = TabstopRange {
+                index: 0,
+                range: rendered.text.len()..rendered.text.len(),
+                has_default: false,
+                is_choice: false,
+            };
+            groups.push(TabstopGroup {
+                index: 0,
+                ranges: track(&[&end]),
                 has_default: false,
                 is_choice: false,
             });
@@ -188,6 +203,12 @@ impl ActiveSnippet {
     /// Currently-focused group's index (`$N`).
     pub fn current_index(&self) -> Option<u32> {
         self.current_group().map(|g| g.index)
+    }
+
+    /// Focus is on `$0`, the exit: the session is over once the cursor is
+    /// there (VS Code's rule), so the next `<Tab>` is a plain `<Tab>`.
+    pub fn at_exit(&self) -> bool {
+        self.current_index() == Some(0)
     }
 
     /// The stickiness every range should have with the current focus: the
@@ -289,10 +310,13 @@ mod tests {
     }
 
     #[test]
-    fn next_without_zero_terminates_after_last_numbered_group() {
-        let (mut a, t) = start("${1:a} ${2:b}", 0);
+    fn without_a_final_stop_the_snippet_exits_at_its_end() {
+        let (mut a, t) = start("${1:a} ${2:b}", 10);
         a.next(&t);
-        // Already at last numbered group; next returns None.
+        let exit = a.next(&t).expect("an implicit `$0`").clone();
+        assert_eq!(exit.index, 0);
+        assert_eq!(exit.live_ranges(&t), vec![13..13], "after `a b`");
+        assert!(a.at_exit());
         assert!(a.next(&t).is_none());
     }
 
@@ -311,9 +335,10 @@ mod tests {
     #[test]
     fn mirror_groups_share_one_tabstop_group() {
         let (a, _) = start("$1 + $1 = ${1:two-x}", 0);
-        // One group of index 1 with three ranges.
-        assert_eq!(a.groups.len(), 1);
+        // One group of index 1 with three ranges, then the implicit exit.
+        assert_eq!(a.groups.len(), 2);
         assert_eq!(a.groups[0].ranges.len(), 3);
+        assert_eq!(a.groups[1].index, 0);
     }
 
     #[test]

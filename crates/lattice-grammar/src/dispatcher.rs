@@ -930,10 +930,17 @@ fn resolve_grammar_range(
                 Some(lattice_protocol::selection::VisualMode::Charwise) | None => {
                     // Charwise visual: half-open `[a, b)` -- but vim treats
                     // visual ranges as INCLUSIVE of the head, so we extend
-                    // the end by one byte (clamped to line length).
+                    // the end past the head's whole character (one byte
+                    // would cut a multi-byte `é` in half, and the edit's
+                    // char-boundary snap would then delete none of it),
+                    // clamped to line length.
                     let buffer = document.buffer();
                     let line_len = line_byte_len(buffer, b.line);
-                    let extended_end = Position::new(b.line, (b.byte + 1).min(line_len));
+                    let head_len = buffer
+                        .line(b.line)
+                        .and_then(|line| line.get(b.byte as usize..)?.chars().next())
+                        .map_or(1, |c| c.len_utf8() as u32);
+                    let extended_end = Position::new(b.line, (b.byte + head_len).min(line_len));
                     Ok(ProtoRange::new(a, extended_end))
                 }
                 Some(lattice_protocol::selection::VisualMode::Blockwise) => {

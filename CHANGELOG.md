@@ -17,6 +17,17 @@
   auto_trigger = true` turns it on for one language alone.
 
 ### Fixed
+- **Moving between snippet placeholders no longer overwrites text.**
+  `<Tab>` onto an empty placeholder kept the previous one selected, so the
+  next key replaced everything between them; `<S-Tab>` back onto a
+  one-letter placeholder did the same. A placeholder ending in an accented
+  letter is now selected — and replaced — whole. A snippet without a final
+  `$0` stop ends after its text, and reaching the final stop ends the
+  snippet, so the next `<Tab>` types a tab instead of doing nothing.
+- **`vd` deletes a selected accented character.** Visual and Select mode
+  selections ending on a multi-byte character (`é`, `ü`) stopped one byte
+  into it, and deleting or replacing the selection left that character
+  behind.
 - **`<Tab>` in a snippet goes to the next placeholder after you type in
   one.** Typing in a placeholder, or any edit while a snippet was live —
   a new line, a language server adding an import above — left the later

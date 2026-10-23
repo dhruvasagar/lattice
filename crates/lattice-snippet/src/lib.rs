@@ -56,7 +56,7 @@ pub use crate::builtins::{builtin_packs, load_builtins, load_builtins_into};
 pub use crate::load::{LoadError, load_pack, load_pack_from_str};
 pub use crate::modes::{
     SNIPPET_COMPLETION_SOURCE_ID, SNIPPET_PAYLOAD_KIND_ID, SnippetCompletionMode,
-    SnippetCompletionSource, SnippetMode, register_snippet_modes,
+    SnippetCompletionSource, SnippetMode, placeholder_selection, register_snippet_modes,
 };
 pub use crate::parse::{ParseError, parse};
 pub use crate::registry::{Snippet, SnippetMeta, SnippetRegistry};

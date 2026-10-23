@@ -435,6 +435,9 @@ macro_rules! peer_conformance_tests {
             moving_out_of_the_snippet_ends_it,
             moving_inside_the_snippet_keeps_it,
             expanding_inside_a_snippet_replaces_it,
+            the_buffers_language_owns_a_shared_snippet_name,
+            a_later_snippet_on_a_prefix_is_the_one_expanded,
+            a_ruby_file_expands_ruby_snippets,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

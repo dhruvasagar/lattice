@@ -17,6 +17,16 @@
   auto_trigger = true` turns it on for one language alone.
 
 ### Fixed
+- **Snippets come from your file's language.** Two languages' snippets
+  with the same name — friendly-snippets has an "if" in most — could
+  expand the wrong one from the completion popup. Your own snippets now
+  override a built-in on the same prefix, as the docs promised. Ruby,
+  Bash/Zsh, TSX and JSX files find their snippet packs (`ruby.json`,
+  `shellscript.json`, `typescriptreact.json`), and `:picker snippets`
+  lists the snippets for every language as well as the file's own.
+  `.tsx` and `.jsx` files are now `typescriptreact` and
+  `javascriptreact` throughout, so completion settings for them go under
+  `[completion.per-language.typescriptreact]`, not `typescript`.
 - **A snippet ends when you leave it.** Leaving Insert mode any way but
   `<Esc>`, or moving the cursor out of the snippet, left it live, and a
   later `<Tab>` jumped back into it. Expanding a snippet inside another

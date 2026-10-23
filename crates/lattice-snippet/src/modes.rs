@@ -71,14 +71,16 @@ pub struct SnippetCompletionSource {
 
 impl SyncCompletionSource for SnippetCompletionSource {
     fn produce(&self, ctx: &InsertContext<'_>) -> Vec<RawCandidate> {
-        // Walk `matching_prefix` per language + the `"*"`
-        // bucket, build one candidate per matching snippet. The
-        // payload carries the snippet's name (a stable handle);
-        // the host's accept path resolves the body via
-        // `SnippetRegistry::by_name`.
+        // Walk `matching_prefix` over the buffer's packs + the `"*"`
+        // pack, build one candidate per matching snippet. The payload
+        // carries the snippet's identity — its pack and name, not the
+        // name alone, which another language's pack can share (SI.5);
+        // the host's accept path resolves the body through
+        // `SnippetRegistry::resolve`.
         let registry = self.registry.load();
+        let languages = crate::registry::lookup_languages(ctx.language);
         let mut out: Vec<RawCandidate> = Vec::new();
-        for snip in registry.matching_prefix(ctx.language, ctx.query) {
+        for (language, snip) in registry.matching_prefix(&languages, ctx.query) {
             let prefix = snip
                 .prefixes
                 .first()
@@ -93,7 +95,7 @@ impl SyncCompletionSource for SnippetCompletionSource {
             cand.display = display;
             cand.data = CandidateData::Extension {
                 kind_id: SNIPPET_PAYLOAD_KIND_ID,
-                payload: snip.name.as_bytes().to_vec(),
+                payload: crate::registry::snippet_key(language, &snip.name).into_bytes(),
             };
             out.push(cand);
         }
@@ -796,7 +798,11 @@ mod tests {
         match &c.data {
             CandidateData::Extension { kind_id, payload } => {
                 assert_eq!(*kind_id, SNIPPET_PAYLOAD_KIND_ID);
-                assert_eq!(std::str::from_utf8(payload).unwrap(), "for-loop");
+                // The pack and the name (SI.5): the name alone is not unique.
+                assert_eq!(
+                    std::str::from_utf8(payload).unwrap(),
+                    crate::snippet_key("rust", "for-loop")
+                );
             }
             other => panic!("unexpected data: {other:?}"),
         }

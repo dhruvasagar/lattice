@@ -72,12 +72,12 @@ mod tests {
         assert!(!reg.is_empty());
         // A known rust prefix resolves.
         assert!(
-            !reg.lookup("rust", "for").is_empty(),
+            !reg.lookup(&["rust"], "for").is_empty(),
             "rust `for` snippet present"
         );
         // A known global prefix resolves under the "*" bucket.
         assert!(
-            !reg.lookup("*", "todo").is_empty(),
+            !reg.lookup(&[], "todo").is_empty(),
             "global `todo` snippet present"
         );
     }

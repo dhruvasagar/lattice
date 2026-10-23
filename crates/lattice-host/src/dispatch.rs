@@ -29499,36 +29499,13 @@ impl Editor {
     // bodies + zero `Action::Diff*` variants — the mode-ownership acid test
     // (`feedback_mode_owns_its_surface`).
 
-    /// Active buffer's snippet language id. Maps the active
-    /// document's filename extension to a language string the
-    /// snippet registry indexes by (e.g. `"rs"` -> `"rust"`).
-    /// Falls back to the empty string when no path is set
-    /// (the registry's `"*"` any-language pack still applies).
+    /// Active buffer's language id (`lattice_core::language`): what
+    /// snippet packs and `[completion.per-language.<id>]` key on. Empty
+    /// for a buffer with no path (the registry's `"*"` any-language pack
+    /// still applies).
     pub fn active_language_id(&self) -> String {
         let snap = self.document.snapshot();
-        let Some(path) = snap.path.as_ref() else {
-            return String::new();
-        };
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("rs") => "rust".into(),
-            Some("py") => "python".into(),
-            Some("go") => "go".into(),
-            Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => "javascript".into(),
-            Some("ts") | Some("tsx") => "typescript".into(),
-            Some("c") | Some("h") => "c".into(),
-            Some("cc") | Some("cpp") | Some("cxx") | Some("hpp") | Some("hxx") => "cpp".into(),
-            Some("md") => "markdown".into(),
-            Some("toml") => "toml".into(),
-            Some("yaml") | Some("yml") => "yaml".into(),
-            Some("json") => "json".into(),
-            Some("sh") => "shellscript".into(),
-            Some("lua") => "lua".into(),
-            // IC.5: the plain-text defaults (`per_language_defaults`) are
-            // keyed `text`; `.txt` fell through as `txt` and never met them.
-            Some("txt") => "text".into(),
-            Some(other) => other.to_string(),
-            None => String::new(),
-        }
+        lattice_core::language::language_id_for_path(snap.path.as_deref().map(|p| p.as_path()))
     }
 
     /// Build a `VariableContext` for snippet expansion from
@@ -29700,12 +29677,12 @@ impl Editor {
         let language = self.active_language_id();
         let snippet = {
             let registry = self.snippet_registry.load();
+            // Most specific pack first, newest first within it: a user
+            // snippet sharing a builtin's prefix is the one expanded (SI.5).
             registry
-                .lookup(&language, &prefix)
+                .lookup(&lattice_snippet::lookup_languages(&language), &prefix)
                 .first()
-                .copied()
-                .or_else(|| registry.lookup("*", &prefix).first().copied())
-                .cloned()
+                .map(|(_, s)| (*s).clone())
         };
         let Some(snippet) = snippet else {
             self.set_message(EchoLevel::Info, format!("no snippet for prefix `{prefix}`"));
@@ -33256,9 +33233,18 @@ impl Editor {
                 }
             }
             ExpandSnippet { id } => {
-                let snippet = self.snippet_registry.load().by_name(&id).cloned();
+                let language = self.active_language_id();
+                let snippet = self
+                    .snippet_registry
+                    .load()
+                    .resolve(&lattice_snippet::lookup_languages(&language), &id)
+                    .cloned();
                 let Some(snippet) = snippet else {
-                    self.set_message(EchoLevel::Error, format!("picker: no snippet named `{id}`"));
+                    let name = id.rsplit('\u{1f}').next().unwrap_or(&id);
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: no snippet named `{name}`"),
+                    );
                     return out;
                 };
                 self.expand_snippet(&snippet.body, self.cursor);
@@ -33702,9 +33688,10 @@ impl Editor {
         if *kind_id != SNIPPET_COMPLETION_KIND_ID {
             return None;
         }
-        let name = std::str::from_utf8(payload).ok()?;
+        let key = std::str::from_utf8(payload).ok()?;
         let registry = self.snippet_registry.load();
-        let snip = registry.by_name(name)?;
+        let language = self.active_language_id();
+        let snip = registry.resolve(&lattice_snippet::lookup_languages(&language), key)?;
         let prefix = snip
             .prefixes
             .first()

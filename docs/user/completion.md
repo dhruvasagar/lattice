@@ -122,11 +122,11 @@ Rust scaffolding (`fn`, `for`, `match`, `impl`, `struct`,
 `date`, `uuid`).
 
 To add your own, drop friendly-snippets-style `<language>.json`
-packs into **`~/.config/lattice/snippets/`** (`_global.json` →
-all languages) and run **`:reload-snippets`**. The reload always
-rebuilds from the built-ins first, then layers your packs on top
-— so your additions augment (or override, by reusing a prefix)
-the built-ins rather than replacing them. The echo reports the
+packs (`ruby.json`, `shellscript.json`; a `.tsx` file reads
+`typescriptreact` then `typescript`) into
+**`~/.config/lattice/snippets/`** (`_global.json` → all languages)
+and run **`:reload-snippets`**. Your packs layer on the built-ins:
+reusing a prefix or a name overrides one. The echo reports the
 split, e.g. `reloaded 24 snippets (22 built-in + 2 user)`.
 
 ### Where snippets activate

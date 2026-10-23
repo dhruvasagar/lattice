@@ -59,7 +59,7 @@ pub use crate::modes::{
     SnippetCompletionSource, SnippetMode, placeholder_selection, register_snippet_modes,
 };
 pub use crate::parse::{ParseError, parse};
-pub use crate::registry::{Snippet, SnippetMeta, SnippetRegistry};
+pub use crate::registry::{Snippet, SnippetMeta, SnippetRegistry, lookup_languages, snippet_key};
 pub use crate::render::{RenderedSnippet, TabstopRange};
 pub use crate::session::{SnippetSession, SnippetSessionHandle, snippet_active_predicate};
 pub use crate::token::{ChoiceOption, SnippetBody, SnippetToken};

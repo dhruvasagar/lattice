@@ -1412,6 +1412,10 @@ Visual's charwise extent covers the head's whole character.
 **SI.4 ✅**: the session ends when the user leaves it — any mode but
 Insert/Select, or the cursor outside the snippet — via the generic
 `SessionProbe` the host hands session-backed minors each dispatch.
+**SI.5 ✅**: snippets are identified by pack and name; a later pack
+overrides on a shared prefix; one path→language-id resolver
+(`lattice_core::language`) serves snippets, completion settings and the
+snippet picker.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

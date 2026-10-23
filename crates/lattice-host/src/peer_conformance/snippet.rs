@@ -26,10 +26,21 @@ fn install_for_snippet<P: PeerUnderTest>(peer: &mut P) {
 
 /// Register `body` under `prefix` in the any-language bucket.
 fn install_snippet<P: PeerUnderTest>(peer: &mut P, name: &str, prefix: &str, body: &str) {
+    install_snippet_in(peer, "*", name, prefix, body);
+}
+
+/// Register `body` under `prefix` in `language`'s pack.
+fn install_snippet_in<P: PeerUnderTest>(
+    peer: &mut P,
+    language: &str,
+    name: &str,
+    prefix: &str,
+    body: &str,
+) {
     let editor = peer.editor_mut();
     let mut next = (**editor.snippet_registry.load()).clone();
     next.insert(
-        "*",
+        language,
         lattice_snippet::Snippet {
             name: name.into(),
             prefixes: vec![prefix.into()],
@@ -412,4 +423,67 @@ pub fn expanding_inside_a_snippet_replaces_it<P: PeerUnderTest>() {
         4,
         "only the inner snippet's extent, `$1`, `$2` and `$0` are tracked"
     );
+}
+
+// ---- SI.5: identity and language ----
+
+/// Open a fresh, empty file named `name` in a scratch directory.
+fn edit_new_file<P: PeerUnderTest>(peer: &mut P, name: &str) {
+    let dir = std::env::temp_dir().join(format!(
+        "lattice-peer-conformance-snippet-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let path = dir.join(name);
+    std::fs::write(&path, "\n").expect("write");
+    press(peer, &format!(":e {}<CR>", path.display()));
+    assert_eq!(
+        peer.editor().document.snapshot().path(),
+        Some(path.as_path()),
+        "precondition: {name} is open"
+    );
+}
+
+/// Accepting a snippet from the popup expands the buffer's language's
+/// snippet of that name, not another language's. Before SI.5 the row
+/// carried the name alone and the body came from whichever pack loaded
+/// last.
+pub fn the_buffers_language_owns_a_shared_snippet_name<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet_in(&mut peer, "rust", "zzif", "zzif", "if ${1:cond} {}");
+    install_snippet_in(&mut peer, "python", "zzif", "zzif", "if ${1:cond}:");
+    edit_new_file(&mut peer, "main.rs");
+
+    press(&mut peer, "izzi<C-Space><C-y>");
+
+    assert_eq!(
+        text(&peer),
+        "if cond {}\n",
+        "Rust's `zzif`, in a `.rs` file"
+    );
+}
+
+/// A snippet loaded later on a prefix — the user's pack, after the builtins
+/// — is the one `<C-x><C-s>` expands.
+pub fn a_later_snippet_on_a_prefix_is_the_one_expanded<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(&mut peer, "builtin-ov", "zzov", "builtin");
+    install_snippet(&mut peer, "user-ov", "zzov", "mine");
+
+    press(&mut peer, "izzov<C-x><C-s>");
+
+    assert_eq!(text(&peer), "mine\n");
+}
+
+/// A Ruby file reaches the `ruby` pack — the language id is `ruby`, not the
+/// extension `rb`, wherever snippets are looked up.
+pub fn a_ruby_file_expands_ruby_snippets<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet_in(&mut peer, "ruby", "zzdef", "zzdef", "def ${1:name}\nend");
+    edit_new_file(&mut peer, "app.rb");
+
+    press(&mut peer, "izzdef<C-x><C-s>");
+
+    assert_eq!(text(&peer), "def name\nend\n");
 }

@@ -112,6 +112,7 @@ pub mod home;
 // home a dependency cycle; see `indent.rs`'s module doc.
 pub mod indent;
 pub mod indent_blocks;
+pub mod language;
 // SS.1: the shared on-disk fingerprint (autoread + multibuffer sources).
 pub mod on_disk;
 // PR.1: which project a path belongs to. Here rather than in a crate of

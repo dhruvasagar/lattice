@@ -1208,14 +1208,14 @@ mod tests {
             !a.editor
                 .snippet_registry
                 .load()
-                .lookup("rust", "for")
+                .lookup(&["rust"], "for")
                 .is_empty()
         );
         assert!(
             !a.editor
                 .snippet_registry
                 .load()
-                .lookup("*", "any")
+                .lookup(&[], "any")
                 .is_empty()
         );
         // Global snippets are visible from any language --
@@ -1224,7 +1224,7 @@ mod tests {
             !a.editor
                 .snippet_registry
                 .load()
-                .lookup("rust", "any")
+                .lookup(&["rust"], "any")
                 .is_empty()
         );
         // A rust-only snippet should NOT be visible from a
@@ -1233,7 +1233,7 @@ mod tests {
             a.editor
                 .snippet_registry
                 .load()
-                .lookup("python", "for")
+                .lookup(&["python"], "for")
                 .is_empty()
         );
         let _ = std::fs::remove_dir_all(&dir);

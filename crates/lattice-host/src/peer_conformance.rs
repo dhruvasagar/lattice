@@ -38,6 +38,8 @@ use crate::editor::Editor;
 
 mod completion;
 pub use completion::*;
+mod snippet;
+pub use snippet::*;
 
 /// A renderer peer, as the scenarios see it.
 ///
@@ -414,6 +416,11 @@ macro_rules! peer_conformance_tests {
             a_trigger_character_opens_the_sources_that_declared_it,
             a_language_can_turn_auto_trigger_on_alone,
             describe_buffer_lists_the_completion_sources,
+            accepting_a_snippet_expands_it_and_selects_the_first_placeholder,
+            ctrl_x_ctrl_s_expands_the_word_before_the_cursor,
+            typing_over_a_placeholder_replaces_its_default,
+            tab_and_shift_tab_walk_the_placeholders,
+            esc_leaves_the_snippet,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

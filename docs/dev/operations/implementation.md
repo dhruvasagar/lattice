@@ -1393,6 +1393,15 @@ navigation arrive incrementally:
 | `:describe-event`                        | ⛔     | needs event bus §5.10                                             |
 | `:describe-mode`                         | ⛔     | needs major/minor modes (Phase 8)                                 |
 
+### Snippet integrity (SI)
+
+🚧 — slice plan: [`slice-plans/snippet-integrity.md`](slice-plans/snippet-integrity.md).
+An audit (2026-10-23) found the live session works only on the path the
+tests walk: placeholder ranges never follow an edit, LSP never advertises
+`snippetSupport`, names collide across languages, bodies are not
+re-indented. **SI.1 ✅**: conformance scenarios for both peers drive
+expansion, overtype, `<Tab>` / `<S-Tab>` and `<Esc>` through real keys.
+
 ### Keymap registry (../architecture/design.md §5.2.3)
 
 `KeymapEntry { chord, mode, doc, command }` in `lattice-ui-tui::keymap`,

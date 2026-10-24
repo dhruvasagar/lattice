@@ -1532,8 +1532,13 @@ pub struct Editor {
     /// (`feedback_mode_owns_its_surface`).
     pub session_backed_minors: Vec<SessionBackedMinor>,
     /// Per-language directories from which snippet packs are
-    /// loaded on startup / `:reload-snippets` (Phase 4.2.g.4).
+    /// loaded on startup / `:reload-snippets` (Phase 4.2.g.4): the
+    /// user's own snippets, which override packages.
     pub snippet_dirs: Vec<PathBuf>,
+    /// Directories whose every subdirectory is a snippet package — a
+    /// friendly-snippets checkout under `~/.config/lattice/snippet-packs/`
+    /// (SI.11). Loaded before `snippet_dirs`, so the user's own win.
+    pub snippet_pack_dirs: Vec<PathBuf>,
     /// LIFO stack of snapshots taken every time the popup's content
     /// gets swapped in place by a help -> help link follow (e.g.
     /// `:describe-buffer` -> click `[text-mode](mode:text-mode)` ->

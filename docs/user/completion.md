@@ -121,12 +121,13 @@ Rust scaffolding (`fn`, `for`, `match`, `impl`, `struct`,
 `test`, …) plus a few language-agnostic ones (`todo`, `fixme`,
 `date`, `uuid`).
 
-To add your own, drop friendly-snippets-style `<language>.json`
-packs (`ruby.json`, `shellscript.json`; a `.tsx` file reads
-`typescriptreact` then `typescript`) into
-**`~/.config/lattice/snippets/`** (`_global.json` → all languages)
-and run **`:reload-snippets`**. Your packs layer on the built-ins:
-reusing a prefix or a name overrides one. The echo reports the
+To add your own, put `<language>.json` packs (`ruby.json`,
+`shellscript.json`; `_global.json` for every language) or VS Code
+`*.code-snippets` files in **`~/.config/lattice/snippets/`**, and run
+**`:reload-snippets`**. A friendly-snippets clone goes in
+`~/.config/lattice/snippet-packs/` (or any folder named in
+`snippet.dirs`); a project's own in `.lattice/snippets/`. Later wins on a
+shared prefix: packages, then yours, then the project's. The echo reports the
 split, e.g. `reloaded 24 snippets (22 built-in + 2 user)`.
 
 ### Where snippets activate

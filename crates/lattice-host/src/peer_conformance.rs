@@ -87,7 +87,11 @@ fn boot<P: PeerUnderTest>(text: &str) -> P {
     // Before the boot spawns plugin discovery: a developer's installed
     // plugins (auto-pair, an `init.rs`) must not reach a scenario.
     crate::disable_autoload();
-    let peer = P::boot(text);
+    let mut peer = P::boot(text);
+    // Nor their snippet packs: a scenario that reloads snippets sees only
+    // the directories it names.
+    peer.editor_mut().snippet_dirs.clear();
+    peer.editor_mut().snippet_pack_dirs.clear();
     // Nor may their language servers. The builtin configs name whatever is
     // on `PATH`, so a scenario opening a `.rs` file started rust-analyzer on
     // a machine that has it: an async completion round the scenario did not
@@ -454,6 +458,10 @@ macro_rules! peer_conformance_tests {
             a_bad_entry_skips_itself_not_its_pack,
             file_and_comment_variables_expand,
             the_clipboard_variable_reads_the_clipboard,
+            the_snippet_dirs_option_adds_a_directory,
+            a_projects_snippets_override_the_users,
+            a_friendly_snippets_checkout_loads,
+            the_users_snippet_overrides_a_packages,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

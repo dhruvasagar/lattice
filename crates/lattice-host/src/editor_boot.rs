@@ -2675,6 +2675,12 @@ impl Editor {
                 .map(|d| d.join("lattice").join("snippets"))
                 .into_iter()
                 .collect(),
+            // SI.11: packages (a friendly-snippets clone) live one level
+            // down, in `~/.config/lattice/snippet-packs/<package>/`.
+            snippet_pack_dirs: lattice_config::config_home()
+                .map(|d| d.join("lattice").join("snippet-packs"))
+                .into_iter()
+                .collect(),
             // M.7: use the pre-created Arc so the `services:` block
             // and `fold_registry` field share identity.
             fold_registry,

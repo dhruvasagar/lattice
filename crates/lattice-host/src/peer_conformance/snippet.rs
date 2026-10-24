@@ -823,3 +823,107 @@ pub fn the_clipboard_variable_reads_the_clipboard<P: PeerUnderTest>() {
 
     assert_eq!(text(&peer), "[copied elsewhere]\n");
 }
+
+// ---- SI.11: where packs load from ----
+
+/// `:set snippet.dirs=…` adds a directory of packs, and takes effect at once.
+pub fn the_snippet_dirs_option_adds_a_directory<P: PeerUnderTest>() {
+    let dir = super::completion::temp_dir("snippet-dirs");
+    std::fs::write(
+        dir.join("_global.json"),
+        r#"{ "extra": { "prefix": "zzextra", "body": "from snippet.dirs" } }"#,
+    )
+    .expect("write the pack");
+    let mut peer = boot::<P>("\n");
+    peer.editor_mut().snippet_dirs = Vec::new();
+
+    press(
+        &mut peer,
+        &format!(":set snippet.dirs={}<CR>", dir.display()),
+    );
+    press(&mut peer, "izzextra<C-x><C-s>");
+
+    assert_eq!(text(&peer), "from snippet.dirs\n");
+}
+
+/// A project's `.lattice/snippets` loads, and wins over the user's own on a
+/// shared prefix.
+pub fn a_projects_snippets_override_the_users<P: PeerUnderTest>() {
+    let user = super::completion::temp_dir("snippet-user");
+    std::fs::write(
+        user.join("_global.json"),
+        r#"{ "mine": { "prefix": "zzhdr", "body": "user header" } }"#,
+    )
+    .expect("write the user pack");
+    let project = super::completion::temp_dir("snippet-project");
+    std::fs::create_dir_all(project.join(".git")).expect("a project root");
+    std::fs::create_dir_all(project.join(".lattice/snippets")).expect("the project's packs");
+    std::fs::write(
+        project.join(".lattice/snippets/_global.json"),
+        r#"{ "ours": { "prefix": "zzhdr", "body": "project header" } }"#,
+    )
+    .expect("write the project pack");
+    let file = project.join("main.rs");
+    std::fs::write(&file, "\n").expect("write the file");
+    let mut peer = boot::<P>("\n");
+    peer.editor_mut().snippet_dirs = vec![user];
+    press(&mut peer, &format!(":e {}<CR>", file.display()));
+
+    press(&mut peer, ":reload-snippets<CR>");
+    press(&mut peer, "izzhdr<C-x><C-s>");
+
+    assert_eq!(text(&peer), "project header\n");
+}
+
+/// A friendly-snippets checkout loads as it is: its `package.json` says
+/// which file serves which languages.
+pub fn a_friendly_snippets_checkout_loads<P: PeerUnderTest>() {
+    let dir = super::completion::temp_dir("friendly-snippets");
+    std::fs::create_dir_all(dir.join("snippets/global")).expect("dirs");
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{ "contributes": { "snippets": [
+            { "language": ["plaintext", "rust"], "path": "./snippets/global/all.json" }
+        ] } }"#,
+    )
+    .expect("write the manifest");
+    std::fs::write(
+        dir.join("snippets/global/all.json"),
+        r#"{ "fs": { "prefix": "zzfs", "body": "friendly" } }"#,
+    )
+    .expect("write the pack");
+    let mut peer = boot::<P>("\n");
+    peer.editor_mut().snippet_dirs = vec![dir];
+    edit_new_file(&mut peer, "lib.rs");
+
+    press(&mut peer, ":reload-snippets<CR>");
+    press(&mut peer, "izzfs<C-x><C-s>");
+
+    assert_eq!(text(&peer), "friendly\n");
+}
+
+/// Packages under `snippet-packs/` load first: the user's own snippet wins
+/// over a package's on a shared prefix (design §8.3's order).
+pub fn the_users_snippet_overrides_a_packages<P: PeerUnderTest>() {
+    let packs = super::completion::temp_dir("snippet-packs");
+    std::fs::create_dir_all(packs.join("friendly")).expect("a package");
+    std::fs::write(
+        packs.join("friendly/_global.json"),
+        r#"{ "theirs": { "prefix": "zzpk", "body": "from the package" } }"#,
+    )
+    .expect("write the package");
+    let user = super::completion::temp_dir("snippet-user-over-pack");
+    std::fs::write(
+        user.join("_global.json"),
+        r#"{ "mine": { "prefix": "zzpk", "body": "mine" } }"#,
+    )
+    .expect("write the user pack");
+    let mut peer = boot::<P>("\n");
+    peer.editor_mut().snippet_pack_dirs = vec![packs];
+    peer.editor_mut().snippet_dirs = vec![user];
+
+    press(&mut peer, ":reload-snippets<CR>");
+    press(&mut peer, "izzpk<C-x><C-s>");
+
+    assert_eq!(text(&peer), "mine\n");
+}

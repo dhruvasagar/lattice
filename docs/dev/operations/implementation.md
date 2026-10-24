@@ -1431,6 +1431,9 @@ pack entry skips only itself; unknown variables become placeholders;
 **SI.10 🚧**: every VS Code variable but `TM_SELECTED_TEXT` resolves
 (clipboard, comments, workspace, relative path, cursor, timezone); wrapping
 a selection awaits an entry-point decision.
+**SI.11 ✅**: packs load from `snippet-packs/` packages, `snippet.dirs`,
+the user's folder and the project's `.lattice/snippets`, in any VS Code
+layout (`package.json`, `<lang>.json`, `.code-snippets`).
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

@@ -49,5 +49,8 @@ lattice-picker = { path = "../lattice-picker" }
 # `lattice-mode`; the direct edge is cycle-free.
 lattice-runtime = { path = "../lattice-runtime" }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

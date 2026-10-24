@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **Snippet packs load from more places, in more layouts.** Clone
+  friendly-snippets into `~/.config/lattice/snippet-packs/` and its
+  snippets load as they are; `:set snippet.dirs=…` adds folders of your
+  own; a project's `.lattice/snippets/` applies inside that project; and
+  VS Code `*.code-snippets` files work alongside `<language>.json`. Your
+  own snippets override a package's, and a project's override yours.
 - **`:describe-buffer` lists the buffer's completion sources** — how the
   popup opens there, each source's priority, and which are off for the
   file's language or waiting on a language server — so "why doesn't X

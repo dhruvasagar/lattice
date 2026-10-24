@@ -875,17 +875,22 @@ Built-in variables (TextMate / VS Code parity):
 
 Loaded at startup; `:reload-snippets` re-reads on demand.
 
-Lookup order (later overrides earlier):
+Lookup order (later overrides earlier on a shared prefix or name):
 
-1. **Bundled.** Shipped with the lattice binary (a small
-   curated set in `bundled-snippets/`).
-2. **friendly-snippets-style packages.** Any directory in
-   `~/.config/lattice/snippet-packs/` — typically
-   `~/.config/lattice/snippet-packs/friendly-snippets/`
-   cloned from upstream.
-3. **User snippets.** `~/.config/lattice/snippets/<lang>.json`.
-4. **Project snippets.** `.lattice/snippets/<lang>.json` in
-   the workspace root.
+1. **Bundled.** Shipped in the binary (`lattice-snippet/snippets/`).
+2. **Packages.** Every subdirectory of
+   `~/.config/lattice/snippet-packs/` — typically a friendly-snippets
+   clone — then each directory in `snippet.dirs`.
+3. **User snippets.** `~/.config/lattice/snippets/`.
+4. **Project snippets.** `.lattice/snippets/` in the workspace root.
+
+Every directory is read by `lattice_snippet::load_dir` in whichever
+layout it has: a `package.json` whose `contributes.snippets` maps files
+to languages (a VS Code extension, friendly-snippets), or a snippets
+folder of `<language>.json` (`_global.json` for every language) and
+`*.code-snippets` files whose entries name their languages in `scope`.
+A malformed entry skips itself; `:reload-snippets` reports each skip.
+Language keys are LSP ids (`lattice_core::language`).
 
 Per-language registry: each language indexes by prefix; the
 `gen:snippet` source filters by the active buffer's

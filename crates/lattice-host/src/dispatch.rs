@@ -33838,59 +33838,45 @@ impl Editor {
         let builtin_total = next.len();
         let mut user_total = 0usize;
         let mut errors: Vec<String> = Vec::new();
-        for dir in &self.snippet_dirs {
-            let entries = match std::fs::read_dir(dir) {
-                Ok(e) => e,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Default user dir simply doesn't exist yet —
-                    // not an error, the user just hasn't added any
-                    // packs.
-                    continue;
-                }
-                Err(e) => {
-                    errors.push(format!("{}: {e}", dir.display()));
-                    continue;
-                }
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                    continue;
-                }
-                let stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                // `_global.json` -> all-language slot.
-                let language = if stem == "_global" {
-                    "*".to_string()
-                } else {
-                    stem
-                };
-                let json = match std::fs::read_to_string(&path) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        errors.push(format!("{}: {e}", path.display()));
-                        continue;
-                    }
-                };
-                match lattice_snippet::load::load_pack_from_str(&json) {
-                    Ok(pack) => {
-                        // SI.8: a malformed entry skips itself, not the
-                        // file; each is reported.
-                        for skipped in pack.skipped {
-                            errors.push(format!("{}: {skipped}", path.display()));
-                        }
-                        for s in pack.snippets {
-                            next.insert(&language, s);
-                            user_total += 1;
-                        }
-                    }
-                    Err(e) => {
-                        errors.push(format!("{}: {e}", path.display()));
-                    }
-                }
+        // SI.11, in the order design §8.3 gives (later overrides earlier on
+        // a shared prefix): packages under `snippet-packs/`, then
+        // `snippet.dirs`, then the user's own folder, then the project's
+        // `.lattice/snippets` — so a project's snippets win where it
+        // defines them, and the user's win over any package. Each
+        // directory may be a snippets folder or a friendly-snippets-style
+        // extension (`lattice_snippet::load_dir` reads either).
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        for packs in &self.snippet_pack_dirs {
+            if let Ok(entries) = std::fs::read_dir(packs) {
+                let mut packages: Vec<std::path::PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                packages.sort();
+                dirs.extend(packages);
+            }
+        }
+        if let Some(extra) = self.config.get_typed::<lattice_snippet::SnippetDirs>() {
+            dirs.extend(lattice_snippet::parse_dirs(&extra));
+        }
+        dirs.extend(self.snippet_dirs.iter().cloned());
+        let snap = self.document.snapshot();
+        dirs.push(
+            self.picker_workspace_root_path(&snap)
+                .join(".lattice")
+                .join("snippets"),
+        );
+        let mut seen = std::collections::HashSet::new();
+        for dir in dirs {
+            if !seen.insert(dir.clone()) {
+                continue;
+            }
+            let load = lattice_snippet::load_dir(&dir);
+            errors.extend(load.errors);
+            for (language, snippet) in load.snippets {
+                next.insert(&language, snippet);
+                user_total += 1;
             }
         }
         (next, builtin_total, user_total, errors)
@@ -40119,6 +40105,8 @@ impl Editor {
                     );
                 }
             }
+            // SI.11: a new set of pack directories takes effect at once.
+            "snippet.dirs" => self.do_reload_snippets(),
             "snippet.activation" | "snippet.languages" => {
                 // SN.3b: re-fold the snippet activation policy into
                 // the shared cell the `snippet-mode` gate reads. The

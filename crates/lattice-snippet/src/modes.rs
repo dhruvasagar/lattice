@@ -397,6 +397,21 @@ fn snippet_active_keymap_entries() -> &'static [KeymapEntry] {
                 cmd: "action:snippet-leave",
                 fall_through: true
             ),
+            // SI.12: a focused choice (`${1|a,b,c|}`) is selected, so it is
+            // Select mode that cycles it. Insert's `<C-n>` / `<C-p>` stay the
+            // completion popup's — once the user types, it is no choice.
+            keymap_entry!(
+                mode: Select,
+                chord: "<C-n>",
+                doc: "Replace the focused snippet choice with its next option.",
+                cmd: "action:snippet-next-choice"
+            ),
+            keymap_entry!(
+                mode: Select,
+                chord: "<C-p>",
+                doc: "Replace the focused snippet choice with its previous option.",
+                cmd: "action:snippet-prev-choice"
+            ),
         ]
     })
 }
@@ -638,6 +653,40 @@ fn step_session(
     }
 }
 
+/// Replace the choice focused in `buffer_id`'s session with its next option
+/// (`forward`) or previous one, and keep it selected (SI.12). `None` when
+/// no choice is focused; the document copies the edit into the choice's
+/// other occurrences.
+fn cycle_choice(
+    session: &SnippetSessionHandle,
+    store: &BufferStoreHandle,
+    buffer_id: lattice_core::BufferId,
+    forward: bool,
+) -> Option<Effect> {
+    let handle = store.handle_for(buffer_id)?;
+    let snapshot = handle.snapshot();
+    let buffer = &snapshot.buffer;
+    let (range, text) = session.with_mut(buffer_id, |s| {
+        s.as_ref()?
+            .cycle_choice(&snapshot.tracked_ranges, |r| text_in(buffer, r), forward)
+    })?;
+    let start = buffer.byte_to_position(range.start).ok()?;
+    let end = buffer.byte_to_position(range.end).ok()?;
+    let edit = lattice_protocol::edit::Edit::replace(Range::new(start, end), text.clone());
+    let mut after = buffer.clone();
+    after.apply_edit(&edit).ok()?;
+    let cursor = snippet_group_cursor_effect(&after, range.start..range.start + text.len());
+    let apply = Effect::ApplyEdit {
+        target: buffer_id,
+        edit,
+        cursor: None,
+    };
+    Some(match cursor {
+        Some(cursor) => Effect::Many(vec![apply, cursor]),
+        None => apply,
+    })
+}
+
 impl Mode for SnippetActiveMode {
     type Guard = SnippetActiveModeGuard;
     fn id(&self) -> ModeId {
@@ -716,6 +765,28 @@ impl Mode for SnippetActiveMode {
                     registrations.push(action_handlers.register(id, handler));
                 }
 
+                // `<C-n>` / `<C-p>` on a focused choice (SI.12).
+                for (name, forward) in [
+                    ("action:snippet-next-choice", true),
+                    ("action:snippet-prev-choice", false),
+                ] {
+                    let Some(id) = cmd_registry.id_by_name(name) else {
+                        continue;
+                    };
+                    let session = session.clone();
+                    let store = buffer_store.clone();
+                    let handler: ActionHandler =
+                        Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+                            cycle_choice(
+                                &session,
+                                store.as_ref()?,
+                                core_buffer_id(ctx.buffer_id),
+                                forward,
+                            )
+                        });
+                    registrations.push(action_handlers.register(id, handler));
+                }
+
                 // `<Esc>` — leave the snippet session (SN.3c.2).
                 // Per-buffer + session-tied (the binding only fires
                 // while a snippet is live on this buffer), so it lives
@@ -783,6 +854,33 @@ impl Mode for SnippetActiveMode {
                 _action_handler_registrations: registrations,
             })
         })
+    }
+}
+
+/// Register the `action:*` commands `lattice-snippet`'s chords resolve that
+/// the host does not: the choice cycle (SI.12). Their bodies are
+/// `active-snippet-mode`'s per-buffer handlers, consulted before these specs
+/// in dispatch, so the spec itself does nothing — it gives the chord a
+/// command to name and `:describe-key` a doc to show.
+pub fn register_snippet_actions(registry: &mut lattice_grammar::CommandRegistry) {
+    for (name, doc) in [
+        (
+            "action:snippet-next-choice",
+            "Active-snippet Select `<C-n>`: replace the focused choice with its next option.",
+        ),
+        (
+            "action:snippet-prev-choice",
+            "Active-snippet Select `<C-p>`: replace the focused choice with its previous option.",
+        ),
+    ] {
+        registry.register_action(
+            name,
+            doc,
+            lattice_grammar::ActionSpec {
+                apply: Arc::new(|_| Ok(Effect::None)),
+                args_schema: vec![],
+            },
+        );
     }
 }
 
@@ -916,8 +1014,9 @@ mod tests {
         use lattice_mode::Mode as _;
         let km = SnippetActiveMode.keymap();
         // SN.3d.4: <Tab> / <S-Tab> / <Esc> in BOTH Insert and Select
-        // (a default-bearing placeholder is focused in Select).
-        assert_eq!(km.entries.len(), 6);
+        // (a default-bearing placeholder is focused in Select), plus the
+        // Select-only choice cycle <C-n> / <C-p> (SI.12).
+        assert_eq!(km.entries.len(), 8);
         let select_count = km
             .entries
             .iter()
@@ -929,7 +1028,7 @@ mod tests {
             .filter(|e| e.modes.contains(&BindingMode::Insert))
             .count();
         assert_eq!(insert_count, 3, "three Insert bindings");
-        assert_eq!(select_count, 3, "three Select bindings");
+        assert_eq!(select_count, 5, "five Select bindings");
     }
 
     #[test]

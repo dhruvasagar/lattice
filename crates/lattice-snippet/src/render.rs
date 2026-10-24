@@ -35,9 +35,10 @@ pub struct TabstopRange {
     /// select their default for easy overwrite; bare tabstops
     /// just place the cursor).
     pub has_default: bool,
-    /// Whether this range came from a `Choice` placeholder.
-    /// The host's choice-picker UI fires on these.
-    pub is_choice: bool,
+    /// The options of a `Choice` placeholder (`${1|a,b,c|}`), in body
+    /// order; empty for any other range. The first is inserted; `<C-n>` /
+    /// `<C-p>` cycle the rest in place.
+    pub choices: Vec<String>,
     /// A transformed copy of `$index` (`${1/(.*)/${1:/upcase}/}`): its text
     /// is this transform of the placeholder's, rewritten when the user
     /// leaves the placeholder (VS Code's rule). Not a stop of its own.
@@ -231,7 +232,7 @@ fn walk(
                     index: *idx,
                     range: start..end,
                     has_default: end > start,
-                    is_choice: false,
+                    choices: Vec::new(),
                     transform: None,
                 });
             }
@@ -243,7 +244,7 @@ fn walk(
                     index: *idx,
                     range: start..end,
                     has_default: !default.is_empty(),
-                    is_choice: false,
+                    choices: Vec::new(),
                     transform: None,
                 });
             }
@@ -257,7 +258,7 @@ fn walk(
                     index: *idx,
                     range: start..end,
                     has_default: !options.is_empty(),
-                    is_choice: true,
+                    choices: options.iter().map(|o| o.text.clone()).collect(),
                     transform: None,
                 });
             }
@@ -278,7 +279,7 @@ fn walk(
                         index: *next_free,
                         range: start..out.len(),
                         has_default: true,
-                        is_choice: false,
+                        choices: Vec::new(),
                         transform: None,
                     });
                     *next_free += 1;
@@ -323,7 +324,7 @@ fn walk(
                             index: *idx,
                             range: start..out.len(),
                             has_default: false,
-                            is_choice: false,
+                            choices: Vec::new(),
                             transform: Some(spec),
                         });
                     }
@@ -468,7 +469,7 @@ mod tests {
         let r = render_str("Hello ${1|world,Earth,planet|}!");
         assert_eq!(r.text, "Hello world!");
         assert_eq!(r.tabstops[0].range, 6..11); // "world"
-        assert!(r.tabstops[0].is_choice);
+        assert_eq!(r.tabstops[0].choices, ["world", "Earth", "planet"]);
     }
 
     #[test]

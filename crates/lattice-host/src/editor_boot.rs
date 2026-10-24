@@ -485,6 +485,8 @@ impl Editor {
             boot.modes_mut(),
             snippet_registry_handle.clone(),
         );
+        // SI.12: the snippet chords' own action ids (the choice cycle).
+        lattice_snippet::register_snippet_actions(boot.commands_mut());
         // BC.4: terminal-mode registration moved into
         // `lattice_terminal::install` (Phase-B list below).
         crate::modes::register_buffer_kind_modes(boot.modes_mut());

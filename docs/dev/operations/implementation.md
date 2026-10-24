@@ -1430,10 +1430,13 @@ pack entry skips only itself; unknown variables become placeholders;
 `CURRENT_*` are local time.
 **SI.10 🚧**: every VS Code variable but `TM_SELECTED_TEXT` resolves
 (clipboard, comments, workspace, relative path, cursor, timezone); wrapping
-a selection awaits an entry-point decision.
+a selection is the `gS` operator, decided and queued.
 **SI.11 ✅**: packs load from `snippet-packs/` packages, `snippet.dirs`,
 the user's folder and the project's `.lattice/snippets`, in any VS Code
 layout (`package.json`, `<lang>.json`, `.code-snippets`).
+**SI.12 🚧**: doc drift fixed; choices cycle in place with `<C-n>` /
+`<C-p>` in Select, in every copy; placeholder highlighting is next (a
+generic mode range-highlight hook).
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

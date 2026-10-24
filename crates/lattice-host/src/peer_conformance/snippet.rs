@@ -927,3 +927,49 @@ pub fn the_users_snippet_overrides_a_packages<P: PeerUnderTest>() {
 
     assert_eq!(text(&peer), "mine\n");
 }
+
+// ---- SI.12: choices ----
+
+/// `<C-n>` / `<C-p>` on a focused choice replace it with the next / previous
+/// option, wrapping, in every copy — and keep it selected, so typing still
+/// overtypes it.
+pub fn ctrl_n_and_ctrl_p_cycle_a_choice<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(
+        &mut peer,
+        "conformance-pick",
+        "zzpick",
+        "${1|aa,b,cc|} = $1",
+    );
+    press(&mut peer, "izzpick<C-x><C-s>");
+    assert_eq!(text(&peer), "aa = aa\n", "the first option is inserted");
+    assert_selects(&peer, "the choice", 0, 2);
+
+    press(&mut peer, "<C-n>");
+    assert_eq!(text(&peer), "b = b\n", "the next option, in every copy");
+    assert_selects(&peer, "the cycled choice", 0, 1);
+
+    press(&mut peer, "<C-n><C-n>");
+    assert_eq!(
+        text(&peer),
+        "aa = aa\n",
+        "the last option wraps to the first"
+    );
+
+    press(&mut peer, "<C-p>");
+    assert_eq!(text(&peer), "cc = cc\n", "and back to the last");
+    assert_selects(&peer, "after <C-p>", 0, 2);
+
+    press(&mut peer, "x");
+    assert_eq!(text(&peer), "x = x\n", "typing overtypes the choice");
+}
+
+/// Off a choice, `<C-n>` changes nothing.
+pub fn ctrl_n_off_a_choice_changes_nothing<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_for_snippet(&mut peer);
+    press(&mut peer, "izzfor<C-x><C-s><C-n>");
+
+    assert_eq!(text(&peer), "for idx in iter {  }\n");
+    assert_selects(&peer, "the placeholder", 4, 7);
+}

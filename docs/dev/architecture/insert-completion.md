@@ -845,7 +845,7 @@ parses:
 |---|---|
 | `$1`, `$2`, ..., `$0` | Tab-stops. `$0` is the final cursor position, exited automatically. |
 | `${1:placeholder}` | Tab-stop with default text. |
-| `${1\|opt1,opt2,opt3\|}` | Choice placeholder — opens a mini-picker over the options. |
+| `${1\|opt1,opt2,opt3\|}` | Choice placeholder — inserts the first option; `<C-n>` / `<C-p>` cycle the rest. |
 | `${1/pattern/replacement/flags}` | Transformation — regex against the placeholder's current text. |
 | `\$`, `\\`, `\}` | Escapes. |
 | `$VAR_NAME`, `${VAR_NAME}` | Variable substitution. |
@@ -978,6 +978,16 @@ with the edit, and move the cursor across them (a copy earlier in the text
 shifts it). Mirrors render with their placeholder's text, so
 `$1 + $1 = ${1:two}` expands to `two + two = two`. The same primitive is
 what LSP linked editing (renaming a tag pair) needs.
+
+**Choices cycle in place.** A focused `${1|a,b,c|}` is selected (Select
+mode), and `<C-n>` / `<C-p>` there replace it with the next / previous
+option, wrapping. The replacement is one ordinary edit of the first
+occurrence: the range equals the replaced span, so it stays the same
+placeholder, and the link copies it into the mirrors. A popup was
+rejected — the completion popup is an Insert-mode surface, and a list of
+three words does not earn a new popup state. Insert keeps `<C-n>` /
+`<C-p>` for completion; once the user types, the text is no longer a
+choice.
 
 A document kind with no text of its own (the multibuffer) tracks nothing:
 its `update_tracked_ranges` resolves at once, its snapshot's set stays
@@ -1297,8 +1307,9 @@ Deliverables:
 - `gen:snippet` source feeds into the unified popup.
 - `<C-x><C-s>` (mode-owned chord, no ex-command form) for
   direct expansion.
-- Choice placeholders open an inline mini-picker;
-  transformation placeholders re-evaluate per-edit.
+- Choice placeholders cycle in place: `<C-n>` / `<C-p>` in Select
+  replace the focused choice with the next / previous option (no popup
+  state); transformation placeholders are rewritten on leaving.
 - LSP item routing: `insertTextFormat == Snippet` items go
   through the engine.
 - **Help**: `:help completion-sources-snippet`, `:help

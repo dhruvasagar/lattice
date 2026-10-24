@@ -207,7 +207,7 @@ accepts a candidate first, then snippet navigation resumes.
 ```text
 $1                       plain tabstop
 ${1:default}             placeholder with default text
-${1|one,two,three|}      choice (inserts the first; no list yet)
+${1|one,two,three|}      choice (<C-n>/<C-p> cycle the options)
 $0                       exit position (last)
 $1 ... $1 ...            mirrors -- edits ripple
 ${TM_FILENAME}           variable (see below)

@@ -62,6 +62,23 @@ Both renderers share the host's expansion code, so every finding is in both.
   `Event::DocumentChanged` (asynchronous — `x<Tab>` races the shift).
 - **Mirrors update live (2026-10-23)**, in the edit's undo group — by the `Document`, as linked tracked ranges (option A over a host post-edit hook or sync-on-`<Tab>`: every edit path mirrors, no extra actor crossing, and LSP linked editing gets the same primitive).
 - **Multi-cursor expansion is deferred** (SI.13).
+- **Wrapping is an operator, `gS` (2026-10-24).** `gS{motion}` in Normal,
+  `gS` in Visual: the covered text becomes `$TM_SELECTED_TEXT` of the
+  snippet picked next. Registered by `lattice-snippet` like
+  `operator:narrow`, so it composes with every motion and text object
+  (paramount #3: the grammar is the command API) and takes no vim key.
+  Rejected: a `<C-x><C-t>` chord in Visual (`<C-x>` as a Visual prefix
+  shadows vim's `v_CTRL-X`), and UltiSnips' stash-then-expand (invisible
+  state). Select cannot reach it — a letter there types.
+- **Placeholders are highlighted through a generic mode hook (2026-10-24)**:
+  a mode publishes byte ranges with a theme element, and both renderers
+  paint them through the overlay path every other range style takes.
+  Rejected: a style on the tracked range (ties painting to a core text
+  primitive). Multi-cursor and linked editing can reuse the hook.
+- **Choices cycle in place (2026-10-24)**: `<C-n>` / `<C-p>` on a focused
+  choice replace it with the next / previous option. Rejected: the
+  completion popup (Insert-only today; a choice is focused in Select) and a
+  floating picker — both add a popup state for a three-word list.
 - **TUI / GPUI parity is structural, and checked per slice.** Every
   scenario lives in `lattice-host/src/peer_conformance/snippet.rs` and runs
   in both peers through `peer_conformance_tests!` — real keys through each
@@ -86,5 +103,5 @@ Both renderers share the host's expansion code, so every finding is in both.
 | SI.9 | LSP: advertise completion capabilities; honour `textEdit`; tabstops correct after `additionalTextEdits`; Select on a default; run `command` (finding 2) | tests with the in-process server | ✅ — `completion` client capabilities (snippets, insert/replace, insert-text modes, lazy `documentation`/`detail`; NOT lazy `additionalTextEdits` — accept does not await a resolve — nor label details, which the popup does not render); `textEdit` range extended to the cursor; origin carried through edits applied after it; first stop focused through the shared `focus_first_snippet_stop`; `command` run; `asIs` skips the re-indent. Found, not fixed: the plain-text LSP accept keeps the stale `textEdit` end, and `lsp_position_to_app_byte` assumes UTF-16 whatever encoding was negotiated |
 | SI.10 | Variables + surround: `TM_SELECTED_TEXT` from Visual, OS clipboard, comment strings from the major mode, `WORKSPACE_*`, `RELATIVE_FILEPATH` | tests per variable | 🚧 — ✅ OS clipboard (read only when the body uses `$CLIPBOARD`, `SnippetBody::uses_variable`; falls back to `+`), `LINE_COMMENT` / `BLOCK_COMMENT_*` from the language, `WORKSPACE_NAME` / `_FOLDER` and `RELATIVE_FILEPATH` (full path outside the workspace) from the picker's root, `CURSOR_INDEX` / `_NUMBER`, `CURRENT_SECONDS_UNIX`, `CURRENT_TIMEZONE_OFFSET`, `TM_FILENAME_BASE` of a dotfile. 📝 `TM_SELECTED_TEXT`: needs an entry point for expanding around a Visual selection — a design decision |
 | SI.11 | Loading: `snippet.dirs` option, project `.lattice/snippets`, `.code-snippets`, friendly-snippets `package.json` layout | tests per layout | ✅ — `lattice_snippet::load_dir` reads a `package.json` (`contributes.snippets`) or a snippets folder (`<lang>.json`, `_global.json`, `*.code-snippets` by `scope`); the host's order is design §8.3's: packages in `snippet-packs/`, `snippet.dirs`, the user's folder, the project's `.lattice/snippets`; `:set snippet.dirs` reloads; conformance boot clears the user's snippet directories |
-| SI.12 | Feedback: placeholder highlight (theme element, both renderers); choice list on `${1\|a,b\|}`; remaining doc drift | tests: decoration present in both peers; choice list opens | 🚧 — ✅ doc drift: the active-snippet keys are actions (no `:snippet-*` commands, no `<C-l>`/`<C-h>`), keeping a default is `<Tab>`, choices insert the first option. 📝 placeholder highlight: no mode-contributed inline range decoration exists (`Mode::decorations()` is a stub) — needs a new seam, a design decision. 📝 choice list: the completion popup is Insert-only and a choice is focused in Select; how they meet is a design decision |
+| SI.12 | Feedback: placeholder highlight (theme element, both renderers); choice list on `${1\|a,b\|}`; remaining doc drift | tests: decoration present in both peers; choice list opens | 🚧 — ✅ doc drift: the active-snippet keys are actions (no `:snippet-*` commands, no `<C-l>`/`<C-h>`), keeping a default is `<Tab>`, choices insert the first option. 📝 placeholder highlight: no mode-contributed inline range decoration exists (`Mode::decorations()` is a stub) — needs a new seam, a design decision. ✅ choices: `<C-n>` / `<C-p>` in Select cycle the focused choice in place, in every copy (`ActiveSnippet::cycle_choice`; the `action:snippet-{next,prev}-choice` ids registered by `lattice_snippet::register_snippet_actions`). 📝 placeholder highlight: decided (generic mode range-highlight hook), building |
 | SI.13 | Multi-cursor: expand at every cursor | — | ⛔ deferred — revisit once single-cursor sessions are sound; until then expansion applies at the primary only, documented in `multi-cursor.md` |

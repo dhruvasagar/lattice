@@ -43,7 +43,8 @@ pub struct TabstopGroup {
     /// One tracked range per occurrence of `$index`, in render order.
     pub ranges: Vec<TrackedRangeId>,
     pub has_default: bool,
-    pub is_choice: bool,
+    /// A choice placeholder's options (`${1|a,b,c|}`); empty otherwise.
+    pub choices: Vec<String>,
     /// Transformed copies of `$index` (`${1/(.*)/${1:/upcase}/}`): tracked
     /// like the rest but not stops and not linked — their text is a
     /// transform of the placeholder's, rewritten when the user leaves it.
@@ -120,7 +121,11 @@ impl ActiveSnippet {
                 index,
                 ranges: plain.iter().map(|r| track(r)).collect(),
                 has_default: plain.iter().any(|r| r.has_default),
-                is_choice: plain.iter().any(|r| r.is_choice),
+                choices: plain
+                    .iter()
+                    .map(|r| r.choices.clone())
+                    .find(|c| !c.is_empty())
+                    .unwrap_or_default(),
                 transforms: transformed
                     .iter()
                     .filter_map(|r| Some((track(r), r.transform.clone()?)))
@@ -150,7 +155,7 @@ impl ActiveSnippet {
                 index: 0,
                 range: rendered.text.len()..rendered.text.len(),
                 has_default: false,
-                is_choice: false,
+                choices: Vec::new(),
                 transform: None,
             };
             groups.push(group(0, &[&end]));
@@ -261,6 +266,34 @@ impl ActiveSnippet {
             }))
             .map(TrackedRangeChange::Untrack)
             .collect()
+    }
+
+    /// The edit that turns the focused choice (`${1|a,b,c|}`) into its next
+    /// option — the previous one when `forward` is false — wrapping at
+    /// either end: its first occurrence's range and the option's text. The
+    /// document copies it into the other occurrences, since they are
+    /// linked. Text that is no option steps to the first (or last) one.
+    /// `None` when the focus is not on a choice.
+    pub fn cycle_choice(
+        &self,
+        tracked: &TrackedRanges,
+        text_of: impl Fn(Range<usize>) -> Option<String>,
+        forward: bool,
+    ) -> Option<(Range<usize>, String)> {
+        let group = self.current_group()?;
+        let n = group.choices.len();
+        if n == 0 {
+            return None;
+        }
+        let range = group.live_ranges(tracked).into_iter().next()?;
+        let text = text_of(range.clone())?;
+        let next = match group.choices.iter().position(|c| *c == text) {
+            Some(i) if forward => (i + 1) % n,
+            Some(i) => (i + n - 1) % n,
+            None if forward => 0,
+            None => n - 1,
+        };
+        Some((range, group.choices[next].clone()))
     }
 
     /// The rewrites the focused placeholder's transformed copies need, for
@@ -450,6 +483,35 @@ mod tests {
             Some(3),
             "`<Tab>` skips the removed stop"
         );
+    }
+
+    #[test]
+    fn a_choice_cycles_through_its_options_and_wraps() {
+        let (a, t) = start("x ${1|aa,b,cc|} y", 0);
+        let text = |s: &'static str| move |_r: Range<usize>| Some(s.to_string());
+        assert_eq!(
+            a.cycle_choice(&t, text("aa"), true),
+            Some((2..4, "b".into()))
+        );
+        assert_eq!(
+            a.cycle_choice(&t, text("cc"), true),
+            Some((2..4, "aa".into()))
+        );
+        assert_eq!(
+            a.cycle_choice(&t, text("aa"), false),
+            Some((2..4, "cc".into()))
+        );
+        assert_eq!(
+            a.cycle_choice(&t, text("edited"), false),
+            Some((2..4, "cc".into())),
+            "text that is no option steps to the last"
+        );
+    }
+
+    #[test]
+    fn cycling_is_nothing_off_a_choice() {
+        let (a, t) = start("${1:plain} ${2|a,b|}", 0);
+        assert_eq!(a.cycle_choice(&t, |_| Some("plain".into()), true), None);
     }
 
     #[test]

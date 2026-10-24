@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Added
+- **Snippet choices cycle.** On a `${1|one,two,three|}` choice, `<C-n>`
+  and `<C-p>` swap in the next or previous option — in every copy of it —
+  and keep it selected, so typing still replaces it.
 - **Snippet packs load from more places, in more layouts.** Clone
   friendly-snippets into `~/.config/lattice/snippet-packs/` and its
   snippets load as they are; `:set snippet.dirs=…` adds folders of your

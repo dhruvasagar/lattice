@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **`gS` wraps text in a snippet.** `gS` takes a motion or text object
+  like any operator — `gSiw` a word, `gSip` a paragraph, `gSS` the line,
+  `gS` in Visual the selection — opens the snippet picker, and the snippet
+  you pick replaces the text with the text inside it, as
+  `$TM_SELECTED_TEXT`. Wrapped lines keep their indentation and nesting;
+  `<Esc>` in the picker changes nothing, and `u` undoes a wrap in one step.
 - **A live snippet's placeholders are highlighted**, so you can see
   where `<Tab>` goes next. The tint follows the text as you type and
   disappears when the snippet ends; themes restyle it as

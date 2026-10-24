@@ -4513,6 +4513,9 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         // CD.3d: applied in sequence, so it runs only if every effect before it
         // did — `apply_effect_host` stops a batch at a write that did not land.
         Effect::InvokeCommand { id, args } => out.merge(editor.invoke_command_named(&id, args)),
+        // SI.10: `gS`'s end — host-applied, so both peers (and an effect that
+        // lands off-keystroke) take the one path.
+        Effect::ExpandSnippetOver { snippet, range } => editor.expand_snippet_over(&snippet, range),
         // I3/BC.8c follow-up: SaveBuffer is host-applied (reuses the existing
         // `Editor::do_write`), joining BufferDelete below — so it works on the
         // off-keystroke inbound tick path (claude-code `saveDocument`), where
@@ -29645,8 +29648,55 @@ impl Editor {
         anchor: lattice_protocol::position::Position,
     ) {
         let vars = self.snippet_variables_for(body);
-        let rendered = self.indent_snippet(lattice_snippet::render::render(body, &vars), anchor);
         let range = lattice_protocol::position::Range::new(anchor, self.cursor);
+        self.expand_snippet_in(body, range, vars);
+    }
+
+    /// SI.10: expand the snippet `key` names over `range`, the range's text
+    /// becoming its `$TM_SELECTED_TEXT` — `gS{motion}`'s end, through
+    /// `Effect::ExpandSnippetOver`. The selection is taken relative to its
+    /// first line's indentation, so the snippet's lines place the rest.
+    pub fn expand_snippet_over(&mut self, key: &str, range: lattice_protocol::position::Range) {
+        let language = self.active_language_id();
+        let snippet = self
+            .snippet_registry
+            .load()
+            .resolve(&lattice_snippet::lookup_languages(&language), key)
+            .cloned();
+        let Some(snippet) = snippet else {
+            let name = key.rsplit('\u{1f}').next().unwrap_or(key);
+            self.set_message(
+                EchoLevel::Error,
+                format!("snippet: no snippet named `{name}`"),
+            );
+            return;
+        };
+        let buffer = self.document.snapshot().buffer.clone();
+        let Ok(text) = buffer.slice(range) else {
+            self.set_message(
+                EchoLevel::Error,
+                "snippet: the text to wrap is no longer there",
+            );
+            return;
+        };
+        let line = buffer.line(range.start.line).unwrap_or_default();
+        let indent_end = lattice_core::IndentUnit::indent_len(&line).min(range.start.byte as usize);
+        let base = line.get(..indent_end).unwrap_or_default();
+        let mut vars = self.snippet_variables_for(&snippet.body);
+        vars.selected_text = Some(lattice_snippet::selection_relative_to(&text, base));
+        self.expand_snippet_in(&snippet.body, range, vars);
+    }
+
+    /// Render `body` against `vars`, splice it over `range`, and start its
+    /// session — the one expansion path every trigger ends in.
+    fn expand_snippet_in(
+        &mut self,
+        body: &lattice_snippet::SnippetBody,
+        range: lattice_protocol::position::Range,
+        vars: lattice_snippet::VariableContext,
+    ) {
+        let rendered =
+            self.indent_snippet(lattice_snippet::render::render(body, &vars), range.start);
         let edit = lattice_protocol::edit::Edit::replace(range, rendered.text.clone());
         let applied = match self.apply_edit_blocking(edit) {
             Ok(a) => a,
@@ -37769,11 +37819,15 @@ impl Editor {
                     lattice_picker::PickerAcceptOutcome::JumpToMark { name },
                 ));
             }
-            lattice_picker::RoutingPayload::ExpandSnippet { id } => {
+            lattice_picker::RoutingPayload::ExpandSnippet { id, over: None } => {
                 out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
                 ));
             }
+            lattice_picker::RoutingPayload::ExpandSnippet {
+                id,
+                over: Some(range),
+            } => self.expand_snippet_over(&id, range),
             // BranchBase is only ever emitted by a generator-based
             // source (the `generator.accept` path above, never
             // reaches here in practice) — kept for match
@@ -44636,6 +44690,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
+        | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -44799,6 +44854,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
+        | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -45326,7 +45382,10 @@ pub fn accept_action_to_routing_payload(
         },
         AcceptAction::PasteRegister { name } => RoutingPayload::PasteRegister { name: *name },
         AcceptAction::JumpToMark { name } => RoutingPayload::JumpToMark { name: *name },
-        AcceptAction::ExpandSnippet { id } => RoutingPayload::ExpandSnippet { id: id.clone() },
+        AcceptAction::ExpandSnippet { id } => RoutingPayload::ExpandSnippet {
+            id: id.clone(),
+            over: None,
+        },
         AcceptAction::OpenLspLog {
             server_id,
             workspace,

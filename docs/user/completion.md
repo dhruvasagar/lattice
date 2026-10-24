@@ -218,8 +218,16 @@ ${1/pat/sub/flags}       transform on the captured text
 VS Code's snippet variables all resolve — `$TM_FILENAME`,
 `$TM_FILENAME_BASE`, `$RELATIVE_FILEPATH`, `$WORKSPACE_NAME`,
 `$LINE_COMMENT`, `$BLOCK_COMMENT_START`, `$CLIPBOARD`, `$CURRENT_*` (local
-time), `$UUID`, … — except `$TM_SELECTED_TEXT`, empty for now. An unknown
-name becomes a placeholder showing it.
+time), `$UUID`, `$TM_SELECTED_TEXT` (the text you wrap, below), … An
+unknown name becomes a placeholder showing it.
+
+### Wrapping text in a snippet
+
+`gS` is an operator: `gSiw`, `gSip`, `gSaf`, `gSS` (the line), or `gS` in
+Visual. It opens the snippet picker, and the snippet you pick replaces
+the text, which lands where the snippet says `$TM_SELECTED_TEXT`. Wrapped
+lines keep their indentation and nesting. `<Esc>` in the picker changes
+nothing; `u` undoes a wrap.
 
 ### Loading snippet packs
 

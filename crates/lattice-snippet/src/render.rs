@@ -264,7 +264,11 @@ fn walk(
             }
             SnippetToken::Variable { name, default } => {
                 if let Some(value) = vars.resolve(name) {
-                    out.push_str(&value);
+                    if name == "TM_SELECTED_TEXT" {
+                        push_at_line_indent(out, &value);
+                    } else {
+                        out.push_str(&value);
+                    }
                 } else if let Some(default) = default {
                     walk(&default.tokens, vars, defaults, out, tabstops, next_free);
                 } else if !vars.is_known(name) {
@@ -331,6 +335,29 @@ fn walk(
                 }
             }
         }
+    }
+}
+
+/// Append a multi-line `value` so each line after the first starts at the
+/// indentation of the body line it lands on — VS Code's rule for the
+/// selection, which is what makes `if ($1) {\n\t$TM_SELECTED_TEXT\n}`
+/// indent every wrapped line, not just the first. The value arrives
+/// relative to its own first line ([`crate::selection_relative_to`]), so
+/// deeper lines keep their extra depth. Empty lines stay empty.
+fn push_at_line_indent(out: &mut String, value: &str) {
+    let line_start = out.rfind('\n').map_or(0, |i| i + 1);
+    let indent: String = out[line_start..]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    for (i, line) in value.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+            if !line.is_empty() {
+                out.push_str(&indent);
+            }
+        }
+        out.push_str(line);
     }
 }
 
@@ -513,6 +540,25 @@ mod tests {
         let r = render(&body, &VariableContext::default());
         assert_eq!(r.text, "foo bar");
         assert!(r.tabstops.is_empty());
+    }
+
+    /// SI.10: a multi-line selection's later lines start at the indentation
+    /// of the body line it is placed on; empty lines stay empty, and other
+    /// variables are inserted as they are.
+    #[test]
+    fn a_multi_line_selection_follows_its_body_lines_indentation() {
+        let vars = VariableContext {
+            selected_text: Some("a();\n    b();\n\nc();".into()),
+            clipboard: Some("x\ny".into()),
+            ..VariableContext::default()
+        };
+        let body = parse::parse("{\n\t$TM_SELECTED_TEXT\n}").unwrap();
+        assert_eq!(
+            render(&body, &vars).text,
+            "{\n\ta();\n\t    b();\n\n\tc();\n}"
+        );
+        let body = parse::parse("\t$CLIPBOARD").unwrap();
+        assert_eq!(render(&body, &vars).text, "\tx\ny");
     }
 
     /// SI.8: a variable transform is applied at render.

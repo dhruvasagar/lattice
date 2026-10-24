@@ -1125,6 +1125,8 @@ impl App {
             | Effect::BufferPrev
             | Effect::FocusBuffer(_)
             | Effect::InvokeCommand { .. }
+            // SI.10: host-applied (`Editor::expand_snippet_over`).
+            | Effect::ExpandSnippetOver { .. }
             | Effect::BufferDelete { .. }
             | Effect::ListModes
             | Effect::DescribeMode { .. }
@@ -1646,6 +1648,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
+        | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -1809,6 +1812,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
+        | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents

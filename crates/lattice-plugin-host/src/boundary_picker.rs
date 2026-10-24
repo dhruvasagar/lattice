@@ -447,8 +447,15 @@ impl WitBoundary for NativeRoutingPayload {
             }
             NativeRoutingPayload::PasteRegister { name } => WitRoutingPayload::PasteRegister(*name),
             NativeRoutingPayload::JumpToMark { name } => WitRoutingPayload::JumpToMark(*name),
-            NativeRoutingPayload::ExpandSnippet { id } => {
+            NativeRoutingPayload::ExpandSnippet { id, over: None } => {
                 WitRoutingPayload::ExpandSnippet(id.clone())
+            }
+            // SI.10: a `gS` wrap row crosses with plugin API 0.4.0.
+            NativeRoutingPayload::ExpandSnippet { over: Some(_), .. } => {
+                return Err(
+                    "a snippet row that wraps text is not on the WIT surface yet (plugin API 0.4.0)"
+                        .to_string(),
+                );
             }
             NativeRoutingPayload::AcceptShowMessageAction {
                 request_id,
@@ -570,7 +577,9 @@ impl WitBoundary for NativeRoutingPayload {
             },
             WitRoutingPayload::PasteRegister(name) => NativeRoutingPayload::PasteRegister { name },
             WitRoutingPayload::JumpToMark(name) => NativeRoutingPayload::JumpToMark { name },
-            WitRoutingPayload::ExpandSnippet(id) => NativeRoutingPayload::ExpandSnippet { id },
+            WitRoutingPayload::ExpandSnippet(id) => {
+                NativeRoutingPayload::ExpandSnippet { id, over: None }
+            }
             WitRoutingPayload::AcceptShowMessageAction(p) => {
                 NativeRoutingPayload::AcceptShowMessageAction {
                     request_id: p.request_id,
@@ -891,7 +900,10 @@ mod tests {
         });
         assert_routing_round_trips(NativeRoutingPayload::PasteRegister { name: 'a' });
         assert_routing_round_trips(NativeRoutingPayload::JumpToMark { name: 'z' });
-        assert_routing_round_trips(NativeRoutingPayload::ExpandSnippet { id: "fn".into() });
+        assert_routing_round_trips(NativeRoutingPayload::ExpandSnippet {
+            id: "fn".into(),
+            over: None,
+        });
         assert_routing_round_trips(NativeRoutingPayload::AcceptShowMessageAction {
             request_id: 5,
             action_index: 1,

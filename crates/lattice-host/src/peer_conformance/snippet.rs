@@ -1028,3 +1028,137 @@ pub fn live_placeholders_are_tinted<P: PeerUnderTest>() {
     press(&mut peer, "<Esc>");
     assert_eq!(placeholder_tints(&peer), vec![], "no snippet, no tint");
 }
+
+// ---- SI.10: `gS` wraps text in a snippet ----
+
+/// A wrap snippet with nothing to visit: the text goes inside the call.
+const CALL_BODY: &str = "wrap($TM_SELECTED_TEXT)";
+const CALL_PREFIX: &str = "zzcall";
+
+/// A block wrap: a condition to fill in, the text indented one level under.
+const IF_BODY: &str = "if ${1:cond} {\n\t$TM_SELECTED_TEXT\n}";
+const IF_PREFIX: &str = "zzif";
+
+/// `gSiw` opens the snippet picker over the word; the snippet picked
+/// expands in its place with the word inside, as one undo step.
+pub fn gs_wraps_a_word_in_the_picked_snippet<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("let x = foo;\n");
+    install_snippet(&mut peer, "conformance-call", CALL_PREFIX, CALL_BODY);
+
+    press(&mut peer, "fogSiw");
+    assert_eq!(
+        text(&peer),
+        "let x = foo;\n",
+        "nothing changes until a pick"
+    );
+    press(&mut peer, &format!("{CALL_PREFIX}<CR>"));
+
+    assert_eq!(text(&peer), "let x = wrap(foo);\n");
+    press(&mut peer, "<Esc>u");
+    assert_eq!(text(&peer), "let x = foo;\n", "one `u` undoes the wrap");
+}
+
+/// A linewise `gS` wraps the lines at their own indentation: the snippet's
+/// lines follow the block, the wrapped lines sit one level in, and the first
+/// stop is selected.
+pub fn gs_over_lines_keeps_the_block_indented<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("fn f() {\n    a();\n    if b {\n        c();\n    }\n}\n");
+    install_snippet(&mut peer, "conformance-if", IF_PREFIX, IF_BODY);
+
+    press(&mut peer, "jgS3j");
+    press(&mut peer, &format!("{IF_PREFIX}<CR>"));
+
+    assert_eq!(
+        text(&peer),
+        "fn f() {\n    if cond {\n        a();\n        if b {\n            c();\n        }\n    }\n}\n"
+    );
+    assert!(session_active(&peer), "the condition is still to fill in");
+    assert_selects_on(&peer, "the condition", 1, 7, 11);
+}
+
+/// `gS` in Visual wraps the selection.
+pub fn gs_in_visual_wraps_the_selection<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("foo bar\n");
+    install_snippet(&mut peer, "conformance-call", CALL_PREFIX, CALL_BODY);
+
+    press(&mut peer, "wvegS");
+    press(&mut peer, &format!("{CALL_PREFIX}<CR>"));
+
+    assert_eq!(text(&peer), "foo wrap(bar)\n");
+}
+
+/// `gSS` wraps the current line, from its first non-blank.
+pub fn gss_wraps_the_line<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("    foo();\n");
+    install_snippet(&mut peer, "conformance-call", CALL_PREFIX, CALL_BODY);
+
+    press(&mut peer, "gSS");
+    press(&mut peer, &format!("{CALL_PREFIX}<CR>"));
+
+    assert_eq!(text(&peer), "    wrap(foo();)\n");
+}
+
+/// Closing the picker leaves the text as it was: `gS` takes nothing from
+/// it until a snippet is picked.
+pub fn closing_the_gs_picker_changes_nothing<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("foo bar\n");
+    install_snippet(&mut peer, "conformance-call", CALL_PREFIX, CALL_BODY);
+
+    press(&mut peer, "gSiw<Esc>");
+
+    assert_eq!(text(&peer), "foo bar\n");
+    assert!(matches!(peer.editor().modal, ModalState::Normal));
+    press(&mut peer, "u");
+    assert_eq!(text(&peer), "foo bar\n", "and there is nothing to undo");
+}
+
+/// The echo line's text, for the failure modes below.
+fn echoed<P: PeerUnderTest>(peer: &P) -> String {
+    peer.editor()
+        .last_message
+        .as_ref()
+        .map(|m| m.text.clone())
+        .unwrap_or_default()
+}
+
+/// A wrap whose range is not a range opens no picker, and says why.
+pub fn a_malformed_wrap_range_opens_no_picker<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("foo\n");
+    install_snippet(&mut peer, "conformance-call", CALL_PREFIX, CALL_BODY);
+
+    press(&mut peer, ":picker snippets --over nonsense<CR>");
+
+    assert!(peer.editor().picker.is_none(), "no picker opened");
+    assert!(echoed(&peer).contains("not a range"), "{:?}", echoed(&peer));
+}
+
+/// Wrapping with a snippet that does not exist, or around text that is no
+/// longer there, leaves the buffer alone and says so.
+pub fn a_wrap_that_cannot_land_changes_nothing<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("foo\n");
+    install_snippet(&mut peer, "conformance-call", CALL_PREFIX, CALL_BODY);
+    let range = |end_line| {
+        lattice_protocol::position::Range::new(Position::new(0, 0), Position::new(end_line, 3))
+    };
+
+    peer.editor_mut()
+        .expand_snippet_over(&lattice_snippet::snippet_key("*", "no-such"), range(0));
+    assert_eq!(text(&peer), "foo\n");
+    assert!(
+        echoed(&peer).contains("no snippet named `no-such`"),
+        "{:?}",
+        echoed(&peer)
+    );
+
+    peer.editor_mut().expand_snippet_over(
+        &lattice_snippet::snippet_key("*", "conformance-call"),
+        range(9),
+    );
+    assert_eq!(text(&peer), "foo\n");
+    assert!(
+        echoed(&peer).contains("no longer there"),
+        "{:?}",
+        echoed(&peer)
+    );
+    assert!(!session_active(&peer));
+}

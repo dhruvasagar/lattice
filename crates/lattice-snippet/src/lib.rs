@@ -47,6 +47,7 @@ pub mod session;
 pub mod token;
 pub mod transform;
 pub mod variables;
+pub mod wrap;
 
 pub use crate::activation::{
     SnippetActivation, SnippetActivationMode, SnippetActivationPolicyHandle, SnippetDirs,
@@ -66,3 +67,6 @@ pub use crate::render::{RenderedSnippet, TabstopRange};
 pub use crate::session::{SnippetSession, SnippetSessionHandle, snippet_active_predicate};
 pub use crate::token::{ChoiceOption, SnippetBody, SnippetToken};
 pub use crate::variables::{VariableContext, builtin_variables};
+pub use crate::wrap::{
+    SNIPPET_WRAP_ACTION, SNIPPET_WRAP_OPERATOR, register_snippet_wrap, selection_relative_to,
+};

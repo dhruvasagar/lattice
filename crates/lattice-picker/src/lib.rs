@@ -204,12 +204,15 @@ pub enum RoutingPayload {
     /// behavior. `name` carries a stable identity, so MRU
     /// will record `mark:<name>` once slice 14 lands.
     JumpToMark { name: char },
-    /// Expand a snippet by name at the cursor. Emitted by
-    /// `:picker snippets`. The host resolves the body through
-    /// `SnippetRegistry::by_name` and routes through the
-    /// existing `:snippet-expand` path. MRU keys on
-    /// `snip:<name>`.
-    ExpandSnippet { id: String },
+    /// Expand a snippet, by its identity, at the cursor — or, with `over`,
+    /// around that text (`gS{motion}`, SI.10: the text becomes the
+    /// snippet's `$TM_SELECTED_TEXT`). Emitted by `:picker snippets`. MRU
+    /// keys on `snip:<id>` either way, so a snippet you wrap with often
+    /// floats in both pickers.
+    ExpandSnippet {
+        id: String,
+        over: Option<lattice_protocol::position::Range>,
+    },
     /// Accept one action from a server-initiated
     /// `window/showMessageRequest`. `request_id` keys into the
     /// App's `lsp_pending_show_message_requests` map (the slot

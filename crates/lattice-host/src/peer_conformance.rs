@@ -465,6 +465,13 @@ macro_rules! peer_conformance_tests {
             ctrl_n_and_ctrl_p_cycle_a_choice,
             ctrl_n_off_a_choice_changes_nothing,
             live_placeholders_are_tinted,
+            gs_wraps_a_word_in_the_picked_snippet,
+            gs_over_lines_keeps_the_block_indented,
+            gs_in_visual_wraps_the_selection,
+            gss_wraps_the_line,
+            closing_the_gs_picker_changes_nothing,
+            a_malformed_wrap_range_opens_no_picker,
+            a_wrap_that_cannot_land_changes_nothing,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

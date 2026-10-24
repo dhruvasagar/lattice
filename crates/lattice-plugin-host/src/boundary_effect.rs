@@ -845,6 +845,15 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::ExpandSnippet { replace_range } => {
             WitEffect::ExpandSnippet(replace_range.to_wit()?)
         }
+        // SI.10: crosses once the WIT carries it — plugin API 0.4.0, the
+        // next commit. Until then a plugin reaches it by name, through
+        // `invoke-command` on `action:snippet-wrap`.
+        NativeEffect::ExpandSnippetOver { .. } => {
+            return Err(
+                "Effect::ExpandSnippetOver is not on the WIT surface yet (plugin API 0.4.0)"
+                    .to_string(),
+            );
+        }
         NativeEffect::ReloadSnippets => WitEffect::ReloadSnippets,
         NativeEffect::DescribeEvents => WitEffect::DescribeEvents,
         NativeEffect::DescribeDiff => WitEffect::DescribeDiff,

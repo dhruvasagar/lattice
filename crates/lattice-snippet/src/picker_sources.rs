@@ -50,7 +50,7 @@ impl SnippetsSource {
         Self {
             spec: PickerSourceSpec::no_args(
                 "snippets",
-                "Available snippets for the active buffer's language. `<CR>` expands the chosen snippet at the cursor.",
+                "Available snippets for the active buffer's language. `<CR>` expands the chosen snippet at the cursor; opened by `gS`, around the text it covers.",
             ),
             registry,
         }
@@ -62,7 +62,17 @@ impl PickerSourceGenerator for SnippetsSource {
         &self.spec
     }
 
-    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        // `--over <range>` (SI.10, `gS`): each row wraps that text instead
+        // of expanding at the cursor.
+        let over = match args {
+            [] => None,
+            [flag, range] if flag == crate::wrap::OVER_FLAG => Some(
+                crate::wrap::decode_range(range)
+                    .ok_or_else(|| format!("snippets: `{range}` is not a range"))?,
+            ),
+            _ => return Err(format!("snippets: unexpected arguments {args:?}")),
+        };
         // The same language id completion and `<C-x><C-s>` use, from the
         // buffer's path (SI.5) — not the tree-sitter label the picker
         // context carries, which named `.rb` `ruby` here and `rb` there.
@@ -93,7 +103,13 @@ impl PickerSourceGenerator for SnippetsSource {
                 // the body through `SnippetRegistry::resolve` at
                 // expansion time. It is also the MRU identity, so
                 // frequent-snippet rows float.
-                (cand, RoutingPayload::ExpandSnippet { id: meta.key() })
+                (
+                    cand,
+                    RoutingPayload::ExpandSnippet {
+                        id: meta.key(),
+                        over,
+                    },
+                )
             })
             .collect();
         Ok(PickerInitResult::Inline(pairs))
@@ -105,9 +121,17 @@ impl PickerSourceGenerator for SnippetsSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::ExpandSnippet { id } => {
+            RoutingPayload::ExpandSnippet { id, over: None } => {
                 Ok(PickerAcceptOutcome::ExpandSnippet { id: id.clone() })
             }
+            // A wrap row runs the action every other caller of a wrap runs.
+            RoutingPayload::ExpandSnippet {
+                id,
+                over: Some(range),
+            } => Ok(PickerAcceptOutcome::InvokeCommand {
+                id: crate::wrap::SNIPPET_WRAP_ACTION.to_string(),
+                args: crate::wrap::wrap_action_args(id, *range),
+            }),
             other => Err(format!("snippets: unexpected routing payload {other:?}")),
         }
     }

@@ -856,7 +856,7 @@ Built-in variables (TextMate / VS Code parity):
 
 | Variable | Value |
 |---|---|
-| `TM_SELECTED_TEXT` | Last visual selection |
+| `TM_SELECTED_TEXT` | The text `gS` wraps (§8.2.1); empty otherwise |
 | `TM_CURRENT_LINE` | Current line text |
 | `TM_CURRENT_WORD` | Word under cursor |
 | `TM_LINE_INDEX` | 0-based current line |
@@ -871,6 +871,39 @@ Built-in variables (TextMate / VS Code parity):
 | `RANDOM`, `RANDOM_HEX` | Random ints |
 | `UUID` | Random UUID |
 | `LINE_COMMENT`, `BLOCK_COMMENT_START`, `BLOCK_COMMENT_END` | Per-major-mode comment strings (Phase 8) |
+
+### 8.2.1 Wrapping text (`gS`)
+
+`$TM_SELECTED_TEXT` has a value only when a snippet is expanded *around*
+text, and that is an operator: `gS{motion}` in Normal, `gS` in Visual,
+`gSS` for the line. It composes with every motion and text object
+because it is registered into the grammar like `d` or `zn`
+(`operator:snippet-wrap`, owned by `lattice-snippet`; the host only wires
+the chord, as it does for `zn`).
+
+The operator removes nothing. It opens `:picker snippets --over <range>`;
+each row carries the range (`RoutingPayload::ExpandSnippet::over`, so
+the MRU still keys on the snippet) and accepts into
+`action:snippet-wrap(snippet, range)`, which emits
+`Effect::ExpandSnippetOver`. The host resolves the snippet, reads the
+range's text, and expands over it — the same splice, session and focus
+as every other expansion. Closing the picker therefore leaves the
+buffer untouched and leaves nothing behind.
+
+A linewise range starts after the first line's indentation and stops
+before the last newline: the snippet lands at the block's indentation
+and its own lines decide where the block ends. The text is taken
+relative to that first line (each later line loses the shared
+indentation), and the renderer starts each of its later lines at the
+indentation of the body line the variable sits on — VS Code's rule.
+Then the usual re-indent (SI.6) adds the trigger line's indentation, so
+a block wrapped in `if ${1} {\n\t$TM_SELECTED_TEXT\n}` sits one level in
+with its own nesting kept.
+
+Rejected: a Visual-only chord (`<C-x><C-t>` — `<C-x>` as a Visual prefix
+shadows vim's `v_CTRL-X`, and a chord cannot take a motion), and
+UltiSnips' stash-the-text-then-expand (invisible state: the text
+vanishes into a slot the next expansion may or may not read).
 
 ### 8.3 Loading paths
 

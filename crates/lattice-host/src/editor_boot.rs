@@ -487,6 +487,9 @@ impl Editor {
         );
         // SI.12: the snippet chords' own action ids (the choice cycle).
         lattice_snippet::register_snippet_actions(boot.commands_mut());
+        // SI.10: `gS`'s operator and the action its picker rows accept into.
+        // The operator is bound below by name, beside `zn`.
+        let _ = lattice_snippet::register_snippet_wrap(boot.commands_mut());
         // BC.4: terminal-mode registration moved into
         // `lattice_terminal::install` (Phase-B list below).
         crate::modes::register_buffer_kind_modes(boot.modes_mut());
@@ -2337,6 +2340,35 @@ impl Editor {
                     narrow_operator_id,
                     Some(lattice_protocol::chord::ChordPattern::Literal(
                         lattice_protocol::chord::KeyChord::char('n'),
+                    )),
+                    &builtins,
+                    &syntax_textobject_ids,
+                    &syntax_motion_ids,
+                    false,
+                );
+                // SI.10: `gS{motion|text-object}` wraps that span in a
+                // snippet; `gSS` the current line, `gS` in Visual the
+                // selection. Universal grammar like `zn`: the operator SPEC is
+                // `lattice-snippet`'s, only the chord is wired here.
+                let snippet_wrap_operator_id = lattice_grammar::registry::OperatorId(
+                    registry
+                        .load()
+                        .id_by_name(lattice_snippet::SNIPPET_WRAP_OPERATOR)
+                        .expect("operator:snippet-wrap registered at boot"),
+                );
+                crate::keymap_normal::register_operator_bindings(
+                    &h,
+                    &[
+                        lattice_protocol::chord::ChordPattern::Literal(
+                            lattice_protocol::chord::KeyChord::char('g'),
+                        ),
+                        lattice_protocol::chord::ChordPattern::Literal(
+                            lattice_protocol::chord::KeyChord::char('S'),
+                        ),
+                    ],
+                    snippet_wrap_operator_id,
+                    Some(lattice_protocol::chord::ChordPattern::Literal(
+                        lattice_protocol::chord::KeyChord::char('S'),
                     )),
                     &builtins,
                     &syntax_textobject_ids,

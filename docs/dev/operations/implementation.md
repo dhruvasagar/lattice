@@ -1428,9 +1428,11 @@ placeholders past an auto-import, select defaults and run their command.
 leaving the placeholder); malformed nesting parses in linear time; a bad
 pack entry skips only itself; unknown variables become placeholders;
 `CURRENT_*` are local time.
-**SI.10 🚧**: every VS Code variable but `TM_SELECTED_TEXT` resolves
-(clipboard, comments, workspace, relative path, cursor, timezone); wrapping
-a selection is the `gS` operator, decided and queued.
+**SI.10 ✅**: every VS Code variable resolves (clipboard, comments,
+workspace, relative path, cursor, timezone); `$TM_SELECTED_TEXT` is the
+text the `gS` operator wraps — it opens the snippet picker over the span
+and the pick expands around it (`Effect::ExpandSnippetOver`), a block
+keeping its indentation.
 **SI.11 ✅**: packs load from `snippet-packs/` packages, `snippet.dirs`,
 the user's folder and the project's `.lattice/snippets`, in any VS Code
 layout (`package.json`, `<lang>.json`, `.code-snippets`).

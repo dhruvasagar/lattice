@@ -33834,8 +33834,13 @@ impl Editor {
                     }
                 };
                 match lattice_snippet::load::load_pack_from_str(&json) {
-                    Ok(snips) => {
-                        for s in snips {
+                    Ok(pack) => {
+                        // SI.8: a malformed entry skips itself, not the
+                        // file; each is reported.
+                        for skipped in pack.skipped {
+                            errors.push(format!("{}: {skipped}", path.display()));
+                        }
+                        for s in pack.snippets {
                             next.insert(&language, s);
                             user_total += 1;
                         }
@@ -33900,6 +33905,17 @@ impl Editor {
                 target: "lattice_host::snippet",
                 total, builtin_total, user_total, ?errors,
                 "loaded snippets at startup with errors"
+            );
+            // SI.8: a pack that half-loaded at boot used to be a log line
+            // nobody saw; the snippets were just missing. Say so once.
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "snippets: {} problem(s) loading your packs; first: {} \
+                     (`:reload-snippets` to retry)",
+                    errors.len(),
+                    errors[0]
+                ),
             );
         }
     }

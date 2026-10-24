@@ -38,6 +38,10 @@ pub struct TabstopRange {
     /// Whether this range came from a `Choice` placeholder.
     /// The host's choice-picker UI fires on these.
     pub is_choice: bool,
+    /// A transformed copy of `$index` (`${1/(.*)/${1:/upcase}/}`): its text
+    /// is this transform of the placeholder's, rewritten when the user
+    /// leaves the placeholder (VS Code's rule). Not a stop of its own.
+    pub transform: Option<crate::transform::TransformSpec>,
 }
 
 /// Output of [`render`]. Contains the literal text the editor
@@ -146,7 +150,15 @@ pub fn render(body: &SnippetBody, vars: &VariableContext) -> RenderedSnippet {
     let mut tabstops: Vec<TabstopRange> = Vec::new();
     let mut defaults = BTreeMap::new();
     collect_defaults(&body.tokens, &mut defaults);
-    walk(&body.tokens, vars, &defaults, &mut out, &mut tabstops);
+    let mut next_free = max_index(&body.tokens) + 1;
+    walk(
+        &body.tokens,
+        vars,
+        &defaults,
+        &mut out,
+        &mut tabstops,
+        &mut next_free,
+    );
     let exit_index = tabstops.iter().position(|t| t.index == 0);
     RenderedSnippet {
         text: out,
@@ -195,6 +207,7 @@ fn walk(
     defaults: &BTreeMap<u32, MirrorText<'_>>,
     out: &mut String,
     tabstops: &mut Vec<TabstopRange>,
+    next_free: &mut u32,
 ) {
     for token in tokens {
         match token {
@@ -208,7 +221,7 @@ fn walk(
                 let start = out.len();
                 match defaults.get(idx) {
                     Some(MirrorText::Body(body)) => {
-                        walk(&body.tokens, vars, defaults, out, &mut Vec::new());
+                        walk(&body.tokens, vars, defaults, out, &mut Vec::new(), &mut 0);
                     }
                     Some(MirrorText::Text(text)) => out.push_str(text),
                     None => {}
@@ -219,17 +232,19 @@ fn walk(
                     range: start..end,
                     has_default: end > start,
                     is_choice: false,
+                    transform: None,
                 });
             }
             SnippetToken::Placeholder { idx, default } => {
                 let start = out.len();
-                walk(&default.tokens, vars, defaults, out, tabstops);
+                walk(&default.tokens, vars, defaults, out, tabstops, next_free);
                 let end = out.len();
                 tabstops.push(TabstopRange {
                     index: *idx,
                     range: start..end,
                     has_default: !default.is_empty(),
                     is_choice: false,
+                    transform: None,
                 });
             }
             SnippetToken::Choice { idx, options } => {
@@ -243,38 +258,100 @@ fn walk(
                     range: start..end,
                     has_default: !options.is_empty(),
                     is_choice: true,
+                    transform: None,
                 });
             }
             SnippetToken::Variable { name, default } => {
                 if let Some(value) = vars.resolve(name) {
                     out.push_str(&value);
                 } else if let Some(default) = default {
-                    walk(&default.tokens, vars, defaults, out, tabstops);
+                    walk(&default.tokens, vars, defaults, out, tabstops, next_free);
+                } else if !vars.is_known(name) {
+                    // An unknown variable becomes a placeholder holding its
+                    // name, after every numbered stop (the LSP rule) — a
+                    // typo'd `$TM_FILNAME` is visible and fixable rather than
+                    // silently empty. A known one with no value (no
+                    // selection for `$TM_SELECTED_TEXT`) inserts nothing.
+                    let start = out.len();
+                    out.push_str(name);
+                    tabstops.push(TabstopRange {
+                        index: *next_free,
+                        range: start..out.len(),
+                        has_default: true,
+                        is_choice: false,
+                        transform: None,
+                    });
+                    *next_free += 1;
                 }
-                // else: variable unknown + no default -> emit
-                // nothing. Matches VS Code behaviour.
             }
-            SnippetToken::Transform { target, .. } => {
-                // v1: render as the bound text un-transformed.
-                // Tabstop targets emit nothing yet (they'll
-                // re-render once the user types into the bound
-                // tabstop in 4.2.g.7); variable targets emit
-                // the variable's value.
+            SnippetToken::Transform {
+                target,
+                pattern,
+                replacement,
+                flags,
+            } => {
+                let spec = crate::transform::TransformSpec {
+                    pattern: pattern.clone(),
+                    format: replacement.clone(),
+                    options: flags.clone(),
+                };
                 match target {
                     TransformTarget::Variable(name) => {
-                        if let Some(v) = vars.resolve(name) {
-                            out.push_str(&v);
-                        }
+                        out.push_str(&spec.apply(&vars.resolve(name).unwrap_or_default()));
                     }
-                    TransformTarget::Tabstop(_) => {
-                        // No bound text yet at render time;
-                        // emit nothing. Future polish: re-
-                        // render after each placeholder edit.
+                    TransformTarget::Tabstop(idx) => {
+                        // The transform of the placeholder's default now; the
+                        // session rewrites it when the user leaves `$idx`.
+                        let mut source = String::new();
+                        match defaults.get(idx) {
+                            Some(MirrorText::Body(body)) => {
+                                walk(
+                                    &body.tokens,
+                                    vars,
+                                    defaults,
+                                    &mut source,
+                                    &mut Vec::new(),
+                                    &mut 0,
+                                );
+                            }
+                            Some(MirrorText::Text(text)) => source.push_str(text),
+                            None => {}
+                        }
+                        let start = out.len();
+                        out.push_str(&spec.apply(&source));
+                        tabstops.push(TabstopRange {
+                            index: *idx,
+                            range: start..out.len(),
+                            has_default: false,
+                            is_choice: false,
+                            transform: Some(spec),
+                        });
                     }
                 }
             }
         }
     }
+}
+
+/// The highest tabstop index the body uses, so unknown variables can be
+/// numbered after it.
+fn max_index(tokens: &[SnippetToken]) -> u32 {
+    tokens
+        .iter()
+        .map(|t| match t {
+            SnippetToken::Tabstop(i) | SnippetToken::Choice { idx: i, .. } => *i,
+            SnippetToken::Placeholder { idx, default } => (*idx).max(max_index(&default.tokens)),
+            SnippetToken::Variable {
+                default: Some(d), ..
+            } => max_index(&d.tokens),
+            SnippetToken::Transform {
+                target: TransformTarget::Tabstop(i),
+                ..
+            } => *i,
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -412,11 +489,56 @@ mod tests {
         assert_eq!(r.text, "fallback.txt");
     }
 
+    /// SI.8: an unknown variable becomes a placeholder holding its name,
+    /// numbered after the body's own stops (the LSP rule); it used to vanish.
     #[test]
-    fn unknown_variable_with_no_default_emits_nothing() {
-        let body = parse::parse("foo$NOPE bar").unwrap();
+    fn an_unknown_variable_becomes_a_placeholder_of_its_name() {
+        let body = parse::parse("foo$NOPE bar$1").unwrap();
+        let r = render(&body, &VariableContext::default());
+        assert_eq!(r.text, "fooNOPE bar");
+        let nope = r
+            .tabstops
+            .iter()
+            .find(|t| t.index == 2)
+            .expect("after `$1`");
+        assert_eq!(&r.text[nope.range.clone()], "NOPE");
+        assert!(nope.has_default);
+    }
+
+    /// A known variable with no value inserts nothing — not a placeholder.
+    #[test]
+    fn a_known_variable_without_a_value_emits_nothing() {
+        let body = parse::parse("foo$TM_SELECTED_TEXT bar").unwrap();
         let r = render(&body, &VariableContext::default());
         assert_eq!(r.text, "foo bar");
+        assert!(r.tabstops.is_empty());
+    }
+
+    /// SI.8: a variable transform is applied at render.
+    #[test]
+    fn a_variable_transform_is_applied() {
+        let body = parse::parse("${TM_FILENAME/(.*)\\.rs$/${1:/pascalcase}/}").unwrap();
+        let vars = VariableContext {
+            filename: Some("my_module.rs".into()),
+            ..VariableContext::default()
+        };
+        assert_eq!(render(&body, &vars).text, "MyModule");
+    }
+
+    /// SI.8: a tabstop transform renders its placeholder's default
+    /// transformed, as a non-navigable occurrence carrying the transform.
+    #[test]
+    fn a_tabstop_transform_renders_from_its_placeholder() {
+        let body = parse::parse("${1:name} ${1/(.*)/${1:/upcase}/}").unwrap();
+        let r = render(&body, &VariableContext::default());
+        assert_eq!(r.text, "name NAME");
+        let copy = r
+            .tabstops
+            .iter()
+            .find(|t| t.transform.is_some())
+            .expect("the copy");
+        assert_eq!(copy.index, 1);
+        assert_eq!(&r.text[copy.range.clone()], "NAME");
     }
 
     #[test]

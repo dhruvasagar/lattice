@@ -1424,6 +1424,10 @@ as you type (same undo entry); the copies ride the snapshot as
 **SI.9 ✅**: the client advertises completion capabilities, so servers
 send snippets; LSP snippet items replace their own range, keep their
 placeholders past an auto-import, select defaults and run their command.
+**SI.8 ✅**: transforms parse and apply (variables at render, tabstops on
+leaving the placeholder); malformed nesting parses in linear time; a bad
+pack entry skips only itself; unknown variables become placeholders;
+`CURRENT_*` are local time.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

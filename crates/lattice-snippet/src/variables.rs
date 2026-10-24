@@ -131,6 +131,13 @@ impl VariableContext {
         }
     }
 
+    /// Whether `name` is a variable this context knows, whether or not it
+    /// has a value right now. An unknown name becomes a placeholder; a
+    /// known one with no value inserts nothing.
+    pub fn is_known(&self, name: &str) -> bool {
+        KNOWN.contains(&name) || self.extra.contains_key(name)
+    }
+
     fn now(&self) -> TimestampParts {
         if let Some(fx) = self.fixed_now.as_ref() {
             return fx.clone();
@@ -138,11 +145,15 @@ impl VariableContext {
         // Real-clock path -- compute from SystemTime. Falls
         // back to a fixed default on UNIX-time errors (clock
         // before epoch -- shouldn't happen).
+        // Local time, as VS Code gives: the date math below is UTC, so
+        // shift by the zone's offset first. Before SI.8 this was UTC, an
+        // hour or more off — and the wrong date — away from Greenwich.
+        let offset = i64::from(chrono::Local::now().offset().local_minus_utc());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
+            .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        compute_timestamp_parts(now)
+        compute_timestamp_parts((now + offset).max(0) as u64)
     }
 
     fn random(&self) -> u64 {
@@ -164,6 +175,39 @@ impl VariableContext {
         x
     }
 }
+
+/// Every variable [`VariableContext::resolve`] answers.
+const KNOWN: &[&str] = &[
+    "TM_SELECTED_TEXT",
+    "TM_CURRENT_LINE",
+    "TM_CURRENT_WORD",
+    "TM_LINE_INDEX",
+    "TM_LINE_NUMBER",
+    "TM_FILENAME",
+    "TM_FILENAME_BASE",
+    "TM_DIRECTORY",
+    "TM_FILEPATH",
+    "WORKSPACE_NAME",
+    "WORKSPACE_FOLDER",
+    "CLIPBOARD",
+    "LINE_COMMENT",
+    "BLOCK_COMMENT_START",
+    "BLOCK_COMMENT_END",
+    "CURRENT_YEAR",
+    "CURRENT_YEAR_SHORT",
+    "CURRENT_MONTH",
+    "CURRENT_DATE",
+    "CURRENT_HOUR",
+    "CURRENT_MINUTE",
+    "CURRENT_SECOND",
+    "CURRENT_DAY_NAME",
+    "CURRENT_DAY_NAME_SHORT",
+    "CURRENT_MONTH_NAME",
+    "CURRENT_MONTH_NAME_SHORT",
+    "RANDOM",
+    "RANDOM_HEX",
+    "UUID",
+];
 
 /// Convenience: `VariableContext` populated with the builtin
 /// timestamp + random sources but no editor-supplied fields.
@@ -427,5 +471,23 @@ mod tests {
         assert_eq!(parts.year, 2024);
         assert_eq!(parts.month, 2);
         assert_eq!(parts.day, 29);
+    }
+
+    /// SI.8: `CURRENT_*` are local time, as VS Code gives them — they were
+    /// UTC, an hour or more off (and the wrong date) away from Greenwich.
+    #[test]
+    fn current_hour_is_local_time() {
+        use chrono::Timelike;
+        let ctx = VariableContext::default();
+        // Retry across an hour boundary rather than flake on one.
+        for _ in 0..3 {
+            let before = chrono::Local::now().hour();
+            let got = ctx.resolve("CURRENT_HOUR").unwrap();
+            if chrono::Local::now().hour() == before {
+                assert_eq!(got, format!("{before:02}"));
+                return;
+            }
+        }
+        panic!("the hour kept changing");
     }
 }

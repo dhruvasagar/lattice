@@ -50,16 +50,44 @@ pub enum LoadError {
         #[source]
         error: parse::ParseError,
     },
+    /// One entry of a pack is malformed (no `prefix`, a `body` that is not
+    /// a string or a list of strings …). The rest of the pack still loads.
+    #[error("snippet `{name}`: {error}")]
+    Entry {
+        name: String,
+        #[source]
+        error: serde_json::Error,
+    },
+}
+
+/// A loaded pack: the snippets that parsed, and the entries that did not.
+#[derive(Debug, Default)]
+pub struct PackLoad {
+    pub snippets: Vec<Snippet>,
+    /// Entries skipped, each with why. One malformed entry used to fail the
+    /// whole file (SI.8); friendly-snippets packs run to hundreds of
+    /// entries.
+    pub skipped: Vec<LoadError>,
 }
 
 /// Parse a friendly-snippets-style JSON pack. Each entry
 /// becomes a [`Snippet`]; the body is parsed eagerly so the
 /// per-keystroke `gen:snippet` source doesn't pay re-parse
-/// cost.
-pub fn load_pack(json: &serde_json::Value) -> Result<Vec<Snippet>, LoadError> {
-    let raw: std::collections::BTreeMap<String, RawSnippet> = serde_json::from_value(json.clone())?;
-    let mut out: Vec<Snippet> = Vec::new();
-    for (name, r) in raw {
+/// cost. An entry that does not decode is skipped and reported in
+/// [`PackLoad::skipped`]; only a file that is not a JSON object of
+/// entries fails as a whole.
+pub fn load_pack(json: &serde_json::Value) -> Result<PackLoad, LoadError> {
+    let raw: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_value(json.clone())?;
+    let mut out = PackLoad::default();
+    for (name, value) in raw {
+        let r: RawSnippet = match serde_json::from_value(value) {
+            Ok(r) => r,
+            Err(error) => {
+                out.skipped.push(LoadError::Entry { name, error });
+                continue;
+            }
+        };
         let prefixes = match r.prefix {
             StringOrArray::String(s) => vec![s],
             StringOrArray::Array(v) => v,
@@ -68,11 +96,14 @@ pub fn load_pack(json: &serde_json::Value) -> Result<Vec<Snippet>, LoadError> {
             StringOrArray::String(s) => s,
             StringOrArray::Array(v) => v.join("\n"),
         };
-        let body = parse::parse(&body_str).map_err(|error| LoadError::Body {
-            name: name.clone(),
-            error,
-        })?;
-        out.push(Snippet {
+        let body = match parse::parse(&body_str) {
+            Ok(body) => body,
+            Err(error) => {
+                out.skipped.push(LoadError::Body { name, error });
+                continue;
+            }
+        };
+        out.snippets.push(Snippet {
             name,
             prefixes,
             body,
@@ -85,7 +116,7 @@ pub fn load_pack(json: &serde_json::Value) -> Result<Vec<Snippet>, LoadError> {
 
 /// Convenience: parse a JSON string directly. Most loader
 /// call sites read a file then route through here.
-pub fn load_pack_from_str(json: &str) -> Result<Vec<Snippet>, LoadError> {
+pub fn load_pack_from_str(json: &str) -> Result<PackLoad, LoadError> {
     let v: serde_json::Value = serde_json::from_str(json)?;
     load_pack(&v)
 }
@@ -120,7 +151,7 @@ mod tests {
                 "description": "for-in loop"
             }
         }"#;
-        let snips = load_pack_from_str(json).unwrap();
+        let snips = load_pack_from_str(json).unwrap().snippets;
         assert_eq!(snips.len(), 1);
         let s = &snips[0];
         assert_eq!(s.name, "for loop");
@@ -142,7 +173,7 @@ mod tests {
                 ]
             }
         }"#;
-        let snips = load_pack_from_str(json).unwrap();
+        let snips = load_pack_from_str(json).unwrap().snippets;
         let s = &snips[0];
         assert_eq!(s.prefixes, vec!["impl_display", "displ"]);
         // Body parses without errors -- placeholders / tabstops
@@ -159,15 +190,31 @@ mod tests {
                 "future_field": 42
             }
         }"#;
-        let snips = load_pack_from_str(json).unwrap();
+        let snips = load_pack_from_str(json).unwrap().snippets;
         assert_eq!(snips.len(), 1);
     }
 
     #[test]
-    fn missing_required_field_errors() {
-        let json = r#"{ "broken": { "prefix": "br" } }"#;
-        let result = load_pack_from_str(json);
-        assert!(matches!(result, Err(LoadError::Json(_))));
+    fn a_missing_field_skips_only_that_entry() {
+        let json = r#"{
+            "broken": { "prefix": "br" },
+            "fine": { "prefix": "ok", "body": "ok $1" }
+        }"#;
+        let pack = load_pack_from_str(json).unwrap();
+        assert_eq!(pack.snippets.len(), 1, "the good entry loads");
+        assert_eq!(pack.snippets[0].name, "fine");
+        assert!(matches!(
+            &pack.skipped[..],
+            [LoadError::Entry { name, .. }] if name == "broken"
+        ));
+    }
+
+    #[test]
+    fn a_file_that_is_not_an_object_of_entries_fails_whole() {
+        assert!(matches!(
+            load_pack_from_str("[1, 2]"),
+            Err(LoadError::Json(_))
+        ));
     }
 
     #[test]
@@ -179,13 +226,13 @@ mod tests {
                 "scope": "source.rust,source.markdown.injection.rust"
             }
         }"#;
-        let snips = load_pack_from_str(json).unwrap();
+        let snips = load_pack_from_str(json).unwrap().snippets;
         assert_eq!(snips[0].scope, "source.rust,source.markdown.injection.rust");
     }
 
     #[test]
     fn empty_pack_loads_to_empty_vec() {
-        let snips = load_pack_from_str("{}").unwrap();
+        let snips = load_pack_from_str("{}").unwrap().snippets;
         assert!(snips.is_empty());
     }
 
@@ -203,7 +250,7 @@ mod tests {
                 "description": "Iterate over a range using a for loop."
             }
         }"#;
-        let snips = load_pack_from_str(json).unwrap();
+        let snips = load_pack_from_str(json).unwrap().snippets;
         let s = &snips[0];
         assert_eq!(s.prefixes.len(), 2);
         // Render to verify parser + render round-trip.

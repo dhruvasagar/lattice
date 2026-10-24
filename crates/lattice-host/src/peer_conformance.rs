@@ -449,6 +449,9 @@ macro_rules! peer_conformance_tests {
             an_import_above_keeps_the_snippets_placeholders,
             a_server_snippets_command_runs,
             an_as_is_server_snippet_keeps_its_whitespace,
+            leaving_a_placeholder_rewrites_its_transformed_copy,
+            an_unknown_variable_is_a_placeholder,
+            a_bad_entry_skips_itself_not_its_pack,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

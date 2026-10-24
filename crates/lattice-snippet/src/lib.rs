@@ -45,6 +45,7 @@ pub mod registry;
 pub mod render;
 pub mod session;
 pub mod token;
+pub mod transform;
 pub mod variables;
 
 pub use crate::activation::{

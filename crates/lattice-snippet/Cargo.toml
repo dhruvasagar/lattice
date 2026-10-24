@@ -10,6 +10,10 @@ arc-swap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# SI.8: snippet transforms (`${1/(.*)/${1:/upcase}/}`) run a regex over a
+# value, and `CURRENT_*` variables read local time.
+regex = { workspace = true }
+chrono = { workspace = true }
 # SN.3f: `debug!` on the `active-snippet-mode` handler-skip path.
 tracing = { workspace = true }
 # CSM.5: lattice-snippet owns `SnippetCompletionMode` (the

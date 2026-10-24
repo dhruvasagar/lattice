@@ -17,6 +17,16 @@
   auto_trigger = true` turns it on for one language alone.
 
 ### Fixed
+- **Snippet transforms work, and malformed snippets can't hang the
+  editor.** `${TM_FILENAME/(.*)\\.rs/${1:/pascalcase}/}` and
+  `${1/(.*)/${1:/upcase}/}` used to leave fragments of their own syntax in
+  the buffer; they now transform, a placeholder's transformed copies
+  updating when you `<Tab>` past it. One malformed entry no longer drops
+  every snippet in its file — the rest load and the reload says what was
+  skipped. A deeply unclosed `${1:${1:…` took exponential time to read;
+  accented choices (`${1|é,ü|}`) are no longer garbled; an unknown
+  variable shows as a placeholder of its name; dates and times are local,
+  not UTC.
 - **Language servers' snippets work.** The editor never told servers it
   understands snippets, so they sent plain text: no `$1` placeholders to
   `<Tab>` through after accepting a function. It does now, and a server's

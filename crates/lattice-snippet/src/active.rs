@@ -44,6 +44,10 @@ pub struct TabstopGroup {
     pub ranges: Vec<TrackedRangeId>,
     pub has_default: bool,
     pub is_choice: bool,
+    /// Transformed copies of `$index` (`${1/(.*)/${1:/upcase}/}`): tracked
+    /// like the rest but not stops and not linked — their text is a
+    /// transform of the placeholder's, rewritten when the user leaves it.
+    pub transforms: Vec<(TrackedRangeId, crate::transform::TransformSpec)>,
 }
 
 impl TabstopGroup {
@@ -100,19 +104,28 @@ impl ActiveSnippet {
             bytes: origin_offset..origin_offset + rendered.text.len(),
             stickiness: Stickiness::GrowsAtEdges,
         });
-        let mut track = |ranges: &[&TabstopRange]| -> Vec<TrackedRangeId> {
-            ranges
-                .iter()
-                .map(|r| {
-                    let id = TrackedRangeId::next();
-                    changes.push(TrackedRangeChange::Track {
-                        id,
-                        bytes: (origin_offset + r.range.start)..(origin_offset + r.range.end),
-                        stickiness: Stickiness::NeverGrows,
-                    });
-                    id
-                })
-                .collect()
+        let mut track = |r: &TabstopRange| -> TrackedRangeId {
+            let id = TrackedRangeId::next();
+            changes.push(TrackedRangeChange::Track {
+                id,
+                bytes: (origin_offset + r.range.start)..(origin_offset + r.range.end),
+                stickiness: Stickiness::NeverGrows,
+            });
+            id
+        };
+        let mut group = |index: u32, ranges: &[&TabstopRange]| -> TabstopGroup {
+            let (plain, transformed): (Vec<&TabstopRange>, Vec<&TabstopRange>) =
+                ranges.iter().copied().partition(|r| r.transform.is_none());
+            TabstopGroup {
+                index,
+                ranges: plain.iter().map(|r| track(r)).collect(),
+                has_default: plain.iter().any(|r| r.has_default),
+                is_choice: plain.iter().any(|r| r.is_choice),
+                transforms: transformed
+                    .iter()
+                    .filter_map(|r| Some((track(r), r.transform.clone()?)))
+                    .collect(),
+            }
         };
 
         // Group by index. BTreeMap keeps `$0` at the start of
@@ -122,37 +135,25 @@ impl ActiveSnippet {
         let mut groups: Vec<TabstopGroup> = groups_map
             .iter()
             .filter(|(idx, _)| **idx != 0)
-            .map(|(idx, ranges)| TabstopGroup {
-                index: *idx,
-                ranges: track(ranges),
-                has_default: ranges.iter().any(|r| r.has_default),
-                is_choice: ranges.iter().any(|r| r.is_choice),
-            })
+            .map(|(idx, ranges)| group(*idx, ranges))
             .collect();
         // Append `$0` last -- the snippet's exit position. A body without
         // one exits at its end, as in VS Code and the LSP spec, so the last
         // `<Tab>` always leaves the cursor somewhere sensible rather than
         // stranding it in the last placeholder.
         if let Some(zero_ranges) = groups_map.get(&0) {
-            groups.push(TabstopGroup {
-                index: 0,
-                ranges: track(zero_ranges),
-                has_default: false,
-                is_choice: false,
-            });
+            let mut zero = group(0, zero_ranges);
+            zero.has_default = false;
+            groups.push(zero);
         } else if !groups.is_empty() {
             let end = TabstopRange {
                 index: 0,
                 range: rendered.text.len()..rendered.text.len(),
                 has_default: false,
                 is_choice: false,
+                transform: None,
             };
-            groups.push(TabstopGroup {
-                index: 0,
-                ranges: track(&[&end]),
-                has_default: false,
-                is_choice: false,
-            });
+            groups.push(group(0, &[&end]));
         }
         // Every occurrence of a `$N` is linked: typing in one is copied
         // into the others by the document itself (SI.7), whatever made the
@@ -252,9 +253,49 @@ impl ActiveSnippet {
     /// them when the session ends.
     pub fn untrack_changes(&self) -> Vec<TrackedRangeChange> {
         std::iter::once(self.extent)
-            .chain(self.groups.iter().flat_map(|g| g.ranges.iter().copied()))
+            .chain(self.groups.iter().flat_map(|g| {
+                g.ranges
+                    .iter()
+                    .copied()
+                    .chain(g.transforms.iter().map(|(id, _)| *id))
+            }))
             .map(TrackedRangeChange::Untrack)
             .collect()
+    }
+
+    /// The rewrites the focused placeholder's transformed copies need, for
+    /// the user leaving it: each copy's range and its new text — the
+    /// transform of the placeholder's text as it is now. Copies already
+    /// up to date are left out. Sorted last-first, so applying them in
+    /// order leaves each later one's range valid.
+    pub fn transform_edits(
+        &self,
+        tracked: &TrackedRanges,
+        text_of: impl Fn(std::ops::Range<usize>) -> Option<String>,
+    ) -> Vec<(Range<usize>, String)> {
+        let Some(group) = self.current_group() else {
+            return Vec::new();
+        };
+        let Some(source) = group
+            .live_ranges(tracked)
+            .into_iter()
+            .next()
+            .and_then(&text_of)
+        else {
+            return Vec::new();
+        };
+        let mut edits: Vec<(Range<usize>, String)> = group
+            .transforms
+            .iter()
+            .filter_map(|(id, spec)| {
+                let r = tracked.get(*id).filter(|r| !r.collapsed)?;
+                let wanted = spec.apply(&source);
+                (text_of(r.bytes()).as_deref() != Some(wanted.as_str()))
+                    .then(|| (r.bytes(), wanted))
+            })
+            .collect();
+        edits.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+        edits
     }
 }
 

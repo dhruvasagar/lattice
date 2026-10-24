@@ -722,3 +722,66 @@ pub fn an_as_is_server_snippet_keeps_its_whitespace<P: PeerUnderTest>() {
 
     assert_eq!(text(&peer), "fn main() {}\n    blk {\n\t\n}\n");
 }
+
+// ---- SI.8: transforms, unknown variables, partial packs ----
+
+/// Leaving a placeholder rewrites its transformed copies from what was typed
+/// (VS Code's rule: on leaving, not on every key).
+pub fn leaving_a_placeholder_rewrites_its_transformed_copy<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(
+        &mut peer,
+        "conformance-transform",
+        "zztr",
+        "${1:name} ${1/(.*)/${1:/upcase}/}$0",
+    );
+    press(&mut peer, "izztr<C-x><C-s>");
+    assert_eq!(text(&peer), "name NAME\n", "the transform of the default");
+
+    press(&mut peer, "foo<Tab>");
+
+    assert_eq!(text(&peer), "foo FOO\n");
+}
+
+/// An unknown variable is a placeholder holding its name, selected for
+/// overtyping — a typo shows instead of vanishing.
+pub fn an_unknown_variable_is_a_placeholder<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(&mut peer, "conformance-var", "zzvar", "hi $NOPE!");
+
+    press(&mut peer, "izzvar<C-x><C-s>");
+
+    assert_eq!(text(&peer), "hi NOPE!\n");
+    assert_selects(&peer, "the variable's name", 3, 7);
+}
+
+/// A pack with one malformed entry still loads the rest, and the reload
+/// says what it skipped. One bad entry used to drop the whole file.
+pub fn a_bad_entry_skips_itself_not_its_pack<P: PeerUnderTest>() {
+    let dir = super::completion::temp_dir("snippet-pack");
+    std::fs::write(
+        dir.join("_global.json"),
+        r#"{
+            "broken": { "prefix": "zzbroken" },
+            "fine": { "prefix": "zzfine", "body": "fine $1" }
+        }"#,
+    )
+    .expect("write the pack");
+    let mut peer = boot::<P>("\n");
+    peer.editor_mut().snippet_dirs = vec![dir];
+
+    press(&mut peer, ":reload-snippets<CR>");
+
+    let message = peer
+        .editor()
+        .last_message
+        .as_ref()
+        .map(|m| m.text.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("broken"),
+        "the reload names the skip: {message:?}"
+    );
+    press(&mut peer, "izzfine<C-x><C-s>");
+    assert_eq!(text(&peer), "fine \n", "the good entry loaded");
+}

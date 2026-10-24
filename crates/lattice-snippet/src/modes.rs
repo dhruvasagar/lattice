@@ -528,10 +528,60 @@ fn snippet_group_cursor_effect(
     ]))
 }
 
+/// The text of `range` in `buffer`, when it lies inside it.
+fn text_in(buffer: &lattice_core::Buffer, range: std::ops::Range<usize>) -> Option<String> {
+    if range.end as u64 > buffer.byte_len() {
+        return None;
+    }
+    let start = buffer.byte_to_position(range.start).ok()?;
+    let end = buffer.byte_to_position(range.end).ok()?;
+    buffer.slice(Range::new(start, end)).ok()
+}
+
+/// The transformed-copy rewrites for leaving the session's focused
+/// placeholder (SI.8), as effects the host applies like any edit — and the
+/// buffer and tracked ranges as they will be after them, so the stop the
+/// cursor moves to next is found where it will be, not where it was.
+fn leave_placeholder(
+    active: &crate::ActiveSnippet,
+    target: lattice_core::BufferId,
+    buffer: &lattice_core::Buffer,
+    tracked: &lattice_core::tracked::TrackedRanges,
+) -> (
+    Vec<Effect>,
+    lattice_core::Buffer,
+    lattice_core::tracked::TrackedRanges,
+) {
+    let mut after = buffer.clone();
+    let mut after_tracked = tracked.clone();
+    let mut effects = Vec::new();
+    // Last-first: each rewrite leaves the earlier ones' positions as they
+    // were, so every edit's range is valid in the original buffer too.
+    for (range, text) in active.transform_edits(tracked, |r| text_in(buffer, r)) {
+        let (Ok(start), Ok(end)) = (
+            buffer.byte_to_position(range.start),
+            buffer.byte_to_position(range.end),
+        ) else {
+            continue;
+        };
+        let edit = lattice_protocol::edit::Edit::replace(Range::new(start, end), text);
+        if let Ok(applied) = after.apply_edit(&edit) {
+            after_tracked.transform(&applied.delta);
+            effects.push(Effect::ApplyEdit {
+                target,
+                edit,
+                cursor: None,
+            });
+        }
+    }
+    (effects, after, after_tracked)
+}
+
 /// Step the session in `buffer_id` one stop with `step` (next or prev),
-/// tell the document which placeholder now grows, and return the cursor
-/// effect for the stop it landed on. When `step` walks off the end the
-/// session ends and its ranges are untracked.
+/// tell the document which placeholder now grows, and return the effects:
+/// the transformed copies of the placeholder being left, rewritten (SI.8),
+/// then the cursor for the stop it landed on. When `step` walks off the
+/// end the session ends and its ranges are untracked.
 fn step_session(
     session: &SnippetSessionHandle,
     store: &BufferStoreHandle,
@@ -544,20 +594,25 @@ fn step_session(
 ) -> Option<Effect> {
     let handle = store.handle_for(buffer_id)?;
     let snapshot = handle.snapshot();
-    let tracked = &snapshot.tracked_ranges;
-    let (range, changes) = session.with_mut(buffer_id, |s| {
+    let (mut effects, buffer, range, changes) = session.with_mut(buffer_id, |s| {
         let active = s.as_mut()?;
-        match step(active, tracked) {
+        let (effects, buffer, tracked) = leave_placeholder(
+            active,
+            buffer_id,
+            &snapshot.buffer,
+            &snapshot.tracked_ranges,
+        );
+        match step(active, &tracked) {
             Some(group) => {
-                let range = group.live_ranges(tracked).into_iter().next();
+                let range = group.live_ranges(&tracked).into_iter().next();
                 if active.at_exit() {
                     // Landed on `$0`: the cursor goes there and the session
                     // is over, so the next `<Tab>` is a plain `<Tab>`.
                     let untrack = active.untrack_changes();
                     *s = None;
-                    return Some((range, untrack));
+                    return Some((effects, buffer, range, untrack));
                 }
-                Some((range, active.focus_changes()))
+                Some((effects, buffer, range, active.focus_changes()))
             }
             None if ends_on_none => {
                 // Walked off `$0`: the session ends for this buffer. The
@@ -565,7 +620,7 @@ fn step_session(
                 // false` next cycle and deactivates this mode.
                 let untrack = active.untrack_changes();
                 *s = None;
-                Some((None, untrack))
+                Some((effects, buffer, None, untrack))
             }
             None => None,
         }
@@ -573,7 +628,14 @@ fn step_session(
     // Fire-and-forget: the restick only shapes the next edit, which the
     // FIFO mailbox orders after it.
     drop(handle.update_tracked_ranges(changes));
-    snippet_group_cursor_effect(&snapshot.buffer, range?)
+    if let Some(cursor) = range.and_then(|r| snippet_group_cursor_effect(&buffer, r)) {
+        effects.push(cursor);
+    }
+    match effects.len() {
+        0 => None,
+        1 => effects.pop(),
+        _ => Some(Effect::Many(effects)),
+    }
 }
 
 impl Mode for SnippetActiveMode {
@@ -676,16 +738,28 @@ impl Mode for SnippetActiveMode {
                     let handler: ActionHandler =
                         Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
                             let buffer_id = core_buffer_id(ctx.buffer_id);
-                            let untrack = session.with_mut(buffer_id, |s| {
-                                s.take().map(|active| active.untrack_changes())
-                            });
-                            if let (Some(untrack), Some(handle)) = (
-                                untrack,
-                                store.as_ref().and_then(|st| st.handle_for(buffer_id)),
-                            ) {
-                                drop(handle.update_tracked_ranges(untrack));
-                            }
-                            Some(Effect::None)
+                            let handle = store.as_ref().and_then(|st| st.handle_for(buffer_id));
+                            let Some(active) = session.with_mut(buffer_id, |s| s.take()) else {
+                                return Some(Effect::None);
+                            };
+                            let Some(handle) = handle else {
+                                return Some(Effect::None);
+                            };
+                            // Leaving the snippet leaves its placeholder too:
+                            // its transformed copies are rewritten (SI.8).
+                            let snapshot = handle.snapshot();
+                            let (effects, _, _) = leave_placeholder(
+                                &active,
+                                buffer_id,
+                                &snapshot.buffer,
+                                &snapshot.tracked_ranges,
+                            );
+                            drop(handle.update_tracked_ranges(active.untrack_changes()));
+                            Some(if effects.is_empty() {
+                                Effect::None
+                            } else {
+                                Effect::Many(effects)
+                            })
                         });
                     registrations.push(action_handlers.register(id, handler));
                 }

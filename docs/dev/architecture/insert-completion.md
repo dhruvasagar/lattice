@@ -647,13 +647,14 @@ resolve to ex-commands; users override via
 
 Active when a snippet expansion has live placeholders.
 
-| Chord | Ex-command | Behaviour |
+| Chord | Action | Behaviour |
 |---|---|---|
-| `<Tab>` | `ex:snippet-next-placeholder` | Jump to next `$N` |
-| `<S-Tab>` | `ex:snippet-prev-placeholder` | Jump to previous `$N` |
-| `<C-l>` | `ex:snippet-next-placeholder` | Alternate (consistent with completion `<C-x><C-o>` family) |
-| `<C-h>` | `ex:snippet-prev-placeholder` | Alternate |
-| `<Esc>` | `ex:snippet-leave` | Exit snippet mode (placeholders become plain text); also exits Insert by vim convention |
+| `<Tab>` | `action:snippet-next-placeholder` | Jump to next `$N`; landing on `$0` (or the end, without one) ends the session |
+| `<S-Tab>` | `action:snippet-prev-placeholder` | Jump to previous `$N` |
+| `<Esc>` | `action:snippet-leave` | End the session; `fall_through` then runs the native `<Esc>` (exit Insert) |
+
+Bound in Insert and Select (a default is focused in Select). They are
+actions with handlers the mode registers while active — not ex-commands.
 
 When a snippet is active AND the completion popup is open
 (e.g. user typed inside a placeholder), the completion-popup
@@ -692,9 +693,9 @@ or from `init.rs`:
 | `ex:completion-scroll-docs-down` | `:complete-docs-down` | |
 | `ex:completion-scroll-docs-up` | `:complete-docs-up` | |
 | `ex:completion-accept-then-insert` | n/a (commit-char internal; commands surface accept then `feedkey` separately) | |
-| `ex:snippet-next-placeholder` | `:snippet-next` | |
-| `ex:snippet-prev-placeholder` | `:snippet-prev` | |
-| `ex:snippet-leave` | `:snippet-leave` | |
+| `action:snippet-next-placeholder` | n/a (mode-owned action, live only in a session) | |
+| `action:snippet-prev-placeholder` | n/a | |
+| `action:snippet-leave` | n/a | |
 
 Plugin-supplied sources register their own commands (e.g.
 `:complete-source-toggle <id>`) via the standard registry
@@ -1290,8 +1291,7 @@ Deliverables:
     placeholder range tracking.
   - `variables.rs` — built-in variable resolver.
 - Active-snippet minor mode in the input layer: `<Tab>` /
-  `<S-Tab>` (and `<C-l>` / `<C-h>` aliases) navigate
-  placeholders; `<Esc>` exits.
+  `<S-Tab>` navigate placeholders; `<Esc>` exits.
 - Snippet registry loads bundled + friendly-snippets-style
   packs + user + project snippets in priority order.
 - `gen:snippet` source feeds into the unified popup.

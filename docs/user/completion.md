@@ -184,21 +184,20 @@ splice.
 ### Active-snippet minor mode
 
 While a snippet is in flight, an **active-snippet minor mode**
-overrides three Insert-mode keys until the snippet exits:
+binds three keys until the snippet ends:
 
-| Chord | Action | Ex-command |
-|---|---|---|
-| `<Tab>` | Jump to next placeholder (or exit on `$0`) | `:snippet-next` |
-| `<S-Tab>` | Jump to previous placeholder | `:snippet-prev` |
-| `<Esc>` | Exit snippet (placeholders become plain text) and return to Normal | `:snippet-leave` |
+| Chord | Action |
+|---|---|
+| `<Tab>` | Next placeholder; reaching the final stop ends the snippet |
+| `<S-Tab>` | Previous placeholder |
+| `<Esc>` | End the snippet and return to Normal |
 
 When you land on a placeholder that has a **default**
 (`${1:value}`), its text is **selected** (the buffer enters
 [Select mode](help:modal-editing)) — so the first character you
 type **replaces the whole default** and drops you into Insert,
 the conventional "type to replace the placeholder" behaviour. To
-keep the default instead, just start editing it: any motion or
-`<Tab>` leaves it untouched. An **empty** tabstop (`$1`) places a
+keep the default, press `<Tab>`. An **empty** tabstop (`$1`) places a
 bare Insert cursor — there is nothing to overtype. The minor mode
 yields to the completion popup when both are open: `<Tab>`
 accepts a candidate first, then snippet navigation resumes.
@@ -208,7 +207,7 @@ accepts a candidate first, then snippet navigation resumes.
 ```text
 $1                       plain tabstop
 ${1:default}             placeholder with default text
-${1|one,two,three|}      choice (cycled per index)
+${1|one,two,three|}      choice (inserts the first; no list yet)
 $0                       exit position (last)
 $1 ... $1 ...            mirrors -- edits ripple
 ${TM_FILENAME}           variable (see below)

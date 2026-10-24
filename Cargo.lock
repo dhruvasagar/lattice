@@ -5866,7 +5866,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-sdk"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "lattice-plugin-sdk-derive",
  "rmp-serde",
@@ -5875,7 +5875,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-sdk-derive"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6114,7 +6114,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-wit"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "lazy_static"

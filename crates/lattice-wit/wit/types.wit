@@ -1,4 +1,4 @@
-package lattice:plugin-host@0.3.0;
+package lattice:plugin-host@0.4.0;
 
 /// Shared boundary records/variants — the owned, WIT-serializable mirrors of
 /// the native grammar + picker/completion types (plugin-host.md §4). Every
@@ -737,6 +737,12 @@ interface types {
         origin-session: u64,
         tab-name: string,
     }
+    /// `expand-snippet-over`'s payload: the snippet's identity (as the
+    /// snippet picker's rows carry it) and the text to expand it around.
+    record expand-snippet-over-payload {
+        snippet: string,
+        range: range,
+    }
 
     /// Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
     /// `Many`/`Global`/`AppAction` are absent by design (see the note above).
@@ -863,6 +869,9 @@ interface types {
         lsp-rename(string),
         lsp-code-action,
         expand-snippet(range),
+        /// SI.10: expand a named snippet around `range`, the range's text
+        /// becoming its `$TM_SELECTED_TEXT` — what `gS` ends in.
+        expand-snippet-over(expand-snippet-over-payload),
         reload-snippets,
         describe-events,
         describe-diff,
@@ -1447,6 +1456,13 @@ interface types {
         request-id: u32,
         action-index: u32,
     }
+    /// A snippet row: the snippet's identity, and — for a `gS` wrap row
+    /// (snippet-integrity SI.10) — the text it expands around, which becomes
+    /// its `$TM_SELECTED_TEXT`. `none` expands at the cursor.
+    record snippet-row {
+        id: string,
+        over: option<range>,
+    }
     /// Mirrors `lattice_picker::RoutingPayload` — the opaque token a source emits
     /// per candidate and consumes in `accept`. All flat pure data; paths cross as
     /// strings (a non-UTF-8 path is a typed error, §4.4).
@@ -1462,7 +1478,7 @@ interface types {
         invoke-command(command-ref),
         paste-register(char),
         jump-to-mark(char),
-        expand-snippet(string),
+        expand-snippet(snippet-row),
         accept-show-message-action(show-message-action-payload),
         lsp-code-lens(u32),
         color-presentation(u32),

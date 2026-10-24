@@ -134,11 +134,11 @@ There is no `grants` field: filesystem grants follow the plugin's own options
 
 ## 4. Compatibility is checked before the download
 
-The host knows its own generation (`lattice:plugin-host@0.3.x`) and builds the
+The host knows its own generation (`lattice:plugin-host@0.4.x`) and builds the
 asset name from it, so a release with no build for this editor is a **named**
 refusal in `:plugins` and `*messages*`:
 
-	org v0.2.0 has no build for plugin API 0.3 (it ships: api0.4)
+	org v0.2.0 has no build for plugin API 0.4 (it ships: api0.3)
 
 — the release's asset list fetched only on that failure, to say what *is*
 available — instead of a download followed by an instantiation error that

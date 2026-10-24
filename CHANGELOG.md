@@ -35,6 +35,17 @@
   text stay manual even with it on, and `[completion.per-language.<lang>]
   auto_trigger = true` turns it on for one language alone.
 
+### Changed
+- **Plugin API 0.4.0.** Wrapping text in a snippet is on the WIT surface:
+  `effect` gains `expand-snippet-over` (a snippet and the range it wraps,
+  what `gS` ends in), and a picker row's `expand-snippet` now carries a
+  `snippet-row` — the snippet's id and, for a wrap row, the range — where
+  it carried a bare string. Both change a variant's shape, so this is a new
+  ABI generation: a plugin pinned to `lattice-wit = "0.3"` moves its pin to
+  `"0.4"` and rebuilds, and one that builds `expand-snippet` rows wraps the
+  id in a `snippet-row` with no range. Plugins without a pin rebuild on
+  their own.
+
 ### Fixed
 - **More snippet variables have values.** `$CLIPBOARD` holds what you
   copied in another program, not only the editor's own copies;

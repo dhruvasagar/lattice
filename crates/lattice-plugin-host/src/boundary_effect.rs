@@ -21,7 +21,8 @@ use crate::lattice::plugin_host::types::{
     DescribeCommandPayload as WitDescribeCommandPayload, DiffsplitPayload as WitDiffsplitPayload,
     EchoLevel as WitEchoLevel, EchoPayload as WitEchoPayload, Edit as WitEdit,
     EditDelta as WitEditDelta, EditKind as WitEditKind, Effect as WitEffect,
-    FileAnchor as WitFileAnchor, LspRequest as WitLspRequest, ModalState as WitModalState,
+    ExpandSnippetOverPayload as WitExpandSnippetOverPayload, FileAnchor as WitFileAnchor,
+    LspRequest as WitLspRequest, ModalState as WitModalState,
     OpenBufferAtColumnPayload as WitOpenBufferAtColumnPayload,
     OpenBufferAtPayload as WitOpenBufferAtPayload, OpenBufferPayload as WitOpenBufferPayload,
     OpenPickerPayload as WitOpenPickerPayload, OpenPopupPayload as WitOpenPopupPayload,
@@ -845,14 +846,12 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::ExpandSnippet { replace_range } => {
             WitEffect::ExpandSnippet(replace_range.to_wit()?)
         }
-        // SI.10: crosses once the WIT carries it — plugin API 0.4.0, the
-        // next commit. Until then a plugin reaches it by name, through
-        // `invoke-command` on `action:snippet-wrap`.
-        NativeEffect::ExpandSnippetOver { .. } => {
-            return Err(
-                "Effect::ExpandSnippetOver is not on the WIT surface yet (plugin API 0.4.0)"
-                    .to_string(),
-            );
+        // SI.10 (plugin API 0.4.0).
+        NativeEffect::ExpandSnippetOver { snippet, range } => {
+            WitEffect::ExpandSnippetOver(WitExpandSnippetOverPayload {
+                snippet: snippet.clone(),
+                range: range.to_wit()?,
+            })
         }
         NativeEffect::ReloadSnippets => WitEffect::ReloadSnippets,
         NativeEffect::DescribeEvents => WitEffect::DescribeEvents,
@@ -1250,6 +1249,10 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::LspCodeAction => NativeEffect::LspCodeAction,
         WitEffect::ExpandSnippet(range) => NativeEffect::ExpandSnippet {
             replace_range: NativeRange::from_wit(range)?,
+        },
+        WitEffect::ExpandSnippetOver(p) => NativeEffect::ExpandSnippetOver {
+            snippet: p.snippet,
+            range: NativeRange::from_wit(p.range)?,
         },
         WitEffect::ReloadSnippets => NativeEffect::ReloadSnippets,
         WitEffect::DescribeEvents => NativeEffect::DescribeEvents,
@@ -1938,6 +1941,13 @@ mod tests {
                 replace_range: NativeRange {
                     start: pos(0, 0),
                     end: pos(0, 2),
+                },
+            },
+            NativeEffect::ExpandSnippetOver {
+                snippet: "rust\u{1f}if".into(),
+                range: NativeRange {
+                    start: pos(1, 4),
+                    end: pos(3, 1),
                 },
             },
             NativeEffect::DiffOff { force: true },

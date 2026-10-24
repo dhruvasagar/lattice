@@ -53,7 +53,7 @@ strip = true
 [workspace]
 "#;
 
-const INIT_WIT: &str = r#"package lattice:plugin-host@0.3.0;
+const INIT_WIT: &str = r#"package lattice:plugin-host@0.4.0;
 
 // Your init.rs world — the seams you use. EXPORT the register-* your guest
 // implements; IMPORT the host APIs you call. Add/remove seams as needed. Browse
@@ -230,7 +230,7 @@ strip = true
 [workspace]
 "#;
 
-const PLUGIN_WORLD_WIT: &str = r#"package lattice:plugin-host@0.3.0;
+const PLUGIN_WORLD_WIT: &str = r#"package lattice:plugin-host@0.4.0;
 
 // Your plugin world — a grammar action + a minor mode that binds a key to it.
 // Add seams (config, events, decorations, …) + their exports as you grow it.

@@ -16,7 +16,7 @@ compile against its API.
 
 ```toml
 [build-dependencies]
-lattice-wit = "0.3"
+lattice-wit = "0.4"
 ```
 
 ```rust
@@ -39,11 +39,11 @@ drifts behind the editor.
 This crate's `major.minor` is always the WIT package's `major.minor`:
 
 ```
-lattice-wit = "0.3"   ⟺   package lattice:plugin-host@0.3.x
+lattice-wit = "0.4"   ⟺   package lattice:plugin-host@0.4.x
 ```
 
 So the dependency line above says which generation of the API you target.
-Patch is this crate's own — a packaging fix ships as `0.3.1` and leaves the ABI
+Patch is this crate's own — a packaging fix ships as `0.4.1` and leaves the ABI
 alone.
 
 `lattice-plugin-sdk` and `lattice-plugin-sdk-derive` carry the same number.

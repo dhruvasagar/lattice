@@ -160,7 +160,8 @@ struct (`registry.rs`), captured once at boot. Introspect a live build with
   `file_tree.{dir,hidden,file}`, `whitespace[.trailing]`, `indent.guide[.active]`,
   `messages.{timestamp,trace,debug,info,warn,error}`, `sticky.context.*`,
   `transient.*`, `help.*`, `completion.annotation.*`.
-- **Mode-owned** (registered by their mode, not core): e.g. `magit.*`.
+- **Mode-owned** (registered by their mode, not core): e.g. `magit.*`,
+  `snippet.placeholder`.
 - **Syntax**: see below.
 
 ## Syntax highlighting elements

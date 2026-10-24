@@ -17,7 +17,8 @@ navigation, and it goes away when the session ends.
 | `<Esc>` | Leave the snippet session, then exit Insert |
 | `<C-n>` / `<C-p>` | On a choice: next / previous option |
 
-Landing on a placeholder selects its default, so typing replaces it.
+Landing on a placeholder selects its default, so typing replaces it;
+the others stay tinted (`snippet.placeholder`) until you visit them.
 Placeholders move with the text, so `<Tab>` finds the next one after any
 edit. The session ends at the final stop (`$0`, else the snippet's end);
 the next `<Tab>` is an ordinary one.

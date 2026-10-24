@@ -194,6 +194,8 @@ pub mod plugin_meta_sink;
 // for "open the multibuffer view a provider owns", replacing the
 // per-provider `AppEffect` variant + host arm + plugin-boundary arm.
 pub mod provider_view;
+// SI.12: text ranges a mode tints while active (snippet placeholders).
+pub mod range_highlight;
 pub mod registry;
 pub mod services;
 pub mod session_probe;
@@ -283,6 +285,10 @@ pub use crate::modes::table::mode::{TableMode, register_table_actions, register_
 pub use crate::plugin_meta_sink::{PluginMetaSink, PluginMetaSinkHandle};
 pub use crate::provider_view::{
     ProviderViewOpener, ProviderViewOutcome, ProviderViewRegistry, ProviderViewRegistryHandle,
+};
+pub use crate::range_highlight::{
+    RangeHighlight, RangeHighlightRegistrar, RangeHighlightRegistrarHandle,
+    RangeHighlightRegistration, RangeHighlightSource, register_range_highlights,
 };
 pub use crate::scanned_excerpt_source::{
     ClockSpan, RowAnnotation, ScanBeginFuture, ScanDescribeFuture, ScanFuture, ScanResult,

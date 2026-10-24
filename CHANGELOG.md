@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- **A live snippet's placeholders are highlighted**, so you can see
+  where `<Tab>` goes next. The tint follows the text as you type and
+  disappears when the snippet ends; themes restyle it as
+  `snippet.placeholder`.
 - **Snippet choices cycle.** On a `${1|one,two,three|}` choice, `<C-n>`
   and `<C-p>` swap in the next or previous option — in every copy of it —
   and keep it selected, so typing still replaces it.

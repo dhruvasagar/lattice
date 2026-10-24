@@ -684,6 +684,11 @@ pub struct ActiveDocumentRenderState {
     /// every range with the softer match bg. Cap is bounded by
     /// `:set max_hits` (default 1000) so the clone is bounded.
     pub all_matches: std::sync::Arc<[lattice_protocol::position::Range]>,
+    /// Text ranges the buffer's active modes tint (a snippet's
+    /// placeholders), computed from the same snapshot as the text at
+    /// publish, so they never trail it. Painted with the cursor-coupled
+    /// overlays, under the selection. Active pane only.
+    pub mode_highlights: std::sync::Arc<[ModeHighlightSpan]>,
     /// Primary search hit the cursor sits on (painted with the
     /// strongest match colour). `None` outside Search mode.
     pub current_match: Option<lattice_protocol::position::Range>,
@@ -772,6 +777,7 @@ impl Default for ActiveDocumentRenderState {
             all_matches: Arc::from(
                 Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
             ),
+            mode_highlights: Arc::from(Vec::<ModeHighlightSpan>::new().into_boxed_slice()),
             current_match: None,
             visual_range: None,
             visual_block_extents: None,
@@ -1848,6 +1854,14 @@ impl DocHighlightKind {
             _ => Self::Text,
         }
     }
+}
+
+/// One range a mode tints (`lattice_mode::RangeHighlight`), in line/byte
+/// positions, with the theme element whose background tints it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeHighlightSpan {
+    pub range: lattice_protocol::position::Range,
+    pub element: lattice_theme::ElementId,
 }
 
 /// One document-highlight occurrence in utf-8 byte space, with its kind.

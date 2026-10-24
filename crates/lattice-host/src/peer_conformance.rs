@@ -464,6 +464,7 @@ macro_rules! peer_conformance_tests {
             the_users_snippet_overrides_a_packages,
             ctrl_n_and_ctrl_p_cycle_a_choice,
             ctrl_n_off_a_choice_changes_nothing,
+            live_placeholders_are_tinted,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

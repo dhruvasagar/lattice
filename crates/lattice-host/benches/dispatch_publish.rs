@@ -37,6 +37,12 @@
 //!   unconditional rebuild as closely as the bench can without
 //!   reverting the cache implementation.
 //!
+//! - `publish_2000_with_mode_highlights` (SI.12) — a no-op publish of
+//!   the 2000-line document, with and without a mode range-highlight
+//!   source on the active buffer returning eight ranges (a snippet with
+//!   four stops and their mirrors). The difference is what a live
+//!   snippet's placeholder tint adds to every publish.
+//!
 //! Run:
 //!
 //!   cargo bench -p lattice-host --bench dispatch_publish
@@ -174,6 +180,44 @@ fn steady_state(c: &mut Criterion) {
     group.finish();
 }
 
+fn publish_with_mode_highlights(c: &mut Criterion) {
+    use lattice_mode::RangeHighlightRegistrar as _;
+    let mut group = c.benchmark_group("dispatch_publish");
+    for with in [false, true] {
+        let mut editor = editor_with_doc(2_000);
+        if with {
+            // Eight ranges mid-file, on the lines the viewport shows.
+            let base = editor.document.snapshot().buffer.byte_len() as usize / 2;
+            let element = lattice_theme::ElementId(0);
+            editor.range_highlights.register(
+                editor.document_buffer_id,
+                lattice_mode::ModeId::new("bench-mode"),
+                std::sync::Arc::new(move |_| {
+                    (0..8)
+                        .map(|i| lattice_mode::RangeHighlight {
+                            bytes: base + i * 40..base + i * 40 + 6,
+                            element,
+                        })
+                        .collect()
+                }),
+            );
+        }
+        editor.publish_render_state();
+        let name = if with {
+            "publish_2000_with_mode_highlights"
+        } else {
+            "publish_2000_without_mode_highlights"
+        };
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                editor.publish_render_state();
+                black_box(editor.render_state.load_full());
+            });
+        });
+    }
+    group.finish();
+}
+
 fn mutated_modes(c: &mut Criterion) {
     let mut group = c.benchmark_group("dispatch_publish");
     let mut editor = populated_editor();
@@ -256,6 +300,7 @@ criterion_group!(
     benches,
     keystroke_publish,
     steady_state,
+    publish_with_mode_highlights,
     mutated_modes,
     mutated_all,
     unmemoised

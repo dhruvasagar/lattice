@@ -1521,6 +1521,10 @@ pub struct Editor {
     /// `<Esc>` / cursor leaving the tabstop ranges. The same `Arc` is
     /// registered in `ServiceRegistry` under `SnippetSessionHandle`.
     pub snippet_session: lattice_snippet::SnippetSessionHandle,
+    /// The text ranges active modes tint, per buffer (SI.12). The same
+    /// `Arc` is the `RangeHighlightRegistrarHandle` service modes register
+    /// through; `publish_render_state` reads the active buffer's.
+    pub range_highlights: Arc<crate::range_highlights::RangeHighlightRegistry>,
     /// Session-backed minor modes reconciled on the active buffer
     /// each `sync_keymap_overlays` cycle (one entry per
     /// service-driven minor). Each pairs a predicate — reading a

@@ -1302,6 +1302,11 @@ impl Editor {
                     // `app.editor.X` directly.
                     folds: std::sync::Arc::from(self.folds.clone().into_boxed_slice()),
                     all_matches: std::sync::Arc::from(self.all_matches.clone().into_boxed_slice()),
+                    mode_highlights: std::sync::Arc::from(
+                        self.range_highlights
+                            .spans_for(self.document_buffer_id, &self.document.snapshot())
+                            .into_boxed_slice(),
+                    ),
                     current_match: self.current_match,
                     visual_range: self.visual_selection_range(),
                     visual_block_extents: self.visual_block_extents(),

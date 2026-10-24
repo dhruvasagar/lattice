@@ -973,3 +973,58 @@ pub fn ctrl_n_off_a_choice_changes_nothing<P: PeerUnderTest>() {
     assert_eq!(text(&peer), "for idx in iter {  }\n");
     assert_selects(&peer, "the placeholder", 4, 7);
 }
+
+// ---- SI.12: placeholder highlight ----
+
+/// The published placeholder tint: each `(start, end)` byte span on line 0,
+/// checked to carry the `snippet.placeholder` element.
+fn placeholder_tints<P: PeerUnderTest>(peer: &P) -> Vec<(u32, u32)> {
+    let editor = peer.editor();
+    let element = editor
+        .services
+        .get::<lattice_theme::ThemeRegistryHandle>()
+        .and_then(|t| {
+            t.id(&lattice_theme::ElementName::from_static(
+                "snippet.placeholder",
+            ))
+        });
+    let spans = editor
+        .render_state
+        .load()
+        .active_document
+        .load()
+        .mode_highlights
+        .clone();
+    spans
+        .iter()
+        .map(|s| {
+            assert_eq!(Some(s.element), element, "tinted as a placeholder");
+            assert_eq!(s.range.start.line, s.range.end.line);
+            (s.range.start.byte, s.range.end.byte)
+        })
+        .collect()
+}
+
+/// Every stop still to visit is tinted while the snippet is live, the tint
+/// moves with the text as it is typed, and it goes when the snippet ends.
+pub fn live_placeholders_are_tinted<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_for_snippet(&mut peer);
+
+    press(&mut peer, "izzfor<C-x><C-s>");
+    assert_eq!(
+        placeholder_tints(&peer),
+        vec![(4, 7), (11, 15)],
+        "both placeholders; the exit is not one"
+    );
+
+    press(&mut peer, "n");
+    assert_eq!(
+        placeholder_tints(&peer),
+        vec![(4, 5), (9, 13)],
+        "the tint follows the overtype in the same publish"
+    );
+
+    press(&mut peer, "<Esc>");
+    assert_eq!(placeholder_tints(&peer), vec![], "no snippet, no tint");
+}

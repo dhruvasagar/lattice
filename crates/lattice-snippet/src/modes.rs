@@ -476,6 +476,8 @@ impl SnippetActiveMode {
 /// through to "unhandled" once no snippet is live.
 pub struct SnippetActiveModeGuard {
     _action_handler_registrations: Vec<ActionHandlerRegistration>,
+    /// The placeholder tint (SI.12); withdrawn with the mode.
+    _placeholder_highlights: Option<lattice_mode::RangeHighlightRegistration>,
 }
 
 /// The charwise selection that covers a placeholder's text: `(anchor, head)`
@@ -687,6 +689,46 @@ fn cycle_choice(
     })
 }
 
+/// The theme element a live placeholder is tinted with, registered (owned
+/// by this mode) on first use. `None` in a harness with no theme registry.
+fn placeholder_element(ctx: &ModeContext) -> Option<lattice_theme::ElementId> {
+    let theme = ctx.service::<lattice_theme::ThemeRegistryHandle>()?;
+    Some(theme.register(
+        lattice_theme::ElementName::from_static("snippet.placeholder"),
+        lattice_theme::ElementOwner::Mode(SnippetActiveMode::mode_id().as_str().to_string().into()),
+        lattice_theme::StyleSpec::new().bg(lattice_theme::ColorRef::Palette("surface0".into())),
+        "A live snippet placeholder (bg tint) — every stop still to visit and its copies.",
+    ))
+}
+
+/// The placeholder tint for one buffer (SI.12): every live, non-empty
+/// occurrence of every stop but the exit, as the snapshot's tracked ranges
+/// hold them — so the tint moves with the text in the same publish. The
+/// focused one is also the selection, which paints over it.
+fn placeholder_highlight_source(
+    session: SnippetSessionHandle,
+    buffer: lattice_core::BufferId,
+    element: lattice_theme::ElementId,
+) -> lattice_mode::RangeHighlightSource {
+    Arc::new(move |snapshot: &lattice_runtime::DocumentSnapshot| {
+        session
+            .with_mut(buffer, |s| {
+                let active = s.as_ref()?;
+                Some(
+                    active
+                        .groups
+                        .iter()
+                        .filter(|g| g.index != 0)
+                        .flat_map(|g| g.live_ranges(&snapshot.tracked_ranges))
+                        .filter(|r| !r.is_empty())
+                        .map(|bytes| lattice_mode::RangeHighlight { bytes, element })
+                        .collect(),
+                )
+            })
+            .unwrap_or_default()
+    })
+}
+
 impl Mode for SnippetActiveMode {
     type Guard = SnippetActiveModeGuard;
     fn id(&self) -> ModeId {
@@ -715,6 +757,7 @@ impl Mode for SnippetActiveMode {
             // handlers to do anything, so its absence skips
             // registration entirely.
             let session = ctx.service::<SnippetSessionHandle>().map(|a| (*a).clone());
+            let session_for_highlights = session.clone();
             let buffer_store = ctx.service::<BufferStoreHandle>().map(|a| (*a).clone());
 
             if let (Some(session), Some(cmd_registry_arc), Some(action_handlers_arc)) = (
@@ -850,8 +893,18 @@ impl Mode for SnippetActiveMode {
                 );
             }
 
+            let placeholder_highlights = session_for_highlights.and_then(|session| {
+                let element = placeholder_element(&ctx)?;
+                lattice_mode::register_range_highlights(
+                    &ctx,
+                    SnippetActiveMode::mode_id(),
+                    placeholder_highlight_source(session, core_buffer_id(ctx.buffer_id()), element),
+                )
+            });
+
             Ok(SnippetActiveModeGuard {
                 _action_handler_registrations: registrations,
+                _placeholder_highlights: placeholder_highlights,
             })
         })
     }

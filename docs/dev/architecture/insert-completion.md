@@ -979,6 +979,13 @@ shifts it). Mirrors render with their placeholder's text, so
 `$1 + $1 = ${1:two}` expands to `two + two = two`. The same primitive is
 what LSP linked editing (renaming a tag pair) needs.
 
+**Live placeholders are tinted** (`snippet.placeholder`, a background
+owned by `active-snippet-mode`): every stop still to visit and its
+copies, but not the exit. The mode registers a range-highlight source
+(mode-architecture.md §9.5.1) that reads the tracked ranges from the
+snapshot the host publishes the text from, so the tint moves with the
+text in the same frame and goes with the session.
+
 **Choices cycle in place.** A focused `${1|a,b,c|}` is selected (Select
 mode), and `<C-n>` / `<C-p>` there replace it with the next / previous
 option, wrapping. The replacement is one ordinary edit of the first

@@ -71,6 +71,23 @@ target rather than just a slower number.
 
 ---
 
+## SI.12 — mode range highlights on the publish path (2026-10-24)
+
+A live snippet's placeholders are tinted through a mode range-highlight
+source the host calls on every publish of the active buffer. Bench:
+`dispatch_publish/publish_2000_{with,without}_mode_highlights` in
+`crates/lattice-host/benches/dispatch_publish.rs` — a no-op publish of a
+2 000-line document, with a source returning eight ranges and without.
+
+| Publish | Time |
+|---|---|
+| without a source | 6.13 µs |
+| eight ranges | 9.87 µs |
+
+About 0.45 µs a range: the source call, and two byte→position lookups
+on the rope per range. Paid only while a mode has a source on the active
+buffer (a snippet is live); with none, one empty map lookup.
+
 ## SI.7 — snippet mirrors on the keystroke path (2026-10-23)
 
 A keystroke inside a placeholder with mirrors makes the `Document` copy

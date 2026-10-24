@@ -1434,9 +1434,10 @@ a selection is the `gS` operator, decided and queued.
 **SI.11 ✅**: packs load from `snippet-packs/` packages, `snippet.dirs`,
 the user's folder and the project's `.lattice/snippets`, in any VS Code
 layout (`package.json`, `<lang>.json`, `.code-snippets`).
-**SI.12 🚧**: doc drift fixed; choices cycle in place with `<C-n>` /
-`<C-p>` in Select, in every copy; placeholder highlighting is next (a
-generic mode range-highlight hook).
+**SI.12 ✅**: doc drift fixed; choices cycle in place with `<C-n>` /
+`<C-p>` in Select, in every copy; live placeholders are tinted
+(`snippet.placeholder`) through a generic mode range-highlight seam
+(mode-architecture.md §9.5.1).
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

@@ -2185,6 +2185,12 @@ impl Editor {
         // `<Tab>`/`<S-Tab>` handlers can reach it from `on_activate`. Same Arc
         // as the `Editor.snippet_session` field (set below).
         boot.register_service::<lattice_snippet::SnippetSessionHandle>(snippet_session.clone());
+        // SI.12: where modes register the text ranges they tint. Same Arc
+        // as the `Editor.range_highlights` field (set below).
+        let range_highlights = Arc::new(crate::range_highlights::RangeHighlightRegistry::default());
+        boot.register_service::<lattice_mode::RangeHighlightRegistrarHandle>(
+            range_highlights.clone(),
+        );
         // MH.A3 / DB.5: `Arc<ConfigRegistry>` is registered as a Phase-A
         // service near `config`'s construction (above, next to `event_bus`)
         // rather than here — see the DB.5 hoist note there for why a
@@ -2664,6 +2670,7 @@ impl Editor {
                 mode_id: lattice_snippet::modes::SnippetActiveMode::mode_id(),
             }],
             snippet_session,
+            range_highlights,
             // Default user snippet dir: `~/.config/lattice/snippets`
             // (the same XDG config root as `lattice.toml`, via
             // `lattice_config::config_home` — honours `$XDG_CONFIG_HOME`

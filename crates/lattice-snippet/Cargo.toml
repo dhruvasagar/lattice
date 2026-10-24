@@ -26,6 +26,8 @@ lattice-completion = { path = "../lattice-completion" }
 lattice-config = { path = "../lattice-config" }
 lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
+# SI.12: the placeholder tint registers its own theme element.
+lattice-theme = { path = "../lattice-theme" }
 # SN.2b: `active-snippet-mode` owns its `<Tab>` / `<S-Tab>`
 # placeholder-navigation handler bodies (relocated off the host
 # per `feedback_mode_owns_its_surface`). The handlers register as

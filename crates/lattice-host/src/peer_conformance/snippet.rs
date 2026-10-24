@@ -785,3 +785,41 @@ pub fn a_bad_entry_skips_itself_not_its_pack<P: PeerUnderTest>() {
     press(&mut peer, "izzfine<C-x><C-s>");
     assert_eq!(text(&peer), "fine \n", "the good entry loaded");
 }
+
+// ---- SI.10: variables ----
+
+/// The language's comment leader and the file's names reach a snippet.
+pub fn file_and_comment_variables_expand<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(
+        &mut peer,
+        "conformance-vars",
+        "zzhdr",
+        "$LINE_COMMENT $TM_FILENAME_BASE in $RELATIVE_FILEPATH",
+    );
+    edit_new_file(&mut peer, "main.rs");
+
+    press(&mut peer, "izzhdr<C-x><C-s>");
+
+    let text = text(&peer);
+    assert!(
+        text.starts_with("// main in ") && text.trim_end().ends_with("main.rs"),
+        "comment leader, base name and relative path: {text:?}"
+    );
+}
+
+/// `$CLIPBOARD` is what the system clipboard holds — text copied in another
+/// program — not only the editor's own `+` register.
+pub fn the_clipboard_variable_reads_the_clipboard<P: PeerUnderTest>() {
+    let mut peer = boot::<P>("\n");
+    install_snippet(&mut peer, "conformance-clip", "zzclip", "[$CLIPBOARD]");
+    peer.editor()
+        .services
+        .get::<lattice_core::ClipboardHandle>()
+        .expect("boot registers a clipboard")
+        .write("copied elsewhere".into());
+
+    press(&mut peer, "izzclip<C-x><C-s>");
+
+    assert_eq!(text(&peer), "[copied elsewhere]\n");
+}

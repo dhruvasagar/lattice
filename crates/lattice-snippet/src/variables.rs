@@ -50,6 +50,8 @@ pub struct VariableContext {
     pub filename: Option<String>,
     pub directory: Option<String>,
     pub filepath: Option<String>,
+    /// The file's path relative to the workspace folder.
+    pub relative_filepath: Option<String>,
     pub workspace_name: Option<String>,
     pub workspace_folder: Option<String>,
     pub clipboard: Option<String>,
@@ -96,13 +98,18 @@ impl VariableContext {
             "TM_LINE_INDEX" => self.line_index.map(|n| n.to_string()),
             "TM_LINE_NUMBER" => self.line_index.map(|n| (n + 1).to_string()),
             "TM_FILENAME" => self.filename.clone(),
-            "TM_FILENAME_BASE" => self.filename.as_ref().map(|f| {
-                f.rsplit_once('.')
-                    .map(|(s, _)| s.to_string())
-                    .unwrap_or(f.clone())
+            // A dotfile (`.bashrc`) has no extension to strip: its base is
+            // itself, as Node's `path.basename(f, path.extname(f))` gives.
+            "TM_FILENAME_BASE" => self.filename.as_ref().map(|f| match f.rsplit_once('.') {
+                Some((base, _)) if !base.is_empty() => base.to_string(),
+                _ => f.clone(),
             }),
             "TM_DIRECTORY" => self.directory.clone(),
             "TM_FILEPATH" => self.filepath.clone(),
+            "RELATIVE_FILEPATH" => self.relative_filepath.clone(),
+            // One cursor until expansion runs at every cursor (SI.13).
+            "CURSOR_INDEX" => Some("0".into()),
+            "CURSOR_NUMBER" => Some("1".into()),
             "WORKSPACE_NAME" => self.workspace_name.clone(),
             "WORKSPACE_FOLDER" => self.workspace_folder.clone(),
             "CLIPBOARD" => self.clipboard.clone(),
@@ -124,6 +131,8 @@ impl VariableContext {
             "CURRENT_DAY_NAME_SHORT" => Some(self.now().day_name_short.to_string()),
             "CURRENT_MONTH_NAME" => Some(self.now().month_name.to_string()),
             "CURRENT_MONTH_NAME_SHORT" => Some(self.now().month_name_short.to_string()),
+            "CURRENT_SECONDS_UNIX" => Some(unix_seconds().to_string()),
+            "CURRENT_TIMEZONE_OFFSET" => Some(timezone_offset()),
             "RANDOM" => Some(format!("{:06}", self.random() % 1_000_000)),
             "RANDOM_HEX" => Some(format!("{:06x}", self.random() & 0xff_ffff)),
             "UUID" => Some(uuid_v4_str(self.random())),
@@ -187,6 +196,9 @@ const KNOWN: &[&str] = &[
     "TM_FILENAME_BASE",
     "TM_DIRECTORY",
     "TM_FILEPATH",
+    "RELATIVE_FILEPATH",
+    "CURSOR_INDEX",
+    "CURSOR_NUMBER",
     "WORKSPACE_NAME",
     "WORKSPACE_FOLDER",
     "CLIPBOARD",
@@ -204,10 +216,28 @@ const KNOWN: &[&str] = &[
     "CURRENT_DAY_NAME_SHORT",
     "CURRENT_MONTH_NAME",
     "CURRENT_MONTH_NAME_SHORT",
+    "CURRENT_SECONDS_UNIX",
+    "CURRENT_TIMEZONE_OFFSET",
     "RANDOM",
     "RANDOM_HEX",
     "UUID",
 ];
+
+/// Seconds since the Unix epoch.
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The local zone's offset from UTC as `+05:30` / `-08:00`, VS Code's form.
+fn timezone_offset() -> String {
+    let secs = chrono::Local::now().offset().local_minus_utc();
+    let sign = if secs < 0 { '-' } else { '+' };
+    let secs = secs.unsigned_abs();
+    format!("{sign}{:02}:{:02}", secs / 3600, (secs % 3600) / 60)
+}
 
 /// Convenience: `VariableContext` populated with the builtin
 /// timestamp + random sources but no editor-supplied fields.
@@ -489,5 +519,51 @@ mod tests {
             }
         }
         panic!("the hour kept changing");
+    }
+
+    /// SI.10: a dotfile's base name is the whole name.
+    #[test]
+    fn a_dotfiles_base_name_is_itself() {
+        let ctx = |name: &str| VariableContext {
+            filename: Some(name.into()),
+            ..VariableContext::default()
+        };
+        assert_eq!(
+            ctx(".bashrc").resolve("TM_FILENAME_BASE").as_deref(),
+            Some(".bashrc")
+        );
+        assert_eq!(
+            ctx("main.rs").resolve("TM_FILENAME_BASE").as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            ctx("a.tar.gz").resolve("TM_FILENAME_BASE").as_deref(),
+            Some("a.tar")
+        );
+    }
+
+    #[test]
+    fn the_newer_variables_resolve() {
+        let ctx = VariableContext {
+            relative_filepath: Some("src/main.rs".into()),
+            ..VariableContext::default()
+        };
+        assert_eq!(
+            ctx.resolve("RELATIVE_FILEPATH").as_deref(),
+            Some("src/main.rs")
+        );
+        assert_eq!(ctx.resolve("CURSOR_INDEX").as_deref(), Some("0"));
+        assert_eq!(ctx.resolve("CURSOR_NUMBER").as_deref(), Some("1"));
+        let unix: u64 = ctx
+            .resolve("CURRENT_SECONDS_UNIX")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(unix > 1_700_000_000);
+        let tz = ctx.resolve("CURRENT_TIMEZONE_OFFSET").unwrap();
+        assert!(
+            tz.len() == 6 && (tz.starts_with('+') || tz.starts_with('-')) && &tz[3..4] == ":",
+            "{tz}"
+        );
     }
 }

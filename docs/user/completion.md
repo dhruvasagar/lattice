@@ -215,18 +215,11 @@ ${1/pat/sub/flags}       transform on the captured text
 \$ \\                    escape
 ```
 
-A handful of TextMate variables are wired today:
-`$TM_FILENAME`, `$TM_FILEPATH`, `$TM_DIRECTORY`,
-`$TM_LINE_INDEX` (0-based), `$TM_LINE_NUMBER` (1-based),
-`$TM_CURRENT_LINE`, `$TM_CURRENT_WORD`, `$CLIPBOARD`,
-`$CURRENT_YEAR`, `$CURRENT_YEAR_SHORT`, `$CURRENT_MONTH`,
-`$CURRENT_DATE`, `$CURRENT_HOUR`, `$CURRENT_MINUTE`,
-`$CURRENT_SECOND`, `$CURRENT_SECONDS_UNIX`,
-`$CURRENT_DAY_NAME`, `$CURRENT_DAY_NAME_SHORT`,
-`$CURRENT_MONTH_NAME`, `$CURRENT_MONTH_NAME_SHORT`,
-`$RANDOM`, `$RANDOM_HEX`, `$UUID`. Unknown variable names
-fall through to the literal `$NAME` so future additions are
-backwards-compatible.
+VS Code's snippet variables all resolve — `$TM_FILENAME`,
+`$TM_FILENAME_BASE`, `$RELATIVE_FILEPATH`, `$WORKSPACE_NAME`,
+`$LINE_COMMENT`, `$BLOCK_COMMENT_START`, `$CLIPBOARD`, `$CURRENT_*` (local
+time), `$UUID`, … — except `$TM_SELECTED_TEXT`, empty for now. An unknown
+name becomes a placeholder showing it.
 
 ### Loading snippet packs
 

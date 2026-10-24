@@ -17,6 +17,12 @@
   auto_trigger = true` turns it on for one language alone.
 
 ### Fixed
+- **More snippet variables have values.** `$CLIPBOARD` holds what you
+  copied in another program, not only the editor's own copies;
+  `$LINE_COMMENT` and `$BLOCK_COMMENT_START`/`_END` follow the file's
+  language; `$WORKSPACE_NAME`, `$WORKSPACE_FOLDER`, `$RELATIVE_FILEPATH`,
+  `$CURSOR_INDEX`, `$CURRENT_SECONDS_UNIX` and `$CURRENT_TIMEZONE_OFFSET`
+  work; and `$TM_FILENAME_BASE` of `.bashrc` is `.bashrc`, not empty.
 - **Snippet transforms work, and malformed snippets can't hang the
   editor.** `${TM_FILENAME/(.*)\\.rs/${1:/pascalcase}/}` and
   `${1/(.*)/${1:/upcase}/}` used to leave fragments of their own syntax in

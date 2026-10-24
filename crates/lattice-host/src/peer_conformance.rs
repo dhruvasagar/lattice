@@ -452,6 +452,8 @@ macro_rules! peer_conformance_tests {
             leaving_a_placeholder_rewrites_its_transformed_copy,
             an_unknown_variable_is_a_placeholder,
             a_bad_entry_skips_itself_not_its_pack,
+            file_and_comment_variables_expand,
+            the_clipboard_variable_reads_the_clipboard,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

@@ -1428,6 +1428,9 @@ placeholders past an auto-import, select defaults and run their command.
 leaving the placeholder); malformed nesting parses in linear time; a bad
 pack entry skips only itself; unknown variables become placeholders;
 `CURRENT_*` are local time.
+**SI.10 🚧**: every VS Code variable but `TM_SELECTED_TEXT` resolves
+(clipboard, comments, workspace, relative path, cursor, timezone); wrapping
+a selection awaits an entry-point decision.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

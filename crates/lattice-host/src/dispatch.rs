@@ -29578,9 +29578,51 @@ impl Editor {
         if let Some(word) = crate::lsp_helpers::word_under_cursor(&snap.buffer, self.cursor) {
             ctx.current_word = Some(word);
         }
-        // CLIPBOARD via the system register.
-        if let Some(reg) = self.registers.get(&Register::System) {
-            ctx.clipboard = Some(reg.content.clone());
+        // SI.10: the workspace the file belongs to (the root `:files` and
+        // the pickers use), and the file's path within it.
+        let root = self.picker_workspace_root_path(&snap);
+        ctx.workspace_folder = Some(root.display().to_string());
+        ctx.workspace_name = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.to_string());
+        if let Some(path) = snap.path.as_ref() {
+            // A file outside the workspace shows its full path, as VS Code's
+            // relative label does.
+            let rel = path.strip_prefix(&root).unwrap_or(path.as_path());
+            ctx.relative_filepath = Some(rel.display().to_string());
+        }
+        // SI.10: the language's comment strings (`$LINE_COMMENT`, …).
+        let comments = self.active_lang().comment_syntax();
+        ctx.line_comment = comments.line;
+        if let Some((start, end)) = comments.block {
+            ctx.block_comment_start = Some(start);
+            ctx.block_comment_end = Some(end);
+        }
+        ctx
+    }
+
+    /// [`Self::snippet_variable_context`] for expanding `body`, with
+    /// `$CLIPBOARD` read from the system clipboard when — and only when —
+    /// the body uses it: the read can block, so a snippet that does not
+    /// ask must not pay it. Falls back to the `+` register (the editor's
+    /// own copy) when the clipboard cannot be read. Before SI.10 it read
+    /// only the register, so text copied in another program was missing.
+    pub fn snippet_variables_for(
+        &self,
+        body: &lattice_snippet::SnippetBody,
+    ) -> lattice_snippet::VariableContext {
+        let mut ctx = self.snippet_variable_context();
+        if body.uses_variable("CLIPBOARD") {
+            ctx.clipboard = self
+                .services
+                .get::<lattice_core::ClipboardHandle>()
+                .and_then(|cb| cb.read())
+                .or_else(|| {
+                    self.registers
+                        .get(&Register::System)
+                        .map(|reg| reg.content.clone())
+                });
         }
         ctx
     }
@@ -29597,7 +29639,7 @@ impl Editor {
         body: &lattice_snippet::SnippetBody,
         anchor: lattice_protocol::position::Position,
     ) {
-        let vars = self.snippet_variable_context();
+        let vars = self.snippet_variables_for(body);
         let rendered = self.indent_snippet(lattice_snippet::render::render(body, &vars), anchor);
         let range = lattice_protocol::position::Range::new(anchor, self.cursor);
         let edit = lattice_protocol::edit::Edit::replace(range, rendered.text.clone());
@@ -34048,7 +34090,7 @@ impl Editor {
         additional: Vec<lattice_lsp::lsp_types::TextEdit>,
         as_is: bool,
     ) -> Result<(), String> {
-        let vars = self.snippet_variable_context();
+        let vars = self.snippet_variables_for(body);
         let raw = lattice_snippet::render::render(body, &vars);
         let rendered = if as_is {
             raw

@@ -72,22 +72,22 @@ pub(crate) fn install_compose_bus(
     bus
 }
 
-/// CC.2: after an operation that can stop short of a commit, open the
-/// commit buffer if it did — and there is nothing left to resolve.
-/// A conflicted stop is the user's to resolve first; the status buffer
-/// shows it, and `c c` composes once it is staged.
+/// CC.2: open the commit buffer if git is waiting on a commit — and there
+/// is nothing left to resolve. A conflicted stop is the user's to resolve
+/// first; the status buffer shows it, and `c c` composes once it is staged.
+/// Returns whether the buffer was asked for.
 ///
 /// Blocking (two small git reads): call it on the blocking pool, where
-/// the operation itself ran.
-pub(crate) fn compose_if_pending(workdir: &Path, bus: &ComposeBusHandle) {
+/// the operation itself runs.
+pub(crate) fn compose_if_pending(workdir: &Path, bus: &ComposeBusHandle) -> bool {
     // The repository's root, not `workdir` as given: the buffer is named
     // for the repository, and a subdirectory would name another one.
     let Some(root) = should_compose(workdir) else {
-        return;
+        return false;
     };
     // A failed send means the editor is going away; the stop is still
     // in the repository, and `c c` composes from it.
-    let _ = bus.send(ComposeRequest { workdir: root });
+    bus.send(ComposeRequest { workdir: root }).is_ok()
 }
 
 /// Is git waiting on a commit, with nothing left to resolve? Then the
@@ -413,5 +413,109 @@ mod tests {
             "Alice|alice side, rebased"
         );
         assert!(!p.join(".git/rebase-merge").exists(), "the rebase finished");
+    }
+
+    /// CC.3: each `--continue` row, with git waiting on a commit and
+    /// nothing unmerged, opens the commit buffer INSTEAD of running — git
+    /// is left exactly where it stopped, for the buffer's confirm to
+    /// conclude. Unresolved, it runs, and git's refusal is the report.
+    #[test]
+    fn a_continue_with_a_commit_pending_composes_instead_of_running() {
+        use crate::magit_global_mode::{RemoteOp, run_then_compose};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = asked.clone();
+        let (bus, mut drain) = lattice_mode::inbound::make_inbound::<ComposeRequest, _>(
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+            move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            },
+        );
+        let bus: ComposeBusHandle = Arc::new(bus);
+        let never = lattice_protocol::CancellationToken::never();
+        let mut run = |op: RemoteOp, dir: &Path| {
+            let result = run_then_compose(
+                op,
+                dir,
+                &op.argv(&lattice_grammar::Args::None),
+                &never,
+                Some(&bus),
+            );
+            drain();
+            (result, asked.swap(0, Ordering::SeqCst))
+        };
+
+        // A merge, conflicted: still unresolved, so git runs and refuses.
+        let d = repo();
+        let p = d.path();
+        git(p, &["checkout", "-q", "-b", "side"]);
+        commit_as(p, "Me", "f", "side\n", "on side");
+        git(p, &["checkout", "-q", "main"]);
+        commit_as(p, "Me", "f", "main\n", "on main");
+        git(p, &["merge", "side"]);
+        let (result, asked_for) = run(RemoteOp::MERGE_CONTINUE, p);
+        assert!(matches!(result, Some(Err(_))), "{result:?}");
+        assert_eq!(asked_for, 0, "nothing to compose while conflicted");
+
+        // Resolved: the buffer, and git untouched.
+        std::fs::write(p.join("f"), "both\n").unwrap();
+        git(p, &["add", "f"]);
+        let (result, asked_for) = run(RemoteOp::MERGE_CONTINUE, p);
+        assert!(matches!(result, Some(Ok(_))), "{result:?}");
+        assert_eq!(asked_for, 1);
+        assert!(p.join(".git/MERGE_HEAD").exists(), "git was not run");
+
+        // A cherry-pick and a revert stop, resolved: the same.
+        for (op, start) in [
+            (RemoteOp::CHERRY_PICK_CONTINUE, &["cherry-pick", "src"][..]),
+            (
+                RemoteOp::REVERT_CONTINUE,
+                &["revert", "--no-edit", "HEAD~1"],
+            ),
+        ] {
+            let d = repo();
+            let p = d.path();
+            git(p, &["checkout", "-q", "-b", "src"]);
+            commit_as(p, "Alice", "f", "1\n", "alice one");
+            git(p, &["checkout", "-q", "main"]);
+            if op == RemoteOp::REVERT_CONTINUE {
+                git(p, &["merge", "-q", "src"]);
+            }
+            commit_as(p, "Me", "f", "X\n", "main X");
+            git(p, start);
+            assert!(
+                PendingCommit::detect(&lattice_vcs::Repository::discover(p).unwrap()).is_some(),
+                "precondition: {start:?} stopped"
+            );
+            std::fs::write(p.join("f"), "R\n").unwrap();
+            git(p, &["add", "f"]);
+            let (result, asked_for) = run(op, p);
+            assert!(matches!(result, Some(Ok(_))), "{start:?}: {result:?}");
+            assert_eq!(asked_for, 1, "{start:?}");
+        }
+
+        // An `edit` stop has no commit pending: `--continue` just runs.
+        let d = repo();
+        let p = d.path();
+        commit_as(p, "Me", "g", "g\n", "add g");
+        git(
+            p,
+            &[
+                "-c",
+                "sequence.editor=sed -i 1s/^pick/edit/",
+                "rebase",
+                "-i",
+                "HEAD~1",
+            ],
+        );
+        assert!(
+            p.join(".git/rebase-merge/amend").exists(),
+            "precondition: edit stop"
+        );
+        let (result, asked_for) = run(RemoteOp::REBASE_CONTINUE, p);
+        assert!(matches!(result, Some(Ok(_))), "{result:?}");
+        assert_eq!(asked_for, 0);
+        assert!(!p.join(".git/rebase-merge").exists(), "the rebase ran on");
     }
 }

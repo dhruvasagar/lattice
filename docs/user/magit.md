@@ -443,6 +443,9 @@ nothing is running.
 A merge has no `skip` — that is a sequencer verb, and a merge is one
 operation with nothing to skip to.
 
+When git would commit, *continue* opens the commit buffer on its
+message; `C-c C-c` commits and carries on.
+
 Keys are deliberately overloaded between the two states — `A` is
 *pick* when idle and *continue* when stopped — which is magit's own
 arrangement and is safe only because the gate never shows both sets at

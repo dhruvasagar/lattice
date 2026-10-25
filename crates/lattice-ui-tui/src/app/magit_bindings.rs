@@ -1587,6 +1587,77 @@ mod compose_buffers {
         );
     }
 
+    /// CC.3: `:magit-rebase-continue` on a resolved conflict stop used to
+    /// commit git's prepared message unseen (`GIT_EDITOR=true`). It opens
+    /// the commit buffer on it instead — off-keystroke, so this waits on the
+    /// wake — and confirming continues the rebase with the original author.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn continuing_a_resolved_rebase_opens_the_commit_buffer_first() {
+        use crate::app::Action;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let repo = scratch_repo("continue-rebase-repo");
+        git_in(&repo, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repo.join("f.txt"), "side\n").unwrap();
+        git_in(
+            &repo,
+            &["-c", "user.name=Alice", "commit", "-q", "-am", "alice side"],
+        );
+        git_in(&repo, &["checkout", "-q", "main"]);
+        std::fs::write(repo.join("f.txt"), "main\n").unwrap();
+        git_in(&repo, &["commit", "-q", "-am", "on main"]);
+        git_in(&repo, &["checkout", "-q", "side"]);
+        git_in(&repo, &["rebase", "main"]);
+        assert!(
+            repo.join(".git/rebase-merge").exists(),
+            "precondition: rebase stopped"
+        );
+        std::fs::write(repo.join("f.txt"), "both\n").unwrap();
+        git_in(&repo, &["add", "f.txt"]);
+
+        let mut app = app_with_path("both\n", 20, repo.join("f.txt"));
+        app.apply(Action::EnterCommandLine);
+        press_chars(&mut app, "magit-rebase-continue");
+        app.apply(Action::CommandLineSubmit);
+
+        let front = |a: &crate::app::App| {
+            a.editor
+                .buffers
+                .name_of(a.editor.active_pane_buffer_id())
+                .filter(|n| n.contains("commit") && n.contains("continue-rebase-repo"))
+        };
+        assert!(
+            settle_woken(&mut app, |a| front(a)
+                .and_then(|n| commit_text(a, &n))
+                .is_some_and(|t| t.starts_with("alice side")))
+            .await,
+            "no commit buffer on the stopped commit's message; front is {:?}",
+            app.editor
+                .buffers
+                .name_of(app.editor.active_pane_buffer_id())
+        );
+        assert!(
+            repo.join(".git/rebase-merge").exists(),
+            "nothing continued before the message was seen"
+        );
+
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        press(&mut app, ctrl('c'));
+        press(&mut app, ctrl('c'));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while repo.join(".git/rebase-merge").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the rebase never continued"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            git_in(&repo, &["log", "-1", "--format=%an|%s"]),
+            "Alice|alice side",
+            "the stopped commit, with its author"
+        );
+    }
+
     /// `cc` / `ca` in magit-status open the same compose buffer as
     /// `C-c g c` / `C-c g a`: named for, and recording, the STATUS
     /// buffer's repository.

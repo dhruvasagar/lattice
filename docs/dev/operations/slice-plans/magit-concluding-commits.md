@@ -13,7 +13,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 |---|---|---|
 | CC.1 | The commit buffer concludes what git stopped | ✅ |
 | CC.2 | Pull follows git config; a stopped merge opens the buffer | ✅ |
-| CC.3 | The `--continue` rows compose when a commit is pending | 📝 |
+| CC.3 | The `--continue` rows compose when a commit is pending | ✅ |
 | CC.4 | Revert `V V` composes | 📝 |
 | CC.5 | Audit pin: every message-writing op is accounted for | 📝 |
 
@@ -79,6 +79,18 @@ Merge, cherry-pick, revert and rebase `--continue`: when git would commit
 buffer through the CC.2 bus instead of running `--continue` with
 `GIT_EDITOR=true`. Otherwise run as now (a sequence with nothing pending,
 an `edit` stop with nothing staged).
+
+✅ One shared tail, `run_then_compose`, for both remote spawners: before
+the run it composes instead of continuing (`RemoteOp::continues_to_a_commit`
+— the four rows; `am --continue` commits the patch's own message), after
+it CC.2's pull check. "Would commit" is `PendingCommit` plus nothing
+unmerged; unresolved, `--continue` runs and git's refusal is the report.
+An `edit` stop has no pending commit (CC.1), so it continues as before.
+The row reports "the commit buffer is open — C-c C-c to continue".
+Tests: `a_continue_with_a_commit_pending_composes_instead_of_running`
+(merge conflicted then resolved, pick, revert, edit stop — real git) and
+`continuing_a_resolved_rebase_opens_the_commit_buffer_first` (end to end
+through `:magit-rebase-continue`, waiting on the wake).
 
 ## CC.4 — Revert `V V` composes
 

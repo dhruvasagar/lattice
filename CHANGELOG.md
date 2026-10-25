@@ -47,6 +47,10 @@
   their own.
 
 ### Fixed
+- **Continuing a merge, cherry-pick, revert or rebase shows you the
+  message first.** *Continue* committed git's prepared message without
+  showing it. When git is about to commit, it now opens the commit
+  buffer on that message; `C-c C-c` commits and carries the sequence on.
 - **A diverged pull no longer fails; it stops before the merge commit and
   opens the commit buffer.** `F` / `:magit-pull` forced `--ff-only`,
   overriding your `pull.rebase` / `pull.ff`, so a pull that had to merge

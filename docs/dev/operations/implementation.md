@@ -1453,7 +1453,8 @@ seeds from `MERGE_MSG` and concludes. **CC.1 ✅**: `cc` mid-merge / pick /
 revert / rebase-conflict concludes it. **CC.2 ✅**: pull follows git config
 with `--no-commit`; a merge stop opens the commit buffer off-keystroke
 (and the host now applies `OpenSyntheticBuffer` from off-keystroke drains).
-CC.3–CC.5 📝.
+**CC.3 ✅**: the `--continue` rows open the commit buffer when git is
+about to commit. CC.4–CC.5 📝.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

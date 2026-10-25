@@ -3263,6 +3263,19 @@ impl RemoteOp {
         self == Self::PULL
     }
 
+    /// CC.3: is this a `--continue` that commits when git is waiting on a
+    /// commit? Then [`run_then_compose`] opens the commit buffer instead.
+    /// `am --continue` is not: it commits the patch's own message.
+    fn continues_to_a_commit(self) -> bool {
+        [
+            Self::MERGE_CONTINUE,
+            Self::REBASE_CONTINUE,
+            Self::CHERRY_PICK_CONTINUE,
+            Self::REVERT_CONTINUE,
+        ]
+        .contains(&self)
+    }
+
     /// NC.4: the notification label for one run, naming what the
     /// resolved argv acts on.
     ///
@@ -5072,8 +5085,7 @@ pub fn spawn_remote_op_to(
             // stash, a sequencer step) takes its turn with every other
             // writer to this repository.
             let _writer = turn.map(RepoTurn::wait);
-            let result = run_remote_op_until(&workdir, &argv, &token);
-            compose_after(op, &workdir, &result, compose.as_ref());
+            let result = run_then_compose(op, &workdir, &argv, &token, compose.as_ref());
             (op.label(&argv), result)
         })
         .await
@@ -5119,9 +5131,7 @@ pub fn spawn_remote_op(
         let result = tokio::task::spawn_blocking(move || {
             // CG.7b: as in `spawn_remote_op_to` — writers take turns.
             let _writer = turn.map(RepoTurn::wait);
-            let result = run_remote_op_until(&workdir, &argv, &token);
-            compose_after(op, &workdir, &result, compose.as_ref());
-            result
+            run_then_compose(op, &workdir, &argv, &token, compose.as_ref())
         })
         .await
         .unwrap_or_else(|e| Some(Err(e.to_string())));
@@ -5520,19 +5530,38 @@ fn finish_remote_op(
     }
 }
 
-/// CC.2: the remote spawners' tail — an op that ran, could stop short of
-/// a commit, and did, opens the commit buffer. Only after a run git
-/// accepted: a refused pull leaves an earlier stop in place, and opening
-/// a buffer on THAT would answer a question the user did not ask.
-fn compose_after(
+/// CC.2 / CC.3: the remote spawners' run, with the commit buffer in it.
+///
+/// Before: a `--continue` that would commit takes the message git
+/// prepared unseen (`GIT_EDITOR=true`). It opens the commit buffer
+/// instead, whose confirm concludes and carries a sequence on (CC.1).
+/// Otherwise — nothing pending, a conflict still unresolved, no bus — it
+/// runs as it always did, and git's own answer is the report.
+///
+/// After: an op that can stop short of a commit and did opens the buffer.
+/// Only after a run git accepted — a refused pull leaves an earlier stop
+/// in place, and opening a buffer on THAT would answer a question the user
+/// did not ask.
+pub(crate) fn run_then_compose(
     op: RemoteOp,
     workdir: &std::path::Path,
-    result: &Option<Result<String, String>>,
+    argv: &[String],
+    token: &lattice_protocol::CancellationToken,
     compose: Option<&crate::conclude::ComposeBusHandle>,
-) {
-    if let (true, Some(Ok(_)), Some(bus)) = (op.stops_for_a_message(), result, compose) {
+) -> Option<Result<String, String>> {
+    if let Some(bus) = compose
+        && op.continues_to_a_commit()
+        && crate::conclude::compose_if_pending(workdir, bus)
+    {
+        return Some(Ok(
+            "the commit buffer is open \u{2014} C-c C-c to continue".to_string()
+        ));
+    }
+    let result = run_remote_op_until(workdir, argv, token);
+    if let (true, Some(Ok(_)), Some(bus)) = (op.stops_for_a_message(), &result, compose) {
         crate::conclude::compose_if_pending(workdir, bus);
     }
+    result
 }
 
 /// The compose bus, for a trigger to hand its spawner. `None` in a harness

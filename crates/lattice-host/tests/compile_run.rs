@@ -293,18 +293,28 @@ async fn the_shell_command_buffer_is_highlighted_as_shell() {
 
     // The tree is of the text on screen, not of the empty buffer the mode
     // was activated on.
+    //
+    // The drain writes its last flush from its own task, so that write can
+    // land after `settle_text`'s final tick. Nothing here may tick on a
+    // timer to catch it — that passes whether or not the editor is woken.
+    // Each tick is the actor's `async_landed` arm: it runs only once the
+    // wake has fired, so a write that wakes nothing fails this test.
     let version = editor
         .buffers
         .document_handle(shell)
         .unwrap()
         .text_version();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while syntax.snapshot().text_version() != version {
+        let woken = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            editor.async_landed.notified(),
+        )
+        .await;
         assert!(
-            std::time::Instant::now() < deadline,
-            "the streamed text was never reparsed: {shown:?}"
+            woken.is_ok(),
+            "nothing woke the editor to reparse the streamed text: {shown:?}"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        editor.run_tick_pending();
     }
 
     // And the build's buffer is still not a shell script.

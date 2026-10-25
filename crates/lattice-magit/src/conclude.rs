@@ -499,11 +499,13 @@ mod tests {
         let d = repo();
         let p = d.path();
         commit_as(p, "Me", "g", "g\n", "add g");
+        // `-i.bak`, not `-i`: BSD sed (macOS) reads the word after a bare
+        // `-i` as the backup suffix and swallows the script.
         git(
             p,
             &[
                 "-c",
-                "sequence.editor=sed -i 1s/^pick/edit/",
+                "sequence.editor=sed -i.bak 1s/^pick/edit/",
                 "rebase",
                 "-i",
                 "HEAD~1",

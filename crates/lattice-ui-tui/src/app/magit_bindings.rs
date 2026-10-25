@@ -1324,6 +1324,10 @@ mod compose_buffers {
             &["config", "user.email", "t@example.com"],
             &["config", "user.name", "t"],
             &["config", "commit.gpgsign", "false"],
+            // Byte-exact file assertions must not depend on the machine's
+            // git config: with `autocrlf=true` (the Windows runner default)
+            // a revert writes `f.txt` back out with CRLF.
+            &["config", "core.autocrlf", "false"],
         ] {
             git_in(&repo, args);
         }
@@ -1463,7 +1467,9 @@ mod compose_buffers {
         git_in(&repo, &["commit", "-q", "-m", "to edit"]);
         let out = std::process::Command::new("git")
             .args(["rebase", "-i", "HEAD~1"])
-            .env("GIT_SEQUENCE_EDITOR", "sed -i 's/^pick/edit/'")
+            // `-i.bak`, not `-i`: BSD sed (macOS) reads the word after a
+            // bare `-i` as the backup suffix and swallows the script.
+            .env("GIT_SEQUENCE_EDITOR", "sed -i.bak 's/^pick/edit/'")
             .current_dir(&repo)
             .output()
             .expect("git runs");

@@ -193,6 +193,8 @@ pub mod pane_render;
 pub mod peer_conformance;
 pub mod popup;
 pub mod preview;
+// SI.12: the text ranges active modes tint (snippet placeholders).
+pub mod range_highlights;
 // Phase 5.8.AF.5 / Slice 3b: per-buffer cache primitive for the
 // LSP feature drains migrating off the renderer thread. See
 // `per_buffer_cache` module docs.

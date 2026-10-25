@@ -13,7 +13,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
 + tests including failure modes + graceful error handling).
 
-**Status: 🚧 in progress (2026-10-19).**
+**Status: 🚧 in progress — every slice settled (✅, PRL.6 ❌ superseded) except PRL.10 and PRL.11, both ⛔ deferred. PRL.8 shipped as org v0.1.2, 2026-10-21.**
 
 | Slice | What | Repo | Status |
 |---|---|---|---|
@@ -24,7 +24,7 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 | PRL.5 | WIT `require-release` + host wiring; `:plugins` source label. | lattice | ✅ |
 | PRL.6 | User grants on `release-spec`. | lattice | ❌ superseded by option-bound grants, [`plugin-manifest.md`](plugin-manifest.md) PMF.3–PMF.5 |
 | PRL.7 | Publishing: one shared plugin build script; reusable `plugin-release.yml`; `release.yml`'s core-plugin job calls the same script. | lattice | ✅ |
-| PRL.8 | Org adopts the workflow; first published release. | lattice-org-plugin | 🚧 |
+| PRL.8 | Org adopts the workflow; first published release. | lattice-org-plugin | ✅ org v0.1.2 (2026-10-21): `org-0.1.2-api0.3.wasm` + `.sha256` published by the workflow; 0.9.11's resolver installs it pinned and unpinned, and refuses it on 0.9.9 by name. |
 | PRL.9 | User and author docs; fix the `plugin-authoring.md` contradiction. | lattice | ✅ |
 | PRL.10 | Signed packages (attestations or minisign). | lattice | ⛔ after PRL.8 has shipped real releases — the threat model needs a real publisher to be written against (design §7). |
 | PRL.11 | A plugin index resolving an id to a `Release` spec. | — | ⛔ until there are enough third-party plugins for discovery to be the problem (design §3). |

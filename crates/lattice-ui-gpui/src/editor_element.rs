@@ -372,6 +372,10 @@ pub(crate) struct EditorElement {
     /// All search matches in the doc (`hlsearch`). Each painted
     /// with the softer match bg.
     pub(crate) all_matches: Vec<lattice_core::protocol::position::Range>,
+    /// Ranges the active modes tint (a snippet's placeholders), from the
+    /// published active document (SI.12). Painted under the selection;
+    /// empty off the active pane.
+    pub(crate) mode_highlights: std::sync::Arc<[lattice_host::render_state::ModeHighlightSpan]>,
     /// Substitute-preview ranges (`:s/pattern/replacement/`). Use
     /// the destructive-preview colour.
     pub(crate) substitute_matches: Vec<lattice_core::protocol::position::Range>,
@@ -1422,6 +1426,7 @@ impl Element for EditorElement {
         let is_active = self.is_active;
         let doc_highlights = &self.doc_highlights;
         let all_matches = &self.all_matches;
+        let mode_highlights = &self.mode_highlights;
         let current_match = &self.current_match;
         let visual_range = &self.visual_range;
         let visual_block_extents = self.visual_block_extents;
@@ -1616,6 +1621,21 @@ impl Element for EditorElement {
                         color_for_layer(lattice_host::render_state::OverlayLayer::AllMatches),
                     );
                 }
+                // SI.12: mode range highlights, from the same snapshot as
+                // the text, under current-match and the selection.
+                push_mode_highlight_quads(
+                    &mut quads,
+                    mode_highlights,
+                    line_idx,
+                    line_text,
+                    inlay_offsets,
+                    |id| {
+                        resolved_theme
+                            .get(id)
+                            .bg
+                            .map(|c| c.to_rgb_u32(0x313244) & OVERLAY_COLOR_MASK)
+                    },
+                );
                 if let Some(r) = current_match {
                     push_range_quads(
                         &mut quads,
@@ -3519,6 +3539,31 @@ pub fn push_range_quads(
     }
 }
 
+/// SI.12: one row's quads for a mode's range highlights, each in its
+/// element's colour (`color_of`); an element with no background paints
+/// nothing.
+pub fn push_mode_highlight_quads(
+    out: &mut Vec<(u32, u32, u32)>,
+    spans: &[lattice_host::render_state::ModeHighlightSpan],
+    line_idx: u32,
+    line_text: &str,
+    inlay_offsets: &RowCoords,
+    color_of: impl Fn(lattice_host::ui::theme::ElementId) -> Option<u32>,
+) {
+    for span in spans {
+        if let Some(color) = color_of(span.element) {
+            push_range_quads(
+                out,
+                std::slice::from_ref(&span.range),
+                line_idx,
+                line_text,
+                inlay_offsets,
+                color,
+            );
+        }
+    }
+}
+
 /// Slice X3.full.4 helper: build a `(combined_text, runs,
 /// inlay_offsets)` triple for one visible line, splicing inlay
 /// virtual text into the line at each hint's byte offset.
@@ -5366,6 +5411,41 @@ mod tests {
             0x42,
         );
         assert_eq!(out, vec![(1, 5, 0x42)]);
+    }
+
+    #[test]
+    fn mode_highlights_paint_in_their_elements_colour() {
+        use lattice_host::render_state::ModeHighlightSpan;
+        use lattice_host::ui::theme::ElementId;
+        let spans = [
+            ModeHighlightSpan {
+                range: range(0, 4, 0, 6),
+                element: ElementId(1),
+            },
+            ModeHighlightSpan {
+                range: range(0, 0, 0, 1),
+                element: ElementId(2),
+            },
+            ModeHighlightSpan {
+                range: range(1, 0, 1, 2),
+                element: ElementId(1),
+            },
+        ];
+        let mut out = Vec::new();
+        // "for é x": the `é` is two bytes, so bytes 4..6 are column 4..5.
+        push_mode_highlight_quads(
+            &mut out,
+            &spans,
+            0,
+            "for é x",
+            &RowCoords::default(),
+            |id| (id == ElementId(1)).then_some(0xabcdef),
+        );
+        assert_eq!(
+            out,
+            vec![(4, 5, 0xabcdef)],
+            "columns, not bytes; no colour, no quad; another row's span skipped"
+        );
     }
 
     #[test]

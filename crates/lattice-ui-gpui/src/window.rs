@@ -841,17 +841,6 @@ fn gpui_render_filter_chord_footer(entries: &[GpuiFilterChordEntry], width_cols:
     compact.chars().take(w).collect()
 }
 
-fn gpui_source_display_label(id: &str) -> &'static str {
-    match id {
-        "gen:buffer-words" => "buffer-words",
-        "gen:lsp-completion" => "lsp",
-        "gen:path" => "path",
-        "gen:tree-sitter-symbol" => "tree-sitter",
-        "gen:snippet" => "snippet",
-        _ => "source",
-    }
-}
-
 /// Slice `3c.unify.gpui-annotation-render`: shared candidate-row
 /// builder for the picker (minibuffer + overlay) and cmdline-
 /// completion (minibuffer + overlay) surfaces. Replaces four
@@ -2922,6 +2911,14 @@ impl EditorView {
         } else {
             Vec::new()
         };
+        // SI.12: the active buffer's mode range highlights (a snippet's
+        // placeholders) — active pane only, like the selection.
+        let mode_highlights: std::sync::Arc<[lattice_host::render_state::ModeHighlightSpan]> =
+            if render_active {
+                rs_guard.active_document.load().mode_highlights.clone()
+            } else {
+                std::sync::Arc::from(Vec::new())
+            };
         let substitute_matches: Vec<lattice_core::protocol::position::Range> = if render_active {
             rs_guard
                 .active_document
@@ -3279,6 +3276,7 @@ impl EditorView {
             visual_block_extents,
             current_match,
             all_matches,
+            mode_highlights,
             substitute_matches,
             doc_highlights,
             cursorline_bg,
@@ -4681,7 +4679,7 @@ impl Render for EditorView {
                 // Also surface the active filter when set.
                 let approx_cols: u16 = 45;
                 let footer_text = if let Some(active) = ic.source_filter.as_ref() {
-                    let label = gpui_source_display_label(active.as_str());
+                    let label = lattice_completion::source_label(active.as_str());
                     let raw = format!(" source: {label} │ <C-Space> all ");
                     if raw.chars().count() > approx_cols as usize {
                         raw.chars().take(approx_cols as usize).collect::<String>()
@@ -4815,6 +4813,7 @@ impl Render for EditorView {
                         visual_block_extents: None,
                         current_match: None,
                         all_matches: Vec::new(),
+                        mode_highlights: std::sync::Arc::from(Vec::new()),
                         substitute_matches: Vec::new(),
                         doc_highlights: Vec::new(),
                         worker_static_overlay_quads: None,
@@ -5495,6 +5494,7 @@ impl Render for EditorView {
                 visual_block_extents: None,
                 current_match: None,
                 all_matches: Vec::new(),
+                mode_highlights: std::sync::Arc::from(Vec::new()),
                 substitute_matches: Vec::new(),
                 doc_highlights: Vec::new(),
                 worker_static_overlay_quads: None,

@@ -75,10 +75,21 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # `release.yml` runs this whole workflow against the tagged commit and
+  # publishes only if it passes.
+  workflow_call:
 
 # Cancel any prior in-flight run for the same ref.
+#
+# The literal `ci-` prefix is load-bearing. Called from `release.yml`,
+# `github.workflow` is the CALLER's name, so the old
+# `${{ github.workflow }}-${{ github.ref }}` resolved to the release run's
+# own group and GitHub cancelled both as a deadlock. Keeping
+# `github.workflow` in the key separates the two callers on one ref: a PR
+# that touches `release.yml` runs this as itself (`ci-ci-…`) and inside the
+# release preview (`ci-release-…`), and neither may cancel the other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:

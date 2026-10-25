@@ -37,6 +37,24 @@ impl SnippetBody {
     pub fn is_empty(&self) -> bool {
         self.tokens.is_empty()
     }
+
+    /// Whether the body reads variable `name` anywhere — directly, in a
+    /// default, or as a transform's source. Lets the host fetch a costly
+    /// value (the system clipboard, which can block) only for the snippets
+    /// that use it.
+    pub fn uses_variable(&self, name: &str) -> bool {
+        self.tokens.iter().any(|t| match t {
+            SnippetToken::Variable { name: n, default } => {
+                n == name || default.as_ref().is_some_and(|d| d.uses_variable(name))
+            }
+            SnippetToken::Placeholder { default, .. } => default.uses_variable(name),
+            SnippetToken::Transform {
+                target: TransformTarget::Variable(n),
+                ..
+            } => n == name,
+            _ => false,
+        })
+    }
 }
 
 /// Choice placeholder option (`${1|opt1,opt2,opt3|}` -> three

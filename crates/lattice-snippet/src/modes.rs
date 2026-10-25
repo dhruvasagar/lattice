@@ -71,14 +71,16 @@ pub struct SnippetCompletionSource {
 
 impl SyncCompletionSource for SnippetCompletionSource {
     fn produce(&self, ctx: &InsertContext<'_>) -> Vec<RawCandidate> {
-        // Walk `matching_prefix` per language + the `"*"`
-        // bucket, build one candidate per matching snippet. The
-        // payload carries the snippet's name (a stable handle);
-        // the host's accept path resolves the body via
-        // `SnippetRegistry::by_name`.
+        // Walk `matching_prefix` over the buffer's packs + the `"*"`
+        // pack, build one candidate per matching snippet. The payload
+        // carries the snippet's identity — its pack and name, not the
+        // name alone, which another language's pack can share (SI.5);
+        // the host's accept path resolves the body through
+        // `SnippetRegistry::resolve`.
         let registry = self.registry.load();
+        let languages = crate::registry::lookup_languages(ctx.language);
         let mut out: Vec<RawCandidate> = Vec::new();
-        for snip in registry.matching_prefix(ctx.language, ctx.query) {
+        for (language, snip) in registry.matching_prefix(&languages, ctx.query) {
             let prefix = snip
                 .prefixes
                 .first()
@@ -93,7 +95,7 @@ impl SyncCompletionSource for SnippetCompletionSource {
             cand.display = display;
             cand.data = CandidateData::Extension {
                 kind_id: SNIPPET_PAYLOAD_KIND_ID,
-                payload: snip.name.as_bytes().to_vec(),
+                payload: crate::registry::snippet_key(language, &snip.name).into_bytes(),
             };
             out.push(cand);
         }
@@ -395,6 +397,21 @@ fn snippet_active_keymap_entries() -> &'static [KeymapEntry] {
                 cmd: "action:snippet-leave",
                 fall_through: true
             ),
+            // SI.12: a focused choice (`${1|a,b,c|}`) is selected, so it is
+            // Select mode that cycles it. Insert's `<C-n>` / `<C-p>` stay the
+            // completion popup's — once the user types, it is no choice.
+            keymap_entry!(
+                mode: Select,
+                chord: "<C-n>",
+                doc: "Replace the focused snippet choice with its next option.",
+                cmd: "action:snippet-next-choice"
+            ),
+            keymap_entry!(
+                mode: Select,
+                chord: "<C-p>",
+                doc: "Replace the focused snippet choice with its previous option.",
+                cmd: "action:snippet-prev-choice"
+            ),
         ]
     })
 }
@@ -459,49 +476,257 @@ impl SnippetActiveMode {
 /// through to "unhandled" once no snippet is live.
 pub struct SnippetActiveModeGuard {
     _action_handler_registrations: Vec<ActionHandlerRegistration>,
+    /// The placeholder tint (SI.12); withdrawn with the mode.
+    _placeholder_highlights: Option<lattice_mode::RangeHighlightRegistration>,
 }
 
-/// Resolve the cursor effect for a newly-focused tabstop group:
-/// move the cursor to the start of the group's first mirror range.
-/// Mirrors the host's pre-SN.2b `move_cursor_to_snippet_group`
-/// (`byte_to_position` against the active document's snapshot),
-/// but returns an `Effect::SelectionChange` for the generic host
-/// pipeline instead of writing `editor.cursor` directly. `None`
-/// (no effect) when the group has no ranges or the byte offset
-/// doesn't map to a position. Takes the snapshot `buffer` (not the
-/// store) so the cursor math is unit-testable with a plain
-/// [`lattice_core::Buffer`].
+/// The charwise selection that covers a placeholder's text: `(anchor, head)`
+/// with the head on the *first byte of the last character* — charwise
+/// selections are head-inclusive, so `[anchor, head]` spans exactly `range`.
+/// Taking `range.end - 1` instead puts the head inside a multi-byte last
+/// character (`${1:café}`), which the overtype then cuts in half.
+///
+/// `None` for an empty range or one that does not lie in `buffer` —
+/// `byte_to_position` panics past the end rather than erring, and a tracked
+/// range never should be past it, but a keystroke must not be what finds
+/// out.
+pub fn placeholder_selection(
+    buffer: &lattice_core::Buffer,
+    range: std::ops::Range<usize>,
+) -> Option<(Position, Position)> {
+    if range.end <= range.start || range.end as u64 > buffer.byte_len() {
+        return None;
+    }
+    let anchor = buffer.byte_to_position(range.start).ok()?;
+    let end = buffer.byte_to_position(range.end).ok()?;
+    let last = buffer.slice(Range::new(anchor, end)).ok()?.chars().last()?;
+    let head = buffer.byte_to_position(range.end - last.len_utf8()).ok()?;
+    Some((anchor, head))
+}
+
+/// Resolve the cursor effect for a newly-focused tabstop: `range` is
+/// where its first occurrence is now (read from the document snapshot's
+/// tracked ranges). `None` (no effect) when the range doesn't lie in the
+/// buffer. Takes the snapshot `buffer` (not the store) so the cursor
+/// math is unit-testable with a plain [`lattice_core::Buffer`].
 fn snippet_group_cursor_effect(
     buffer: &lattice_core::Buffer,
-    group: &TabstopGroup,
+    range: std::ops::Range<usize>,
 ) -> Option<Effect> {
-    let first = group.ranges.first()?;
-    let start = buffer.byte_to_position(first.start).ok()?;
-    if first.end > first.start {
+    if range.end as u64 > buffer.byte_len() {
+        return None;
+    }
+    if let Some((anchor, head)) = placeholder_selection(buffer, range.clone()) {
         // SN.3d.3: a non-empty placeholder default is SELECTED so the
-        // next printable key overtypes the whole default in one keystroke
-        // (the edit then ripples to the group's mirrors through the
-        // existing tabstop tracking). Charwise Select with the head on the
-        // placeholder's LAST byte (inclusive-head convention) makes
-        // `selection_extent` span exactly `[start, end)`. `EnterMode`
-        // FIRST: the host's `Effect::SelectionChange` arm only adopts a
-        // span (and sets `visual_anchor`) once modal is Visual/Select, so
-        // the mode flip must land before the selection.
-        let head = buffer.byte_to_position(first.end - 1).ok()?;
+        // next printable key overtypes the whole default in one keystroke.
+        // `EnterMode` FIRST: the host's `Effect::SelectionChange` arm only
+        // adopts a span once modal is Visual/Select. The selection carries
+        // its `visual` kind, which tells the host to adopt both endpoints
+        // even when they coincide (a one-character default) instead of
+        // extending from the previous anchor as it would for a motion.
         let sel = Selection {
-            anchor: start,
+            anchor,
             head,
             visual: Some(VisualMode::Charwise),
         };
-        Some(Effect::Many(vec![
+        return Some(Effect::Many(vec![
             Effect::EnterMode(ModalState::Select(VisualKind::Charwise)),
             Effect::SelectionChange(SelectionSet::single(sel)),
-        ]))
-    } else {
-        // Empty tabstop (`$1` / `${1:}`): nothing to overtype, so keep the
-        // bare Insert cursor — do NOT enter Select on a zero-width stop.
-        Some(Effect::CursorMove(start))
+        ]));
     }
+    // Empty tabstop (`$1` / `$0`): nothing to overtype, so a bare Insert
+    // cursor. Leave Select FIRST: a cursor move in Select extends the
+    // selection from its anchor, and the next keystroke would overtype
+    // everything from the previous placeholder to here (SI.3).
+    let start = buffer.byte_to_position(range.start).ok()?;
+    Some(Effect::Many(vec![
+        Effect::EnterMode(ModalState::Insert),
+        Effect::CursorMove(start),
+    ]))
+}
+
+/// The text of `range` in `buffer`, when it lies inside it.
+fn text_in(buffer: &lattice_core::Buffer, range: std::ops::Range<usize>) -> Option<String> {
+    if range.end as u64 > buffer.byte_len() {
+        return None;
+    }
+    let start = buffer.byte_to_position(range.start).ok()?;
+    let end = buffer.byte_to_position(range.end).ok()?;
+    buffer.slice(Range::new(start, end)).ok()
+}
+
+/// The transformed-copy rewrites for leaving the session's focused
+/// placeholder (SI.8), as effects the host applies like any edit — and the
+/// buffer and tracked ranges as they will be after them, so the stop the
+/// cursor moves to next is found where it will be, not where it was.
+fn leave_placeholder(
+    active: &crate::ActiveSnippet,
+    target: lattice_core::BufferId,
+    buffer: &lattice_core::Buffer,
+    tracked: &lattice_core::tracked::TrackedRanges,
+) -> (
+    Vec<Effect>,
+    lattice_core::Buffer,
+    lattice_core::tracked::TrackedRanges,
+) {
+    let mut after = buffer.clone();
+    let mut after_tracked = tracked.clone();
+    let mut effects = Vec::new();
+    // Last-first: each rewrite leaves the earlier ones' positions as they
+    // were, so every edit's range is valid in the original buffer too.
+    for (range, text) in active.transform_edits(tracked, |r| text_in(buffer, r)) {
+        let (Ok(start), Ok(end)) = (
+            buffer.byte_to_position(range.start),
+            buffer.byte_to_position(range.end),
+        ) else {
+            continue;
+        };
+        let edit = lattice_protocol::edit::Edit::replace(Range::new(start, end), text);
+        if let Ok(applied) = after.apply_edit(&edit) {
+            after_tracked.transform(&applied.delta);
+            effects.push(Effect::ApplyEdit {
+                target,
+                edit,
+                cursor: None,
+            });
+        }
+    }
+    (effects, after, after_tracked)
+}
+
+/// Step the session in `buffer_id` one stop with `step` (next or prev),
+/// tell the document which placeholder now grows, and return the effects:
+/// the transformed copies of the placeholder being left, rewritten (SI.8),
+/// then the cursor for the stop it landed on. When `step` walks off the
+/// end the session ends and its ranges are untracked.
+fn step_session(
+    session: &SnippetSessionHandle,
+    store: &BufferStoreHandle,
+    buffer_id: lattice_core::BufferId,
+    step: impl FnOnce(
+        &mut crate::ActiveSnippet,
+        &lattice_core::tracked::TrackedRanges,
+    ) -> Option<TabstopGroup>,
+    ends_on_none: bool,
+) -> Option<Effect> {
+    let handle = store.handle_for(buffer_id)?;
+    let snapshot = handle.snapshot();
+    let (mut effects, buffer, range, changes) = session.with_mut(buffer_id, |s| {
+        let active = s.as_mut()?;
+        let (effects, buffer, tracked) = leave_placeholder(
+            active,
+            buffer_id,
+            &snapshot.buffer,
+            &snapshot.tracked_ranges,
+        );
+        match step(active, &tracked) {
+            Some(group) => {
+                let range = group.live_ranges(&tracked).into_iter().next();
+                if active.at_exit() {
+                    // Landed on `$0`: the cursor goes there and the session
+                    // is over, so the next `<Tab>` is a plain `<Tab>`.
+                    let untrack = active.untrack_changes();
+                    *s = None;
+                    return Some((effects, buffer, range, untrack));
+                }
+                Some((effects, buffer, range, active.focus_changes()))
+            }
+            None if ends_on_none => {
+                // Walked off `$0`: the session ends for this buffer. The
+                // host's overlay reconciler sees `is_active(buffer) ==
+                // false` next cycle and deactivates this mode.
+                let untrack = active.untrack_changes();
+                *s = None;
+                Some((effects, buffer, None, untrack))
+            }
+            None => None,
+        }
+    })?;
+    // Fire-and-forget: the restick only shapes the next edit, which the
+    // FIFO mailbox orders after it.
+    drop(handle.update_tracked_ranges(changes));
+    if let Some(cursor) = range.and_then(|r| snippet_group_cursor_effect(&buffer, r)) {
+        effects.push(cursor);
+    }
+    match effects.len() {
+        0 => None,
+        1 => effects.pop(),
+        _ => Some(Effect::Many(effects)),
+    }
+}
+
+/// Replace the choice focused in `buffer_id`'s session with its next option
+/// (`forward`) or previous one, and keep it selected (SI.12). `None` when
+/// no choice is focused; the document copies the edit into the choice's
+/// other occurrences.
+fn cycle_choice(
+    session: &SnippetSessionHandle,
+    store: &BufferStoreHandle,
+    buffer_id: lattice_core::BufferId,
+    forward: bool,
+) -> Option<Effect> {
+    let handle = store.handle_for(buffer_id)?;
+    let snapshot = handle.snapshot();
+    let buffer = &snapshot.buffer;
+    let (range, text) = session.with_mut(buffer_id, |s| {
+        s.as_ref()?
+            .cycle_choice(&snapshot.tracked_ranges, |r| text_in(buffer, r), forward)
+    })?;
+    let start = buffer.byte_to_position(range.start).ok()?;
+    let end = buffer.byte_to_position(range.end).ok()?;
+    let edit = lattice_protocol::edit::Edit::replace(Range::new(start, end), text.clone());
+    let mut after = buffer.clone();
+    after.apply_edit(&edit).ok()?;
+    let cursor = snippet_group_cursor_effect(&after, range.start..range.start + text.len());
+    let apply = Effect::ApplyEdit {
+        target: buffer_id,
+        edit,
+        cursor: None,
+    };
+    Some(match cursor {
+        Some(cursor) => Effect::Many(vec![apply, cursor]),
+        None => apply,
+    })
+}
+
+/// The theme element a live placeholder is tinted with, registered (owned
+/// by this mode) on first use. `None` in a harness with no theme registry.
+fn placeholder_element(ctx: &ModeContext) -> Option<lattice_theme::ElementId> {
+    let theme = ctx.service::<lattice_theme::ThemeRegistryHandle>()?;
+    Some(theme.register(
+        lattice_theme::ElementName::from_static("snippet.placeholder"),
+        lattice_theme::ElementOwner::Mode(SnippetActiveMode::mode_id().as_str().to_string().into()),
+        lattice_theme::StyleSpec::new().bg(lattice_theme::ColorRef::Palette("surface0".into())),
+        "A live snippet placeholder (bg tint) — every stop still to visit and its copies.",
+    ))
+}
+
+/// The placeholder tint for one buffer (SI.12): every live, non-empty
+/// occurrence of every stop but the exit, as the snapshot's tracked ranges
+/// hold them — so the tint moves with the text in the same publish. The
+/// focused one is also the selection, which paints over it.
+fn placeholder_highlight_source(
+    session: SnippetSessionHandle,
+    buffer: lattice_core::BufferId,
+    element: lattice_theme::ElementId,
+) -> lattice_mode::RangeHighlightSource {
+    Arc::new(move |snapshot: &lattice_runtime::DocumentSnapshot| {
+        session
+            .with_mut(buffer, |s| {
+                let active = s.as_ref()?;
+                Some(
+                    active
+                        .groups
+                        .iter()
+                        .filter(|g| g.index != 0)
+                        .flat_map(|g| g.live_ranges(&snapshot.tracked_ranges))
+                        .filter(|r| !r.is_empty())
+                        .map(|bytes| lattice_mode::RangeHighlight { bytes, element })
+                        .collect(),
+                )
+            })
+            .unwrap_or_default()
+    })
 }
 
 impl Mode for SnippetActiveMode {
@@ -532,6 +757,7 @@ impl Mode for SnippetActiveMode {
             // handlers to do anything, so its absence skips
             // registration entirely.
             let session = ctx.service::<SnippetSessionHandle>().map(|a| (*a).clone());
+            let session_for_highlights = session.clone();
             let buffer_store = ctx.service::<BufferStoreHandle>().map(|a| (*a).clone());
 
             if let (Some(session), Some(cmd_registry_arc), Some(action_handlers_arc)) = (
@@ -545,30 +771,20 @@ impl Mode for SnippetActiveMode {
                 let cmd_registry = &*cmd_registry_snapshot;
                 let action_handlers: ActionHandlerRegistryHandle = (*action_handlers_arc).clone();
 
-                // `<Tab>` — step to the next placeholder; clear the
-                // session (ending it) on walk-off-`$0`.
+                // `<Tab>` — step to the next placeholder; end the
+                // session on walk-off-`$0`.
                 if let Some(id) = cmd_registry.id_by_name("action:snippet-next-placeholder") {
                     let session = session.clone();
                     let store = buffer_store.clone();
                     let handler: ActionHandler =
                         Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
-                            let buffer_id = core_buffer_id(ctx.buffer_id);
-                            let group = session.with_mut(buffer_id, |s| {
-                                let active = s.as_mut()?;
-                                let next = active.next().cloned();
-                                if next.is_none() {
-                                    // Walked off `$0`: the session
-                                    // ends for this buffer. The host's
-                                    // overlay reconciler sees
-                                    // `is_active(buffer) == false` next
-                                    // cycle and deactivates this mode.
-                                    *s = None;
-                                }
-                                next
-                            })?;
-                            let store = store.as_ref()?;
-                            let handle = store.handle_for(buffer_id)?;
-                            snippet_group_cursor_effect(&handle.snapshot().buffer, &group)
+                            step_session(
+                                &session,
+                                store.as_ref()?,
+                                core_buffer_id(ctx.buffer_id),
+                                |active, tracked| active.next(tracked).cloned(),
+                                true,
+                            )
                         });
                     registrations.push(action_handlers.register(id, handler));
                 }
@@ -581,13 +797,35 @@ impl Mode for SnippetActiveMode {
                     let store = buffer_store.clone();
                     let handler: ActionHandler =
                         Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
-                            let buffer_id = core_buffer_id(ctx.buffer_id);
-                            let group = session.with_mut(buffer_id, |s| {
-                                s.as_mut().and_then(|a| a.prev().cloned())
-                            })?;
-                            let store = store.as_ref()?;
-                            let handle = store.handle_for(buffer_id)?;
-                            snippet_group_cursor_effect(&handle.snapshot().buffer, &group)
+                            step_session(
+                                &session,
+                                store.as_ref()?,
+                                core_buffer_id(ctx.buffer_id),
+                                |active, tracked| active.prev(tracked).cloned(),
+                                false,
+                            )
+                        });
+                    registrations.push(action_handlers.register(id, handler));
+                }
+
+                // `<C-n>` / `<C-p>` on a focused choice (SI.12).
+                for (name, forward) in [
+                    ("action:snippet-next-choice", true),
+                    ("action:snippet-prev-choice", false),
+                ] {
+                    let Some(id) = cmd_registry.id_by_name(name) else {
+                        continue;
+                    };
+                    let session = session.clone();
+                    let store = buffer_store.clone();
+                    let handler: ActionHandler =
+                        Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+                            cycle_choice(
+                                &session,
+                                store.as_ref()?,
+                                core_buffer_id(ctx.buffer_id),
+                                forward,
+                            )
                         });
                     registrations.push(action_handlers.register(id, handler));
                 }
@@ -610,10 +848,32 @@ impl Mode for SnippetActiveMode {
                 // meaning. No buffer store needed.
                 if let Some(id) = cmd_registry.id_by_name("action:snippet-leave") {
                     let session = session.clone();
+                    let store = buffer_store.clone();
                     let handler: ActionHandler =
                         Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
-                            session.clear(core_buffer_id(ctx.buffer_id));
-                            Some(Effect::None)
+                            let buffer_id = core_buffer_id(ctx.buffer_id);
+                            let handle = store.as_ref().and_then(|st| st.handle_for(buffer_id));
+                            let Some(active) = session.with_mut(buffer_id, |s| s.take()) else {
+                                return Some(Effect::None);
+                            };
+                            let Some(handle) = handle else {
+                                return Some(Effect::None);
+                            };
+                            // Leaving the snippet leaves its placeholder too:
+                            // its transformed copies are rewritten (SI.8).
+                            let snapshot = handle.snapshot();
+                            let (effects, _, _) = leave_placeholder(
+                                &active,
+                                buffer_id,
+                                &snapshot.buffer,
+                                &snapshot.tracked_ranges,
+                            );
+                            drop(handle.update_tracked_ranges(active.untrack_changes()));
+                            Some(if effects.is_empty() {
+                                Effect::None
+                            } else {
+                                Effect::Many(effects)
+                            })
                         });
                     registrations.push(action_handlers.register(id, handler));
                 }
@@ -633,10 +893,47 @@ impl Mode for SnippetActiveMode {
                 );
             }
 
+            let placeholder_highlights = session_for_highlights.and_then(|session| {
+                let element = placeholder_element(&ctx)?;
+                lattice_mode::register_range_highlights(
+                    &ctx,
+                    SnippetActiveMode::mode_id(),
+                    placeholder_highlight_source(session, core_buffer_id(ctx.buffer_id()), element),
+                )
+            });
+
             Ok(SnippetActiveModeGuard {
                 _action_handler_registrations: registrations,
+                _placeholder_highlights: placeholder_highlights,
             })
         })
+    }
+}
+
+/// Register the `action:*` commands `lattice-snippet`'s chords resolve that
+/// the host does not: the choice cycle (SI.12). Their bodies are
+/// `active-snippet-mode`'s per-buffer handlers, consulted before these specs
+/// in dispatch, so the spec itself does nothing — it gives the chord a
+/// command to name and `:describe-key` a doc to show.
+pub fn register_snippet_actions(registry: &mut lattice_grammar::CommandRegistry) {
+    for (name, doc) in [
+        (
+            "action:snippet-next-choice",
+            "Active-snippet Select `<C-n>`: replace the focused choice with its next option.",
+        ),
+        (
+            "action:snippet-prev-choice",
+            "Active-snippet Select `<C-p>`: replace the focused choice with its previous option.",
+        ),
+    ] {
+        registry.register_action(
+            name,
+            doc,
+            lattice_grammar::ActionSpec {
+                apply: Arc::new(|_| Ok(Effect::None)),
+                args_schema: vec![],
+            },
+        );
     }
 }
 
@@ -726,7 +1023,11 @@ mod tests {
         match &c.data {
             CandidateData::Extension { kind_id, payload } => {
                 assert_eq!(*kind_id, SNIPPET_PAYLOAD_KIND_ID);
-                assert_eq!(std::str::from_utf8(payload).unwrap(), "for-loop");
+                // The pack and the name (SI.5): the name alone is not unique.
+                assert_eq!(
+                    std::str::from_utf8(payload).unwrap(),
+                    crate::snippet_key("rust", "for-loop")
+                );
             }
             other => panic!("unexpected data: {other:?}"),
         }
@@ -766,8 +1067,9 @@ mod tests {
         use lattice_mode::Mode as _;
         let km = SnippetActiveMode.keymap();
         // SN.3d.4: <Tab> / <S-Tab> / <Esc> in BOTH Insert and Select
-        // (a default-bearing placeholder is focused in Select).
-        assert_eq!(km.entries.len(), 6);
+        // (a default-bearing placeholder is focused in Select), plus the
+        // Select-only choice cycle <C-n> / <C-p> (SI.12).
+        assert_eq!(km.entries.len(), 8);
         let select_count = km
             .entries
             .iter()
@@ -779,7 +1081,7 @@ mod tests {
             .filter(|e| e.modes.contains(&BindingMode::Insert))
             .count();
         assert_eq!(insert_count, 3, "three Insert bindings");
-        assert_eq!(select_count, 3, "three Select bindings");
+        assert_eq!(select_count, 5, "five Select bindings");
     }
 
     #[test]
@@ -945,13 +1247,7 @@ mod tests {
     #[test]
     fn cursor_effect_selects_non_empty_default_and_enters_select() {
         let buffer = Buffer::from_text("for i in iter {}");
-        let group = TabstopGroup {
-            index: 1,
-            ranges: Vec::from([9..13]),
-            has_default: true,
-            is_choice: false,
-        };
-        match snippet_group_cursor_effect(&buffer, &group).expect("effect") {
+        match snippet_group_cursor_effect(&buffer, 9..13).expect("effect") {
             Effect::Many(effects) => {
                 assert!(
                     matches!(
@@ -973,48 +1269,56 @@ mod tests {
         }
     }
 
-    /// SN.3d.3: an EMPTY tabstop (`$1`, zero-width range) keeps the bare
-    /// Insert cursor — no Select, nothing to overtype.
+    /// SN.3d.3: an EMPTY tabstop (`$1`, zero-width range) gets a bare
+    /// Insert cursor — no Select, nothing to overtype. SI.3: it enters
+    /// Insert before moving, because the `<Tab>` that lands here is
+    /// usually pressed in Select, where a cursor move extends the selection.
     #[test]
     fn cursor_effect_empty_tabstop_keeps_bare_cursor() {
         let buffer = Buffer::from_text("for i in iter {}");
-        let group = TabstopGroup {
-            index: 1,
-            ranges: Vec::from([4..4]),
-            has_default: false,
-            is_choice: false,
-        };
-        // A bare cursor is expressed as `Effect::CursorMove`, NOT as a
-        // zero-width `SelectionChange`. This assertion previously
-        // expected the latter and went stale when the bare-cursor
-        // representation changed; the test's INTENT (its name — "keeps
-        // bare cursor") was always the behaviour below, so only the
-        // encoding is updated here, not what's being guarded.
-        match snippet_group_cursor_effect(&buffer, &group).expect("effect") {
-            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 4)),
-            other => panic!("expected a bare CursorMove, got {other:?}"),
+        match snippet_group_cursor_effect(&buffer, 4..4).expect("effect") {
+            Effect::Many(effects) => {
+                assert!(
+                    matches!(effects.first(), Some(Effect::EnterMode(ModalState::Insert))),
+                    "leaves Select first, or the move extends the old selection: {effects:?}"
+                );
+                assert!(
+                    matches!(effects.get(1), Some(Effect::CursorMove(p)) if *p == Position::new(0, 4)),
+                    "then a bare cursor: {effects:?}"
+                );
+            }
+            other => panic!("expected Effect::Many, got {other:?}"),
         }
     }
 
-    /// A group with no ranges produces no cursor effect.
+    /// The selection's head sits on the first byte of the last character,
+    /// so a multi-byte last character is selected whole.
     #[test]
-    fn cursor_effect_is_none_for_empty_group() {
-        let buffer = Buffer::from_text("abc");
-        let group = TabstopGroup {
-            index: 0,
-            ranges: vec![],
-            has_default: false,
-            is_choice: false,
-        };
-        assert!(snippet_group_cursor_effect(&buffer, &group).is_none());
+    fn placeholder_selection_ends_on_a_character_boundary() {
+        let buffer = Buffer::from_text("x café y");
+        // `café` is bytes 2..7 (`é` is two bytes).
+        assert_eq!(
+            placeholder_selection(&buffer, 2..7),
+            Some((Position::new(0, 2), Position::new(0, 5)))
+        );
+        assert_eq!(
+            placeholder_selection(&buffer, 0..1),
+            Some((Position::new(0, 0), Position::new(0, 0))),
+            "a one-character default: anchor and head coincide"
+        );
+        assert_eq!(placeholder_selection(&buffer, 3..3), None, "empty");
+        assert_eq!(placeholder_selection(&buffer, 7..40), None, "off the end");
     }
 
-    /// Minimal `BufferStore` for the handler-dispatch test. The
-    /// nav handlers advance the session *before* consulting the
-    /// store, so a `None`-returning `handle_for` still exercises
-    /// the full session state-machine (the migrated decision
-    /// logic); only the cursor `Effect` short-circuits — which is
-    /// covered separately by `cursor_effect_targets_first_range_start`.
+    /// A range past the end of the buffer produces no cursor effect.
+    #[test]
+    fn cursor_effect_is_none_off_the_end_of_the_buffer() {
+        let buffer = Buffer::from_text("abc");
+        assert!(snippet_group_cursor_effect(&buffer, 40..42).is_none());
+    }
+
+    /// A `BufferStore` that resolves nothing — for the graceful
+    /// "buffer unavailable" path.
     #[derive(Debug)]
     struct NullBufferStore;
 
@@ -1030,6 +1334,56 @@ mod tests {
             _id: lattice_core::BufferId,
         ) -> Option<Arc<dyn lattice_runtime::Document>> {
             None
+        }
+        fn insert_document_buffer(
+            &self,
+            _id: lattice_core::BufferId,
+            _kind: lattice_core::BufferKind,
+            _handle: Arc<dyn lattice_runtime::Document>,
+            _flags: lattice_core::BufferFlags,
+            _name: Option<String>,
+        ) {
+        }
+    }
+
+    /// The text every handler test's session expands into:
+    /// `for ${1:i} in ${2:iter} { $0 }` rendered.
+    const SESSION_TEXT: &str = "for i in iter {  }";
+
+    /// `BufferStore` for the handler-dispatch tests: one real document
+    /// per buffer, spawned on first use and holding [`SESSION_TEXT`].
+    /// The handlers read placeholder positions from the document's
+    /// tracked ranges (SI.2), so a store with no documents would leave
+    /// them nothing to navigate.
+    #[derive(Debug, Default)]
+    struct DocStore {
+        docs: std::sync::Mutex<
+            std::collections::HashMap<lattice_core::BufferId, Arc<dyn lattice_runtime::Document>>,
+        >,
+    }
+
+    impl lattice_mode::BufferStore for DocStore {
+        fn find_by_name(&self, _name: &str) -> Option<lattice_core::BufferId> {
+            None
+        }
+        fn name_for(&self, _id: lattice_core::BufferId) -> Option<String> {
+            None
+        }
+        fn handle_for(
+            &self,
+            id: lattice_core::BufferId,
+        ) -> Option<Arc<dyn lattice_runtime::Document>> {
+            let mut docs = self.docs.lock().expect("store lock");
+            let doc = docs.entry(id).or_insert_with(|| {
+                Arc::new(lattice_runtime::spawn_document(
+                    id,
+                    lattice_core::Document::from_text(SESSION_TEXT),
+                    Arc::new(arc_swap::ArcSwap::from_pointee(
+                        lattice_grammar::CommandRegistry::new(),
+                    )),
+                ))
+            });
+            Some(Arc::clone(doc))
         }
         fn insert_document_buffer(
             &self,
@@ -1060,7 +1414,7 @@ mod tests {
         use lattice_grammar::{ActionSpec, CommandRegistry};
 
         let session: SnippetSessionHandle = Arc::new(crate::session::SnippetSession::new());
-        let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(NullBufferStore);
+        let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(DocStore::default());
         let action_handlers: ActionHandlerRegistryHandle =
             Arc::new(lattice_mode::ActionHandlerRegistry::new());
 
@@ -1108,22 +1462,37 @@ mod tests {
     }
 
     /// Install a freshly-expanded `for ${1:i} in ${2:iter} { $0 }`
-    /// session focused on `$1` (mirrors `Editor::expand_snippet`'s
-    /// `focus_first` step), so `<Tab>` starts from `$1`.
-    fn install_active_session(session: &SnippetSessionHandle) {
+    /// session focused on `$1`, its ranges tracked in the buffer's
+    /// document the way `Editor::expand_snippet` tracks them, so
+    /// `<Tab>` starts from `$1`.
+    fn install_active_session(
+        services: &lattice_mode::ServiceRegistry,
+        session: &SnippetSessionHandle,
+    ) {
         // Keyed under the same buffer `fire`'s `ActionContext` uses
         // (`BufferId::new(1)` → `core_buffer_id` → core `BufferId(1)`),
         // so the handlers and the test reads agree on the buffer.
-        install_active_session_in(session, lattice_core::BufferId(1));
+        install_active_session_in(services, session, lattice_core::BufferId(1));
     }
 
     /// Install a fresh `for ${1:i} in ${2:iter} { $0 }` session in
     /// `buffer`, focused on `$1` (SN.3e multi-buffer tests).
-    fn install_active_session_in(session: &SnippetSessionHandle, buffer: lattice_core::BufferId) {
+    fn install_active_session_in(
+        services: &lattice_mode::ServiceRegistry,
+        session: &SnippetSessionHandle,
+        buffer: lattice_core::BufferId,
+    ) {
         let body = crate::parse("for ${1:i} in ${2:iter} { $0 }").expect("parse");
         let rendered = crate::render::render(&body, &crate::VariableContext::default());
-        let mut active = ActiveSnippet::from_render(&rendered, 0);
-        active.focus_first();
+        assert_eq!(rendered.text, SESSION_TEXT);
+        let (active, changes) = ActiveSnippet::from_render(&rendered, 0);
+        let doc = services
+            .get::<BufferStoreHandle>()
+            .and_then(|store| store.handle_for(buffer))
+            .expect("the test store has a document for every buffer");
+        doc.update_tracked_ranges(changes)
+            .blocking_recv()
+            .expect("tracked");
         session.set(buffer, active);
     }
 
@@ -1214,14 +1583,14 @@ mod tests {
         assert_eq!(action_handlers.registered_count(), 0);
     }
 
-    /// `<Tab>` walks `$1 -> $2 -> $0`, then a fourth fire walks off
-    /// `$0` and ends the session — the migrated
+    /// `<Tab>` walks `$1 -> $2 -> $0`, and landing on `$0` ends the
+    /// session — the migrated
     /// `do_snippet_next_placeholder` behaviour.
     #[test]
     fn next_handler_walks_through_groups_and_drops_on_zero() {
         let (services, session, handlers, next_id, _prev_id, _leave_id) = wire_services();
         let _guard = activate_mode(services.clone());
-        install_active_session(&session);
+        install_active_session(&services, &session);
 
         let idx = |s: &SnippetSessionHandle| {
             s.with_mut(lattice_core::BufferId(1), |o| {
@@ -1231,10 +1600,11 @@ mod tests {
         assert_eq!(idx(&session), Some(1)); // focused on $1
         fire(&handlers, next_id, &services);
         assert_eq!(idx(&session), Some(2));
-        fire(&handlers, next_id, &services);
-        assert_eq!(idx(&session), Some(0)); // $0 exit tabstop
-        fire(&handlers, next_id, &services);
-        assert!(!session.is_active(lattice_core::BufferId(1))); // walked off $0 -> session ended
+        // SI.3: landing on `$0` moves the cursor there AND ends the
+        // session, so the next `<Tab>` is a plain one.
+        let effect = fire(&handlers, next_id, &services);
+        assert!(effect.is_some(), "the cursor still moves to `$0`");
+        assert!(!session.is_active(lattice_core::BufferId(1)));
     }
 
     /// `<S-Tab>` walks back a placeholder and never ends the
@@ -1243,7 +1613,7 @@ mod tests {
     fn prev_handler_walks_back() {
         let (services, session, handlers, next_id, prev_id, _leave_id) = wire_services();
         let _guard = activate_mode(services.clone());
-        install_active_session(&session);
+        install_active_session(&services, &session);
 
         let idx = |s: &SnippetSessionHandle| {
             s.with_mut(lattice_core::BufferId(1), |o| {
@@ -1281,7 +1651,7 @@ mod tests {
     fn leave_handler_clears_session() {
         let (services, session, handlers, _next_id, _prev_id, leave_id) = wire_services();
         let _guard = activate_mode(services.clone());
-        install_active_session(&session);
+        install_active_session(&services, &session);
         assert!(session.is_active(lattice_core::BufferId(1)));
 
         let effect = fire(&handlers, leave_id, &services);
@@ -1303,8 +1673,8 @@ mod tests {
         let _guard = activate_mode(services.clone());
 
         // Two buffers, two independent sessions, both focused on `$1`.
-        install_active_session_in(&session, Core(1));
-        install_active_session_in(&session, Core(2));
+        install_active_session_in(&services, &session, Core(1));
+        install_active_session_in(&services, &session, Core(2));
 
         let idx = |s: &SnippetSessionHandle, b: Core| {
             s.with_mut(b, |o| o.as_ref().and_then(ActiveSnippet::current_index))

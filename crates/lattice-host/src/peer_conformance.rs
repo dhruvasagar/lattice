@@ -36,6 +36,11 @@ use crate::action::Action;
 use crate::chord::KeyChord;
 use crate::editor::Editor;
 
+mod completion;
+pub use completion::*;
+mod snippet;
+pub use snippet::*;
+
 /// A renderer peer, as the scenarios see it.
 ///
 /// Every method must go through the peer's REAL path. `press_chord` is the
@@ -82,7 +87,23 @@ fn boot<P: PeerUnderTest>(text: &str) -> P {
     // Before the boot spawns plugin discovery: a developer's installed
     // plugins (auto-pair, an `init.rs`) must not reach a scenario.
     crate::disable_autoload();
-    P::boot(text)
+    let mut peer = P::boot(text);
+    // Nor their snippet packs: a scenario that reloads snippets sees only
+    // the directories it names.
+    peer.editor_mut().snippet_dirs.clear();
+    peer.editor_mut().snippet_pack_dirs.clear();
+    // Nor may their language servers. The builtin configs name whatever is
+    // on `PATH`, so a scenario opening a `.rs` file started rust-analyzer on
+    // a machine that has it: an async completion round the scenario did not
+    // ask for, and a different code path than on a machine without it. A
+    // scenario that wants a server attaches an in-process one.
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(peer.editor().lsp.set_configs(Vec::new()))
+        .expect("the supervisor takes the empty set");
+    peer
 }
 
 /// Press a vim-notation key sequence (`"ihello<Esc>"`, `":q<CR>"`).
@@ -380,6 +401,77 @@ macro_rules! peer_conformance_tests {
             a_queued_renderer_effect_is_applied_on_an_idle_wake,
             quitting_is_published,
             a_declined_chord_falls_through_to_the_layer_below,
+            ctrl_space_completes_from_buffer_words,
+            ctrl_space_completes_from_tree_sitter_symbols,
+            ctrl_space_completes_paths_inside_a_string,
+            ctrl_space_completes_from_snippets,
+            ctrl_space_completes_from_a_background_source,
+            ctrl_space_completes_from_a_language_server,
+            a_slow_source_lands_after_an_empty_one_answered,
+            typing_while_a_source_answers_keeps_its_rows,
+            an_empty_round_says_no_completions,
+            a_source_filter_survives_a_late_answer,
+            every_source_keeps_its_priority,
+            a_background_sources_rows_carry_its_own_id,
+            a_source_registered_after_the_buffer_opened_completes_there,
+            a_text_file_completes_from_its_plain_text_sources,
+            typing_does_not_open_completion_by_default,
+            auto_trigger_opens_once_the_word_is_long_enough,
+            a_trigger_character_opens_the_sources_that_declared_it,
+            a_language_can_turn_auto_trigger_on_alone,
+            describe_buffer_lists_the_completion_sources,
+            accepting_a_snippet_expands_it_and_selects_the_first_placeholder,
+            ctrl_x_ctrl_s_expands_the_word_before_the_cursor,
+            typing_over_a_placeholder_replaces_its_default,
+            tab_and_shift_tab_walk_the_placeholders,
+            esc_leaves_the_snippet,
+            typing_in_a_placeholder_then_tab_lands_on_the_next,
+            a_newline_in_a_placeholder_moves_the_later_ones_down,
+            an_edit_above_the_snippet_moves_its_placeholders,
+            overtyping_a_placeholder_drops_the_ones_nested_in_it,
+            tab_onto_the_final_stop_types_there_and_ends_the_snippet,
+            the_tab_after_the_final_stop_is_a_plain_tab,
+            shift_tab_onto_a_one_character_default_selects_only_it,
+            a_multibyte_default_is_overtyped_whole,
+            without_a_final_stop_the_last_tab_goes_to_the_end,
+            visual_delete_takes_a_whole_multibyte_character,
+            leaving_insert_ends_the_snippet,
+            moving_out_of_the_snippet_ends_it,
+            moving_inside_the_snippet_keeps_it,
+            expanding_inside_a_snippet_replaces_it,
+            the_buffers_language_owns_a_shared_snippet_name,
+            a_later_snippet_on_a_prefix_is_the_one_expanded,
+            a_ruby_file_expands_ruby_snippets,
+            a_multi_line_snippet_follows_the_lines_indentation,
+            without_expandtab_a_snippet_indents_with_tabs,
+            mirrors_show_the_placeholder_text,
+            typing_in_a_placeholder_updates_its_mirrors,
+            typing_in_a_later_copy_keeps_the_cursor_in_place,
+            the_client_tells_servers_it_takes_snippets,
+            a_server_snippet_expands_with_its_placeholders,
+            a_server_snippet_replaces_its_own_range,
+            an_import_above_keeps_the_snippets_placeholders,
+            a_server_snippets_command_runs,
+            an_as_is_server_snippet_keeps_its_whitespace,
+            leaving_a_placeholder_rewrites_its_transformed_copy,
+            an_unknown_variable_is_a_placeholder,
+            a_bad_entry_skips_itself_not_its_pack,
+            file_and_comment_variables_expand,
+            the_clipboard_variable_reads_the_clipboard,
+            the_snippet_dirs_option_adds_a_directory,
+            a_projects_snippets_override_the_users,
+            a_friendly_snippets_checkout_loads,
+            the_users_snippet_overrides_a_packages,
+            ctrl_n_and_ctrl_p_cycle_a_choice,
+            ctrl_n_off_a_choice_changes_nothing,
+            live_placeholders_are_tinted,
+            gs_wraps_a_word_in_the_picked_snippet,
+            gs_over_lines_keeps_the_block_indented,
+            gs_in_visual_wraps_the_selection,
+            gss_wraps_the_line,
+            closing_the_gs_picker_changes_nothing,
+            a_malformed_wrap_range_opens_no_picker,
+            a_wrap_that_cannot_land_changes_nothing,
         );
     };
     (@each $peer:ty; $($scenario:ident),+ $(,)?) => {

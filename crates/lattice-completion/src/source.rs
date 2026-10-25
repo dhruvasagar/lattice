@@ -1,12 +1,10 @@
 //! Mode-driven completion sources (insert-completion.md §12).
 //!
-//! The trait surface every minor mode uses to contribute one or
-//! more completion sources via `Mode::completion_sources()`. The
-//! v1 architecture (§3 -- §11) hardcodes the source set inside
-//! `lattice-ui-tui::app::completion::populate_insert_completion_sync`
-//! and the bespoke `do_async_insert_completion_requests` host code;
-//! §12 of the design doc lays out the migration to a uniform
-//! mode-contribution shape that:
+//! The trait surface every mode uses to contribute one or more
+//! completion sources via `Mode::completion_sources()`. It is the only
+//! way a source reaches the popup: the host caches each buffer's active
+//! contributions (`ActiveCompletionSources`) and both the sync pass and
+//! the async fan-out read that cache — nothing is hardcoded. The shape:
 //!
 //! - lets WASM plugins register a completion source the same way
 //!   they register any other mode contribution (options, keymap,
@@ -17,10 +15,6 @@
 //! - keeps the per-keystroke hot path identical by caching the
 //!   active source set per buffer in an `ActiveCompletionSources`
 //!   buffer-local (§12.4).
-//!
-//! CSM.1 lands the type surface only -- nothing in the editor
-//! references these types yet. CSM.2 -- CSM.8 wire production
-//! code through them one source at a time.
 //!
 //! ## Two source shapes
 //!

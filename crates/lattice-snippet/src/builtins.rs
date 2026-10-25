@@ -43,8 +43,8 @@ pub fn load_builtins() -> SnippetRegistry {
 /// panicking on the hot-adjacent boot path.
 pub fn load_builtins_into(registry: &mut SnippetRegistry) {
     for (language, json) in builtin_packs() {
-        if let Ok(snippets) = load_pack_from_str(json) {
-            for snippet in snippets {
+        if let Ok(pack) = load_pack_from_str(json) {
+            for snippet in pack.snippets {
                 registry.insert(language, snippet);
             }
         }
@@ -61,8 +61,13 @@ mod tests {
     #[test]
     fn builtin_packs_all_parse() {
         for (language, json) in builtin_packs() {
-            load_pack_from_str(json)
+            let pack = load_pack_from_str(json)
                 .unwrap_or_else(|e| panic!("builtin pack `{language}` must parse: {e}"));
+            assert!(
+                pack.skipped.is_empty(),
+                "builtin pack `{language}` has entries that do not load: {:?}",
+                pack.skipped
+            );
         }
     }
 
@@ -72,12 +77,12 @@ mod tests {
         assert!(!reg.is_empty());
         // A known rust prefix resolves.
         assert!(
-            !reg.lookup("rust", "for").is_empty(),
+            !reg.lookup(&["rust"], "for").is_empty(),
             "rust `for` snippet present"
         );
         // A known global prefix resolves under the "*" bucket.
         assert!(
-            !reg.lookup("*", "todo").is_empty(),
+            !reg.lookup(&[], "todo").is_empty(),
             "global `todo` snippet present"
         );
     }

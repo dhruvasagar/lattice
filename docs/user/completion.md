@@ -36,21 +36,17 @@ list, ranked together.
 
 ## Triggering
 
-Three paths open the popup:
+`<C-Space>` in Insert mode opens the popup. That is the
+default: completion opens when you ask. `:describe-buffer` lists
+the sources a buffer completes from, and why any is off.
 
-- `<C-x><C-o>` — vim's omni-completion chord. Vim-native
-  muscle memory.
-- `<C-Space>` — modern-editor muscle memory (VS Code, IntelliJ,
-  Helix).
-- Smart-tab — `<Tab>` triggers completion when the cursor is
-  right after a word character; `<Tab>` inserts a literal
-  tab when the cursor is on whitespace or at line start.
-  (Phase 4.2.g.5.)
-
-All three resolve to the same `cmd:completion-trigger`
-ex-command. Manual trigger is the default; auto-trigger as
-you type is opt-in via `:set completion.auto_trigger=true`
-(coming with 4.2.g.5).
+`:set completion.auto_trigger` opens it as you type instead:
+once the word before the cursor is `completion.min_chars` (2)
+characters long, or on a character a source declares as its
+trigger — `.` for a language server, say, which then asks only
+the sources that declared it. Markdown and plain text stay
+manual even with it on; turn it on for one language with
+`[completion.per-language.<lang>] auto_trigger = true`.
 
 ## Navigating the popup
 
@@ -125,12 +121,13 @@ Rust scaffolding (`fn`, `for`, `match`, `impl`, `struct`,
 `test`, …) plus a few language-agnostic ones (`todo`, `fixme`,
 `date`, `uuid`).
 
-To add your own, drop friendly-snippets-style `<language>.json`
-packs into **`~/.config/lattice/snippets/`** (`_global.json` →
-all languages) and run **`:reload-snippets`**. The reload always
-rebuilds from the built-ins first, then layers your packs on top
-— so your additions augment (or override, by reusing a prefix)
-the built-ins rather than replacing them. The echo reports the
+To add your own, put `<language>.json` packs (`ruby.json`,
+`shellscript.json`; `_global.json` for every language) or VS Code
+`*.code-snippets` files in **`~/.config/lattice/snippets/`**, and run
+**`:reload-snippets`**. A friendly-snippets clone goes in
+`~/.config/lattice/snippet-packs/` (or any folder named in
+`snippet.dirs`); a project's own in `.lattice/snippets/`. Later wins on a
+shared prefix: packages, then yours, then the project's. The echo reports the
 split, e.g. `reloaded 24 snippets (22 built-in + 2 user)`.
 
 ### Where snippets activate
@@ -187,21 +184,20 @@ splice.
 ### Active-snippet minor mode
 
 While a snippet is in flight, an **active-snippet minor mode**
-overrides three Insert-mode keys until the snippet exits:
+binds three keys until the snippet ends:
 
-| Chord | Action | Ex-command |
-|---|---|---|
-| `<Tab>` | Jump to next placeholder (or exit on `$0`) | `:snippet-next` |
-| `<S-Tab>` | Jump to previous placeholder | `:snippet-prev` |
-| `<Esc>` | Exit snippet (placeholders become plain text) and return to Normal | `:snippet-leave` |
+| Chord | Action |
+|---|---|
+| `<Tab>` | Next placeholder; reaching the final stop ends the snippet |
+| `<S-Tab>` | Previous placeholder |
+| `<Esc>` | End the snippet and return to Normal |
 
 When you land on a placeholder that has a **default**
 (`${1:value}`), its text is **selected** (the buffer enters
 [Select mode](help:modal-editing)) — so the first character you
 type **replaces the whole default** and drops you into Insert,
 the conventional "type to replace the placeholder" behaviour. To
-keep the default instead, just start editing it: any motion or
-`<Tab>` leaves it untouched. An **empty** tabstop (`$1`) places a
+keep the default, press `<Tab>`. An **empty** tabstop (`$1`) places a
 bare Insert cursor — there is nothing to overtype. The minor mode
 yields to the completion popup when both are open: `<Tab>`
 accepts a candidate first, then snippet navigation resumes.
@@ -211,7 +207,7 @@ accepts a candidate first, then snippet navigation resumes.
 ```text
 $1                       plain tabstop
 ${1:default}             placeholder with default text
-${1|one,two,three|}      choice (cycled per index)
+${1|one,two,three|}      choice (<C-n>/<C-p> cycle the options)
 $0                       exit position (last)
 $1 ... $1 ...            mirrors -- edits ripple
 ${TM_FILENAME}           variable (see below)
@@ -219,18 +215,19 @@ ${1/pat/sub/flags}       transform on the captured text
 \$ \\                    escape
 ```
 
-A handful of TextMate variables are wired today:
-`$TM_FILENAME`, `$TM_FILEPATH`, `$TM_DIRECTORY`,
-`$TM_LINE_INDEX` (0-based), `$TM_LINE_NUMBER` (1-based),
-`$TM_CURRENT_LINE`, `$TM_CURRENT_WORD`, `$CLIPBOARD`,
-`$CURRENT_YEAR`, `$CURRENT_YEAR_SHORT`, `$CURRENT_MONTH`,
-`$CURRENT_DATE`, `$CURRENT_HOUR`, `$CURRENT_MINUTE`,
-`$CURRENT_SECOND`, `$CURRENT_SECONDS_UNIX`,
-`$CURRENT_DAY_NAME`, `$CURRENT_DAY_NAME_SHORT`,
-`$CURRENT_MONTH_NAME`, `$CURRENT_MONTH_NAME_SHORT`,
-`$RANDOM`, `$RANDOM_HEX`, `$UUID`. Unknown variable names
-fall through to the literal `$NAME` so future additions are
-backwards-compatible.
+VS Code's snippet variables all resolve — `$TM_FILENAME`,
+`$TM_FILENAME_BASE`, `$RELATIVE_FILEPATH`, `$WORKSPACE_NAME`,
+`$LINE_COMMENT`, `$BLOCK_COMMENT_START`, `$CLIPBOARD`, `$CURRENT_*` (local
+time), `$UUID`, `$TM_SELECTED_TEXT` (the text you wrap, below), … An
+unknown name becomes a placeholder showing it.
+
+### Wrapping text in a snippet
+
+`gS` is an operator: `gSiw`, `gSip`, `gSaf`, `gSS` (the line), or `gS` in
+Visual. It opens the snippet picker, and the snippet you pick replaces
+the text, which lands where the snippet says `$TM_SELECTED_TEXT`. Wrapped
+lines keep their indentation and nesting. `<Esc>` in the picker changes
+nothing; `u` undoes a wrap.
 
 ### Loading snippet packs
 
@@ -368,17 +365,12 @@ prose typing.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `completion.auto_trigger` | bool | `false` | Open the popup automatically as you type. (4.2.g.5) |
-| `completion.min_chars` | int | `2` | Identifier-threshold characters before auto-trigger fires. |
-| `completion.debounce_ms` | int | `50` | Per-keystroke debounce for refilter passes. |
-| `completion.docs_auto` | bool | `false` | Auto-show docs popup on selection change. (4.2.g.3) |
+| `completion.auto_trigger` | bool | `false` | Open the popup automatically as you type. |
+| `completion.min_chars` | int | `2` | With `auto_trigger`, how many characters of a word open the popup. |
 | `completion.extra_commit_chars` | string | `""` | Editor-side commit characters unioned with each LSP server's per-item `commitCharacters`. Typing one of these while the popup is open accepts the focused candidate then inserts the character (e.g. `:set completion.extra_commit_chars=.,;` to accept on `.`, `,`, or `;` globally). (4.2.g.7) |
 | `completion.ghost_text` | bool | `false` | Render the top-ranked candidate's suffix as a dimmed inline overlay after the cursor while the popup is open. Off by default; flip on for vscode-style preview. Only fires when the cursor is at end-of-line and the top candidate is a case-insensitive prefix of the typed query. Suppressed in path-completion mode (filenames are already shown in full). (4.2.g.7) |
 | `completion.auto_insert_single` | bool | `true` | Auto-accept when only one candidate matches. |
-| `completion.fuzzy_threshold` | int | `5` | Minimum match score to render. |
-| `completion.suppress_in` | string list | `[]` | Tree-sitter scopes where completion is suppressed (e.g. `["string", "comment"]`). |
-| `completion.source.<id>.enabled` | bool | `true` | Toggle a source on/off. |
-| `completion.source.<id>.priority` | int | source-default | Per-source ranker priority. |
+| `completion.source.<name>.priority` | int | source-default | Ranker priority of `lsp`, `snippet`, `buffer-words`, `path` or `tree-sitter`. A plugin's source ranks by the priority it declares. |
 
 See `:help completion-options` for the full list with
 explanations and examples (`:help` topic auto-rendered from
@@ -397,8 +389,8 @@ at startup.
 | Language | `sources` | `auto_trigger` | `auto_insert_single` |
 |---|---|---|---|
 | `markdown` | `snippet`, `buffer-words` (no LSP for prose) | `false` | inherits global |
-| `text` | `snippet`, `buffer-words` | inherits | inherits |
-| `rust` | inherits (all enabled sources) | `true` | `true` |
+| `text` | `snippet`, `buffer-words` | `false` | inherits |
+| `rust` | inherits (all enabled sources) | inherits | `true` |
 
 Other languages inherit every global option.
 
@@ -426,14 +418,15 @@ sources = ["lsp", "snippet"]    # LSP-led; skip noisy buffer words
   contributes. Sources outside this list short-circuit at
   emit time, so an LSP-disabled language never even fires
   the `textDocument/completion` request.
-- **`auto_trigger`** (`bool`) — whether typing identifier
-  characters opens the popup automatically. Plumbed today;
-  the auto-fire feature itself lands in a future slice.
+- **`auto_trigger`** (`bool`) — whether typing opens the popup
+  automatically in this language. Inherits the global
+  `completion.auto_trigger` when unset.
 - **`auto_insert_single`** (`bool`) — whether the popup
   auto-accepts when only one candidate matches. Inherits
   the global `completion.auto_insert_single` when unset.
 - **`suppress_in`** (`string[]`) — tree-sitter scopes where
   the popup should not fire (e.g. `["string", "comment"]`).
+  Parsed, not yet applied.
   Plumbed today; scope-detect enforcement awaits the
   tree-sitter scope-query slice.
 

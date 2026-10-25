@@ -55,7 +55,7 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 | `gr` | Manual refresh (re-runs git status) |
 | `q` | Close the buffer (bury, return to previous) |
 | `]]` / `[[` | Next / previous top-level section |
-| `]f` / `[f` | Next / previous file or entry within the current section |
+| `]f` / `[f` | Next / previous entry, even from inside an expanded diff |
 | `]c` / `[c` | Next / previous hunk (within expanded diffs) |
 | `s` / `u` in Visual over file rows | Stage / unstage **every file** the selection covers |
 | `s` / `u` / `x` in Visual inside a diff | Act on the selected lines only |
@@ -335,7 +335,7 @@ family:
 | Level | What you navigate | Chords |
 |---|---|---|
 | **Sections** | Top-level headers (Staged, Unstaged, Untracked, Stashes, Unmerged into &lt;upstream&gt;, Recent commits) | `]]` / `[[` |
-| **Files / entries** | File headers within the current section, stash entries, commit lines | `]f` / `[f` |
+| **Files / entries** | File, stash and commit rows; an expanded diff is skipped | `]f` / `[f` |
 | **Hunks** | Individual diff hunks within an expanded file diff | `]c` / `[c` |
 
 Hunk navigation only works for files whose diff is currently expanded

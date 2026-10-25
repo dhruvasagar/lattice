@@ -59,6 +59,9 @@ lattice-core = { path = "../lattice-core" }
 # paramount-#2 (every mode self-sufficient for its full surface)
 # per the mode-owns-its-surface principle.
 lattice-cells = { path = "../lattice-cells" }
+# SI.12: a mode's range highlights name the theme element that tints
+# them (`ElementId`). `lattice-theme` is a leaf crate, so no cycle.
+lattice-theme = { path = "../lattice-theme" }
 # M-async.2: `ModeEvent` registered as a typed event via
 # `register_event!` so the dispatcher publishes lifecycle
 # transitions through the typed event bus. `register_event!`

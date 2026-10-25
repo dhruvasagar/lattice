@@ -1302,6 +1302,11 @@ impl Editor {
                     // `app.editor.X` directly.
                     folds: std::sync::Arc::from(self.folds.clone().into_boxed_slice()),
                     all_matches: std::sync::Arc::from(self.all_matches.clone().into_boxed_slice()),
+                    mode_highlights: std::sync::Arc::from(
+                        self.range_highlights
+                            .spans_for(self.document_buffer_id, &self.document.snapshot())
+                            .into_boxed_slice(),
+                    ),
                     current_match: self.current_match,
                     visual_range: self.visual_selection_range(),
                     visual_block_extents: self.visual_block_extents(),
@@ -4040,8 +4045,8 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // The SHAPE of the incoming primary is the generic
             // discriminant, with NO per-object branching (a text
             // object never gets special-cased here):
-            //   * anchor == head -> a motion (`Selection::cursor`):
-            //     keep the running visual anchor and extend the head.
+            //   * anchor == head, no `visual` kind -> a cursor: keep the
+            //     running visual anchor and extend the head.
             //   * anchor != head -> a text object resolved a full span
             //     (`viw` / `vaf` / `vaC` / `vac` ...): adopt BOTH
             //     endpoints, so the selection jumps to the object and
@@ -4060,7 +4065,12 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 _ => None,
             };
             if let Some(kind) = active_kind {
-                let anchor = if primary.anchor != primary.head {
+                // A selection that names its `visual` kind is an explicit
+                // span too, even when anchor == head: a one-character
+                // snippet default, a plugin selecting a character. Without
+                // this, `<S-Tab>` back onto `${1:i}` extended from the
+                // previous placeholder and the next key overtyped both (SI.3).
+                let anchor = if primary.anchor != primary.head || primary.visual.is_some() {
                     editor.visual_anchor = Some(primary.anchor);
                     primary.anchor
                 } else {
@@ -4503,6 +4513,9 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         // CD.3d: applied in sequence, so it runs only if every effect before it
         // did — `apply_effect_host` stops a batch at a write that did not land.
         Effect::InvokeCommand { id, args } => out.merge(editor.invoke_command_named(&id, args)),
+        // SI.10: `gS`'s end — host-applied, so both peers (and an effect that
+        // lands off-keystroke) take the one path.
+        Effect::ExpandSnippetOver { snippet, range } => editor.expand_snippet_over(&snippet, range),
         // I3/BC.8c follow-up: SaveBuffer is host-applied (reuses the existing
         // `Editor::do_write`), joining BufferDelete below — so it works on the
         // off-keystroke inbound tick path (claude-code `saveDocument`), where
@@ -6837,6 +6850,69 @@ impl Editor {
         if changed {
             self.reresolve_majors_after_catalog_change();
         }
+    }
+
+    /// IC.4: record the registry as it stands, so the sweep below treats
+    /// only later registrations as new.
+    pub(crate) fn seed_late_minor_registry(&mut self) {
+        let registry = self.mode_registry.load_full();
+        self.late_minor_seen = registry.iter_meta().map(|(id, _)| id).collect();
+        self.late_minor_registry = Some(registry);
+    }
+
+    /// IC.4: activate minors registered after a document opened on that
+    /// document, when their activation policy admits it.
+    ///
+    /// Policy minors activate on `MajorEntered`. One registered later — a
+    /// plugin's completion carrier, registered once the plugin has loaded,
+    /// which is after argv's files are open — never reached the documents
+    /// already open: the source was simply absent from them.
+    ///
+    /// Only ids the sweep has not seen before: re-offering every admitted
+    /// minor would switch back on one the user turned off in a buffer. The
+    /// gate is a pointer compare, so an unchanged registry costs one load.
+    #[must_use]
+    pub fn activate_late_registered_minors(&mut self) -> Vec<RendererSignal> {
+        let registry = self.mode_registry.load_full();
+        if self
+            .late_minor_registry
+            .as_ref()
+            .is_some_and(|seen| std::sync::Arc::ptr_eq(seen, &registry))
+        {
+            return Vec::new();
+        }
+        let new_minors: Vec<lattice_mode::ModeId> = registry
+            .iter_meta()
+            .filter(|(id, kind)| {
+                *kind == lattice_mode::ModeKind::Minor && !self.late_minor_seen.contains(id)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        self.late_minor_seen = registry.iter_meta().map(|(id, _)| id).collect();
+        self.late_minor_registry = Some(registry.clone());
+        if new_minors.is_empty() {
+            return Vec::new();
+        }
+        let mut to_activate: Vec<(BufferId, lattice_mode::ModeId)> = Vec::new();
+        for buffer in self.buffers.document_ids_sorted() {
+            let Some(major) = self.active_modes.get(&buffer).and_then(|a| a.major()) else {
+                continue;
+            };
+            let Some(kind) = self.buffers.kind_of(buffer) else {
+                continue;
+            };
+            let admitted = registry.auto_activatable_minors(major.as_str(), kind);
+            for id in &new_minors {
+                if admitted.contains(id) && !self.minor_mode_enabled_for(buffer, *id) {
+                    to_activate.push((buffer, *id));
+                }
+            }
+        }
+        let mut signals = Vec::new();
+        for (buffer, id) in to_activate {
+            signals.extend(self.activate_mode_by_id(buffer, id));
+        }
+        signals
     }
 
     pub(crate) fn reresolve_majors_after_catalog_change(&mut self) {
@@ -12961,9 +13037,13 @@ impl Editor {
         if let Some(spec) = self.pending_block_insert.as_mut() {
             spec.live_edits = spec.live_edits.saturating_add(1);
         }
-        // Insert-mode completion live-refresh.
+        // Insert-mode completion live-refresh; or, with the popup closed,
+        // IC.6's automatic open — single typed characters only, so paste,
+        // snippet expansion and dot-repeat never open it.
         if self.insert_completion.is_some() {
             self.maybe_refresh_insert_completion_after_edit(out);
+        } else if matches!(self.modal, ModalState::Insert) && s.chars().count() == 1 {
+            self.maybe_auto_trigger_completion(s.chars().next().unwrap_or('\0'));
         }
         // SignatureHelp + OnTypeFormatting trigger autopilots fire
         // only for single-character inserts in Insert mode. Paste /
@@ -13004,6 +13084,8 @@ impl Editor {
         // Resolved before the `&mut` borrow of `insert_completion`: it reads
         // `buffer_locals`, and the two borrows would otherwise overlap.
         let phrase_sources = self.completion_sources_accept_non_word_query();
+        // IC.2: a source still answering may yet match what was typed.
+        let round_pending = self.pending_insert_completion_async_remaining > 0;
         let Some(state) = self.insert_completion.as_mut() else {
             return;
         };
@@ -13034,63 +13116,17 @@ impl Editor {
         state.query = query;
         state.cursor = self.cursor;
         let was_incomplete = state.lsp_incomplete;
-        let ranker = lattice_completion::InsertRanker::new();
-        let matcher = lattice_completion::FuzzyInsertMatcher::new();
-        let source_filter = state.source_filter.clone();
-        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
-            .raw
-            .iter()
-            .filter(|raw| match source_filter.as_ref() {
-                Some(id) => raw.source.as_ref() == Some(id),
-                None => true,
-            })
-            .filter_map(|raw| {
-                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
-                    |(score, ranges)| lattice_completion::ScoredCandidate {
-                        raw: raw.clone(),
-                        score,
-                        match_ranges: ranges,
-                    },
-                )
-            })
-            .collect();
-        // Disjoint-field borrows: `state` aliases
-        // `self.insert_completion` mutably, so the bonus closure
-        // captures `freq` / `config` through direct field refs.
-        let freq = &self.completion_accept_freq;
-        let config = &self.config;
-        ranker.rank_with_bonus(&mut scored, |raw| {
-            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
-                Some("gen:lsp-completion") => *config
-                    .get_typed::<lattice_config::CompletionSourceLspPriority>()
-                    .expect("CompletionSourceLspPriority"),
-                Some("gen:snippet") => *config
-                    .get_typed::<lattice_config::CompletionSourceSnippetPriority>()
-                    .expect("CompletionSourceSnippetPriority"),
-                Some("gen:buffer-words") => *config
-                    .get_typed::<lattice_config::CompletionSourceBufferWordsPriority>()
-                    .expect("CompletionSourceBufferWordsPriority"),
-                _ => 0,
-            }
-            .clamp(0, u32::MAX as i64) as u32;
-            let freq_bonus = freq
-                .get(&(raw.text.clone(), raw.kind))
-                .copied()
-                .unwrap_or(0)
-                .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
-            priority.saturating_add(freq_bonus)
-        });
-        state.rendered = scored
-            .into_iter()
-            .map(lattice_completion::RenderedCandidate::from_scored)
-            .collect();
-        dedup_rendered_by_text(&mut state.rendered);
-        if state.selected >= state.rendered.len() {
-            state.selected = state.rendered.len().saturating_sub(1);
-        }
+        // IC.3: the one ranking path — the filter, every source's priority.
+        // This used to be a copy that knew three priorities of five.
+        let mut taken = self.insert_completion.take().expect("checked above");
+        self.refilter_insert_completion(&mut taken);
+        self.insert_completion = Some(taken);
+        let state = self.insert_completion.as_mut().expect("just restored");
         // If nothing matches, close the popup -- unless the last LSP
-        // response said `isIncomplete`, in which case we re-fire LSP.
-        if state.rendered.is_empty() && !was_incomplete {
+        // response said `isIncomplete`, in which case we re-fire LSP, or a
+        // source of this round has not answered yet (IC.2): closing then
+        // dropped its rows when they landed.
+        if state.rendered.is_empty() && !was_incomplete && !round_pending {
             self.insert_completion = None;
             return;
         }
@@ -19140,7 +19176,24 @@ impl Editor {
         if outcomes.is_empty() {
             return;
         }
-        self.pending_insert_completion_async_token = None;
+        // IC.2: count the round down BEFORE looking for a popup, so a round
+        // always finishes — even one whose popup the user has closed.
+        for outcome in &outcomes {
+            match outcome {
+                lattice_completion::AsyncCompletionOutcome::Nothing => {
+                    self.pending_insert_completion_async_remaining = 0;
+                }
+                lattice_completion::AsyncCompletionOutcome::Items { .. } => {
+                    self.pending_insert_completion_async_remaining = self
+                        .pending_insert_completion_async_remaining
+                        .saturating_sub(1);
+                }
+            }
+        }
+        let round_over = self.pending_insert_completion_async_remaining == 0;
+        if round_over {
+            self.pending_insert_completion_async_token = None;
+        }
         let Some(state) = self.insert_completion.as_mut() else {
             return;
         };
@@ -19169,54 +19222,22 @@ impl Editor {
                 }
             }
         }
-        let matcher = lattice_completion::FuzzyInsertMatcher::new();
-        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
-            .raw
-            .iter()
-            .filter_map(|raw| {
-                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
-                    |(score, ranges)| lattice_completion::ScoredCandidate {
-                        raw: raw.clone(),
-                        score,
-                        match_ranges: ranges,
-                    },
-                )
-            })
-            .collect();
-        let ranker = lattice_completion::InsertRanker::new();
-        let freq = &self.completion_accept_freq;
-        let config = &self.config;
-        ranker.rank_with_bonus(&mut scored, |raw| {
-            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
-                Some("gen:lsp-completion") => *config
-                    .get_typed::<lattice_config::CompletionSourceLspPriority>()
-                    .expect("CompletionSourceLspPriority"),
-                Some("gen:snippet") => *config
-                    .get_typed::<lattice_config::CompletionSourceSnippetPriority>()
-                    .expect("CompletionSourceSnippetPriority"),
-                Some("gen:buffer-words") => *config
-                    .get_typed::<lattice_config::CompletionSourceBufferWordsPriority>()
-                    .expect("CompletionSourceBufferWordsPriority"),
-                _ => 0,
-            }
-            .clamp(0, u32::MAX as i64) as u32;
-            let freq_bonus = freq
-                .get(&(raw.text.clone(), raw.kind))
-                .copied()
-                .unwrap_or(0)
-                .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
-            priority.saturating_add(freq_bonus)
-        });
-        state.rendered = scored
-            .into_iter()
-            .map(lattice_completion::RenderedCandidate::from_scored)
-            .collect();
-        dedup_rendered_by_text(&mut state.rendered);
-        if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
-            state.selected = state.rendered.len() - 1;
-        }
-        if state.rendered.is_empty() {
+        // IC.3: the one ranking path. The copy here knew three priorities
+        // of five and no source filter, so a late answer undid `<C-b>` and
+        // sank tree-sitter's rows.
+        let mut taken = self.insert_completion.take().expect("checked above");
+        self.refilter_insert_completion(&mut taken);
+        self.insert_completion = Some(taken);
+        let state = self.insert_completion.as_mut().expect("just restored");
+        // IC.2: empty is final only once every source has answered. A
+        // manual trigger says so, as it does when nothing is pending at
+        // open; before, the popup vanished without a word.
+        if state.rendered.is_empty() && round_over {
+            let manual = matches!(state.trigger, lattice_completion::CompletionTrigger::Manual);
             self.insert_completion = None;
+            if manual {
+                self.set_message(EchoLevel::Info, "no completions");
+            }
         }
     }
 
@@ -19545,6 +19566,7 @@ impl Editor {
         // else; the O(major-modes × open buffers) walk runs on plugin load /
         // reload only.
         self.drain_catalog_changes();
+        signals.extend(self.activate_late_registered_minors());
         self.maybe_refold_after_async_population();
         // OA.4d: folds must follow the document, including when the document
         // filled in without anyone typing.
@@ -20552,7 +20574,12 @@ impl Editor {
             // SN.3e: scope the predicate to the buffer being reconciled
             // (`buffer_id == self.document_buffer_id`), so a snippet live
             // in another buffer never activates the mode here.
-            let want = (minor.active)(buffer_id);
+            let want = (minor.active)(&lattice_mode::SessionProbe {
+                buffer: buffer_id,
+                modal: self.modal,
+                cursor: self.cursor,
+                document: &*self.document,
+            });
             let have = active.has_minor(minor.mode_id);
             if want && !have {
                 if let Err(e) = self.mode_registry.load_full().activate_minor(
@@ -22424,14 +22451,39 @@ impl Editor {
         if self.read_only_edit_rejected(&edit) {
             return Err(lattice_runtime::RuntimeError::ReadOnly);
         }
-        let result = block_on(self.document.apply_edit(edit));
-        if let Ok(applied) = result.as_ref() {
+        let mut result = block_on(self.document.apply_edit(edit));
+        if let Ok(applied) = result.as_mut() {
             // OWC: record the text version so the host knows it issued
             // this edit (not an owner write).
             let snap = self.document.snapshot();
             self.last_seen_text_version
                 .insert(self.document_buffer_id, snap.text_version);
-            self.publish_document_changed(std::slice::from_ref(applied));
+            // SI.7: an edit inside a linked range (a snippet mirror) was
+            // copied into its siblings by the document. Publish the copies
+            // with it, and hand callers the edit's range as it stands after
+            // them — they place the cursor at `inserted_range.end`, which a
+            // copy earlier in the text has moved.
+            match snap.linked_edits.as_deref() {
+                Some(linked) => {
+                    let mut all = Vec::with_capacity(linked.len() + 1);
+                    all.push(applied.clone());
+                    all.extend_from_slice(linked);
+                    self.publish_document_changed(&all);
+                    for copy in linked {
+                        applied.inserted_range = lattice_protocol::position::Range::new(
+                            lattice_core::buffer::transform_position(
+                                applied.inserted_range.start,
+                                copy,
+                            ),
+                            lattice_core::buffer::transform_position(
+                                applied.inserted_range.end,
+                                copy,
+                            ),
+                        );
+                    }
+                }
+                None => self.publish_document_changed(std::slice::from_ref(applied)),
+            }
             // MB.1: `self.document` is the `*command-line*` buffer while
             // the `:` line is open. This is the ONE place a `:` line edit
             // actually changes text (the buffer is the single source of
@@ -22498,7 +22550,15 @@ impl Editor {
             let snap = self.document.snapshot();
             self.last_seen_text_version
                 .insert(self.document_buffer_id, snap.text_version);
-            self.publish_document_changed(applied);
+            // SI.7: and the copies the document made into linked ranges.
+            match snap.linked_edits.as_deref() {
+                Some(linked) => {
+                    let mut all = applied.clone();
+                    all.extend_from_slice(linked);
+                    self.publish_document_changed(&all);
+                }
+                None => self.publish_document_changed(applied),
+            }
         }
         result
     }
@@ -22844,12 +22904,28 @@ impl Editor {
     ///   instead of falling back to full).
     /// - `visible_highlights` stays line- and byte-aligned via
     ///   `shift_highlights_for_edit`.
+    ///
+    /// SI.7: an operator edit inside a linked range (a snippet mirror) was
+    /// copied into its siblings by the document; the copies are published
+    /// too, and the cursor moved across them.
     pub fn handle_edits(&mut self, edits: &[lattice_core::buffer::AppliedEdit]) {
         if let Some(first) = edits.first() {
             self.cursor = first.original_range.start;
         }
-        if !edits.is_empty() {
-            self.publish_document_changed(edits);
+        if edits.is_empty() {
+            return;
+        }
+        let snap = self.document.snapshot();
+        match snap.linked_edits.as_deref() {
+            Some(linked) => {
+                let mut all = edits.to_vec();
+                all.extend_from_slice(linked);
+                self.publish_document_changed(&all);
+                for copy in linked {
+                    self.cursor = lattice_core::buffer::transform_position(self.cursor, copy);
+                }
+            }
+            None => self.publish_document_changed(edits),
         }
     }
 
@@ -29480,33 +29556,13 @@ impl Editor {
     // bodies + zero `Action::Diff*` variants — the mode-ownership acid test
     // (`feedback_mode_owns_its_surface`).
 
-    /// Active buffer's snippet language id. Maps the active
-    /// document's filename extension to a language string the
-    /// snippet registry indexes by (e.g. `"rs"` -> `"rust"`).
-    /// Falls back to the empty string when no path is set
-    /// (the registry's `"*"` any-language pack still applies).
+    /// Active buffer's language id (`lattice_core::language`): what
+    /// snippet packs and `[completion.per-language.<id>]` key on. Empty
+    /// for a buffer with no path (the registry's `"*"` any-language pack
+    /// still applies).
     pub fn active_language_id(&self) -> String {
         let snap = self.document.snapshot();
-        let Some(path) = snap.path.as_ref() else {
-            return String::new();
-        };
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("rs") => "rust".into(),
-            Some("py") => "python".into(),
-            Some("go") => "go".into(),
-            Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => "javascript".into(),
-            Some("ts") | Some("tsx") => "typescript".into(),
-            Some("c") | Some("h") => "c".into(),
-            Some("cc") | Some("cpp") | Some("cxx") | Some("hpp") | Some("hxx") => "cpp".into(),
-            Some("md") => "markdown".into(),
-            Some("toml") => "toml".into(),
-            Some("yaml") | Some("yml") => "yaml".into(),
-            Some("json") => "json".into(),
-            Some("sh") => "shellscript".into(),
-            Some("lua") => "lua".into(),
-            Some(other) => other.to_string(),
-            None => String::new(),
-        }
+        lattice_core::language::language_id_for_path(snap.path.as_deref().map(|p| p.as_path()))
     }
 
     /// Build a `VariableContext` for snippet expansion from
@@ -29530,9 +29586,51 @@ impl Editor {
         if let Some(word) = crate::lsp_helpers::word_under_cursor(&snap.buffer, self.cursor) {
             ctx.current_word = Some(word);
         }
-        // CLIPBOARD via the system register.
-        if let Some(reg) = self.registers.get(&Register::System) {
-            ctx.clipboard = Some(reg.content.clone());
+        // SI.10: the workspace the file belongs to (the root `:files` and
+        // the pickers use), and the file's path within it.
+        let root = self.picker_workspace_root_path(&snap);
+        ctx.workspace_folder = Some(root.display().to_string());
+        ctx.workspace_name = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.to_string());
+        if let Some(path) = snap.path.as_ref() {
+            // A file outside the workspace shows its full path, as VS Code's
+            // relative label does.
+            let rel = path.strip_prefix(&root).unwrap_or(path.as_path());
+            ctx.relative_filepath = Some(rel.display().to_string());
+        }
+        // SI.10: the language's comment strings (`$LINE_COMMENT`, …).
+        let comments = self.active_lang().comment_syntax();
+        ctx.line_comment = comments.line;
+        if let Some((start, end)) = comments.block {
+            ctx.block_comment_start = Some(start);
+            ctx.block_comment_end = Some(end);
+        }
+        ctx
+    }
+
+    /// [`Self::snippet_variable_context`] for expanding `body`, with
+    /// `$CLIPBOARD` read from the system clipboard when — and only when —
+    /// the body uses it: the read can block, so a snippet that does not
+    /// ask must not pay it. Falls back to the `+` register (the editor's
+    /// own copy) when the clipboard cannot be read. Before SI.10 it read
+    /// only the register, so text copied in another program was missing.
+    pub fn snippet_variables_for(
+        &self,
+        body: &lattice_snippet::SnippetBody,
+    ) -> lattice_snippet::VariableContext {
+        let mut ctx = self.snippet_variable_context();
+        if body.uses_variable("CLIPBOARD") {
+            ctx.clipboard = self
+                .services
+                .get::<lattice_core::ClipboardHandle>()
+                .and_then(|cb| cb.read())
+                .or_else(|| {
+                    self.registers
+                        .get(&Register::System)
+                        .map(|reg| reg.content.clone())
+                });
         }
         ctx
     }
@@ -29549,9 +29647,56 @@ impl Editor {
         body: &lattice_snippet::SnippetBody,
         anchor: lattice_protocol::position::Position,
     ) {
-        let vars = self.snippet_variable_context();
-        let rendered = lattice_snippet::render::render(body, &vars);
+        let vars = self.snippet_variables_for(body);
         let range = lattice_protocol::position::Range::new(anchor, self.cursor);
+        self.expand_snippet_in(body, range, vars);
+    }
+
+    /// SI.10: expand the snippet `key` names over `range`, the range's text
+    /// becoming its `$TM_SELECTED_TEXT` — `gS{motion}`'s end, through
+    /// `Effect::ExpandSnippetOver`. The selection is taken relative to its
+    /// first line's indentation, so the snippet's lines place the rest.
+    pub fn expand_snippet_over(&mut self, key: &str, range: lattice_protocol::position::Range) {
+        let language = self.active_language_id();
+        let snippet = self
+            .snippet_registry
+            .load()
+            .resolve(&lattice_snippet::lookup_languages(&language), key)
+            .cloned();
+        let Some(snippet) = snippet else {
+            let name = key.rsplit('\u{1f}').next().unwrap_or(key);
+            self.set_message(
+                EchoLevel::Error,
+                format!("snippet: no snippet named `{name}`"),
+            );
+            return;
+        };
+        let buffer = self.document.snapshot().buffer.clone();
+        let Ok(text) = buffer.slice(range) else {
+            self.set_message(
+                EchoLevel::Error,
+                "snippet: the text to wrap is no longer there",
+            );
+            return;
+        };
+        let line = buffer.line(range.start.line).unwrap_or_default();
+        let indent_end = lattice_core::IndentUnit::indent_len(&line).min(range.start.byte as usize);
+        let base = line.get(..indent_end).unwrap_or_default();
+        let mut vars = self.snippet_variables_for(&snippet.body);
+        vars.selected_text = Some(lattice_snippet::selection_relative_to(&text, base));
+        self.expand_snippet_in(&snippet.body, range, vars);
+    }
+
+    /// Render `body` against `vars`, splice it over `range`, and start its
+    /// session — the one expansion path every trigger ends in.
+    fn expand_snippet_in(
+        &mut self,
+        body: &lattice_snippet::SnippetBody,
+        range: lattice_protocol::position::Range,
+        vars: lattice_snippet::VariableContext,
+    ) {
+        let rendered =
+            self.indent_snippet(lattice_snippet::render::render(body, &vars), range.start);
         let edit = lattice_protocol::edit::Edit::replace(range, rendered.text.clone());
         let applied = match self.apply_edit_blocking(edit) {
             Ok(a) => a,
@@ -29566,47 +29711,108 @@ impl Editor {
             .buffer
             .position_to_byte(applied.inserted_range.start)
             .unwrap_or_default();
-        if !rendered.tabstops.is_empty() {
-            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
-            // SN.3d.3: focus the first tabstop. A non-empty placeholder
-            // default is SELECTED (charwise Select) so the next printable
-            // key overtypes it — same UX as the `<Tab>` nav path
-            // (`snippet_group_cursor_effect`), but here the host mutates
-            // state directly (the expansion callers don't thread a
-            // `DispatchOutcome`, so routing through the effect pipeline
-            // would be invasive). An empty tabstop keeps the bare Insert
-            // cursor.
-            let mut entered_select = false;
-            if let Some(group) = active.focus_first()
-                && let Some(first) = group.ranges.first().cloned()
-            {
-                let buffer = self.document.snapshot().buffer.clone();
-                if let Ok(start) = buffer.byte_to_position(first.start) {
-                    if first.end > first.start
-                        && let Ok(head) = buffer.byte_to_position(first.end - 1)
-                    {
-                        self.set_selections_blocking(SelectionSet::single(Selection {
-                            anchor: start,
-                            head,
-                            visual: Some(VisualMode::Charwise),
-                        }));
-                        self.visual_anchor = Some(start);
-                        self.cursor = head;
-                        self.modal = ModalState::Select(VisualKind::Charwise);
-                        entered_select = true;
-                    }
-                    if !entered_select {
-                        self.cursor = start;
-                    }
-                }
-            }
-            self.snippet_session.set(self.document_buffer_id, active);
-            if !entered_select {
-                self.modal = ModalState::Insert;
-            }
+        if !rendered.tabstops.is_empty()
+            && let Some(first) = self.start_snippet_session(&rendered, origin)
+        {
+            self.focus_first_snippet_stop(first);
         } else {
             self.cursor = applied.inserted_range.end;
         }
+    }
+
+    /// SN.3d.3: focus a freshly expanded snippet's first stop, whose text is
+    /// at `first`. A non-empty placeholder default is SELECTED (charwise
+    /// Select) so the next printable key overtypes it — same UX as the
+    /// `<Tab>` nav path (`snippet_group_cursor_effect`), but here the host
+    /// mutates state directly (the expansion callers don't thread a
+    /// `DispatchOutcome`, so routing through the effect pipeline would be
+    /// invasive). An empty stop keeps the bare Insert cursor. Every
+    /// expansion path — a snippet, a language server's — focuses through
+    /// here (SI.9: the LSP path had left defaults unselected).
+    fn focus_first_snippet_stop(&mut self, first: std::ops::Range<usize>) {
+        let buffer = self.document.snapshot().buffer.clone();
+        if let Some((anchor, head)) = lattice_snippet::placeholder_selection(&buffer, first.clone())
+        {
+            self.set_selections_blocking(SelectionSet::single(Selection {
+                anchor,
+                head,
+                visual: Some(VisualMode::Charwise),
+            }));
+            self.visual_anchor = Some(anchor);
+            self.cursor = head;
+            self.modal = ModalState::Select(VisualKind::Charwise);
+        } else {
+            if let Ok(start) = buffer.byte_to_position(first.start) {
+                self.cursor = start;
+            }
+            self.modal = ModalState::Insert;
+        }
+    }
+
+    /// `rendered` laid out for the line it expands on (SI.6): continuation
+    /// lines take that line's indentation, and the body's `\t` levels the
+    /// buffer's indent unit (`shiftwidth` spaces under `expandtab`).
+    fn indent_snippet(
+        &self,
+        rendered: lattice_snippet::RenderedSnippet,
+        anchor: lattice_protocol::position::Position,
+    ) -> lattice_snippet::RenderedSnippet {
+        let line = self
+            .document
+            .snapshot()
+            .buffer
+            .line(anchor.line)
+            .unwrap_or_default();
+        let indent_end = lattice_core::IndentUnit::indent_len(&line).min(anchor.byte as usize);
+        let base = line.get(..indent_end).unwrap_or_default();
+        let unit = self.indent_unit(self.document_buffer_id);
+        rendered.reindented(base, &unit.render(unit.step()))
+    }
+
+    /// Start a snippet session for `rendered`, whose text now starts at
+    /// byte `origin` of the active document: track its placeholders in the
+    /// document (snippet-integrity SI.2 — the document moves them across
+    /// every edit from here on) and install the session. Returns where the
+    /// first stop is now, or `None` when the document tracks nothing — a
+    /// kind without text of its own, such as the multibuffer — in which case
+    /// the expansion stands as plain text.
+    fn start_snippet_session(
+        &mut self,
+        rendered: &lattice_snippet::render::RenderedSnippet,
+        origin: usize,
+    ) -> Option<std::ops::Range<usize>> {
+        // A snippet expanded inside a live one replaces it; release the
+        // outer one's ranges, or the document would move them forever.
+        if let Some(outer) = self
+            .snippet_session
+            .with_mut(self.document_buffer_id, |s| s.take())
+        {
+            drop(self.document.update_tracked_ranges(outer.untrack_changes()));
+        }
+        let (active, changes) = lattice_snippet::ActiveSnippet::from_render(rendered, origin);
+        if let Err(e) = block_on(self.document.update_tracked_ranges(changes)) {
+            tracing::debug!(error = ?e, "snippet: tracking placeholders failed; plain expansion");
+            return None;
+        }
+        let snapshot = self.document.snapshot();
+        let Some(first) = active
+            .current_group()
+            .and_then(|g| g.live_ranges(&snapshot.tracked_ranges).into_iter().next())
+        else {
+            tracing::debug!("snippet: the document tracks no ranges; plain expansion");
+            return None;
+        };
+        if active.at_exit() {
+            // A body whose only stop is `$0` (`loop { $0 }`): the cursor goes
+            // there and there is nothing to navigate.
+            drop(
+                self.document
+                    .update_tracked_ranges(active.untrack_changes()),
+            );
+        } else {
+            self.snippet_session.set(self.document_buffer_id, active);
+        }
+        Some(first)
     }
 
     /// SN.3c.1: host-owned snippet resolution + expansion for a
@@ -29641,12 +29847,12 @@ impl Editor {
         let language = self.active_language_id();
         let snippet = {
             let registry = self.snippet_registry.load();
+            // Most specific pack first, newest first within it: a user
+            // snippet sharing a builtin's prefix is the one expanded (SI.5).
             registry
-                .lookup(&language, &prefix)
+                .lookup(&lattice_snippet::lookup_languages(&language), &prefix)
                 .first()
-                .copied()
-                .or_else(|| registry.lookup("*", &prefix).first().copied())
-                .cloned()
+                .map(|(_, s)| (*s).clone())
         };
         let Some(snippet) = snippet else {
             self.set_message(EchoLevel::Info, format!("no snippet for prefix `{prefix}`"));
@@ -33197,9 +33403,18 @@ impl Editor {
                 }
             }
             ExpandSnippet { id } => {
-                let snippet = self.snippet_registry.load().by_name(&id).cloned();
+                let language = self.active_language_id();
+                let snippet = self
+                    .snippet_registry
+                    .load()
+                    .resolve(&lattice_snippet::lookup_languages(&language), &id)
+                    .cloned();
                 let Some(snippet) = snippet else {
-                    self.set_message(EchoLevel::Error, format!("picker: no snippet named `{id}`"));
+                    let name = id.rsplit('\u{1f}').next().unwrap_or(&id);
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: no snippet named `{name}`"),
+                    );
                     return out;
                 };
                 self.expand_snippet(&snippet.body, self.cursor);
@@ -33643,9 +33858,10 @@ impl Editor {
         if *kind_id != SNIPPET_COMPLETION_KIND_ID {
             return None;
         }
-        let name = std::str::from_utf8(payload).ok()?;
+        let key = std::str::from_utf8(payload).ok()?;
         let registry = self.snippet_registry.load();
-        let snip = registry.by_name(name)?;
+        let language = self.active_language_id();
+        let snip = registry.resolve(&lattice_snippet::lookup_languages(&language), key)?;
         let prefix = snip
             .prefixes
             .first()
@@ -33677,54 +33893,45 @@ impl Editor {
         let builtin_total = next.len();
         let mut user_total = 0usize;
         let mut errors: Vec<String> = Vec::new();
-        for dir in &self.snippet_dirs {
-            let entries = match std::fs::read_dir(dir) {
-                Ok(e) => e,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Default user dir simply doesn't exist yet —
-                    // not an error, the user just hasn't added any
-                    // packs.
-                    continue;
-                }
-                Err(e) => {
-                    errors.push(format!("{}: {e}", dir.display()));
-                    continue;
-                }
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                    continue;
-                }
-                let stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                // `_global.json` -> all-language slot.
-                let language = if stem == "_global" {
-                    "*".to_string()
-                } else {
-                    stem
-                };
-                let json = match std::fs::read_to_string(&path) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        errors.push(format!("{}: {e}", path.display()));
-                        continue;
-                    }
-                };
-                match lattice_snippet::load::load_pack_from_str(&json) {
-                    Ok(snips) => {
-                        for s in snips {
-                            next.insert(&language, s);
-                            user_total += 1;
-                        }
-                    }
-                    Err(e) => {
-                        errors.push(format!("{}: {e}", path.display()));
-                    }
-                }
+        // SI.11, in the order design §8.3 gives (later overrides earlier on
+        // a shared prefix): packages under `snippet-packs/`, then
+        // `snippet.dirs`, then the user's own folder, then the project's
+        // `.lattice/snippets` — so a project's snippets win where it
+        // defines them, and the user's win over any package. Each
+        // directory may be a snippets folder or a friendly-snippets-style
+        // extension (`lattice_snippet::load_dir` reads either).
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        for packs in &self.snippet_pack_dirs {
+            if let Ok(entries) = std::fs::read_dir(packs) {
+                let mut packages: Vec<std::path::PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                packages.sort();
+                dirs.extend(packages);
+            }
+        }
+        if let Some(extra) = self.config.get_typed::<lattice_snippet::SnippetDirs>() {
+            dirs.extend(lattice_snippet::parse_dirs(&extra));
+        }
+        dirs.extend(self.snippet_dirs.iter().cloned());
+        let snap = self.document.snapshot();
+        dirs.push(
+            self.picker_workspace_root_path(&snap)
+                .join(".lattice")
+                .join("snippets"),
+        );
+        let mut seen = std::collections::HashSet::new();
+        for dir in dirs {
+            if !seen.insert(dir.clone()) {
+                continue;
+            }
+            let load = lattice_snippet::load_dir(&dir);
+            errors.extend(load.errors);
+            for (language, snippet) in load.snippets {
+                next.insert(&language, snippet);
+                user_total += 1;
             }
         }
         (next, builtin_total, user_total, errors)
@@ -33781,6 +33988,17 @@ impl Editor {
                 target: "lattice_host::snippet",
                 total, builtin_total, user_total, ?errors,
                 "loaded snippets at startup with errors"
+            );
+            // SI.8: a pack that half-loaded at boot used to be a log line
+            // nobody saw; the snippets were just missing. Say so once.
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "snippets: {} problem(s) loading your packs; first: {} \
+                     (`:reload-snippets` to retry)",
+                    errors.len(),
+                    errors[0]
+                ),
             );
         }
     }
@@ -33856,29 +34074,71 @@ impl Editor {
             );
         }
         if let Some(cmd) = meta.command.clone() {
-            let uri = self.buffer_uris.get(&self.document_buffer_id).cloned();
-            if let Some(uri) = uri {
-                let handle = self
-                    .lsp
-                    .servers_for(&uri)
-                    .into_iter()
-                    .find(|h| h.capabilities().supports_execute_command());
-                self.execute_lsp_command(handle, cmd);
-            }
+            self.run_completion_command(cmd);
         }
     }
 
+    /// Run an accepted completion item's `command` on a server of this
+    /// buffer that executes commands.
+    fn run_completion_command(&mut self, cmd: lattice_lsp::lsp_types::Command) {
+        let uri = self.buffer_uris.get(&self.document_buffer_id).cloned();
+        if let Some(uri) = uri {
+            let handle = self
+                .lsp
+                .servers_for(&uri)
+                .into_iter()
+                .find(|h| h.capabilities().supports_execute_command());
+            self.execute_lsp_command(handle, cmd);
+        }
+    }
+
+    /// The span an accepted LSP item replaces, in buffer positions: its
+    /// `textEdit` range when it has one, extended to the cursor when the
+    /// user has typed on since the request (the server's range ends where
+    /// the request was made — replacing only that much would leave the
+    /// extra characters after the insert); the popup's anchor to the cursor
+    /// otherwise (SI.9).
+    fn lsp_completion_replace_range(
+        &self,
+        meta: &lattice_lsp::completion::LspCompletionMeta,
+        anchor: lattice_protocol::position::Position,
+    ) -> lattice_protocol::position::Range {
+        let Some(r) = meta.replace_range else {
+            return lattice_protocol::position::Range::new(anchor, self.cursor);
+        };
+        let buffer = &self.document.snapshot().buffer;
+        let at = |p: lattice_lsp::lsp_types::Position| {
+            lattice_protocol::position::Position::new(
+                p.line,
+                Editor::lsp_position_to_app_byte(buffer, p.line, p.character),
+            )
+        };
+        let (start, mut end) = (at(r.start), at(r.end));
+        if end.line == self.cursor.line && self.cursor > end {
+            end = self.cursor;
+        }
+        lattice_protocol::position::Range::new(start, end)
+    }
+
     /// Expand a snippet body alongside LSP `additionalTextEdits`
-    /// as one undo unit. Phase 5.8.AD.4.
+    /// as one undo unit, replacing `replace`. Phase 5.8.AD.4; SI.9 gave it
+    /// the item's own range, placeholders that survive an import added
+    /// above, and `insertTextMode: asIs` (no re-indent).
     pub fn expand_snippet_with_lsp_edits(
         &mut self,
         body: &lattice_snippet::SnippetBody,
-        anchor: lattice_protocol::position::Position,
+        replace: lattice_protocol::position::Range,
         additional: Vec<lattice_lsp::lsp_types::TextEdit>,
+        as_is: bool,
     ) -> Result<(), String> {
-        let vars = self.snippet_variable_context();
-        let rendered = lattice_snippet::render::render(body, &vars);
-        let main_range = lattice_protocol::position::Range::new(anchor, self.cursor);
+        let vars = self.snippet_variables_for(body);
+        let raw = lattice_snippet::render::render(body, &vars);
+        let rendered = if as_is {
+            raw
+        } else {
+            self.indent_snippet(raw, replace.start)
+        };
+        let main_range = replace;
         let main_edit = lattice_protocol::edit::Edit::replace(main_range, rendered.text.clone());
         let snap = self.document.snapshot();
         let mut all_edits: Vec<lattice_protocol::edit::Edit> =
@@ -33922,28 +34182,29 @@ impl Editor {
         let main_applied = applied
             .get(main_idx)
             .ok_or_else(|| "main edit missing from applied batch".to_string())?;
+        // The batch applies bottom-up, so an edit ABOVE the snippet — an
+        // auto-import — lands after it and moves it. Its recorded range is
+        // as of its own application; carry it through the edits after it,
+        // or every placeholder is off by the import (SI.9).
+        let mut inserted = main_applied.inserted_range;
+        for later in &applied[main_idx + 1..] {
+            inserted = lattice_protocol::position::Range::new(
+                lattice_core::buffer::transform_position(inserted.start, later),
+                lattice_core::buffer::transform_position(inserted.end, later),
+            );
+        }
         let origin = self
             .document
             .snapshot()
             .buffer
-            .position_to_byte(main_applied.inserted_range.start)
+            .position_to_byte(inserted.start)
             .unwrap_or(0);
-        if !rendered.tabstops.is_empty() {
-            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
-            if let Some(group) = active.focus_first()
-                && let Some(first) = group.ranges.first()
-                && let Ok(pos) = self
-                    .document
-                    .snapshot()
-                    .buffer
-                    .byte_to_position(first.start)
-            {
-                self.cursor = pos;
-            }
-            self.snippet_session.set(self.document_buffer_id, active);
-            self.modal = lattice_grammar::ModalState::Insert;
+        if !rendered.tabstops.is_empty()
+            && let Some(first) = self.start_snippet_session(&rendered, origin)
+        {
+            self.focus_first_snippet_stop(first);
         } else {
-            self.cursor = main_applied.inserted_range.end;
+            self.cursor = inserted.end;
         }
         Ok(())
     }
@@ -34054,16 +34315,25 @@ impl Editor {
             ) {
                 match lattice_snippet::parse(&meta.insert_text) {
                     Ok(body) => {
+                        let replace = self.lsp_completion_replace_range(&meta, state.anchor);
+                        let as_is = meta.original_item.insert_text_mode
+                            == Some(lattice_lsp::lsp_types::InsertTextMode::AS_IS);
                         if let Err(e) = self.expand_snippet_with_lsp_edits(
                             &body,
-                            state.anchor,
+                            replace,
                             meta.additional_text_edits.clone(),
+                            as_is,
                         ) {
                             self.set_message(
                                 EchoLevel::Error,
                                 format!("completion: apply failed: {e}"),
                             );
                             return;
+                        }
+                        // SI.9: an item's `command` runs after it is inserted,
+                        // snippet or not (the plain path already did).
+                        if let Some(cmd) = meta.command.clone() {
+                            self.run_completion_command(cmd);
                         }
                     }
                     Err(_) => {
@@ -34114,6 +34384,17 @@ impl Editor {
     /// `<C-Space>` -- manual trigger / refresh of the insert-
     /// completion popup. Phase 5.8.AD.4.
     pub fn do_completion_trigger(&mut self) {
+        self.open_insert_completion(None);
+    }
+
+    /// Open (or re-open) the Insert-mode completion popup at the cursor.
+    ///
+    /// `requested` is `None` for a manual trigger (`<C-Space>`), which keeps
+    /// an open popup's trigger and says "no completions" when nothing
+    /// answers; `Some` for an automatic open (IC.6) — a trigger character or
+    /// the identifier threshold — which closes quietly when nothing does.
+    fn open_insert_completion(&mut self, requested: Option<lattice_completion::CompletionTrigger>) {
+        let manual = requested.is_none();
         if !matches!(self.modal, lattice_grammar::ModalState::Insert) {
             return;
         }
@@ -34158,7 +34439,9 @@ impl Editor {
             .get(start..cursor_byte.min(line_text.len()))
             .unwrap_or("")
             .to_string();
-        let trigger = if self.insert_completion.is_some() {
+        let trigger = if let Some(requested) = requested {
+            requested
+        } else if self.insert_completion.is_some() {
             self.insert_completion
                 .as_ref()
                 .map(|s| s.trigger.clone())
@@ -34183,9 +34466,101 @@ impl Editor {
             && let Some(state) = self.insert_completion.as_ref()
             && state.rendered.is_empty()
         {
-            self.set_message(EchoLevel::Info, "no completions");
+            if manual {
+                self.set_message(EchoLevel::Info, "no completions");
+            }
             self.insert_completion = None;
         }
+    }
+
+    /// IC.6: with `completion.auto_trigger` on for this buffer's language,
+    /// open the popup after the single character `c` was typed: on a
+    /// character an active source declares as its trigger, or once the word
+    /// before the cursor is `completion.min_chars` long.
+    fn maybe_auto_trigger_completion(&mut self, c: char) {
+        let language = self.active_language_id();
+        if !self.auto_trigger_for(&language) {
+            return;
+        }
+        let lsp_chars = self.lsp_completion_trigger_chars();
+        let declared = self
+            .buffer_locals
+            .get(&self.document_buffer_id)
+            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
+            .is_some_and(|active| {
+                active.0.iter().any(|contribution| {
+                    contribution_answers_trigger_char(contribution, c, &lsp_chars)
+                })
+            });
+        if declared {
+            self.open_insert_completion(Some(lattice_completion::CompletionTrigger::TriggerChar(
+                c,
+            )));
+            return;
+        }
+        if !c.is_ascii() || !is_word_char_byte(c as u8) {
+            return;
+        }
+        let min_chars = (*self
+            .config
+            .get_typed::<lattice_config::CompletionMinChars>()
+            .expect("CompletionMinChars"))
+        .max(1) as usize;
+        let line = self
+            .document
+            .snapshot()
+            .buffer
+            .line(self.cursor.line)
+            .unwrap_or_default();
+        let before = line
+            .as_bytes()
+            .get(..self.cursor.byte as usize)
+            .unwrap_or_default();
+        let word_len = before
+            .iter()
+            .rev()
+            .take_while(|b| is_word_char_byte(**b))
+            .count();
+        if word_len >= min_chars {
+            self.open_insert_completion(Some(
+                lattice_completion::CompletionTrigger::IdentifierThreshold,
+            ));
+        }
+    }
+
+    /// Whether `language` opens completion by itself: its per-language
+    /// `auto_trigger`, else `completion.auto_trigger`. Read on every typed
+    /// character, so it does not build the whole effective config.
+    fn auto_trigger_for(&self, language: &str) -> bool {
+        self.per_language_completion
+            .get(language)
+            .and_then(|o| o.auto_trigger)
+            .unwrap_or_else(|| {
+                *self
+                    .config
+                    .get_typed::<lattice_config::CompletionAutoTrigger>()
+                    .expect("CompletionAutoTrigger")
+            })
+    }
+
+    /// The completion trigger characters of every language server attached
+    /// to the active document, when `lsp-completion-mode` is on for it.
+    fn lsp_completion_trigger_chars(&self) -> Vec<char> {
+        if !self.lsp_completion_mode_enabled_for(self.document_buffer_id) {
+            return Vec::new();
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return Vec::new();
+        };
+        let mut chars: Vec<char> = Vec::new();
+        for handle in self.lsp.servers_for(uri) {
+            for c in handle.capabilities().completion_trigger_chars() {
+                if !chars.contains(&c) {
+                    chars.push(c);
+                }
+            }
+        }
+        chars
     }
 
     /// `<C-Space>` (or auto-trigger) -- run the **async completion
@@ -34240,6 +34615,7 @@ impl Editor {
         // LSP's own preconditions, resolved once. `None` ⇒ LSP sits this
         // round out; the rest of the fan-out is unaffected.
         let lsp_ctx = self.lsp_completion_round_context();
+        let lsp_trigger_chars = self.lsp_completion_trigger_chars();
         let uri_string = lsp_ctx.as_ref().map(|(uri, _)| uri.clone());
         let lsp_position = lsp_ctx.as_ref().map(|(_, pos)| *pos);
 
@@ -34257,6 +34633,7 @@ impl Editor {
                 active
                     .0
                     .iter()
+                    .filter(|c| source_joins_round(c, &trigger, &lsp_trigger_chars))
                     .filter_map(|c| match &c.kind {
                         lattice_completion::CompletionSourceKind::Async(src) => {
                             Some((c.id.clone(), src.clone()))
@@ -34278,9 +34655,13 @@ impl Editor {
             // clears the "loading…" state instead of leaving the popup
             // waiting on a round that will never answer.
             self.pending_insert_completion_async_token = None;
+            self.pending_insert_completion_async_remaining = 0;
             let _ = tx.send(lattice_completion::AsyncCompletionOutcome::Nothing);
             return;
         }
+        // IC.2: the round is over when every source has answered, not when
+        // the first one has.
+        self.pending_insert_completion_async_remaining = sources.len();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_insert_completion_async_token = Some(token.clone());
         // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
@@ -34311,6 +34692,14 @@ impl Editor {
                 let fut = source.produce_async(ctx_snapshot, sink_for_fut, token_for_fut);
                 fut.await;
                 let (candidates, is_incomplete) = sink.drain();
+                // IC.4: the host names a row's source, not the source. A
+                // guest that left it unset made rows the drain could never
+                // replace (they piled up a copy per round); one that named
+                // another source's id would have replaced THAT source's rows.
+                let candidates = candidates
+                    .into_iter()
+                    .map(|c| c.with_source(id.clone()))
+                    .collect();
                 let _ = tx.send(lattice_completion::AsyncCompletionOutcome::Items {
                     candidates,
                     sources: vec![id],
@@ -34526,7 +34915,7 @@ impl Editor {
         let overrides = self.per_language_completion.get(language);
         EffectiveCompletionConfig {
             sources: overrides.and_then(|o| o.sources.clone()),
-            auto_trigger: overrides.and_then(|o| o.auto_trigger).unwrap_or(false),
+            auto_trigger: self.auto_trigger_for(language),
             auto_insert_single: overrides
                 .and_then(|o| o.auto_insert_single)
                 .unwrap_or_else(|| self.completion_auto_insert_single()),
@@ -34564,26 +34953,24 @@ impl Editor {
                 .config
                 .get_typed::<CompletionSourcePathPriority>()
                 .expect("CompletionSourcePathPriority"),
-            _ => 0,
+            // IC.3: any other source ranks by the priority it declares — a
+            // plugin's spec says it. This was a flat 0, so every plugin
+            // source sank below every builtin.
+            _ => return self.declared_priority(source).unwrap_or(0),
         };
         raw.max(0) as u32
     }
 
-    /// Total ranker bonus for a candidate (per-source priority +
-    /// capped frequency lift). Phase 5.8.AD.4.
-    fn completion_total_bonus(&self, raw: &lattice_completion::RawCandidate) -> u32 {
-        let priority = raw
-            .source
-            .as_ref()
-            .map(|s| self.priority_for_source(s))
-            .unwrap_or(0);
-        let freq = self
-            .completion_accept_freq
-            .get(&(raw.text.clone(), raw.kind))
-            .copied()
-            .unwrap_or(0)
-            .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
-        priority.saturating_add(freq)
+    /// The `default_priority` the active buffer's contribution for `source`
+    /// declares, if one is active.
+    fn declared_priority(&self, source: &lattice_completion::SourceId) -> Option<u32> {
+        self.buffer_locals
+            .get(&self.document_buffer_id)?
+            .get::<lattice_mode::ActiveCompletionSources>()?
+            .0
+            .iter()
+            .find(|c| &c.id == source)
+            .map(|c| c.default_priority)
     }
 
     /// Re-run matcher + ranker over `state.raw` against the
@@ -34611,8 +34998,36 @@ impl Editor {
                 )
             })
             .collect();
+        // Each source's priority, resolved once per re-rank rather than per
+        // candidate: a popup holds a handful of sources and hundreds of rows,
+        // and this runs on every keystroke while it is open (IC.3 bench).
+        let mut priorities: Vec<(&lattice_completion::SourceId, u32)> = Vec::new();
+        for source in state.raw.iter().filter_map(|raw| raw.source.as_ref()) {
+            if !priorities.iter().any(|(id, _)| *id == source) {
+                priorities.push((source, self.priority_for_source(source)));
+            }
+        }
+        let freq = &self.completion_accept_freq;
         let ranker = lattice_completion::InsertRanker::new();
-        ranker.rank_with_bonus(&mut scored, |raw| self.completion_total_bonus(raw));
+        ranker.rank_with_bonus(&mut scored, |raw| {
+            let priority = raw
+                .source
+                .as_ref()
+                .and_then(|s| priorities.iter().find(|(id, _)| *id == s))
+                .map(|(_, p)| *p)
+                .unwrap_or(0);
+            // Keyed by an owned `(String, kind)`, so a lookup clones the
+            // text; nothing to find until something has been accepted.
+            let freq_bonus = if freq.is_empty() {
+                0
+            } else {
+                freq.get(&(raw.text.clone(), raw.kind))
+                    .copied()
+                    .unwrap_or(0)
+                    .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP)
+            };
+            priority.saturating_add(freq_bonus)
+        });
         state.rendered = scored
             .into_iter()
             .map(lattice_completion::RenderedCandidate::from_scored)
@@ -34676,6 +35091,9 @@ impl Editor {
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
         {
             for contribution in &active_sources.0 {
+                if !source_joins_round(contribution, trigger, &[]) {
+                    continue;
+                }
                 if !effective.source_enabled(&contribution.id) {
                     continue;
                 }
@@ -37401,11 +37819,15 @@ impl Editor {
                     lattice_picker::PickerAcceptOutcome::JumpToMark { name },
                 ));
             }
-            lattice_picker::RoutingPayload::ExpandSnippet { id } => {
+            lattice_picker::RoutingPayload::ExpandSnippet { id, over: None } => {
                 out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
                 ));
             }
+            lattice_picker::RoutingPayload::ExpandSnippet {
+                id,
+                over: Some(range),
+            } => self.expand_snippet_over(&id, range),
             // BranchBase is only ever emitted by a generator-based
             // source (the `generator.accept` path above, never
             // reaches here in practice) — kept for match
@@ -37910,8 +38332,8 @@ impl Editor {
             return;
         }
         let range = {
-            let sels = self.document.selections();
-            crate::visual::selection_extent(sels.primary())
+            let snapshot = self.document.snapshot();
+            crate::visual::selection_extent(snapshot.selections.primary(), &snapshot.buffer)
         };
         // `<CR>` / `<NL>` over a selection TYPES a newline (vim: "the typed
         // character is inserted" after entering Insert), and a typed newline
@@ -39742,6 +40164,8 @@ impl Editor {
                     );
                 }
             }
+            // SI.11: a new set of pack directories takes effect at once.
+            "snippet.dirs" => self.do_reload_snippets(),
             "snippet.activation" | "snippet.languages" => {
                 // SN.3b: re-fold the snippet activation policy into
                 // the shared cell the `snippet-mode` gate reads. The
@@ -40119,7 +40543,83 @@ impl Editor {
                 lines.push(format!("    - {}", lattice_help::mode_link(id.as_str())));
             }
         }
+        lines.push(String::new());
+        lines.extend(self.describe_completion_sources_lines());
         lattice_help::HelpContent::from_lines("describe-buffer", lines)
+    }
+
+    /// IC.7: the `## Completion sources` section of `:describe-buffer` —
+    /// how the popup opens here, and every source the buffer's modes
+    /// contribute, each with its priority and what limits it.
+    ///
+    /// The answer to "why does X not complete here", which nothing showed:
+    /// the source set is assembled from mode contributions per buffer, then
+    /// narrowed by language, so neither the modes list nor the options say it.
+    fn describe_completion_sources_lines(&self) -> Vec<String> {
+        let mut lines = vec!["## Completion sources".to_string()];
+        let buffer = self.document_buffer_id;
+        if !self.completion_mode_active_for(buffer) {
+            lines.push("(completion is off in this buffer)".to_string());
+            return lines;
+        }
+        let language = self.active_language_id();
+        let effective = self.effective_completion_for(&language);
+        let shown_language = if language.is_empty() {
+            "this buffer".to_string()
+        } else {
+            format!("`{language}`")
+        };
+        lines.push(if effective.auto_trigger {
+            let min = *self
+                .config
+                .get_typed::<lattice_config::CompletionMinChars>()
+                .expect("CompletionMinChars");
+            format!(
+                "Opens: as you type ({min} characters, or a trigger character), or on `<C-Space>`"
+            )
+        } else {
+            "Opens: on `<C-Space>` (`completion.auto_trigger` is off)".to_string()
+        });
+        let contributions = self
+            .buffer_locals
+            .get(&buffer)
+            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
+            .map(|active| active.0.clone())
+            .unwrap_or_default();
+        if contributions.is_empty() {
+            lines.push("(no mode contributes a source)".to_string());
+            return lines;
+        }
+        let lsp_attached = self
+            .buffer_uris
+            .get(&buffer)
+            .is_some_and(|uri| !self.lsp.servers_for(uri).is_empty());
+        for contribution in &contributions {
+            let id = contribution.id.as_str();
+            let mut notes: Vec<String> = Vec::new();
+            if !effective.source_enabled(&contribution.id) {
+                notes.push(format!("off for {shown_language}"));
+            } else if id == lattice_completion::LSP_COMPLETION_SOURCE_ID && !lsp_attached {
+                notes.push("no language server attached".to_string());
+            } else if id == lattice_completion::PATH_SOURCE_ID {
+                notes.push("answers inside a string literal".to_string());
+            }
+            if !contribution.trigger_chars.is_empty() {
+                let chars: String = contribution.trigger_chars.iter().collect();
+                notes.push(format!("trigger characters `{chars}`"));
+            }
+            let notes = if notes.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", notes.join("; "))
+            };
+            lines.push(format!(
+                "- {} — `{id}`, priority {}{notes}",
+                lattice_completion::source_label(id),
+                self.priority_for_source(&contribution.id),
+            ));
+        }
+        lines
     }
 
     /// 5.5.F.2: build the `:describe-command` content.
@@ -44190,6 +44690,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
+        | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -44353,6 +44854,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
+        | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -44735,6 +45237,36 @@ pub fn prefer_aliases_for_command_candidates(
     });
 }
 
+/// IC.6: whether a source takes part in a completion round opened by
+/// `trigger`. A manual open (or an `isIncomplete` refresh) asks every
+/// source; the identifier threshold asks the sources that opt into
+/// automatic opening; a trigger character asks the sources that declared
+/// it — a language server's characters come from its capabilities, so
+/// they are passed in.
+fn source_joins_round(
+    contribution: &lattice_completion::CompletionSourceContribution,
+    trigger: &lattice_completion::CompletionTrigger,
+    lsp_trigger_chars: &[char],
+) -> bool {
+    match trigger {
+        lattice_completion::CompletionTrigger::IdentifierThreshold => contribution.auto_trigger,
+        lattice_completion::CompletionTrigger::TriggerChar(c) => {
+            contribution_answers_trigger_char(contribution, *c, lsp_trigger_chars)
+        }
+        _ => true,
+    }
+}
+
+fn contribution_answers_trigger_char(
+    contribution: &lattice_completion::CompletionSourceContribution,
+    c: char,
+    lsp_trigger_chars: &[char],
+) -> bool {
+    contribution.trigger_chars.contains(&c)
+        || (contribution.id.as_str() == lattice_completion::LSP_COMPLETION_SOURCE_ID
+            && lsp_trigger_chars.contains(&c))
+}
+
 /// 5.5.G.23.insert-prep: cross-source visual dedup for the
 /// insert-completion popup (Phase 4.2.g.7 polish). Keeps the FIRST
 /// occurrence of each `raw.text`; subsequent rows with the same text
@@ -44850,7 +45382,10 @@ pub fn accept_action_to_routing_payload(
         },
         AcceptAction::PasteRegister { name } => RoutingPayload::PasteRegister { name: *name },
         AcceptAction::JumpToMark { name } => RoutingPayload::JumpToMark { name: *name },
-        AcceptAction::ExpandSnippet { id } => RoutingPayload::ExpandSnippet { id: id.clone() },
+        AcceptAction::ExpandSnippet { id } => RoutingPayload::ExpandSnippet {
+            id: id.clone(),
+            over: None,
+        },
         AcceptAction::OpenLspLog {
             server_id,
             workspace,

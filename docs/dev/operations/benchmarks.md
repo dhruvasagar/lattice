@@ -71,6 +71,109 @@ target rather than just a slower number.
 
 ---
 
+## SI.12 — mode range highlights on the publish path (2026-10-24)
+
+A live snippet's placeholders are tinted through a mode range-highlight
+source the host calls on every publish of the active buffer. Bench:
+`dispatch_publish/publish_2000_{with,without}_mode_highlights` in
+`crates/lattice-host/benches/dispatch_publish.rs` — a no-op publish of a
+2 000-line document, with a source returning eight ranges and without.
+
+| Publish | Time |
+|---|---|
+| without a source | 6.13 µs |
+| eight ranges | 9.87 µs |
+
+About 0.45 µs a range: the source call, and two byte→position lookups
+on the rope per range. Paid only while a mode has a source on the active
+buffer (a snippet is live); with none, one empty map lookup.
+
+## SI.7 — snippet mirrors on the keystroke path (2026-10-23)
+
+A keystroke inside a placeholder with mirrors makes the `Document` copy
+the placeholder's text into each copy, in the same commit. Bench:
+`document_edit_p99_us::insert_into_linked_range/<copies>` in
+`crates/lattice-core/benches/document_hotpath.rs` — one character typed
+into a linked range in a 1 000-line document, its copies on the lines
+after.
+
+| Copies | Insert |
+|---|---|
+| 0 (tracked, not linked) | 2.14 µs |
+| 1 | 4.77 µs |
+| 3 | 7.81 µs |
+| 8 | 16.5 µs |
+
+About 2.5 µs a copy — each is a slice of the source range plus a rope
+edit and the tracked-set transform. Snippets rarely mirror a placeholder
+more than two or three times; even eight copies stay two orders of
+magnitude under a frame. Edits outside a linked range pay one
+`has_links` scan of the tracked set.
+
+## SI.2 — tracked ranges on the keystroke path (2026-10-23)
+
+A snippet's placeholders are ranges the `Document` moves across every edit,
+in the same loop as its selections. Bench:
+`document_edit_p99_us::insert_with_tracked_ranges/<n>` in
+`crates/lattice-core/benches/document_hotpath.rs` — one character inserted
+in a 1 000-line document with `n` ranges tracked after it, holding a clone
+of the set as the actor's last-published snapshot does (so the edit also
+copies the set).
+
+| Ranges tracked | Insert |
+|---|---|
+| 0 (no snippet) | 2.14 µs |
+| 8 (a typical snippet) | 2.17 µs |
+| 64 | 2.64 µs |
+
+`insert_at_middle/1000`, the same edit before tracked ranges existed:
+1.98 µs. With nothing tracked the set is not touched (an `is_empty` check);
+a snippet's handful of ranges is ~30 ns a keystroke.
+
+## IC.6 — what an automatic completion open costs (2026-10-22)
+
+With `completion.auto_trigger` on, a keystroke that does not open the
+popup adds a map lookup and an option read. One that does pays a whole
+open — every sync source, buffer words walking the document. Bench:
+`insert_completion_open/<lines>` in
+`crates/lattice-host/benches/insert_completion.rs`, typing `al` on the last
+line of a document of distinct words.
+
+| Document | Open |
+|---|---|
+| 100 lines | 62.3 µs |
+| 1 000 lines | 59.6 µs |
+| 10 000 lines | 72.3 µs |
+
+Flat in the document's size — buffer words caps its own walk — at about
+60–70 µs, paid once per word that reaches `completion.min_chars`, not per
+keystroke. Typing on in an open popup is the re-rank below.
+
+## IC.3 — re-ranking an open completion popup (2026-10-22)
+
+`refilter_insert_completion` is the one match / rank / dedup path: the
+popup's open, every keystroke while it is open, and every async answer
+landing all run it over the popup's whole raw set, on the actor, inside the
+keystroke. Bench: `crates/lattice-host/benches/insert_completion.rs` —
+candidates spread over four sources (a plugin's among them); `it` matches
+every row, `item_01` about one in twenty.
+
+| Candidates | `it` (all match) | `item_01` (~5% match) |
+|---|---|---|
+| 200 | 58.6 µs | 50.6 µs |
+| 700 | 205 µs | 155 µs |
+| 2000 | 554 µs | 392 µs |
+
+Linear, about 0.28 µs a candidate. Resolving each source's priority once
+per re-rank instead of per candidate took 10–15% off (2000 rows: 650 →
+554 µs). What remains is matching and copying: each match clones its
+`RawCandidate` into a `ScoredCandidate` and again into a
+`RenderedCandidate`. A realistic popup — buffer words and symbols plus
+one server's capped 500 items — is 200–700 rows, 50–200 µs: within a frame,
+but a real share of a 0.7 ms keystroke. **Follow-up:** rank indices into
+`raw` instead of cloning candidates; it touches `ScoredCandidate`, which the
+picker shares, so it is its own slice.
+
 ## CG.6 — keyed supersede, per trigger (2026-10-20)
 
 `ForegroundCancel::begin` runs once per user-triggered task — a push, a

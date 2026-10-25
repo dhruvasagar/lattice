@@ -2368,6 +2368,31 @@ match in the render path. Hover popup is a floating-geometry
 view of a `markdown-mode` buffer with a `hover-mode` minor
 contributing `wrap=true, line-numbers=false, anchor=cursor`.
 
+#### 9.5.1 Range highlights — text a mode tints
+
+A mode that wants part of the text tinted while it is active — a
+snippet's placeholders; later linked-editing pairs, secondary
+cursors — registers a `RangeHighlightSource` for the buffer from its
+`on_activate` (`lattice_mode::register_range_highlights`) and keeps
+the returned registration in its guard, so deactivation withdraws it.
+A source maps the document snapshot to `(bytes, ElementId)` pairs;
+the element is one the mode registers itself, owned by the mode.
+
+The host calls the active buffer's sources when it publishes that
+buffer's render state, **with the snapshot the published text comes
+from**, and publishes the spans on the active document. Both renderers
+paint them per frame with the cursor-coupled overlays, under the
+selection, keeping each cell's foreground. This is deliberately not
+the overlay worker's per-row bucket: the bucket is recomputed off
+the publish and can trail an edit by a frame, which is fine for
+`hlsearch` but not for ranges that move with every keystroke the way
+a selection does (UX: no pixel lag on the edited line). Sources run
+on the actor, never on a render thread; a publish with an eight-range
+source costs ~4 µs more (benchmarks.md, SI.12).
+
+Rejected: a style on the `Document`'s tracked range — it ties painting
+to a core text primitive, and only tracked ranges could be tinted.
+
 ### 9.6 Toggle and reload semantics
 
 Modes are user-toggleable and reloadable. The mechanisms:

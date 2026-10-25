@@ -35,6 +35,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use lattice_core::tracked::TrackedRanges;
 use lattice_core::{Buffer, Document};
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::selection::SelectionSet;
@@ -65,6 +66,16 @@ pub struct DocumentSnapshot {
     /// charwise selection; multi-cursor support folds in here when
     /// it lands.
     pub selections: Arc<SelectionSet>,
+    /// The ranges the document keeps in place across its edits
+    /// ([`lattice_core::tracked`]) — a snippet's placeholders. Shared with
+    /// the document, so publishing costs an `Arc` bump. Empty for a kind
+    /// that tracks none (the multibuffer).
+    pub tracked_ranges: Arc<TrackedRanges>,
+    /// The edits this commit applied to linked tracked ranges by itself
+    /// (`lattice_core::Document::linked_edits` — snippet mirrors), after the
+    /// edit its caller asked for. `None` for the usual commit with none, so
+    /// publishing allocates nothing.
+    pub linked_edits: Option<Arc<[lattice_core::buffer::AppliedEdit]>>,
 }
 
 impl DocumentSnapshot {
@@ -92,6 +103,8 @@ impl DocumentSnapshot {
             path: doc.path_shared(),
             dirty: doc.dirty(),
             selections: Arc::new(doc.selections().clone()),
+            tracked_ranges: Arc::clone(doc.tracked_ranges()),
+            linked_edits: (!doc.linked_edits().is_empty()).then(|| Arc::from(doc.linked_edits())),
         }
     }
 

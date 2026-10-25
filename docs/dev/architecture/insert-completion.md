@@ -297,7 +297,24 @@ async overhead.
 | `gen:buffer-words` | sync (bridged) | 100 | yes | Walks visible buffers' rope text; words >= 3 chars; deduped. |
 | `gen:path` | sync (bridged) | 90 | trigger-char `'/'` in string contexts | Filesystem walk capped at 200 entries. |
 | `gen:tree-sitter-symbol` | sync (bridged) | 80 | yes | Local symbols from the buffer's syntax tree (functions, vars in scope). |
-| `gen:plugin-*` | async | as configured | as configured | Reserved for the WASM plugin host (Phase 7). |
+| `gen:plugin-*` | async | as declared | as declared | A plugin's `completion-source`, on a universal carrier mode. Ranked by the priority its contribution declares; labelled by its id. |
+
+**The host names a background source's rows** (IC.4). Every
+candidate an async source produces is stamped with that source's
+contribution id when its round reports, whatever the source wrote
+on it: the drain replaces a source's rows by that id, so a row left
+unnamed (the WIT does not require a name) was never replaced and
+piled up a copy per round, and one naming another source would have
+replaced that source's rows.
+
+**A source registered late reaches the buffers already open.**
+Policy minors activate on `MajorEntered`; a plugin's carrier mode
+registers once the plugin has loaded — after argv's files are open.
+`run_tick_pending` compares the live mode registry against the one
+it last saw (a pointer compare) and activates newly registered
+policy minors on the documents their policy admits. Only new ids:
+re-offering every admitted minor would switch back on one the user
+turned off in a buffer.
 
 ### 3.5 Matcher
 
@@ -331,8 +348,14 @@ final_score = base_score
 ```
 
 - `base_score`: from the matcher.
-- `per_source_priority`: from `AsyncCandidateGenerator::default_priority`,
-  overridable per-buffer.
+- `per_source_priority`: the five builtin sources read
+  `completion.source.<name>.priority`; any other source — a
+  plugin's — ranks by the `default_priority` its contribution
+  declares. One function computes it, and one path ranks: the
+  popup's open, every keystroke while it is open, and every async
+  answer landing all re-rank through it, honouring the popup's
+  source filter. (Three copies of this, each knowing a different
+  set of priorities and only one the filter, were IC.3's defect.)
 - `frequency_bonus`: 0–50, based on how many times the user
   has accepted this exact `(label, kind)` pair in the
   current session. In-memory only for v1; persisted later.
@@ -357,6 +380,15 @@ no receive), it:
 Coalescing the run on a tick (rather than per-receive) keeps
 the renderer from thrashing during a flurry of source pushes
 (e.g. tree-sitter walk emitting 100 symbols at once).
+
+**A round ends when every source has answered**, not when the
+first one has. The aggregator counts the async sources a round
+started and counts each answer off; an empty popup may close only
+at zero, and a manually triggered one then says "no completions".
+Typing while a source is still answering re-filters but does not
+close the popup either. Ending at the first answer let an empty
+source that answered quickly close the popup and drop every later
+answer — LSP's, typically (IC.2).
 
 ### 3.8 Completion-popup minor mode
 
@@ -456,6 +488,18 @@ Auto-trigger can be enabled per-language via
 `[completion.per-language.<lang>] auto_trigger = true` for
 users who want noise-free prose typing but live completion
 in code buffers.
+
+**Shipped defaults** (decided 2026-10-22): `completion.auto_trigger`
+is `false` and `completion.min_chars` is 2; Markdown and plain text
+set `auto_trigger = false` so prose stays manual even with the
+global option on; no code language sets it, so code follows the
+global option. The `rust` block in §9's example `lattice.toml` is
+what a user would write, not a default. Only single-character
+inserts in Insert mode open the popup — paste, snippet expansion
+and dot-repeat insert many characters at once and do not. A
+trigger character opens the popup with the sources that declared
+it (a language server's `triggerCharacters` included), not every
+source: an empty query would otherwise list every buffer word.
 
 ### 4.3 Once-open behaviour
 
@@ -603,13 +647,14 @@ resolve to ex-commands; users override via
 
 Active when a snippet expansion has live placeholders.
 
-| Chord | Ex-command | Behaviour |
+| Chord | Action | Behaviour |
 |---|---|---|
-| `<Tab>` | `ex:snippet-next-placeholder` | Jump to next `$N` |
-| `<S-Tab>` | `ex:snippet-prev-placeholder` | Jump to previous `$N` |
-| `<C-l>` | `ex:snippet-next-placeholder` | Alternate (consistent with completion `<C-x><C-o>` family) |
-| `<C-h>` | `ex:snippet-prev-placeholder` | Alternate |
-| `<Esc>` | `ex:snippet-leave` | Exit snippet mode (placeholders become plain text); also exits Insert by vim convention |
+| `<Tab>` | `action:snippet-next-placeholder` | Jump to next `$N`; landing on `$0` (or the end, without one) ends the session |
+| `<S-Tab>` | `action:snippet-prev-placeholder` | Jump to previous `$N` |
+| `<Esc>` | `action:snippet-leave` | End the session; `fall_through` then runs the native `<Esc>` (exit Insert) |
+
+Bound in Insert and Select (a default is focused in Select). They are
+actions with handlers the mode registers while active — not ex-commands.
 
 When a snippet is active AND the completion popup is open
 (e.g. user typed inside a placeholder), the completion-popup
@@ -648,9 +693,9 @@ or from `init.rs`:
 | `ex:completion-scroll-docs-down` | `:complete-docs-down` | |
 | `ex:completion-scroll-docs-up` | `:complete-docs-up` | |
 | `ex:completion-accept-then-insert` | n/a (commit-char internal; commands surface accept then `feedkey` separately) | |
-| `ex:snippet-next-placeholder` | `:snippet-next` | |
-| `ex:snippet-prev-placeholder` | `:snippet-prev` | |
-| `ex:snippet-leave` | `:snippet-leave` | |
+| `action:snippet-next-placeholder` | n/a (mode-owned action, live only in a session) | |
+| `action:snippet-prev-placeholder` | n/a | |
+| `action:snippet-leave` | n/a | |
 
 Plugin-supplied sources register their own commands (e.g.
 `:complete-source-toggle <id>`) via the standard registry
@@ -800,7 +845,7 @@ parses:
 |---|---|
 | `$1`, `$2`, ..., `$0` | Tab-stops. `$0` is the final cursor position, exited automatically. |
 | `${1:placeholder}` | Tab-stop with default text. |
-| `${1\|opt1,opt2,opt3\|}` | Choice placeholder — opens a mini-picker over the options. |
+| `${1\|opt1,opt2,opt3\|}` | Choice placeholder — inserts the first option; `<C-n>` / `<C-p>` cycle the rest. |
 | `${1/pattern/replacement/flags}` | Transformation — regex against the placeholder's current text. |
 | `\$`, `\\`, `\}` | Escapes. |
 | `$VAR_NAME`, `${VAR_NAME}` | Variable substitution. |
@@ -811,7 +856,7 @@ Built-in variables (TextMate / VS Code parity):
 
 | Variable | Value |
 |---|---|
-| `TM_SELECTED_TEXT` | Last visual selection |
+| `TM_SELECTED_TEXT` | The text `gS` wraps (§8.2.1); empty otherwise |
 | `TM_CURRENT_LINE` | Current line text |
 | `TM_CURRENT_WORD` | Word under cursor |
 | `TM_LINE_INDEX` | 0-based current line |
@@ -827,21 +872,59 @@ Built-in variables (TextMate / VS Code parity):
 | `UUID` | Random UUID |
 | `LINE_COMMENT`, `BLOCK_COMMENT_START`, `BLOCK_COMMENT_END` | Per-major-mode comment strings (Phase 8) |
 
+### 8.2.1 Wrapping text (`gS`)
+
+`$TM_SELECTED_TEXT` has a value only when a snippet is expanded *around*
+text, and that is an operator: `gS{motion}` in Normal, `gS` in Visual,
+`gSS` for the line. It composes with every motion and text object
+because it is registered into the grammar like `d` or `zn`
+(`operator:snippet-wrap`, owned by `lattice-snippet`; the host only wires
+the chord, as it does for `zn`).
+
+The operator removes nothing. It opens `:picker snippets --over <range>`;
+each row carries the range (`RoutingPayload::ExpandSnippet::over`, so
+the MRU still keys on the snippet) and accepts into
+`action:snippet-wrap(snippet, range)`, which emits
+`Effect::ExpandSnippetOver`. The host resolves the snippet, reads the
+range's text, and expands over it — the same splice, session and focus
+as every other expansion. Closing the picker therefore leaves the
+buffer untouched and leaves nothing behind.
+
+A linewise range starts after the first line's indentation and stops
+before the last newline: the snippet lands at the block's indentation
+and its own lines decide where the block ends. The text is taken
+relative to that first line (each later line loses the shared
+indentation), and the renderer starts each of its later lines at the
+indentation of the body line the variable sits on — VS Code's rule.
+Then the usual re-indent (SI.6) adds the trigger line's indentation, so
+a block wrapped in `if ${1} {\n\t$TM_SELECTED_TEXT\n}` sits one level in
+with its own nesting kept.
+
+Rejected: a Visual-only chord (`<C-x><C-t>` — `<C-x>` as a Visual prefix
+shadows vim's `v_CTRL-X`, and a chord cannot take a motion), and
+UltiSnips' stash-the-text-then-expand (invisible state: the text
+vanishes into a slot the next expansion may or may not read).
+
 ### 8.3 Loading paths
 
 Loaded at startup; `:reload-snippets` re-reads on demand.
 
-Lookup order (later overrides earlier):
+Lookup order (later overrides earlier on a shared prefix or name):
 
-1. **Bundled.** Shipped with the lattice binary (a small
-   curated set in `bundled-snippets/`).
-2. **friendly-snippets-style packages.** Any directory in
-   `~/.config/lattice/snippet-packs/` — typically
-   `~/.config/lattice/snippet-packs/friendly-snippets/`
-   cloned from upstream.
-3. **User snippets.** `~/.config/lattice/snippets/<lang>.json`.
-4. **Project snippets.** `.lattice/snippets/<lang>.json` in
-   the workspace root.
+1. **Bundled.** Shipped in the binary (`lattice-snippet/snippets/`).
+2. **Packages.** Every subdirectory of
+   `~/.config/lattice/snippet-packs/` — typically a friendly-snippets
+   clone — then each directory in `snippet.dirs`.
+3. **User snippets.** `~/.config/lattice/snippets/`.
+4. **Project snippets.** `.lattice/snippets/` in the workspace root.
+
+Every directory is read by `lattice_snippet::load_dir` in whichever
+layout it has: a `package.json` whose `contributes.snippets` maps files
+to languages (a VS Code extension, friendly-snippets), or a snippets
+folder of `<language>.json` (`_global.json` for every language) and
+`*.code-snippets` files whose entries name their languages in `scope`.
+A malformed entry skips itself; `:reload-snippets` reports each skip.
+Language keys are LSP ids (`lattice_core::language`).
 
 Per-language registry: each language indexes by prefix; the
 `gen:snippet` source filters by the active buffer's
@@ -868,37 +951,103 @@ lattice-snippet/
 
 ### 8.5 Active-snippet state
 
-When a snippet expands:
+When a snippet expands, the host splices the rendered text and starts a
+session (`lattice-snippet`'s `ActiveSnippet`): the placeholder groups in
+`$1, $2, …, $0` order, the focused one, and an id per placeholder
+occurrence. **The positions are not the session's.** Each occurrence is a
+*tracked range* of the `Document` (`lattice_core::tracked`), which moves it
+across every edit in the same loop that moves its selections:
 
 ```rust
-pub struct ActiveSnippet {
-	/// Buffer position the snippet was inserted at.
-	pub origin: Position,
-	/// Per-tabstop ranges in the buffer; mirrored entries
-	/// share an index so editing one updates all.
-	pub tabstops: Vec<TabstopGroup>,
-	/// Currently focused tabstop index (1-based; `$0` is the
-	/// final position).
-	pub current: usize,
-	/// `$N -> ranges` map for fast jump.
-	pub by_index: HashMap<u32, Vec<Range>>,
+pub struct TrackedRange {
+	pub start: usize,              // absolute bytes
+	pub end: usize,
+	pub stickiness: Stickiness,    // GrowsAtEdges | NeverGrows
+	pub collapsed: bool,           // its text was removed around it
 }
 ```
 
-Edits inside a tabstop range shift the matching ranges in
-its mirror group; ranges in adjacent tabstops shift too as
-the buffer text grows. Buffer events from outside the
-snippet (LSP didChange, format-on-save) flow through
-unchanged — the snippet ranges adjust via the same
-position-update path the rest of the editor uses.
+The session reads where a placeholder is now from the snapshot's
+`tracked_ranges` whenever it needs it — on `<Tab>`, on `<S-Tab>`.
+
+Why the document, and not the session or the host:
+
+- **Every edit path, by construction.** Typing, an operator, undo, a
+  language server's `applyEdit`, a formatter, a plugin: all apply through
+  `Document`, so none can forget to shift the ranges. The session once held
+  byte offsets itself and nothing moved them; the first keystroke inside a
+  placeholder sent every later `<Tab>` to the wrong place.
+- **Synchronously.** The transform runs inside the edit, so by the time the
+  edit's caller sees the result the ranges have moved. An event-bus
+  subscriber (`Event::DocumentChanged`) is delivered asynchronously and
+  would race a fast `x<Tab>`.
+- **Not the host.** Shifting at the host's post-edit chokepoint would put
+  snippet logic in the host and miss edits to a buffer that is not active.
+
+**Stickiness** decides text typed exactly at a range's edge. The focused
+placeholder's occurrences grow; every other range does not. Typing at the
+boundary of `${1:a}${2:b}` therefore lands in the placeholder the user is
+in, and text typed at an empty `$2` becomes `$2`'s. The session resticks
+on every move (fire-and-forget: the mailbox is FIFO, so the next edit sees
+it).
+
+**Collapse.** A range lying wholly inside a span an edit replaced, without
+being that span, is collapsed: the text it named is gone. Overtyping
+`${1:name${2:_x}}`'s default collapses `$2`, and `<Tab>` skips groups with
+no live occurrence. A range exactly equal to the replaced span — the
+overtype of a selected default — becomes the new text instead.
+
+**Mirrors are linked ranges.** Every occurrence of a `$N` is tracked and
+the occurrences are *linked* into one group. When an edit lands inside a
+linked range, the `Document` copies that range's text into its siblings in
+the same commit and the same undo entry — so a typed character, a `cw`, a
+language server's edit all mirror alike, and one `u` takes back the edit
+with its copies. Undo and redo replay the recorded copies; they never
+mirror. The edit's caller gets its own `AppliedEdit` back unchanged; the
+copies are the commit's `linked_edits`, carried on the published snapshot,
+and the host's edit chokepoints (`apply_edit_blocking`, its batch peer,
+`handle_edits`) publish them to language servers, syntax and the renderer
+with the edit, and move the cursor across them (a copy earlier in the text
+shifts it). Mirrors render with their placeholder's text, so
+`$1 + $1 = ${1:two}` expands to `two + two = two`. The same primitive is
+what LSP linked editing (renaming a tag pair) needs.
+
+**Live placeholders are tinted** (`snippet.placeholder`, a background
+owned by `active-snippet-mode`): every stop still to visit and its
+copies, but not the exit. The mode registers a range-highlight source
+(mode-architecture.md §9.5.1) that reads the tracked ranges from the
+snapshot the host publishes the text from, so the tint moves with the
+text in the same frame and goes with the session.
+
+**Choices cycle in place.** A focused `${1|a,b,c|}` is selected (Select
+mode), and `<C-n>` / `<C-p>` there replace it with the next / previous
+option, wrapping. The replacement is one ordinary edit of the first
+occurrence: the range equals the replaced span, so it stays the same
+placeholder, and the link copies it into the mirrors. A popup was
+rejected — the completion popup is an Insert-mode surface, and a list of
+three words does not earn a new popup state. Insert keeps `<C-n>` /
+`<C-p>` for completion; once the user types, the text is no longer a
+choice.
+
+A document kind with no text of its own (the multibuffer) tracks nothing:
+its `update_tracked_ranges` resolves at once, its snapshot's set stays
+empty, and an expansion there stands as plain text.
+
+Cost: an `is_empty` check per edit with no snippet live; ~30 ns per
+keystroke for a typical snippet (benchmarks.md, SI.2).
 
 Exit triggers:
 
-- `$0` reached.
+- Landing on `$0` — or on the snippet's end, when the body has no `$0`.
 - `<Esc>` (also exits Insert, vim convention).
-- Cursor moved outside any tabstop range.
-- New snippet expanded (the prior snippet exits before the
-  new one begins).
+- Leaving Insert/Select by any route, or the cursor leaving the snippet's
+  text. The host reconciles session-backed minor modes on the active
+  buffer at the end of every dispatch, handing each a `SessionProbe`
+  (buffer, modal state, cursor, document); `active-snippet-mode`'s
+  predicate ends its own session there. The host stays generic — the rule
+  is the mode's.
+- A new snippet expanded inside it (the outer session's ranges are
+  released first).
 
 ### 8.6 Snippets in the unified popup
 
@@ -1192,15 +1341,15 @@ Deliverables:
     placeholder range tracking.
   - `variables.rs` — built-in variable resolver.
 - Active-snippet minor mode in the input layer: `<Tab>` /
-  `<S-Tab>` (and `<C-l>` / `<C-h>` aliases) navigate
-  placeholders; `<Esc>` exits.
+  `<S-Tab>` navigate placeholders; `<Esc>` exits.
 - Snippet registry loads bundled + friendly-snippets-style
   packs + user + project snippets in priority order.
 - `gen:snippet` source feeds into the unified popup.
 - `<C-x><C-s>` (mode-owned chord, no ex-command form) for
   direct expansion.
-- Choice placeholders open an inline mini-picker;
-  transformation placeholders re-evaluate per-edit.
+- Choice placeholders cycle in place: `<C-n>` / `<C-p>` in Select
+  replace the focused choice with the next / previous option (no popup
+  state); transformation placeholders are rewritten on leaving.
 - LSP item routing: `insertTextFormat == Snippet` items go
   through the engine.
 - **Help**: `:help completion-sources-snippet`, `:help

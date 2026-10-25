@@ -50,7 +50,7 @@ impl SnippetsSource {
         Self {
             spec: PickerSourceSpec::no_args(
                 "snippets",
-                "Available snippets for the active buffer's language. `<CR>` expands the chosen snippet at the cursor.",
+                "Available snippets for the active buffer's language. `<CR>` expands the chosen snippet at the cursor; opened by `gS`, around the text it covers.",
             ),
             registry,
         }
@@ -62,14 +62,30 @@ impl PickerSourceGenerator for SnippetsSource {
         &self.spec
     }
 
-    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
-        let language = ctx.active_buffer.language.unwrap_or("plain");
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        // `--over <range>` (SI.10, `gS`): each row wraps that text instead
+        // of expanding at the cursor.
+        let over = match args {
+            [] => None,
+            [flag, range] if flag == crate::wrap::OVER_FLAG => Some(
+                crate::wrap::decode_range(range)
+                    .ok_or_else(|| format!("snippets: `{range}` is not a range"))?,
+            ),
+            _ => return Err(format!("snippets: unexpected arguments {args:?}")),
+        };
+        // The same language id completion and `<C-x><C-s>` use, from the
+        // buffer's path (SI.5) — not the tree-sitter label the picker
+        // context carries, which named `.rb` `ruby` here and `rb` there.
+        let language = lattice_core::language::language_id_for_path(ctx.active_buffer.path);
         let snapshot = self.registry.load();
-        let mut metas = snapshot.meta_for_language(language);
+        let mut metas = snapshot.meta_for(&crate::registry::lookup_languages(&language));
         if metas.is_empty() {
-            return Err(format!(
-                "snippets: no snippets registered for language `{language}`"
-            ));
+            let shown = if language.is_empty() {
+                "this buffer"
+            } else {
+                &language
+            };
+            return Err(format!("snippets: no snippets for {shown}"));
         }
         // Sort by user-facing prefix so popup order is stable.
         metas.sort_by(|a, b| a.prefix.cmp(&b.prefix));
@@ -82,15 +98,16 @@ impl PickerSourceGenerator for SnippetsSource {
             .map(|meta| {
                 let mut cand = RawCandidate::plain(meta.prefix.clone(), CandidateKind::Plain);
                 cand.annotations = snippet_annotations(&meta);
-                // ExpandSnippet routing carries the snippet
-                // `name` (stable id) -- the host resolves the
-                // body through `SnippetRegistry::by_name` at
-                // expansion time. Identity for MRU is the
-                // name, so frequent-snippet rows float.
+                // ExpandSnippet routing carries the snippet's
+                // identity (pack + name, SI.5) -- the host resolves
+                // the body through `SnippetRegistry::resolve` at
+                // expansion time. It is also the MRU identity, so
+                // frequent-snippet rows float.
                 (
                     cand,
                     RoutingPayload::ExpandSnippet {
-                        id: meta.name.clone(),
+                        id: meta.key(),
+                        over,
                     },
                 )
             })
@@ -104,9 +121,17 @@ impl PickerSourceGenerator for SnippetsSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::ExpandSnippet { id } => {
+            RoutingPayload::ExpandSnippet { id, over: None } => {
                 Ok(PickerAcceptOutcome::ExpandSnippet { id: id.clone() })
             }
+            // A wrap row runs the action every other caller of a wrap runs.
+            RoutingPayload::ExpandSnippet {
+                id,
+                over: Some(range),
+            } => Ok(PickerAcceptOutcome::InvokeCommand {
+                id: crate::wrap::SNIPPET_WRAP_ACTION.to_string(),
+                args: crate::wrap::wrap_action_args(id, *range),
+            }),
             other => Err(format!("snippets: unexpected routing payload {other:?}")),
         }
     }
@@ -162,6 +187,7 @@ mod tests {
             name: "for-loop".into(),
             prefix: "for".into(),
             description: Some("C-style for loop".into()),
+            language: "rust".into(),
         };
         let anns = snippet_annotations(&with_desc);
         assert_eq!(anns.len(), 2);
@@ -174,6 +200,7 @@ mod tests {
             name: "main".into(),
             prefix: "main".into(),
             description: None,
+            language: "rust".into(),
         };
         let anns = snippet_annotations(&no_desc);
         assert_eq!(anns.len(), 1);

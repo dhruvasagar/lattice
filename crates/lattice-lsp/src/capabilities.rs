@@ -282,6 +282,9 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
         // markdown highlighter then has no patterns to colour and
         // the popup renders as flat grey text.
         hover: Some(hover_capabilities()),
+        // SI.9: without this a server sends plain-text items only — no
+        // snippets, and no lazily-resolved docs.
+        completion: Some(completion_capabilities()),
         signature_help: Some(signature_help_capabilities()),
         // 4.4.j: pull-based diagnostics client capabilities.
         // `related_document_support = true` tells the server
@@ -342,6 +345,53 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
             dynamic_registration: Some(false),
         }),
         ..Default::default()
+    }
+}
+
+/// What the completion popup handles, and nothing it does not: a server
+/// that is told a capability exists omits whatever it would otherwise send
+/// eagerly.
+///
+/// - **`snippetSupport`**: items expand through the snippet engine
+///   (placeholders, mirrors, the session), as `expand_snippet_with_lsp_edits`.
+/// - **`resolveSupport`**: `documentation` and `detail` only — the docs
+///   popup resolves them on focus. Not `additionalTextEdits`: accept does
+///   not wait for a resolve, so a server allowed to defer them (rust-analyzer
+///   defers auto-imports this way) would lose the import.
+/// - **`insertReplaceSupport`**: an `InsertReplaceEdit`'s `replace` range is
+///   used.
+/// - **`insertTextModeSupport`**: `asIs` and `adjustIndentation`; the default
+///   is adjusting, which is what the snippet path does.
+/// - Not `labelDetailsSupport`: the popup does not render label details,
+///   and a server told it does moves the signature out of `label` / `detail`.
+fn completion_capabilities() -> lsp_types::CompletionClientCapabilities {
+    lsp_types::CompletionClientCapabilities {
+        dynamic_registration: Some(false),
+        completion_item: Some(lsp_types::CompletionItemCapability {
+            snippet_support: Some(true),
+            commit_characters_support: Some(true),
+            documentation_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+            deprecated_support: Some(true),
+            preselect_support: Some(true),
+            tag_support: Some(lsp_types::TagSupport {
+                value_set: vec![lsp_types::CompletionItemTag::DEPRECATED],
+            }),
+            insert_replace_support: Some(true),
+            resolve_support: Some(lsp_types::CompletionItemCapabilityResolveSupport {
+                properties: vec!["documentation".into(), "detail".into()],
+            }),
+            insert_text_mode_support: Some(lsp_types::InsertTextModeSupport {
+                value_set: vec![
+                    lsp_types::InsertTextMode::AS_IS,
+                    lsp_types::InsertTextMode::ADJUST_INDENTATION,
+                ],
+            }),
+            label_details_support: None,
+        }),
+        completion_item_kind: None,
+        context_support: Some(true),
+        insert_text_mode: Some(lsp_types::InsertTextMode::ADJUST_INDENTATION),
+        completion_list: None,
     }
 }
 

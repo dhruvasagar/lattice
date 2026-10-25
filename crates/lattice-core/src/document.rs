@@ -19,6 +19,7 @@ use lattice_protocol::selection::{Selection, SelectionSet};
 
 use crate::buffer::{AppliedEdit, Buffer, transform_position};
 use crate::error::{CoreError, CoreResult};
+use crate::tracked::TrackedRanges;
 use crate::undo::{UndoEntry, UndoStack};
 
 /// An editable document: a [`Buffer`] plus the bookkeeping every edit needs
@@ -100,6 +101,16 @@ pub struct Document {
     /// to decide whether to reparse.
     text_version: u64,
     selections: SelectionSet,
+    /// Ranges kept in place across edits ([`crate::tracked`]). Behind an
+    /// `Arc` so a published snapshot shares them for the cost of a bump; an
+    /// edit copies only when something is tracked.
+    tracked: Arc<TrackedRanges>,
+    /// The edits the last commit applied to linked tracked ranges on its
+    /// own — snippet mirrors copying what was typed into one of them. The
+    /// caller's edit is what `apply_edit` returns; these follow it, so the
+    /// host reads them here (via the published snapshot) to keep language
+    /// servers, syntax and the renderer in step. Cleared by every commit.
+    linked_edits: Vec<AppliedEdit>,
     undo: UndoStack,
     /// Undo-stack depth at which the buffer last matched its on-disk state
     /// (or its initial-load state, for a fresh `open` / `from_text`). The
@@ -213,6 +224,8 @@ impl DocumentBuilder {
             version: 0,
             text_version: 0,
             selections: SelectionSet::default(),
+            tracked: Arc::default(),
+            linked_edits: Vec::new(),
             undo: UndoStack::new(),
             // A freshly built document is "clean" at undo depth 0 -- the
             // initial buffer (whether empty, from_text, or just-loaded
@@ -370,6 +383,19 @@ impl Document {
         &self.selections
     }
 
+    /// The ranges this document keeps in place across its edits.
+    pub fn tracked_ranges(&self) -> &Arc<TrackedRanges> {
+        &self.tracked
+    }
+
+    /// Change the tracked ranges: start or stop tracking, or change a
+    /// range's stickiness. Bumps [`Self::version`] (a published snapshot
+    /// must show the change) but not [`Self::text_version`].
+    pub fn update_tracked_ranges(&mut self, f: impl FnOnce(&mut TrackedRanges)) {
+        f(Arc::make_mut(&mut self.tracked));
+        self.version += 1;
+    }
+
     /// Replace the selections. Bumps [`Self::version`] but not
     /// [`Self::text_version`]. Positions are not validated against the
     /// buffer.
@@ -397,10 +423,14 @@ impl Document {
     ///
     /// Those of [`Buffer::apply_edit`]; the document is unchanged on error.
     pub fn apply_edit(&mut self, edit: Edit) -> CoreResult<AppliedEdit> {
+        self.linked_edits.clear();
         let applied = self.buffer.apply_edit(&edit)?;
-        self.transform_selections(&applied);
-        let inverse = inverse_edit(&applied);
-        self.record_inverses(vec![inverse]);
+        self.transform_for_edit(&applied);
+        let mut inverses = vec![inverse_edit(&applied)];
+        self.mirror_linked(&applied, &mut inverses)?;
+        // Inverses replay in reverse order during undo.
+        inverses.reverse();
+        self.record_inverses(inverses);
         self.version += 1;
         self.text_version += 1;
         Ok(applied)
@@ -443,12 +473,14 @@ impl Document {
     /// # }
     /// ```
     pub fn apply_edit_batch(&mut self, edits: Vec<Edit>) -> CoreResult<Vec<AppliedEdit>> {
+        self.linked_edits.clear();
         let mut applied_set = Vec::with_capacity(edits.len());
         let mut inverses = Vec::with_capacity(edits.len());
         for edit in edits {
             let applied = self.buffer.apply_edit(&edit)?;
-            self.transform_selections(&applied);
+            self.transform_for_edit(&applied);
             inverses.push(inverse_edit(&applied));
+            self.mirror_linked(&applied, &mut inverses)?;
             applied_set.push(applied);
         }
         // Inverses replay in reverse order during undo.
@@ -479,10 +511,73 @@ impl Document {
         self.group_has_entry = false;
     }
 
+    /// Move everything the document anchors to its text across one applied
+    /// edit: the selections and the [tracked ranges](crate::tracked). Called
+    /// for every edit — `apply_edit`, `apply_edit_batch`, `undo`, `redo` — so
+    /// nothing anchored here can miss one.
+    fn transform_for_edit(&mut self, applied: &AppliedEdit) {
+        self.transform_selections(applied);
+        if !self.tracked.is_empty() {
+            Arc::make_mut(&mut self.tracked).transform(&applied.delta);
+        }
+    }
+
+    /// The edits the last commit applied to linked ranges by itself — see
+    /// [`crate::tracked`]. Empty unless the commit's edit landed in one.
+    pub fn linked_edits(&self) -> &[AppliedEdit] {
+        &self.linked_edits
+    }
+
+    /// Copy what `applied` left in a linked tracked range into the other
+    /// ranges of its group (snippet mirrors), recording each copy in
+    /// [`Self::linked_edits`] and its inverse in `inverses`, so the copies
+    /// share the edit's undo entry. Copies are applied to the buffer
+    /// directly: they do not mirror again. Undo and redo never mirror —
+    /// they replay the copies recorded with the edit.
+    fn mirror_linked(&mut self, applied: &AppliedEdit, inverses: &mut Vec<Edit>) -> CoreResult<()> {
+        if self.tracked.is_empty() || !self.tracked.has_links() {
+            return Ok(());
+        }
+        let Some((source, group)) = self.tracked.linked_source(&applied.delta) else {
+            return Ok(());
+        };
+        let text = |doc: &Self, id| -> CoreResult<Option<String>> {
+            let Some(r) = doc.tracked.get(id) else {
+                return Ok(None);
+            };
+            let range = Range::new(
+                doc.buffer.byte_to_position(r.start)?,
+                doc.buffer.byte_to_position(r.end)?,
+            );
+            Ok(Some(doc.buffer.slice(range)?))
+        };
+        let Some(wanted) = text(self, source)? else {
+            return Ok(());
+        };
+        for sibling in self.tracked.linked_siblings(group, source) {
+            let Some(r) = self.tracked.get(sibling) else {
+                continue;
+            };
+            if text(self, sibling)?.as_deref() == Some(wanted.as_str()) {
+                continue;
+            }
+            let range = Range::new(
+                self.buffer.byte_to_position(r.start)?,
+                self.buffer.byte_to_position(r.end)?,
+            );
+            let copy = self
+                .buffer
+                .apply_edit(&Edit::replace(range, wanted.clone()))?;
+            self.transform_for_edit(&copy);
+            inverses.push(inverse_edit(&copy));
+            self.linked_edits.push(copy);
+        }
+        Ok(())
+    }
+
     /// Transform this document's selections across an applied edit.
     /// Every selection's anchor and head are independently transformed
-    /// so the caret survives owner writes. Called from `apply_edit`
-    /// and `apply_edit_batch`.
+    /// so the caret survives owner writes.
     fn transform_selections(&mut self, applied: &AppliedEdit) {
         let all: Vec<Selection> = self
             .selections
@@ -533,12 +628,13 @@ impl Document {
     ///
     /// [`CoreError::NothingToUndo`] if the undo stack is empty.
     pub fn undo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
+        self.linked_edits.clear();
         let entry = self.undo.pop_for_undo().ok_or(CoreError::NothingToUndo)?;
         let mut applied = Vec::with_capacity(entry.inverse_edits.len());
         let mut redo_inverses = Vec::with_capacity(entry.inverse_edits.len());
         for edit in &entry.inverse_edits {
             let a = self.buffer.apply_edit(edit)?;
-            self.transform_selections(&a);
+            self.transform_for_edit(&a);
             redo_inverses.push(inverse_edit(&a));
             applied.push(a);
         }
@@ -560,12 +656,13 @@ impl Document {
     /// [`CoreError::NothingToRedo`] if nothing has been undone since the
     /// last new edit.
     pub fn redo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
+        self.linked_edits.clear();
         let entry = self.undo.pop_for_redo().ok_or(CoreError::NothingToRedo)?;
         let mut applied = Vec::with_capacity(entry.inverse_edits.len());
         let mut undo_inverses = Vec::with_capacity(entry.inverse_edits.len());
         for edit in &entry.inverse_edits {
             let a = self.buffer.apply_edit(edit)?;
-            self.transform_selections(&a);
+            self.transform_for_edit(&a);
             undo_inverses.push(inverse_edit(&a));
             applied.push(a);
         }
@@ -667,6 +764,82 @@ mod tests {
     use super::*;
     use lattice_protocol::position::Position;
     use lattice_protocol::selection::Selection;
+
+    /// Tracked ranges follow every edit path — a single edit, a batch, undo
+    /// and redo — because the document moves them itself.
+    #[test]
+    fn tracked_ranges_follow_edits_batches_undo_and_redo() {
+        use crate::tracked::{Stickiness, TrackedRangeId};
+        let mut d = Document::from_text("for idx in iter {}");
+        let one = TrackedRangeId::next();
+        let two = TrackedRangeId::next();
+        d.update_tracked_ranges(|t| {
+            t.insert(one, 4..7, Stickiness::GrowsAtEdges);
+            t.insert(two, 11..15, Stickiness::NeverGrows);
+        });
+        let bytes = |d: &Document, id| d.tracked_ranges().get(id).map(|r| r.bytes());
+
+        d.apply_edit(Edit::insert(Position::new(0, 7), "es"))
+            .unwrap();
+        assert_eq!(bytes(&d, one), Some(4..9), "typing at `$1`'s end grows it");
+        assert_eq!(bytes(&d, two), Some(13..17), "and pushes `$2` along");
+
+        d.apply_edit_batch(vec![Edit::insert(Position::new(0, 0), "  ")])
+            .unwrap();
+        assert_eq!(bytes(&d, two), Some(15..19), "a batch moves them too");
+
+        d.undo().unwrap();
+        d.undo().unwrap();
+        assert_eq!(bytes(&d, one), Some(4..7), "undo moves them back");
+        assert_eq!(bytes(&d, two), Some(11..15));
+
+        d.redo().unwrap();
+        assert_eq!(bytes(&d, one), Some(4..9), "and redo forward again");
+    }
+
+    /// An edit inside one linked range is copied into the others, the
+    /// copies are reported as the commit's linked edits, and one undo takes
+    /// back the edit and its copies together.
+    #[test]
+    fn an_edit_in_a_linked_range_is_copied_into_the_others() {
+        use crate::tracked::{Stickiness, TrackedRangeChange, TrackedRangeId};
+        // `$1 + $1`, both copies `x`.
+        let mut d = Document::from_text("x + x");
+        let (a, b) = (TrackedRangeId::next(), TrackedRangeId::next());
+        d.update_tracked_ranges(|t| {
+            t.insert(a, 0..1, Stickiness::GrowsAtEdges);
+            t.insert(b, 4..5, Stickiness::GrowsAtEdges);
+            t.apply(TrackedRangeChange::Link(vec![a, b]));
+        });
+
+        // Type `y` at the end of the second copy.
+        let main = d
+            .apply_edit(Edit::insert(Position::new(0, 5), "y"))
+            .unwrap();
+        assert_eq!(d.text(), "xy + xy");
+        assert_eq!(
+            main.inserted_text, "y",
+            "the caller's edit is returned as is"
+        );
+        assert_eq!(d.linked_edits().len(), 1, "the copy into the first");
+        assert_eq!(d.tracked_ranges().get(b).map(|r| r.bytes()), Some(5..7));
+
+        // Undo replays the copies recorded with the edit; it never mirrors.
+        d.undo().unwrap();
+        assert_eq!(d.text(), "x + x", "one undo takes back both");
+        assert!(d.linked_edits().is_empty());
+    }
+
+    /// With nothing tracked, an edit does not touch the shared set — a
+    /// snapshot taken before still points at the same allocation.
+    #[test]
+    fn an_edit_with_nothing_tracked_leaves_the_set_shared() {
+        let mut d = Document::from_text("abc");
+        let before = Arc::clone(d.tracked_ranges());
+        d.apply_edit(Edit::insert(Position::new(0, 1), "x"))
+            .unwrap();
+        assert!(Arc::ptr_eq(&before, d.tracked_ranges()));
+    }
 
     #[test]
     fn empty_document_has_empty_buffer_and_no_path() {

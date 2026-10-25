@@ -53,7 +53,7 @@ pub use crate::insert::{
     BufferWordsSource, CompletionTrigger, DocPopupState, FuzzyInsertMatcher, InsertCompletionState,
     InsertContext, InsertRanker, InsertSource, LSP_COMPLETION_SOURCE_ID, PATH_SOURCE_ID,
     PerLanguageOverrides, SNIPPET_SOURCE_ID, SourceId, TREE_SITTER_SYMBOL_SOURCE_ID,
-    canonical_source_id, fuzzy_match, per_language_defaults,
+    canonical_source_id, fuzzy_match, per_language_defaults, source_label,
 };
 pub use crate::orderless::{
     ORDER_BONUS, OrderlessComponent, orderless_match, parse_orderless_query,

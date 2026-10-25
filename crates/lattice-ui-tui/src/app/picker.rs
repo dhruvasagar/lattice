@@ -1372,11 +1372,7 @@ mod tests {
         app.open_picker("snippets".into(), Vec::new(), None, None);
         assert!(app.editor.picker.is_none());
         let msg = app.editor.last_message.as_ref().expect("echo");
-        assert!(
-            msg.text.contains("no snippets registered"),
-            "got `{}`",
-            msg.text
-        );
+        assert!(msg.text.contains("no snippets"), "got `{}`", msg.text);
     }
 
     /// Slice 14c: accepting a candidate records it in

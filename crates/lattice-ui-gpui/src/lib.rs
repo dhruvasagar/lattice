@@ -1531,6 +1531,8 @@ impl GpuiApp {
             | Effect::BufferPrev
             | Effect::FocusBuffer(_)
             | Effect::InvokeCommand { .. }
+            // SI.10: host-applied (`Editor::expand_snippet_over`).
+            | Effect::ExpandSnippetOver { .. }
             | Effect::BufferDelete { .. }
             | Effect::ListModes
             | Effect::DescribeMode { .. }

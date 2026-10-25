@@ -1156,6 +1156,13 @@ enum SupervisorCmd {
     RegisterConfig { token: u64, config: ServerConfig },
     /// LH.0.4: remove a runtime config.
     UnregisterConfig { token: u64 },
+    /// Replace the boot-time configs (`LspSupervisor::set_configs`).
+    /// Replies once the new snapshot is published, so the caller's next
+    /// buffer open sees it.
+    SetConfigs {
+        configs: Vec<ServerConfig>,
+        reply: oneshot::Sender<()>,
+    },
     /// Editor exit: close every buffer, drop fan-ins, shut down
     /// every actor. Reply resolves after the supervisor task
     /// itself is exiting (next iteration drops `cmd_rx`).
@@ -1461,6 +1468,23 @@ impl LspSupervisorHandle {
         let _ = self.cmd_tx.send(SupervisorCmd::UnregisterConfig { token });
     }
 
+    /// Replace the boot-time configs — the builtins the supervisor starts
+    /// with — as [`LspSupervisor::set_configs`] does before the supervisor is
+    /// running. Runtime registrations ([`Self::register_config`]) are kept.
+    /// Resolves once the new snapshot is published, so a buffer opened after
+    /// it sees the new set.
+    ///
+    /// An empty set is what keeps a test hermetic: the builtins name
+    /// whatever servers the machine has on `PATH`, and a scenario that opens
+    /// a `.rs` file would otherwise start the developer's rust-analyzer.
+    pub async fn set_configs(&self, configs: Vec<ServerConfig>) -> LspResult<()> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SupervisorCmd::SetConfigs { configs, reply })
+            .map_err(|_| LspError::ActorGone)?;
+        rx.await.map_err(|_| LspError::ActorGone)
+    }
+
     /// Editor exit: close every buffer, drop fan-ins, shut down
     /// every actor. Awaits the supervisor task's final ack.
     pub async fn shutdown(&self) -> LspResult<()> {
@@ -1567,6 +1591,11 @@ async fn supervisor_main(
             SupervisorCmd::UnregisterConfig { token } => {
                 state.unregister_config(token);
                 snapshot.store(Arc::new(state.build_snapshot()));
+            }
+            SupervisorCmd::SetConfigs { configs, reply } => {
+                state.set_configs(configs);
+                snapshot.store(Arc::new(state.build_snapshot()));
+                let _ = reply.send(());
             }
             SupervisorCmd::Shutdown { reply } => {
                 let result = state.shutdown().await;
@@ -1971,6 +2000,29 @@ mod tests {
             ids_and_binaries(&sup),
             vec![("rust".to_string(), "/managed/ra".to_string())]
         );
+    }
+
+    /// The handle's `set_configs` replaces the boot-time set on the running
+    /// supervisor, keeps registrations, and has landed by the time it
+    /// resolves — a buffer opened next sees it.
+    #[tokio::test]
+    async fn the_handle_replaces_the_boot_configs_and_keeps_registrations() {
+        let mut sup = LspSupervisor::new(LspLogger::with_defaults());
+        sup.set_configs([managed("rust", "rust-analyzer", "*.rs")]);
+        let handle = sup.spawn(&tokio::runtime::Handle::current());
+        let rs = Path::new("/p/main.rs");
+        let zig = Path::new("/p/main.zig");
+        assert!(handle.has_server_for_path(rs), "precondition: a builtin");
+
+        handle
+            .register_config(managed("zig", "/managed/zls", "*.zig"))
+            .unwrap();
+        handle.set_configs(Vec::new()).await.unwrap();
+        assert!(
+            !handle.has_server_for_path(rs),
+            "the builtin is gone as soon as `set_configs` resolves"
+        );
+        assert!(handle.has_server_for_path(zig), "the registration stays");
     }
 
     /// **The seam's exit criterion**: register, and the next matching buffer

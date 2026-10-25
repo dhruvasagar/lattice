@@ -903,7 +903,7 @@ fn insert_completion_footer_line(
     use ratatui::style::{Modifier, Style};
     use ratatui::text::Span;
     if let Some(active) = state.source_filter.as_ref() {
-        let label = source_display_label(active.as_str());
+        let label = lattice_completion::source_label(active.as_str());
         let text = format!(" source: {label} │ <C-Space> all ");
         let text = clip_to_width(&text, width);
         return Line::from(Span::styled(
@@ -1020,17 +1020,6 @@ pub(crate) fn render_filter_chord_footer(entries: &[FilterChordEntry], width: u1
     }
     // Single chord still doesn't fit — hard truncate.
     clip_to_width(&compact, width)
-}
-
-fn source_display_label(id: &str) -> &'static str {
-    match id {
-        "gen:buffer-words" => "buffer-words",
-        "gen:lsp-completion" => "lsp",
-        "gen:path" => "path",
-        "gen:tree-sitter-symbol" => "tree-sitter",
-        "gen:snippet" => "snippet",
-        _ => "source",
-    }
 }
 
 fn clip_to_width(s: &str, width: u16) -> String {
@@ -5296,6 +5285,18 @@ pub(crate) fn compose_pane_lines(
         // cell worker layers them over the grammar spans when it builds
         // the row, so `body` already carries them — as it does in the
         // GPUI window, which has no merge point of its own.
+        // SI.12: ranges the active modes tint (a snippet's placeholders),
+        // from the published active document — the same snapshot as the
+        // text, so never a stale offset. Under the selection, which paints
+        // next. Active pane only: they are the active buffer's.
+        if ctx.is_active {
+            for span in app.ad().mode_highlights.iter() {
+                if let Some((start, end)) = match_overlay_range(span.range, line_idx, line_len) {
+                    let style = mode_highlight_style(overlay_resolved, span.element);
+                    body = apply_tint_overlay(body, map_ob(start), map_ob(end), style);
+                }
+            }
+        }
         // Blockwise visual: per-line column band [min_col, max_col].
         // Charwise / Linewise visual go through `visual_range` instead.
         if let Some(b) = block
@@ -5846,6 +5847,17 @@ pub(crate) fn compose_pane_lines(
     out
 }
 
+/// A mode range highlight's tint: its element's background, nothing else.
+fn mode_highlight_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    element: lattice_host::ui::theme::ElementId,
+) -> TuiStyle {
+    match resolved.get(element).bg {
+        Some(bg) => TuiStyle::default().bg(crate::theme::host_color_to_ratatui(bg)),
+        None => TuiStyle::default(),
+    }
+}
+
 fn hlsearch_style(
     resolved: &lattice_host::ui::theme::ResolvedTheme,
     ids: &lattice_host::ui::theme::BuiltinElementIds,
@@ -5996,6 +6008,31 @@ pub(crate) fn apply_match_overlay(
     overlay_end: usize,
     overlay_style: TuiStyle,
 ) -> Vec<Span<'static>> {
+    apply_overlay_with(spans, overlay_start, overlay_end, |_| overlay_style)
+}
+
+/// [`apply_match_overlay`] that keeps each covered span's own style and
+/// lays `overlay_style`'s set fields over it — a background tint that
+/// leaves the syntax colours readable (a mode's range highlight, SI.12).
+pub(crate) fn apply_tint_overlay(
+    spans: Vec<Span<'static>>,
+    overlay_start: usize,
+    overlay_end: usize,
+    overlay_style: TuiStyle,
+) -> Vec<Span<'static>> {
+    apply_overlay_with(spans, overlay_start, overlay_end, |style| {
+        style.patch(overlay_style)
+    })
+}
+
+/// Split `spans` at `[overlay_start, overlay_end)` (body bytes) and restyle
+/// the covered part with `restyle(its own style)`.
+fn apply_overlay_with(
+    spans: Vec<Span<'static>>,
+    overlay_start: usize,
+    overlay_end: usize,
+    restyle: impl Fn(TuiStyle) -> TuiStyle,
+) -> Vec<Span<'static>> {
     let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
     let mut cursor = 0usize;
     for span in spans {
@@ -6012,7 +6049,7 @@ pub(crate) fn apply_match_overlay(
                 out.push(Span::styled(pre, span.style));
             }
             let mid = s[overlap_start - span_start..overlap_end - span_start].to_string();
-            out.push(Span::styled(mid, overlay_style));
+            out.push(Span::styled(mid, restyle(span.style)));
             if overlap_end < span_end {
                 let post = s[overlap_end - span_start..].to_string();
                 out.push(Span::styled(post, span.style));
@@ -8213,6 +8250,60 @@ mod tests {
         // through the cells / `DisplayMatrix` substrate (rebuilt on
         // publish); no explicit prime is needed for these render tests.
         a
+    }
+
+    /// SI.12: a mode's range highlight paints its element's background on
+    /// exactly the covered cells, and keeps their foreground.
+    #[test]
+    fn a_mode_range_highlight_tints_its_cells() {
+        use lattice_mode::RangeHighlightRegistrar as _;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (tw, th): (u16, u16) = (40, 6);
+        let mut a = app_with("for idx in iter\n", th as u32);
+        // `search.current` is a builtin with a literal background, so the
+        // expected colour does not depend on the theme's palette.
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            let element = e
+                .services
+                .get::<lattice_host::ui::theme::ThemeRegistryHandle>()
+                .and_then(|t| {
+                    t.id(&lattice_host::ui::theme::ElementName::from_static(
+                        "search.current",
+                    ))
+                })
+                .expect("search.current is registered");
+            e.range_highlights.register(
+                e.document_buffer_id,
+                lattice_mode::ModeId::new("test-mode"),
+                std::sync::Arc::new(move |_| {
+                    vec![lattice_mode::RangeHighlight {
+                        bytes: 4..7,
+                        element,
+                    }]
+                }),
+            );
+            e.publish_render_state();
+        });
+
+        let snap = a.ad().snapshot.clone();
+        let mut terminal = Terminal::new(TestBackend::new(tw, th)).unwrap();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &a, &snap);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let row: String = (0..tw).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        let col = row.find("for idx").expect("the line paints") as u16;
+        let tint = Color::Rgb(0x6c, 0x5a, 0x1e);
+        for x in col + 4..col + 7 {
+            assert_eq!(buf[(x, 0)].bg, tint, "`idx` is tinted: {row:?}");
+        }
+        for x in [col, col + 3, col + 7] {
+            assert_ne!(buf[(x, 0)].bg, tint, "only `idx` is tinted: {row:?}");
+        }
     }
 
     /// Regression (2026-09-29): describe/help opened in a horizontal split

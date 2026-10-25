@@ -1,5 +1,144 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`gS` wraps text in a snippet.** `gS` takes a motion or text object
+  like any operator — `gSiw` a word, `gSip` a paragraph, `gSS` the line,
+  `gS` in Visual the selection — opens the snippet picker, and the snippet
+  you pick replaces the text with the text inside it, as
+  `$TM_SELECTED_TEXT`. Wrapped lines keep their indentation and nesting;
+  `<Esc>` in the picker changes nothing, and `u` undoes a wrap in one step.
+- **A live snippet's placeholders are highlighted**, so you can see
+  where `<Tab>` goes next. The tint follows the text as you type and
+  disappears when the snippet ends; themes restyle it as
+  `snippet.placeholder`.
+- **Snippet choices cycle.** On a `${1|one,two,three|}` choice, `<C-n>`
+  and `<C-p>` swap in the next or previous option — in every copy of it —
+  and keep it selected, so typing still replaces it.
+- **Snippet packs load from more places, in more layouts.** Clone
+  friendly-snippets into `~/.config/lattice/snippet-packs/` and its
+  snippets load as they are; `:set snippet.dirs=…` adds folders of your
+  own; a project's `.lattice/snippets/` applies inside that project; and
+  VS Code `*.code-snippets` files work alongside `<language>.json`. Your
+  own snippets override a package's, and a project's override yours.
+- **`:describe-buffer` lists the buffer's completion sources** — how the
+  popup opens there, each source's priority, and which are off for the
+  file's language or waiting on a language server — so "why doesn't X
+  complete here" has an answer.
+- **Completion can open by itself as you type.** `:set
+  completion.auto_trigger` opens the popup once the word before the
+  cursor is `completion.min_chars` (2) characters long, or on a character
+  a source declares as its trigger — `.` after an object asks your
+  language server, not every word in the buffer. Off by default:
+  completion still opens when you press `<C-Space>`. Markdown and plain
+  text stay manual even with it on, and `[completion.per-language.<lang>]
+  auto_trigger = true` turns it on for one language alone.
+
+### Changed
+- **Plugin API 0.4.0.** Wrapping text in a snippet is on the WIT surface:
+  `effect` gains `expand-snippet-over` (a snippet and the range it wraps,
+  what `gS` ends in), and a picker row's `expand-snippet` now carries a
+  `snippet-row` — the snippet's id and, for a wrap row, the range — where
+  it carried a bare string. Both change a variant's shape, so this is a new
+  ABI generation: a plugin pinned to `lattice-wit = "0.3"` moves its pin to
+  `"0.4"` and rebuilds, and one that builds `expand-snippet` rows wraps the
+  id in a `snippet-row` with no range. Plugins without a pin rebuild on
+  their own.
+
+### Fixed
+- **More snippet variables have values.** `$CLIPBOARD` holds what you
+  copied in another program, not only the editor's own copies;
+  `$LINE_COMMENT` and `$BLOCK_COMMENT_START`/`_END` follow the file's
+  language; `$WORKSPACE_NAME`, `$WORKSPACE_FOLDER`, `$RELATIVE_FILEPATH`,
+  `$CURSOR_INDEX`, `$CURRENT_SECONDS_UNIX` and `$CURRENT_TIMEZONE_OFFSET`
+  work; and `$TM_FILENAME_BASE` of `.bashrc` is `.bashrc`, not empty.
+- **Snippet transforms work, and malformed snippets can't hang the
+  editor.** `${TM_FILENAME/(.*)\\.rs/${1:/pascalcase}/}` and
+  `${1/(.*)/${1:/upcase}/}` used to leave fragments of their own syntax in
+  the buffer; they now transform, a placeholder's transformed copies
+  updating when you `<Tab>` past it. One malformed entry no longer drops
+  every snippet in its file — the rest load and the reload says what was
+  skipped. A deeply unclosed `${1:${1:…` took exponential time to read;
+  accented choices (`${1|é,ü|}`) are no longer garbled; an unknown
+  variable shows as a placeholder of its name; dates and times are local,
+  not UTC.
+- **Language servers' snippets work.** The editor never told servers it
+  understands snippets, so they sent plain text: no `$1` placeholders to
+  `<Tab>` through after accepting a function. It does now, and a server's
+  snippet replaces the text it says to (not just the word before the
+  cursor), keeps its placeholders in the right place when an import is
+  added above, selects its first placeholder, and runs the server's
+  follow-up command.
+- **Repeated snippet placeholders update together.** In a snippet like
+  `let ${1:x} = $1;` the second `x` started empty and never followed
+  what you typed. Every copy now shows the placeholder's text and changes
+  as you type in any of them; one undo takes back the change everywhere.
+- **Multi-line snippets keep your indentation.** A snippet expanded
+  inside a block put its second and later lines at column 0, and its
+  indentation stayed tabs with `expandtab` on. Each line now starts at the
+  line's indentation and nests with your `shiftwidth`.
+- **Snippets come from your file's language.** Two languages' snippets
+  with the same name — friendly-snippets has an "if" in most — could
+  expand the wrong one from the completion popup. Your own snippets now
+  override a built-in on the same prefix, as the docs promised. Ruby,
+  Bash/Zsh, TSX and JSX files find their snippet packs (`ruby.json`,
+  `shellscript.json`, `typescriptreact.json`), and `:picker snippets`
+  lists the snippets for every language as well as the file's own.
+  `.tsx` and `.jsx` files are now `typescriptreact` and
+  `javascriptreact` throughout, so completion settings for them go under
+  `[completion.per-language.typescriptreact]`, not `typescript`.
+- **A snippet ends when you leave it.** Leaving Insert mode any way but
+  `<Esc>`, or moving the cursor out of the snippet, left it live, and a
+  later `<Tab>` jumped back into it. Expanding a snippet inside another
+  replaces the outer one.
+- **Moving between snippet placeholders no longer overwrites text.**
+  `<Tab>` onto an empty placeholder kept the previous one selected, so the
+  next key replaced everything between them; `<S-Tab>` back onto a
+  one-letter placeholder did the same. A placeholder ending in an accented
+  letter is now selected — and replaced — whole. A snippet without a final
+  `$0` stop ends after its text, and reaching the final stop ends the
+  snippet, so the next `<Tab>` types a tab instead of doing nothing.
+- **`vd` deletes a selected accented character.** Visual and Select mode
+  selections ending on a multi-byte character (`é`, `ü`) stopped one byte
+  into it, and deleting or replacing the selection left that character
+  behind.
+- **`<Tab>` in a snippet goes to the next placeholder after you type in
+  one.** Typing in a placeholder, or any edit while a snippet was live —
+  a new line, a language server adding an import above — left the later
+  placeholders where they were when the snippet expanded, so `<Tab>`
+  selected the wrong text. Placeholders now move with the text, and
+  overtyping one removes the placeholders nested inside it.
+- **Plain-text files complete from their own sources.** `.txt` files
+  were meant to complete from snippets and buffer words only, like
+  Markdown, but the setting never matched them, so every source — a
+  plugin's included — contributed.
+- **A plugin's completion source reaches files that were already open.**
+  A completion plugin (org-roam's link targets) that finished loading after
+  a file was open — as files given on the command line always are — never
+  offered completions in that file. Its rows are also named after the
+  plugin's source in the popup's footer, instead of the word "source", and
+  can no longer pile up or overwrite another source's rows.
+- **Completion keeps its order and its filter.** Suggestions from
+  tree-sitter and paths sank to the bottom as soon as you typed or a
+  language server answered, and plugin sources (org-roam's link targets)
+  always ranked last whatever priority they declared. Narrowing the popup
+  to one source (`<C-b>`, `<C-o>`, …) was undone when a late answer
+  arrived. The popup now ranks the same way when it opens, as you type and
+  when results land, and a filter stays put.
+- **Completion no longer loses a slow source's results.** A completion
+  round ended at the first source to answer, so a source that answered
+  empty at once — org's, in any non-org file — could close the popup before
+  your language server replied, and the server's suggestions never
+  appeared. Typing while a source was still answering lost its results the
+  same way. The popup now waits for every source, and when all of them
+  come back empty it says "no completions" instead of vanishing.
+- **`]f` / `[f` in magit-status jump out of an expanded diff.** With a file's
+  diff open under it (`=`), `]f` from inside the diff stepped through its
+  indented lines of code one at a time instead of moving to the next entry.
+  It now goes straight to the next file, stash or commit row — and `[f`
+  back to the previous — wherever in the diff the cursor is.
+
 ## 0.9.11 — 2026-10-21
 
 ### Added

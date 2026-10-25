@@ -109,17 +109,53 @@ impl SnippetSession {
 }
 
 /// Predicate for the host's generic session-backed-minor
-/// reconciler: `active-snippet-mode` should be active on the
-/// active buffer exactly while a snippet session is live. The host
+/// reconciler: `active-snippet-mode` should be active on the active
+/// buffer exactly while a snippet session is live there. The host
 /// pairs this with `SnippetActiveMode::mode_id()` at boot and
 /// reconciles it each overlay-sync cycle — so the host's generic
-/// sync carries no `snippet_session.is_active()` literal. Keeps the
-/// "when is my mode active?" policy in this crate per
-/// `feedback_mode_owns_its_surface`.
-pub fn snippet_active_predicate(
-    session: SnippetSessionHandle,
-) -> Arc<dyn Fn(BufferId) -> bool + Send + Sync> {
-    Arc::new(move |buffer| session.is_active(buffer))
+/// sync carries no snippet literal. Keeps the "when is my mode
+/// active?" policy in this crate per `feedback_mode_owns_its_surface`.
+///
+/// SI.4: it is also where the session ends when the user leaves it —
+/// see [`SnippetSession::reconcile`].
+pub fn snippet_active_predicate(session: SnippetSessionHandle) -> lattice_mode::SessionPredicate {
+    Arc::new(move |probe| session.reconcile(probe))
+}
+
+impl SnippetSession {
+    /// Is the session in `probe.buffer` still live? It ends — its ranges
+    /// untracked — once the user has left it: any mode but Insert or
+    /// Select (Normal by whatever route, not only the `<Esc>` the mode
+    /// binds), or the cursor outside the snippet's text. A session the
+    /// user has left must not wake again on the next `<Tab>` and jump
+    /// back into text they moved away from.
+    pub fn reconcile(&self, probe: &lattice_mode::SessionProbe<'_>) -> bool {
+        let mut map = self.lock();
+        let Some(active) = map.get(&probe.buffer) else {
+            return false;
+        };
+        let snapshot = probe.document.snapshot();
+        let editing = matches!(
+            probe.modal,
+            lattice_grammar::ModalState::Insert | lattice_grammar::ModalState::Select(_)
+        );
+        let inside = snapshot
+            .buffer
+            .position_to_byte(probe.cursor)
+            .is_ok_and(|at| active.contains(&snapshot.tracked_ranges, at));
+        if editing && inside {
+            return true;
+        }
+        if let Some(ended) = map.remove(&probe.buffer) {
+            drop(map);
+            drop(
+                probe
+                    .document
+                    .update_tracked_ranges(ended.untrack_changes()),
+            );
+        }
+        false
+    }
 }
 
 #[cfg(test)]

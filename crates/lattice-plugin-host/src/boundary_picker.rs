@@ -49,8 +49,8 @@ use crate::lattice::plugin_host::types::{
     PickerContext as WitPickerContext, PickerSourceSpec as WitPickerSourceSpec,
     PositionEntry as WitPositionEntry, PositionSource as WitPositionSource,
     ResolveDiffPayload as WitResolveDiffPayload, RoutingPayload as WitRoutingPayload,
-    ShowMessageActionPayload as WitShowMessageActionPayload, SpecialKey as WitSpecialKey,
-    SymbolLocation as WitSymbolLocation,
+    ShowMessageActionPayload as WitShowMessageActionPayload, SnippetRow as WitSnippetRow,
+    SpecialKey as WitSpecialKey, SymbolLocation as WitSymbolLocation,
 };
 
 use lattice_completion::candidate::{
@@ -72,6 +72,7 @@ use lattice_protocol::chord::{
     KeyChord as NativeKeyChord, KeyKind as NativeKeyKind, KeyMods as NativeKeyMods,
     SpecialKey as NativeSpecialKey,
 };
+use lattice_protocol::position::Range as NativeRange;
 
 // PL8.F: the `intern`/`Box::leak` helper is gone. The native picker/grammar
 // spec types (`PickerSourceSpec`, `ArgSpec`) now hold `Cow<'static, str>`, so a
@@ -447,8 +448,11 @@ impl WitBoundary for NativeRoutingPayload {
             }
             NativeRoutingPayload::PasteRegister { name } => WitRoutingPayload::PasteRegister(*name),
             NativeRoutingPayload::JumpToMark { name } => WitRoutingPayload::JumpToMark(*name),
-            NativeRoutingPayload::ExpandSnippet { id } => {
-                WitRoutingPayload::ExpandSnippet(id.clone())
+            NativeRoutingPayload::ExpandSnippet { id, over } => {
+                WitRoutingPayload::ExpandSnippet(WitSnippetRow {
+                    id: id.clone(),
+                    over: over.as_ref().map(NativeRange::to_wit).transpose()?,
+                })
             }
             NativeRoutingPayload::AcceptShowMessageAction {
                 request_id,
@@ -570,7 +574,10 @@ impl WitBoundary for NativeRoutingPayload {
             },
             WitRoutingPayload::PasteRegister(name) => NativeRoutingPayload::PasteRegister { name },
             WitRoutingPayload::JumpToMark(name) => NativeRoutingPayload::JumpToMark { name },
-            WitRoutingPayload::ExpandSnippet(id) => NativeRoutingPayload::ExpandSnippet { id },
+            WitRoutingPayload::ExpandSnippet(row) => NativeRoutingPayload::ExpandSnippet {
+                id: row.id,
+                over: row.over.map(NativeRange::from_wit).transpose()?,
+            },
             WitRoutingPayload::AcceptShowMessageAction(p) => {
                 NativeRoutingPayload::AcceptShowMessageAction {
                     request_id: p.request_id,
@@ -891,7 +898,18 @@ mod tests {
         });
         assert_routing_round_trips(NativeRoutingPayload::PasteRegister { name: 'a' });
         assert_routing_round_trips(NativeRoutingPayload::JumpToMark { name: 'z' });
-        assert_routing_round_trips(NativeRoutingPayload::ExpandSnippet { id: "fn".into() });
+        assert_routing_round_trips(NativeRoutingPayload::ExpandSnippet {
+            id: "fn".into(),
+            over: None,
+        });
+        // SI.10: a `gS` wrap row carries its range across.
+        assert_routing_round_trips(NativeRoutingPayload::ExpandSnippet {
+            id: "fn".into(),
+            over: Some(NativeRange {
+                start: lattice_protocol::position::Position::new(1, 4),
+                end: lattice_protocol::position::Position::new(3, 1),
+            }),
+        });
         assert_routing_round_trips(NativeRoutingPayload::AcceptShowMessageAction {
             request_id: 5,
             action_index: 1,

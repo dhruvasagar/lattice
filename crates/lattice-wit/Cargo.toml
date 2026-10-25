@@ -23,7 +23,7 @@
 # author, and a WIT change must be able to land without waiting for one.
 [package]
 name = "lattice-wit"
-version = "0.3.1"
+version = "0.4.0"
 description = "The WIT interface package for lattice editor plugins — the API definitions a WebAssembly Component Model plugin builds against."
 edition.workspace = true
 rust-version.workspace = true

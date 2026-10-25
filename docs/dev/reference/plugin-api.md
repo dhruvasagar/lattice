@@ -3,7 +3,7 @@
 
 # Lattice Plugin API
 
-The plugin API is the WIT package `lattice:plugin-host@0.3.0` — 31 interfaces ("seams") and 26 worlds. It is the whole contract: a plugin written in any language with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees exactly what is on these pages and nothing else. This reference is generated from the `.wit` files in `crates/lattice-wit/wit/`, so it cannot disagree with them.
+The plugin API is the WIT package `lattice:plugin-host@0.4.0` — 31 interfaces ("seams") and 26 worlds. It is the whole contract: a plugin written in any language with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees exactly what is on these pages and nothing else. This reference is generated from the `.wit` files in `crates/lattice-wit/wit/`, so it cannot disagree with them.
 
 New to writing plugins? Start with the [plugin authoring guide](../../dev/guides/plugin-authoring.md), then come back here for the detail. The same reference in machine-readable form — every seam, signature, type and member — is `docs/dev/reference/plugin-api.json` in the repository and `/plugin-api.json` on the documentation site.
 
@@ -82,5 +82,5 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`theme`](plugin-api/theme.md) | imports | - | 2 | 3 | Mirrors the theme-element registry (`lattice-theme`). |
 | [`transient-source`](plugin-api/transient-source.md) | exports | - | 2 | 0 | TR.2b: plugin-contributed transient menus. |
 | [`tree-sitter`](plugin-api/tree-sitter.md) | imports | - | 25 | 6 | Structural queries for plugins (plugin-treesitter-seam.md). |
-| [`types`](plugin-api/types.md) | types | - | 0 | 152 | Shared boundary records/variants — the owned, WIT-serializable mirrors of the native grammar + picker/completion types (plugin-host.md §4). |
+| [`types`](plugin-api/types.md) | types | - | 0 | 154 | Shared boundary records/variants — the owned, WIT-serializable mirrors of the native grammar + picker/completion types (plugin-host.md §4). |
 | [`ui`](plugin-api/ui.md) | imports | - | 3 | 0 | The UI-contribution surface (design.md §9.4 `ui`): guest→host emits **data only**, never draw calls (§7, paramount #1). |

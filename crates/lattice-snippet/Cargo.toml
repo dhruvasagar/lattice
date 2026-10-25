@@ -10,6 +10,10 @@ arc-swap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# SI.8: snippet transforms (`${1/(.*)/${1:/upcase}/}`) run a regex over a
+# value, and `CURRENT_*` variables read local time.
+regex = { workspace = true }
+chrono = { workspace = true }
 # SN.3f: `debug!` on the `active-snippet-mode` handler-skip path.
 tracing = { workspace = true }
 # CSM.5: lattice-snippet owns `SnippetCompletionMode` (the
@@ -22,6 +26,8 @@ lattice-completion = { path = "../lattice-completion" }
 lattice-config = { path = "../lattice-config" }
 lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
+# SI.12: the placeholder tint registers its own theme element.
+lattice-theme = { path = "../lattice-theme" }
 # SN.2b: `active-snippet-mode` owns its `<Tab>` / `<S-Tab>`
 # placeholder-navigation handler bodies (relocated off the host
 # per `feedback_mode_owns_its_surface`). The handlers register as
@@ -39,11 +45,14 @@ lattice-grammar = { path = "../lattice-grammar" }
 # doesn't depend back on lattice-snippet.
 lattice-picker = { path = "../lattice-picker" }
 
-[dev-dependencies]
-# SN.2b handler-level dispatch test: building a `ModeContext` to
-# drive `SnippetActiveMode::on_activate` needs `EventBus` (not
-# re-exported by `lattice-mode`). Test-only.
+# SI.2: the active-snippet handlers read placeholder positions from
+# the document snapshot's tracked ranges and send restick / untrack
+# changes through the `Document` trait. Already transitive through
+# `lattice-mode`; the direct edge is cycle-free.
 lattice-runtime = { path = "../lattice-runtime" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

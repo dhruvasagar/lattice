@@ -180,13 +180,9 @@ impl App {
     /// runs at mode-transition rate, not keystroke rate, so the
     /// allocation cost is amortised away from the hot path.
     ///
-    /// Empty in practice today -- no mode contributes a source
-    /// yet. CSM.4 (`buffer-words-mode`) is the first slice that
-    /// lights up the cache; CSM.5 -- CSM.8 add the rest. Until
-    /// then, `populate_insert_completion_sync` reads the cache,
-    /// finds it empty, and falls through to the v1 hardcoded
-    /// calls -- proving the read path works without changing
-    /// behaviour.
+    /// Every source the popup consults comes from this cache; there
+    /// is no hardcoded fallback. A buffer whose modes contribute no
+    /// source gets no candidates.
     /// 5.5.F.5.1: see [`lattice_host::dispatch::Editor::recompute_active_completion_sources_for`].
     pub fn recompute_active_completion_sources_for(&mut self, buffer: crate::buffers::BufferId) {
         // Slice 3c.final.E.3: route through `mutate_editor`.
@@ -1212,14 +1208,14 @@ mod tests {
             !a.editor
                 .snippet_registry
                 .load()
-                .lookup("rust", "for")
+                .lookup(&["rust"], "for")
                 .is_empty()
         );
         assert!(
             !a.editor
                 .snippet_registry
                 .load()
-                .lookup("*", "any")
+                .lookup(&[], "any")
                 .is_empty()
         );
         // Global snippets are visible from any language --
@@ -1228,7 +1224,7 @@ mod tests {
             !a.editor
                 .snippet_registry
                 .load()
-                .lookup("rust", "any")
+                .lookup(&["rust"], "any")
                 .is_empty()
         );
         // A rust-only snippet should NOT be visible from a
@@ -1237,7 +1233,7 @@ mod tests {
             a.editor
                 .snippet_registry
                 .load()
-                .lookup("python", "for")
+                .lookup(&["python"], "for")
                 .is_empty()
         );
         let _ = std::fs::remove_dir_all(&dir);

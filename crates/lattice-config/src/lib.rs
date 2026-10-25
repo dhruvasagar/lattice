@@ -204,19 +204,20 @@ pub use completion::OptionsGenerator;
 pub use core_options::COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 pub use core_options::{
     AutoWrapOption, ClipboardEnabled, CommandLineExpandHeight, CompletionAutoInsertSingle,
-    CompletionExtraCommitChars, CompletionGhostText, CompletionSourceBufferWordsPriority,
-    CompletionSourceLspPriority, CompletionSourcePathPriority, CompletionSourceSnippetPriority,
-    CompletionSourceTreeSitterPriority, CursorLine, DiagnosticsInlineOption,
-    DiagnosticsMinSeverityOption, ElectricIndent, ExpandTab, FoldEnable, FoldMethodOption,
-    FormatIndentChain, FormatOnSave, FormatPrg, FormatReflowChain, FormatReformatChain,
-    HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay, HoverDisplay,
-    IgnoreCase, IndentMethodOption, LspLogDisplay, LspStatusDisplay, MessagesDisplay,
-    MessagesFilter, ModelineCenter, ModelineLeft, ModelinePadding, ModelineRight,
-    ModelineSeparator, MouseEnabled, NoFile, Number, PickerResultDisplay, ProjectRootMarkers,
-    ReadOnly, RelativeNumber, Scroll, Scrollbind, Scrolloff, Shiftwidth, Sidescroll, Sidescrolloff,
-    SignColumnOption, SignatureDisplay, StartOfLine, TablineShowOption, Tabstop, TerminalEscExits,
-    TerminalScrollbackLines, TextWidth, TransientMaxRows, UiDimInactive, Whitespace, WhitespaceEol,
-    WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
+    CompletionAutoTrigger, CompletionExtraCommitChars, CompletionGhostText, CompletionMinChars,
+    CompletionSourceBufferWordsPriority, CompletionSourceLspPriority, CompletionSourcePathPriority,
+    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine,
+    DiagnosticsInlineOption, DiagnosticsMinSeverityOption, ElectricIndent, ExpandTab, FoldEnable,
+    FoldMethodOption, FormatIndentChain, FormatOnSave, FormatPrg, FormatReflowChain,
+    FormatReformatChain, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay,
+    HelpTopicDisplay, HoverDisplay, IgnoreCase, IndentMethodOption, LspLogDisplay,
+    LspStatusDisplay, MessagesDisplay, MessagesFilter, ModelineCenter, ModelineLeft,
+    ModelinePadding, ModelineRight, ModelineSeparator, MouseEnabled, NoFile, Number,
+    PickerResultDisplay, ProjectRootMarkers, ReadOnly, RelativeNumber, Scroll, Scrollbind,
+    Scrolloff, Shiftwidth, Sidescroll, Sidescrolloff, SignColumnOption, SignatureDisplay,
+    StartOfLine, TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines, TextWidth,
+    TransientMaxRows, UiDimInactive, Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace,
+    WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{

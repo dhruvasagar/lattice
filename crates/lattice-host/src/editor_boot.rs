@@ -485,6 +485,11 @@ impl Editor {
             boot.modes_mut(),
             snippet_registry_handle.clone(),
         );
+        // SI.12: the snippet chords' own action ids (the choice cycle).
+        lattice_snippet::register_snippet_actions(boot.commands_mut());
+        // SI.10: `gS`'s operator and the action its picker rows accept into.
+        // The operator is bound below by name, beside `zn`.
+        let _ = lattice_snippet::register_snippet_wrap(boot.commands_mut());
         // BC.4: terminal-mode registration moved into
         // `lattice_terminal::install` (Phase-B list below).
         crate::modes::register_buffer_kind_modes(boot.modes_mut());
@@ -2183,6 +2188,12 @@ impl Editor {
         // `<Tab>`/`<S-Tab>` handlers can reach it from `on_activate`. Same Arc
         // as the `Editor.snippet_session` field (set below).
         boot.register_service::<lattice_snippet::SnippetSessionHandle>(snippet_session.clone());
+        // SI.12: where modes register the text ranges they tint. Same Arc
+        // as the `Editor.range_highlights` field (set below).
+        let range_highlights = Arc::new(crate::range_highlights::RangeHighlightRegistry::default());
+        boot.register_service::<lattice_mode::RangeHighlightRegistrarHandle>(
+            range_highlights.clone(),
+        );
         // MH.A3 / DB.5: `Arc<ConfigRegistry>` is registered as a Phase-A
         // service near `config`'s construction (above, next to `event_bus`)
         // rather than here — see the DB.5 hoist note there for why a
@@ -2329,6 +2340,35 @@ impl Editor {
                     narrow_operator_id,
                     Some(lattice_protocol::chord::ChordPattern::Literal(
                         lattice_protocol::chord::KeyChord::char('n'),
+                    )),
+                    &builtins,
+                    &syntax_textobject_ids,
+                    &syntax_motion_ids,
+                    false,
+                );
+                // SI.10: `gS{motion|text-object}` wraps that span in a
+                // snippet; `gSS` the current line, `gS` in Visual the
+                // selection. Universal grammar like `zn`: the operator SPEC is
+                // `lattice-snippet`'s, only the chord is wired here.
+                let snippet_wrap_operator_id = lattice_grammar::registry::OperatorId(
+                    registry
+                        .load()
+                        .id_by_name(lattice_snippet::SNIPPET_WRAP_OPERATOR)
+                        .expect("operator:snippet-wrap registered at boot"),
+                );
+                crate::keymap_normal::register_operator_bindings(
+                    &h,
+                    &[
+                        lattice_protocol::chord::ChordPattern::Literal(
+                            lattice_protocol::chord::KeyChord::char('g'),
+                        ),
+                        lattice_protocol::chord::ChordPattern::Literal(
+                            lattice_protocol::chord::KeyChord::char('S'),
+                        ),
+                    ],
+                    snippet_wrap_operator_id,
+                    Some(lattice_protocol::chord::ChordPattern::Literal(
+                        lattice_protocol::chord::KeyChord::char('S'),
                     )),
                     &builtins,
                     &syntax_textobject_ids,
@@ -2662,6 +2702,7 @@ impl Editor {
                 mode_id: lattice_snippet::modes::SnippetActiveMode::mode_id(),
             }],
             snippet_session,
+            range_highlights,
             // Default user snippet dir: `~/.config/lattice/snippets`
             // (the same XDG config root as `lattice.toml`, via
             // `lattice_config::config_home` — honours `$XDG_CONFIG_HOME`
@@ -2673,6 +2714,12 @@ impl Editor {
             // hasn't added any packs).
             snippet_dirs: lattice_config::config_home()
                 .map(|d| d.join("lattice").join("snippets"))
+                .into_iter()
+                .collect(),
+            // SI.11: packages (a friendly-snippets clone) live one level
+            // down, in `~/.config/lattice/snippet-packs/<package>/`.
+            snippet_pack_dirs: lattice_config::config_home()
+                .map(|d| d.join("lattice").join("snippet-packs"))
                 .into_iter()
                 .collect(),
             // M.7: use the pre-created Arc so the `services:` block
@@ -2772,6 +2819,10 @@ impl Editor {
                 });
             }
         }
+        // IC.4: everything registered so far activates the usual way, on
+        // `MajorEntered`. Only what registers after this — a plugin's carrier
+        // mode, most often — is the late-minor sweep's business.
+        editor.seed_late_minor_registry();
         editor
     }
 }

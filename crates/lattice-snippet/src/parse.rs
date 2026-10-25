@@ -71,9 +71,22 @@ fn merge_literals(tokens: Vec<SnippetToken>) -> Vec<SnippetToken> {
     out
 }
 
+/// Deepest `${…}` nesting the parser follows. Past it a `$` is literal: a
+/// real snippet nests two or three levels, and following an arbitrary depth
+/// would let a malformed body overflow the stack.
+const MAX_DEPTH: usize = 32;
+
 struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
+    /// Current `${…}` nesting.
+    depth: usize,
+    /// `$` positions already found not to start a well-formed block. A
+    /// failed block falls back to a literal `$` and parsing resumes inside
+    /// it, which reaches the inner `$`s again; without this an unclosed
+    /// `${1:${1:${1:…` re-parsed each level once per enclosing level —
+    /// exponential in the nesting (snippet-integrity SI.8).
+    failed: std::collections::HashSet<usize>,
 }
 
 impl<'a> Parser<'a> {
@@ -81,6 +94,8 @@ impl<'a> Parser<'a> {
         Self {
             src: s.as_bytes(),
             pos: 0,
+            depth: 0,
+            failed: std::collections::HashSet::new(),
         }
     }
 
@@ -138,10 +153,19 @@ impl<'a> Parser<'a> {
                 b'$' => {
                     let saved = self.pos;
                     self.bump();
-                    match self.try_parse_dollar() {
+                    let parsed = if self.failed.contains(&saved) || self.depth >= MAX_DEPTH {
+                        None
+                    } else {
+                        self.depth += 1;
+                        let tok = self.try_parse_dollar();
+                        self.depth -= 1;
+                        tok
+                    };
+                    match parsed {
                         Some(tok) => tokens.push(tok),
                         None => {
                             // Fall back to literal '$'.
+                            self.failed.insert(saved);
                             self.pos = saved + 1;
                             tokens.push(SnippetToken::Literal("$".to_string()));
                         }
@@ -344,82 +368,92 @@ impl<'a> Parser<'a> {
                 }
                 b'\\' => {
                     self.bump();
-                    if let Some(esc) = self.peek() {
-                        match esc {
-                            b',' | b'|' | b'\\' => {
-                                self.bump();
-                                current.push(char::from(esc));
-                            }
-                            _ => current.push('\\'),
+                    match self.peek() {
+                        Some(esc @ (b',' | b'|' | b'\\' | b'$' | b'}')) => {
+                            self.bump();
+                            current.push(char::from(esc));
                         }
-                    } else {
-                        current.push('\\');
+                        _ => current.push('\\'),
                     }
                 }
-                b => {
-                    self.bump();
-                    current.push(char::from(b));
-                }
+                _ => current.push(self.bump_char()),
             }
         }
     }
 
+    /// Consume one whole UTF-8 scalar. Choice and transform text was once
+    /// built a byte at a time, which turned `é` into two Latin-1 characters.
+    fn bump_char(&mut self) -> char {
+        let ch = self.peek_char_at(self.pos);
+        self.pos += ch.len_utf8();
+        ch
+    }
+
+    /// After `${N/` or `${NAME/`: `pattern/format/options}`. The format may
+    /// itself hold `${1:/upcase}`-style references, whose `/` and `}` belong
+    /// to them, so braces are tracked; a `/` or `}` that ends a part is the
+    /// first one at brace depth zero. `None` (a literal `$`) for anything
+    /// unterminated.
     fn parse_transform(&mut self) -> Option<(String, String, String)> {
-        // Pattern up to next unescaped `/`.
-        let pattern = self.parse_until_slash()?;
+        let pattern = self.parse_transform_part(true)?;
         if self.peek()? != b'/' {
             return None;
         }
         self.bump();
-        let replacement = self.parse_until_slash()?;
+        let replacement = self.parse_transform_part(false)?;
         if self.peek()? != b'/' {
             return None;
         }
         self.bump();
-        // Flags up to `}`.
         let mut flags = String::new();
-        while let Some(b) = self.peek() {
-            if b == b'}' {
-                self.bump();
-                return Some((pattern, replacement, flags));
+        loop {
+            match self.peek()? {
+                b'}' => {
+                    self.bump();
+                    return Some((pattern, replacement, flags));
+                }
+                b if b.is_ascii_alphabetic() => {
+                    self.bump();
+                    flags.push(char::from(b));
+                }
+                _ => return None,
             }
-            self.bump();
-            flags.push(char::from(b));
         }
-        None
     }
 
-    fn parse_until_slash(&mut self) -> Option<String> {
+    /// A pattern or format, up to the `/` that ends it. In a pattern `\/` is
+    /// a slash and every other escape is kept for the regex engine
+    /// (`\d`, `\.`); in a format the escapes are kept for the format parser,
+    /// which resolves them. A `}` at depth zero means the transform is
+    /// unterminated.
+    fn parse_transform_part(&mut self, pattern: bool) -> Option<String> {
         let mut out = String::new();
-        while let Some(b) = self.peek() {
-            match b {
-                b'/' => return Some(out),
+        let mut depth = 0usize;
+        loop {
+            match self.peek()? {
+                b'/' if depth == 0 => return Some(out),
+                b'}' if depth == 0 => return None,
                 b'\\' => {
                     self.bump();
-                    if let Some(esc) = self.peek() {
-                        self.bump();
-                        match esc {
-                            b'/' | b'\\' => out.push(char::from(esc)),
-                            other => {
-                                // Preserve the escape so regex
-                                // engines downstream can act on
-                                // `\n` / `\t` / `\d` / etc.
-                                out.push('\\');
-                                out.push(char::from(other));
-                            }
-                        }
-                    } else {
+                    let esc = self.bump_char();
+                    if !(pattern && esc == '/') {
                         out.push('\\');
                     }
+                    out.push(esc);
                 }
-                b'}' => return Some(out),
-                _ => {
+                b'$' if !pattern && self.src.get(self.pos + 1) == Some(&b'{') => {
+                    depth += 1;
+                    self.pos += 2;
+                    out.push_str("${");
+                }
+                b'}' => {
+                    depth -= 1;
                     self.bump();
-                    out.push(char::from(b));
+                    out.push('}');
                 }
+                _ => out.push(self.bump_char()),
             }
         }
-        Some(out)
     }
 }
 
@@ -601,5 +635,73 @@ mod tests {
     fn unicode_literals_round_trip() {
         let b = parse_ok("héllo wörld");
         assert_eq!(b.tokens, vec![SnippetToken::Literal("héllo wörld".into())]);
+    }
+
+    /// SI.8: a transform's format can hold its own `${…}` references, with
+    /// `/` and `}` inside them. The parser used to stop at the first of
+    /// either and fall back to literal text, leaving `{TM_FILENAME/(.*)/` in
+    /// the buffer.
+    #[test]
+    fn a_transform_with_a_nested_format_parses() {
+        let body = parse_ok("${TM_FILENAME/(.*)\\.rs$/${1:/upcase}/g}");
+        assert_eq!(
+            body.tokens,
+            vec![SnippetToken::Transform {
+                target: TransformTarget::Variable("TM_FILENAME".into()),
+                pattern: "(.*)\\.rs$".into(),
+                replacement: "${1:/upcase}".into(),
+                flags: "g".into(),
+            }]
+        );
+        let body = parse_ok("${1/(a)|(b)/${1:?x:y}/}");
+        assert!(matches!(
+            &body.tokens[..],
+            [SnippetToken::Transform { replacement, .. }] if replacement == "${1:?x:y}"
+        ));
+    }
+
+    #[test]
+    fn an_escaped_slash_in_a_pattern_is_a_slash() {
+        let body = parse_ok("${1/a\\/b/c/}");
+        assert!(matches!(
+            &body.tokens[..],
+            [SnippetToken::Transform { pattern, .. }] if pattern == "a/b"
+        ));
+    }
+
+    #[test]
+    fn an_unterminated_transform_is_literal_text() {
+        let body = parse_ok("${1/abc}");
+        assert_eq!(body.tokens, vec![SnippetToken::Literal("${1/abc}".into())]);
+    }
+
+    /// SI.8: choice text is decoded as UTF-8, not byte by byte.
+    #[test]
+    fn choices_keep_non_ascii_text_and_take_the_spec_escapes() {
+        let body = parse_ok("${1|é,ü,\\$x\\}|}");
+        let SnippetToken::Choice { options, .. } = &body.tokens[0] else {
+            panic!("a choice: {:?}", body.tokens);
+        };
+        let texts: Vec<&str> = options.iter().map(|o| o.text.as_str()).collect();
+        assert_eq!(texts, vec!["é", "ü", "$x}"]);
+    }
+
+    /// SI.8: unclosed nesting parses in bounded time. Each level used to be
+    /// re-parsed once per enclosing level — 2^40 steps here.
+    #[test]
+    fn deeply_unclosed_nesting_parses_quickly_as_text() {
+        let body: String = "${1:".repeat(40);
+        let started = std::time::Instant::now();
+        let parsed = parse_ok(&body);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(parsed.tokens, vec![SnippetToken::Literal(body)]);
+    }
+
+    /// SI.8: nesting deeper than the cap is text, not a stack overflow.
+    #[test]
+    fn nesting_past_the_cap_is_literal() {
+        let deep = format!("{}x{}", "${1:".repeat(10_000), "}".repeat(10_000));
+        let parsed = parse_ok(&deep);
+        assert!(!parsed.tokens.is_empty());
     }
 }

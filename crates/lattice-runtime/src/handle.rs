@@ -236,6 +236,15 @@ impl RopeDocumentHandle {
         self.send(|reply| ActorMsg::SetSelections { selections, reply })
     }
 
+    /// Track, untrack or restick ranges the document keeps in place across
+    /// its edits. See [`crate::document::Document::update_tracked_ranges`].
+    pub fn update_tracked_ranges(
+        &self,
+        changes: Vec<lattice_core::tracked::TrackedRangeChange>,
+    ) -> Pending<()> {
+        self.send(|reply| ActorMsg::UpdateTrackedRanges { changes, reply })
+    }
+
     /// Open an undo-coalescing group on the actor so a run of edits (a
     /// vim insert session) collapses into a single undo unit until
     /// [`Self::end_undo_group`]. Fire-and-forget -- ordering against the
@@ -429,6 +438,13 @@ impl crate::document::Document for RopeDocumentHandle {
 
     fn end_undo_group(&self) {
         RopeDocumentHandle::end_undo_group(self)
+    }
+
+    fn update_tracked_ranges(
+        &self,
+        changes: Vec<lattice_core::tracked::TrackedRangeChange>,
+    ) -> Pending<()> {
+        RopeDocumentHandle::update_tracked_ranges(self, changes)
     }
 
     fn dispatch_with_cancel(

@@ -132,6 +132,27 @@ lattice_config::options! {
     /// "rust,python"`.
     #[name("snippet.languages")]
     pub SnippetLanguages: String = String::new();
+
+    /// More directories of snippet packs, comma-separated (`~` expands).
+    /// They load after the packages in `~/.config/lattice/snippet-packs/`
+    /// and before your own `~/.config/lattice/snippets` and the project's
+    /// `.lattice/snippets`, which therefore override them on a shared
+    /// prefix. Each may be a snippets folder (`rust.json`,
+    /// `_global.json`, `*.code-snippets`) or a VS Code snippet extension
+    /// such as a friendly-snippets checkout (its `package.json`). A string,
+    /// not a list, for the same reason as `snippet.languages`.
+    #[name("snippet.dirs")]
+    pub SnippetDirs: String = String::new();
+}
+
+/// The directories a `snippet.dirs` value names: split on commas, trimmed,
+/// `~` expanded, empty segments dropped.
+pub fn parse_dirs(dirs: &str) -> Vec<std::path::PathBuf> {
+    dirs.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| std::path::PathBuf::from(lattice_core::home::expand_tilde(s)))
+        .collect()
 }
 
 /// Split a `snippet.languages` value into trimmed, non-empty

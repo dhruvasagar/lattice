@@ -1500,6 +1500,20 @@ pub enum Effect {
         /// up (active language first, then `*`).
         replace_range: lattice_protocol::position::Range,
     },
+    /// Expand the snippet `snippet` over `range` of the focused buffer, the
+    /// range's text becoming its `$TM_SELECTED_TEXT` (snippet-integrity
+    /// SI.10). What `gS{motion}` ends in, once a snippet is picked; any
+    /// caller that knows which snippet and where emits it too. Unlike
+    /// [`Self::ExpandSnippet`], nothing is looked up from the text: the
+    /// snippet is named. No-op with an echo when no such snippet exists
+    /// for the buffer's language, or the range is no longer in the buffer.
+    ExpandSnippetOver {
+        /// The snippet's identity as `lattice_snippet::snippet_key` forms
+        /// it (language, then name) — what the snippet picker's rows carry.
+        snippet: String,
+        /// The text to wrap, half-open `(line, byte)`; may span lines.
+        range: lattice_protocol::position::Range,
+    },
     /// `:reload-snippets` -- re-read every snippet file from
     /// disk and rebuild the per-language registry (Phase
     /// 4.2.g.4). Useful after editing a `.code-snippets` /

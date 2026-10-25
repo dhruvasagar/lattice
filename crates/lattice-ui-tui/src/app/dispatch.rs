@@ -213,21 +213,12 @@ impl App {
         // `apply` loop (LSP autopilots, macro replay, AppEffect-derived
         // follow-ups).
         //
-        // The 13 explicit arms remaining are the architectural seam,
-        // NOT migration debt:
-        //
-        //   - `LspOnTypeFormattingRequest(c)` /
-        //     `LspInsertCompletionRequest` — host→renderer LSP autopilot
-        //     landing zones. The host fires the action; the renderer
-        //     owns the LSP runtime (`spawn_on_lsp_runtime`, BatchingSink,
-        //     `pending_insert_completion_lsp_*`). gpui will implement
-        //     its own equivalent on `lattice-ui-gpui::App`.
-        //
-        //   - 8 Completion arms (`CompletionTrigger`/`Next`/`Prev`/`Accept`/
-        //     `ToggleDocs`/`FilterToSource`/`FilterClear`/`AcceptThenInsert`)
-        //     — completion popup state mutation + LSP async resolve.
-        //     `editor.completion` lives host-side, but the LSP fetch
-        //     path is renderer-coupled (same reason as above).
+        // The LSP autopilots (`LspOnTypeFormattingRequest`,
+        // `LspInsertCompletionRequest`) and the 8 completion-popup actions
+        // are host-side too (`Editor::handle_action`), so both peers run
+        // the same completion pipeline; their arms below are no-ops. The
+        // explicit arms remaining are the architectural seam, NOT migration
+        // debt:
         //
         //   - `PickerAccept` / `PickerDismiss` — file-open + the
         //     show-message-request queue. `do_edit` is renderer-side
@@ -673,12 +664,8 @@ impl App {
             // `LspInsertCompletionRequest`) through `out.next_actions`
             // which the dispatch wrapper already drained.
             Action::Insert(_) => {}
-            // 5.5.G.23.insert: LSP autopilot follow-ups host-emitted
-            // by `Editor::do_insert_text` (forthcoming). The handlers
-            // live App-side because they reach for `spawn_on_lsp_runtime`
-            // + `BatchingSink` + the `pending_insert_completion_lsp_*`
-            // channels.
-            // Phase 5.8.AF: migrated to host (consumed = true).
+            // LSP autopilot follow-ups `Editor::do_insert_text` emits.
+            // Handled host-side (`Editor::handle_action`) since 5.8.AF.
             Action::LspOnTypeFormattingRequest(_) => {}
             Action::LspInsertCompletionRequest => {}
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -1138,6 +1125,8 @@ impl App {
             | Effect::BufferPrev
             | Effect::FocusBuffer(_)
             | Effect::InvokeCommand { .. }
+            // SI.10: host-applied (`Editor::expand_snippet_over`).
+            | Effect::ExpandSnippetOver { .. }
             | Effect::BufferDelete { .. }
             | Effect::ListModes
             | Effect::DescribeMode { .. }
@@ -1659,6 +1648,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
+        | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -1822,6 +1812,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
+        | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents

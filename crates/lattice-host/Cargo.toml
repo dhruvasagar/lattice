@@ -327,6 +327,13 @@ harness = false
 name = "modeline"
 harness = false
 
+# IC.3: re-ranking an open insert-completion popup — the one match / rank /
+# dedup path its open, each keystroke and each async landing all run. On
+# the keystroke path. See `benches/insert_completion.rs`.
+[[bench]]
+name = "insert_completion"
+harness = false
+
 # DB.7 (design.md §13): dashboard creation-time compose+seed +
 # idle-frame tick cost. The dashboard has no keystroke path, so these
 # two assertions (not a keystroke bench) are the coverage. See
@@ -363,7 +370,9 @@ system-clipboard = ["dep:arboard"]
 # behaviour tests each renderer peer runs through its own entry points.
 # Test-only — the peers enable it from `[dev-dependencies]`, so it is never
 # in a shipped build.
-peer-conformance = []
+# The completion scenarios attach an in-process language server over a
+# `tokio::io::duplex` pipe, on a runtime of their own.
+peer-conformance = ["tokio/io-util", "tokio/rt-multi-thread"]
 
 [lints]
 workspace = true

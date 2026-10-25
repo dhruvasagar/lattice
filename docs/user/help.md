@@ -255,7 +255,9 @@ for a mode name.
 
 Shows the current buffer's ID, kind (Document / Multibuffer /
 Terminal / Help / …), flags (`listed`, `hidden`, `modified`,
-`read-only`), the file path if any, and the full mode stack.
+`read-only`), the file path if any, the full mode stack, and its
+completion sources — how the popup opens, each source's priority,
+and which are off for the buffer's language.
 
 Via `<C-h>`: `<C-h> b`.
 

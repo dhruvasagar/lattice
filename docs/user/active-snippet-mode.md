@@ -15,17 +15,19 @@ navigation, and it goes away when the session ends.
 | `<Tab>` | Next placeholder |
 | `<S-Tab>` | Previous placeholder |
 | `<Esc>` | Leave the snippet session, then exit Insert |
+| `<C-n>` / `<C-p>` | On a choice: next / previous option |
+
+Landing on a placeholder selects its default, so typing replaces it;
+the others stay tinted (`snippet.placeholder`) until you visit them.
+Placeholders move with the text, so `<Tab>` finds the next one after any
+edit. The session ends at the final stop (`$0`, else the snippet's end);
+the next `<Tab>` is an ordinary one.
 
 ## Why the scoping matters
 
-`<Tab>` is not a key you can casually rebind — in Insert it inserts a
-tab or triggers completion, depending on context. Binding "next
-placeholder" to it globally would be wrong; binding it only for the
-duration of an expansion is exactly right.
-
-That is what this mode buys: the chords exist while a snippet is in
-flight and not one keystroke longer. Finish or abandon the expansion
-and `<Tab>` goes back to meaning what it always meant.
+In Insert, `<Tab>` inserts a tab or completes, so "next placeholder"
+cannot own it globally. This mode binds it only while a snippet is in
+flight; when the expansion ends, `<Tab>` means what it always did.
 
 ## `<Esc>` falls through
 

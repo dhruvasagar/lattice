@@ -186,11 +186,12 @@ impl std::fmt::Debug for CellsWake {
 /// `feedback_mode_owns_its_surface`.
 #[derive(Clone)]
 pub struct SessionBackedMinor {
-    /// `true` ⇒ the mode should be active on the **given buffer**.
-    /// SN.3e: the predicate is buffer-scoped so a session live in one
-    /// buffer never activates the mode in another; `sync_keymap_overlays`
-    /// passes the buffer it is reconciling.
-    pub active: std::sync::Arc<dyn Fn(lattice_core::BufferId) -> bool + Send + Sync>,
+    /// `true` ⇒ the mode should be active on the probed buffer.
+    /// SN.3e: buffer-scoped, so a session live in one buffer never
+    /// activates the mode in another. SI.4: the probe also carries the
+    /// modal state, cursor and document, so the mode's own policy can end
+    /// its session when the user leaves it — the host stays generic.
+    pub active: lattice_mode::SessionPredicate,
     /// The minor mode toggled by `active`.
     pub mode_id: lattice_mode::ModeId,
 }
@@ -1520,6 +1521,10 @@ pub struct Editor {
     /// `<Esc>` / cursor leaving the tabstop ranges. The same `Arc` is
     /// registered in `ServiceRegistry` under `SnippetSessionHandle`.
     pub snippet_session: lattice_snippet::SnippetSessionHandle,
+    /// The text ranges active modes tint, per buffer (SI.12). The same
+    /// `Arc` is the `RangeHighlightRegistrarHandle` service modes register
+    /// through; `publish_render_state` reads the active buffer's.
+    pub range_highlights: Arc<crate::range_highlights::RangeHighlightRegistry>,
     /// Session-backed minor modes reconciled on the active buffer
     /// each `sync_keymap_overlays` cycle (one entry per
     /// service-driven minor). Each pairs a predicate — reading a
@@ -1531,8 +1536,13 @@ pub struct Editor {
     /// (`feedback_mode_owns_its_surface`).
     pub session_backed_minors: Vec<SessionBackedMinor>,
     /// Per-language directories from which snippet packs are
-    /// loaded on startup / `:reload-snippets` (Phase 4.2.g.4).
+    /// loaded on startup / `:reload-snippets` (Phase 4.2.g.4): the
+    /// user's own snippets, which override packages.
     pub snippet_dirs: Vec<PathBuf>,
+    /// Directories whose every subdirectory is a snippet package — a
+    /// friendly-snippets checkout under `~/.config/lattice/snippet-packs/`
+    /// (SI.11). Loaded before `snippet_dirs`, so the user's own win.
+    pub snippet_pack_dirs: Vec<PathBuf>,
     /// LIFO stack of snapshots taken every time the popup's content
     /// gets swapped in place by a help -> help link follow (e.g.
     /// `:describe-buffer` -> click `[text-mode](mode:text-mode)` ->
@@ -2315,6 +2325,19 @@ pub struct Editor {
     pub pending_insert_completion_async_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_completion::AsyncCompletionOutcome>>,
     pub pending_insert_completion_async_token: Option<CancellationToken>,
+    /// IC.2: how many of the current round's async sources have not
+    /// answered yet. The round is over at zero, and only then may an empty
+    /// popup close: before this, the FIRST outcome ended the round, so an
+    /// empty source answering quickly closed the popup and every later
+    /// outcome — LSP's, typically — was dropped.
+    pub pending_insert_completion_async_remaining: usize,
+    /// IC.4: the mode registry as the late-minor sweep last saw it, and the
+    /// ids it held. `run_tick_pending` compares the live registry's pointer
+    /// against this — one compare per tick — and, when a registration has
+    /// replaced it, activates the NEW policy minors on the documents already
+    /// open (`Editor::activate_late_registered_minors`).
+    pub late_minor_registry: Option<std::sync::Arc<lattice_mode::ModeRegistry>>,
+    pub late_minor_seen: std::collections::HashSet<lattice_mode::ModeId>,
     pub pending_completion_resolve_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
     pub pending_completion_resolve_token: Option<CancellationToken>,

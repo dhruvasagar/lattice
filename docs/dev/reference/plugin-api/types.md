@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (152)
+## Types (154)
 
 ### variant `arg-value`
 
@@ -1298,6 +1298,23 @@ record close-session-diffs-payload {
 }
 ```
 
+### record `expand-snippet-over-payload`
+
+```wit
+record expand-snippet-over-payload {
+    snippet: string,
+    range: range,
+}
+```
+
+`expand-snippet-over`'s payload: the snippet's identity (as the
+snippet picker's rows carry it) and the text to expand it around.
+
+**Fields**
+
+- `snippet`: `string`
+- `range`: [`range`](#record-range)
+
 ### variant `viewport-pos`
 
 ```wit
@@ -1888,6 +1905,7 @@ variant effect {
     lsp-rename(string),
     lsp-code-action,
     expand-snippet(range),
+    expand-snippet-over(expand-snippet-over-payload),
     reload-snippets,
     describe-events,
     describe-diff,
@@ -2043,6 +2061,8 @@ Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
 - `lsp-rename`: `string`
 - `lsp-code-action`
 - `expand-snippet`: [`range`](#record-range)
+- `expand-snippet-over`: [`expand-snippet-over-payload`](#record-expand-snippet-over-payload) — SI.10: expand a named snippet around `range`, the range's text
+  becoming its `$TM_SELECTED_TEXT` — what `gS` ends in.
 - `reload-snippets`
 - `describe-events`
 - `describe-diff`
@@ -2456,6 +2476,19 @@ record show-message-action-payload {
 }
 ```
 
+### record `snippet-row`
+
+```wit
+record snippet-row {
+    id: string,
+    over: option<range>,
+}
+```
+
+A snippet row: the snippet's identity, and — for a `gS` wrap row
+(snippet-integrity SI.10) — the text it expands around, which becomes
+its `$TM_SELECTED_TEXT`. `none` expands at the cursor.
+
 ### record `ai-session-payload`
 
 ```wit
@@ -2483,7 +2516,7 @@ variant routing-payload {
     invoke-command(command-ref),
     paste-register(char),
     jump-to-mark(char),
-    expand-snippet(string),
+    expand-snippet(snippet-row),
     accept-show-message-action(show-message-action-payload),
     lsp-code-lens(u32),
     color-presentation(u32),
@@ -2512,7 +2545,7 @@ strings (a non-UTF-8 path is a typed error, §4.4).
 - `invoke-command`: [`command-ref`](#record-command-ref)
 - `paste-register`: `char`
 - `jump-to-mark`: `char`
-- `expand-snippet`: `string`
+- `expand-snippet`: [`snippet-row`](#record-snippet-row)
 - `accept-show-message-action`: [`show-message-action-payload`](#record-show-message-action-payload)
 - `lsp-code-lens`: `u32`
 - `color-presentation`: `u32`

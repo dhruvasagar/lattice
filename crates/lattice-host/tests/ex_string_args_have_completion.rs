@@ -98,6 +98,18 @@ const NO_CANDIDATE_SET: &[(&str, &str, &str)] = &[
          this row.",
     ),
     ("diffget", "bufnr", "as `diffput`"),
+    (
+        "action:snippet-wrap",
+        "snippet",
+        "the accept target of a `gS` picker row, which supplies the snippet's \
+         identity; `gS{motion}` and the picker are how it is chosen, never typed",
+    ),
+    (
+        "action:snippet-wrap",
+        "range",
+        "an encoded `line:byte-line:byte` span the `gS` operator computes; \
+         positions have no candidate set",
+    ),
     // Both found by this test on its first run, which is the point of it.
     (
         "ex:substitute",

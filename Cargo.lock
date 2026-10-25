@@ -5683,6 +5683,7 @@ dependencies = [
  "lattice-keymap",
  "lattice-protocol",
  "lattice-runtime",
+ "lattice-theme",
  "linkme",
  "smallvec",
  "thiserror 2.0.18",
@@ -5865,7 +5866,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-sdk"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "lattice-plugin-sdk-derive",
  "rmp-serde",
@@ -5874,7 +5875,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-plugin-sdk-derive"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5934,6 +5935,7 @@ name = "lattice-snippet"
 version = "0.9.11"
 dependencies = [
  "arc-swap",
+ "chrono",
  "lattice-completion",
  "lattice-config",
  "lattice-core",
@@ -5942,8 +5944,11 @@ dependencies = [
  "lattice-picker",
  "lattice-protocol",
  "lattice-runtime",
+ "lattice-theme",
+ "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -6109,7 +6114,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-wit"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "lazy_static"

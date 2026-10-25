@@ -12,7 +12,7 @@ without this crate; you will just hand-build the value trees that
 
 ```toml
 [dependencies]
-lattice-plugin-sdk = "0.3"
+lattice-plugin-sdk = "0.4"
 ```
 
 ```rust
@@ -57,7 +57,7 @@ This crate shares one version with `lattice-wit` and
 `lattice-plugin-sdk-derive`, and its `major.minor` is always the WIT package's:
 
 ```
-lattice-plugin-sdk = "0.3"   ⟺   package lattice:plugin-host@0.3.x
+lattice-plugin-sdk = "0.4"   ⟺   package lattice:plugin-host@0.4.x
 ```
 
 It carries the number even though it has no `lattice-wit` dependency and is

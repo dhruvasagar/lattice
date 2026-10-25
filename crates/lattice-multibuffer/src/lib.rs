@@ -3740,6 +3740,8 @@ fn snapshot_from_composed_doc(
         path: None,
         dirty: doc.dirty(),
         selections,
+        tracked_ranges: Default::default(),
+        linked_edits: None,
     }
 }
 
@@ -3783,6 +3785,8 @@ fn compose_snapshot(
         // clobber the user's Visual selection. Updated via
         // `set_selections` (Document trait).
         selections,
+        tracked_ranges: Default::default(),
+        linked_edits: None,
     }
 }
 

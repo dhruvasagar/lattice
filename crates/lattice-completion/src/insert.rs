@@ -657,17 +657,23 @@ pub fn per_language_defaults() -> std::collections::HashMap<String, PerLanguageO
             ..Default::default()
         },
     );
+    // Prose stays manual even with `completion.auto_trigger` on: a popup
+    // after every two letters of English is noise.
     m.insert(
         "text".into(),
         PerLanguageOverrides {
             sources: Some(prose_sources),
+            auto_trigger: Some(false),
             ..Default::default()
         },
     );
+    // No code language forces `auto_trigger` on: completion is manual by
+    // default (decided 2026-10-22), and a user turns it on globally or per
+    // language. Rust used to ship with it on — from the design's example
+    // `lattice.toml` — which had no effect only because nothing read it.
     m.insert(
         "rust".into(),
         PerLanguageOverrides {
-            auto_trigger: Some(true),
             auto_insert_single: Some(true),
             ..Default::default()
         },
@@ -722,6 +728,24 @@ pub const TREE_SITTER_SYMBOL_SOURCE_ID: &str = "gen:tree-sitter-symbol";
 /// the directory of the partial path and emits filesystem
 /// entries.
 pub const PATH_SOURCE_ID: &str = "gen:path";
+
+/// The name the popup's footer gives a source: the five builtins by their
+/// short names, any other — a plugin's — by its id without the `gen:`
+/// prefix.
+///
+/// One function for both renderers (IC.4). Each kept its own copy, and both
+/// called every plugin source "source", so a popup filtered to org-roam's
+/// link targets could not say so.
+pub fn source_label(id: &str) -> &str {
+    match id {
+        BufferWordsSource::ID => "buffer-words",
+        LSP_COMPLETION_SOURCE_ID => "lsp",
+        PATH_SOURCE_ID => "path",
+        TREE_SITTER_SYMBOL_SOURCE_ID => "tree-sitter",
+        SNIPPET_SOURCE_ID => "snippet",
+        other => other.strip_prefix("gen:").unwrap_or(other),
+    }
+}
 
 // ---- Built-in: gen:buffer-words ----
 
@@ -1213,8 +1237,13 @@ mod tests {
             "markdown drops LSP per spec",
         );
         let rust = m.get("rust").expect("rust default");
-        assert_eq!(rust.auto_trigger, Some(true));
+        assert_eq!(
+            rust.auto_trigger, None,
+            "no code language forces auto-trigger; it inherits the global option"
+        );
         assert_eq!(rust.auto_insert_single, Some(true));
+        let text = m.get("text").expect("text default");
+        assert_eq!(text.auto_trigger, Some(false), "prose stays manual");
     }
 
     #[test]
@@ -1278,5 +1307,21 @@ mod tests {
         // LSP: 100 + 200 = 300; words: 100 + 100 + 50 = 250.
         // LSP wins despite the freq lift.
         assert_eq!(scored[0].raw.text, "from_lsp");
+    }
+}
+
+#[cfg(test)]
+mod source_labels {
+    use super::*;
+
+    /// The builtins keep their short names; any other source — a plugin's —
+    /// is named by its id, not by the word "source" (IC.4).
+    #[test]
+    fn a_plugin_source_is_named_by_its_id() {
+        assert_eq!(source_label(BufferWordsSource::ID), "buffer-words");
+        assert_eq!(source_label(LSP_COMPLETION_SOURCE_ID), "lsp");
+        assert_eq!(source_label(SNIPPET_SOURCE_ID), "snippet");
+        assert_eq!(source_label("gen:org-roam-node"), "org-roam-node");
+        assert_eq!(source_label("no-prefix"), "no-prefix");
     }
 }

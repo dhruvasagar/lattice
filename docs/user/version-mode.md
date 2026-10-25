@@ -21,7 +21,7 @@ markdown file; `version-mode` adds the read-only guard and `Y`.
 |---|---|
 | **Build** | Version; the commit it was built from, whether the tree had uncommitted changes, and the commit's date; debug or release; which renderers were compiled in; the Rust toolchain and target |
 | **Runtime** | The renderer this session is running in (window or terminal), the OS and architecture, and the terminal's `TERM` / `COLORTERM` / `TERM_PROGRAM` when set |
-| **Plugin API** | The plugin API generation a plugin must be built for (`lattice:plugin-host@0.3.x`), its fingerprint, and the wasmtime version that runs plugins |
+| **Plugin API** | The plugin API generation a plugin must be built for (`lattice:plugin-host@0.4.x`), its fingerprint, and the wasmtime version that runs plugins |
 | **Paths** | The config directory, options file, `init.rs`, user and core plugin directories, and the cache. There is no log file — logs go to [`*messages*`](help:messages-mode) |
 
 The commit **date** is shown, not when the binary was built: two builds of

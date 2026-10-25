@@ -194,8 +194,11 @@ pub mod plugin_meta_sink;
 // for "open the multibuffer view a provider owns", replacing the
 // per-provider `AppEffect` variant + host arm + plugin-boundary arm.
 pub mod provider_view;
+// SI.12: text ranges a mode tints while active (snippet placeholders).
+pub mod range_highlight;
 pub mod registry;
 pub mod services;
+pub mod session_probe;
 // DB.5 (design.md §9.1): the generic `Startup` boot-completion typed event.
 // Declared here (alongside `ModeEvent`) so subsystem `install(&mut boot)`
 // fns can subscribe without a `lattice-host` dependency.
@@ -283,12 +286,17 @@ pub use crate::plugin_meta_sink::{PluginMetaSink, PluginMetaSinkHandle};
 pub use crate::provider_view::{
     ProviderViewOpener, ProviderViewOutcome, ProviderViewRegistry, ProviderViewRegistryHandle,
 };
+pub use crate::range_highlight::{
+    RangeHighlight, RangeHighlightRegistrar, RangeHighlightRegistrarHandle,
+    RangeHighlightRegistration, RangeHighlightSource, register_range_highlights,
+};
 pub use crate::scanned_excerpt_source::{
     ClockSpan, RowAnnotation, ScanBeginFuture, ScanDescribeFuture, ScanFuture, ScanResult,
     ScannedExcerpt, ScannedExcerptSource, ScannedExcerptSourceRegistry,
     ScannedExcerptSourceRegistryHandle,
 };
 pub use crate::services::ServiceRegistry;
+pub use crate::session_probe::{SessionPredicate, SessionProbe};
 pub use crate::startup::Startup;
 pub use crate::subsystem_boot::SubsystemBoot;
 pub use crate::tick_callback::{

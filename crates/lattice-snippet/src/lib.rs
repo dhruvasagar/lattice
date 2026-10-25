@@ -45,22 +45,28 @@ pub mod registry;
 pub mod render;
 pub mod session;
 pub mod token;
+pub mod transform;
 pub mod variables;
+pub mod wrap;
 
 pub use crate::activation::{
-    SnippetActivation, SnippetActivationMode, SnippetActivationPolicyHandle, SnippetLanguages,
-    fold_activation_policy,
+    SnippetActivation, SnippetActivationMode, SnippetActivationPolicyHandle, SnippetDirs,
+    SnippetLanguages, fold_activation_policy, parse_dirs,
 };
 pub use crate::active::{ActiveSnippet, TabstopGroup};
 pub use crate::builtins::{builtin_packs, load_builtins, load_builtins_into};
-pub use crate::load::{LoadError, load_pack, load_pack_from_str};
+pub use crate::load::{DirLoad, LoadError, PackLoad, load_dir, load_pack, load_pack_from_str};
 pub use crate::modes::{
     SNIPPET_COMPLETION_SOURCE_ID, SNIPPET_PAYLOAD_KIND_ID, SnippetCompletionMode,
-    SnippetCompletionSource, SnippetMode, register_snippet_modes,
+    SnippetCompletionSource, SnippetMode, placeholder_selection, register_snippet_actions,
+    register_snippet_modes,
 };
 pub use crate::parse::{ParseError, parse};
-pub use crate::registry::{Snippet, SnippetMeta, SnippetRegistry};
+pub use crate::registry::{Snippet, SnippetMeta, SnippetRegistry, lookup_languages, snippet_key};
 pub use crate::render::{RenderedSnippet, TabstopRange};
 pub use crate::session::{SnippetSession, SnippetSessionHandle, snippet_active_predicate};
 pub use crate::token::{ChoiceOption, SnippetBody, SnippetToken};
 pub use crate::variables::{VariableContext, builtin_variables};
+pub use crate::wrap::{
+    SNIPPET_WRAP_ACTION, SNIPPET_WRAP_OPERATOR, register_snippet_wrap, selection_relative_to,
+};

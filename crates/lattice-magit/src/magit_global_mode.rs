@@ -3258,14 +3258,14 @@ impl RemoteOp {
     /// CC.2: can this op leave git stopped short of a commit it would
     /// have asked a message for? Then its spawner asks for the commit
     /// buffer once it has run (`conclude::compose_if_pending`).
-    fn stops_for_a_message(self) -> bool {
+    pub(crate) fn stops_for_a_message(self) -> bool {
         self == Self::PULL
     }
 
     /// CC.3: is this a `--continue` that commits when git is waiting on a
     /// commit? Then [`run_then_compose`] opens the commit buffer instead.
     /// `am --continue` is not: it commits the patch's own message.
-    fn continues_to_a_commit(self) -> bool {
+    pub(crate) fn continues_to_a_commit(self) -> bool {
         [
             Self::MERGE_CONTINUE,
             Self::REBASE_CONTINUE,

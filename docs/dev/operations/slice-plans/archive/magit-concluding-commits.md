@@ -1,7 +1,7 @@
 # Magit concluding commits — slice plan
 
 > **Status: Active.** Opened 2026-10-25. Implements
-> [`magit-concluding-commits.md`](../../architecture/magit-concluding-commits.md):
+> [`magit-concluding-commits.md`](../../../architecture/magit-concluding-commits.md):
 > every operation git would stop to ask a message for is concluded in the
 > commit buffer.
 
@@ -15,7 +15,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | CC.2 | Pull follows git config; a stopped merge opens the buffer | ✅ |
 | CC.3 | The `--continue` rows compose when a commit is pending | ✅ |
 | CC.4 | Revert `V V` composes | ✅ |
-| CC.5 | Audit pin: every message-writing op is accounted for | 📝 |
+| CC.5 | Audit pin: every message-writing op is accounted for | ✅ |
 
 ## CC.1 — The commit buffer concludes what git stopped
 
@@ -119,3 +119,19 @@ listed with a reason (`m m`'s `--no-edit`, fixup / squash, instant fixup).
 Includes verifying `subtree pull` / `subtree merge`, which the 2026-10-25
 audit did not reach. This is what the design gives up generality for
 (design §6), so it ships with the work, not after it.
+
+✅ `conclude::audit`, four tests reading `magit_global_mode.rs` from
+source. Every `RemoteOp` / `CommitOp` const whose subcommand can commit
+has a ledger row saying what happens to its message; every `*_argv` /
+`*_steps` builder, committing or not, has been read and has a row; every
+literal argv handed straight to `spawn_git` that commits has a row; and
+the six "composes" rows are checked against `stops_for_a_message` /
+`continues_to_a_commit` / `composes`. Stale rows fail as missing ones
+do. Its first run caught `AM_SKIP`, which the reading audit had missed.
+
+Subtree verified against real git with `GIT_EDITOR=false`, which fails
+any op that consults the editor: `subtree add`, `pull` (plain and
+`--squash`) and `merge` all succeed, taking git's `Merge commit '…'`
+message. Off a TTY git does not ask, so subtree is not a gap — the same
+standing as `m m`'s `--no-edit`.
+

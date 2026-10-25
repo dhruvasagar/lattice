@@ -1443,7 +1443,7 @@ layout (`package.json`, `<lang>.json`, `.code-snippets`).
 
 ### Magit concluding commits (CC)
 
-🚧 — slice plan: [`slice-plans/magit-concluding-commits.md`](slice-plans/magit-concluding-commits.md),
+✅ — slice plan (archived): [`slice-plans/archive/magit-concluding-commits.md`](slice-plans/archive/magit-concluding-commits.md),
 design: [`magit-concluding-commits.md`](../architecture/magit-concluding-commits.md).
 A diverged pull failed on its hard-coded `--ff-only`, and an audit
 (2026-10-25) found five more places where git would ask for a message and
@@ -1455,7 +1455,7 @@ with `--no-commit`; a merge stop opens the commit buffer off-keystroke
 (and the host now applies `OpenSyntheticBuffer` from off-keystroke drains).
 **CC.3 ✅**: the `--continue` rows open the commit buffer when git is
 about to commit. **CC.4 ✅**: revert `V V` stops before committing and composes.
-CC.5 📝.
+**CC.5 ✅**: the audit is a test (`conclude::audit`); subtree verified.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

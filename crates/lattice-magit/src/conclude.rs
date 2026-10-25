@@ -519,3 +519,302 @@ mod tests {
         assert!(!p.join(".git/rebase-merge").exists(), "the rebase ran on");
     }
 }
+
+/// CC.5: the audit pin. Every way magit runs git that can make a commit
+/// says what happens to that commit's message — and a new one cannot land
+/// without saying.
+///
+/// The 2026-10-25 audit found six places where git would have asked for
+/// a message and magit answered unseen (`GIT_EDITOR=true`). They were
+/// found by reading; this keeps them found. It reads the op tables and
+/// argv builders from source, the way `every_spawner_reports_completion`
+/// does, because what has to stay complete is the code, not a list kept
+/// beside it.
+///
+/// Out of scope by design: the composing surfaces themselves
+/// (`magit-commit-mode`, the rebase todo buffer), which are where
+/// messages are written.
+#[cfg(test)]
+mod audit {
+    use crate::magit_global_mode::{CommitOp, RemoteOp};
+    use std::collections::BTreeSet;
+
+    const SOURCE: &str = include_str!("magit_global_mode.rs");
+
+    /// Subcommands that can record a commit — and so a message.
+    /// `stash` is not one: its commits are git's bookkeeping, and git
+    /// never asks for their message.
+    const COMMITS: &[&str] = &[
+        "commit",
+        "merge",
+        "pull",
+        "cherry-pick",
+        "revert",
+        "rebase",
+        "am",
+        "notes",
+        "tag",
+        "subtree",
+    ];
+
+    /// Every op whose subcommand can commit, and what becomes of the
+    /// message. "Composes" rows are checked against the code below;
+    /// the rest are the reason, read and verified.
+    const OPS: &[(&str, &str)] = &[
+        ("PULL", "composes: stops before a merge commit (CC.2)"),
+        ("MERGE_CONTINUE", "composes when a commit is pending (CC.3)"),
+        (
+            "REBASE_CONTINUE",
+            "composes when a commit is pending (CC.3)",
+        ),
+        (
+            "CHERRY_PICK_CONTINUE",
+            "composes when a commit is pending (CC.3)",
+        ),
+        (
+            "REVERT_CONTINUE",
+            "composes when a commit is pending (CC.3)",
+        ),
+        ("REVERT", "composes: stops before the revert commit (CC.4)"),
+        ("MERGE_ABORT", "records nothing"),
+        ("REBASE_ABORT", "records nothing"),
+        ("CHERRY_PICK_ABORT", "records nothing"),
+        ("REVERT_ABORT", "records nothing"),
+        ("AM_ABORT", "records nothing"),
+        ("NOTES_MERGE_ABORT", "records nothing"),
+        ("NOTES_PRUNE", "notes bookkeeping; git asks nothing"),
+        (
+            "REBASE_SKIP",
+            "the remaining commits replay with their own messages",
+        ),
+        (
+            "CHERRY_PICK_SKIP",
+            "the remaining picks keep their own messages",
+        ),
+        (
+            "REVERT_SKIP",
+            "the remaining reverts take git's `Revert` messages, as magit's skip does",
+        ),
+        (
+            "CHERRY_PICK",
+            "a pick keeps its commit's message — magit's `A A` does not edit",
+        ),
+        ("AM_CONTINUE", "a patch commits its own message"),
+        ("AM_SKIP", "the remaining patches commit their own messages"),
+        (
+            "NOTES_MERGE_COMMIT",
+            "a notes-ref merge commit; git asks nothing",
+        ),
+        ("REVERT_CHANGES", "`--no-commit`: stages, records nothing"),
+        (
+            "CHERRY_PICK_APPLY",
+            "`--no-commit`: stages, records nothing",
+        ),
+        (
+            "COMMIT_FIXUP",
+            "`--no-edit`: git writes `fixup! …`, as magit's `c f` does",
+        ),
+        (
+            "COMMIT_SQUASH",
+            "`--no-edit`: git writes `squash! …`, as magit's `c s` does",
+        ),
+    ];
+
+    /// Every argv builder, committing or not — a builder is free-form, so
+    /// the only complete check is that each one has been read.
+    const BUILDERS: &[(&str, &str)] = &[
+        (
+            "merge_argv",
+            "`--no-edit`: magit's `m m` takes git's message",
+        ),
+        (
+            "merge_no_commit_argv",
+            "`--no-commit`: records nothing; `c c` composes after",
+        ),
+        (
+            "merge_squash_argv",
+            "`--squash`: records nothing; `c c` composes after",
+        ),
+        (
+            "merge_into_steps",
+            "magit's `m i` takes git's merge message",
+        ),
+        (
+            "merge_absorb_steps",
+            "magit's `m a` takes git's merge message",
+        ),
+        (
+            "rebase_onto_argv",
+            "replays commits with their own messages",
+        ),
+        (
+            "rebase_subset_argv",
+            "replays commits with their own messages",
+        ),
+        (
+            "rebase_autosquash_argv",
+            "the todo is git's own; fixup!/squash! messages fold as written",
+        ),
+        (
+            "instant_squash_steps",
+            "`--no-edit` marker commit, then an autosquash",
+        ),
+        ("am_argv", "a patch commits its own message"),
+        ("note_merge_argv", "a notes-ref merge; git asks nothing"),
+        ("tag_argv", "lightweight: no message"),
+        (
+            "tag_release_argv",
+            "annotated with `-m`: the message is passed",
+        ),
+        ("tag_delete_argv", "records nothing"),
+        ("tag_prune_argv", "records nothing"),
+        (
+            "subtree_argv",
+            "git's `Merge commit` message; verified to consult no editor off a TTY (2026-10-25)",
+        ),
+        ("stash_branch_argv", "stash: no message"),
+        ("stash_snapshot_steps", "stash: no message"),
+        ("format_patch_argv", "writes files, records nothing"),
+        ("clone_argv", "records nothing"),
+        ("init_argv", "records nothing"),
+        ("untrack_argv", "records nothing"),
+        ("delete_argv", "records nothing"),
+        ("rename_argv", "records nothing"),
+        ("checkout_file_argv", "records nothing"),
+        ("reset_file_argv", "records nothing"),
+    ];
+
+    /// Literal argv handed straight to `spawn_git` whose subcommand
+    /// commits, keyed by the literal as written.
+    const LITERALS: &[(&str, &str)] = &[(
+        r#"["commit", "--amend", "--no-edit"]"#,
+        "magit's `c e` (extend) keeps the message by definition",
+    )];
+
+    /// `pub const NAME: Self = Self { … args: &["sub", …] … }` in `impl`.
+    fn consts_of(impl_header: &str) -> Vec<(String, String)> {
+        let start = SOURCE.find(impl_header).expect("impl present");
+        let body = &SOURCE[start..start + SOURCE[start..].find("\n}\n").expect("impl ends")];
+        body.split("pub const ")
+            .skip(1)
+            .filter_map(|chunk| {
+                let name = chunk.split(':').next()?.trim().to_string();
+                let args = chunk.split("args: &[").nth(1)?;
+                let sub = args.split('"').nth(1)?.to_string();
+                Some((name, sub))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_committing_op_says_what_happens_to_its_message() {
+        let mut needed = BTreeSet::new();
+        for (name, sub) in consts_of("impl RemoteOp {")
+            .into_iter()
+            .chain(consts_of("impl CommitOp {"))
+        {
+            if COMMITS.contains(&sub.as_str()) {
+                needed.insert(name);
+            }
+        }
+        let listed: BTreeSet<String> = OPS.iter().map(|(n, _)| n.to_string()).collect();
+        assert_eq!(
+            needed.difference(&listed).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "an op that can commit is not in the ledger — say what happens to its message"
+        );
+        assert_eq!(
+            listed.difference(&needed).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "a ledger row names no committing op"
+        );
+    }
+
+    /// The "composes" rows are what the code does, not just what the
+    /// ledger says.
+    #[test]
+    fn the_composing_rows_are_the_ones_that_compose() {
+        assert!(RemoteOp::PULL.stops_for_a_message());
+        for op in [
+            RemoteOp::MERGE_CONTINUE,
+            RemoteOp::REBASE_CONTINUE,
+            RemoteOp::CHERRY_PICK_CONTINUE,
+            RemoteOp::REVERT_CONTINUE,
+        ] {
+            assert!(op.continues_to_a_commit(), "{}", op.what);
+        }
+        assert!(!RemoteOp::AM_CONTINUE.continues_to_a_commit());
+        assert!(CommitOp::REVERT.composes());
+        let composing = OPS
+            .iter()
+            .filter(|(_, why)| why.starts_with("composes"))
+            .count();
+        assert_eq!(
+            composing, 6,
+            "a composing row was added without its check here"
+        );
+    }
+
+    #[test]
+    fn every_argv_builder_has_been_read() {
+        let mut found = BTreeSet::new();
+        let lines: Vec<&str> = SOURCE.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let Some(rest) = line.split("fn ").nth(1) else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let is_test = lines[i.saturating_sub(2)..i]
+                .iter()
+                .any(|l| l.trim() == "#[test]");
+            if (name.ends_with("_argv") || name.ends_with("_steps")) && !is_test {
+                found.insert(name);
+            }
+        }
+        let listed: BTreeSet<String> = BUILDERS.iter().map(|(n, _)| n.to_string()).collect();
+        assert_eq!(
+            found.difference(&listed).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "an argv builder is not in the ledger — read it and say what it commits"
+        );
+        assert_eq!(
+            listed.difference(&found).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "a ledger row names no builder"
+        );
+    }
+
+    #[test]
+    fn every_literal_committing_argv_is_accounted_for() {
+        let sources = [
+            include_str!("magit_global_mode.rs"),
+            include_str!("lib.rs"),
+            include_str!("magit_stash_mode.rs"),
+            include_str!("git_config.rs"),
+        ];
+        let mut found = BTreeSet::new();
+        for src in sources {
+            for (at, _) in src.match_indices("spawn_git(") {
+                // The argv is the second argument: the first `[` or
+                // `vec![` within the call's opening lines.
+                let window: String = src[at..].lines().take(4).collect::<Vec<_>>().join("\n");
+                let Some(open) = window.find('[') else {
+                    continue;
+                };
+                let literal = &window[open..=open + window[open..].find(']').unwrap_or(0)];
+                let sub = literal.split('"').nth(1).unwrap_or_default();
+                if COMMITS.contains(&sub) {
+                    found.insert(literal.to_string());
+                }
+            }
+        }
+        let listed: BTreeSet<String> = LITERALS.iter().map(|(l, _)| l.to_string()).collect();
+        assert_eq!(
+            found, listed,
+            "a literal committing argv handed to `spawn_git` is not in the ledger"
+        );
+    }
+}

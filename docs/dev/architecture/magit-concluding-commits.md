@@ -5,7 +5,7 @@ open `$EDITOR` for a commit message. Lattice cannot hand git an editor, so
 each of these either failed or committed a message nobody saw.
 
 Companion to [`magit.md`](magit.md) (the subsystem). Sequencing:
-[`../operations/slice-plans/magit-concluding-commits.md`](../operations/slice-plans/magit-concluding-commits.md).
+[`../operations/slice-plans/archive/magit-concluding-commits.md`](../operations/slice-plans/archive/magit-concluding-commits.md).
 
 ## 1. The gap
 
@@ -29,7 +29,13 @@ Not gaps: commit, amend, reword, augment, merge `e` and rebase `w` already
 compose in `magit-commit-mode`. Merge `m m` passes `--no-edit`, as Emacs
 magit's does, with `m e` the composing row. Tag `r` takes its message from
 a prompt. Fixup, squash, instant fixup, `am`, notes merge and stash write
-no message the user is meant to edit.
+no message the user is meant to edit. Subtree `pull` / `merge` take git's
+`Merge commit '…'` message and, off a TTY, consult no editor (verified
+with `GIT_EDITOR=false`).
+
+The audit is kept as a test (`conclude::audit`): each op and argv builder
+that can commit carries a row saying what happens to its message, read
+from source so a new one cannot land without one.
 
 ## 2. Git's own stopped state is the protocol
 

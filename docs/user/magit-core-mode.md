@@ -163,7 +163,7 @@ non-commit row end up in the same place.
 | Chord | Runs | Keeps |
 |---|---|---|
 | `A` | `git cherry-pick <commit>` | — |
-| `_` | `git revert --no-edit <commit>` | — |
+| `_` | `git revert --no-commit <commit>`, then the commit buffer | — |
 | `Os` | `git reset --soft <commit>` | index **and** working tree |
 | `Om` | `git reset --mixed <commit>` | working tree |
 | `Oh` | `git reset --hard <commit>` | **nothing** — asks first |
@@ -174,9 +174,8 @@ use, where the chord itself performs no git call at all. `--soft` and
 `--mixed` keep your changes, and prompting on those would just train
 you to dismiss the prompt that matters.
 
-`_` passes `--no-edit`: git would otherwise open `$EDITOR` for the
-revert message, which inside lattice means waiting on a prompt you
-cannot answer.
+The revert stops before committing and the commit buffer opens on
+git's `Revert "…"` message; `C-c C-c` records it.
 
 ## Operating on one hunk of a commit
 

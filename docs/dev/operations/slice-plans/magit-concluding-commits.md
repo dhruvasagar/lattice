@@ -14,7 +14,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | CC.1 | The commit buffer concludes what git stopped | ✅ |
 | CC.2 | Pull follows git config; a stopped merge opens the buffer | ✅ |
 | CC.3 | The `--continue` rows compose when a commit is pending | ✅ |
-| CC.4 | Revert `V V` composes | 📝 |
+| CC.4 | Revert `V V` composes | ✅ |
 | CC.5 | Audit pin: every message-writing op is accounted for | 📝 |
 
 ## CC.1 — The commit buffer concludes what git stopped
@@ -96,6 +96,20 @@ through `:magit-rebase-continue`, waiting on the wake).
 
 `revert --no-commit <commit>`, then the commit buffer through the CC.2
 bus, seeded with git's `Revert "…"` message. `V v` (no commit) unchanged.
+
+✅ `CommitOp::REVERT` runs `revert --no-commit` (git writes `REVERT_HEAD`
+and `MERGE_MSG`, so CC.1 detects and seeds it), and `CommitOp::composes`
+asks for the buffer after the run. Its argv is now `v`'s; `composes` is
+the whole difference, and the test that pinned the argv apart pins that
+instead. All three surfaces pass the bus: the two `magit-core-mode`
+handlers and `:magit-revert`. A conflict leaves something unmerged, so
+nothing opens until CC.3's continue.
+
+Its end-to-end test surfaced an older bug, fixed in its own commit just
+before: the commit buffer's confirm dropped every blank line, so any
+message with a body was committed as one long subject. The read-back is
+now `message_above_marker`, and its tests call it rather than copying its
+loop — the copies had pinned the bug.
 
 ## CC.5 — Audit pin
 

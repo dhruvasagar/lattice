@@ -3883,12 +3883,14 @@ mod commit_op_argv_tests {
 
     /// The committing halves and their `--no-commit` peers are NOT the
     /// same operation, and neither pair may collapse into the other.
+    ///
+    /// CC.4: revert's pair share their argv — both stop before committing
+    /// — and differ in what follows: `V V` opens the commit buffer on
+    /// git's message, `v` leaves the reversal staged.
     #[test]
     fn each_no_commit_half_differs_from_its_committing_sibling() {
-        assert_ne!(
-            CommitOp::REVERT.argv("abc123"),
-            CommitOp::REVERT_CHANGES.argv("abc123"),
-        );
+        assert!(CommitOp::REVERT.composes());
+        assert!(!CommitOp::REVERT_CHANGES.composes());
         assert_ne!(
             CommitOp::CHERRY_PICK.argv("abc123"),
             CommitOp::CHERRY_PICK_APPLY.argv("abc123"),

@@ -50,6 +50,9 @@
 - **A commit message keeps the blank line between subject and body.**
   The commit buffer dropped every blank line, so a message with a body
   was committed as one long subject.
+- **Reverting a commit shows you the message first.** `V V` / `_ V` /
+  `:magit-revert` committed git's `Revert "…"` message unseen. It now
+  stops before committing and opens the commit buffer on it.
 - **Continuing a merge, cherry-pick, revert or rebase shows you the
   message first.** *Continue* committed git's prepared message without
   showing it. When git is about to commit, it now opens the commit

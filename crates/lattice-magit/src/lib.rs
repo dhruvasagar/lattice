@@ -1520,6 +1520,7 @@ fn register_ex_commands(
             // Cloned per iteration: each closure outlives the loop body.
             let store = store.clone();
             let scopes = scopes.clone();
+            let compose = compose.clone();
             registry.register_ex_command(
                 op.ex_command,
                 // Leaked once at boot, from a `&'static` table — the
@@ -1562,6 +1563,7 @@ fn register_ex_commands(
                                 op,
                                 repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
                                 &commit,
+                                compose.clone(),
                             ),
                         })
                     }),

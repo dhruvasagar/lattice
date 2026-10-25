@@ -273,7 +273,10 @@ fn commit_op(
                 None => {
                     let workdir = view.workdir()?;
                     Some(crate::magit_global_mode::spawn_commit_op(
-                        op, workdir, &commit,
+                        op,
+                        workdir,
+                        &commit,
+                        crate::magit_global_mode::compose_bus(ctx),
                     ))
                 }
             }
@@ -401,7 +404,10 @@ fn commit_op_execute(
             };
             let workdir = view.workdir()?;
             Some(crate::magit_global_mode::spawn_commit_op(
-                op, workdir, &commit,
+                op,
+                workdir,
+                &commit,
+                crate::magit_global_mode::compose_bus(ctx),
             ))
         }),
     }

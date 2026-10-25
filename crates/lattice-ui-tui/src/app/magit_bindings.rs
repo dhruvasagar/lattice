@@ -1658,6 +1658,66 @@ mod compose_buffers {
         );
     }
 
+    /// CC.4: `:magit-revert` (magit's `V V`) committed git's message
+    /// unseen. It stops before committing and the commit buffer opens on
+    /// `Revert "…"`, off-keystroke; confirming records the revert.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reverting_a_commit_opens_the_commit_buffer_on_its_message() {
+        use crate::app::Action;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let repo = scratch_repo("revert-compose-repo");
+        std::fs::write(repo.join("f.txt"), "changed\n").unwrap();
+        git_in(&repo, &["commit", "-q", "-am", "change f"]);
+        let sha = git_in(&repo, &["rev-parse", "HEAD"]);
+
+        let mut app = app_with_path("changed\n", 20, repo.join("f.txt"));
+        app.apply(Action::EnterCommandLine);
+        press_chars(&mut app, &format!("magit-revert {sha}"));
+        app.apply(Action::CommandLineSubmit);
+
+        let front = |a: &crate::app::App| {
+            a.editor
+                .buffers
+                .name_of(a.editor.active_pane_buffer_id())
+                .filter(|n| n.contains("commit") && n.contains("revert-compose-repo"))
+        };
+        assert!(
+            settle_woken(&mut app, |a| front(a)
+                .and_then(|n| commit_text(a, &n))
+                .is_some_and(|t| t.starts_with("Revert \"change f\"")))
+            .await,
+            "no commit buffer on the revert message; front is {:?}",
+            app.editor
+                .buffers
+                .name_of(app.editor.active_pane_buffer_id())
+        );
+        assert_eq!(
+            git_in(&repo, &["log", "-1", "--format=%s"]),
+            "change f",
+            "nothing committed before the message was seen"
+        );
+
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        press(&mut app, ctrl('c'));
+        press(&mut app, ctrl('c'));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while repo.join(".git/REVERT_HEAD").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the revert was never recorded"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            git_in(&repo, &["log", "-1", "--format=%s"]),
+            "Revert \"change f\""
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("f.txt")).unwrap(),
+            "base\n"
+        );
+    }
+
     /// `cc` / `ca` in magit-status open the same compose buffer as
     /// `C-c g c` / `C-c g a`: named for, and recording, the STATUS
     /// buffer's repository.

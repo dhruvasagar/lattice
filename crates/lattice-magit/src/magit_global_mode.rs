@@ -1438,10 +1438,9 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         action_name: "action:magit-global-merge-finish",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let branch = ctx.prompt_value?.trim();
-            // `--no-edit` for the same reason `revert` passes it: git
-            // would otherwise open `$EDITOR` for the merge message,
-            // which inside lattice is a wait on a prompt that never
-            // appears.
+            // `--no-edit`: git would otherwise open `$EDITOR` for the
+            // merge message, which inside lattice is a wait on a prompt
+            // that never appears.
             (!branch.is_empty()).then(|| {
                 spawn_git(
                     crate::repo_scope::action_workdir(ctx),
@@ -4598,10 +4597,9 @@ pub(crate) fn init_argv(dir: &str) -> Vec<String> {
     vec!["init".into(), dir.to_string()]
 }
 
-/// `--no-edit` for the same reason `revert` passes it: git would open
-/// `$EDITOR` for the merge message, and inside lattice that is a wait
-/// on a prompt that never appears — a hang `Command::output()` cannot
-/// recover from.
+/// `--no-edit`: git would otherwise open `$EDITOR` for the merge
+/// message, and inside lattice that is a wait on a prompt that never
+/// appears — a hang `Command::output()` cannot recover from.
 /// NC.4: the label for each merge flavour, naming the branch. The
 /// flavours leave the repository in different states, so they must not
 /// read alike.
@@ -5206,11 +5204,12 @@ impl CommitOp {
         label: "revert",
         trailing: &[],
         ex_command: "magit-revert",
-        // `--no-edit` keeps the generated message: lattice has no
-        // commit-message UI wired into this path, so opening $EDITOR
-        // inside the editor would hang the operation on a prompt the
-        // user cannot answer.
-        args: &["revert", "--no-edit"],
+        // CC.4: magit's `V V` opens git's `Revert "…"` message for
+        // editing. Git cannot ask (its `$EDITOR` would hang the task), so
+        // it stops before committing and the commit buffer opens on that
+        // message instead — see [`Self::composes`]. This was `--no-edit`,
+        // which committed the message unseen.
+        args: &["revert", "--no-commit"],
         confirm_action: None,
     };
     pub const CHERRY_PICK: Self = Self {
@@ -5242,6 +5241,13 @@ impl CommitOp {
         // `--hard` is held to.
         confirm_action: Some("action:magit-reset-worktree-execute"),
     };
+
+    /// CC.4: does this op stop short of the commit it means to make, for
+    /// the commit buffer to write? [`Self::REVERT`] does; its argv is
+    /// [`Self::REVERT_CHANGES`]'s, and this is the whole difference.
+    pub(crate) fn composes(self) -> bool {
+        self == Self::REVERT
+    }
 
     /// MG.43a: magit's revert `v` — apply the inverse to the working
     /// tree and index WITHOUT committing.
@@ -5356,14 +5362,26 @@ impl CommitOp {
 /// Same detached shape as [`spawn_remote_op`]: optimistic echo now,
 /// real outcome through `tracing`, because nothing can carry a result
 /// back to an echo area from a task that outlives the handler call.
-pub fn spawn_commit_op(op: CommitOp, workdir: std::path::PathBuf, commit: &str) -> Effect {
+pub fn spawn_commit_op(
+    op: CommitOp,
+    workdir: std::path::PathBuf,
+    commit: &str,
+    compose: Option<crate::conclude::ComposeBusHandle>,
+) -> Effect {
     let argv = op.argv(commit);
     let shown = argv.join(" ");
     let label = format!("{} {}", op.label, short_rev(commit));
     let identity = argv.join(" ");
     // MG.41g: was log-only; `spawn_repo_task` reports it.
     if let Err(refused) = spawn_repo_task(workdir, &identity, label, move |workdir| {
-        run_remote_op(workdir, &argv)
+        let result = run_remote_op(workdir, &argv);
+        // CC.4: on the blocking pool, after git stopped short. A conflict
+        // leaves something unmerged, so nothing opens until it is resolved
+        // and continued (CC.3).
+        if let (true, Ok(_), Some(bus)) = (op.composes(), &result, compose.as_ref()) {
+            crate::conclude::compose_if_pending(workdir, bus);
+        }
+        result
     }) {
         return refused;
     }
@@ -6408,15 +6426,17 @@ mod tests {
         assert!(CommitOp::CHERRY_PICK.confirm_action.is_none());
     }
 
-    /// Revert passes `--no-edit`. Without it git opens `$EDITOR` for
-    /// the message, which inside lattice means the operation hangs on
-    /// a prompt the user has no way to answer.
+    /// Revert never lets git open `$EDITOR` for the message — inside
+    /// lattice that hangs the operation on a prompt the user has no way to
+    /// answer. CC.4: it stops before committing instead, and the commit
+    /// buffer is where the message is written.
     #[test]
     fn revert_does_not_open_an_editor() {
         assert!(
-            CommitOp::REVERT.args.contains(&"--no-edit"),
+            CommitOp::REVERT.args.contains(&"--no-commit"),
             "revert must not block on $EDITOR"
         );
+        assert!(CommitOp::REVERT.composes());
     }
 
     /// Every destructive commit op's confirm target must be a real

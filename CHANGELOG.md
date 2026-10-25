@@ -47,6 +47,9 @@
   their own.
 
 ### Fixed
+- **A buffer opened by background work appears without a key press.** A
+  subsystem that opened a buffer when its work finished (rather than when
+  you pressed a key) had the request dropped until your next keystroke.
 - **Committing mid-merge starts from git's message and finishes the
   merge.** `cc` while a merge, cherry-pick, revert or conflicted rebase is
   waiting on a commit used to open an empty buffer, dropping git's message

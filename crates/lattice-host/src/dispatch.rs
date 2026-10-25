@@ -19803,12 +19803,13 @@ impl Editor {
         for effect in effects {
             apply_effect_host(self, effect, &mut out);
         }
-        self.absorb_off_keystroke_popup_effects(&mut out);
+        self.absorb_off_keystroke_effects(&mut out);
         out.renderer_signals
     }
 
-    /// WK.10: absorb the popup pair from an OFF-KEYSTROKE drain's renderer
-    /// tail, host-side.
+    /// WK.10: absorb the effects an OFF-KEYSTROKE drain's renderer tail
+    /// would drop — the popup pair, and opening a synthetic buffer —
+    /// host-side.
     ///
     /// `apply_effect_host` deliberately routes `OpenPopup` / `DismissPopup`
     /// to `out.effects` for a renderer to drain. Off a keystroke there is no
@@ -19825,9 +19826,16 @@ impl Editor {
     /// them is how the second one got missed; a third off-keystroke drain
     /// calls this and inherits the fix.
     ///
+    /// `OpenSyntheticBuffer` has the same hazard and the same remedy: both
+    /// peers apply it by calling [`Self::open_synthetic_buffer_seeded`],
+    /// so the host can call it with nothing lost. A producer that opens a
+    /// buffer when its work lands — a pull stopped before its merge commit
+    /// opening the commit buffer — was otherwise a no-op until a key went
+    /// through a peer that never received it either.
+    ///
     /// Anything else keeps the old routing — back onto the tail, in case a
     /// peer is in a position to drain it.
-    fn absorb_off_keystroke_popup_effects(&mut self, out: &mut DispatchOutcome) {
+    fn absorb_off_keystroke_effects(&mut self, out: &mut DispatchOutcome) {
         let deferred = std::mem::take(&mut out.effects);
         for effect in deferred {
             match effect {
@@ -19844,6 +19852,19 @@ impl Editor {
                 lattice_grammar::Effect::DismissPopupNamed { name } => {
                     self.dismiss_popup_named(&name);
                 }
+                lattice_grammar::Effect::OpenSyntheticBuffer {
+                    name,
+                    mode_id,
+                    content,
+                    cursor,
+                    activate_minor,
+                } => self.open_synthetic_buffer_seeded(
+                    &name,
+                    &mode_id,
+                    content.as_deref(),
+                    cursor,
+                    activate_minor.as_deref(),
+                ),
                 other => out.effects.push(other),
             }
         }
@@ -19865,11 +19886,11 @@ impl Editor {
             apply_effect_host(self, effect, &mut out);
         }
         // A tick callback runs off-keystroke, exactly like a fired gate —
-        // see `absorb_off_keystroke_popup_effects`. Without this, which-key's
+        // see `absorb_off_keystroke_effects`. Without this, which-key's
         // `DismissPopup` was produced on every chord resolution and thrown
         // away with `out.effects`, leaving the popup describing a prefix that
         // no longer existed.
-        self.absorb_off_keystroke_popup_effects(&mut out);
+        self.absorb_off_keystroke_effects(&mut out);
         out.renderer_signals
     }
 

@@ -5372,6 +5372,37 @@ fn run_remote_op_until(
     args: &[String],
     token: &lattice_protocol::CancellationToken,
 ) -> Option<Result<String, String>> {
+    run_git_op_until(workdir, args, "true", None, token)
+}
+
+/// CC.1: [`run_remote_op`] with what git would otherwise ask a person
+/// for supplied up front — `git_editor` as `GIT_EDITOR`, `input` on
+/// stdin. Concluding a stopped commit hands git its message both ways:
+/// `commit -F -` reads stdin, and `rebase --continue` runs the editor
+/// (`magit-concluding-commits.md` §2.1).
+pub(crate) fn run_git_op(
+    workdir: &std::path::Path,
+    args: &[String],
+    git_editor: &str,
+    input: Option<Vec<u8>>,
+) -> Result<String, String> {
+    run_git_op_until(
+        workdir,
+        args,
+        git_editor,
+        input,
+        &lattice_protocol::CancellationToken::never(),
+    )
+    .unwrap_or_else(|| Err("cancelled".to_string()))
+}
+
+fn run_git_op_until(
+    workdir: &std::path::Path,
+    args: &[String],
+    git_editor: &str,
+    input: Option<Vec<u8>>,
+    token: &lattice_protocol::CancellationToken,
+) -> Option<Result<String, String>> {
     use lattice_core::process::{ProcessGroup, RunOutcome, run_cancellable};
     let mut command = std::process::Command::new("git");
     command
@@ -5382,8 +5413,9 @@ fn run_remote_op_until(
         // without this the child blocks forever holding a blocking-pool
         // thread and the operation never reports either way. `true`
         // accepts the message unchanged — the same limitation, and the
-        // same reason, as `run_rebase`'s `GIT_EDITOR`.
-        .env("GIT_EDITOR", "true")
+        // same reason, as `run_rebase`'s `GIT_EDITOR`. CC.1's callers
+        // pass `cp <message>` instead, when they have one.
+        .env("GIT_EDITOR", git_editor)
         // MG.42-E2: the todo-list editor, distinct from `GIT_EDITOR`.
         // `rebase -i --autosquash` opens the generated todo list; `true`
         // accepts it unchanged, which is exactly what autosquash means
@@ -5396,7 +5428,7 @@ fn run_remote_op_until(
     // output after it — `finish_task` publishes the first line and
     // logs the rest. Taking stdout-then-stderr as it came made a push
     // read `To <url>` and a conflicted merge read nothing at all.
-    match run_cancellable(command, None, ProcessGroup::Shared, token) {
+    match run_cancellable(command, input, ProcessGroup::Shared, token) {
         Ok(RunOutcome::Cancelled) => None,
         Ok(RunOutcome::Finished(o)) => {
             let out = String::from_utf8_lossy(&o.stdout);

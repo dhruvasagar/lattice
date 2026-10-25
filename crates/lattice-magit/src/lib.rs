@@ -13,6 +13,7 @@ pub mod blame;
 pub mod buffer_io;
 pub mod buffer_state;
 mod cherry_move;
+mod conclude;
 mod confirm;
 mod git_config;
 mod git_report;

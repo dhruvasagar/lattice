@@ -1441,6 +1441,17 @@ layout (`package.json`, `<lang>.json`, `.code-snippets`).
 (`snippet.placeholder`) through a generic mode range-highlight seam
 (mode-architecture.md §9.5.1).
 
+### Magit concluding commits (CC)
+
+🚧 — slice plan: [`slice-plans/magit-concluding-commits.md`](slice-plans/magit-concluding-commits.md),
+design: [`magit-concluding-commits.md`](../architecture/magit-concluding-commits.md).
+A diverged pull failed on its hard-coded `--ff-only`, and an audit
+(2026-10-25) found five more places where git would ask for a message and
+lattice answered unseen with `GIT_EDITOR=true`: each `--continue`, revert,
+and `c c` mid-merge, which opened empty. Git stops; the commit buffer
+seeds from `MERGE_MSG` and concludes. **CC.1 ✅**: `cc` mid-merge / pick /
+revert / rebase-conflict concludes it. CC.2–CC.5 📝.
+
 ### Keymap registry (../architecture/design.md §5.2.3)
 
 `KeymapEntry { chord, mode, doc, command }` in `lattice-ui-tui::keymap`,

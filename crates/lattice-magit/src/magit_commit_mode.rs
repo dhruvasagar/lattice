@@ -79,6 +79,15 @@ pub enum CommitIntent {
     /// with that commit's todo verb set to `reword` and hands git the
     /// message through `GIT_EDITOR`.
     RewordCommit { target: String },
+    /// CC.1: finish the commit git stopped short of making — a merge,
+    /// pick, revert or rebase step in flight.
+    ///
+    /// Never selected by name. A `Create` buffer becomes this on
+    /// activation when git is stopped with a commit pending, because
+    /// committing then IS concluding that operation — it is what
+    /// `git commit` itself means mid-merge. Opening `c c` empty there
+    /// lost git's message and its conflict list.
+    Conclude(lattice_vcs::InFlightOp),
 }
 
 impl CommitIntent {
@@ -92,6 +101,28 @@ impl CommitIntent {
             Self::Augment { target } => format!("fix up {}", short_rev(target)),
             Self::MergeEdit { branch } => format!("merge {branch}"),
             Self::RewordCommit { target } => format!("reword {}", short_rev(target)),
+            Self::Conclude(op) => match op {
+                lattice_vcs::InFlightOp::Merge => "conclude the merge",
+                lattice_vcs::InFlightOp::CherryPick => "conclude the cherry-pick",
+                lattice_vcs::InFlightOp::Revert => "conclude the revert",
+                lattice_vcs::InFlightOp::Rebase => "continue the rebase",
+                lattice_vcs::InFlightOp::ApplyPatch => "continue applying patches",
+            }
+            .to_string(),
+        }
+    }
+
+    /// The headerline's alert for this buffer: what the confirm changes
+    /// besides adding a commit. `None` for a plain commit.
+    fn alert(&self) -> Option<&'static str> {
+        match self {
+            Self::Create => None,
+            Self::Conclude(op) => Some(op.label()),
+            Self::Amend
+            | Self::Reword
+            | Self::Augment { .. }
+            | Self::MergeEdit { .. }
+            | Self::RewordCommit { .. } => Some("AMEND"),
         }
     }
 
@@ -379,6 +410,9 @@ impl Mode for MagitCommitMode {
                                     )
                                     .map_err(lattice_vcs::VcsError::Index)
                                 }
+                                CommitIntent::Conclude(op) => {
+                                    return crate::conclude::conclude(workdir, *op, &message);
+                                }
                                 CommitIntent::Create => Commit::create(&repo, message.trim()),
                             };
                             result.map(|()| String::new()).map_err(|e| e.to_string())
@@ -480,9 +514,18 @@ impl Mode for MagitCommitMode {
             // pre-populates the previous commit's message instead of a
             // blank region, matching what it's about to replace.
             let wd = workdir.clone();
-            let (staged, prior_message, branch) = tokio::task::spawn_blocking(move || {
+            let creating = intent == CommitIntent::Create;
+            let (staged, prior_message, branch, pending) = tokio::task::spawn_blocking(move || {
                 let staged = run_staged_diff(&wd);
-                let prior = if amend {
+                // CC.1: git stopped with a commit pending — the message it
+                // proposed is where this commit starts.
+                let pending = creating
+                    .then(|| Repository::discover(&wd).ok())
+                    .flatten()
+                    .and_then(|repo| lattice_vcs::PendingCommit::detect(&repo));
+                let prior = if let Some(p) = &pending {
+                    p.message.clone()
+                } else if amend {
                     run_commit_message(&wd, &seed_rev)
                 } else {
                     String::new()
@@ -495,13 +538,23 @@ impl Mode for MagitCommitMode {
                     .and_then(|r| r.run_git_str(["rev-parse", "--abbrev-ref", "HEAD"]).ok())
                     .map(|s| s.trim().to_string())
                     .unwrap_or_default();
-                (staged, prior, branch)
+                (staged, prior, branch, pending.map(|p| p.op))
             })
             .await
             .unwrap_or_default();
+            let intent = match pending {
+                Some(op) => {
+                    let concluding = CommitIntent::Conclude(op);
+                    if let Ok(mut g) = state.lock() {
+                        g.intent = concluding.clone();
+                    }
+                    concluding
+                }
+                None => intent,
+            };
             headerline::publish(
                 &hl,
-                headerline::commit_fields(&branch, &staged, intent != CommitIntent::Create),
+                headerline::commit_fields(&branch, &staged, intent.alert()),
             );
             // Message first (line 0 for a fresh commit, so the cursor
             // opens where you type), then the marker, then the diff.

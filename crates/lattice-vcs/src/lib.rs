@@ -40,7 +40,7 @@ pub use blob::GitBlob;
 pub use branch::Branch;
 pub use commit::Commit;
 pub use error::{Result, VcsError};
-pub use in_flight::InFlightOp;
+pub use in_flight::{InFlightOp, PendingCommit};
 pub use index::Index;
 pub use note::{Note, NoteMergeStrategy};
 pub use reference::{RefEntry, RefKind, Reference, parse_for_each_ref};

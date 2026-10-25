@@ -47,6 +47,12 @@
   their own.
 
 ### Fixed
+- **Committing mid-merge starts from git's message and finishes the
+  merge.** `cc` while a merge, cherry-pick, revert or conflicted rebase is
+  waiting on a commit used to open an empty buffer, dropping git's message
+  and its conflict list. It now starts from that message, and `C-c C-c`
+  concludes the operation — two parents for a merge, the original author
+  for a pick or rebase step, and the rest of a sequence carried on.
 - **More snippet variables have values.** `$CLIPBOARD` holds what you
   copied in another program, not only the editor's own copies;
   `$LINE_COMMENT` and `$BLOCK_COMMENT_START`/`_END` follow the file's

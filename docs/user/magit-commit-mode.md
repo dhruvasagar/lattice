@@ -73,8 +73,7 @@ which may already differ from a copy you've edited since.
 
 The same compose buffer backs several operations. Which one `C-c C-c`
 runs is decided by the buffer's **name**, so `:ls` always shows what
-you are about to do — there is no hidden state to get out of step with
-the text on screen.
+you are about to do — except mid-merge (below).
 
 | Buffer | Opened by | `C-c C-c` runs | Pre-filled? |
 |---|---|---|---|
@@ -103,6 +102,12 @@ differs from that menu's `n` (don't commit) precisely in that it
 cleanly you end up with a merge commit; a conflict leaves you in the
 usual conflicted state and your message is not used.
 
+**Mid-merge, `cc` finishes the merge.** When a merge, cherry-pick,
+revert or conflicted rebase is waiting on a commit, the buffer starts
+from git's message and `C-c C-c` concludes the operation (`#` lines are
+dropped); the headerline says `MERGING`, `REBASING`, and so on.
+`C-c C-k` leaves git where it stopped.
+
 Both targeted forms carry their target in the buffer name because the
 buffer is opened well before the commit runs. A sha or branch that
 lives only in the name cannot drift out of sync with the buffer you
@@ -113,10 +118,7 @@ are looking at.
 - **Empty subject is rejected.** Pressing `C-c C-c` with a blank
   subject line reports an error rather than silently doing nothing.
 - **The buffer closes when the commit is *kicked off*,** not when git
-  confirms it landed. A failure is logged rather than reported back
-  into a buffer that has already gone. The commit action refreshes
-  magit-status behind it as part of its own completion — not a
-  background watcher, of which there is none.
+  confirms it landed; the outcome arrives as a notification.
 
 ## See also
 

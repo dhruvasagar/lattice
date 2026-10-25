@@ -121,6 +121,53 @@ impl InFlightOp {
     }
 }
 
+/// A commit git stopped short of making, and the message it proposed.
+///
+/// Git writes both when it stops on purpose (`merge --no-commit`,
+/// `revert --no-commit`) or on a conflict: the `*_HEAD` marker names the
+/// operation, `MERGE_MSG` holds the message it would have opened `$EDITOR`
+/// on. Committing now concludes that operation, so the commit buffer
+/// seeds from the message instead of opening empty
+/// (`magit-concluding-commits.md` §2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingCommit {
+    pub op: InFlightOp,
+    pub message: String,
+}
+
+impl PendingCommit {
+    pub fn detect(repo: &Repository) -> Option<Self> {
+        Self::detect_in(repo.gitdir())
+    }
+
+    /// [`Self::detect`] against a gitdir path directly.
+    pub fn detect_in(gitdir: &Path) -> Option<Self> {
+        let op = InFlightOp::detect_in(gitdir)?;
+        let pending = match op {
+            InFlightOp::Merge | InFlightOp::CherryPick | InFlightOp::Revert => true,
+            // A conflict stop, not an `edit` stop. Git marks an `edit` stop
+            // with `amend`, and a commit made there is a NEW one — splitting
+            // the stopped commit — not the stopped pick concluded. The
+            // `--apply` backend writes no `MERGE_MSG` and its `--continue`
+            // never asks for a message.
+            InFlightOp::Rebase => {
+                gitdir.join("rebase-merge").exists()
+                    && !gitdir.join("rebase-merge").join("amend").exists()
+                    && gitdir.join("MERGE_MSG").exists()
+            }
+            // `am --continue` commits the patch's own message.
+            InFlightOp::ApplyPatch => false,
+        };
+        if !pending {
+            return None;
+        }
+        // A marker without a message is still a pending commit: the
+        // buffer opens empty, as it would have.
+        let message = std::fs::read_to_string(gitdir.join("MERGE_MSG")).unwrap_or_default();
+        Some(Self { op, message })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +264,75 @@ mod tests {
         let labels: std::collections::HashSet<&str> =
             InFlightOp::ALL.iter().map(|o| o.label()).collect();
         assert_eq!(labels.len(), InFlightOp::ALL.len());
+    }
+
+    fn write(dir: &Path, rel: &str, text: &str) {
+        touch(dir, rel);
+        std::fs::write(dir.join(rel), text).expect("write");
+    }
+
+    #[test]
+    fn a_stopped_merge_pick_or_revert_is_a_pending_commit_with_gits_message() {
+        for (marker, op) in [
+            ("MERGE_HEAD", InFlightOp::Merge),
+            ("CHERRY_PICK_HEAD", InFlightOp::CherryPick),
+            ("REVERT_HEAD", InFlightOp::Revert),
+        ] {
+            let d = gitdir();
+            touch(d.path(), marker);
+            write(
+                d.path(),
+                "MERGE_MSG",
+                "Merge branch 'x'\n\n# Conflicts:\n#\tf\n",
+            );
+            assert_eq!(
+                PendingCommit::detect_in(d.path()),
+                Some(PendingCommit {
+                    op,
+                    message: "Merge branch 'x'\n\n# Conflicts:\n#\tf\n".to_string(),
+                }),
+                "{marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rebase_conflict_stop_is_pending_and_an_edit_stop_is_not() {
+        let conflict = gitdir();
+        touch(conflict.path(), "rebase-merge/stopped-sha");
+        write(conflict.path(), "MERGE_MSG", "the pick\n");
+        assert_eq!(
+            PendingCommit::detect_in(conflict.path()).map(|p| p.op),
+            Some(InFlightOp::Rebase)
+        );
+
+        // An `edit` stop: a commit there splits the stopped commit, it does
+        // not conclude a pick, so it must stay a plain commit.
+        let edit = gitdir();
+        touch(edit.path(), "rebase-merge/amend");
+        assert_eq!(PendingCommit::detect_in(edit.path()), None);
+    }
+
+    #[test]
+    fn nothing_in_flight_and_am_are_not_pending_commits() {
+        assert_eq!(PendingCommit::detect_in(gitdir().path()), None);
+        let am = gitdir();
+        touch(am.path(), "rebase-apply/applying");
+        assert_eq!(PendingCommit::detect_in(am.path()), None);
+    }
+
+    /// A marker with no message (git always writes one, but a user's
+    /// hand-edit need not survive) still concludes: the buffer opens empty.
+    #[test]
+    fn a_marker_without_a_message_is_pending_with_an_empty_one() {
+        let d = gitdir();
+        touch(d.path(), "MERGE_HEAD");
+        assert_eq!(
+            PendingCommit::detect_in(d.path()),
+            Some(PendingCommit {
+                op: InFlightOp::Merge,
+                message: String::new()
+            })
+        );
     }
 }

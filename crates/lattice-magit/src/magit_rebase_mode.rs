@@ -720,7 +720,7 @@ fn run_rebase(workdir: &Path, upstream: &str, todo: &str) -> Result<(), String> 
 /// Git-for-Windows' sh reads `\` as an escape and turns `C:\Users\…`
 /// into `C:Users…` — every interactive rebase then failed with
 /// "cp: cannot stat". `C:/Users/…` is a path both sh and Windows accept.
-fn sh_quoted_path(path: &Path) -> String {
+pub(crate) fn sh_quoted_path(path: &Path) -> String {
     let s = path.display().to_string();
     let s = if cfg!(windows) {
         s.replace('\\', "/")

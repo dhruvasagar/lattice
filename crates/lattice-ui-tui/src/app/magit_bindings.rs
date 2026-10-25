@@ -1305,6 +1305,205 @@ mod compose_buffers {
         );
     }
 
+    fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .env("GIT_EDITOR", "true")
+            .current_dir(dir)
+            .output()
+            .expect("git runs");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A throwaway repository named `name`, with one commit of `f.txt`.
+    fn scratch_repo(name: &str) -> std::path::PathBuf {
+        let repo = unique_tempdir().join(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@example.com"],
+            &["config", "user.name", "t"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            git_in(&repo, args);
+        }
+        std::fs::write(repo.join("f.txt"), "base\n").unwrap();
+        git_in(&repo, &["add", "f.txt"]);
+        git_in(&repo, &["commit", "-q", "-m", "base"]);
+        repo
+    }
+
+    /// A merge of `side` into `main` stopped on a conflict in `f.txt`, then
+    /// resolved and staged — git is waiting only for the commit.
+    fn stopped_merge(name: &str) -> std::path::PathBuf {
+        let repo = scratch_repo(name);
+        git_in(&repo, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repo.join("f.txt"), "side\n").unwrap();
+        git_in(&repo, &["commit", "-q", "-am", "on side"]);
+        git_in(&repo, &["checkout", "-q", "main"]);
+        std::fs::write(repo.join("f.txt"), "main\n").unwrap();
+        git_in(&repo, &["commit", "-q", "-am", "on main"]);
+        git_in(&repo, &["merge", "side"]);
+        assert!(
+            repo.join(".git/MERGE_HEAD").exists(),
+            "precondition: merge stopped"
+        );
+        std::fs::write(repo.join("f.txt"), "resolved\n").unwrap();
+        git_in(&repo, &["add", "f.txt"]);
+        repo
+    }
+
+    /// `:magit-commit` from a file in `repo`; the compose buffer's name once
+    /// it is seeded. Refuses a buffer not scoped to `repo`, so no test can
+    /// commit into the checkout the suite runs in.
+    async fn open_commit_in(app: &mut crate::app::App, repo: &std::path::Path) -> String {
+        use crate::app::Action;
+        app.apply(Action::EnterCommandLine);
+        press_chars(app, "magit-commit");
+        app.apply(Action::CommandLineSubmit);
+        assert!(
+            settle_mode(app, "magit-commit-mode").await,
+            "precondition: commit buffer open"
+        );
+        let id = app.editor.active_pane_buffer_id();
+        let name = app.editor.buffers.name_of(id).expect("named");
+        let label = repo.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            name.contains(&label),
+            "refusing to commit: `{name}` is not scoped to the throwaway repo"
+        );
+        assert!(
+            settle_seeded(app, &name).await,
+            "precondition: the compose buffer is seeded"
+        );
+        name
+    }
+
+    /// CC.1, the gap itself: `c c` mid-merge opened EMPTY, losing git's
+    /// message and its conflict list. It now starts from git's message, and
+    /// confirming concludes the merge — two parents, the `# Conflicts:`
+    /// lines stripped as git's own editor session would have.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn committing_mid_merge_starts_from_gits_message_and_concludes_it() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let repo = stopped_merge("conclude-merge-repo");
+        let mut app = app_with_path("resolved\n", 20, repo.join("f.txt"));
+        let name = open_commit_in(&mut app, &repo).await;
+
+        let seeded = commit_text(&app, &name).unwrap_or_default();
+        assert!(
+            seeded.starts_with("Merge branch 'side'"),
+            "the message area starts from MERGE_MSG: {seeded:?}"
+        );
+        assert!(
+            seeded.contains("# Conflicts:"),
+            "git's conflict list is shown"
+        );
+
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        press(&mut app, ctrl('c'));
+        press(&mut app, ctrl('c'));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while repo.join(".git/MERGE_HEAD").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the merge was never concluded"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            git_in(&repo, &["log", "-1", "--format=%B"]),
+            "Merge branch 'side'",
+            "git's message, comment lines stripped"
+        );
+        assert_eq!(
+            git_in(&repo, &["rev-list", "--parents", "-n1", "HEAD"])
+                .split_whitespace()
+                .count(),
+            3,
+            "a merge commit: itself and two parents"
+        );
+    }
+
+    /// Aborting the compose buffer leaves git's stopped state alone: the
+    /// merge is still in flight, for the status buffer's ways out.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn aborting_a_concluding_commit_leaves_the_merge_in_flight() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let repo = stopped_merge("abort-conclude-repo");
+        let mut app = app_with_path("resolved\n", 20, repo.join("f.txt"));
+        let name = open_commit_in(&mut app, &repo).await;
+
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        press(&mut app, ctrl('c'));
+        press(&mut app, ctrl('k'));
+
+        assert!(
+            app.editor.buffers.by_name(&name).is_none(),
+            "the buffer ends"
+        );
+        assert!(
+            repo.join(".git/MERGE_HEAD").exists(),
+            "aborting the message must not abort the merge"
+        );
+        assert_eq!(git_in(&repo, &["log", "-1", "--format=%s"]), "on main");
+    }
+
+    /// A rebase `edit` stop is in flight but has no commit pending: a commit
+    /// there SPLITS the stopped commit. It must stay a plain, empty commit
+    /// and leave the rebase running — concluding would continue the rebase
+    /// out from under the user.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn committing_at_an_edit_stop_is_a_plain_commit() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let repo = scratch_repo("edit-stop-repo");
+        std::fs::write(repo.join("g.txt"), "g\n").unwrap();
+        git_in(&repo, &["add", "g.txt"]);
+        git_in(&repo, &["commit", "-q", "-m", "to edit"]);
+        let out = std::process::Command::new("git")
+            .args(["rebase", "-i", "HEAD~1"])
+            .env("GIT_SEQUENCE_EDITOR", "sed -i 's/^pick/edit/'")
+            .current_dir(&repo)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "precondition: rebase stopped to edit");
+        std::fs::write(repo.join("h.txt"), "h\n").unwrap();
+        git_in(&repo, &["add", "h.txt"]);
+
+        let mut app = app_with_path("h\n", 20, repo.join("h.txt"));
+        let name = open_commit_in(&mut app, &repo).await;
+        assert!(
+            !commit_text(&app, &name)
+                .unwrap_or_default()
+                .starts_with("to edit"),
+            "an edit stop seeds nothing"
+        );
+
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+        );
+        press_chars(&mut app, "split off h");
+        press(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        press(&mut app, ctrl('c'));
+        press(&mut app, ctrl('c'));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while git_in(&repo, &["log", "-1", "--format=%s"]) != "split off h" {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the commit never landed"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            repo.join(".git/rebase-merge").exists(),
+            "the rebase is still stopped — the user continues it"
+        );
+    }
+
     /// `cc` / `ca` in magit-status open the same compose buffer as
     /// `C-c g c` / `C-c g a`: named for, and recording, the STATUS
     /// buffer's repository.

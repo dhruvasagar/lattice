@@ -178,6 +178,7 @@ docs = [
   "architecture/n-way-diff-membership",
   "architecture/magit",
   "architecture/magit-blame",
+  "architecture/magit-concluding-commits",
   "architecture/magit-hunk-mode",
   "architecture/magit-hunk-staging",
   "architecture/magit-project-diff",

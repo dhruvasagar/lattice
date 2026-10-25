@@ -711,7 +711,7 @@ pub(crate) fn diff_counts(diff: &str) -> (usize, usize, usize) {
 
 /// magit-commit: the branch being committed to, what is staged, and
 /// whether this rewrites the previous commit.
-pub(crate) fn commit_fields(branch: &str, staged_diff: &str, amend: bool) -> Vec<Field> {
+pub(crate) fn commit_fields(branch: &str, staged_diff: &str, alert: Option<&str>) -> Vec<Field> {
     let mut fields = Vec::new();
     if !branch.is_empty() {
         fields.push(Field::branch(branch.to_string()));
@@ -725,8 +725,8 @@ pub(crate) fn commit_fields(branch: &str, staged_diff: &str, amend: bool) -> Vec
             "{files} {plural} +{added} \u{2212}{removed}"
         )));
     }
-    if amend {
-        fields.push(Field::alert("AMEND"));
+    if let Some(alert) = alert {
+        fields.push(Field::alert(alert.to_string()));
     }
     fields
 }
@@ -1264,19 +1264,23 @@ mod tests {
     fn commit_row_carries_branch_staged_counts_and_the_amend_marker() {
         let diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n+one\n-two\n";
         assert_eq!(
-            rendered(commit_fields("main", diff, false)),
+            rendered(commit_fields("main", diff, None)),
             "main  1 file +1 \u{2212}1"
         );
         assert!(
-            rendered(commit_fields("main", diff, true)).contains("AMEND"),
+            rendered(commit_fields("main", diff, Some("AMEND"))).contains("AMEND"),
             "amend must be visible — it rewrites history"
+        );
+        assert!(
+            rendered(commit_fields("main", diff, Some("MERGING"))).contains("MERGING"),
+            "concluding a merge must say so — the commit has two parents"
         );
     }
 
     #[test]
     fn commit_row_names_an_empty_index_rather_than_showing_zeroes() {
         assert_eq!(
-            rendered(commit_fields("main", "", false)),
+            rendered(commit_fields("main", "", None)),
             "main  nothing staged"
         );
     }

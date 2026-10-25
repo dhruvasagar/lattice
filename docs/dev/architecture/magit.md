@@ -1920,6 +1920,11 @@ marker line splitting it conceptually in two:
   documented limitation, not a silently swallowed error.
 - `C-c C-k`: close without committing.
 
+When git is stopped mid-merge, mid-pick, mid-revert or mid-rebase, the
+same buffer concludes that operation: it seeds from git's own message and
+commits it the way the operation needs. See
+[`magit-concluding-commits.md`](magit-concluding-commits.md).
+
 ## 10. Log and blame views
 
 ### 10.1 Log view

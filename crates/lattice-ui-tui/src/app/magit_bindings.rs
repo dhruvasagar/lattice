@@ -1504,6 +1504,89 @@ mod compose_buffers {
         );
     }
 
+    /// CC.2, the report: a pull whose branches diverged, configured to
+    /// merge (`pull.rebase=false`), FAILED on a forced `--ff-only`. It now
+    /// stops before the merge commit and the commit buffer opens on git's
+    /// merge message — with no key pressed after `:magit-pull`, which is
+    /// why this waits on the editor's wake and not on a timer. Confirming
+    /// it records the merge.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_diverged_pull_opens_the_commit_buffer_on_gits_merge_message() {
+        use crate::app::Action;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let upstream = scratch_repo("pull-upstream-repo");
+        let work = unique_tempdir().join("pull-work-repo");
+        let cloned = std::process::Command::new("git")
+            .args(["clone", "-q"])
+            .arg(&upstream)
+            .arg(&work)
+            .output()
+            .expect("git runs");
+        assert!(cloned.status.success(), "precondition: clone");
+        for args in [
+            &["config", "user.email", "t@example.com"][..],
+            &["config", "user.name", "t"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "pull.rebase", "false"],
+        ] {
+            git_in(&work, args);
+        }
+        std::fs::write(upstream.join("g.txt"), "g\n").unwrap();
+        git_in(&upstream, &["add", "g.txt"]);
+        git_in(&upstream, &["commit", "-q", "-m", "upstream g"]);
+        std::fs::write(work.join("h.txt"), "h\n").unwrap();
+        git_in(&work, &["add", "h.txt"]);
+        git_in(&work, &["commit", "-q", "-m", "local h"]);
+
+        let mut app = app_with_path("h\n", 20, work.join("h.txt"));
+        app.apply(Action::EnterCommandLine);
+        press_chars(&mut app, "magit-pull");
+        app.apply(Action::CommandLineSubmit);
+
+        // In front, where the user types: the active pane's buffer is this
+        // repository's commit buffer, on git's message.
+        let front = |a: &crate::app::App| {
+            a.editor
+                .buffers
+                .name_of(a.editor.active_pane_buffer_id())
+                .filter(|n| n.contains("commit") && n.contains("pull-work-repo"))
+        };
+        assert!(
+            settle_woken(&mut app, |a| front(a)
+                .and_then(|n| commit_text(a, &n))
+                .is_some_and(|t| t.starts_with("Merge branch")))
+            .await,
+            "no commit buffer on git's merge message in front; front is {:?}",
+            app.editor
+                .buffers
+                .name_of(app.editor.active_pane_buffer_id())
+        );
+        assert!(
+            work.join(".git/MERGE_HEAD").exists(),
+            "git stopped before the merge commit"
+        );
+        assert_eq!(git_in(&work, &["log", "-1", "--format=%s"]), "local h");
+
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        press(&mut app, ctrl('c'));
+        press(&mut app, ctrl('c'));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while work.join(".git/MERGE_HEAD").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the merge was never concluded"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            git_in(&work, &["rev-list", "--parents", "-n1", "HEAD"])
+                .split_whitespace()
+                .count(),
+            3,
+            "the pull's merge commit has both parents"
+        );
+    }
+
     /// `cc` / `ca` in magit-status open the same compose buffer as
     /// `C-c g c` / `C-c g a`: named for, and recording, the STATUS
     /// buffer's repository.

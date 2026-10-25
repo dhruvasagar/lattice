@@ -185,6 +185,7 @@ mod tests {
             Default::default(),
             crate::repo_scope::test_support::empty_store(),
             Default::default(),
+            None,
         );
         for (ask_name, execute_name) in DESTRUCTIVE_ACTIONS {
             assert!(

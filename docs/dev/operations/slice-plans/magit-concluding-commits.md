@@ -12,7 +12,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | Slice | Title | Status |
 |---|---|---|
 | CC.1 | The commit buffer concludes what git stopped | ✅ |
-| CC.2 | Pull follows git config; a stopped merge opens the buffer | 📝 |
+| CC.2 | Pull follows git config; a stopped merge opens the buffer | ✅ |
 | CC.3 | The `--continue` rows compose when a commit is pending | 📝 |
 | CC.4 | Revert `V V` composes | 📝 |
 | CC.5 | Audit pin: every message-writing op is accounted for | 📝 |
@@ -52,6 +52,25 @@ Tests: a diverged pull opens the buffer **without a keystroke** (assert on
 the wake, as `async_landed` tests do); fast-forward opens nothing;
 `pull.ff=only` and `pull.rebase=true` behave as git does; the flag
 restores fast-forward-only.
+
+✅ Landed as two commits. The first is a host fix CC.2 surfaced:
+`Effect::OpenSyntheticBuffer` from an off-keystroke drain (tick callback,
+inbound handler, idle gate) was routed to the renderer tail and dropped,
+because a peer drains that tail only after a dispatch. The host now applies
+it in `absorb_off_keystroke_effects`, beside WK.10's popup pair
+(`lattice-host/tests/off_keystroke_opens_synthetic_buffer.rs`, red without
+the fix). The second is CC.2 itself. The bus is a `ComposeBusHandle`
+service, not a static: a `OnceLock` keeps the first editor's bus, which
+in a test binary is the wrong editor. Tests:
+`a_diverged_pull_opens_the_commit_buffer_on_gits_merge_message` (waits via
+`settle_woken`, which ticks only on `async_landed`),
+`pull_does_what_the_config_says` (merge / rebase / ff-only / fast-forward
+against real clones, each asserting whether a compose would be asked
+for), and `compose_waits_for_a_resolved_stop`. "Fast-forward opens
+nothing" is pinned at that gate rather than end to end: the only
+end-to-end signal that the pull finished is magit's report, which goes
+through a process-wide sink and in a test binary can land in another
+test's editor.
 
 ## CC.3 — The `--continue` rows compose when a commit is pending
 

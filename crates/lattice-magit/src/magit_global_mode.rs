@@ -349,6 +349,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         crate::repo_scope::action_workdir(ctx),
                         $op,
                         &ctx.args,
+                        compose_bus(ctx),
                     ))
                 }),
             });
@@ -379,6 +380,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         &ctx.args,
                         $target,
                         prompted,
+                        compose_bus(ctx),
                     ))
                 }),
             });
@@ -1960,6 +1962,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         crate::repo_scope::action_workdir(ctx),
                         $op,
                         &lattice_grammar::Args::None,
+                        compose_bus(ctx),
                     ))
                 }),
             });
@@ -2076,6 +2079,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         crate::repo_scope::action_workdir(ctx),
                         $op,
                         &lattice_grammar::Args::None,
+                        compose_bus(ctx),
                     ))
                 }),
             });
@@ -2855,12 +2859,22 @@ impl RemoteOp {
         what: "pull",
         retrigger: lattice_mode::RePolicy::RunToCompletion,
         doing: "pulling",
-        // `--ff-only` stays the default: a pull that can create a merge
-        // commit behind your back is the wrong default. `--rebase`
-        // REPLACES it (see `argv`) — it solves the same problem a
-        // different way, and git rejects the two together.
-        args: &["pull", "--ff-only"],
+        // CC.2: git's own `pull.rebase` / `pull.ff` decide, as they do
+        // for `git pull` anywhere. This was `--ff-only`, which overrode
+        // them: a diverged pull configured to merge just failed.
+        // `--no-commit` is what makes a merge safe to allow — git stops
+        // before the merge commit and the commit buffer opens on its
+        // message (`magit-concluding-commits.md` §2.2). It is inert for a
+        // fast-forward and for a rebase.
+        args: &["pull", "--no-commit"],
         flags: &[
+            RemoteFlag {
+                name: "ff-only",
+                arg: "--ff-only",
+                key: "-f",
+                doc: "Fast-forward only: refuse a pull that would merge",
+                kind: RemoteArgKind::Flag,
+            },
             RemoteFlag {
                 name: "rebase",
                 arg: "--rebase",
@@ -3202,15 +3216,6 @@ impl RemoteOp {
     /// [`RemoteOp::flags`].
     pub fn argv(&self, args: &lattice_grammar::Args) -> Vec<String> {
         let mut argv: Vec<String> = self.args.iter().map(|s| (*s).to_string()).collect();
-        // MG.41c: `--rebase` REPLACES the default `--ff-only` rather
-        // than joining it — git rejects the pair outright, so leaving
-        // both in would make the `-r` row fail every time instead of
-        // doing the obvious thing. Rebase serves the same purpose the
-        // default was protecting (no surprise merge commit), so
-        // dropping it here loses no safety.
-        if self.rebase_selected(args) {
-            argv.retain(|a| a != "--ff-only");
-        }
         for (i, flag) in self.flags.iter().enumerate() {
             let slot = args.as_list().and_then(|l| l.get(i));
             match flag.kind {
@@ -3241,7 +3246,21 @@ impl RemoteOp {
                 }
             }
         }
+        // MG.41c: `--rebase` wins over `--ff-only` rather than joining it
+        // — git rejects the pair outright, so both toggled would make the
+        // pull fail every time instead of doing the obvious thing.
+        // Rebasing already avoids the merge commit `-f` refuses.
+        if self.rebase_selected(args) {
+            argv.retain(|a| a != "--ff-only");
+        }
         argv
+    }
+
+    /// CC.2: can this op leave git stopped short of a commit it would
+    /// have asked a message for? Then its spawner asks for the commit
+    /// buffer once it has run (`conclude::compose_if_pending`).
+    fn stops_for_a_message(self) -> bool {
+        self == Self::PULL
     }
 
     /// NC.4: the notification label for one run, naming what the
@@ -4221,7 +4240,12 @@ pub(crate) fn spawn_note_remove(workdir: std::path::PathBuf, commit: String) -> 
 /// is *what it removed*, and an echo written at fire time cannot carry
 /// it.
 pub(crate) fn spawn_note_prune(workdir: std::path::PathBuf) -> Effect {
-    spawn_remote_op(workdir, RemoteOp::NOTES_PRUNE, &lattice_grammar::Args::None)
+    spawn_remote_op(
+        workdir,
+        RemoteOp::NOTES_PRUNE,
+        &lattice_grammar::Args::None,
+        None,
+    )
 }
 
 /// Merge a notes ref into the current one.
@@ -4985,6 +5009,7 @@ pub fn spawn_remote_op_to(
     args: &lattice_grammar::Args,
     target: RemoteTarget,
     prompted: Option<String>,
+    compose: Option<crate::conclude::ComposeBusHandle>,
 ) -> Effect {
     let base = op.argv(args);
     let shown = base.join(" ");
@@ -5047,10 +5072,9 @@ pub fn spawn_remote_op_to(
             // stash, a sequencer step) takes its turn with every other
             // writer to this repository.
             let _writer = turn.map(RepoTurn::wait);
-            (
-                op.label(&argv),
-                run_remote_op_until(&workdir, &argv, &token),
-            )
+            let result = run_remote_op_until(&workdir, &argv, &token);
+            compose_after(op, &workdir, &result, compose.as_ref());
+            (op.label(&argv), result)
         })
         .await
         .unwrap_or_else(|e| (fallback, Some(Err(e.to_string()))));
@@ -5066,13 +5090,14 @@ pub fn spawn_remote_op(
     workdir: std::path::PathBuf,
     op: RemoteOp,
     args: &lattice_grammar::Args,
+    compose: Option<crate::conclude::ComposeBusHandle>,
 ) -> Effect {
     // `:magit-push` is magit's `p`: the configured destination — which,
     // for a branch with no upstream yet, has to be named (see
     // `resolve_push_destination`). One path for both surfaces, so the
     // ex-command and the transient row cannot disagree about it.
     if op == RemoteOp::PUSH {
-        return spawn_remote_op_to(workdir, op, args, RemoteTarget::Configured, None);
+        return spawn_remote_op_to(workdir, op, args, RemoteTarget::Configured, None, compose);
     }
     let argv = op.argv(args);
     let shown = argv.join(" ");
@@ -5094,7 +5119,9 @@ pub fn spawn_remote_op(
         let result = tokio::task::spawn_blocking(move || {
             // CG.7b: as in `spawn_remote_op_to` — writers take turns.
             let _writer = turn.map(RepoTurn::wait);
-            run_remote_op_until(&workdir, &argv, &token)
+            let result = run_remote_op_until(&workdir, &argv, &token);
+            compose_after(op, &workdir, &result, compose.as_ref());
+            result
         })
         .await
         .unwrap_or_else(|e| Some(Err(e.to_string())));
@@ -5491,6 +5518,30 @@ fn finish_remote_op(
             tracing::info!(target: "lattice_magit", "magit: {label} stopped — superseded or cancelled")
         }
     }
+}
+
+/// CC.2: the remote spawners' tail — an op that ran, could stop short of
+/// a commit, and did, opens the commit buffer. Only after a run git
+/// accepted: a refused pull leaves an earlier stop in place, and opening
+/// a buffer on THAT would answer a question the user did not ask.
+fn compose_after(
+    op: RemoteOp,
+    workdir: &std::path::Path,
+    result: &Option<Result<String, String>>,
+    compose: Option<&crate::conclude::ComposeBusHandle>,
+) {
+    if let (true, Some(Ok(_)), Some(bus)) = (op.stops_for_a_message(), result, compose) {
+        crate::conclude::compose_if_pending(workdir, bus);
+    }
+}
+
+/// The compose bus, for a trigger to hand its spawner. `None` in a harness
+/// that never installed magit — the stop is still reported, and `c c`
+/// composes from it.
+pub(crate) fn compose_bus(ctx: &ActionContext<'_>) -> Option<crate::conclude::ComposeBusHandle> {
+    ctx.services
+        .get::<crate::conclude::ComposeBusHandle>()
+        .map(|bus| (*bus).clone())
 }
 
 #[cfg(test)]
@@ -7108,6 +7159,7 @@ mod keyed_remote_ops {
             &Args::None,
             RemoteTarget::Configured,
             None,
+            None,
         );
         assert!(!echo_text(&first).contains("already running"));
         let second = spawn_remote_op_to(
@@ -7115,6 +7167,7 @@ mod keyed_remote_ops {
             RemoteOp::PUSH,
             &Args::None,
             RemoteTarget::Configured,
+            None,
             None,
         );
         assert!(
@@ -7145,12 +7198,14 @@ mod keyed_remote_ops {
             &Args::None,
             RemoteTarget::Configured,
             None,
+            None,
         );
         let forced = spawn_remote_op_to(
             work.clone(),
             RemoteOp::PUSH,
             &Args::List(vec![ArgValue::Bool(true), ArgValue::Bool(false)]),
             RemoteTarget::Configured,
+            None,
             None,
         );
         assert!(!echo_text(&forced).contains("already running"));

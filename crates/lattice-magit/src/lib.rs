@@ -262,6 +262,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         tracing::debug!("no project resolver at magit install; `C-x g` falls back to process cwd");
     }
     boot.register_service::<repo_scope::RepoScopesHandle>(repo_scopes.clone());
+    // CC.2: a pull that stops short of its merge commit opens the commit
+    // buffer for that repository, off-keystroke.
+    let compose = conclude::install_compose_bus(boot, repo_scopes.clone());
     // PR.6: magit's buffers have no path, so the editor's project resolution
     // had only the process working directory left to answer with — `:files`
     // in a status buffer for one checkout listed whichever tree the editor
@@ -292,6 +295,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         blame_requests,
         store,
         repo_scopes.clone(),
+        Some(compose),
     );
 
     // ── Action commands (keymap resolution targets) ──────
@@ -940,6 +944,7 @@ fn register_ex_commands(
     blame_requests: magit_blame_mode::BlameRequestsHandle,
     store: lattice_mode::BufferStoreHandle,
     scopes: repo_scope::RepoScopesHandle,
+    compose: Option<conclude::ComposeBusHandle>,
 ) {
     // MR.2: `:magit-status` resolves its repository from the buffer the
     // `:` line was submitted from, exactly as `C-x g` does — both go
@@ -1218,11 +1223,13 @@ fn register_ex_commands(
                 apply: {
                     let store = store.clone();
                     let scopes = scopes.clone();
+                    let compose = compose.clone();
                     Arc::new(move |ctx| {
                         Ok(magit_global_mode::spawn_remote_op(
                             repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
                             op,
                             &ctx.args,
+                            compose.clone(),
                         ))
                     })
                 },
@@ -1238,7 +1245,7 @@ fn register_ex_commands(
     );
     mk_op(
         "magit-pull",
-        "Pull from the upstream branch (fast-forward only).",
+        "Pull from the upstream branch, as `pull.rebase` / `pull.ff` say.",
         magit_global_mode::RemoteOp::PULL,
     );
     mk_op(
@@ -3079,6 +3086,7 @@ pub(crate) fn register_ex_commands_for_test(registry: &mut CommandRegistry) {
         Default::default(),
         crate::repo_scope::test_support::empty_store(),
         Default::default(),
+        None,
     );
 }
 
@@ -4543,6 +4551,7 @@ mod tests {
             Default::default(),
             crate::repo_scope::test_support::empty_store(),
             Default::default(),
+            None,
         );
 
         // Every ex-command any handler passes as the commit picker's
@@ -5006,6 +5015,7 @@ mod tests {
             Default::default(),
             crate::repo_scope::test_support::empty_store(),
             Default::default(),
+            None,
         );
         let id = ex
             .id_by_name("magit-find-file")
@@ -5369,6 +5379,7 @@ mod tests {
             Default::default(),
             crate::repo_scope::test_support::empty_store(),
             Default::default(),
+            None,
         );
         let id = registry
             .id_by_name("magit-submodule")
@@ -5712,6 +5723,7 @@ mod tests {
             Default::default(),
             crate::repo_scope::test_support::empty_store(),
             Default::default(),
+            None,
         );
         for op in [
             magit_global_mode::CommitOp::CHERRY_PICK,
@@ -5756,6 +5768,7 @@ mod tests {
             Default::default(),
             crate::repo_scope::test_support::empty_store(),
             Default::default(),
+            None,
         );
         let id = registry
             .id_by_name("magit-remote")
@@ -6605,6 +6618,7 @@ mod tests {
             Default::default(),
             crate::repo_scope::test_support::empty_store(),
             Default::default(),
+            None,
         );
         register_action_commands(&mut registry);
         let handlers = MagitGlobalMode.action_handlers();
@@ -6672,6 +6686,7 @@ mod tests {
             Default::default(),
             crate::repo_scope::test_support::empty_store(),
             Default::default(),
+            None,
         );
         let create = registry
             .lookup_by_name("magit-stash")

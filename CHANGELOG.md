@@ -47,6 +47,13 @@
   their own.
 
 ### Fixed
+- **A diverged pull no longer fails; it stops before the merge commit and
+  opens the commit buffer.** `F` / `:magit-pull` forced `--ff-only`,
+  overriding your `pull.rebase` / `pull.ff`, so a pull that had to merge
+  just failed. It now does what your git config says. A merge stops
+  before committing and the commit buffer opens on git's message, with
+  no key pressed; `C-c C-c` records the merge. `-f` in the pull menu
+  restores fast-forward-only.
 - **A buffer opened by background work appears without a key press.** A
   subsystem that opened a buffer when its work finished (rather than when
   you pressed a key) had the request dropped until your next keystroke.

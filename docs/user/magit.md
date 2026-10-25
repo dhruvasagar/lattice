@@ -60,7 +60,7 @@ no hidden state.
 | `:magit-rebase` | Start interactive rebase |
 | `:magit-rebase-continue` / `-skip` / `-abort` | Leave a [rebase that stopped](help:magit-rebase-mode) |
 | `:magit-fetch` | Fetch from the default remote (`--all`, `--prune`) |
-| `:magit-pull` | Pull from the upstream branch (fast-forward only) |
+| `:magit-pull` | Pull from the upstream branch, as your git config says |
 | `:magit-push` | Push the current branch (`--force-with-lease`, `--set-upstream`) |
 | `:magit-stash` | Stash the working tree (`--include-untracked`, `-m <message>`); `:magit-stash-list` opens the list |
 | `C-c g` | (in **any** buffer, magit or not) Open the [dispatch menu](help:magit-transient) — every root menu is one key from there |
@@ -267,9 +267,9 @@ you pressed it over belongs to, which is also the repository `F` / `P` /
 The menu's *rows* follow that repository too: the ways out of a stopped
 rebase, cherry-pick, merge or bisect appear only when **it** has one
 half-done. `F` (pull) and `P` (push) are
-also real: `F` runs `git fetch` + a fast-forward-only merge (it will
-never create a merge commit — if your branch has diverged it fails
-cleanly instead of merging), `P` runs `git push`. `S` stages every
+also real: `F` pulls as your `pull.rebase` / `pull.ff` config says,
+stopping before a merge commit so you write its message; `P` runs
+`git push`. `S` stages every
 tracked modification (`git add --update`, untracked files deliberately
 left out) and `U` unstages everything while leaving your working tree
 alone. These all run in the background and fail fast if git needs

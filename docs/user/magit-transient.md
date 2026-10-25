@@ -267,10 +267,9 @@ two ways in.
 
 `f` (fetch), `F` (pull), `P` (push), and `z z` (stash push) run git
 directly rather than opening a buffer. `f` runs plain `git fetch`
-(updates your remote-tracking refs, touches nothing else); `F` runs
-`git pull --ff-only` — it will never create a merge commit, and fails
-cleanly if your branch has diverged rather than merging; `P` runs
-`git push`. All run in the background and fail fast (no hang) if git
+(updates your remote-tracking refs, touches nothing else); `F` pulls as
+your git config says, and a merge opens the commit buffer on git's
+message; `P` runs `git push`. All run in the background and fail fast (no hang) if git
 needs credentials it doesn't have. **None reports success or failure
 back into the menu** — there's no synchronous path from the background
 task back to a transient that's already dismissed. Check the
@@ -916,9 +915,8 @@ is one extra keystroke than before, and it's the cost of the flags
 being reachable at all — a flat menu fires the instant you press its
 key, leaving no moment in which to toggle anything.
 
-Pull deliberately has no flags. `--ff-only` isn't optional: a pull that
-could silently create a merge commit is the wrong default, so it stays
-a direct action rather than a submenu with nothing in it.
+Pull's flags are `-f` (`--ff-only`, never merge), `-r` (`--rebase`) and
+`-a` (`--autostash`). With none, git's `pull.rebase` / `pull.ff` decide.
 
 ### The preview line
 

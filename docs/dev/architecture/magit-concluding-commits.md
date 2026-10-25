@@ -102,6 +102,14 @@ An operation that ends stopped asks for the buffer through an inbound bus
 (`SubsystemBoot::inbound`), not a tick callback, so the buffer opens the
 moment git stops, without a keystroke (`boot-composition.md` §3).
 
+The bus is a **service** the trigger looks up and hands its spawner, not a
+static captured at install as magit's `EVENT_BUS` is. A `OnceLock` keeps
+the first editor's bus, so with two editors in one process — every test
+binary — a pull in the second would open its buffer in the first. The
+handler's `Effect::OpenSyntheticBuffer` is applied host-side by the
+off-keystroke drain (`absorb_off_keystroke_effects`): a peer applies that
+effect only after a dispatch, and there is none behind a wake.
+
 ## 4. Paramount-goal alignment
 
 - **#4 asynchronicity.** No git process waits on a person. Every git run

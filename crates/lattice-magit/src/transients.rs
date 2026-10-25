@@ -3458,11 +3458,11 @@ mod remote_flag_tests {
         op.argv(&Args::List(list))
     }
 
-    /// MG.41c: `--rebase` REPLACES `--ff-only`. Git rejects the pair,
-    /// so emitting both would make magit's `-r` row fail every time.
+    /// MG.41c: `--rebase` wins over `--ff-only`. Git rejects the pair,
+    /// so emitting both would make the pull fail every time.
     #[test]
     fn pull_rebase_replaces_ff_only() {
-        let argv = flags(RemoteOp::PULL, &["rebase"]);
+        let argv = flags(RemoteOp::PULL, &["rebase", "ff-only"]);
         assert!(argv.contains(&"--rebase".to_string()), "{argv:?}");
         assert!(
             !argv.contains(&"--ff-only".to_string()),
@@ -3470,13 +3470,28 @@ mod remote_flag_tests {
         );
     }
 
-    /// Without `-r`, the safe default stands: a pull cannot create a
-    /// merge commit behind your back.
+    /// CC.2: with no flag, pull follows git's own `pull.rebase` /
+    /// `pull.ff`. It used to force `--ff-only`, which overrode them — a
+    /// diverged pull configured to merge just failed. `--no-commit` is
+    /// what makes merging safe: git stops before the merge commit and
+    /// the commit buffer opens on its message.
     #[test]
-    fn pull_defaults_to_ff_only() {
-        let argv = flags(RemoteOp::PULL, &[]);
+    fn pull_follows_git_config_and_stops_before_a_merge_commit() {
+        assert_eq!(flags(RemoteOp::PULL, &[]), ["pull", "--no-commit"]);
+    }
+
+    /// `-f` is magit's key for fast-forward-only, kept for anyone who
+    /// wants a pull that can never merge.
+    #[test]
+    fn pull_ff_only_is_a_flag() {
+        let ff = RemoteOp::PULL
+            .flags
+            .iter()
+            .find(|f| f.name == "ff-only")
+            .expect("pull offers --ff-only");
+        assert_eq!(ff.key, "-f");
+        let argv = flags(RemoteOp::PULL, &["ff-only"]);
         assert!(argv.contains(&"--ff-only".to_string()), "{argv:?}");
-        assert!(!argv.contains(&"--rebase".to_string()), "{argv:?}");
     }
 
     /// `--autostash` is orthogonal — it must survive alongside either.
@@ -3484,10 +3499,10 @@ mod remote_flag_tests {
     fn pull_autostash_is_independent_of_rebase() {
         let with_rebase = flags(RemoteOp::PULL, &["rebase", "autostash"]);
         assert!(with_rebase.contains(&"--autostash".to_string()));
-        assert!(!with_rebase.contains(&"--ff-only".to_string()));
+        assert!(with_rebase.contains(&"--rebase".to_string()));
         let without = flags(RemoteOp::PULL, &["autostash"]);
         assert!(without.contains(&"--autostash".to_string()));
-        assert!(without.contains(&"--ff-only".to_string()));
+        assert!(!without.contains(&"--rebase".to_string()));
     }
 
     /// The flag table is looked up by NAME, so reordering it cannot
@@ -3499,14 +3514,16 @@ mod remote_flag_tests {
             .iter()
             .position(|f| f.name == "rebase")
             .expect("pull has a rebase flag");
-        // Only that slot turns it on.
+        // Only that slot turns it on — and with `-f` also on, rebase
+        // still drops it, so the lookup found the right slot.
         let mut list: Vec<ArgValue> = RemoteOp::PULL
             .flags
             .iter()
-            .map(|_| ArgValue::Bool(false))
+            .map(|f| ArgValue::Bool(f.name == "ff-only"))
             .collect();
         list[idx] = ArgValue::Bool(true);
         let argv = RemoteOp::PULL.argv(&Args::List(list));
+        assert!(argv.contains(&"--rebase".to_string()), "{argv:?}");
         assert!(!argv.contains(&"--ff-only".to_string()), "{argv:?}");
     }
 

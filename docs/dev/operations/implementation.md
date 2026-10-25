@@ -1450,7 +1450,10 @@ A diverged pull failed on its hard-coded `--ff-only`, and an audit
 lattice answered unseen with `GIT_EDITOR=true`: each `--continue`, revert,
 and `c c` mid-merge, which opened empty. Git stops; the commit buffer
 seeds from `MERGE_MSG` and concludes. **CC.1 ✅**: `cc` mid-merge / pick /
-revert / rebase-conflict concludes it. CC.2–CC.5 📝.
+revert / rebase-conflict concludes it. **CC.2 ✅**: pull follows git config
+with `--no-commit`; a merge stop opens the commit buffer off-keystroke
+(and the host now applies `OpenSyntheticBuffer` from off-keystroke drains).
+CC.3–CC.5 📝.
 
 ### Keymap registry (../architecture/design.md §5.2.3)
 

@@ -512,7 +512,28 @@ fn repo_view_name_resolved(
         // "Not a git repository." exactly as it did before.
         return compose("");
     };
+    name_for_repo(view, rest, scopes, repo)
+}
 
+/// CC.2: [`repo_view_name`] for a trigger that is not a keystroke — a
+/// finished git operation asking for a buffer. There is no active buffer
+/// to resolve from, only the repository it ran in.
+pub fn repo_view_name_for(view: &str, scopes: &RepoScopes, repo: &std::path::Path) -> String {
+    name_for_repo(view, None, scopes, repo.to_path_buf())
+}
+
+/// Compose the name for a resolved repository and record what it acts on.
+fn name_for_repo(
+    view: &str,
+    rest: Option<&str>,
+    scopes: &RepoScopes,
+    repo: std::path::PathBuf,
+) -> String {
+    use crate::workdir;
+    let compose = |label: &str| match rest {
+        Some(rest) => workdir::magit_buffer_name_with(view, label, rest),
+        None => workdir::magit_buffer_name(view, label),
+    };
     let mut name = compose(&workdir::repo_label(&repo));
     if scopes.collides(&name, &repo) {
         // Two checkouts sharing a basename. Qualifying is the only
@@ -1047,6 +1068,7 @@ mod tests {
             Default::default(),
             store.clone(),
             scopes.clone(),
+            None,
         );
         let id = registry
             .id_by_name("magit-status")

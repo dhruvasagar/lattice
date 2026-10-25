@@ -264,6 +264,35 @@ pub(super) async fn settle(app: &mut App, mut until: impl FnMut(&App) -> bool) -
     }
 }
 
+/// [`settle`] for a result that must arrive WITHOUT a keystroke.
+///
+/// [`settle`] ticks on a timer, so it passes whether or not anything woke
+/// the editor — which is the very thing a test of an off-keystroke result
+/// exists to prove. This ticks only once `async_landed` has fired, as the
+/// editor actor's arm does: a producer that writes and wakes nothing
+/// fails here instead of passing on the timer. `Notify` keeps one permit,
+/// so a wake that fired before the wait is not lost.
+pub(super) async fn settle_woken(app: &mut App, mut until: impl FnMut(&App) -> bool) -> bool {
+    let deadline = std::time::Instant::now() + SETTLE_BUDGET;
+    loop {
+        if until(app) {
+            return true;
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let notified = app.editor.async_landed.clone();
+        if tokio::time::timeout(left, notified.notified())
+            .await
+            .is_err()
+        {
+            return until(app);
+        }
+        let signals = app.editor.run_tick_pending();
+        for s in signals {
+            app.handle_renderer_signal(s);
+        }
+    }
+}
+
 /// [`settle`] specialised to "this mode is active on the active
 /// buffer" — the common case, and the one whose absence hid
 /// `magit-core-mode` entirely.

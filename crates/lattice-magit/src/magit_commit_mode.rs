@@ -341,17 +341,10 @@ impl Mode for MagitCommitMode {
                         // absent marker ⇒ the whole buffer is message,
                         // which is the safe direction for a buffer
                         // whose entire purpose is the message.
-                        let mut message = String::new();
-                        for l in 0..snap.buffer.content_line_count() {
-                            let text = snap.buffer.line(l).unwrap_or_default();
-                            if text.contains(DIFF_MARKER) {
-                                break;
-                            }
-                            if !text.trim().is_empty() {
-                                message.push_str(&text);
-                                message.push('\n');
-                            }
-                        }
+                        let message = message_above_marker(
+                            (0..snap.buffer.content_line_count())
+                                .map(|l| snap.buffer.line(l).unwrap_or_default()),
+                        );
                         (message, g.workdir.clone(), g.intent.clone())
                     };
                     if message.trim().is_empty() {
@@ -634,6 +627,36 @@ fn run_commit_message(workdir: &std::path::Path, rev: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The message: the buffer's lines above [`DIFF_MARKER`], as written.
+///
+/// Stopping AT the marker rather than skipping past it means a diff line
+/// can never leak into a commit message, even if the user edited or
+/// deleted the marker line itself — absent marker ⇒ the whole buffer is
+/// message, the safe direction for a buffer whose entire purpose is the
+/// message.
+///
+/// Blank lines between paragraphs stay: the one after the subject is
+/// what makes the rest a body, and without it git reads subject and body
+/// as one long subject. Leading and trailing blank lines go, as git's own
+/// cleanup would drop them.
+fn message_above_marker(lines: impl IntoIterator<Item = String>) -> String {
+    let lines: Vec<String> = lines
+        .into_iter()
+        .take_while(|l| !l.contains(DIFF_MARKER))
+        .collect();
+    let is_text = |l: &String| !l.trim().is_empty();
+    let (Some(first), Some(last)) = (
+        lines.iter().position(is_text),
+        lines.iter().rposition(is_text),
+    ) else {
+        return String::new();
+    };
+    lines[first..=last]
+        .iter()
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,26 +698,35 @@ mod tests {
         );
     }
 
+    fn extracted(buffer: &str) -> String {
+        message_above_marker(buffer.lines().map(str::to_string))
+    }
+
     /// Extraction stops AT the marker rather than skipping past it, so
     /// a diff line cannot end up in a commit message even if the user
     /// edited or deleted the marker.
     #[test]
     fn a_diff_line_never_leaks_into_the_extracted_message() {
-        let buffer =
-            format!("subject\n\nbody line\n{DIFF_MARKER}\ndiff --git a/x b/x\n+added\n-removed\n");
-        let mut message = String::new();
-        for line in buffer.lines() {
-            if line.contains(DIFF_MARKER) {
-                break;
-            }
-            if !line.trim().is_empty() {
-                message.push_str(line);
-                message.push('\n');
-            }
-        }
-        assert_eq!(message, "subject\nbody line\n");
+        let message = extracted(&format!(
+            "subject\n\nbody line\n{DIFF_MARKER}\ndiff --git a/x b/x\n+added\n-removed\n"
+        ));
         assert!(!message.contains("diff --git"));
         assert!(!message.contains("+added"));
+    }
+
+    /// The blank line after the subject is what makes the rest a body.
+    /// This dropped every blank line, so `subject\n\nbody` was committed
+    /// as `subject\nbody` — which git reads as one two-line subject.
+    #[test]
+    fn the_message_keeps_its_paragraphs() {
+        assert_eq!(
+            extracted(&format!(
+                "\nsubject\n\nbody one\n\nbody two\n\n{DIFF_MARKER}\n+added\n"
+            )),
+            "subject\n\nbody one\n\nbody two\n",
+            "interior blank lines kept; leading and trailing ones dropped"
+        );
+        assert_eq!(extracted(&format!("\n\n{DIFF_MARKER}\n")), "");
     }
 
     /// With the marker gone, the whole buffer is message. That is the
@@ -702,18 +734,7 @@ mod tests {
     /// message — better than silently committing nothing.
     #[test]
     fn a_missing_marker_treats_everything_as_message() {
-        let buffer = "just a subject\n";
-        let mut message = String::new();
-        for line in buffer.lines() {
-            if line.contains(DIFF_MARKER) {
-                break;
-            }
-            if !line.trim().is_empty() {
-                message.push_str(line);
-                message.push('\n');
-            }
-        }
-        assert_eq!(message, "just a subject\n");
+        assert_eq!(extracted("just a subject\n"), "just a subject\n");
     }
 
     /// `<CR>` visits a file only BELOW the marker. Pressing it while

@@ -11405,8 +11405,8 @@ mod tests {
             .join("\n")
     }
 
-    #[test]
-    fn dr3_active_pane_compose_characterization() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dr3_active_pane_compose_characterization() {
         // DR.3: pins the active-pane overlay stack (syntax spans,
         // gutter, line-number column, cursor-line bg, visual
         // selection, hlsearch, current-match) byte-identical through
@@ -11444,9 +11444,27 @@ mod tests {
         app.editor.current_match = Some(ProtoRange::new(pos(2, 4), pos(2, 7)));
         app.editor.all_matches = vec![ProtoRange::new(pos(2, 4), pos(2, 7))];
         app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 6, 40);
-        let fp = compose_fingerprint(&lines);
         let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1   \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                      \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2   \"/Some(DarkGray)/None/NONE|\"\u{2502}\"/Some(Rgb(108, 112, 134))/None/NONE|\"   \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3   \"/Some(DarkGray)/None/NONE|\"\u{2502}\"/Some(Rgb(108, 112, 134))/None/NONE|\"   \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4   \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE";
+        // The syntax spans and indent guides come from the cells worker's
+        // `DisplayMatrix`, built off-thread after the publish; until it lands
+        // the pane paints plain text. So compose again each time the worker
+        // fires `paint_request`, the wake it gives the renderer when it
+        // publishes. `Notify` keeps one permit, so a publish that landed
+        // before the wait is not lost. A loaded Windows runner composed
+        // before the worker finished and saw plain text.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let fp = loop {
+            let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 6, 40);
+            let fp = compose_fingerprint(&lines);
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if fp == expected
+                || tokio::time::timeout(left, app.editor.paint_request.notified())
+                    .await
+                    .is_err()
+            {
+                break fp;
+            }
+        };
         assert_eq!(fp, expected, "active-pane compose output changed");
     }
 

@@ -192,8 +192,13 @@ say "changelog"
 # date — rather than answered with an empty stub beside it. Without this the
 # script reported "no section" for a changelog that had one, and the author
 # was left to move the text by hand.
-if ! extract_section "$next" | grep -q . \
-    && extract_section Unreleased | tail -n +2 | grep -q '[^[:space:]]'; then
+#
+# Sections are captured and tested, never piped into `grep -q`: grep quits at
+# its first match, the writer upstream dies of SIGPIPE, and under pipefail a
+# section long enough to outrun the pipe reads as absent. That is how a written
+# `## Unreleased` got a stub inserted beside it instead of being retitled.
+unreleased_body="$(extract_section Unreleased | tail -n +2)"
+if [ -z "$(extract_section "$next")" ] && [[ "$unreleased_body" =~ [^[:space:]] ]]; then
     if [ "$dry_run" -eq 1 ]; then
         die "CHANGELOG.md has no '## $next' section, but '## Unreleased' is written (a real run would retitle it '## $next')"
     fi
@@ -207,7 +212,7 @@ if ! extract_section "$next" | grep -q . \
     echo "  '## Unreleased' retitled '## $next — $(date +%F)'"
 fi
 
-if ! extract_section "$next" | grep -q .; then
+if [ -z "$(extract_section "$next")" ]; then
     [ "$dry_run" -eq 0 ] \
         || die "CHANGELOG.md has no '## $next' section (a real run would insert a stub)"
     tmp="$(mktemp)"

@@ -41,6 +41,9 @@ Design: `docs/dev/architecture/release-pipeline.md`.
    creates the GitHub Release — **only if the full CI passes on the tagged
    commit**. The release runs `ci.yml` itself beside the builds; a red CI
    means no release, and the tag is fixed forward with a new patch release.
+   That run is the release commit's only CI: its push to `main` skips every
+   `ci.yml` job (bar the main-only `bench-baseline`), rather than test the
+   same commit twice.
 
 ### Why a script rather than `cargo-release`
 

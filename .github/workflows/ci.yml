@@ -77,6 +77,13 @@ on:
     branches: [main]
   # `release.yml` runs this whole workflow against the tagged commit and
   # publishes only if it passes.
+  #
+  # So the release commit's own push to main runs nothing: `release.sh`
+  # pushes it and its tag together, and the tag's run is the one that
+  # gates. Every job but `bench-baseline` (main-only, so not run by the
+  # release) carries the `if:` that says so. It tests the ref as well as
+  # the message because a called workflow sees its CALLER's context — the
+  # tag push carries the same head commit, and must still run.
   workflow_call:
 
 # Cancel any prior in-flight run for the same ref.
@@ -99,6 +106,7 @@ env:
 jobs:
   test:
     name: test (${{ matrix.os }})
+    if: "${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release): v')) }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -162,6 +170,7 @@ jobs:
 
   fmt:
     name: fmt
+    if: "${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release): v')) }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -175,6 +184,7 @@ jobs:
 
   doc:
     name: doc
+    if: "${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release): v')) }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -207,6 +217,7 @@ jobs:
 
   bench-compile:
     name: bench-compile (${{ matrix.os }})
+    if: "${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release): v')) }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -261,6 +272,7 @@ jobs:
     # flapping gate. Remove the skip when the layer is rebuilt
     # incrementally and the spread sits near 1.0.
     name: keystroke-ratchet
+    if: "${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release): v')) }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -365,6 +377,7 @@ jobs:
     # lib + tests build everywhere). This job exists specifically to
     # catch platform-specific link breakage at PR time, not at release.
     name: gpui-window-build (${{ matrix.os }})
+    if: "${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release): v')) }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

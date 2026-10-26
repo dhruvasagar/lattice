@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.12 — 2026-10-26
 
 ### Added
 - **`gS` wraps text in a snippet.** `gS` takes a motion or text object

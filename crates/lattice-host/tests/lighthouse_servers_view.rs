@@ -165,13 +165,17 @@ fn lines_of(editor: &Editor, name: &str) -> Vec<String> {
         .collect()
 }
 
-/// Wait — on the editor's own wake, with no key pressed — until the list has
-/// a row for rust-analyzer. Returns the lines last seen.
+/// Wait — on the editor's own wake, with no key pressed — until the list is
+/// drawn to its end, the keys line. Returns the lines last seen.
+///
+/// The plugin appends the list a line per host call, so the buffer can be
+/// read part-way down: a rust-analyzer row is no sign the rows after it, or
+/// the keys under them, have landed.
 async fn list_drawn(editor: &Editor) -> Vec<String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         let lines = lines_of(editor, LIST);
-        if lines.iter().any(|l| l.contains("rust-analyzer"))
+        if lines.iter().any(|l| l.starts_with("i install"))
             || tokio::time::Instant::now() >= deadline
         {
             return lines;

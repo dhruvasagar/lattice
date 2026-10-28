@@ -95,6 +95,22 @@ pub trait BufferStore: Send + Sync {
         None
     }
 
+    /// The directory buffer `id` is *about* when it is not itself a file —
+    /// its [`BufferScopeDir`](crate::BufferScopeDir): an oil listing's
+    /// directory, a file tree's root, a search view's scan root. `None`
+    /// when none was recorded, or `id` is not registered.
+    ///
+    /// The store-level read of the same value
+    /// [`ActionContext::buffer_local`](crate::ActionContext::buffer_local)
+    /// offers an action handler, for the callers that have no action
+    /// context — a transient menu's rows, an ex-command — and must still
+    /// resolve "where is the user" from the buffer rather than the
+    /// process's working directory. Default `None`, like
+    /// [`Self::path_for`].
+    fn scope_dir_for(&self, _id: BufferId) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Is `id` a buffer this store knows about at all?
     ///
     /// **The existence oracle**, and the reason it is a method rather than a
@@ -201,6 +217,11 @@ impl BufferStoreHandle {
     /// Forwards to [`BufferStore::path_for`].
     pub fn path_for(&self, id: BufferId) -> Option<std::path::PathBuf> {
         self.inner.path_for(id)
+    }
+
+    /// Forwards to [`BufferStore::scope_dir_for`].
+    pub fn scope_dir_for(&self, id: BufferId) -> Option<std::path::PathBuf> {
+        self.inner.scope_dir_for(id)
     }
 
     /// The existence oracle. See [`BufferStore::contains_buffer`] for why this

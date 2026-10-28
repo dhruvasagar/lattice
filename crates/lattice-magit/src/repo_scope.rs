@@ -328,7 +328,7 @@ pub fn label_of_buffer(
 /// stages into repo A is data-loss-shaped, and it is exactly what a
 /// half-migration produces.
 ///
-/// The three questions are design §2's, with the first one *read* rather
+/// The questions are design §2's, with the first one *read* rather
 /// than re-resolved:
 ///
 /// 1. The active buffer is a magit buffer → the repository it was
@@ -337,9 +337,14 @@ pub fn label_of_buffer(
 ///    whole point is that this buffer's repository is not the process's.
 /// 2. The active buffer has a file → that file's repository. This is the
 ///    `C-c g` -from-a-file case: the dispatch was opened over a file, so
-///    the operation belongs to that file's checkout.
-/// 3. Otherwise the working directory — unchanged, and still the answer
-///    for a fresh editor with nothing open.
+///    the operation belongs to that file's checkout. A file outside any
+///    repository is `None` ("Not a git repository"), never the cwd's repo.
+/// 3. The active buffer is about a directory (its
+///    [`BufferStore::scope_dir_for`](lattice_mode::BufferStore::scope_dir_for):
+///    oil, a file tree, a search view) → that directory's repository, or
+///    `None` on the same terms as a file.
+/// 4. Otherwise the working directory — the answer for a buffer that is
+///    about nowhere (the dashboard) and for a fresh editor.
 pub fn active_workdir(
     store: &lattice_mode::BufferStoreHandle,
     scopes: &RepoScopes,
@@ -358,6 +363,7 @@ pub fn active_workdir(
     crate::workdir::repo_for_trigger(
         from_magit_buffer,
         store.path_for(active).as_deref(),
+        store.scope_dir_for(active).as_deref(),
         scopes.discovery_start().as_deref(),
     )
 }
@@ -563,6 +569,7 @@ pub(crate) mod test_support {
     pub(crate) struct StubStore {
         pub name: Option<String>,
         pub path: Option<PathBuf>,
+        pub scope_dir: Option<PathBuf>,
     }
 
     impl lattice_mode::BufferStore for StubStore {
@@ -580,6 +587,9 @@ pub(crate) mod test_support {
         }
         fn path_for(&self, _id: lattice_core::BufferId) -> Option<PathBuf> {
             self.path.clone()
+        }
+        fn scope_dir_for(&self, _id: lattice_core::BufferId) -> Option<PathBuf> {
+            self.scope_dir.clone()
         }
         fn insert_document_buffer(
             &self,
@@ -601,6 +611,16 @@ pub(crate) mod test_support {
         BufferStoreHandle::new(Arc::new(StubStore {
             name: name.map(str::to_string),
             path,
+            scope_dir: None,
+        }))
+    }
+
+    /// A store whose active buffer is not a file but is about `dir` — an
+    /// oil listing, a file tree.
+    pub(crate) fn store_scoped_to(dir: PathBuf) -> BufferStoreHandle {
+        BufferStoreHandle::new(Arc::new(StubStore {
+            scope_dir: Some(dir),
+            ..StubStore::default()
         }))
     }
 }
@@ -711,6 +731,30 @@ mod tests {
                 .and_then(|w| w.canonicalize().ok()),
             repo.canonicalize().ok(),
             "the buffer must be recorded against the file's repo, not the cwd"
+        );
+    }
+
+    /// The same from a buffer that is not a file but is about a directory —
+    /// `C-x g` from an oil listing or file tree in another checkout. It had
+    /// no path, so it fell through to the working directory's repository.
+    #[test]
+    fn a_directory_buffer_from_another_checkout_opens_that_checkouts_buffer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("api");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        git_init(&repo);
+
+        let scopes = RepoScopes::default();
+        let store = test_support::store_scoped_to(repo.join("src"));
+        let name = repo_view_name("status", &store, &scopes, active());
+
+        assert_eq!(name, "*magit:status:api*");
+        assert_eq!(
+            scopes
+                .workdir_for(&name)
+                .and_then(|w| w.canonicalize().ok()),
+            repo.canonicalize().ok(),
+            "the buffer must be recorded against the directory's repo, not the cwd"
         );
     }
 

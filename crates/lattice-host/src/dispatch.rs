@@ -26060,6 +26060,10 @@ impl Editor {
     /// [`ModeActivator::set_buffer_scope_dir`](lattice_mode::ModeActivator::set_buffer_scope_dir)
     /// forwards to, so a provider crate reaches it without a host dependency.
     pub fn set_buffer_scope_dir(&mut self, buffer_id: BufferId, dir: std::path::PathBuf) {
+        // Mirrored onto the registry so `BufferStore::scope_dir_for` answers
+        // for callers with no action context (a transient menu, an
+        // ex-command). Written together here, so the two cannot disagree.
+        self.buffers.set_scope_dir(buffer_id, dir.clone());
         self.buffer_locals
             .entry(buffer_id)
             .or_default()

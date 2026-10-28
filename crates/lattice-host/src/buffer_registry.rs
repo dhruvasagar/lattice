@@ -254,6 +254,11 @@ pub enum BufferData {
 #[derive(Debug, Default)]
 struct BufferRegistryInner {
     by_id: HashMap<BufferId, BufferEntry>,
+    /// Each buffer's `BufferScopeDir`, mirrored here by
+    /// `Editor::set_buffer_scope_dir` (its single writer) so
+    /// `BufferStore::scope_dir_for` can answer from the store. Dropped
+    /// with the entry in [`BufferRegistry::remove`].
+    scope_dirs: HashMap<BufferId, std::path::PathBuf>,
 }
 
 /// The App's buffer registry. Methods take `&self` and lock
@@ -323,7 +328,11 @@ impl BufferRegistry {
     }
 
     pub fn remove(&self, id: BufferId) -> Option<BufferEntry> {
-        let removed = lock_inner(&self.inner).by_id.remove(&id);
+        let removed = {
+            let mut inner = lock_inner(&self.inner);
+            inner.scope_dirs.remove(&id);
+            inner.by_id.remove(&id)
+        };
         // Only bump on an actual removal so a no-op `remove` of a
         // non-existent id doesn't invalidate the cache.
         if removed.is_some() {
@@ -442,6 +451,18 @@ impl BufferRegistry {
             }
         }
         None
+    }
+
+    /// Record the directory `id` is about. Written only by
+    /// `Editor::set_buffer_scope_dir`, which also keeps the buffer-local
+    /// copy action handlers read.
+    pub fn set_scope_dir(&self, id: BufferId, dir: std::path::PathBuf) {
+        lock_inner(&self.inner).scope_dirs.insert(id, dir);
+    }
+
+    /// The directory `id` is about, if one was recorded.
+    pub fn scope_dir_of(&self, id: BufferId) -> Option<std::path::PathBuf> {
+        lock_inner(&self.inner).scope_dirs.get(&id).cloned()
     }
 
     /// Kind-specific convenience: path of the document at `id`.
@@ -905,6 +926,10 @@ impl lattice_mode::BufferStore for BufferRegistry {
 
     fn path_for(&self, id: lattice_core::BufferId) -> Option<std::path::PathBuf> {
         self.document_path(id)
+    }
+
+    fn scope_dir_for(&self, id: lattice_core::BufferId) -> Option<std::path::PathBuf> {
+        self.scope_dir_of(id)
     }
 
     /// H.1 (2026-05-31): generic Document-shaped buffer

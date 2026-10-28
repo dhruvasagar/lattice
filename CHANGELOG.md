@@ -22,6 +22,12 @@
   stale when magit was left any way other than `q`. `q` now goes back
   along the pane's own buffer history, so it returns to the previous file
   in that pane — past any other magit views opened on top.
+- **magit opens the repository you are looking at.** `C-x g` from an oil
+  listing or file tree used the editor's working directory instead of the
+  directory shown, and a file outside any repository silently opened the
+  working directory's repository. Both now resolve from the buffer in
+  front of you, and a file outside any repository says "Not a git
+  repository" instead of opening an unrelated one.
 
 ## 0.9.12 — 2026-10-26
 

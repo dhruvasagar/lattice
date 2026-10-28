@@ -81,7 +81,7 @@ pub(crate) fn workdir_for_file(path: &Path) -> Option<(PathBuf, PathBuf)> {
 
 /// MR.1: which repository a magit trigger should act on.
 ///
-/// Design: `docs/dev/architecture/magit-repo-scoping.md` §2. Three
+/// Design: `docs/dev/architecture/magit-repo-scoping.md` §2. Four
 /// questions, in this order, and the order is the design:
 ///
 /// 1. **`from_magit_buffer`** — the active buffer is itself a magit
@@ -92,7 +92,12 @@ pub(crate) fn workdir_for_file(path: &Path) -> Option<(PathBuf, PathBuf)> {
 /// 2. **`active_file`** — the file in front of you decides. This is the
 ///    point of the change: opening a file from another checkout and
 ///    acting on *its* repository, without restarting the editor there.
-/// 3. **cwd** — what every magit surface did unconditionally before.
+///    A file outside any repository is `None`, never the cwd's repository
+///    — the fall-through opened an unrelated project, silently.
+/// 3. **`scope_dir`** — a buffer that is not a file but is about a
+///    directory (oil, a file tree, a search view) decides the same way.
+/// 4. **cwd** — only for a buffer that is about nowhere (the dashboard,
+///    a fresh editor). What every magit surface did unconditionally before.
 ///    Kept as the fallback so a fresh editor with nothing open still
 ///    answers `C-x g`; that is what makes this a widening rather than a
 ///    trade.
@@ -104,15 +109,40 @@ pub(crate) fn workdir_for_file(path: &Path) -> Option<(PathBuf, PathBuf)> {
 pub(crate) fn repo_for_trigger(
     from_magit_buffer: Option<PathBuf>,
     active_file: Option<&Path>,
+    scope_dir: Option<&Path>,
     fallback_start: Option<&Path>,
 ) -> Option<PathBuf> {
     if let Some(workdir) = from_magit_buffer {
         return Some(workdir);
     }
-    if let Some(path) = active_file
-        && let Some((workdir, _rel)) = workdir_for_file(path)
-    {
-        return Some(workdir);
+    // A file decides, and only the file: its repository, or none. Falling
+    // through to the working directory here opened an UNRELATED repository
+    // for a file outside it — and silently, so it read as magit having
+    // picked the wrong project. `None` makes the view say "Not a git
+    // repository", which is the truth.
+    if let Some(path) = active_file {
+        let found = workdir_for_file(path).map(|(workdir, _rel)| workdir);
+        if found.is_none() {
+            tracing::debug!(
+                target: "lattice_magit",
+                path = %path.display(),
+                "magit trigger: file is not in a git repository",
+            );
+        }
+        return found;
+    }
+    // Not a file, but about a directory — an oil listing, a file tree, a
+    // search view. Same rule: that directory's repository, or none.
+    if let Some(dir) = scope_dir {
+        let found = magit_workdir_from(dir);
+        if found.is_none() {
+            tracing::debug!(
+                target: "lattice_magit",
+                dir = %dir.display(),
+                "magit trigger: buffer's directory is not in a git repository",
+            );
+        }
+        return found;
     }
     // PR.5: step 3 discovers from the project resolver's answer when one
     // is reachable, so `:cd` is honoured. `None` keeps the pre-PR.5
@@ -233,7 +263,7 @@ pub(crate) fn parse_magit_name(name: &str) -> Option<MagitName<'_>> {
 
 /// MR.2: does this name belong to a magit buffer at all?
 ///
-/// The first of design §2's three questions — "is the active buffer a
+/// The first of design §2's questions — "is the active buffer a
 /// magit buffer" — asked of the only thing a trigger has to hand: the
 /// name. A magit chord pressed inside magit must not change which
 /// repository you are working on.
@@ -322,7 +352,7 @@ mod tests {
 
         let showing = PathBuf::from("/somewhere/else");
         assert_eq!(
-            repo_for_trigger(Some(showing.clone()), Some(&file), None),
+            repo_for_trigger(Some(showing.clone()), Some(&file), None, None),
             Some(showing),
             "the buffer in front of you decides, not the file underneath it"
         );
@@ -340,7 +370,8 @@ mod tests {
         let file = p.join("src").join("main.rs");
         std::fs::write(&file, "fn main() {}\n").unwrap();
 
-        let resolved = repo_for_trigger(None, Some(&file), None).expect("the file is in a repo");
+        let resolved =
+            repo_for_trigger(None, Some(&file), None, None).expect("the file is in a repo");
         // `canonicalize` because a tempdir under /var is a symlink to
         // /private/var on macOS, and git reports the resolved form —
         // comparing the raw paths fails for a reason that has nothing to
@@ -358,7 +389,7 @@ mod tests {
     #[test]
     fn with_neither_it_falls_back_to_the_working_directory() {
         assert_eq!(
-            repo_for_trigger(None, None, None),
+            repo_for_trigger(None, None, None, None),
             magit_workdir(),
             "the fallback IS the old behaviour, unchanged"
         );
@@ -383,7 +414,7 @@ mod tests {
             .expect("git init");
         let canonical = std::fs::canonicalize(&repo).expect("canonicalize");
 
-        let got = repo_for_trigger(None, None, Some(&canonical)).expect("a repo was found");
+        let got = repo_for_trigger(None, None, None, Some(&canonical)).expect("a repo was found");
         assert_eq!(
             got, canonical,
             "step 3 must use the directory it was handed, not the process cwd"
@@ -398,25 +429,54 @@ mod tests {
         );
     }
 
-    /// A file outside any repository falls through too — it does not
-    /// resolve to nothing, because the editor's own repo is still a
-    /// sensible answer for `C-x g`.
+    /// A file outside any repository is "not a repository" — NOT the
+    /// working directory's repository.
+    ///
+    /// This used to assert the opposite, on the reasoning that the editor's
+    /// own repo was "still a sensible answer for `C-x g`". It was not: the
+    /// fall-through was silent, so magit opened an unrelated project and it
+    /// read as magit having misidentified the file's. Reversed 2026-10-27 on
+    /// that report; the view now says "Not a git repository".
     #[test]
-    fn a_file_outside_any_repo_falls_through_to_the_working_directory() {
+    fn a_file_outside_any_repo_is_not_given_the_working_directorys_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
+        if magit_workdir_from(dir.path()).is_some() {
+            // The tempdir sits inside a repository on this machine, so there
+            // is no "outside" to test from; skip loudly rather than assert
+            // against that repository.
+            eprintln!("skipping: the temp dir is inside a git repository");
+            return;
+        }
         let orphan = dir.path().join("loose.txt");
         std::fs::write(&orphan, "x\n").unwrap();
-        // No `git init` here on purpose. (If the tempdir happened to sit
-        // inside a repo, discovery would find THAT — which is still the
-        // fall-through behaviour being asserted.)
-        // The claim is the fall-through itself: an unresolvable file
-        // gives the same answer as no file at all, rather than being
-        // more fatal than having opened nothing.
-        assert_eq!(
-            repo_for_trigger(None, Some(&orphan), None),
-            repo_for_trigger(None, None, None),
-            "a file we cannot place must fall through, not refuse"
-        );
+
+        assert_eq!(repo_for_trigger(None, Some(&orphan), None, None), None);
+    }
+
+    /// A buffer that is about a directory — oil, a file tree, a search view
+    /// — resolves that directory's repository, not the working directory's.
+    #[test]
+    fn a_buffers_scope_dir_beats_the_working_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        std::fs::create_dir_all(p.join("src")).unwrap();
+
+        let resolved = repo_for_trigger(None, None, Some(&p.join("src")), None)
+            .expect("the directory is in a repo");
+        assert_eq!(resolved.canonicalize().ok(), p.canonicalize().ok());
+    }
+
+    /// A scope directory outside any repository is "not a repository" too,
+    /// for the same reason a file is.
+    #[test]
+    fn a_scope_dir_outside_any_repo_is_not_given_the_working_directorys_repo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        if magit_workdir_from(dir.path()).is_some() {
+            eprintln!("skipping: the temp dir is inside a git repository");
+            return;
+        }
+        assert_eq!(repo_for_trigger(None, None, Some(dir.path()), None), None);
     }
 
     // ── MR.1: the label ──────────────────────────────────────────

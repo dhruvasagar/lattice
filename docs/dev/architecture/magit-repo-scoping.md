@@ -28,7 +28,7 @@ the **trigger** and be carried into the view. That is the whole of the
 work; swapping `magit_workdir()` for `workdir_for_file()` is the easy
 part and, done alone, would be a no-op.
 
-## 2. Resolution: three questions in order
+## 2. Resolution: four questions in order
 
 A trigger resolves its repository by asking, in this order:
 
@@ -39,13 +39,29 @@ A trigger resolves its repository by asking, in this order:
 2. **Does the active buffer have a file?** Then discover from that file's
    parent (`workdir::workdir_for_file`, which exists and takes a
    *directory* precisely because `gix::discover` fails silently on a file
-   path — see `workdir.rs`'s module note).
-3. **Otherwise, the working directory** (`magit_workdir()`, today's
-   behaviour). A fresh editor with nothing open still answers `C-x g`,
-   which is what keeps this a widening rather than a trade.
+   path — see `workdir.rs`'s module note). **The file's answer is final:**
+   a file outside any repository is "not a repository", never the working
+   directory's repository.
+3. **Is the active buffer about a directory?** An oil listing, a file
+   tree, a search view has no path but records the directory it shows
+   (`BufferScopeDir`, read through `BufferStore::scope_dir_for`). Discover
+   from that, final in the same way.
+4. **Otherwise, the working directory** (`magit_workdir()`). Only a buffer
+   that is about nowhere — the dashboard, a fresh editor — reaches here,
+   so `C-x g` still answers with nothing open.
 
-`None` from all three means "not in a repository", and the view says so
-exactly as it does today.
+`None` means "not in a repository", and the view says so.
+
+**Why the file's answer is final (revised 2026-10-27).** This section
+first let an unresolvable file fall through to step 4, reasoning that the
+editor's own repository was still a sensible answer. It was not: the
+fall-through was silent, so `C-x g` on a file from elsewhere opened an
+*unrelated* project and read as magit having misidentified the file's.
+Directory buffers (step 3) had the same hole from the other side — no
+path, so every oil or file-tree trigger fell to the working directory. A
+wrong repository is worse than "Not a git repository": the second is
+visibly a refusal, the first invites a stage or commit in the wrong
+checkout.
 
 ## 3. Identity: the repository is part of the buffer
 

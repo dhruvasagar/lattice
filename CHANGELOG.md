@@ -12,6 +12,10 @@
   `:cnext` / `]q`, compile-error jumps — now centres its target like `zz`
   when it was off-screen, and leaves the view alone when it was already
   visible.
+- **`<C-w>T` moves the buffer for real.** Moving a pane to a new tab could
+  leave the tab showing the wrong file, without syntax highlighting, with
+  the buffer's own keys dead until it was reopened — most often for
+  synthetic buffers. The moved buffer is now the live one in its new tab.
 
 ## 0.9.12 — 2026-10-26
 

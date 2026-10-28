@@ -31046,9 +31046,13 @@ impl Editor {
         let insert_at = self.active_tab + 1;
         self.tabs.insert(insert_at, new_slot);
         self.active_tab = insert_at;
-        self.active_buffer = captured_kind;
-        self.cursor = captured_cursor;
-        self.scroll = captured_scroll;
+        // Make the moved buffer LIVE, through the funnel every other pane /
+        // tab switch uses. Closing the pane above made the sibling's buffer
+        // the live document; writing back only the kind, cursor and scroll
+        // left `document`, its syntax handle and `document_buffer_id` on the
+        // sibling — the new tab showed the wrong file, uncoloured, with the
+        // moved buffer's actions dead until it was reopened.
+        self.load_active_pane();
     }
 
     /// `:tabnew <path>` — open `path` in a new tab. Creates

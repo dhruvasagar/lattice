@@ -6,6 +6,12 @@
 - **Tabs are named after the file they show.** A tab holding a file read
   `[scratch]` instead of the file's name; it now shows the basename, and
   `[scratch]` is left for a buffer that genuinely has no name.
+- **Jumps show where they land.** `gd` (and `gD`, type definition,
+  implementation) could put the cursor on the right line but off-screen
+  until the next key. Every lookup — LSP jumps, picker and grep accepts,
+  `:cnext` / `]q`, compile-error jumps — now centres its target like `zz`
+  when it was off-screen, and leaves the view alone when it was already
+  visible.
 
 ## 0.9.12 — 2026-10-26
 

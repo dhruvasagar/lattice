@@ -4738,6 +4738,7 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // open line (the conversion the handler couldn't do pre-open).
             if let Some(lattice_grammar::Utf16Pos { line, col }) = column {
                 editor.move_cursor_to_utf16_column(line, col);
+                editor.land_cursor_at(editor.cursor);
             }
         }
         // I5.1 (Claude Code IDE peer): host-applied terminal spawn with
@@ -16557,7 +16558,10 @@ impl Editor {
         let line_text = snap.buffer.line(loc.range.start.line).unwrap_or_default();
         let byte =
             lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, loc.range.start.character);
-        self.cursor = lattice_protocol::position::Position::new(loc.range.start.line, byte);
+        self.land_cursor_at(lattice_protocol::position::Position::new(
+            loc.range.start.line,
+            byte,
+        ));
         signals
     }
 
@@ -25085,9 +25089,34 @@ impl Editor {
     /// inside closed folds, and the user arrived looking at a collapsed
     /// outline with no sign of where they had gone. Navigation that does not
     /// show you the thing you navigated to has not finished.
+    ///
+    /// Then the third half of revealing: scroll the target into view,
+    /// centred (`zz`) when it was not already comfortably on screen. A jump
+    /// that lands asynchronously (`gd`) has no keystroke tail to run
+    /// [`Self::ensure_cursor_visible`] for it — that clamp is keystroke-only —
+    /// so the cursor sat on the right line, off-screen, until the next key.
     pub fn land_cursor_at(&mut self, position: lattice_protocol::position::Position) {
         self.set_cursor_clamped(position);
         self.auto_open_folds_at_cursor();
+        self.reveal_cursor_centred();
+    }
+
+    /// Bring the cursor into view after a jump: centred (`zz`) when it is
+    /// off-screen or inside the `scrolloff` margin, untouched when it is
+    /// already comfortably visible — moving content the user was reading to
+    /// show them a line they could already see is churn, not navigation.
+    ///
+    /// "Comfortably visible" is whatever [`Self::ensure_cursor_visible`]
+    /// accepts without scrolling, so sticky rows, context strips, wrap and
+    /// `scrolloff` are all judged by the one clamp rather than a second
+    /// opinion of it. A no-op before the first draw (`viewport_height == 0`),
+    /// as that clamp is.
+    fn reveal_cursor_centred(&mut self) {
+        let before = self.scroll;
+        self.ensure_cursor_visible();
+        if self.scroll != before {
+            self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
+        }
     }
 
     /// Open every closed fold whose range contains the current
@@ -33243,7 +33272,7 @@ impl Editor {
         let line = line.min(last_addressable_line(&snap.buffer));
         let line_len = snap.buffer.line_byte_len(line);
         let col = col.min(line_len);
-        self.cursor = lattice_protocol::Position::new(line, col);
+        self.land_cursor_at(lattice_protocol::Position::new(line, col));
         signals
     }
 
@@ -33303,7 +33332,7 @@ impl Editor {
                 let line = line.min(last_addressable_line(&snap.buffer));
                 let len = snap.buffer.line_byte_len(line);
                 let col = col.min(len);
-                self.cursor = lattice_protocol::Position::new(line, col);
+                self.land_cursor_at(lattice_protocol::Position::new(line, col));
             }
             JumpToLocation { path, line, col } => {
                 out.renderer_signals

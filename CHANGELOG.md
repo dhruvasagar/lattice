@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Tabs are named after the file they show.** A tab holding a file read
+  `[scratch]` instead of the file's name; it now shows the basename, and
+  `[scratch]` is left for a buffer that genuinely has no name.
+
 ## 0.9.12 — 2026-10-26
 
 ### Added

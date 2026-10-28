@@ -30482,18 +30482,25 @@ impl Editor {
     }
 
     /// Issue #29: derive a tab label from a buffer's name.
-    /// Returns the basename of a file path, `[scratch]` for
-    /// the empty unnamed document, or the buffer's name verbatim
-    /// for non-document buffers.
+    /// Returns the basename of a document's file path, else the
+    /// basename of the registry's synthetic name, else `[scratch]`
+    /// for the unnamed document. The path comes first because file
+    /// buffers never fill the synthetic-name slot — reading only
+    /// that slot labelled every file tab `[scratch]`. Same order as
+    /// the modeline's `pane_path_segment`.
     fn buffer_label_for_tab(&self, buffer_id: lattice_core::BufferId) -> String {
-        if let Some(name) = self.buffers.name_of(buffer_id) {
-            // basename
-            let path = std::path::Path::new(name.as_str());
-            return path
-                .file_name()
+        let basename = |path: &std::path::Path| {
+            path.file_name()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| name.to_string());
+        };
+        if let Some(path) = self.buffers.document_path(buffer_id)
+            && let Some(name) = basename(&path)
+        {
+            return name;
+        }
+        if let Some(name) = self.buffers.name_of(buffer_id) {
+            return basename(std::path::Path::new(name.as_str())).unwrap_or(name);
         }
         "[scratch]".to_string()
     }

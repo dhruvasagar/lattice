@@ -16,6 +16,12 @@
   leave the tab showing the wrong file, without syntax highlighting, with
   the buffer's own keys dead until it was reopened — most often for
   synthetic buffers. The moved buffer is now the live one in its new tab.
+- **`q` in magit returns to the file you came from.** Closing
+  magit-status could land on the dashboard even when a file had been open
+  just before, because the return address was remembered once and went
+  stale when magit was left any way other than `q`. `q` now goes back
+  along the pane's own buffer history, so it returns to the previous file
+  in that pane — past any other magit views opened on top.
 
 ## 0.9.12 — 2026-10-26
 

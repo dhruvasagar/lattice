@@ -8416,23 +8416,60 @@ impl Editor {
     /// bug this used to have (`q` out of a magit view returned the file
     /// with magit's `Number = false` still cached, so the line numbers
     /// vanished) is fixed at that seam rather than here.
+    ///
+    /// **Where it returns to is read from the pane's buffer trail**, not
+    /// from a stored address: the newest earlier entry that is neither the
+    /// view being buried nor another in-pane view, so a chain of views
+    /// (status → log → `q`) returns to the file under all of them. When the
+    /// trail holds only views, the nearest live one. The walk does not
+    /// record — the view stays reachable forward with `<C-7>`, exactly as
+    /// after `<C-6>`. See [`Editor::in_pane_views`] for why the stored
+    /// address this replaces went stale.
     pub fn bury_buffer(&mut self) -> bool {
-        let Some(prev) = self.bury_target.take() else {
+        let Some((index, entry)) = self.bury_destination() else {
             return false;
         };
-        // Full swap first — this is what moves `Editor::document`.
-        let _ = self.activate_buffer(prev.buffer_id);
-        // Then the view state the pane had when it was displaced.
-        // After `activate_buffer`, not before: activation resets the
-        // cursor/scroll for the destination.
-        self.cursor = prev.cursor;
-        self.scroll = prev.scroll;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = prev.buffer;
-        pane.buffer_id = prev.buffer_id;
-        self.active_buffer = prev.buffer;
-        self.modal = prev.modal;
+        self.capture_outgoing_pane_position();
+        if self.active_pane_history_mut().jump_to(index).is_none() {
+            return false;
+        }
+        // Full swap — this is what moves `Editor::document`. Not recorded:
+        // returning along the trail is not a new visit.
+        self.walking_pane_history = true;
+        let switched = self.activate_buffer(entry.buffer);
+        self.walking_pane_history = false;
+        if !switched {
+            return false;
+        }
+        // Then where the user was in that buffer, in this pane. After
+        // `activate_buffer`: activation resets the destination's view.
+        self.cursor = entry.cursor;
+        self.scroll = entry.scroll;
+        self.snapshot_active_pane();
         true
+    }
+
+    /// Where [`Self::bury_buffer`] would return the active pane, as an
+    /// index into its buffer trail and the entry there. `None` when the
+    /// pane is not showing an in-pane view, or the trail has nowhere live
+    /// to go back to.
+    fn bury_destination(&mut self) -> Option<(usize, crate::pane_history::PaneHistoryEntry)> {
+        let buried = self.active_pane_buffer_id();
+        if !self.in_pane_views.contains(&buried) {
+            return None;
+        }
+        let history = self.active_pane_history_mut().clone();
+        let candidates = || {
+            history.entries()[..=history.cursor()]
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, e)| e.buffer != buried && self.buffers.contains(e.buffer))
+        };
+        candidates()
+            .find(|(_, e)| !self.in_pane_views.contains(&e.buffer))
+            .or_else(|| candidates().next())
+            .map(|(i, e)| (i, *e))
     }
 
     /// `Effect::DismissPopupNamed` — dismiss the popup **only if** the one on
@@ -8570,7 +8607,7 @@ impl Editor {
         // `activate_help_in_pane` genuinely MOVES the pane and pushes no
         // frame, so its stash is the only thing that can put it back. It is
         // also the ONLY writer of this field: an in-pane synthetic open
-        // writes `bury_target` instead, precisely so this branch cannot
+        // returns through the pane trail instead, precisely so this branch cannot
         // restore over a buffer no popup ever displaced.
         else if let Some(prev) = self.prev_pane_for_popup.take() {
             {
@@ -35800,39 +35837,14 @@ impl Editor {
             lattice_mode::ModeId::new(mode_id),
             crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
         );
-        // Bug fix: stash the pane's pre-open state so a later
-        // `Effect::BuryBuffer` (magit's `q`, bound in
-        // `magit-core-mode` and inherited by every magit buffer) can
-        // bury this buffer back to whatever was showing before,
-        // instead of magit's `q` having nothing to fall back to and
-        // reaching for `Effect::QuitEditor` (which, with one pane
-        // open, quit the whole editor — the exact live-reported bug
-        // this fixes). Only set when not already populated, so
-        // chained synthetic-buffer opens (magit-status -> magit-log
-        // -> back) restore the TRUE origin buffer, not the
-        // intermediate one.
-        //
-        // `bury_target`, NOT `prev_pane_for_popup`. This used to
-        // write the popup's slot, on the reasoning that it "just sits
-        // unused until GC'd by the next dismiss" — but a dismiss does
-        // not GC a stash, it APPLIES it, and it cannot tell whose it
-        // is. A synthetic buffer opened while any State-A popup was
-        // up therefore had its bury address consumed by that popup's
-        // teardown, which hand-restored the pane to the origin
-        // without going through `activate_buffer`. Everything reading
-        // `active_pane_buffer_id()` afterwards then addressed the
-        // wrong buffer, `Effect::BufferDelete` included. See the
-        // field's own doc comment for the org-capture report.
-        if self.bury_target.is_none() && self.active_pane_buffer_id() != id {
-            let active = self.pane_tree.active();
-            self.bury_target = Some(crate::state::PrevPaneState {
-                buffer: active.buffer,
-                buffer_id: active.buffer_id,
-                cursor: self.cursor,
-                scroll: self.scroll,
-                modal: self.modal,
-            });
-        }
+        // Mark it an in-pane view, so a later `Effect::BuryBuffer`
+        // (magit's `q`, inherited by every magit buffer) can return the
+        // pane from it instead of reaching for `Effect::QuitEditor` —
+        // which, with one pane open, quit the whole editor. Where it
+        // returns to is read from the pane's trail at bury time, not
+        // stashed here; see `Editor::in_pane_views` for why a stash went
+        // stale.
+        self.in_pane_views.insert(id);
         // OC.7a: seed BEFORE activating, so the first frame the user sees is
         // the finished buffer.
         //
@@ -42923,14 +42935,10 @@ impl Editor {
         // BufferId is still mapped.
         self.lsp_close_buffer(to_remove);
         self.buffers.remove(to_remove);
-        // The bury address is spent once the buffer it would have returned
-        // FROM is gone — this delete has already chosen a successor and
-        // re-pointed the panes. Left set, it would both block the next
-        // synthetic open from recording its own origin and, if the origin is
-        // what was deleted here, let a later `q` hand-point the pane at a
-        // buffer that no longer exists (`bury_buffer` assigns the id whether
-        // or not the activation took).
-        self.bury_target = None;
+        // No longer a view anything can be buried from. Where a bury
+        // returns TO needs no clean-up: it is read from the pane trails,
+        // which the purge below drops this buffer from.
+        self.in_pane_views.remove(&to_remove);
         // AR.0: drop the autoread fingerprint for the closed buffer so the
         // map tracks only live file-backed buffers.
         self.on_disk_fingerprints.remove(&to_remove);
@@ -42972,7 +42980,7 @@ impl Editor {
     /// ends up on a real buffer.
     pub fn kill_buffer(&mut self) -> bool {
         let to_remove = self.active_pane_buffer_id();
-        if self.bury_target.is_none() {
+        if self.bury_destination().is_none() {
             return self.do_buffer_delete(true);
         }
         // Leave Insert against the buffer that is still alive, for the reason

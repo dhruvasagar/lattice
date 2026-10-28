@@ -342,6 +342,14 @@ field (`Editor::bury_target`), cleared by `do_buffer_delete` once the buffer it
 would return from is gone. Pinned by
 `crates/lattice-host/tests/a_popup_dismiss_must_not_move_the_pane.rs`.
 
+That field then went stale in its own way — written only when empty, it kept
+the *first* origin when a view was left by `<CR>` / `:e` rather than a bury, so
+magit's `q` returned to the dashboard instead of the file just visited. It is
+gone: a bury now reads its destination from the pane's buffer trail
+(`pane-buffer-history.md` §6.1), which no popup path writes, so the isolation
+this paragraph won is kept by construction. `Editor::in_pane_views` records
+only *which* buffers can be buried from.
+
 The next three were found while scoping PU-A and fixed ahead of it (slice plan
 `../operations/slice-plans/archive/popup-input-caret.md`). Each is the same half-migration
 seen from a different axis: the popup is "active" for `active_buffer` /

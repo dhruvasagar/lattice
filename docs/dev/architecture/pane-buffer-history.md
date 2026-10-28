@@ -263,6 +263,25 @@ than by overloading a directional key with hidden state.
   buffer change, seeded with the pane's current buffer as entry 0, so
   the first `<C-6>` has somewhere to go back *from*.
 
+### 6.1 Burying a view reads the trail
+
+`Effect::BuryBuffer` — `q` in magit, org-capture and every other in-pane
+view — is a walk back, not a stored address. The destination is the
+newest entry at or before the cursor that is neither the view being
+buried nor another in-pane view (`Editor::in_pane_views`), so a chain of
+views — status → log → `q` — returns to the file under all of them. A
+trail holding only views falls back to the nearest live one. Like
+`<C-6>`, it moves the cursor without recording, so the buried view stays
+reachable with `<C-7>`.
+
+The stored address it replaced was one editor-wide slot written only
+when empty. Leaving a view by `<CR>` onto a file, `:e` or a picker never
+cleared it, so the next `q` returned to the *first* origin — the
+dashboard — rather than the file just visited, and a slot shared by
+every pane could hand one pane another's buffer. The trail is per-pane
+and already correct for every way a pane changes buffer, so nothing can
+go stale. Pinned by `crates/lattice-host/tests/bury_returns_through_pane_history.rs`.
+
 ---
 
 ## 7. Chords — `<C-6>` / `<C-7>`, and why not `<C-^>`

@@ -678,7 +678,7 @@ pub struct Editor {
     /// help activation path; cleared by dismiss.
     ///
     /// **Popup lifetime only.** The bury-back address for an
-    /// in-pane synthetic buffer lives in [`Self::bury_target`]
+    /// in-pane synthetic buffer is read from the pane trail (see [`Self::in_pane_views`])
     /// and is deliberately a different field -- see there.
     pub prev_pane_for_popup: Option<PrevPaneState>,
     /// The pane [`Editor::open_help_in_split`] created for a help buffer, when
@@ -688,32 +688,28 @@ pub struct Editor {
     /// an active-pane help displaced. `None` for popup / active-pane help and
     /// once the pane is gone. Cleared on dismiss.
     pub help_split_pane: Option<lattice_core::ui::pane::PaneId>,
-    /// Where `Effect::BuryBuffer` (magit's `q`) returns the pane
-    /// after an in-pane synthetic buffer is closed. Written by
-    /// `open_synthetic_buffer_seeded`, consumed by
-    /// [`Editor::bury_buffer`](crate::editor::Editor::bury_buffer).
+    /// The in-pane views — buffers opened over a pane by
+    /// `open_synthetic_buffer_seeded` (magit, org-capture, `*plugins*`, …)
+    /// — which `Effect::BuryBuffer` (their `q`) can return the pane from.
+    /// Written at open, dropped when the buffer is deleted.
     ///
-    /// **Its own field because the two mechanisms have different
-    /// lifetimes.** Both used to share `prev_pane_for_popup`, and
-    /// whichever teardown ran first consumed whatever was in the
-    /// slot regardless of who wrote it. Reported against
-    /// org-capture: a transient menu was still up (State A) when
-    /// the `*org-capture*` draft opened, so the draft's bury
-    /// address landed in the shared slot; dismissing the menu
-    /// then hand-restored the pane to the pre-capture buffer
-    /// *without* going through `activate_buffer` -- silently,
-    /// since only that function echoes. `C-c C-c`'s
-    /// `Effect::BufferDelete` resolves its target from
-    /// `active_pane_buffer_id()`, so it deleted the buffer the
-    /// user came from and left the draft alive, unsaved and
-    /// unreachable. MG.47 had patched one call site of this on
-    /// the reasoning that a State-A popup "leaves
-    /// `prev_pane_for_popup` as `None` -- so this guard cannot
-    /// move the pane"; that holds only until something opens a
-    /// synthetic buffer underneath the popup.
+    /// **Where a bury returns to is NOT stored.** It is read from the
+    /// pane's own buffer trail
+    /// ([`Editor::bury_buffer`](crate::editor::Editor::bury_buffer)), which
+    /// already records every buffer the pane showed. A stored return
+    /// address was the previous design and the bug: one editor-wide slot,
+    /// written only when empty, went stale whenever a view was left by
+    /// anything but a bury (`<CR>` onto a file, `:e`, a picker), so `q`
+    /// returned to the FIRST origin — the dashboard — rather than the file
+    /// just visited, and could hand one pane another pane's buffer.
     ///
-    /// See `crates/lattice-host/tests/a_popup_dismiss_must_not_move_the_pane.rs`.
-    pub bury_target: Option<PrevPaneState>,
+    /// **Separate from `prev_pane_for_popup` on purpose.** Popup teardown
+    /// consumes that slot; a view's return must never be spent by an
+    /// unrelated popup dismiss (the org-capture report:
+    /// `crates/lattice-host/tests/a_popup_dismiss_must_not_move_the_pane.rs`).
+    /// Deriving the return from the pane trail keeps that property — no
+    /// popup path writes or reads it.
+    pub in_pane_views: std::collections::HashSet<lattice_core::BufferId>,
     /// Where the popup overlay sits on screen when one is
     /// open. Lives on the editor (not on the buffer) because
     /// the popup is a generic rectangular surface inside

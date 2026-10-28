@@ -5642,18 +5642,26 @@ impl Render for EditorView {
         // The band is advisory and never takes focus — `popup_focused` names
         // the popup slot, so passing it here would draw a focused border
         // around a hint nobody is in.
-        let band_overlay: Option<gpui::Div> = band_sub.buffer_id.map(|id| {
-            build_overlay(
-                &band_sub,
-                id,
-                lattice_core::ui::pane::PaneId::MINIBUFFER_BAND,
-                band_w_px,
-                band_h_px,
-                band_inner_rows,
-                band_body_h_px,
-                false,
-            )
-        });
+        //
+        // A band whose buffer is not in the registry paints NOTHING, as the
+        // TUI's `band_row_count` decides. `dims_of` sizes a missing buffer
+        // as one row, so this used to draw an empty strip over the modeline
+        // and the `:` line whenever the slot named a dead buffer.
+        let band_overlay: Option<gpui::Div> = band_sub
+            .buffer_id
+            .filter(|id| popup_rs.buffers.registry.document_handle(*id).is_some())
+            .map(|id| {
+                build_overlay(
+                    &band_sub,
+                    id,
+                    lattice_core::ui::pane::PaneId::MINIBUFFER_BAND,
+                    band_w_px,
+                    band_h_px,
+                    band_inner_rows,
+                    band_body_h_px,
+                    false,
+                )
+            });
 
         // Issue #29 (2026-05-22): tabline strip. Visibility is
         // resolved by the publisher's `build_tabs_render_state`

@@ -522,3 +522,77 @@ async fn the_band_opening_does_not_evict_a_popup_the_user_asked_for() {
         "and the popup the user asked for is untouched"
     );
 }
+
+// ── A growing prefix re-opens the band it is already showing ──────────────
+
+/// Open the band the way which-key's gate does: by name, into the band slot.
+fn open_band_as_which_key_does(editor: &mut Editor) {
+    let _ = editor.open_popup_named(
+        lattice_mode::modes::which_key::WHICH_KEY_BUFFER_NAME,
+        lattice_mode::modes::WhichKeyMode::mode_id().as_str(),
+        lattice_host::popup::PopupPlacement::MinibufferBand,
+        lattice_host::popup::PopupFocus::Passive,
+    );
+}
+
+/// **The `C-c n` bug.** Holding `C-c` opens the band; adding `n` re-arms the
+/// gate, which fires again and opens the band again under the SAME name while
+/// the first is still up. The name resolved back to the open band's buffer,
+/// and the band's own stale-registry teardown then deleted that buffer — the
+/// one it was about to show. The slot was left naming a dead buffer: the
+/// second level's hint never appeared, the dismissal (which matches by name)
+/// could not find it, and GPUI painted the dead slot as an empty strip over
+/// the modeline and the `:` line until which-key next opened.
+#[tokio::test]
+async fn reopening_an_open_band_shows_a_live_buffer() {
+    let mut editor = booted();
+    quiesce(&editor).await;
+
+    open_band_as_which_key_does(&mut editor);
+    assert!(editor.band_buffer.is_some(), "precondition: the band is up");
+
+    open_band_as_which_key_does(&mut editor);
+    let band = editor.band_buffer.expect("the band is still up");
+    assert!(
+        editor.buffers.contains(band),
+        "the band names a buffer that exists — not one its own reopen deleted"
+    );
+}
+
+/// The other half of the same report: the hint must still go away when the
+/// longer chord resolves. Dismissal matches the band by name, so a band left
+/// naming a deleted buffer could never be closed.
+#[tokio::test]
+async fn a_reopened_band_is_still_dismissed_by_name() {
+    let mut editor = booted();
+    quiesce(&editor).await;
+
+    open_band_as_which_key_does(&mut editor);
+    open_band_as_which_key_does(&mut editor);
+
+    assert!(
+        editor.dismiss_popup_named(lattice_mode::modes::which_key::WHICH_KEY_BUFFER_NAME),
+        "which-key's dismissal finds its band"
+    );
+    assert!(editor.band_buffer.is_none(), "and the band is gone");
+}
+
+/// The band is a non-cell surface, so its closing must move the paint
+/// revision: off a keystroke (the chord resolving lands on the actor's
+/// `async_landed` arm), `paint_request` — the only thing that repaints the
+/// GPUI peer — fires only when `publish_render_state` reports a change.
+#[tokio::test]
+async fn closing_the_band_requests_a_paint() {
+    let mut editor = booted();
+    quiesce(&editor).await;
+
+    open_band_as_which_key_does(&mut editor);
+    let _ = editor.publish_render_state();
+    let _ = editor.publish_render_state(); // settle: a no-op publish is stable
+
+    editor.dismiss_band();
+    assert!(
+        editor.publish_render_state(),
+        "a band that closed off-keystroke must repaint, or it stays on screen"
+    );
+}

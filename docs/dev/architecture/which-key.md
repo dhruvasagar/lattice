@@ -219,6 +219,18 @@ its own fed geometry, with the popup drawn over the band (WK.13). Until then
 GPUI could paint only one and preferred the popup, so the hint was invisible
 behind one.
 
+**A growing prefix reopens the band it is showing.** `C-c` opens the hint;
+`n` re-arms the gate, which fires again with the same name while the first
+band is still up. `open_popup_named` therefore closes an open band before
+opening one, as it does for the popup slot: the name would otherwise resolve
+back to the open band's buffer, which the band's stale-registry teardown then
+deleted — the slot named a dead buffer, the `C-c n` grid never appeared, the
+by-name dismissal could not find it, and GPUI painted the dead slot as an
+empty strip over the modeline and `:` line until which-key next opened
+(reported 2026-10-28). Closing first also gives the reopen a fresh buffer, so
+the mode's activation writes the longer prefix's grid. Both renderers paint
+nothing for a band whose buffer is not in the registry.
+
 `PopupFocus::Passive` is State A in `popup-api.md` §4.1: the document
 keeps focus, the caret, and the modal state. **Every keystroke
 continues to flow to the trie unchanged.** This is the property that

@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **which-key no longer leaves a strip over the command line.** Holding a
+  longer prefix such as `C-c n` re-opened the hint while it was showing,
+  which deleted its own buffer: the second level's hint never appeared,
+  and in the GUI an empty strip stayed over the modeline and the `:` line
+  until which-key next opened. The hint now refreshes to the longer prefix
+  and closes when the chord resolves.
 - **Tabs are named after the file they show.** A tab holding a file read
   `[scratch]` instead of the file's name; it now shows the basename, and
   `[scratch]` is left for a buffer that genuinely has no name.

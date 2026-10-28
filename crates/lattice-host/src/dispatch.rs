@@ -1958,6 +1958,8 @@ impl Editor {
         }
         // Popups / floats (presence + placement + anchor).
         self.popup_buffer.hash(&mut h);
+        // WK.12's band is its own non-cell surface beside the popup.
+        self.band_buffer.hash(&mut h);
         std::mem::discriminant(&self.popup_placement).hash(&mut h);
         self.popup_anchor.hash(&mut h);
         // The picker's CONTENT, not merely its presence. This used to be
@@ -32882,7 +32884,11 @@ impl Editor {
         // evict whatever hover, diagnostic or completion popup was showing,
         // because there was one slot and opening it dismissed the occupant.
         if matches!(placement, crate::popup::PopupPlacement::MinibufferBand) {
-            self.dismiss_stale_band_registry();
+            // Never tear down the buffer being opened: re-showing the band's
+            // own buffer would delete it and leave the slot naming nothing.
+            if self.band_buffer != Some(buffer) {
+                self.dismiss_stale_band_registry();
+            }
             self.band_buffer = Some(buffer);
             return Vec::new();
         }
@@ -32992,9 +32998,22 @@ impl Editor {
         // before the placement was ever consulted, so the band routing in
         // `open_popup_buffer` alone did not fix it. Caught by
         // `the_band_opening_does_not_evict_a_popup_the_user_asked_for`.
-        if self.popup_buffer.is_some()
-            && !matches!(placement, crate::popup::PopupPlacement::MinibufferBand)
-        {
+        //
+        // The band has the same reuse hazard in its own slot, so it gets the
+        // same remedy there: a growing prefix (`C-c` → `C-c n`) re-fires the
+        // gate and re-opens the band under the SAME name while it is up. The
+        // name resolved back to the open band's buffer, which the band's
+        // stale-registry teardown then deleted — leaving the slot naming a
+        // dead buffer that the by-name dismissal could never find. Closing it
+        // first also gives the reopen a fresh buffer, so the mode's
+        // activation writes the LONGER prefix's grid rather than the stale
+        // one. Both happen inside this call, before any publish, so no frame
+        // sees the band absent.
+        if matches!(placement, crate::popup::PopupPlacement::MinibufferBand) {
+            if self.band_buffer.is_some() {
+                self.dismiss_band();
+            }
+        } else if self.popup_buffer.is_some() {
             self.dismiss_popup();
         }
         let id = self.ensure_named_popup_buffer(

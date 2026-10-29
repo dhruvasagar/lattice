@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.13 — 2026-10-29
 
 ### Fixed
 - **which-key no longer leaves a strip over the command line.** Holding a

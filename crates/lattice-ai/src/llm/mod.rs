@@ -10,7 +10,16 @@
 //! round-trip text, reasoning (with opaque provider data), tool calls and tool
 //! results. Nothing here depends on the `acp` feature.
 
+pub mod install;
 pub mod provider;
+pub mod request;
+pub mod transport;
+
+pub use request::{
+    RequestId, RequestInfo, RequestRegistry, RequestRegistryHandle, RequestState,
+    RequestStateChanged, RequestTarget, Sink,
+};
+pub use transport::SinkFlow;
 
 pub use provider::{AnthropicProvider, OpenAiProvider, Provider, StreamDecoder};
 

@@ -41,6 +41,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     #[cfg(feature = "acp")]
     crate::acp::install::install(boot, &logger);
 
+    #[cfg(feature = "llm")]
+    crate::llm::install::install(boot);
+
     #[cfg(feature = "mcp")]
     crate::mcp::install::install(boot);
 

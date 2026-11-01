@@ -71,6 +71,23 @@ target rather than just a slower number.
 
 ---
 
+## LL.4 — LLM stream decode throughput (2026-11-01)
+
+`crates/lattice-ai/benches/llm_decode.rs`. The request task decodes every
+network chunk before the sink sees it, so decoder cost per byte bounds how fast
+a reply reaches a buffer. Recorded fixtures replayed 200 times, fed in 1 KiB
+chunks. Off the UI thread; recorded so a decoder regression shows.
+
+| Provider | Time per stream | Throughput |
+|---|---|---|
+| Anthropic | 754 µs | ~382 MiB/s |
+| OpenAI-compatible | 349 µs | ~474 MiB/s |
+
+Real model output is orders of magnitude slower than this, so the decoder is
+never the bottleneck.
+
+---
+
 ## SI.12 — mode range highlights on the publish path (2026-10-24)
 
 A live snippet's placeholders are tinted through a mode range-highlight

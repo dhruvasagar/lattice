@@ -13,7 +13,7 @@ default = ["acp", "mcp", "llm"]
 acp = ["dep:agent-client-protocol", "dep:tokio-util", "dep:linkme", "tokio/process"]
 # Direct model-API layer: no-I/O provider adapters (LL.3), later the engine. Shares
 # the protocol-neutral `conversation` model with `acp`; never depends on it.
-llm = ["dep:linkme"]
+llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "tokio/net"]
 # MCP IDE-peer transport (Claude Code, folded in by AG-4): the loopback
 # WebSocket server + the read / write / diff tools it exposes.
 mcp = ["dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
@@ -56,12 +56,20 @@ futures = { workspace = true }
 arc-swap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# llm: the HTTP transport (rustls, streaming body).
+reqwest = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt", "net", "io-util"] }
 futures = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "llm_decode"
+harness = false
+required-features = ["llm"]
 
 [lints]
 workspace = true

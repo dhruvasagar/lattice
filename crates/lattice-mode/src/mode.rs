@@ -805,7 +805,13 @@ pub trait Mode: Send + Sync + 'static {
     /// end (see [`EditableTail`]), so it stays valid as the owner appends
     /// content above it. Returning `None` leaves the read-only gate's
     /// behaviour unchanged (edits rejected iff `ReadOnly` is resolved true).
-    fn editable_tail(&self) -> Option<EditableTail> {
+    ///
+    /// `buffer` is the buffer the gate is asking about, so a mode that backs
+    /// several buffers at once (one conversation per buffer) can answer per
+    /// buffer instead of from process-wide state. A mode whose tail is the
+    /// same everywhere ignores it.
+    fn editable_tail(&self, buffer: lattice_core::BufferId) -> Option<EditableTail> {
+        let _ = buffer;
         None
     }
 
@@ -919,7 +925,7 @@ pub trait DynMode: Send + Sync + 'static {
     /// Forwards to [`Mode::activation_policy`].
     fn activation_policy(&self) -> ActivationPolicy;
     /// Forwards to [`Mode::editable_tail`].
-    fn editable_tail(&self) -> Option<EditableTail>;
+    fn editable_tail(&self, buffer: lattice_core::BufferId) -> Option<EditableTail>;
 
     /// Type-erased lifecycle entry. Returns a future whose
     /// output is the typed Guard erased to `Box<dyn Any + Send>`.
@@ -992,8 +998,8 @@ impl<M: Mode> DynMode for M {
     fn activation_policy(&self) -> ActivationPolicy {
         <M as Mode>::activation_policy(self)
     }
-    fn editable_tail(&self) -> Option<EditableTail> {
-        <M as Mode>::editable_tail(self)
+    fn editable_tail(&self, buffer: lattice_core::BufferId) -> Option<EditableTail> {
+        <M as Mode>::editable_tail(self, buffer)
     }
 
     fn on_activate_dyn<'a>(
@@ -1031,7 +1037,10 @@ mod tests {
                 Box::pin(async { Ok(()) })
             }
         }
-        assert_eq!(<BareMode as Mode>::editable_tail(&BareMode), None);
+        assert_eq!(
+            <BareMode as Mode>::editable_tail(&BareMode, lattice_core::BufferId(1)),
+            None
+        );
     }
 
     /// AU‑3: a single-line prompt tail (`> ` marker ⇒ min byte 2) permits

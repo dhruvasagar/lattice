@@ -22473,8 +22473,9 @@ impl Editor {
     /// static mode declaration expressed relative to the buffer end, so it
     /// needs no seeding and stays valid as the owner appends content.
     fn active_editable_tail(&self) -> Option<lattice_mode::EditableTail> {
-        let major = self.active_modes.get(&self.document_buffer_id)?.major()?;
-        self.mode_registry.load().get(major)?.editable_tail()
+        let buffer = self.document_buffer_id;
+        let major = self.active_modes.get(&buffer)?.major()?;
+        self.mode_registry.load().get(major)?.editable_tail(buffer)
     }
 
     /// AU‑3: should this keystroke edit be rejected by the read-only gate?
@@ -53648,7 +53649,7 @@ mod tests {
             // Last buffer line is the editable prompt; everything above is
             // frozen. `first_editable_line: None` derives the boundary from
             // the line count, so the test needs no anchor seeding.
-            fn editable_tail(&self) -> Option<EditableTail> {
+            fn editable_tail(&self, _buffer: lattice_core::BufferId) -> Option<EditableTail> {
                 Some(EditableTail {
                     trailing_lines: 1,
                     first_line_min_byte: 0,

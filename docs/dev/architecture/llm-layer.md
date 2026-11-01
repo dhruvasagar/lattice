@@ -2,7 +2,7 @@
 
 > **Status: 📝 design, awaiting review.** Nothing here is implemented. Substrate
 > findings are verified against source; §11 names what only building can settle.
-> Slice sequencing will live in `docs/dev/operations/slice-plans/llm-layer.md`.
+> Slice sequencing: [`../operations/slice-plans/llm-layer.md`](../operations/slice-plans/llm-layer.md).
 >
 > **Siblings:** [`agent-integration.md`](agent-integration.md) (the `EditorAccess`
 > port, MCP and ACP adapters), [`agent-ui.md`](agent-ui.md) (the ACP transcript
@@ -339,7 +339,7 @@ command works).
 | Menu that stays open | `TransientItemKind::Flag` and `Argument` (with picker sources) re-seat the menu; `Action` closes | No new menu needed. Open: state is per-menu, projected into a command's args, so session-scope writes need an apply path |
 | Custom operators | `register_operator` + `OperatorSpec`. But chord composition (`register_operator_bindings_in`) is in `lattice-host`, and `surround` is bound from `editor_boot` | `lattice-ai` cannot reach it, so `SubsystemBoot` needs a generic way to bind an operator under a mode's layer |
 | Operators on read-only sources | `run_read_only_motion` allows `y` by id. Its comment says a `mutates` bit is "worth adding when a second non-mutating operator appears" | Ask is that operator: add `OperatorSpec::mutates`. Rewrite stays refused |
-| Highlighting without being that language | Help buffers seed `Lang::Markdown` per buffer (`seed_help_metadata_locals`) | The precedent for the chat major's binding |
+| Highlighting without being that language | `Editor::lang_for_major` falls back to the mode registry's language index, which is how a plugin major with no file path gets a grammar | The chat major declares markdown there |
 | Not blocking quit | `*messages*` and `*ai:opencode*` are synthetic-name Documents | Dedicated buffers follow them, not `ephemeral`, which also hides from `:ls` |
 | Option origin | `OptionOrigin`: `Default`, `GlobalConfig`, `BufferLocal`, `ModeContribution` | Needs `Profile` and `Project` variants |
 | Diff review | `review_diff`, `ProgrammaticDiffBus` | Direct reuse |

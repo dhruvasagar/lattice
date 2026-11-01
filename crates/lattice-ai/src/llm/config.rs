@@ -247,7 +247,7 @@ fn number(v: &toml::Value) -> Option<f64> {
     v.as_float().or_else(|| v.as_integer().map(|i| i as f64))
 }
 
-/// Resolve a provider's key. Runs `api_key_command` on a blocking thread, so
+/// Resolve a provider's key. Runs `api_key_command` as a child process, so
 /// call it from a task, never from a handler on the editor thread.
 ///
 /// A provider with no key source is allowed an empty key only if it is
@@ -276,30 +276,37 @@ pub async fn resolve_key(provider: &ProviderConfig) -> Result<ApiKey, String> {
 }
 
 async fn run_key_command(provider: &str, cmd: &str) -> Result<ApiKey, String> {
-    let cmd = cmd.to_string();
-    let job = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-    });
-    let output = match tokio::time::timeout(KEY_COMMAND_TIMEOUT, job).await {
+    run_key_command_within(provider, cmd, KEY_COMMAND_TIMEOUT).await
+}
+
+/// `kill_on_drop` is what makes the timeout real: when the timeout drops the
+/// pending `output()` future, the child is killed rather than left running.
+async fn run_key_command_within(
+    provider: &str,
+    cmd: &str,
+    timeout: Duration,
+) -> Result<ApiKey, String> {
+    let job = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = match tokio::time::timeout(timeout, job).await {
         Err(_) => {
             return Err(format!(
                 "api_key_command for `{provider}` did not finish within {}s",
-                KEY_COMMAND_TIMEOUT.as_secs()
+                timeout.as_secs().max(1)
             ));
         }
-        Ok(Err(_)) => return Err(format!("api_key_command for `{provider}` did not run")),
-        Ok(Ok(Err(e))) => {
+        Ok(Err(e)) => {
             return Err(format!(
                 "api_key_command for `{provider}` could not start ({})",
                 e.kind()
             ));
         }
-        Ok(Ok(Ok(o))) => o,
+        Ok(Ok(o)) => o,
     };
     if !output.status.success() {
         return Err(match output.status.code() {
@@ -451,5 +458,18 @@ mod tests {
         let err = resolve_key(&p).await.unwrap_err();
         assert!(err.contains("exit status 3"), "{err}");
         assert!(!err.contains("LEAKED"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_key_command_that_outlives_the_timeout_is_killed() {
+        let dir = std::env::temp_dir().join(format!("lattice-ll5-kill-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let cmd = format!("sleep 1; touch {}", dir.display());
+        let err = run_key_command_within("p", &cmd, Duration::from_millis(200))
+            .await
+            .unwrap_err();
+        assert!(err.contains("did not finish"), "{err}");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(!dir.exists(), "the child survived the timeout");
     }
 }

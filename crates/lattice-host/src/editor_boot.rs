@@ -2774,7 +2774,9 @@ impl Editor {
         // editable-tail read-only gate otherwise only covered the
         // `apply_edit_blocking` char path, not the operator path.
         editor.register_invocation_runner(
-            lattice_ai::acp::conversation_mode::AiConversationMode::mode_id(),
+            // Keyed by the protocol-neutral id, not the ACP mode type, so
+            // the llm chat gets the runner whether or not `acp` is built.
+            lattice_ai::conversation::transcript::editable_tail_runner(),
             Editor::run_editable_tail_invocation,
         );
         // PD.4: the same gap, one layer more general. `read-only-mode`

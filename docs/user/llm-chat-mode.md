@@ -40,6 +40,9 @@ second request. The prompt is **queued**: it shows in the transcript as
 sent it. The first reply is never split by a later question.
 
 `<C-c>` stops the reply in progress. A queued prompt, if any, is sent next.
+If a reply fails instead, the error is shown and the queued prompts wait: the next
+prompt you send resumes them in order. The failed question is not sent to the
+model again.
 
 ## Setting up a provider
 

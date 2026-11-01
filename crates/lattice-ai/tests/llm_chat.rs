@@ -339,3 +339,144 @@ async fn two_chats_do_not_cross() {
     assert_eq!(texts(&a)[0].1, "for a");
     assert_eq!(texts(&b)[0].1, "for b");
 }
+
+/// A failed reply holds the queue: the error shows, the queued prompts stay
+/// visible, nothing is sent on top of the failed turn, and the next explicit
+/// send resumes the queue in order without sending the failed turn as history.
+#[tokio::test]
+async fn a_failed_reply_holds_the_queue_until_the_next_send() {
+    let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = bodies.clone();
+    let addr = serve(move |req, mut s| {
+        let seen = seen.clone();
+        async move {
+            let n = {
+                let mut g = seen.lock().unwrap();
+                g.push(req);
+                g.len()
+            };
+            if n == 1 {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let body = r#"{"error":{"message":"overloaded"}}"#;
+                let raw = format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(raw.as_bytes()).await;
+            } else {
+                let _ = s.write_all(&sse(OPENAI_OK_BODY)).await;
+                let _ = s.shutdown().await;
+            }
+        }
+    })
+    .await;
+    let chats = chats_with(config_for(addr, ""));
+    let session = chats.create();
+    chats.submit(&session, "first".into());
+    chats.submit(&session, "second".into());
+    until("the failure", || {
+        !session.is_busy() && session.store.snapshot().error.is_some()
+    })
+    .await;
+    // Give a wrongly-sent follow-up time to show itself.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let snap = session.store.snapshot();
+    assert_eq!(snap.queued, vec!["second".to_string()], "queue is held");
+    assert!(snap.error.is_some(), "the error stays shown");
+    assert_eq!(texts(&session), vec![(Role::User, "first".to_string())]);
+    assert_eq!(bodies.lock().unwrap().len(), 1, "nothing sent on top");
+
+    // The next explicit send resumes the queue in order.
+    chats.submit(&session, "third".into());
+    until("both replies", || {
+        texts(&session).len() == 5 && !session.is_busy()
+    })
+    .await;
+    let t = texts(&session);
+    assert_eq!(t[1].1, "second");
+    assert_eq!(t[2].0, Role::Assistant);
+    assert_eq!(t[3].1, "third");
+    let sent = bodies.lock().unwrap().clone();
+    assert_eq!(sent.len(), 3);
+    assert!(
+        sent[1].contains("second") && !sent[1].contains("first"),
+        "the failed turn is not history: {}",
+        sent[1]
+    );
+}
+
+/// The queue and `busy` are decided together: prompts submitted from many
+/// threads while turns end are all eventually sent, none stranded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_submits_never_strand_a_prompt() {
+    let addr = serve_bytes(sse(OPENAI_OK_BODY)).await;
+    let chats = chats_with(config_for(addr, ""));
+    let session = chats.create();
+    let mut joins = Vec::new();
+    for i in 0..12 {
+        let (chats, session) = (chats.clone(), session.clone());
+        joins.push(tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(i * 7)).await;
+            chats.submit(&session, format!("p{i}"));
+        }));
+    }
+    for j in joins {
+        j.await.unwrap();
+    }
+    until("every prompt sent and answered", || {
+        let snap = session.store.snapshot();
+        !session.is_busy() && snap.queued.is_empty() && snap.turns.len() == 24
+    })
+    .await;
+    assert_eq!(session.store.snapshot().status, SessionStatus::Idle);
+}
+
+/// The key command runs once per chat, not once per turn.
+#[tokio::test]
+async fn the_key_command_runs_once_per_chat() {
+    let log = std::env::temp_dir().join(format!("lattice-ll5-keyruns-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let addr = serve_bytes(sse(OPENAI_OK_BODY)).await;
+    let chats = chats_with(config_for(
+        addr,
+        &format!(
+            "api_key_command = 'echo run >> {}; echo sk-test'",
+            log.display()
+        ),
+    ));
+    let session = chats.create();
+    chats.submit(&session, "one".into());
+    until("first reply", || {
+        !session.is_busy() && texts(&session).len() == 2
+    })
+    .await;
+    chats.submit(&session, "two".into());
+    until("second reply", || {
+        !session.is_busy() && texts(&session).len() == 4
+    })
+    .await;
+    let runs = std::fs::read_to_string(&log).unwrap().lines().count();
+    let _ = std::fs::remove_file(&log);
+    assert_eq!(runs, 1, "the key was fetched again");
+}
+
+/// Reactivating the mode after its guard dropped rebinds the same chat, and a
+/// chat whose buffer never activates does not accumulate.
+#[tokio::test]
+async fn rebinding_after_release_works_and_unbound_chats_are_bounded() {
+    let chats = chats_with(LlmConfig::default());
+    let a = chats.create();
+    let b = lattice_core::BufferId(5);
+    let (_, g1) = chats.bind(&a.name, b).unwrap();
+    chats.release(b, g1);
+    assert!(chats.for_buffer(b).is_none());
+    let (again, g2) = chats.bind(&a.name, b).expect("reactivation rebinds");
+    assert!(Arc::ptr_eq(&again, &a));
+    assert!(chats.for_buffer(b).is_some());
+    chats.release(b, g2);
+
+    for _ in 0..100 {
+        chats.create();
+    }
+    assert!(chats.unbound_count() <= 32, "{}", chats.unbound_count());
+}

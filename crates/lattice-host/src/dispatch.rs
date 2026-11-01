@@ -42959,6 +42959,12 @@ impl Editor {
         // BufferId is still mapped.
         self.lsp_close_buffer(to_remove);
         self.buffers.remove(to_remove);
+        // Drop the buffer's mode state and the guards its modes stashed, so
+        // a mode's cleanup (an in-flight request, a subscription) runs on
+        // `:bd` / KillBuffer, not only on an explicit deactivate.
+        self.active_modes.remove(&to_remove);
+        self.mode_guards
+            .purge_buffer(lattice_protocol::ids::BufferId::new(to_remove.0 as u64));
         // No longer a view anything can be buried from. Where a bury
         // returns TO needs no clean-up: it is read from the pane trails,
         // which the purge below drops this buffer from.

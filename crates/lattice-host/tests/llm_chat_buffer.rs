@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use lattice_ai::llm::chat::LlmChatsHandle;
 use lattice_ai::llm::config::LlmConfig;
 use lattice_core::Document as CoreDocument;
+use lattice_grammar::{CommandInvocation, Target, args::Args, range::Range};
 use lattice_host::dispatch::DispatchOutcome;
 use lattice_host::editor::Editor;
 use lattice_protocol::edit::Edit;
@@ -251,14 +252,9 @@ async fn two_chats_sharing_one_mode_have_their_own_editable_tails() {
     );
 }
 
-/// Closing the buffer cancels the request in flight and forgets the chat.
-///
-/// KNOWN GAP: `Editor::forget_buffer` (the `:bd` / `KillBuffer` teardown) never
-/// drops the buffer's `active_modes` entry, so no mode guard is dropped on
-/// close and `LlmChatGuard::drop` (which releases the chat) never runs. That is
-/// a generic host change outside this slice's allowed set; ignored until the
-/// controller decides. Un-ignore once close deactivates modes.
-#[ignore = "host does not drop mode guards when a buffer is deleted"]
+/// Closing the buffer (`:bd`) drops its mode guards, which releases the chat and
+/// cancels the request in flight: the turn ends (it was blocked on a server that
+/// never answers, so only a cancellation can end it).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn closing_the_chat_releases_it() {
     let addr = serve(Duration::from_secs(30)); // never answers in time
@@ -277,5 +273,173 @@ async fn closing_the_chat_releases_it() {
             && !session.is_busy())
         .await,
         "closing the buffer left the chat bound or busy"
+    );
+}
+
+/// Seed a finished exchange and return the chat's buffer, session and prompt line.
+async fn chat_with_history(
+    editor: &mut Editor,
+) -> (
+    lattice_core::BufferId,
+    std::sync::Arc<lattice_ai::llm::chat::ChatSession>,
+    u32,
+) {
+    let id = open_chat(editor);
+    assert!(settle(editor, |e| text_of(e, id) == "> ").await);
+    let session = chats(editor).for_buffer(id).unwrap();
+    session.store.mutate(&session.key, |c| {
+        c.push_user_text("q");
+        c.extend_text(lattice_ai::conversation::Role::Assistant, "a");
+    });
+    assert!(settle_woken(editor, |e| text_of(e, id).contains("mock-model:\na")).await);
+    let prompt_line = text_of(editor, id).lines().count() as u32 - 1;
+    (id, session, prompt_line)
+}
+
+/// The operators as the grammar runs them (`dispatch_invocation`), not the
+/// `apply_edit_blocking` char path, which skips the invocation runner.
+fn run_x(editor: &mut Editor, at: Position) {
+    editor.modal = lattice_grammar::ModalState::Normal;
+    editor.cursor = at;
+    let x = CommandInvocation::of(editor.builtins.delete.0)
+        .with_target(Target::Motion(editor.builtins.char_right, Args::None));
+    editor.dispatch_invocation(x, &mut DispatchOutcome::default());
+}
+
+fn run_dd(editor: &mut Editor, at: Position) {
+    editor.modal = lattice_grammar::ModalState::Normal;
+    editor.cursor = at;
+    let dd = CommandInvocation::of(editor.builtins.delete.0)
+        .with_target(Target::Range(Range::CurrentLine));
+    editor.dispatch_invocation(dd, &mut DispatchOutcome::default());
+}
+
+/// `p` is an Action: it takes the keymap path, which routes the invocation
+/// through the mode's runner like any other.
+fn run_p(editor: &mut Editor, at: Position) {
+    editor.modal = lattice_grammar::ModalState::Normal;
+    editor.cursor = at;
+    let mut partial: Vec<KeyChord> = Vec::new();
+    editor.dispatch_chord(chord("p"), &mut partial);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn x_dd_and_p_are_refused_in_history_and_allowed_in_the_prompt() {
+    let addr = serve(Duration::ZERO);
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    chats(&editor).set_config(config_for(addr));
+    let (id, _session, prompt_line) = chat_with_history(&mut editor).await;
+    editor
+        .apply_edit_blocking(Edit::insert(Position::new(prompt_line, 2), "abc"))
+        .expect("the prompt is editable");
+    let before = text_of(&editor, id);
+
+    // History: each operator is refused and the buffer is untouched.
+    run_x(&mut editor, Position::new(1, 0));
+    assert_eq!(text_of(&editor, id), before, "x edited history");
+    run_dd(&mut editor, Position::new(1, 0));
+    assert_eq!(text_of(&editor, id), before, "dd edited history");
+
+    // The prompt: x edits and fills the unnamed register ...
+    run_x(&mut editor, Position::new(prompt_line, 2));
+    let after_x = text_of(&editor, id);
+    assert!(after_x.ends_with("> bc"), "x in the prompt: {after_x:?}");
+
+    // ... which `p` in history must not paste, and in the prompt may.
+    run_p(&mut editor, Position::new(1, 0));
+    assert_eq!(text_of(&editor, id), after_x, "p edited history");
+    run_p(&mut editor, Position::new(prompt_line, 2));
+    let after_p = text_of(&editor, id);
+    assert!(
+        after_p.starts_with(before.split("> abc").next().unwrap()) && after_p != after_x,
+        "p in the prompt did nothing: {after_p:?}"
+    );
+
+    // dd in the prompt line is allowed too.
+    run_dd(&mut editor, Position::new(prompt_line, 2));
+    assert_ne!(
+        text_of(&editor, id),
+        after_p,
+        "dd in the prompt did nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_caret_stays_in_the_prompt_while_text_arrives_above() {
+    let addr = serve(Duration::ZERO);
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    chats(&editor).set_config(config_for(addr));
+    let (id, session, prompt_line) = chat_with_history(&mut editor).await;
+    // Type "abc" into the prompt the way a user does, so the document's own
+    // caret is there too.
+    editor.modal = lattice_grammar::ModalState::Insert;
+    editor.cursor = Position::new(prompt_line, 2);
+    let mut partial: Vec<KeyChord> = Vec::new();
+    for key in ["a", "b", "c"] {
+        editor.dispatch_chord(chord(key), &mut partial);
+    }
+    assert!(text_of(&editor, id).ends_with("> abc"));
+
+    // A reply grows the transcript above the prompt, with no key dispatched.
+    // Only the reply grows: a new user turn would be a submission, and the
+    // drain clears the prompt for those.
+    session.store.mutate(&session.key, |c| {
+        c.extend_text(
+            lattice_ai::conversation::Role::Assistant,
+            "\nstreamed in\nmore",
+        );
+    });
+    assert!(settle_woken(&mut editor, |e| text_of(e, id).contains("streamed in")).await);
+
+    let text = text_of(&editor, id);
+    assert!(
+        text.lines().count() as u32 - 1 > prompt_line,
+        "the prompt moved"
+    );
+    assert!(text.ends_with("> abc"), "the typed text survived: {text:?}");
+
+    // The next key lands in the prompt, not in the history the caret was
+    // above when the text arrived.
+    // `dispatch_fused` is the production entry, and the one that adopts the
+    // document's caret (an owner write moved it) before the key runs.
+    editor.dispatch_fused(
+        lattice_host::action::Action::Insert("d".to_string()),
+        lattice_core::BufferKind::Document,
+        false,
+        false,
+    );
+    let text = text_of(&editor, id);
+    assert!(
+        text.ends_with("> abcd"),
+        "the caret left the prompt: {text:?}"
+    );
+    assert!(text.contains("streamed in\nmore\n"), "{text:?}");
+}
+
+/// An open chat, even one mid-request with an unsent prompt typed, does not hold
+/// up `:qa`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_chat_buffer_does_not_block_quit_all() {
+    let addr = serve(Duration::from_secs(30));
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    let handle = chats(&editor);
+    handle.set_config(config_for(addr));
+    let id = open_chat(&mut editor);
+    assert!(settle(&mut editor, |e| text_of(e, id) == "> ").await);
+    let session = handle.for_buffer(id).unwrap();
+    handle.submit(&session, "slow".into());
+    editor
+        .apply_edit_blocking(Edit::insert(
+            Position::new(text_of(&editor, id).lines().count() as u32 - 1, 2),
+            "unsent",
+        ))
+        .expect("the prompt is editable");
+
+    // What `:qa` runs (`Effect::QuitEditor` -> `do_quit`), dirty guard included.
+    editor.do_quit(false, lattice_grammar::QuitScope::All);
+    assert!(
+        editor.should_quit,
+        "`:qa` was blocked by the chat buffer: {:?}",
+        editor.last_message.as_ref().map(|m| &m.text)
     );
 }

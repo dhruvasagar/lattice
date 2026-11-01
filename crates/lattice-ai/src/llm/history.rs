@@ -16,7 +16,8 @@ use crate::conversation::{Block, Conversation, Role};
 /// its first byte) is skipped, since providers reject an empty assistant
 /// message. Tool calls are not sent until the tool loop exists.
 ///
-/// Queued prompts and the shown error are not history.
+/// A user turn left without a reply by the next user turn is dropped. Queued
+/// prompts and the shown error are not history.
 pub fn messages(conv: &Conversation) -> Vec<Message> {
     let mut out = Vec::new();
     for (t, turn) in conv.turns.iter().enumerate() {
@@ -32,6 +33,12 @@ pub fn messages(conv: &Conversation) -> Vec<Message> {
                     .collect::<Vec<_>>()
                     .join("\n");
                 if !text.is_empty() {
+                    // A user turn whose reply never came (it failed, or was
+                    // interrupted first) is superseded: two user messages in a
+                    // row are rejected by providers.
+                    if matches!(out.last(), Some(Message::User(_))) {
+                        out.pop();
+                    }
                     out.push(Message::User(text));
                 }
             }

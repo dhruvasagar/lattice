@@ -266,30 +266,46 @@ fn an_expanded_block_keeps_its_identity_as_text_streams_above_it() {
     assert_eq!(short[0].identity, tool_fold_identity("t1"));
 }
 
-#[test]
-fn the_fold_options_are_read_from_config_and_a_bad_value_warns() {
-    let cfg = |s: &str| LlmConfig::from_table(&s.parse::<toml::Table>().unwrap());
-    let c = cfg("[llm.fold]\nreasoning = \"open\"\ntools = \"hidden\"\n");
-    assert_eq!(c.fold_reasoning, FoldDisplay::Open);
-    assert_eq!(c.fold_tools, FoldDisplay::Hidden);
-    assert!(c.projection_options().markdown);
-    let c = cfg("[llm.fold]\ntools = \"folded\"\n");
-    assert_eq!(c.fold_tools, FoldDisplay::Closed, "default kept");
-    assert!(c.warnings.iter().any(|w| w.contains("llm.fold.tools")));
-    let c = cfg("[llm.fold]\ntools = 3\ntool = \"open\"\n");
+#[tokio::test]
+async fn the_fold_options_are_read_from_config_and_a_bad_value_warns() {
+    let chats = |s: &str| {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let handle = tokio::runtime::Handle::current();
+        let requests: lattice_ai::llm::RequestRegistryHandle = Arc::new(
+            lattice_ai::llm::RequestRegistry::new(handle.clone(), Some(bus.clone()), None),
+        );
+        let cfg = LlmConfig::from_table(&s.parse::<toml::Table>().unwrap());
+        let warnings = cfg.warnings.clone();
+        (
+            lattice_ai::llm::chat::LlmChats::new(handle, requests, bus, cfg),
+            warnings,
+        )
+    };
+    let b = BufferId(1);
+    let (c, w) = chats("[llm.fold]\nreasoning = \"open\"\ntools = \"hidden\"\n");
+    let o = c.projection_options_for(b);
     assert_eq!(
-        c.fold_tools,
+        (o.reasoning, o.tools),
+        (FoldDisplay::Open, FoldDisplay::Hidden)
+    );
+    assert!(o.markdown && w.is_empty());
+    let (c, w) = chats("[llm.fold]\ntools = \"folded\"\n");
+    assert_eq!(
+        c.projection_options_for(b).tools,
         FoldDisplay::Closed,
-        "non-string keeps default"
+        "default kept"
     );
-    assert!(c.warnings.iter().any(|w| w.contains("llm.fold.tools")));
+    assert!(w.iter().any(|w| w.contains("llm.fold.tools")), "{w:?}");
+    let (c, w) = chats("[llm.fold]\ntool = \"open\"\n");
+    assert_eq!(c.projection_options_for(b).tools, FoldDisplay::Closed);
     assert!(
-        c.warnings.iter().any(|w| w.contains("llm.fold.tool")),
-        "unknown key"
+        w.iter().any(|w| w.contains("llm.fold.tool")),
+        "unknown key: {w:?}"
     );
-    let c = cfg("");
+    let (c, _) = chats("");
+    let o = c.projection_options_for(b);
     assert_eq!(
-        (c.fold_reasoning, c.fold_tools),
+        (o.reasoning, o.tools),
         (FoldDisplay::Closed, FoldDisplay::Closed)
     );
 }

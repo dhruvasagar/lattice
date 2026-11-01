@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: ✅ LL.1–LL.6 built (first usable version); 📝 LL.7–LL.24 planned.**
+**Status: ✅ LL.1–LL.7 built (first usable version); 📝 LL.8–LL.24 planned.**
 
 **Goal:** direct model access from any buffer, with a REPL chat, per-session overrides,
 reviewed tools, and MCP behind one tool interface.
@@ -219,14 +219,14 @@ containing `#` headings (design §11).
 **Landed:** `ProjectionOptions` (markdown, per-type `FoldDisplay`) is a parameter of the shared
 projection and fold sources; `:opencode-acp` passes the default and is unchanged. The chat declares
 `target_language() = "markdown"` (grammar only: `markdown-mode` is not activated, so its `<CR>`
-link chord stays out). Fold values are read from `[llm.fold]` in `lattice.toml` until LL.7.
+link chord stays out). Fold values are the `llm.fold.*` options from LL.7.
 `benches/llm_projection.rs` covers projection of a growing reply (about 68 µs for a 2000-line
 reply). No existing keystroke-ratchet bench was easy to extend with a streaming producer, so the
 ratchet comparison is not done here; the projection runs on the drain task, not the UI thread.
 
 ## Settings
 
-### LL.7 — Layers, profiles and trust 📝
+### LL.7 — Layers, profiles and trust ✅
 
 **Files:** `crates/lattice-config/src/` (`OptionOrigin::{Profile, Project}`), `src/llm/settings.rs`,
 `src/llm/config.rs`, `docs/user/llm.md`.
@@ -243,6 +243,20 @@ Session values are typed options, so `:setlocal llm.model=…` and `:set llm.mod
 project config setting `base_url`, key commands, wider tools, trust and MCP servers, each refused
 with a message; switching profile clears overrides and echoes them; unset env var names the variable;
 a failing `api_key_command` reports without its output; unsupported parameter omitted with a notice.
+
+**Landed:** `OptionOrigin::{Profile, Project}`; the `llm.*` options (`options.rs`, group `llm`);
+`settings.rs` (`resolve`, `Layers`, the trust table, one `validate` shared by options, profiles and
+project files). Host changes, all generic: `BufferOptionsResolved` (published after every per-buffer
+resolution, the only way off-thread readers see `:setlocal`), `llm.providers` / `llm.profiles` as
+structural config prefixes, and `:setlocal name&` now finds an option by name instead of parsing a
+dummy value (a validated option could not be cleared). The loader refuses `[llm]` in
+`.lattice/config.toml`: project LLM config is `.lattice/llm.toml`, read per request off-thread.
+`:llm [profile]` and `:llm-profile` (the one switch: `:setlocal` cannot clear siblings). Fold sources
+read a `ProjectionFrame` the drain publishes with the text, so text and folds share one snapshot.
+`default_model` is gone, replaced by `model`. Unsupported parameters: a short per-provider list in
+`config.rs` (`omitted_params`), reported once per chat in `:messages`; no 400-retry, no capability
+table. Open: the notice is a log line, not a transcript row; a buffer's mirrored overrides are not
+dropped when a non-chat buffer closes (sparse, a few bytes).
 
 ### LL.8 — Overriding on the go 📝
 

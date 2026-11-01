@@ -177,7 +177,7 @@ impl Mode for LlmChatMode {
                 runtime,
                 projection: ProjectionSource::new({
                     let chats = self.chats.clone();
-                    move || chats.projection_options()
+                    move || chats.projection_options_for(buffer_id)
                 }),
             })
             .await;
@@ -306,7 +306,7 @@ impl Headerline for ChatHeaderline {
     }
 
     fn render(&self) -> Option<HeaderlineRow> {
-        let text = Self::text(&self.session.store, self.session.model());
+        let text = Self::text(&self.session.store, self.session.model().as_deref());
         let cells: Arc<[Cell]> = text
             .chars()
             .map(|c| Cell::new(c as u32, 0, 0, 0))

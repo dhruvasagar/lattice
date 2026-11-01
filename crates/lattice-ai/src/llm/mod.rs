@@ -16,8 +16,10 @@ pub mod config;
 pub mod history;
 pub mod install;
 pub mod modes;
+pub mod options;
 pub mod provider;
 pub mod request;
+pub mod settings;
 pub mod transport;
 
 pub use request::{

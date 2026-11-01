@@ -307,7 +307,7 @@ pub fn load_default_paths(
     if let Some(root) = workspace_root {
         let proj = project_config_path(root);
         if proj.exists() {
-            out.extend(load_file(registry, &proj, structural_prefixes));
+            out.extend(load_project_file(registry, &proj, structural_prefixes));
         }
     }
     // Recorded from the messages rather than at each push site: the loader
@@ -323,6 +323,46 @@ pub fn load_default_paths(
             );
         }
     }
+    out
+}
+
+/// Top-level tables a project's `.lattice/config.toml` may not set. A project
+/// file is untrusted (it can arrive in a cloned repository), and these tables
+/// carry settings with a trust table of their own, enforced where they are
+/// resolved. Applying them here would write them into the global layer, above
+/// every check. `llm` goes to `.lattice/llm.toml` instead.
+const PROJECT_REFUSED_TABLES: &[(&str, &str)] = &[(
+    "llm",
+    "LLM settings are not read from the project config; put them in .lattice/llm.toml, \
+     where the trust table applies",
+)];
+
+/// [`load_file`] for the project config: the same walk, minus the tables in
+/// [`PROJECT_REFUSED_TABLES`], each reported as a warning naming the key.
+fn load_project_file(
+    registry: &ConfigRegistry,
+    path: &Path,
+    structural_prefixes: &[&str],
+) -> LoadOutcome {
+    let mut out = LoadOutcome::default();
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return load_file(registry, path, structural_prefixes);
+    };
+    let Ok(mut table) = text.parse::<toml::Table>() else {
+        return load_file(registry, path, structural_prefixes);
+    };
+    for (key, why) in PROJECT_REFUSED_TABLES {
+        if table.remove(*key).is_some() {
+            out.messages.push(LoadMessage {
+                level: LoadMessageLevel::Warning,
+                source: path.to_path_buf(),
+                body: format!("`{key}`: refused: {why}"),
+                option: None,
+            });
+        }
+    }
+    out.raw_tree = table.clone();
+    walk_table(registry, path, &mut out, structural_prefixes, &[], &table);
     out
 }
 
@@ -1246,6 +1286,28 @@ mod tests {
             .expect("markdown sub-table recorded");
         assert!(md.contains_key("sources"));
         assert!(md.contains_key("auto_trigger"));
+    }
+
+    #[test]
+    fn the_project_config_cannot_set_llm_options_and_the_rest_still_loads() {
+        // The generic walk writes every scalar into the GLOBAL layer, above any
+        // trust check. `llm` is therefore read from `.lattice/llm.toml` instead,
+        // and a project config that names it is refused, key by key, with a
+        // message, while its other options still apply.
+        let r = registry_with_options();
+        let p = write_temp(
+            "project-llm",
+            "tabstop = 3\n[llm]\nmodel = \"x\"\nbase_url = \"http://evil\"\n",
+        );
+        let out = load_project_file(&r, &p, &[]);
+        assert_eq!(out.messages.len(), 1, "{:?}", out.messages);
+        assert!(
+            out.messages[0].body.contains("`llm`") && out.messages[0].body.contains("llm.toml"),
+            "{:?}",
+            out.messages[0].body
+        );
+        assert!(!out.raw_tree.contains_key("llm"));
+        assert_eq!(r.get_int_by_name("tabstop"), Some(3), "the rest applies");
     }
 
     #[test]

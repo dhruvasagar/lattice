@@ -180,7 +180,7 @@ async fn a_reply_reaches_the_buffer_without_another_key() {
     // The transcript labels the model, the question sits above, the prompt is
     // empty and last.
     assert!(
-        text.starts_with("you:\nsay hi\n\nmock-model:\nHello from the mock\n"),
+        text.starts_with("you:\n\nsay hi\n\nmock-model:\n\nHello from the mock\n"),
         "{text:?}"
     );
     assert!(text.ends_with("\n> "), "{text:?}");
@@ -201,7 +201,7 @@ async fn history_is_read_only_and_the_prompt_is_not() {
         c.extend_text(lattice_ai::conversation::Role::Assistant, "a");
     });
     assert!(
-        settle_woken(&mut editor, |e| text_of(e, id).contains("mock-model:\na")).await,
+        settle_woken(&mut editor, |e| text_of(e, id).contains("mock-model:\n\na")).await,
         "{:?}",
         text_of(&editor, id)
     );
@@ -291,7 +291,7 @@ async fn chat_with_history(
         c.push_user_text("q");
         c.extend_text(lattice_ai::conversation::Role::Assistant, "a");
     });
-    assert!(settle_woken(editor, |e| text_of(e, id).contains("mock-model:\na")).await);
+    assert!(settle_woken(editor, |e| text_of(e, id).contains("mock-model:\n\na")).await);
     let prompt_line = text_of(editor, id).lines().count() as u32 - 1;
     (id, session, prompt_line)
 }

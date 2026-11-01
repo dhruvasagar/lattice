@@ -23,10 +23,12 @@ use lattice_mode::{
     VirtualRowRegistrar,
 };
 
-use crate::conversation::tool_fold::{ReasoningFoldSource, ToolCallFoldSource};
+use crate::conversation::tool_fold::{
+    FrameCell, ProjectionFrame, ReasoningFoldSource, ToolCallFoldSource,
+};
 use crate::conversation::{
     Conversation, ConversationProjected, ConversationStore, ConversationUpdated, ProjectionSource,
-    render_conversation_with,
+    project_conversation_with,
 };
 
 /// Provider id of the conversation headerline. A fixed tag so the guard can
@@ -403,7 +405,17 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
     // the *conversation zone* only; the buffer is `{conversation}{marker}`
     // with the editable prompt as the trailing line.
     let seed = store.snapshot();
-    let mut last = render_conversation_with(&seed, &projection.get());
+    // One options read and one projection feed BOTH the text and the folds: the
+    // frame is what the fold sources read. Reading the options (or the store)
+    // again from a source would let text and folds come from different moments.
+    let frames = FrameCell::default();
+    let seed_options = projection.get();
+    let (seed_text, seed_folds) = project_conversation_with(&seed, &seed_options);
+    frames.publish(ProjectionFrame {
+        options: seed_options,
+        folds: seed_folds,
+    });
+    let mut last = seed_text;
     let mut last_submissions = seed.submission_count();
     full_replace(&handle, &format!("{last}{PROMPT_MARKER}")).await;
 
@@ -428,11 +440,11 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
         .map(|outer| {
             let svc = (*outer).clone();
             let tool: Arc<dyn lattice_core::FoldSource> = Arc::new(
-                ToolCallFoldSource::new(store.clone(), buffer_id).with_options(projection.clone()),
+                ToolCallFoldSource::new(store.clone(), buffer_id).with_frame(frames.clone()),
             );
             let tool_id = svc.add_source(tool, buffer_id);
             let reasoning: Arc<dyn lattice_core::FoldSource> = Arc::new(
-                ReasoningFoldSource::new(store.clone(), buffer_id).with_options(projection.clone()),
+                ReasoningFoldSource::new(store.clone(), buffer_id).with_frame(frames.clone()),
             );
             let reasoning_id = svc.add_source(reasoning, buffer_id);
             vec![(svc.clone(), tool_id), (svc, reasoning_id)]
@@ -463,7 +475,12 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
                 continue;
             }
             let snap: Conversation = store.snapshot();
-            let new = render_conversation_with(&snap, &projection.get());
+            let options = projection.get();
+            let (new, folds) = project_conversation_with(&snap, &options);
+            // Published BEFORE the edit: the recompute the edit triggers then
+            // reads folds for this very text. After it, that recompute could
+            // run against the previous frame.
+            frames.publish(ProjectionFrame { options, folds });
             let submissions = snap.submission_count();
             // Keep the editable-region anchor on the transcript-end line: a
             // re-projection may grow the transcript above the prompt (streaming)

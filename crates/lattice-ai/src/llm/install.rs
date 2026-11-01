@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use lattice_mode::SubsystemBoot;
 
-use super::chat::{LlmChats, LlmChatsHandle, spawn_turn_listener};
+use super::chat::{LlmChats, LlmChatsHandle, spawn_options_listener, spawn_turn_listener};
 use super::config::LlmConfig;
 use super::modes::chat::{LlmChatMode, register_actions};
 use super::request::{RequestRegistry, RequestRegistryHandle};
@@ -34,7 +34,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         boot.event_bus().clone(),
         config,
     ));
+    // The global registry holds `:set llm.*` and the config file's scalar
+    // settings; the bus carries the buffer-local layer (`:setlocal`) from the
+    // editor thread to the requests that run off it.
+    if let Some(registry) = boot.service::<Arc<lattice_config::ConfigRegistry>>() {
+        chats.set_registry((*registry).clone());
+    }
     spawn_turn_listener(chats.clone(), boot.event_bus());
+    spawn_options_listener(chats.clone(), boot.event_bus());
     boot.register_service::<LlmChatsHandle>(chats.clone());
 
     boot.modes_mut()

@@ -334,6 +334,7 @@ title = "AI agent surfaces"
 description = "The conversation transcript, permission popups, and agent process logs."
 docs = [
   "ai-conversation-mode",
+  "llm",
   "llm-chat-mode",
   "ai-permission-mode",
   "ai-log-mode",

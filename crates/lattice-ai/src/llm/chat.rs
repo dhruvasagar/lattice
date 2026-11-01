@@ -28,47 +28,35 @@
 //! `submit` and in `end_turn`, so a send landing between a turn ending and the
 //! next being chosen cannot strand a prompt.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use lattice_agent::SessionKey;
+use lattice_config::ConfigRegistry;
 use lattice_core::BufferId;
 use tokio::runtime::Handle;
 
 use super::ApiKey;
-use super::config::{ChosenModel, LlmConfig, ProviderConfig, resolve_key};
+use super::config::{LlmConfig, ProviderConfig, omitted_params, resolve_key};
 use super::history;
+use super::settings::{
+    Layers, ProjectLayer, RawSet, RequestOverrides, Resolved, SettingKey, SettingsError, Trust,
+    global_set, resolve, session_set, system_is_path,
+};
 use super::{
-    LlmRequest, Params, Provider, RequestId, RequestRegistryHandle, RequestState, RequestTarget,
+    LlmRequest, Message, Params, RequestId, RequestRegistryHandle, RequestState, RequestTarget,
     Sink, SinkFlow, StopReason, StreamEvent,
 };
 use crate::conversation::{
-    ConversationStore, Cost, OpaqueReasoning, Role, SessionStatus, UsageSnapshot,
+    ConversationStore, Cost, FoldDisplay, OpaqueReasoning, ProjectionOptions, Role, SessionStatus,
+    UsageSnapshot,
 };
 
 /// Provider tag of a chat's [`SessionKey`].
 pub const SESSION_PROVIDER: &str = "llm";
 
 pub type LlmChatsHandle = Arc<LlmChats>;
-
-/// What a chat needs to send a request.
-#[derive(Clone)]
-pub struct Settings {
-    provider_config: ProviderConfig,
-    provider: Arc<dyn Provider>,
-    pub model: String,
-}
-
-impl Settings {
-    fn new(chosen: ChosenModel) -> Self {
-        Self {
-            provider: chosen.provider.build(),
-            provider_config: chosen.provider,
-            model: chosen.model,
-        }
-    }
-}
 
 #[derive(Default)]
 struct TurnState {
@@ -81,19 +69,36 @@ pub struct ChatSession {
     pub name: String,
     pub key: SessionKey,
     pub store: ConversationStore,
-    /// `Err` carries the configuration problem, shown in the buffer on send.
-    settings: Result<Settings, String>,
+    /// The session settings copied when the chat was created: the requesting
+    /// buffer's overrides, or just a profile. Nothing stays linked to the
+    /// source. The chat buffer's own `:setlocal` values sit above these.
+    seed: Mutex<RawSet>,
+    /// The model label shown in the headerline: what the next request would use.
+    label: Mutex<Option<String>>,
     turn: Mutex<TurnState>,
-    /// The resolved key, fetched once per chat so a password manager prompts
-    /// once, not once per turn.
-    api_key: Mutex<Option<ApiKey>>,
+    /// The resolved key and the provider it belongs to, fetched once per
+    /// provider so a password manager prompts once, not once per turn.
+    api_key: Mutex<Option<(String, ApiKey)>>,
+    /// Refusals and omissions already reported for this chat, so a project's
+    /// bad key is named once, not on every turn.
+    warned: Mutex<HashSet<String>>,
     /// Set when the buffer closes: no queued prompt is sent after it.
     closed: AtomicBool,
 }
 
 impl ChatSession {
-    pub fn model(&self) -> Option<&str> {
-        self.settings.as_ref().ok().map(|s| s.model.as_str())
+    /// The model the next request would use, for the headerline.
+    pub fn model(&self) -> Option<String> {
+        self.label.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set_label(&self, label: Option<String>) {
+        *self.label.lock().unwrap_or_else(|e| e.into_inner()) = label;
+    }
+
+    /// The settings this chat was created with.
+    pub fn seed(&self) -> RawSet {
+        self.seed.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn turn(&self) -> MutexGuard<'_, TurnState> {
@@ -103,6 +108,14 @@ impl ChatSession {
     /// True while a request is in flight or being prepared.
     pub fn is_busy(&self) -> bool {
         self.turn().busy
+    }
+
+    /// True the first time `what` is reported for this chat.
+    fn first_report(&self, what: String) -> bool {
+        self.warned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(what)
     }
 }
 
@@ -133,6 +146,16 @@ pub struct LlmChats {
     requests: RequestRegistryHandle,
     bus: Arc<lattice_runtime::EventBus>,
     config: RwLock<LlmConfig>,
+    /// The global registry, where `:set llm.*` and the config file's scalar
+    /// settings land. Absent in tests that run without a host.
+    registry: RwLock<Option<Arc<ConfigRegistry>>>,
+    /// Buffer-local `llm.*` values per buffer, mirrored from the host by
+    /// [`on_buffer_options`](Self::on_buffer_options). Looked up per call: this
+    /// map is replaced entry by entry, so a clone of one entry would go stale.
+    sessions: RwLock<HashMap<BufferId, RawSet>>,
+    /// Where `.lattice/llm.toml` is looked for. `None` finds the project root
+    /// from the working directory when a request starts.
+    project_root: RwLock<Option<std::path::PathBuf>>,
     next_chat: AtomicU32,
     next_bind: AtomicU64,
     inner: Mutex<Registry>,
@@ -150,25 +173,184 @@ impl LlmChats {
             requests,
             bus,
             config: RwLock::new(config),
+            registry: RwLock::new(None),
+            sessions: RwLock::new(HashMap::new()),
+            project_root: RwLock::new(None),
             next_chat: AtomicU32::new(1),
             next_bind: AtomicU64::new(1),
             inner: Mutex::new(Registry::default()),
         }
     }
 
-    /// Replace the configuration new chats are created from. Chats already open
-    /// keep the settings they were created with.
+    /// Replace the configuration new chats are created from. A chat already open
+    /// resolves against it on its next request, like any other layer.
     pub fn set_config(&self, config: LlmConfig) {
         *self.config.write().unwrap_or_else(|e| e.into_inner()) = config;
     }
 
-    /// How chat transcripts are projected right now. Read per projection, so a
-    /// changed fold setting applies to the next one.
-    pub fn projection_options(&self) -> crate::conversation::ProjectionOptions {
+    /// Give chats the global registry, so `:set llm.model=x` applies live.
+    pub fn set_registry(&self, registry: Arc<ConfigRegistry>) {
+        *self.registry.write().unwrap_or_else(|e| e.into_inner()) = Some(registry);
+    }
+
+    /// Look for `.lattice/llm.toml` under `root` instead of the project root
+    /// found from the working directory.
+    pub fn set_project_root(&self, root: std::path::PathBuf) {
+        *self.project_root.write().unwrap_or_else(|e| e.into_inner()) = Some(root);
+    }
+
+    /// The names of the configured profiles.
+    pub fn profile_names(&self) -> Vec<String> {
         self.config
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .projection_options()
+            .profile_names()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn global_layer(&self) -> RawSet {
+        let mut set = self
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .global
+            .clone();
+        if let Some(reg) = self
+            .registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            set.extend(global_set(reg));
+        }
+        set
+    }
+
+    fn default_provider(&self) -> Option<String> {
+        let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
+        reg.as_ref()
+            .and_then(|r| r.get_typed::<super::options::LlmDefaultProvider>())
+            .map(|v| (*v).clone())
+            .filter(|v| !v.trim().is_empty())
+    }
+
+    /// Everything but the project layer (which is a file, read off-thread).
+    fn layers_for(&self, buffer: BufferId, session: RawSet) -> Layers {
+        let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
+        Layers {
+            global: self.global_layer(),
+            profiles: cfg.profiles.clone(),
+            default_profile: cfg.default_profile.clone(),
+            project: None,
+            sessions: [(buffer, session)].into_iter().collect(),
+        }
+    }
+
+    /// A buffer's session overrides: the chat's creation-time seed, if the
+    /// buffer is a chat, under the live `:setlocal` values.
+    pub fn session_overrides(&self, buffer: BufferId) -> RawSet {
+        let chat = self.for_buffer(buffer);
+        self.overrides_of(chat.as_deref(), buffer)
+    }
+
+    /// [`session_overrides`](Self::session_overrides) for a chat already in hand,
+    /// which need not be bound to a buffer yet (a test, a chat awaiting its
+    /// buffer's activation).
+    fn overrides_of(&self, chat: Option<&ChatSession>, buffer: BufferId) -> RawSet {
+        let mut set = chat.map(ChatSession::seed).unwrap_or_default();
+        if let Some(live) = self
+            .sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&buffer)
+        {
+            set.extend(live.iter().map(|(k, v)| (*k, v.clone())));
+        }
+        set
+    }
+
+    /// Take a buffer's re-resolved options (the bus event the host publishes).
+    /// Returns true when its session values changed. An open chat is then
+    /// re-projected, so a fold option applies without a keypress: the update the
+    /// drain consumes is the same one a streamed chunk publishes.
+    pub fn on_buffer_options(
+        &self,
+        buffer: BufferId,
+        options: &lattice_config::ResolvedOptions,
+    ) -> bool {
+        let new = session_set(options);
+        let changed = {
+            let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+            let old = map.get(&buffer).cloned().unwrap_or_default();
+            if old == new {
+                false
+            } else if new.is_empty() {
+                map.remove(&buffer);
+                true
+            } else {
+                map.insert(buffer, new);
+                true
+            }
+        };
+        if changed && let Some(chat) = self.for_buffer(buffer) {
+            chat.store.mutate(&chat.key, |_| {});
+        }
+        changed
+    }
+
+    /// How a chat buffer's transcript is projected right now. Fold values come
+    /// from the session and global layers only: a project or profile cannot set
+    /// them, so no file is read and no profile resolved here. Called once per
+    /// projection, by the drain, which hands the result to the fold sources too.
+    pub fn projection_options_for(&self, buffer: BufferId) -> ProjectionOptions {
+        let session = self.session_overrides(buffer);
+        let global = self.global_layer();
+        let pick = |key: SettingKey| {
+            session
+                .get(&key)
+                .or_else(|| global.get(&key))
+                .and_then(|v| FoldDisplay::parse(v))
+                .unwrap_or_default()
+        };
+        ProjectionOptions {
+            markdown: true,
+            reasoning: pick(SettingKey::FoldReasoning),
+            tools: pick(SettingKey::FoldTools),
+        }
+    }
+
+    /// The model a chat would use now, or the reason it cannot send. No file is
+    /// read, so this is safe on the editor thread.
+    fn provisional(&self, buffer: BufferId, session: RawSet) -> Result<String, String> {
+        let layers = self.layers_for(buffer, session);
+        let resolved = resolve(&layers, buffer, &RequestOverrides::default(), Trust::User)
+            .map_err(|e: SettingsError| e.to_string())?;
+        let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
+        cfg.choose(
+            resolved.values.model.as_deref(),
+            self.default_provider().as_deref(),
+        )
+        .map(|c| c.model)
+    }
+
+    /// Resolve a buffer's settings as a request from it would see them, without
+    /// the project layer. For introspection and tests.
+    pub fn resolve_for(&self, buffer: BufferId) -> Result<Resolved, SettingsError> {
+        let layers = self.layers_for(buffer, self.session_overrides(buffer));
+        resolve(&layers, buffer, &RequestOverrides::default(), Trust::User)
+    }
+
+    /// Forget the creation-time seed of the chat bound to `buffer`, returning the
+    /// keys it held. The profile switch clears it along with the live values.
+    pub fn clear_seed(&self, buffer: BufferId) -> Vec<SettingKey> {
+        let Some(chat) = self.for_buffer(buffer) else {
+            return Vec::new();
+        };
+        let mut seed = chat.seed.lock().unwrap_or_else(|e| e.into_inner());
+        let keys = seed.keys().copied().collect();
+        seed.clear();
+        keys
     }
 
     fn reg(&self) -> MutexGuard<'_, Registry> {
@@ -179,25 +361,32 @@ impl LlmChats {
     /// ex-command can call it on the editor thread. A configuration problem
     /// does not fail the creation: the buffer opens with the problem shown.
     pub fn create(&self) -> Arc<ChatSession> {
+        self.create_with(None, None)
+    }
+
+    /// [`create`](Self::create) with a starting profile and a source buffer.
+    ///
+    /// The new chat's session settings are **copied** from `from`'s session,
+    /// then the chat stands alone (design §4). Naming a profile that differs
+    /// from the source's starts the chat fresh from that profile: the source's
+    /// overrides were made on top of another base and do not carry over.
+    pub fn create_with(&self, profile: Option<&str>, from: Option<BufferId>) -> Arc<ChatSession> {
         let n = self.next_chat.fetch_add(1, Ordering::Relaxed);
         let name = format!("*llm:{n}*");
         let key = SessionKey::new(SESSION_PROVIDER, n);
         let bus = self.bus.clone();
         let store = ConversationStore::new(Arc::new(move |ev| bus.publish_typed(ev)));
-        let settings = self
-            .config
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .choose()
-            .map(Settings::new);
+        let mut seed = from.map(|b| self.session_overrides(b)).unwrap_or_default();
+        if let Some(p) = profile {
+            if seed.get(&SettingKey::Profile).map(String::as_str) != Some(p) {
+                seed.clear();
+            }
+            seed.insert(SettingKey::Profile, p.to_string());
+        }
+        let provisional = self.provisional(BufferId(0), seed.clone());
         store.mutate(&key, |c| {
-            c.assistant_label = Some(
-                settings
-                    .as_ref()
-                    .map(|s| s.model.clone())
-                    .unwrap_or_else(|_| "model".to_string()),
-            );
-            if let Err(e) = &settings {
+            c.assistant_label = Some(provisional.clone().unwrap_or_else(|_| "model".to_string()));
+            if let Err(e) = &provisional {
                 c.error = Some(e.clone());
             }
         });
@@ -205,9 +394,11 @@ impl LlmChats {
             name,
             key,
             store,
-            settings,
+            seed: Mutex::new(seed),
+            label: Mutex::new(provisional.ok()),
             turn: Mutex::new(TurnState::default()),
             api_key: Mutex::new(None),
+            warned: Mutex::new(HashSet::new()),
             closed: AtomicBool::new(false),
         });
         {
@@ -324,31 +515,98 @@ impl LlmChats {
 
     /// Start the request for the conversation as it now stands. The caller has
     /// already folded the user turn in and marked the session busy.
+    ///
+    /// The layers are snapshotted here, once: a setting changed after this point
+    /// applies to the next request, never to this one in flight. Everything
+    /// that can block (the project file, a system-prompt file, the key command)
+    /// happens on the runtime, never on the editor thread.
     fn start_request(self: &Arc<Self>, session: &Arc<ChatSession>) {
-        let settings = match &session.settings {
-            Ok(s) => s.clone(),
-            Err(e) => {
-                self.end_turn(session, Some(e.clone()));
-                return;
-            }
-        };
+        let buffer = self.buffer_of(session).unwrap_or(BufferId(0));
+        let layers = self.layers_for(buffer, self.overrides_of(Some(session), buffer));
         let history = history::messages(&session.store.snapshot());
+        let default_provider = self.default_provider();
         let chats = self.clone();
         let session = session.clone();
-        // Key resolution may run a command, so it happens on the runtime, never
-        // here on the editor thread.
         self.runtime.spawn(async move {
+            let mut layers = layers;
+            layers.project = chats.read_project(&session).await;
+            let resolved = match resolve(&layers, buffer, &RequestOverrides::default(), Trust::User)
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    chats.end_turn(&session, Some(e.to_string()));
+                    return;
+                }
+            };
+            for refusal in &resolved.refused {
+                if session.first_report(format!("{}\u{0}{}", refusal.source, refusal.key)) {
+                    tracing::warn!(target: "lattice::llm", "{refusal}");
+                }
+            }
+            let chosen = chats
+                .config
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .choose(
+                    resolved.values.model.as_deref(),
+                    default_provider.as_deref(),
+                );
+            let chosen = match chosen {
+                Ok(c) => c,
+                Err(e) => {
+                    chats.end_turn(&session, Some(e));
+                    return;
+                }
+            };
+            session.set_label(Some(chosen.model.clone()));
+            session.store.mutate(&session.key, |c| {
+                c.assistant_label = Some(chosen.model.clone());
+            });
+            let system = match &resolved.values.system {
+                Some(text) if system_is_path(text) => match read_system_file(text).await {
+                    Ok(t) => Some(t),
+                    Err(e) => {
+                        chats.end_turn(&session, Some(e));
+                        return;
+                    }
+                },
+                other => other.clone(),
+            };
+            let mut params = Params {
+                max_tokens: resolved.values.max_tokens,
+                temperature: resolved.values.temperature,
+            };
+            for omission in omitted_params(&chosen.provider, &chosen.model, &resolved.values) {
+                omission.clear(&mut params);
+                if session.first_report(format!("omit\u{0}{}", omission.param)) {
+                    tracing::info!(
+                        target: "lattice::llm",
+                        "llm: {} is not sent to {} ({}): {}",
+                        omission.param,
+                        chosen.provider.name,
+                        chosen.model,
+                        omission.reason
+                    );
+                }
+            }
+            let history = resolved
+                .values
+                .messages
+                .apply(&history, |m| matches!(m, Message::User(_)));
+            let provider_cfg = chosen.provider;
             let cached = session
                 .api_key
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .clone();
+                .clone()
+                .filter(|(name, _)| *name == provider_cfg.name)
+                .map(|(_, k)| k);
             let key = match cached {
                 Some(k) => k,
-                None => match resolve_key(&settings.provider_config).await {
+                None => match resolve_key(&provider_cfg).await {
                     Ok(k) => {
                         *session.api_key.lock().unwrap_or_else(|e| e.into_inner()) =
-                            Some(k.clone());
+                            Some((provider_cfg.name.clone(), k.clone()));
                         k
                     }
                     Err(e) => {
@@ -362,17 +620,13 @@ impl LlmChats {
                 return;
             }
             let req = LlmRequest {
-                model: settings.model.clone(),
-                system: None,
+                model: chosen.model.clone(),
+                system,
                 messages: history,
                 tools: Vec::new(),
-                params: Params::default(),
+                params,
             };
-            let sink = ChatSink::new(
-                session.store.clone(),
-                session.key.clone(),
-                &settings.provider_config,
-            );
+            let sink = ChatSink::new(session.store.clone(), session.key.clone(), &provider_cfg);
             let target = RequestTarget {
                 buffer: chats.buffer_of(&session).unwrap_or(BufferId(0)),
                 label: session.name.clone(),
@@ -380,7 +634,7 @@ impl LlmChats {
             let id = chats.requests.start_with_key(
                 target,
                 req,
-                settings.provider.clone(),
+                provider_cfg.build(),
                 key,
                 Box::new(sink),
             );
@@ -396,6 +650,44 @@ impl LlmChats {
             }
             chats.register_request(id, &session);
         });
+    }
+
+    /// Read `.lattice/llm.toml` from the project root. Absent is no project
+    /// layer; unreadable or malformed is reported once and treated as absent,
+    /// since a broken file in a repository must not stop the chat.
+    async fn read_project(&self, session: &ChatSession) -> Option<ProjectLayer> {
+        let root = self
+            .project_root
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let root = match root {
+            Some(r) => r,
+            None => tokio::task::spawn_blocking(lattice_core::project::root_from_cwd)
+                .await
+                .ok()
+                .flatten()?,
+        };
+        let path = root.join(".lattice").join("llm.toml");
+        let text = match tokio::fs::read_to_string(&path).await {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                if session.first_report(format!("read\u{0}{}", path.display())) {
+                    tracing::warn!(target: "lattice::llm", "llm: cannot read {}: {}", path.display(), e.kind());
+                }
+                return None;
+            }
+        };
+        match ProjectLayer::parse(".lattice/llm.toml", &text) {
+            Ok(layer) => Some(layer),
+            Err(e) => {
+                if session.first_report(format!("parse\u{0}{}", path.display())) {
+                    tracing::warn!(target: "lattice::llm", "llm: {e}");
+                }
+                None
+            }
+        }
     }
 
     fn register_request(self: &Arc<Self>, id: RequestId, session: &Arc<ChatSession>) {
@@ -490,6 +782,24 @@ impl LlmChats {
     }
 }
 
+/// Read a system prompt that names a file (`~/...`, `/...`, `./...`). Only the
+/// user's own config reaches here: a project's file path is refused in
+/// `resolve`. The message names the path and the failure kind, nothing of the
+/// contents.
+async fn read_system_file(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    let path = match raw.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => std::path::PathBuf::from(home).join(rest),
+            None => return Err(format!("cannot read system prompt {raw}: HOME is not set")),
+        },
+        None => std::path::PathBuf::from(raw),
+    };
+    tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("cannot read system prompt {raw}: {}", e.kind()))
+}
+
 /// Folds a request's stream events into a chat's conversation model.
 struct ChatSink {
     store: ConversationStore,
@@ -563,6 +873,20 @@ pub fn spawn_turn_listener(chats: LlmChatsHandle, bus: &Arc<lattice_runtime::Eve
     runtime.spawn(async move {
         while let Some(ev) = rx.recv().await {
             chats.on_request_state(ev.id, ev.state);
+        }
+    });
+}
+
+/// Subscribe `chats` to the host's per-buffer option snapshots, so `:setlocal
+/// llm.*` reaches requests that run off the editor thread.
+pub fn spawn_options_listener(chats: LlmChatsHandle, bus: &Arc<lattice_runtime::EventBus>) {
+    let (tx, mut rx) =
+        tokio::sync::mpsc::unbounded_channel::<lattice_config::BufferOptionsResolved>();
+    bus.subscribe_typed::<lattice_config::BufferOptionsResolved>(tx);
+    let runtime = chats.runtime.clone();
+    runtime.spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            chats.on_buffer_options(ev.buffer, &ev.options);
         }
     });
 }

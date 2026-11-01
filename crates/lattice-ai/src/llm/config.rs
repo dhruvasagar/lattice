@@ -1,16 +1,19 @@
-//! The `[llm]` table of the user config: named providers and a default model.
+//! The `[llm]` table of the user config: named providers, profiles and the
+//! global values of the session options.
 //!
-//! Read straight from `lattice.toml` at boot rather than through the typed
-//! option registry. The registry has no notion of a table of named providers,
-//! and reading the file here keeps this crate from depending on `lattice-host`.
-//! The cost is that edits apply on the next start; layered settings (global,
-//! profile, project, session) arrive with LL.7 and will move this onto the
-//! typed options.
+//! The scalar settings (`model`, `system`, `temperature`, ...) are the typed
+//! `llm.*` options ([`super::options`]); the loader writes them into the
+//! registry like any option, and [`super::settings`] reads them from there so
+//! `:set` applies live. What the registry cannot hold is a table of named
+//! things, so providers (`[llm.providers.<name>]`) and profiles
+//! (`[llm.profiles.<name>]`) are read here, once at boot. Editing those applies
+//! on the next start.
 //!
 //! ```toml
 //! [llm]
 //! default_provider = "anthropic"
-//! default_model = "claude-sonnet-4-5"
+//! default_profile = "general"
+//! model = "claude-sonnet-4-5"
 //!
 //! [llm.providers.anthropic]
 //! api_key_env = "ANTHROPIC_API_KEY"     # or api_key_command; never a key in TOML
@@ -19,20 +22,24 @@
 //! kind = "openai-compatible"
 //! base_url = "http://localhost:11434/v1"
 //! model = "qwen2.5-coder"
+//!
+//! [llm.profiles.writer]
+//! model = "local/qwen2.5-coder"
+//! system = "~/.config/lattice/llm/editor.md"
 //! ```
 //!
 //! A key is never read from this file. It comes from an environment variable
 //! (`api_key_env`) or a command whose first output line is the key
-//! (`api_key_command`, run off the editor thread). Neither the command's output
-//! nor its stderr ever reaches an error message.
+//! (`api_key_command`, run off the editor thread). A literal `api_key` is
+//! refused with a message. Neither the command's output nor its stderr ever
+//! reaches an error message.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::conversation::{FoldDisplay, ProjectionOptions};
-
+use super::settings::{RawSet, SettingKey, parse_profile, validate, value_text};
 use super::{AnthropicProvider, ApiKey, OpenAiProvider, Provider};
 
 const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
@@ -83,11 +90,15 @@ impl ProviderConfig {
 pub struct LlmConfig {
     providers: BTreeMap<String, ProviderConfig>,
     default_provider: Option<String>,
-    default_model: Option<String>,
-    /// `llm.fold.reasoning` and `llm.fold.tools`: how each block type is shown.
-    /// LL.7 moves these onto layered settings.
-    pub fold_reasoning: FoldDisplay,
-    pub fold_tools: FoldDisplay,
+    /// `[llm.profiles.<name>]`, trusted: it is the user's own file.
+    pub profiles: BTreeMap<String, RawSet>,
+    /// `default_profile`, if the table names one.
+    pub default_profile: Option<String>,
+    /// The scalar settings the table itself holds (`model = ...`). In the editor
+    /// the loader has also written these into the registry, whose live value
+    /// wins; this copy is what a config read without a registry (a test, the
+    /// `LlmConfig::load` path) resolves from.
+    pub global: RawSet,
     /// Problems found while reading, for the log. A bad provider is skipped,
     /// not fatal: one typo must not take the others down.
     pub warnings: Vec<String>,
@@ -137,47 +148,18 @@ impl LlmConfig {
             return cfg;
         };
         cfg.default_provider = str_of(llm, "default_provider");
-        cfg.default_model = str_of(llm, "default_model");
-        if let Some(fold) = llm.get("fold").and_then(toml::Value::as_table) {
-            for key in fold
-                .keys()
-                .filter(|k| !matches!(k.as_str(), "reasoning" | "tools"))
-            {
-                tracing::warn!("llm: unknown key llm.fold.{key}; ignoring it");
-                cfg.warnings
-                    .push(format!("llm: unknown key llm.fold.{key}"));
-            }
-            for (key, slot) in [
-                ("reasoning", &mut cfg.fold_reasoning),
-                ("tools", &mut cfg.fold_tools),
-            ] {
-                let Some(value) = fold.get(key) else {
-                    continue;
-                };
-                let Some(raw) = value
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                else {
-                    tracing::warn!(
-                        "llm: llm.fold.{key} must be a string (closed, open or hidden); keeping the default"
-                    );
-                    cfg.warnings.push(format!(
-                        "llm: llm.fold.{key} must be closed, open or hidden, not `{value}`"
-                    ));
-                    continue;
-                };
-                match FoldDisplay::parse(&raw) {
-                    Some(d) => *slot = d,
-                    None => {
-                        tracing::warn!(
-                            "llm: llm.fold.{key} must be closed, open or hidden, not `{raw}`; keeping the default"
-                        );
-                        cfg.warnings.push(format!(
-                            "llm: llm.fold.{key} must be closed, open or hidden, not `{raw}`"
-                        ));
+        cfg.default_profile = str_of(llm, "default_profile");
+        cfg.read_global(llm);
+        if let Some(profiles) = llm.get("profiles").and_then(toml::Value::as_table) {
+            for (name, value) in profiles {
+                match value.as_table() {
+                    Some(t) => {
+                        let set = parse_profile(name, t, &mut cfg.warnings);
+                        cfg.profiles.insert(name.clone(), set);
                     }
+                    None => cfg
+                        .warnings
+                        .push(format!("llm: profile `{name}` must be a table")),
                 }
             }
         }
@@ -185,7 +167,8 @@ impl LlmConfig {
             for (name, value) in providers {
                 match value.as_table() {
                     Some(t) => match parse_provider(name, t) {
-                        Ok(p) => {
+                        Ok((p, mut warns)) => {
+                            cfg.warnings.append(&mut warns);
                             cfg.providers.insert(name.clone(), p);
                         }
                         Err(w) => cfg.warnings.push(w),
@@ -199,13 +182,40 @@ impl LlmConfig {
         cfg
     }
 
-    /// The projection options a chat transcript uses: markdown on, folds as
-    /// configured.
-    pub fn projection_options(&self) -> ProjectionOptions {
-        ProjectionOptions {
-            markdown: true,
-            reasoning: self.fold_reasoning,
-            tools: self.fold_tools,
+    /// The scalar settings in `[llm]` and `[llm.fold]`.
+    fn read_global(&mut self, llm: &toml::Table) {
+        for key in SettingKey::ALL {
+            let value = match key {
+                SettingKey::FoldReasoning | SettingKey::FoldTools => llm
+                    .get("fold")
+                    .and_then(toml::Value::as_table)
+                    .and_then(|f| f.get(key.option_name().trim_start_matches("llm.fold."))),
+                SettingKey::Profile => continue,
+                _ => llm.get(key.option_name().trim_start_matches("llm.")),
+            };
+            let Some(value) = value else { continue };
+            let text = value_text(value);
+            match validate(key, &text) {
+                Ok(()) => {
+                    self.global.insert(key, text);
+                }
+                Err(e) => self.warnings.push(format!("llm: {e}")),
+            }
+        }
+        if llm.contains_key("default_model") {
+            self.warnings.push(
+                "llm: `default_model` is now `model` (or `provider/model`); it is ignored"
+                    .to_string(),
+            );
+        }
+        if let Some(fold) = llm.get("fold").and_then(toml::Value::as_table) {
+            for key in fold
+                .keys()
+                .filter(|k| !matches!(k.as_str(), "reasoning" | "tools"))
+            {
+                self.warnings
+                    .push(format!("llm: unknown key llm.fold.{key}"));
+            }
         }
     }
 
@@ -213,40 +223,64 @@ impl LlmConfig {
         self.providers.keys().map(String::as_str)
     }
 
-    /// Choose the provider and model a new chat uses.
+    pub fn profile_names(&self) -> impl Iterator<Item = &str> {
+        self.profiles.keys().map(String::as_str)
+    }
+
+    /// Choose the provider and model for `model` (`provider/model`, a bare
+    /// model, or nothing).
     ///
-    /// The provider is `default_provider`, or the only one configured. The model
-    /// is the provider's own `model`, else `default_model`. Failures say what to
+    /// A leading `name/` selects that provider when `name` is a configured one;
+    /// anything else is a model on the default provider (so `meta/llama-3` still
+    /// works on a gateway). The default provider is `default_provider` (the
+    /// option when set, else the table's), or the only one configured. With no
+    /// model, the provider's own `model` is used. Failures say what to
     /// configure, since this text lands in the chat buffer.
-    pub fn choose(&self) -> Result<ChosenModel, String> {
-        let provider = match (&self.default_provider, self.providers.len()) {
-            (_, 0) => {
-                return Err(
-                    "no LLM provider configured: add an [llm.providers.<name>] table \
-                            to lattice.toml (see :help llm-chat-mode)"
-                        .to_string(),
-                );
-            }
-            (Some(name), _) => self.providers.get(name).ok_or_else(|| {
+    pub fn choose(
+        &self,
+        model: Option<&str>,
+        default_provider: Option<&str>,
+    ) -> Result<ChosenModel, String> {
+        if self.providers.is_empty() {
+            return Err(
+                "no LLM provider configured: add an [llm.providers.<name>] table \
+                        to lattice.toml (see :help llm)"
+                    .to_string(),
+            );
+        }
+        let (named, bare) = match model.map(str::trim).filter(|m| !m.is_empty()) {
+            Some(m) => match m.split_once('/') {
+                Some((p, rest)) if self.providers.contains_key(p) && !rest.is_empty() => {
+                    (Some(p), Some(rest))
+                }
+                _ => (None, Some(m)),
+            },
+            None => (None, None),
+        };
+        let default_name = default_provider
+            .filter(|p| !p.trim().is_empty())
+            .or(self.default_provider.as_deref());
+        let provider = match (named, default_name, self.providers.len()) {
+            (Some(p), _, _) => self.providers.get(p).ok_or("no provider")?,
+            (None, Some(name), _) => self.providers.get(name).ok_or_else(|| {
                 format!("llm.default_provider `{name}` is not a configured provider")
             })?,
-            (None, 1) => self.providers.values().next().ok_or("no provider")?,
-            (None, _) => {
+            (None, None, 1) => self.providers.values().next().ok_or("no provider")?,
+            (None, None, _) => {
                 let names: Vec<&str> = self.provider_names().collect();
                 return Err(format!(
-                    "several LLM providers are configured ({}): set llm.default_provider",
+                    "several LLM providers are configured ({}): set llm.default_provider, \
+                     or name one in llm.model as provider/model",
                     names.join(", ")
                 ));
             }
         };
-        let model = provider
-            .model
-            .clone()
-            .or_else(|| self.default_model.clone())
+        let model = bare
+            .map(str::to_string)
+            .or_else(|| provider.model.clone())
             .ok_or_else(|| {
                 format!(
-                    "no model for provider `{}`: set llm.default_model or \
-                     llm.providers.{}.model",
+                    "no model for provider `{}`: set llm.model or llm.providers.{}.model",
                     provider.name, provider.name
                 )
             })?;
@@ -265,7 +299,17 @@ fn str_of(t: &toml::Table, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn parse_provider(name: &str, t: &toml::Table) -> Result<ProviderConfig, String> {
+fn parse_provider(name: &str, t: &toml::Table) -> Result<(ProviderConfig, Vec<String>), String> {
+    let mut warnings = Vec::new();
+    // A literal key is the one thing this file must never hold: it ends up in
+    // backups, dotfile repos and screen shares. Refuse it by name, and do not
+    // echo the value.
+    if t.contains_key("api_key") {
+        warnings.push(format!(
+            "llm: provider `{name}`: `api_key` is refused: a key never goes in TOML. \
+             Use api_key_env = \"NAME\" or api_key_command = \"pass show ...\""
+        ));
+    }
     // The design's example gives `anthropic` no `kind`; the name says it.
     let kind = match str_of(t, "kind").as_deref() {
         Some("anthropic") => ProviderKind::Anthropic,
@@ -291,19 +335,80 @@ fn parse_provider(name: &str, t: &toml::Table) -> Result<ProviderConfig, String>
         (None, Some(cmd)) => KeySource::Command(cmd),
         (None, None) => KeySource::None,
     };
-    Ok(ProviderConfig {
-        name: name.to_string(),
-        kind,
-        base_url,
-        key,
-        model: str_of(t, "model"),
-        input_cost_per_mtok: t.get("input_cost_per_mtok").and_then(number),
-        output_cost_per_mtok: t.get("output_cost_per_mtok").and_then(number),
-    })
+    Ok((
+        ProviderConfig {
+            name: name.to_string(),
+            kind,
+            base_url,
+            key,
+            model: str_of(t, "model"),
+            input_cost_per_mtok: t.get("input_cost_per_mtok").and_then(number),
+            output_cost_per_mtok: t.get("output_cost_per_mtok").and_then(number),
+        },
+        warnings,
+    ))
 }
 
 fn number(v: &toml::Value) -> Option<f64> {
     v.as_float().or_else(|| v.as_integer().map(|i| i as f64))
+}
+
+/// A parameter a request will not send, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Omission {
+    pub param: &'static str,
+    pub reason: &'static str,
+}
+
+impl Omission {
+    /// Remove the parameter from `params`.
+    pub fn clear(&self, params: &mut super::Params) {
+        if self.param == "temperature" {
+            params.temperature = None;
+        }
+    }
+}
+
+/// OpenAI models that accept only the default temperature and answer anything
+/// else with a 400.
+const FIXED_TEMPERATURE_PREFIXES: &[&str] = &["o1", "o3", "o4", "gpt-5"];
+
+/// The parameters in `settings` that this provider and model will not take, so
+/// the request omits them instead of failing with a 400 and says so.
+///
+/// A small per-provider list rather than a capability table, and rather than
+/// retrying after a 400 that names the parameter: a table per model is a
+/// maintenance burden that is wrong the week after it is written, and a retry
+/// doubles the first request's latency and has to parse each provider's error
+/// shape. The list holds only what is known to fail; a model it does not know
+/// gets the parameter, and the provider's own error text reaches the chat if it
+/// objects.
+pub fn omitted_params(
+    provider: &ProviderConfig,
+    model: &str,
+    settings: &super::settings::Settings,
+) -> Vec<Omission> {
+    let mut out = Vec::new();
+    if settings.reasoning.is_some() {
+        out.push(Omission {
+            param: "reasoning",
+            reason: "this build does not send a reasoning effort to any provider yet",
+        });
+    }
+    let bare = model.rsplit('/').next().unwrap_or(model);
+    if settings.temperature.is_some()
+        && provider.kind == ProviderKind::OpenAiCompatible
+        && provider.base_url.starts_with(OPENAI_BASE_URL)
+        && FIXED_TEMPERATURE_PREFIXES
+            .iter()
+            .any(|p| bare.starts_with(p))
+    {
+        out.push(Omission {
+            param: "temperature",
+            reason: "this model only accepts its default temperature",
+        });
+    }
+    out
 }
 
 /// Resolve a provider's key. Runs `api_key_command` as a child process, so
@@ -392,7 +497,7 @@ mod tests {
     #[test]
     fn an_absent_table_is_an_empty_config_that_says_how_to_fix_it() {
         let c = cfg("[ui]\nx = 1\n");
-        let err = c.choose().unwrap_err();
+        let err = c.choose(Some("m"), None).unwrap_err();
         assert!(err.contains("llm.providers"), "{err}");
     }
 
@@ -400,7 +505,7 @@ mod tests {
     fn the_design_example_parses() {
         let c = cfg(r#"
             [llm]
-            default_model = "claude-x"
+            model = "claude-x"
             [llm.providers.anthropic]
             api_key_env = "ANTHROPIC_API_KEY"
             [llm.providers.local]
@@ -413,49 +518,103 @@ mod tests {
         assert_eq!(a.base_url, ANTHROPIC_BASE_URL);
         assert_eq!(a.key, KeySource::Env("ANTHROPIC_API_KEY".into()));
         assert_eq!(c.providers["local"].key, KeySource::None);
+        assert_eq!(c.global[&SettingKey::Model], "claude-x");
     }
 
     #[test]
     fn several_providers_need_a_default() {
         let c = cfg(r#"
-            [llm]
-            default_model = "m"
             [llm.providers.a]
             [llm.providers.b]
         "#);
-        assert!(c.choose().unwrap_err().contains("default_provider"));
+        let err = c.choose(Some("m"), None).unwrap_err();
+        assert!(
+            err.contains("default_provider") && err.contains("provider/model"),
+            "{err}"
+        );
+        // A named provider, or a default, settles it.
+        assert_eq!(c.choose(Some("b/m"), None).unwrap().provider.name, "b");
+        assert_eq!(c.choose(Some("m"), Some("a")).unwrap().provider.name, "a");
     }
 
     #[test]
-    fn the_only_provider_is_the_default_and_its_model_wins() {
+    fn the_only_provider_is_the_default_and_a_bare_model_is_its_own() {
         let c = cfg(r#"
-            [llm]
-            default_model = "fallback"
             [llm.providers.local]
             model = "own"
         "#);
-        let chosen = c.choose().unwrap();
+        let chosen = c.choose(None, None).unwrap();
         assert_eq!(chosen.provider.name, "local");
         assert_eq!(chosen.model, "own");
+        // An explicit model beats the provider's.
+        assert_eq!(c.choose(Some("other"), None).unwrap().model, "other");
+        // A slash that is not a provider name stays part of the model.
+        assert_eq!(
+            c.choose(Some("meta/llama"), None).unwrap().model,
+            "meta/llama"
+        );
+        assert_eq!(c.choose(Some("local/qwen"), None).unwrap().model, "qwen");
     }
 
     #[test]
     fn a_missing_model_names_where_to_set_it() {
         let c = cfg("[llm.providers.local]\n");
-        assert!(c.choose().unwrap_err().contains("default_model"));
+        assert!(c.choose(None, None).unwrap_err().contains("llm.model"));
     }
 
     #[test]
     fn a_bad_provider_is_skipped_with_a_warning_and_the_rest_survive() {
         let c = cfg(r#"
-            [llm]
-            default_model = "m"
             [llm.providers.bad]
             kind = "gemini"
             [llm.providers.good]
         "#);
         assert_eq!(c.warnings.len(), 1);
-        assert_eq!(c.choose().unwrap().provider.name, "good");
+        assert_eq!(c.choose(Some("m"), None).unwrap().provider.name, "good");
+    }
+
+    #[test]
+    fn a_literal_api_key_is_refused_by_name_and_never_echoed() {
+        let c = cfg(r#"
+            [llm.providers.p]
+            api_key = "sk-SECRET-VALUE"
+            api_key_env = "E"
+        "#);
+        let w = c.warnings.join("\n");
+        assert!(
+            w.contains("`api_key` is refused") && w.contains("api_key_env"),
+            "{w}"
+        );
+        assert!(!w.contains("SECRET"), "{w}");
+        // The provider still loads, with its safe key source.
+        assert_eq!(c.providers["p"].key, KeySource::Env("E".into()));
+    }
+
+    #[test]
+    fn profiles_and_global_values_are_read_and_bad_ones_skipped() {
+        let c = cfg(r#"
+            [llm]
+            default_profile = "writer"
+            temperature = 0.3
+            default_model = "old"
+            [llm.fold]
+            tools = "open"
+            reasoning = "folded"
+            [llm.profiles.writer]
+            model = "local/qwen"
+            tools = []
+            nonsense = 1
+        "#);
+        assert_eq!(c.default_profile.as_deref(), Some("writer"));
+        assert_eq!(c.global[&SettingKey::Temperature], "0.3");
+        assert_eq!(c.global[&SettingKey::FoldTools], "open");
+        assert!(!c.global.contains_key(&SettingKey::FoldReasoning));
+        assert_eq!(c.profiles["writer"][&SettingKey::Tools], "none");
+        let w = c.warnings.join("\n");
+        assert!(
+            w.contains("reasoning") && w.contains("nonsense") && w.contains("default_model"),
+            "{w}"
+        );
     }
 
     #[test]
@@ -469,6 +628,40 @@ mod tests {
         "#);
         assert_eq!(c.providers["a"].key, KeySource::Env("E".into()));
         assert_eq!(c.providers["b"].key, KeySource::Command("pass x".into()));
+    }
+
+    #[test]
+    fn a_temperature_the_model_rejects_is_omitted_and_named() {
+        use super::super::Params;
+        let openai = ProviderConfig {
+            name: "openai".into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: OPENAI_BASE_URL.into(),
+            key: KeySource::None,
+            model: None,
+            input_cost_per_mtok: None,
+            output_cost_per_mtok: None,
+        };
+        let settings = super::super::settings::Settings {
+            temperature: Some(0.2),
+            ..Default::default()
+        };
+        let om = omitted_params(&openai, "o3-mini", &settings);
+        assert_eq!(om.len(), 1);
+        assert_eq!(om[0].param, "temperature");
+        let mut p = Params {
+            temperature: Some(0.2),
+            max_tokens: Some(5),
+        };
+        om[0].clear(&mut p);
+        assert_eq!((p.temperature, p.max_tokens), (None, Some(5)));
+        // A model not on the list, and a local server, keep it.
+        assert!(omitted_params(&openai, "gpt-4o", &settings).is_empty());
+        let local = ProviderConfig {
+            base_url: "http://localhost:11434/v1".into(),
+            ..openai
+        };
+        assert!(omitted_params(&local, "o3-mini", &settings).is_empty());
     }
 
     fn provider(kind: ProviderKind, key: KeySource) -> ProviderConfig {

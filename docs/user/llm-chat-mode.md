@@ -53,7 +53,7 @@ starts. Providers are named; `kind` is `anthropic` or `openai-compatible`
 ```toml
 [llm]
 default_provider = "anthropic"
-default_model = "claude-sonnet-4-5"
+model = "claude-sonnet-4-5"
 
 [llm.providers.anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
@@ -65,29 +65,21 @@ model = "qwen2.5-coder"
 ```
 
 - `default_provider` is optional when only one provider is configured.
-- A provider's own `model` wins over `default_model`.
+- `model` is `provider/model` or a bare model on the default provider; a
+  provider's own `model` is used when nothing else names one.
 - `base_url` has a sensible default for `anthropic` and OpenAI.
 - `input_cost_per_mtok` and `output_cost_per_mtok` (USD per million
   tokens) turn on the cost in the headerline. Without both, no cost is
   shown: a guessed price is worse than none.
 
-### Keys
+A key never goes in the file: use `api_key_env` or `api_key_command`
+(a literal `api_key` is refused). If the key is missing, or the command
+fails, the buffer says so under the transcript and the prompt stays
+usable: fix it and send again. The message names the variable or the exit
+status, never the command's output.
 
-A key never goes in the config file. Give one of:
-
-- `api_key_env = "NAME"` — read from that environment variable.
-- `api_key_command = "pass show anthropic"` — run through `sh -c`; the
-  first line of its output is the key. It runs in the background, so a slow
-  password manager does not freeze the editor, and it is given 30 seconds.
-
-A local OpenAI-compatible server (Ollama, llama.cpp) needs neither.
-
-If the key is missing, or the command fails, the buffer says so under the
-transcript (`! environment variable ANTHROPIC_API_KEY is not set`) and the
-prompt stays usable: fix it and send again. The message names the
-variable or the exit status, never the command's output.
-
-Edits to the config apply the next time the editor starts.
+Profiles, the `llm.*` options, project config and `:llm-profile` are in
+[`llm`](help:llm). `:llm writer` opens a chat from a profile.
 
 ## The transcript
 
@@ -127,7 +119,9 @@ is always longer than any fence inside the output.
 
 `za` on a head line opens or closes that block, and `zM` / `zR` close or
 open every fold. A block you opened stays open as the reply keeps
-streaming. Set how each kind is shown in `lattice.toml` (read at startup):
+streaming. Set how each kind is shown with `llm.fold.reasoning` and
+`llm.fold.tools`, in `lattice.toml` or with `:set` / `:setlocal`. A change
+applies to open chats at once:
 
 ```toml
 [llm.fold]
@@ -148,3 +142,4 @@ as it does in a markdown file.
 - [`ai-conversation-mode`](help:ai-conversation-mode) — the agent
   conversation buffer.
 - [`repl-mode`](help:repl-mode) — the insert-entry keys.
+- [`llm`](help:llm) — settings, profiles and project config.

@@ -20,6 +20,15 @@ pub enum OptionOrigin {
         /// `(mode: rust-mode)`.
         mode_id: String,
     },
+    /// Supplied by a named profile (LL.7): a bundle of starting values a
+    /// subsystem selects, echoed as `(profile: writer)`.
+    Profile {
+        /// The profile's name.
+        name: String,
+    },
+    /// Supplied by project-level config checked in beside the code (LL.7),
+    /// which is untrusted and so subject to a trust table.
+    Project,
 }
 
 impl std::fmt::Display for OptionOrigin {
@@ -29,6 +38,8 @@ impl std::fmt::Display for OptionOrigin {
             Self::GlobalConfig => f.write_str("global"),
             Self::BufferLocal => f.write_str("buffer-local"),
             Self::ModeContribution { mode_id } => write!(f, "mode: {mode_id}"),
+            Self::Profile { name } => write!(f, "profile: {name}"),
+            Self::Project => f.write_str("project"),
         }
     }
 }
@@ -49,5 +60,13 @@ mod tests {
             .to_string(),
             "mode: rust-mode"
         );
+        assert_eq!(
+            OptionOrigin::Profile {
+                name: "writer".into()
+            }
+            .to_string(),
+            "profile: writer"
+        );
+        assert_eq!(OptionOrigin::Project.to_string(), "project");
     }
 }

@@ -98,22 +98,70 @@ pub fn reasoning_fold_identity(ordinal: usize) -> u64 {
     h.finish()
 }
 
-/// Snapshot the store, project it, and return the folds of `want` kind, closed
-/// unless the options say `open`. Shared by both sources — the layout pass is
-/// the single source of truth for line ranges. A `hidden` kind has no spans in
-/// the projection, so it yields no folds.
+/// One projection's folds, taken together with its text. The drain makes it from
+/// the same conversation snapshot and options it rendered the text from, and the
+/// fold sources read it, so text and folds cannot disagree: a source that
+/// re-projected the live store on its own would see a later conversation, or
+/// later options, than the text the buffer holds.
+#[derive(Debug, Clone, Default)]
+pub struct ProjectionFrame {
+    pub options: crate::conversation::ProjectionOptions,
+    pub folds: Vec<ConversationFold>,
+}
+
+/// Where the drain publishes its latest [`ProjectionFrame`]. Shared by the drain
+/// and both fold sources of one buffer.
+#[derive(Debug, Clone, Default)]
+pub struct FrameCell(std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<ProjectionFrame>>>>);
+
+impl FrameCell {
+    pub fn publish(&self, frame: ProjectionFrame) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(frame));
+    }
+
+    pub fn latest(&self) -> Option<std::sync::Arc<ProjectionFrame>> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Where a fold source gets its spans: the live store (`:opencode-acp`, which
+/// has no drain-owned frame) or the drain's frame.
+#[derive(Clone)]
+enum FoldInput {
+    Live(ProjectionSource),
+    Frame(FrameCell),
+}
+
+impl Default for FoldInput {
+    fn default() -> Self {
+        Self::Live(ProjectionSource::default())
+    }
+}
+
+/// The folds of `want` kind, closed unless the options say `open`. Shared by
+/// both sources: the layout pass is the single source of truth for line ranges.
+/// A `hidden` kind has no spans in the projection, so it yields no folds.
 fn folds_of_kind(
     store: &ConversationStore,
-    options: &ProjectionSource,
+    input: &FoldInput,
     want: ConversationFoldKind,
 ) -> Vec<Fold> {
-    let conv = store.snapshot();
-    let opts = options.get();
+    let (opts, spans) = match input {
+        FoldInput::Live(options) => {
+            let conv = store.snapshot();
+            let opts = options.get();
+            let (_text, spans) = project_conversation_with(&conv, &opts);
+            (opts, spans)
+        }
+        FoldInput::Frame(cell) => match cell.latest() {
+            Some(frame) => (frame.options, frame.folds.clone()),
+            None => return Vec::new(),
+        },
+    };
     let shown = match want {
         ConversationFoldKind::ToolCall => opts.tools,
         ConversationFoldKind::Reasoning => opts.reasoning,
     };
-    let (_text, spans) = project_conversation_with(&conv, &opts);
     spans
         .into_iter()
         .filter(|s| s.kind == want)
@@ -130,7 +178,7 @@ fn folds_of_kind(
 pub struct ToolCallFoldSource {
     id: ProviderId,
     store: ConversationStore,
-    options: ProjectionSource,
+    input: FoldInput,
 }
 
 impl ToolCallFoldSource {
@@ -140,13 +188,20 @@ impl ToolCallFoldSource {
         Self {
             id: ProviderId(TOOL_FOLD_NAMESPACE | buffer_id.0 as u64),
             store,
-            options: ProjectionSource::default(),
+            input: FoldInput::default(),
         }
     }
 
     /// Read the display options from `options` on every recompute.
     pub fn with_options(mut self, options: ProjectionSource) -> Self {
-        self.options = options;
+        self.input = FoldInput::Live(options);
+        self
+    }
+
+    /// Read the spans and options from the drain's frame instead of
+    /// re-projecting the live store.
+    pub fn with_frame(mut self, frame: FrameCell) -> Self {
+        self.input = FoldInput::Frame(frame);
         self
     }
 }
@@ -156,7 +211,7 @@ impl FoldSource for ToolCallFoldSource {
         self.id
     }
     fn compute_folds(&self) -> Vec<Fold> {
-        folds_of_kind(&self.store, &self.options, ConversationFoldKind::ToolCall)
+        folds_of_kind(&self.store, &self.input, ConversationFoldKind::ToolCall)
     }
 }
 
@@ -164,7 +219,7 @@ impl FoldSource for ToolCallFoldSource {
 pub struct ReasoningFoldSource {
     id: ProviderId,
     store: ConversationStore,
-    options: ProjectionSource,
+    input: FoldInput,
 }
 
 impl ReasoningFoldSource {
@@ -173,13 +228,20 @@ impl ReasoningFoldSource {
         Self {
             id: ProviderId(REASONING_FOLD_NAMESPACE | buffer_id.0 as u64),
             store,
-            options: ProjectionSource::default(),
+            input: FoldInput::default(),
         }
     }
 
     /// Read the display options from `options` on every recompute.
     pub fn with_options(mut self, options: ProjectionSource) -> Self {
-        self.options = options;
+        self.input = FoldInput::Live(options);
+        self
+    }
+
+    /// Read the spans and options from the drain's frame instead of
+    /// re-projecting the live store.
+    pub fn with_frame(mut self, frame: FrameCell) -> Self {
+        self.input = FoldInput::Frame(frame);
         self
     }
 }
@@ -189,7 +251,7 @@ impl FoldSource for ReasoningFoldSource {
         self.id
     }
     fn compute_folds(&self) -> Vec<Fold> {
-        folds_of_kind(&self.store, &self.options, ConversationFoldKind::Reasoning)
+        folds_of_kind(&self.store, &self.input, ConversationFoldKind::Reasoning)
     }
 }
 

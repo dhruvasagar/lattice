@@ -67,7 +67,11 @@ fn user_docs_name_the_config_files_the_loader_reads() {
             }
         }
         for name in toml_names_after(&text, ".lattice/") {
-            if name != project {
+            // `llm.toml` is read by the LLM layer, not this loader, because its
+            // trust table must be enforced where the settings are resolved
+            // (see `lattice-ai`'s `llm::settings`); the loader refuses `[llm]`
+            // in `config.toml` for the same reason.
+            if name != project && name != "llm.toml" {
                 wrong.push(format!(
                     "{doc}: .lattice/{name} (the loader reads {project})"
                 ));

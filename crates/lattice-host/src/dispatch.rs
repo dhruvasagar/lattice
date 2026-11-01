@@ -38832,7 +38832,13 @@ impl Editor {
         &mut self,
         workspace_root: Option<&std::path::Path>,
     ) -> Vec<RendererSignal> {
-        let prefixes = ["completion.per-language", "plugin", "lsp"];
+        let prefixes = [
+            "completion.per-language",
+            "plugin",
+            "lsp",
+            "llm.providers",
+            "llm.profiles",
+        ];
         let outcome = lattice_config::load_default_paths(&self.config, workspace_root, &prefixes);
         // Re-derive host theme + hot-path option cache.
         self.sync_host_theme_from_config();
@@ -39093,6 +39099,14 @@ impl Editor {
         let resolver = lattice_config::Resolver::new();
         resolver.resolve_into_with_origins(layered, &mut resolved);
 
+        // Off-thread readers (an LLM request on the runtime) cannot see this
+        // cache, and the buffer-local layer is not in the global registry. The
+        // snapshot goes out on the bus so they can keep the slice they need.
+        self.event_bus
+            .publish_typed(lattice_config::BufferOptionsResolved {
+                buffer,
+                options: std::sync::Arc::new(resolved.clone()),
+            });
         self.resolved_options.insert(buffer, resolved);
         // PI.4: any resolution change bumps the version so the published
         // per-buffer resolved-options snapshot rebuilds.
@@ -39968,22 +39982,13 @@ impl Editor {
                         .lookup(&name)
                         .map(|o| o.name().to_string())
                         .unwrap_or(name.clone());
-                    let type_id = match self
-                        .config
-                        .parse_for_buffer_local(&format!("{canonical}=0"))
-                    {
-                        // We only need the TypeId; discard the value.
-                        Ok((tid, _, _)) => tid,
-                        Err(_) => {
-                            // Fall back: try to find by name via a bool parse.
-                            match self.config.parse_for_buffer_local(&canonical) {
-                                Ok((tid, _, _)) => tid,
-                                Err(e) => {
-                                    self.set_message(EchoLevel::Error, e.to_string());
-                                    return Vec::new();
-                                }
-                            }
-                        }
+                    // The option's TypeId is all that is needed to find its
+                    // override. Asking the registry by name avoids parsing a
+                    // dummy value, which a validated option (a closed set of
+                    // words, say) would reject, leaving it impossible to clear.
+                    let Some(type_id) = self.config.type_id_for_name(&canonical) else {
+                        self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
+                        return Vec::new();
                     };
                     // Remove the override for this TypeId.
                     let overrides: Vec<_> = set

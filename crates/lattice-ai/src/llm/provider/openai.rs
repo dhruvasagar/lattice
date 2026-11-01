@@ -17,15 +17,31 @@ use crate::llm::{
 #[derive(Debug, Clone)]
 pub struct OpenAiProvider {
     base_url: String,
+    /// JSON key for the output limit: `max_completion_tokens` for OpenAI proper
+    /// (newer models reject `max_tokens`), `max_tokens` for compatible servers.
+    max_tokens_key: String,
 }
 
 impl OpenAiProvider {
     /// `base_url` includes any version segment, e.g. `https://api.openai.com/v1`
     /// or `http://localhost:11434/v1`.
     pub fn new(base_url: impl Into<String>) -> Self {
+        let base_url = base_url.into().trim_end_matches('/').to_string();
+        let key = if host_of(&base_url) == Some("api.openai.com") {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        };
         Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
+            base_url,
+            max_tokens_key: key.to_string(),
         }
+    }
+
+    /// Override the output-limit key for a server that wants the other one.
+    pub fn with_max_tokens_key(mut self, key: impl Into<String>) -> Self {
+        self.max_tokens_key = key.into();
+        self
     }
 }
 
@@ -43,7 +59,7 @@ impl Provider for OpenAiProvider {
             "stream_options": {"include_usage": true},
         });
         if let Some(n) = req.params.max_tokens {
-            body["max_tokens"] = json!(n);
+            body[self.max_tokens_key.as_str()] = json!(n);
         }
         if let Some(t) = req.params.temperature {
             body["temperature"] = json!(t);
@@ -84,6 +100,13 @@ impl Provider for OpenAiProvider {
     fn decoder(&self) -> Box<dyn StreamDecoder> {
         Box::new(OpenAiDecoder::default())
     }
+}
+
+fn host_of(url: &str) -> Option<&str> {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit('@').next()?;
+    authority.split(':').next()
 }
 
 /// Reasoning is never sent back: the wire format has no slot for it that
@@ -130,14 +153,27 @@ struct OpenAiDecoder {
     sse: SseParser,
     /// Tool-call index -> id, in index order, for calls not yet ended.
     open: BTreeMap<u64, String>,
+    /// Counter and latest key for tool calls the server sent without `index`.
+    anon: u64,
+    last_anon: Option<u64>,
     finish: Option<StopReason>,
     done: bool,
 }
 
+/// Keys for index-less calls sit above any real wire index.
+const ANON_BASE: u64 = 1 << 32;
+
 impl StreamDecoder for OpenAiDecoder {
     fn push(&mut self, bytes: &[u8]) -> Vec<StreamEvent> {
         let events = self.sse.push(bytes);
-        self.handle(events)
+        let mut out = self.handle(events);
+        if self.sse.overflowed() && !self.done {
+            self.done = true;
+            out.push(StreamEvent::Error(ProviderError::LineTooLong(
+                super::MAX_LINE_BYTES,
+            )));
+        }
+        out
     }
 
     fn finish(&mut self) -> Vec<StreamEvent> {
@@ -231,18 +267,37 @@ impl OpenAiDecoder {
     }
 
     fn tool_call(&mut self, c: &Value, out: &mut Vec<StreamEvent>) {
-        let index = c["index"].as_u64().unwrap_or(0);
-        if let std::collections::btree_map::Entry::Vacant(slot) = self.open.entry(index) {
-            let id = c["id"]
-                .as_str()
+        let wire_id = c["id"].as_str().filter(|i| !i.is_empty());
+        let key = match c["index"].as_u64() {
+            Some(i) => i,
+            // Servers that omit `index`: a new id opens a new call; no id
+            // continues the latest one.
+            None => match wire_id {
+                Some(id) => self
+                    .open
+                    .iter()
+                    .find(|(_, open_id)| open_id.as_str() == id)
+                    .map(|(k, _)| *k)
+                    .unwrap_or_else(|| {
+                        self.anon += 1;
+                        ANON_BASE + self.anon
+                    }),
+                None => self.last_anon.unwrap_or(0),
+            },
+        };
+        if c["index"].is_null() {
+            self.last_anon = Some(key);
+        }
+        if let std::collections::btree_map::Entry::Vacant(slot) = self.open.entry(key) {
+            let id = wire_id
                 .map(String::from)
-                .unwrap_or_else(|| format!("call_{index}"));
+                .unwrap_or_else(|| format!("call_{key}"));
             let name = c["function"]["name"].as_str().unwrap_or("").to_string();
             slot.insert(id.clone());
             out.push(StreamEvent::ToolCallStart { id, name });
         }
         if let (Some(id), Some(frag)) = (
-            self.open.get(&index),
+            self.open.get(&key),
             c["function"]["arguments"]
                 .as_str()
                 .filter(|a| !a.is_empty()),
@@ -332,6 +387,23 @@ mod tests {
             })
         );
         assert!(!String::from_utf8_lossy(&http.body).contains("sk-secret-123"));
+    }
+
+    #[test]
+    fn output_limit_key_follows_the_host() {
+        let key = |base: &str| {
+            let http = OpenAiProvider::new(base)
+                .build(&req(), &ApiKey::new("k"))
+                .unwrap();
+            let body: Value = serde_json::from_slice(&http.body).unwrap();
+            (
+                body.get("max_completion_tokens").is_some(),
+                body.get("max_tokens").is_some(),
+            )
+        };
+        assert_eq!(key("https://api.openai.com/v1"), (true, false));
+        assert_eq!(key("http://localhost:11434/v1"), (false, true));
+        assert_eq!(key("https://api.openai.com.evil.test/v1"), (false, true));
     }
 
     #[test]

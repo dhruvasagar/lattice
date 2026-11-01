@@ -152,7 +152,14 @@ struct AnthropicDecoder {
 impl StreamDecoder for AnthropicDecoder {
     fn push(&mut self, bytes: &[u8]) -> Vec<StreamEvent> {
         let events = self.sse.push(bytes);
-        self.handle(events)
+        let mut out = self.handle(events);
+        if self.sse.overflowed() && !self.done {
+            self.done = true;
+            out.push(StreamEvent::Error(ProviderError::LineTooLong(
+                super::MAX_LINE_BYTES,
+            )));
+        }
+        out
     }
 
     fn finish(&mut self) -> Vec<StreamEvent> {

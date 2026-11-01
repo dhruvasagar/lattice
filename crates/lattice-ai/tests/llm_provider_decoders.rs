@@ -221,3 +221,165 @@ fn arbitrary_garbage_never_panics() {
         }
     }
 }
+
+fn calls(ev: &[StreamEvent]) -> Vec<(String, String)> {
+    ev.iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolCallStart { id, name } => Some((id.clone(), name.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn openai_calls_without_index_open_a_slot_per_new_id() {
+    let ev = run(
+        &openai(),
+        concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"a\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"x\\\":\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"1}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"b\",\"function\":{\"name\":\"g\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ),
+    );
+    assert_eq!(
+        calls(&ev),
+        vec![("a".into(), "f".into()), ("b".into(), "g".into())]
+    );
+    let frag = |id: &str| -> String {
+        ev.iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolCallInput {
+                    id: i,
+                    json_fragment,
+                } if i == id => Some(json_fragment.as_str()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(frag("a"), "{\"x\":1}");
+    assert_eq!(frag("b"), "{}");
+}
+
+#[test]
+fn openai_eof_after_finish_reason_without_done_completes() {
+    let ev = run(
+        &openai(),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"length\"}]}\n\n",
+    );
+    assert_eq!(
+        ev,
+        vec![
+            StreamEvent::Text("hi".into()),
+            StreamEvent::Done(StopReason::MaxTokens)
+        ]
+    );
+}
+
+#[test]
+fn anthropic_tool_call_with_no_arguments() {
+    let ev = run(
+        &anthropic(),
+        concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"ping\",\"input\":{}}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        ),
+    );
+    assert_eq!(
+        ev,
+        vec![
+            StreamEvent::ToolCallStart {
+                id: "t".into(),
+                name: "ping".into()
+            },
+            StreamEvent::ToolCallEnd { id: "t".into() },
+            StreamEvent::Done(StopReason::EndTurn),
+        ]
+    );
+}
+
+#[test]
+fn anthropic_thinking_without_signature_emits_no_reasoning_data() {
+    let ev = run(
+        &anthropic(),
+        concat!(
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hm\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        ),
+    );
+    assert_eq!(
+        ev,
+        vec![
+            StreamEvent::Reasoning("hm".into()),
+            StreamEvent::Done(StopReason::EndTurn)
+        ]
+    );
+}
+
+#[test]
+fn anthropic_interleaved_tool_blocks_keep_their_ids() {
+    let d = |i: u32, f: &str| {
+        format!(
+            "data: {{\"type\":\"content_block_delta\",\"index\":{i},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{f}\"}}}}\n\n"
+        )
+    };
+    let start = |i: u32, id: &str| {
+        format!(
+            "data: {{\"type\":\"content_block_start\",\"index\":{i},\"content_block\":{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"n\"}}}}\n\n"
+        )
+    };
+    let stop = |i: u32| format!("data: {{\"type\":\"content_block_stop\",\"index\":{i}}}\n\n");
+    let stream = [
+        start(0, "A"),
+        start(1, "B"),
+        d(0, "a1"),
+        d(1, "b1"),
+        d(0, "a2"),
+        stop(1),
+        stop(0),
+    ]
+    .concat();
+    let ev = run(&anthropic(), &stream);
+    let inp = |id: &str, f: &str| StreamEvent::ToolCallInput {
+        id: id.into(),
+        json_fragment: f.into(),
+    };
+    assert_eq!(
+        &ev[2..],
+        &[
+            inp("A", "a1"),
+            inp("B", "b1"),
+            inp("A", "a2"),
+            StreamEvent::ToolCallEnd { id: "B".into() },
+            StreamEvent::ToolCallEnd { id: "A".into() },
+            StreamEvent::Error(ProviderError::Truncated),
+        ]
+    );
+}
+
+#[test]
+fn an_endless_line_is_cut_off_with_an_error_not_buffered_forever() {
+    for p in [&anthropic() as &dyn Provider, &openai()] {
+        let mut d = p.decoder();
+        let chunk = vec![b'x'; 1024 * 1024];
+        let mut ev = Vec::new();
+        for _ in 0..10 {
+            ev.extend(d.push(&chunk));
+        }
+        ev.extend(d.finish());
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, StreamEvent::Error(ProviderError::LineTooLong(_)))),
+            "{ev:?}"
+        );
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, StreamEvent::Error(_)))
+                .count(),
+            1
+        );
+    }
+}

@@ -152,6 +152,9 @@ pub enum ProviderError {
     /// The provider reported an error in-band on the stream.
     #[error("provider error ({kind}): {message}")]
     Api { kind: String, message: String },
+    /// A single SSE line exceeded the decoder's size cap.
+    #[error("stream line exceeded the {0}-byte limit")]
+    LineTooLong(usize),
     /// The stream ended before the provider said it was finished.
     #[error("stream ended before the response completed")]
     Truncated,

@@ -25,6 +25,10 @@ pub trait StreamDecoder: Send {
     fn finish(&mut self) -> Vec<StreamEvent>;
 }
 
+/// Cap on one SSE line. A well-formed stream never nears it; a hostile or broken
+/// one must not grow the buffer without limit.
+pub(crate) const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
+
 /// One dispatched server-sent event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SseEvent {
@@ -41,10 +45,19 @@ pub(crate) struct SseParser {
     event: Option<String>,
     data: Vec<String>,
     started: bool,
+    overflowed: bool,
 }
 
 impl SseParser {
+    /// True once a line exceeded [`MAX_LINE_BYTES`]; the parser then drops input.
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
     pub fn push(&mut self, bytes: &[u8]) -> Vec<SseEvent> {
+        if self.overflowed {
+            return Vec::new();
+        }
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
         let mut start = 0;
@@ -55,6 +68,10 @@ impl SseParser {
             self.line(&line, &mut out);
         }
         self.buf.drain(..start);
+        if self.buf.len() > MAX_LINE_BYTES {
+            self.buf = Vec::new();
+            self.overflowed = true;
+        }
         out
     }
 

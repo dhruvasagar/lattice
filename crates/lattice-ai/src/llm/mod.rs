@@ -10,7 +10,12 @@
 //! round-trip text, reasoning (with opaque provider data), tool calls and tool
 //! results. Nothing here depends on the `acp` feature.
 
+pub mod chat;
+pub mod commands;
+pub mod config;
+pub mod history;
 pub mod install;
+pub mod modes;
 pub mod provider;
 pub mod request;
 pub mod transport;

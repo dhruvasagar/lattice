@@ -45,7 +45,7 @@ pub fn project_conversation(conv: &Conversation) -> (String, Vec<ConversationFol
     for turn in &conv.turns {
         let who = match turn.role {
             Role::User => "you",
-            Role::Assistant => "opencode",
+            Role::Assistant => conv.assistant_label(),
         };
         out.push_str(who);
         out.push_str(":\n");
@@ -160,6 +160,24 @@ pub fn project_conversation(conv: &Conversation) -> (String, Vec<ConversationFol
         }
         out.push('\n');
         line += 1;
+    }
+    // Prompts waiting behind a streaming reply, then the last failure. Both
+    // sit after the turns so the history above them never shifts.
+    for text in &conv.queued {
+        out.push_str("you (queued):\n");
+        for l in text.split('\n') {
+            out.push_str(l);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if let Some(err) = &conv.error {
+        for (i, l) in err.split('\n').enumerate() {
+            out.push_str(if i == 0 { "! " } else { "  " });
+            out.push_str(l);
+            out.push('\n');
+        }
+        out.push('\n');
     }
     (out, folds)
 }
@@ -453,5 +471,46 @@ mod tests {
         };
         let text = render_conversation(&conv);
         assert!(text.contains("\u{2717} Allow cargo test? [denied]"));
+    }
+
+    #[test]
+    fn the_assistant_label_defaults_to_opencode_and_can_be_a_model_name() {
+        let mut conv = Conversation {
+            turns: vec![text_turn(Role::Assistant, "hi")],
+            ..Default::default()
+        };
+        assert!(render_conversation(&conv).starts_with("opencode:\n"));
+        conv.assistant_label = Some("claude-x".into());
+        assert!(render_conversation(&conv).starts_with("claude-x:\n"));
+    }
+
+    #[test]
+    fn queued_prompts_and_the_error_follow_the_turns() {
+        let conv = Conversation {
+            turns: vec![text_turn(Role::User, "q")],
+            queued: vec!["next\nline".into()],
+            error: Some("boom\nmore".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            render_conversation(&conv),
+            "you:\nq\n\nyou (queued):\nnext\nline\n\n! boom\n  more\n\n"
+        );
+    }
+
+    /// The drain clears the prompt exactly when this rises, so a queued prompt
+    /// becoming a turn must leave it unchanged.
+    #[test]
+    fn submission_count_rises_on_a_submit_and_not_on_a_dequeue() {
+        let mut conv = Conversation::default();
+        assert_eq!(conv.submission_count(), 0);
+        conv.push_user_text("a");
+        conv.queued.push("b".into());
+        assert_eq!(conv.submission_count(), 2);
+        let next = conv.queued.remove(0);
+        conv.push_user_text(&next);
+        assert_eq!(conv.submission_count(), 2);
+        conv.extend_text(Role::Assistant, "agent text");
+        assert_eq!(conv.submission_count(), 2, "agent turns do not count");
     }
 }

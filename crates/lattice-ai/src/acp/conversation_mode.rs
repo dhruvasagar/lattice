@@ -5,38 +5,33 @@
 //! [`ConversationStore`](crate::conversation::ConversationStore) service,
 //! seeds the buffer from the current snapshot, subscribes to
 //! [`ConversationUpdated`](crate::conversation::ConversationUpdated), and
-//! spawns a drain task that re-projects on every change. The returned
-//! `Subscription` guard unsubscribes on drop.
+//! spawns a drain task that re-projects on every change. The returned guard
+//! unsubscribes on drop.
 //!
-//! [`render_conversation`] is pure and unit-testable. Projection is a
-//! **line-granular suffix replace**: unchanged leading lines are never
-//! rewritten, so streaming appends touch only the tail and a tool-call status
-//! change rewrites only from its line down (AU‑2 shows status inline as text; a
-//! decoration-based in-place update is a follow-up).
+//! The buffer machinery (anchors, the line-granular re-projection, the drain,
+//! the guard) is shared with the native `llm-chat` mode and lives in
+//! [`crate::conversation::transcript`]; what stays here is what is ACP's: the
+//! headerline's content, the send / interrupt / trust bodies that talk to the
+//! agent, and the mode declaration.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use lattice_cells::{
-    Cell, Headerline, HeaderlineProvider, HeaderlineRow, ProviderId, VirtualRowProvider,
-};
+use lattice_cells::{Cell, Headerline, HeaderlineRow};
 use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_mode::{
-    ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
-    EditableTail, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
-    OptionOverrideSet, ReplMode, Subscription, VirtualRowRegistrar, keymap_entry,
+    ActionContext, ActionHandler, ActionHandlerContribution, CapabilitySet, EditableTail, Keymap,
+    KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet, ReplMode,
+    keymap_entry,
 };
 
 use crate::acp::handle::AiClientHandle;
-use crate::conversation::projection::render_conversation;
-use crate::conversation::tool_fold::{ReasoningFoldSource, ToolCallFoldSource};
-use crate::conversation::{
-    Conversation, ConversationProjected, ConversationStore, ConversationUpdated, Role,
+use crate::conversation::ConversationStore;
+use crate::conversation::transcript::{
+    self, PromptAnchors, TranscriptBinding, TranscriptGuard, humanize, newline_handler, read_prompt,
 };
-
-/// AUX‑2: provider id for the conversation headerline. Derived from a fixed
-/// tag so the host can unregister it on buffer teardown.
-const CONV_HEADERLINE_PROVIDER_ID: ProviderId = 0x4155_0002;
+#[cfg(test)]
+use crate::conversation::{Role, transcript::suffix_replace};
 
 /// AUX‑2/4: headerline that reads the usage snapshot, processing status, and
 /// queue length, and formats them as a sticky row above the buffer.
@@ -90,22 +85,6 @@ fn format_tokens(used: u64, size: u64) -> String {
     format!("{used_s}/{size_s}")
 }
 
-fn humanize(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-
-/// AU‑3: the prompt marker rendered at the head of the editable tail line.
-/// Two bytes, so [`EditableTail::first_line_min_byte`] is `2`: the marker
-/// itself is not user-editable (backspace at the prompt start is refused by
-/// the read-only gate), only the text after it.
-const PROMPT_MARKER: &str = "> ";
-
 /// The synthetic buffer name for the (single, v1) opencode conversation.
 pub fn conversation_buffer_name() -> String {
     "*ai:opencode*".to_string()
@@ -113,13 +92,12 @@ pub fn conversation_buffer_name() -> String {
 
 /// `ai-conversation-mode` -- major mode for the `*ai:opencode*` buffer.
 ///
-/// Holds the prompt's editable-region `anchor`: the absolute line where the
-/// prompt begins (== the transcript line count). The drain updates it on each
-/// re-projection; [`editable_tail`](Mode::editable_tail) publishes it so the
-/// read-only gate lets the user edit a multi-line prompt (`<C-j>` inserts a
-/// newline) while the transcript above stays frozen. One instance backs the
-/// conversation buffer. Anchors are keyed by buffer so several conversations
-/// can coexist: each buffer's guard removes its own entry on deactivate.
+/// Holds the prompt's editable-region anchors: per buffer, the absolute line
+/// where the prompt begins (== the transcript line count). The drain updates
+/// each on re-projection; [`editable_tail`](Mode::editable_tail) publishes it so
+/// the read-only gate lets the user edit a multi-line prompt (`<C-j>` inserts a
+/// newline) while the transcript above stays frozen. One instance backs every
+/// conversation buffer; each buffer's guard removes its own entry on deactivate.
 ///
 /// AUX‑2: `headerline_version` is bumped by the drain on each re-projection so
 /// the `ConversationHeaderline` widget republishes its row when usage changes.
@@ -127,36 +105,6 @@ pub fn conversation_buffer_name() -> String {
 pub struct AiConversationMode {
     anchors: PromptAnchors,
     headerline_version: Arc<AtomicU64>,
-}
-
-/// Per-buffer prompt anchors. Only the buffer's own activation inserts an
-/// entry and only its guard removes it; the drain updates an entry that is
-/// still present, so a re-projection landing after deactivation cannot
-/// resurrect a stale one.
-#[derive(Clone, Default)]
-struct PromptAnchors(
-    Arc<std::sync::RwLock<std::collections::HashMap<lattice_core::BufferId, u32>>>,
-);
-
-impl PromptAnchors {
-    fn get(&self, buffer: lattice_core::BufferId) -> Option<u32> {
-        let map = self.0.read().unwrap_or_else(|e| e.into_inner());
-        map.get(&buffer).copied()
-    }
-    fn seed(&self, buffer: lattice_core::BufferId, line: u32) {
-        let mut map = self.0.write().unwrap_or_else(|e| e.into_inner());
-        map.insert(buffer, line);
-    }
-    fn update(&self, buffer: lattice_core::BufferId, line: u32) {
-        let mut map = self.0.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(slot) = map.get_mut(&buffer) {
-            *slot = line;
-        }
-    }
-    fn remove(&self, buffer: lattice_core::BufferId) {
-        let mut map = self.0.write().unwrap_or_else(|e| e.into_inner());
-        map.remove(&buffer);
-    }
 }
 
 impl Default for AiConversationMode {
@@ -177,80 +125,8 @@ impl AiConversationMode {
     }
 }
 
-/// The absolute line where the prompt begins for a given transcript: the
-/// transcript's line count (each rendered turn ends in `\n`, so the trailing
-/// `PROMPT_MARKER` lands on the next line). Pure — the seed and the drain both
-/// feed this into the mode's anchor.
-fn prompt_anchor_line(transcript: &str) -> u32 {
-    transcript.matches('\n').count() as u32
-}
-
-/// The minimal line-granular replacement turning `old` into `new`: the index of
-/// the first differing line, and the replacement text for everything from that
-/// line onward. `None` when the texts are already equal.
-///
-/// Pure and unit-testable; the mode turns this into an
-/// [`Edit`](lattice_protocol::edit::Edit) against the live buffer positions.
-pub fn suffix_replace(old: &str, new: &str) -> Option<LineSuffixReplace> {
-    if old == new {
-        return None;
-    }
-    let old_lines: Vec<&str> = old.split('\n').collect();
-    let new_lines: Vec<&str> = new.split('\n').collect();
-    let common = old_lines
-        .iter()
-        .zip(new_lines.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    Some(LineSuffixReplace {
-        first_diff_line: common,
-        old_line_count: old_lines.len(),
-        replacement: new_lines[common..].join("\n"),
-    })
-}
-
-/// Result of [`suffix_replace`]: replace lines `first_diff_line..old_line_count`
-/// (0-based, the split-on-`\n` line grid) with `replacement`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LineSuffixReplace {
-    pub first_diff_line: usize,
-    pub old_line_count: usize,
-    pub replacement: String,
-}
-
-/// AU‑3+ activation guard: the `ConversationUpdated` subscription. Dropping
-/// it on deactivation unsubscribes, so a stopped mode contributes no further
-/// work.
-pub struct AiConversationGuard {
-    _subscription: Subscription,
-    /// This buffer's prompt anchor entry, removed on deactivate.
-    anchors: PromptAnchors,
-    buffer_id: lattice_core::BufferId,
-    /// AUX‑2: the headerline provider registration. Removed on deactivate so the
-    /// mode owns its full surface — nothing else in the host knows this provider
-    /// exists, so nothing else can clean it up.
-    headerline: Option<(Arc<dyn VirtualRowRegistrar>, lattice_core::BufferId)>,
-    /// TCF: the tool-call + reasoning fold source registrations. Removed on
-    /// deactivate so the mode owns its full surface — the same Drop-based
-    /// lifecycle `DiffModeGuard` uses for its hunk/unchanged sources. Empty when
-    /// the fold service wasn't registered (some test harnesses) — Drop no-ops.
-    fold_registrations: Vec<(
-        lattice_core::FoldOverlayServiceHandle,
-        lattice_core::ProviderId,
-    )>,
-}
-
-impl Drop for AiConversationGuard {
-    fn drop(&mut self) {
-        self.anchors.remove(self.buffer_id);
-        if let Some((registrar, buffer_id)) = self.headerline.take() {
-            registrar.unregister(buffer_id, CONV_HEADERLINE_PROVIDER_ID);
-        }
-        for (svc, id) in self.fold_registrations.drain(..) {
-            svc.remove_source(id);
-        }
-    }
-}
+/// The activation guard. Shared with the native chat mode.
+pub type AiConversationGuard = TranscriptGuard;
 
 impl Mode for AiConversationMode {
     type Guard = Option<AiConversationGuard>;
@@ -292,21 +168,10 @@ impl Mode for AiConversationMode {
     /// AU‑3: the prompt is the single trailing line, editable only after the
     /// `"> "` marker (2 bytes). Consulted by the host's read-only edit gate so
     /// Insert/operator keystrokes land only in the prompt; the transcript above
-    /// stays owner-written.
+    /// stays owner-written. No anchor means this buffer is not (or no longer) a
+    /// seeded conversation: fully read-only rather than another buffer's prompt.
     fn editable_tail(&self, buffer: lattice_core::BufferId) -> Option<EditableTail> {
-        // No anchor means this buffer is not (or no longer) a seeded
-        // conversation: fully read-only rather than another buffer's prompt.
-        let anchor = self.anchors.get(buffer)?;
-        Some(EditableTail {
-            trailing_lines: 1,
-            first_line_min_byte: PROMPT_MARKER.len() as u32,
-            // Absolute anchor = the transcript-end line, kept current by the
-            // drain. Lets the read-only gate cover a MULTI-line prompt (`<C-j>`):
-            // every line at or below the anchor is editable, the transcript
-            // above is frozen. The `trailing_lines: 1` above is the inert
-            // fallback for the first frame before the anchor is seeded.
-            first_editable_line: Some(anchor),
-        })
+        self.anchors.editable_tail(buffer)
     }
 
     /// AU‑3: the modal-input surface. Insert-entering chords relocate the
@@ -359,232 +224,51 @@ impl Mode for AiConversationMode {
                 return Ok(None);
             };
 
-            // Sync the buffer to the current snapshot with a single full replace
-            // (handles a fresh OR reopened buffer uniformly). `last` then tracks
-            // the buffer content so subsequent updates diff self-consistently --
-            // no fragile buffer-text round-trip.
-            // AU‑3: `last` tracks the *conversation zone* only; the buffer is
-            // `{conversation}{PROMPT_MARKER}` with the editable prompt as the
-            // trailing line. Seeding appends the marker once; the update path
-            // below is unchanged because `suffix_edit`'s replace range ends at
-            // `text_end(last)` — the start of the prompt line — so re-projecting
-            // the transcript never rewrites the user's in-progress prompt.
-            let seed = conv_store.snapshot();
-            let mut last = render_conversation(&seed);
-            let mut last_user_turns = user_turn_count(&seed);
-            full_replace(&handle, &format!("{last}{PROMPT_MARKER}")).await;
-
-            // AU‑3+ (`<C-j>` multi-line prompt): the editable-region anchor, the
-            // absolute line where the prompt begins. `editable_tail` publishes it
-            // to the read-only gate; the drain keeps it current as the transcript
-            // streams. Seed it from the initial transcript.
-            let anchors = self.anchors.clone();
-            anchors.seed(buffer_id, prompt_anchor_line(&last));
-
-            // AUX‑2: register the conversation headerline (token/cost display).
-            // `conv_store` is `Arc<ConversationStore>` from the service lookup;
-            // cloning the Arc gives another reference to the same store.
+            // AUX‑2: the conversation headerline (token/cost display).
             let hl_version = self.headerline_version.clone();
-            let headerline_registration =
-                ctx.service::<Arc<dyn VirtualRowRegistrar>>()
-                    .map(|registrar| {
-                        let queue_len = ctx
-                            .service::<AiClientHandle>()
-                            .map(|h| h.queue_len.clone())
-                            .unwrap_or_default();
-                        let headerline = ConversationHeaderline {
-                            store: (*conv_store).clone(),
-                            version: hl_version.clone(),
-                            queue_len,
-                        };
-                        let provider = Arc::new(HeaderlineProvider::new(
-                            CONV_HEADERLINE_PROVIDER_ID,
-                            Arc::new(headerline),
-                        ));
-                        let registrar: Arc<dyn VirtualRowRegistrar> = (*registrar).clone();
-                        // The provider id is a fixed tag, and `register` refuses to
-                        // replace a live id. Clear any registration a previous
-                        // activation left behind so a re-opened `:opencode` binds its
-                        // own headerline rather than silently keeping the stale one.
-                        registrar.unregister(buffer_id, CONV_HEADERLINE_PROVIDER_ID);
-                        registrar.register(buffer_id, provider as Arc<dyn VirtualRowProvider>);
-                        (registrar, buffer_id)
-                    });
-
-            // TCF: register the tool-call + reasoning fold sources. Each holds a
-            // `ConversationStore` clone and reads the published snapshot on every
-            // `recompute_folds` (driven by the drain's owner-write edits bumping
-            // the buffer version → `maybe_reparse_syntax`). Mirrors
-            // `DiffMode::on_activate`; the guard's Drop removes them. Distinct
-            // provider ids so each deregisters independently. `ctx.service`
-            // yields `Arc<FoldOverlayServiceHandle>` (an `Arc<Arc<dyn …>>`);
-            // unwrap one layer to the inner handle.
-            let fold_registrations = ctx
-                .service::<lattice_core::FoldOverlayServiceHandle>()
-                .map(|outer| {
-                    let svc = (*outer).clone();
-                    let tool: Arc<dyn lattice_core::FoldSource> =
-                        Arc::new(ToolCallFoldSource::new((*conv_store).clone(), buffer_id));
-                    let tool_id = svc.add_source(tool, buffer_id);
-                    let reasoning: Arc<dyn lattice_core::FoldSource> =
-                        Arc::new(ReasoningFoldSource::new((*conv_store).clone(), buffer_id));
-                    let reasoning_id = svc.add_source(reasoning, buffer_id);
-                    vec![(svc.clone(), tool_id), (svc, reasoning_id)]
-                })
+            let queue_len = ctx
+                .service::<AiClientHandle>()
+                .map(|h| h.queue_len.clone())
                 .unwrap_or_default();
-
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
-            let sub_id = ctx.events().subscribe_typed::<ConversationUpdated>(tx);
-            let bus_handle = ctx.events_handle();
-            // A separate handle for the drain to *publish* `ConversationProjected`
-            // once its edit lands (see below).
-            let projected_bus = ctx.events_handle();
-
-            let drain_anchors = anchors.clone();
-            let drain_hl_version = hl_version;
-            runtime.spawn(async move {
-                // Coalesce a burst of updates into one re-projection.
-                while rx.recv().await.is_some() {
-                    while rx.try_recv().is_ok() {}
-                    let snap = conv_store.snapshot();
-                    let new = render_conversation(&snap);
-                    let user_turns = user_turn_count(&snap);
-                    // Keep the editable-region anchor on the transcript-end line:
-                    // a re-projection may grow the transcript above the prompt
-                    // (streaming) or reset it (send), moving where the prompt
-                    // begins. Store before the edit so the gate is consistent
-                    // with the new content on the next keystroke.
-                    drain_anchors.update(buffer_id, prompt_anchor_line(&new));
-                    // A new User turn means the user just sent a prompt. Rewrite
-                    // the tail through EOF and re-append an empty prompt marker,
-                    // clearing the prompt *atomically* with the transcript update.
-                    // The send handler deliberately emits no clear edit: a
-                    // separate clear would race this re-projection (which shifts
-                    // the prompt line down) and land on the wrong, now-read-only
-                    // line. On agent-only updates we leave the user's in-progress
-                    // prompt untouched.
-                    let _did_clear = user_turns > last_user_turns;
-                    let _changed = reproject(&handle, &last, &new, _did_clear).await;
-                    // AUX‑2: bump the headerline version on every re-projection so
-                    // the ConversationHeaderline widget republishes its row (usage
-                    // may have changed).
-                    drain_hl_version.fetch_add(1, Ordering::Release);
-
-                    // Wake the editor actor now that the edit has LANDED, so the
-                    // streamed response repaints (and the focus tick callback
-                    // runs) WITHOUT a keystroke. Published after the await — not
-                    // via `ConversationUpdated`, which fires before the buffer is
-                    // re-projected — so the wake never repaints stale content.
-                    //
-                    // AUX‑2: published unconditionally, NOT gated on the
-                    // transcript text changing. The headerline reads status,
-                    // usage and queue length — none of which appear in the
-                    // transcript — so a `usage_update` re-projects to identical
-                    // text yet must still repaint. Gating this on text change
-                    // froze the headerline at "Ready" forever.
-                    projected_bus.publish_typed(ConversationProjected);
-                    last = new;
-                    last_user_turns = user_turns;
-                }
+            let headerline: Arc<dyn Headerline> = Arc::new(ConversationHeaderline {
+                store: (*conv_store).clone(),
+                version: hl_version.clone(),
+                queue_len,
             });
 
-            Ok(Some(AiConversationGuard {
-                _subscription: Subscription::new(bus_handle, sub_id),
-                anchors,
+            let guard = transcript::bind(TranscriptBinding {
+                ctx: &ctx,
                 buffer_id,
-                headerline: headerline_registration,
-                fold_registrations,
-            }))
+                handle,
+                store: (*conv_store).clone(),
+                anchors: self.anchors.clone(),
+                headerline: Some(headerline),
+                headerline_version: hl_version,
+                only_session: None,
+                runtime,
+            })
+            .await;
+            Ok(Some(guard))
         })
     }
-}
-
-/// (line, col) of the end of `s` on the split-on-`\n` line grid.
-fn text_end(s: &str) -> (u32, u32) {
-    let last_line = s.split('\n').count().saturating_sub(1);
-    let last_len = s.rsplit('\n').next().map(str::len).unwrap_or(0);
-    (last_line as u32, last_len as u32)
-}
-
-/// Replace the entire buffer with `text`.
-async fn full_replace(handle: &std::sync::Arc<dyn lattice_runtime::Document>, text: &str) {
-    let snap = handle.snapshot();
-    let last_line = snap.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — whole-buffer extent
-    let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
-    let range = lattice_protocol::Range::new(
-        lattice_protocol::position::Position::new(0, 0),
-        lattice_protocol::position::Position::new(last_line, last_len),
-    );
-    let edit = lattice_protocol::edit::Edit::replace(range, text.to_string());
-    let _ = handle.apply_edit_batch(vec![edit]).await;
-}
-
-/// Number of `User`-role turns in the conversation. A send is the only thing
-/// that adds one (`ConversationStore::push_user_text`), so an increase between
-/// re-projections is the drain's reliable "the prompt was just sent" signal.
-fn user_turn_count(conv: &Conversation) -> usize {
-    conv.turns.iter().filter(|t| t.role == Role::User).count()
-}
-
-/// Re-project the transcript zone `last` → `new` into the buffer with one edit.
-///
-/// When `clear_prompt` (a send just added a User turn) the edit extends through
-/// the *current* prompt line to EOF and re-appends an empty `PROMPT_MARKER`, so
-/// the transcript grows and the prompt resets in a single atomic edit — the
-/// drain owns the prompt's lifecycle, so there is no separate clear edit to race
-/// this re-projection. Otherwise the edit ends at the prompt-line start, leaving
-/// the user's in-progress prompt intact while the agent streams.
-/// Returns `true` when an edit was applied (the transcript changed), `false`
-/// when `last == new` and the buffer was left untouched. The drain uses this to
-/// wake the render loop only when something actually changed.
-async fn reproject(
-    handle: &std::sync::Arc<dyn lattice_runtime::Document>,
-    last: &str,
-    new: &str,
-    clear_prompt: bool,
-) -> bool {
-    let Some(rep) = suffix_replace(last, new) else {
-        return false; // transcript text unchanged
-    };
-    let (end, replacement) = if clear_prompt {
-        let snap = handle.snapshot();
-        let last_line = snap.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — whole-buffer extent
-        let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
-        (
-            (last_line, last_len),
-            format!("{}{}", rep.replacement, PROMPT_MARKER),
-        )
-    } else {
-        (text_end(last), rep.replacement)
-    };
-    let range = lattice_protocol::Range::new(
-        lattice_protocol::position::Position::new(rep.first_diff_line as u32, 0),
-        lattice_protocol::position::Position::new(end.0, end.1),
-    );
-    let edit = lattice_protocol::edit::Edit::replace(range, replacement);
-    let _ = handle.apply_edit_batch(vec![edit]).await;
-    true
 }
 
 // ──────────────────────────────────────────────────────────────
 // AU‑3: modal-input surface — keymap entries + action handlers
 // ──────────────────────────────────────────────────────────────
 
-/// The Insert- and Normal-mode chords the `ai-conversation` mode contributes.
-/// The Normal-mode insert-entry chords (`i`/`a`/`o`/`A`/`I`/`O` →
-/// jump-to-prompt-and-Insert) are NOT here: that is the generic REPL input
-/// surface, owned by `repl-mode` (a minor mode this major pulls in via
-/// [`implies`](Mode::implies)). This keeps vim's universal insert keys off
-/// every ordinary buffer. `<CR>` sends; `<C-j>` inserts a newline; `<C-c>`
-/// interrupts; `<C-t>` toggles trust — all ACP-specific, so they stay here.
 /// The minor modes `ai-conversation-mode` implies: `repl-mode` (the generic
-/// REPL input surface). A process-wide static so [`Mode::implies`] can hand back
-/// a `&'static [ModeId]`.
+/// REPL input surface, owner of the Normal-mode insert-entry chords
+/// `i`/`a`/`o`/`A`/`I`/`O`). A process-wide static so [`Mode::implies`] can hand
+/// back a `&'static [ModeId]`.
 fn ai_conversation_implies() -> &'static [ModeId] {
     static IMPLIES: OnceLock<Vec<ModeId>> = OnceLock::new();
     IMPLIES.get_or_init(|| vec![ReplMode::mode_id()])
 }
 
+/// The Insert- and Normal-mode chords the `ai-conversation` mode contributes.
+/// `<CR>` sends; `<C-j>` inserts a newline; `<C-c>` interrupts; `<C-t>` toggles
+/// trust — all ACP-specific, so they stay here.
 fn ai_conversation_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
@@ -623,53 +307,18 @@ fn ai_conversation_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
-/// Join the prompt lines (`anchor..=last`) into the text to send: strip the
-/// `PROMPT_MARKER` from the first (anchor) line, take continuation lines (added
-/// via `<C-j>`) verbatim, and join with `\n`. Pure so the multi-line read is
-/// unit-testable without a live buffer.
-fn assemble_prompt<I: IntoIterator<Item = String>>(lines: I) -> String {
-    lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let line = line.trim_end_matches('\n');
-            if i == 0 {
-                line.strip_prefix(PROMPT_MARKER).unwrap_or(line).to_string()
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// `action:ai-conv-send` — read the full (possibly multi-line) prompt and hand
 /// it to the agent via the `AiClientHandle` service, staying in Insert at the
-/// prompt (only <Esc> returns to Normal). The prompt spans `anchor..EOF`: the
-/// anchor line carries the `PROMPT_MARKER` (stripped), continuation lines from
-/// `<C-j>` do not. An empty prompt is a no-op (Enter does nothing); with no
-/// running session it echoes an error and keeps the prompt. The prompt clear +
-/// caret re-park are owned by the drain's re-projection and the per-tick focus
-/// callback (see `on_activate`), not by this handler — so there is no clear edit
-/// here to race the re-projection.
+/// prompt (only <Esc> returns to Normal). An empty prompt is a no-op (Enter does
+/// nothing); a buffer with no seeded anchor sends nothing; with no running
+/// session it echoes an error and keeps the prompt. The prompt clear + caret
+/// re-park are owned by the drain's re-projection and the host's focus
+/// handling, not by this handler — so there is no clear edit here to race the
+/// re-projection (which shifts the prompt line down and would land the clear on
+/// the wrong, now-read-only line).
 fn send_handler(anchors: PromptAnchors) -> ActionHandler {
     Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
-        let store = ctx.services.get::<BufferStoreHandle>()?;
-        let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
-        let handle = store.handle_for(buffer_id)?;
-        let snap = handle.snapshot();
-        // CV.3: content space — the prompt region is user-typed lines;
-        // a phantom empty line after the terminating newline is not one.
-        let last_line = snap.buffer.content_line_count().saturating_sub(1);
-        // The prompt is `anchor..=last_line` (marker on the anchor line,
-        // `<C-j>` continuation lines below).
-        let anchor_line = anchors.get(buffer_id).unwrap_or(0).min(last_line);
-        let prompt = assemble_prompt(
-            (anchor_line..=last_line).map(|l| snap.buffer.line(l).unwrap_or_default()),
-        );
-        if prompt.trim().is_empty() {
-            return None;
-        }
+        let prompt = read_prompt(ctx, &anchors)?;
         let ai = ctx.services.get::<AiClientHandle>()?;
         // Surface the "no running agent" case instead of silently dropping the
         // prompt: without a live session the supervisor discards `prompt(..)`, so
@@ -684,37 +333,10 @@ fn send_handler(anchors: PromptAnchors) -> ActionHandler {
             });
         }
         ai.prompt(prompt.to_string());
-        // AU‑3+: stay in Insert at the prompt (vim / `:terminal` / `:claude`
-        // parity — only <Esc> returns to Normal). `<CR>` resolved to a mode
-        // handler, so returning `None` consumes the key WITHOUT inserting a
-        // newline, and leaves the modal state untouched (Insert). The prompt is
-        // cleared and the caret re-parked at the fresh prompt by the drain's
-        // re-projection + the per-tick focus callback (see `on_activate`), which
-        // fire once the resulting User turn lands — NOT by a clear edit here (a
-        // separate clear would race the re-projection that shifts the prompt
-        // line down, and land on the wrong, now-read-only line).
+        // `<CR>` resolved to a mode handler, so returning `None` consumes the key
+        // WITHOUT inserting a newline, and leaves the modal state untouched
+        // (Insert).
         None
-    })
-}
-
-/// `action:ai-conv-newline` — insert a literal newline at the cursor, growing
-/// the multi-line prompt. Bound to `<C-j>` (Insert) because `<CR>` is taken by
-/// send, matching the `:terminal` / `:claude` convention. Uses the generic
-/// `Effect::ApplyEdit` edit primitive; the caret parks at column 0 of the new
-/// line. The cursor is always within the prompt (Insert only edits the tail),
-/// so the insert stays inside the editable region.
-fn newline_handler() -> ActionHandler {
-    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
-        let target = lattice_core::BufferId(ctx.buffer_id.0 as u32);
-        let edit = lattice_protocol::edit::Edit::insert(ctx.cursor, "\n".to_string());
-        Some(Effect::ApplyEdit {
-            target,
-            edit,
-            cursor: Some(lattice_protocol::position::Position::new(
-                ctx.cursor.line + 1,
-                0,
-            )),
-        })
     })
 }
 
@@ -787,32 +409,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use crate::acp::conversation::ApplySessionUpdateToStore;
+    use crate::conversation::render_conversation;
     use crate::conversation::{Block, Conversation, SessionStatus, ToolStatus, Turn};
     use lattice_agent::SessionKey;
-
-    fn text_turn(role: Role, text: &str) -> Turn {
-        Turn {
-            role,
-            blocks: vec![Block::Text(text.to_string())],
-        }
-    }
-
-    /// The drain clears the prompt exactly when the User-turn count rises (a
-    /// send), so this count is the load-bearing signal for the clear-vs-preserve
-    /// branch — agent turns must not trip it.
-    #[test]
-    fn user_turn_count_counts_only_user_turns() {
-        let conv = Conversation {
-            turns: vec![
-                text_turn(Role::User, "refactor"),
-                text_turn(Role::Assistant, "on it"),
-                text_turn(Role::User, "also add tests"),
-            ],
-            ..Default::default()
-        };
-        assert_eq!(user_turn_count(&conv), 2);
-        assert_eq!(user_turn_count(&Conversation::default()), 0);
-    }
 
     #[test]
     fn mode_id_is_ai_conversation_mode() {
@@ -820,38 +419,6 @@ mod tests {
             AiConversationMode::mode_id(),
             ModeId::new("ai-conversation-mode")
         );
-    }
-
-    /// AU‑3+ (`<C-j>`): the anchor is the transcript-end line — the number of
-    /// newlines in the rendered transcript (each turn ends in `\n`, so the
-    /// trailing prompt marker lands on the next line).
-    #[test]
-    fn prompt_anchor_line_is_transcript_line_count() {
-        assert_eq!(prompt_anchor_line(""), 0); // empty ⇒ prompt on line 0
-        assert_eq!(prompt_anchor_line("you:\nhi\n"), 2); // prompt on line 2
-        assert_eq!(prompt_anchor_line("a\nb\nc\n"), 3);
-    }
-
-    /// AU‑3+ (`<C-j>`): the send read strips the marker from the first prompt
-    /// line, keeps continuation lines verbatim, and joins with newlines.
-    #[test]
-    fn assemble_prompt_reads_multiline_prompt() {
-        assert_eq!(assemble_prompt(["> hello".to_string()]), "hello");
-        assert_eq!(
-            assemble_prompt([
-                "> line1".to_string(),
-                "line2".to_string(),
-                "line3".to_string()
-            ]),
-            "line1\nline2\nline3",
-        );
-        // Per-line trailing newlines are trimmed; a bare (unmarked) first line
-        // is taken as-is.
-        assert_eq!(
-            assemble_prompt(["> a\n".to_string(), "b\n".to_string()]),
-            "a\nb"
-        );
-        assert_eq!(assemble_prompt(["plain".to_string()]), "plain");
     }
 
     /// AU‑3: the mode declares a prompt tail editable after the 2-byte `"> "`
@@ -875,22 +442,6 @@ mod tests {
         );
     }
 
-    fn guard_for(
-        mode: &AiConversationMode,
-        buffer_id: lattice_core::BufferId,
-    ) -> AiConversationGuard {
-        let bus = Arc::new(lattice_runtime::EventBus::new());
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
-        let sub_id = bus.subscribe_typed::<ConversationUpdated>(tx);
-        AiConversationGuard {
-            _subscription: Subscription::new(bus, sub_id),
-            anchors: mode.anchors.clone(),
-            buffer_id,
-            headerline: None,
-            fold_registrations: Vec::new(),
-        }
-    }
-
     fn first_line(mode: &AiConversationMode, b: lattice_core::BufferId) -> Option<u32> {
         <AiConversationMode as Mode>::editable_tail(mode, b).and_then(|t| t.first_editable_line)
     }
@@ -902,13 +453,13 @@ mod tests {
     fn two_conversation_buffers_keep_their_own_prompt() {
         let mode = AiConversationMode::new();
         let (a, b) = (lattice_core::BufferId(1), lattice_core::BufferId(2));
-        mode.anchors.seed(a, 3);
-        mode.anchors.seed(b, 7);
-        let guard_a = guard_for(&mode, a);
-        let _guard_b = guard_for(&mode, b);
+        let gen_a = mode.anchors.seed(a, 3);
+        let gen_b = mode.anchors.seed(b, 7);
+        let guard_a = AiConversationGuard::for_test(&mode.anchors, a, gen_a);
+        let _guard_b = AiConversationGuard::for_test(&mode.anchors, b, gen_b);
 
         // Streaming into A moves A's anchor only.
-        mode.anchors.update(a, 12);
+        mode.anchors.update(a, gen_a, 12);
         assert_eq!(first_line(&mode, a), Some(12));
         assert_eq!(first_line(&mode, b), Some(7));
 
@@ -918,9 +469,9 @@ mod tests {
         assert_eq!(first_line(&mode, b), Some(7));
 
         // A drain landing after deactivation must not resurrect it.
-        mode.anchors.update(a, 20);
+        mode.anchors.update(a, gen_a, 20);
         assert_eq!(first_line(&mode, a), None);
-        assert_eq!(mode.anchors.0.read().unwrap().len(), 1);
+        assert_eq!(mode.anchors.len(), 1);
     }
 
     /// AU‑3 gap fix: the mode claims its own invocation runner so the host

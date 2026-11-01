@@ -172,6 +172,7 @@ same surface).
 | Agent conversation         | [`ai-conversation-mode`](help:ai-conversation-mode) | ✅      |
 |   — permission prompts     | [`ai-permission-mode`](help:ai-permission-mode) | ✅      |
 |   — agent process log      | [`ai-log-mode`](help:ai-log-mode) | ✅      |
+| LLM chat                   | [`llm-chat-mode`](help:llm-chat-mode) | ✅      |
 | Languages                  | [`languages`](help:languages)            | ✅      |
 | Plain text (fallback)      | [`text-mode`](help:text-mode) | ✅      |
 | Rust                       | [`rust-mode`](help:rust-mode) | ✅      |

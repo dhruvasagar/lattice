@@ -204,6 +204,15 @@ pub struct Turn {
     pub blocks: Vec<Block>,
 }
 
+/// Provider data that must come back verbatim with the reasoning it belongs to
+/// (a signature, say). Opaque to this module: `provider` names whose it is, so a
+/// different provider can drop it on the next request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpaqueReasoning {
+    pub provider: String,
+    pub data: String,
+}
+
 /// The full conversation as a turn/block tree. Streaming *extends* the last
 /// block; earlier turns are never rewritten.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -214,9 +223,54 @@ pub struct Conversation {
     /// AUX‑3: global processing status derived by the supervisor from the active
     /// turn's state. Set via [`ConversationStore::set_status`].
     pub status: SessionStatus,
+    /// Who the projection labels assistant turns as. `None` keeps the ACP
+    /// default (`opencode`); a native chat sets its model name.
+    pub assistant_label: Option<String>,
+    /// Round-trip data for `Reasoning` blocks, keyed by `(turn, block)` index.
+    /// Turns are append-only, so an index names the same block for life.
+    pub reasoning_data: std::collections::BTreeMap<(usize, usize), OpaqueReasoning>,
+    /// The last failure, shown after the transcript and cleared by the next
+    /// send. Not part of the history a model is sent.
+    pub error: Option<String>,
+    /// Prompts submitted while a reply was streaming, oldest first. They join
+    /// the transcript as user turns when they are actually sent, so a streaming
+    /// reply can never be split by a later question.
+    pub queued: Vec<String>,
 }
 
 impl Conversation {
+    /// The label assistant turns carry in the projection.
+    pub fn assistant_label(&self) -> &str {
+        self.assistant_label.as_deref().unwrap_or("opencode")
+    }
+
+    /// How many prompts have been submitted: sent as user turns, or queued.
+    /// Only a submission raises it (a queued prompt becoming a turn leaves it
+    /// unchanged), so an increase is the drain's "clear the prompt" signal.
+    pub fn submission_count(&self) -> usize {
+        self.turns.iter().filter(|t| t.role == Role::User).count() + self.queued.len()
+    }
+
+    /// Attach round-trip data to the most recent `Reasoning` block.
+    pub fn attach_reasoning_data(&mut self, data: OpaqueReasoning) {
+        let Some((t, turn)) = self
+            .turns
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, turn)| turn.role == Role::Assistant)
+        else {
+            return;
+        };
+        if let Some(b) = turn
+            .blocks
+            .iter()
+            .rposition(|b| matches!(b, Block::Reasoning(_)))
+        {
+            self.reasoning_data.insert((t, b), data);
+        }
+    }
+
     /// AU‑3: append a complete user prompt as a new `User` turn. Each Enter is
     /// a distinct turn (the terminal-REPL model), so — unlike chunk-streamed
     /// agent output — this always opens a fresh turn rather than extending.

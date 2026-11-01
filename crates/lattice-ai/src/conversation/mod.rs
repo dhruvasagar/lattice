@@ -11,10 +11,11 @@
 pub mod model;
 pub mod projection;
 pub mod tool_fold;
+pub mod transcript;
 
 pub use model::{
     Block, Conversation, ConversationProjected, ConversationStore, ConversationUpdated, Cost,
-    EditStatus, PendingPermissionView, PermissionKind, PermissionOption, PermissionStatus, Role,
+    EditStatus, OpaqueReasoning, PendingPermissionView, PermissionKind, PermissionOption, PermissionStatus, Role,
     SessionStatus, ToolKind, ToolStatus, Turn, UsageSnapshot,
 };
 pub use projection::{project_conversation, render_conversation};

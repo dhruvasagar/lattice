@@ -1,19 +1,52 @@
-//! Boot wiring for the llm layer: registers the [`RequestRegistry`] service.
+//! Boot wiring for the llm layer: the request registry, the chat registry, the
+//! `llm-chat` mode and `:llm`.
 
 use std::sync::Arc;
 
 use lattice_mode::SubsystemBoot;
 
+use super::chat::{LlmChats, LlmChatsHandle, spawn_turn_listener};
+use super::config::LlmConfig;
+use super::modes::chat::{LlmChatMode, register_actions};
 use super::request::{RequestRegistry, RequestRegistryHandle};
 
-/// Register the request registry on the boot runtime, publishing state changes
-/// to the event bus. Look it up as [`RequestRegistryHandle`] (the same type used
-/// here -- `Arc<X>` registered under a different `T` would silently miss).
+/// Register the llm layer's services, mode and command. Look services up as
+/// their `*Handle` types (the same type used here -- `Arc<X>` registered under a
+/// different `T` would silently miss).
 pub fn install(boot: &mut impl SubsystemBoot) {
     let registry: RequestRegistryHandle = Arc::new(RequestRegistry::new(
         boot.runtime_handle().clone(),
         Some(boot.event_bus().clone()),
         None,
     ));
-    boot.register_service::<RequestRegistryHandle>(registry);
+    boot.register_service::<RequestRegistryHandle>(registry.clone());
+
+    // The user's `[llm]` table, read once here (boot is not the editor thread's
+    // hot path). Problems become log lines; a bad provider is skipped.
+    let config = LlmConfig::load_user();
+    for warning in &config.warnings {
+        tracing::warn!(target: "lattice::llm", "{warning}");
+    }
+
+    let chats: LlmChatsHandle = Arc::new(LlmChats::new(
+        boot.runtime_handle().clone(),
+        registry,
+        boot.event_bus().clone(),
+        config,
+    ));
+    spawn_turn_listener(chats.clone(), boot.event_bus());
+    boot.register_service::<LlmChatsHandle>(chats.clone());
+
+    boot.modes_mut()
+        .register(LlmChatMode::new(chats.clone()))
+        .expect("llm-chat-mode register");
+    register_actions(boot.commands_mut());
+    super::commands::register(boot.commands_mut(), chats);
+
+    // The drain publishes `ConversationProjected` after each re-projection edit
+    // lands; waking the editor on it is what paints a streamed reply without a
+    // keystroke. The ACP install registers the same wake; only add it when that
+    // feature is absent so it is not subscribed twice.
+    #[cfg(not(feature = "acp"))]
+    boot.wake_on_event::<crate::conversation::ConversationProjected>();
 }

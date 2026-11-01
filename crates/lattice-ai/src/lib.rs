@@ -17,10 +17,13 @@
 pub mod commands;
 
 // LL.1: the protocol-neutral conversation model, its projection and fold
-// sources. Gated on `acp` for now (its only producer); LL.3 widens the gate to
-// `llm`.
-#[cfg(feature = "acp")]
+// sources. Gated on `acp` or `llm`, its two producers.
+#[cfg(any(feature = "acp", feature = "llm"))]
 pub mod conversation;
+
+// LL.3: direct model-API layer (provider adapters; no I/O yet).
+#[cfg(feature = "llm")]
+pub mod llm;
 
 // AG-5: the ACP adapter, gated on `feature = "acp"`. Symmetric with `mcp`: both
 // transport adapters are self-contained submodules under this crate. Drives

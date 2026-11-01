@@ -6,8 +6,7 @@
 //! in `acp::conversation`, and the native LLM layer drives the same mutators.
 //! A grep test (`tests/conversation_names_no_protocol.rs`) holds that line.
 //!
-//! Compiled whenever a conversation producer is (`acp` today; LL.3 widens the
-//! gate to `llm`).
+//! Compiled whenever a conversation producer is (`acp` or `llm`).
 
 pub mod model;
 pub mod projection;

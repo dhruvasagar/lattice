@@ -6,11 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = ["acp", "mcp"]
+default = ["acp", "mcp", "llm"]
 # ACP agent-client transport (opencode et al): the JSON-RPC `connection`,
 # `session`, `providers`, the `supervisor` + `AiClientHandle`, and the
 # `:opencode` / `:ai-prompt` / `:ai-stop` ex-commands.
 acp = ["dep:agent-client-protocol", "dep:tokio-util", "dep:linkme", "tokio/process"]
+# Direct model-API layer: no-I/O provider adapters (LL.3), later the engine. Shares
+# the protocol-neutral `conversation` model with `acp`; never depends on it.
+llm = ["dep:linkme"]
 # MCP IDE-peer transport (Claude Code, folded in by AG-4): the loopback
 # WebSocket server + the read / write / diff tools it exposes.
 mcp = ["dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]

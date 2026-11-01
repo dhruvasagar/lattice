@@ -346,6 +346,44 @@ async fn a_fold_option_re_projects_the_open_chat_without_a_keypress() {
     assert!(rx.try_recv().is_err());
 }
 
+#[tokio::test]
+async fn a_global_fold_change_re_projects_the_open_chat_without_a_keypress_or_chunk() {
+    let (addr, _seen) = recording_server(Duration::ZERO).await;
+    let (chats, bus) = chats_with(config(addr, ""));
+    let registry = Arc::new(lattice_config::ConfigRegistry::new());
+    registry.init_from_linkme();
+    chats.set_registry(registry.clone());
+    let session = chats.create();
+    let buffer = bind(&chats, &session, 16);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
+    bus.subscribe_typed::<ConversationUpdated>(tx);
+
+    // The first resolution settles the baseline.
+    chats.on_buffer_options(buffer, &ResolvedOptions::new());
+    while rx.try_recv().is_ok() {}
+
+    // `:set llm.fold.reasoning=open` changes the global registry only; the host
+    // then re-resolves the buffer, whose session values are unchanged.
+    registry
+        .parse_and_set_command("llm.fold.reasoning=open")
+        .unwrap();
+    chats.on_buffer_options(buffer, &ResolvedOptions::new());
+    let ev = tokio::time::timeout(WAIT, rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ev.session, session.key);
+    assert_eq!(
+        chats.projection_options_for(buffer).reasoning,
+        lattice_ai::conversation::FoldDisplay::Open
+    );
+
+    // Re-resolving with nothing new churns nothing.
+    while rx.try_recv().is_ok() {}
+    chats.on_buffer_options(buffer, &ResolvedOptions::new());
+    assert!(rx.try_recv().is_err());
+}
+
 fn echoed(e: &Effect) -> String {
     let Effect::Many(items) = e else {
         panic!("expected Many, got {e:?}");

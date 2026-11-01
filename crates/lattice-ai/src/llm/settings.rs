@@ -651,7 +651,18 @@ pub fn resolve(
     acc.apply(&layers.global, OptionOrigin::GlobalConfig);
     // 2. profile
     if let (Some(name), Some(set)) = (&profile_name, profile_set) {
-        acc.apply(set, OptionOrigin::Profile { name: name.clone() });
+        let origin = OptionOrigin::Profile { name: name.clone() };
+        // A profile named by pasted text is still pasted text: it may narrow
+        // tools but not widen them, whatever the profile itself carries.
+        if trust == Trust::Pasted && req.profile.is_some() {
+            let entries = set
+                .iter()
+                .filter_map(|(k, v)| k.file_key().map(|n| (n.to_string(), v.clone())));
+            let kept = apply_restricted(entries, "a prompt", &mut acc.tools, &mut refused);
+            acc.apply(&kept, origin);
+        } else {
+            acc.apply(set, origin);
+        }
     }
     // 3. project, through the trust table
     if let Some(project) = &layers.project {
@@ -1051,6 +1062,41 @@ mod tests {
         // The same text from the user is honoured.
         let r = run(&layers(), &req, Trust::User);
         assert_eq!(r.values.destination.as_deref(), Some("below"));
+        assert!(r.refused.is_empty());
+    }
+
+    #[test]
+    fn a_profile_named_in_a_pasted_prompt_may_only_narrow_tools() {
+        let mut l = layers();
+        l.global.insert(SettingKey::Tools, "read,grep".into());
+        l.profiles.insert(
+            "wide".into(),
+            set(&[
+                (SettingKey::Model, "wide-model"),
+                (SettingKey::Tools, "read,exec"),
+                (SettingKey::Destination, "below"),
+            ]),
+        );
+        let req = RequestOverrides {
+            profile: Some("wide".into()),
+            ..Default::default()
+        };
+        let r = run(&l, &req, Trust::Pasted);
+        assert_eq!(
+            r.values.tools,
+            ["read".to_string(), "grep".to_string()]
+                .into_iter()
+                .collect(),
+            "the profile's wider set must not apply"
+        );
+        assert_eq!(r.values.model.as_deref(), Some("wide-model"));
+        assert_eq!(r.values.destination, None);
+        let mut keys = refused_keys(&r);
+        keys.sort();
+        assert_eq!(keys, vec!["destination", "tools"]);
+        // The same profile chosen by the user applies in full.
+        let r = run(&l, &req, Trust::User);
+        assert!(r.values.tools.contains("exec"));
         assert!(r.refused.is_empty());
     }
 

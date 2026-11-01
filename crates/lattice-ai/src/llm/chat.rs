@@ -153,6 +153,9 @@ pub struct LlmChats {
     /// [`on_buffer_options`](Self::on_buffer_options). Looked up per call: this
     /// map is replaced entry by entry, so a clone of one entry would go stale.
     sessions: RwLock<HashMap<BufferId, RawSet>>,
+    /// The fold values each chat buffer was last re-projected under, so a change
+    /// at ANY layer (a global `:set` leaves the session values untouched) is seen.
+    folds_seen: RwLock<HashMap<BufferId, (FoldDisplay, FoldDisplay)>>,
     /// Where `.lattice/llm.toml` is looked for. `None` finds the project root
     /// from the working directory when a request starts.
     project_root: RwLock<Option<std::path::PathBuf>>,
@@ -175,6 +178,7 @@ impl LlmChats {
             config: RwLock::new(config),
             registry: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
+            folds_seen: RwLock::new(HashMap::new()),
             project_root: RwLock::new(None),
             next_chat: AtomicU32::new(1),
             next_bind: AtomicU64::new(1),
@@ -293,8 +297,24 @@ impl LlmChats {
                 true
             }
         };
-        if changed && let Some(chat) = self.for_buffer(buffer) {
-            chat.store.mutate(&chat.key, |_| {});
+        // Compare the EFFECTIVE fold values (session over global), not just the
+        // session set: `:set llm.fold.reasoning=open` changes only the global
+        // registry, and the host's re-resolution then arrives with the session
+        // values unchanged.
+        let mut repaint = changed;
+        if let Some(chat) = self.for_buffer(buffer) {
+            let now = self.projection_options_for(buffer);
+            let now = (now.reasoning, now.tools);
+            let before = self
+                .folds_seen
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(buffer, now)
+                .unwrap_or_default();
+            repaint |= before != now;
+            if repaint {
+                chat.store.mutate(&chat.key, |_| {});
+            }
         }
         changed
     }

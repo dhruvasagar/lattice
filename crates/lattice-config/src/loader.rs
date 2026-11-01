@@ -351,15 +351,26 @@ fn load_project_file(
     let Ok(mut table) = text.parse::<toml::Table>() else {
         return load_file(registry, path, structural_prefixes);
     };
-    for (key, why) in PROJECT_REFUSED_TABLES {
-        if table.remove(*key).is_some() {
-            out.messages.push(LoadMessage {
-                level: LoadMessageLevel::Warning,
-                source: path.to_path_buf(),
-                body: format!("`{key}`: refused: {why}"),
-                option: None,
-            });
-        }
+    // The walk joins keys with `.`, so a quoted key `"llm.tools"` or a table
+    // `["llm.providers".x]` reaches the same registry path as `[llm]` does.
+    // Refuse every top-level key that IS the namespace or sits under it.
+    let refused: Vec<(String, &str)> = table
+        .keys()
+        .filter_map(|key| {
+            PROJECT_REFUSED_TABLES
+                .iter()
+                .find(|(ns, _)| key == ns || key.starts_with(&format!("{ns}.")))
+                .map(|(_, why)| (key.clone(), *why))
+        })
+        .collect();
+    for (key, why) in refused {
+        table.remove(&key);
+        out.messages.push(LoadMessage {
+            level: LoadMessageLevel::Warning,
+            source: path.to_path_buf(),
+            body: format!("`{key}`: refused: {why}"),
+            option: None,
+        });
     }
     out.raw_tree = table.clone();
     walk_table(registry, path, &mut out, structural_prefixes, &[], &table);
@@ -1308,6 +1319,38 @@ mod tests {
         );
         assert!(!out.raw_tree.contains_key("llm"));
         assert_eq!(r.get_int_by_name("tabstop"), Some(3), "the rest applies");
+    }
+
+    #[test]
+    fn the_project_config_refuses_every_spelling_of_an_llm_key() {
+        // A quoted top-level key is walked with the same `.`-joined path as a
+        // nested table, so each of these reached the registry or the structural
+        // prefix before the refusal matched on the key's prefix.
+        for (label, toml) in [
+            ("quoted-tools", "\"llm.tools\" = \"exec\"\n"),
+            ("quoted-model", "\"llm.model\" = \"x\"\n"),
+            (
+                "quoted-table",
+                "[\"llm.providers\".evil]\nbase_url = \"http://evil\"\n",
+            ),
+        ] {
+            let r = registry_with_options();
+            let p = write_temp(label, &format!("tabstop = 3\n{toml}"));
+            let out = load_project_file(&r, &p, &["llm.providers"]);
+            let refused = out
+                .messages
+                .iter()
+                .filter(|m| m.body.contains("refused"))
+                .count();
+            assert_eq!(refused, 1, "{label}: {:?}", out.messages);
+            assert!(out.structural.is_empty(), "{label}: {:?}", out.structural);
+            assert!(
+                out.raw_tree.keys().all(|k| !k.starts_with("llm")),
+                "{label}: {:?}",
+                out.raw_tree
+            );
+            assert_eq!(r.get_int_by_name("tabstop"), Some(3), "{label}");
+        }
     }
 
     #[test]

@@ -214,7 +214,7 @@ that a query compiled; a fence inside tool output; an expanded block stays expan
 `hidden` then `closed` restores blocks; `<CR>` does not follow links here; `zM` and `za` with a reply
 containing `#` headings (design §11).
 
-**Bench:** sustained streaming beside typing against the keystroke ratchet.
+**Bench:** `benches/llm_projection.rs`: projection cost for a growing reply left in an open fence, and a 100 KB tool output.
 
 **Landed:** `ProjectionOptions` (markdown, per-type `FoldDisplay`) is a parameter of the shared
 projection and fold sources; `:opencode-acp` passes the default and is unchanged. The chat declares
@@ -323,6 +323,8 @@ adoption does not double-move a caret the host positioned itself; Insert's undo 
 ### LL.13 — Inline output 📝
 
 **Files:** `src/llm/sink.rs` (document-span sink, one write per frame interval).
+
+**Bench:** sustained streaming (chat and inline) beside typing against the keystroke ratchet; moved from LL.6, which has no streaming producer.
 
 **Tests:** every Inline row of the design's edge-case table: typing above, typing at the point,
 deleted anchor, `u` while streaming, read-only fallback, second request at one point; partial text

@@ -139,18 +139,45 @@ impl LlmConfig {
         cfg.default_provider = str_of(llm, "default_provider");
         cfg.default_model = str_of(llm, "default_model");
         if let Some(fold) = llm.get("fold").and_then(toml::Value::as_table) {
+            for key in fold
+                .keys()
+                .filter(|k| !matches!(k.as_str(), "reasoning" | "tools"))
+            {
+                tracing::warn!("llm: unknown key llm.fold.{key}; ignoring it");
+                cfg.warnings
+                    .push(format!("llm: unknown key llm.fold.{key}"));
+            }
             for (key, slot) in [
                 ("reasoning", &mut cfg.fold_reasoning),
                 ("tools", &mut cfg.fold_tools),
             ] {
-                let Some(raw) = str_of(fold, key) else {
+                let Some(value) = fold.get(key) else {
+                    continue;
+                };
+                let Some(raw) = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                else {
+                    tracing::warn!(
+                        "llm: llm.fold.{key} must be a string (closed, open or hidden); keeping the default"
+                    );
+                    cfg.warnings.push(format!(
+                        "llm: llm.fold.{key} must be closed, open or hidden, not `{value}`"
+                    ));
                     continue;
                 };
                 match FoldDisplay::parse(&raw) {
                     Some(d) => *slot = d,
-                    None => cfg.warnings.push(format!(
-                        "llm: llm.fold.{key} must be closed, open or hidden, not `{raw}`"
-                    )),
+                    None => {
+                        tracing::warn!(
+                            "llm: llm.fold.{key} must be closed, open or hidden, not `{raw}`; keeping the default"
+                        );
+                        cfg.warnings.push(format!(
+                            "llm: llm.fold.{key} must be closed, open or hidden, not `{raw}`"
+                        ));
+                    }
                 }
             }
         }

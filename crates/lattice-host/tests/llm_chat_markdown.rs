@@ -289,6 +289,8 @@ async fn enter_does_not_follow_a_markdown_link_in_the_transcript() {
     assert!(settle_woken(&mut editor, |e| text_of(e, id).contains("now")).await);
     let text = text_of(&editor, id);
     let link = line_of(&text, "[top]");
+    let active = editor.active_pane_buffer_id();
+    let jumps = editor.position_history.len();
     editor.modal = lattice_grammar::ModalState::Normal;
     editor.cursor = Position::new(link, 6);
     let mut partial: Vec<KeyChord> = Vec::new();
@@ -298,6 +300,10 @@ async fn enter_does_not_follow_a_markdown_link_in_the_transcript() {
         line_of(&text, "# Top"),
         "<CR> jumped to the link target: markdown-mode's chord leaked in"
     );
+    assert_eq!(text_of(&editor, id), text, "no edit was made");
+    assert_eq!(editor.active_pane_buffer_id(), active, "same buffer active");
+    assert_eq!(id, active);
+    assert_eq!(editor.position_history.len(), jumps, "no jump was recorded");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -346,4 +352,51 @@ async fn zm_and_za_work_on_blocks_with_markdown_headings_around_them() {
         "the prompt is never swallowed by a fold"
     );
     assert!(!editor.line_inside_closed_fold(line_of(&text, "# Title")));
+}
+
+/// An opened block stays open when the transcript grows and the folds are
+/// recomputed (identity is keyed on the tool-call id, not the line range).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_opened_block_stays_open_after_the_transcript_grows() {
+    let addr = serve(Duration::ZERO);
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    chats(&editor).set_config(config_for(addr));
+    let id = chat_with_reply(&mut editor).await;
+    let session = chats(&editor).for_buffer(id).unwrap();
+    session.store.mutate(&session.key, |c| {
+        c.push_tool_call(
+            "t1".into(),
+            Some("github".into()),
+            "search_issues".into(),
+            ToolStatus::Ok,
+            ToolKind::Search,
+            Some("{ \"query\": \"x\" }".into()),
+            Some("{ \"total_count\": 3 }".into()),
+        );
+    });
+    assert!(settle_woken(&mut editor, |e| text_of(e, id).contains("total_count")).await);
+    editor.recompute_folds();
+    let head = line_of(&text_of(&editor, id), "github");
+    editor.cursor = Position::new(head, 0);
+    editor.modal = lattice_grammar::ModalState::Normal;
+    let mut partial: Vec<KeyChord> = Vec::new();
+    for c in ['z', 'a'] {
+        editor.dispatch_chord(KeyChord::char(c), &mut partial);
+    }
+    assert!(!editor.line_inside_closed_fold(head + 2), "za opened it");
+
+    session.store.mutate(&session.key, |c| {
+        c.extend_text(Role::Assistant, "streamed after the block");
+    });
+    assert!(
+        settle_woken(&mut editor, |e| text_of(e, id).contains("streamed after")).await,
+        "{:?}",
+        text_of(&editor, id)
+    );
+    editor.recompute_folds();
+    let head = line_of(&text_of(&editor, id), "github");
+    assert!(
+        !editor.line_inside_closed_fold(head + 2),
+        "the opened block was re-closed by the recompute"
+    );
 }

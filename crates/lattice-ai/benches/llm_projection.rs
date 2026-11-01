@@ -69,6 +69,26 @@ fn bench(c: &mut Criterion) {
             b.iter(|| black_box(project_conversation_with(black_box(conv), &OPTS)));
         });
     }
+    // One 100 KB tool output: language detection must not cost a parse.
+    let big = format!("[{}]", "1,".repeat(50_000));
+    let conv = Conversation {
+        turns: vec![Turn {
+            role: Role::Assistant,
+            blocks: vec![Block::ToolCall {
+                id: "big".into(),
+                origin: None,
+                title: "dump".into(),
+                status: ToolStatus::Ok,
+                kind: ToolKind::Search,
+                input: Some("{}".into()),
+                output: Some(big),
+            }],
+        }],
+        ..Default::default()
+    };
+    group.bench_function("tool_output_100kb", |b| {
+        b.iter(|| black_box(project_conversation_with(black_box(&conv), &OPTS)));
+    });
     group.finish();
 }
 

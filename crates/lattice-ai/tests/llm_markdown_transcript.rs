@@ -14,9 +14,9 @@ use lattice_ai::conversation::tool_fold::{
 };
 use lattice_ai::conversation::transcript::{PROMPT_MARKER, prompt_anchor_line};
 use lattice_ai::conversation::{
-    Block, Conversation, ConversationStore, FoldDisplay, ProjectionOptions, ProjectionSource, Role,
-    ToolKind, ToolStatus, Turn, project_conversation_with, render_conversation,
-    render_conversation_with,
+    Block, Conversation, ConversationStore, EditStatus, FoldDisplay, PermissionKind,
+    PermissionOption, PermissionStatus, ProjectionOptions, ProjectionSource, Role, ToolKind,
+    ToolStatus, Turn, project_conversation_with, render_conversation, render_conversation_with,
 };
 use lattice_ai::llm::config::LlmConfig;
 use lattice_core::{BufferId, FoldSource};
@@ -81,7 +81,7 @@ fn a_tool_block_is_a_head_line_over_fenced_bodies_with_the_origin_label() {
     let (text, folds) = project_conversation_with(&conv, &MD);
     assert_eq!(
         text,
-        "opencode:\n\u{25b8} github \u{b7} search_issues [ok]\n```json\n{ \"query\": \"fold overlap\" }\n```\n```json\n{ \"total_count\": 3 }\n```\n\n"
+        "opencode:\n\n\u{25b8} github \u{b7} search_issues [ok]\n```json\n{ \"query\": \"fold overlap\" }\n```\n```json\n{ \"total_count\": 3 }\n```\n\n"
     );
     assert_eq!(folds.len(), 1);
     let lines: Vec<&str> = text.split('\n').collect();
@@ -127,7 +127,7 @@ fn a_fence_inside_tool_output_cannot_close_the_blocks_fence() {
 fn an_unclosed_fence_in_a_reply_is_closed_so_the_prompt_is_not_code() {
     let conv = assistant(vec![Block::Text("here:\n```rust\nfn half(".into())]);
     let text = render_conversation_with(&conv, &MD);
-    assert_eq!(text, "opencode:\nhere:\n```rust\nfn half(\n```\n\n");
+    assert_eq!(text, "opencode:\n\nhere:\n```rust\nfn half(\n```\n\n");
     assert!(fences_balanced(&format!("{text}{PROMPT_MARKER}")));
     // The projection added a line; the prompt anchor follows the projected text.
     let anchor = prompt_anchor_line(&text);
@@ -150,7 +150,7 @@ fn tilde_and_longer_fences_close_with_their_own_character_and_length() {
     let conv = assistant(vec![Block::Text("```\nx\n```".into())]);
     assert_eq!(
         render_conversation_with(&conv, &MD),
-        "opencode:\n```\nx\n```\n\n"
+        "opencode:\n\n```\nx\n```\n\n"
     );
 }
 
@@ -164,7 +164,7 @@ fn a_fence_in_reasoning_stays_in_its_prefixed_block_and_a_queued_one_is_closed()
         "reasoning keeps its prefix: {text}"
     );
     assert!(
-        text.contains("you (queued):\n```\nunfinished\n```\n"),
+        text.contains("you (queued):\n\n```\nunfinished\n```\n"),
         "{text}"
     );
     for l in text.lines().filter(|l| l.contains("```py")) {
@@ -186,7 +186,7 @@ fn hidden_leaves_blocks_out_of_the_projection_and_closed_restores_them() {
         ..MD
     };
     let (text, folds) = project_conversation_with(&conv, &hidden);
-    assert_eq!(text, "opencode:\ndone\n\n");
+    assert_eq!(text, "opencode:\n\ndone\n\n");
     assert!(folds.is_empty());
     // The conversation itself is untouched, so closed brings everything back.
     let (text, folds) = project_conversation_with(&conv, &MD);
@@ -276,6 +276,17 @@ fn the_fold_options_are_read_from_config_and_a_bad_value_warns() {
     let c = cfg("[llm.fold]\ntools = \"folded\"\n");
     assert_eq!(c.fold_tools, FoldDisplay::Closed, "default kept");
     assert!(c.warnings.iter().any(|w| w.contains("llm.fold.tools")));
+    let c = cfg("[llm.fold]\ntools = 3\ntool = \"open\"\n");
+    assert_eq!(
+        c.fold_tools,
+        FoldDisplay::Closed,
+        "non-string keeps default"
+    );
+    assert!(c.warnings.iter().any(|w| w.contains("llm.fold.tools")));
+    assert!(
+        c.warnings.iter().any(|w| w.contains("llm.fold.tool")),
+        "unknown key"
+    );
     let c = cfg("");
     assert_eq!(
         (c.fold_reasoning, c.fold_tools),
@@ -289,5 +300,101 @@ fn acp_display_is_unchanged_by_the_new_options() {
     assert_eq!(
         render_conversation(&conv),
         "opencode:\n  \u{25b8} search_issues [ok]\n    input:\n      {\n      }\n    output:\n      x\n\n"
+    );
+}
+
+#[test]
+fn json_is_picked_by_the_first_byte_without_parsing() {
+    let lang = |output: &str| {
+        let text = render_conversation_with(
+            &assistant(vec![tool("t", None, ToolKind::Read, "{}", output)]),
+            &MD,
+        );
+        text.lines()
+            .filter(|l| l.starts_with("```") && l.len() > 3)
+            .nth(1)
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        lang("  \n[1, 2"),
+        "```json",
+        "no parse: truncated JSON still counts"
+    );
+    assert_eq!(lang("{not json"), "```json");
+    assert_eq!(lang("42"), "```text");
+    assert_eq!(lang("done {x}"), "```text");
+}
+
+#[test]
+fn a_newline_in_a_tool_title_or_origin_cannot_break_the_head_line() {
+    let conv = assistant(vec![Block::ToolCall {
+        id: "t".into(),
+        origin: Some("git\nhub".into()),
+        title: "a\r\nb\nc".into(),
+        status: ToolStatus::Ok,
+        kind: ToolKind::Read,
+        input: Some("{}".into()),
+        output: None,
+    }]);
+    let text = render_conversation_with(&conv, &MD);
+    assert_eq!(
+        text.lines().nth(2),
+        Some("\u{25b8} git hub \u{b7} a  b c [ok]")
+    );
+}
+
+#[test]
+fn a_dash_line_under_a_label_cannot_make_the_label_a_heading() {
+    let user = |t: &str| Conversation {
+        turns: vec![Turn {
+            role: Role::User,
+            blocks: vec![Block::Text(t.into())],
+        }],
+        queued: vec![t.into()],
+        ..Default::default()
+    };
+    let md = render_conversation_with(&user("---"), &MD);
+    assert_eq!(md, "you:\n\n---\n\nyou (queued):\n\n---\n\n");
+    // ACP form is unchanged: no blank line.
+    let acp = render_conversation(&user("---"));
+    assert_eq!(acp, "you:\n---\n\nyou (queued):\n---\n\n");
+}
+
+#[test]
+fn acp_golden_over_permission_edit_queued_and_error_blocks() {
+    let conv = Conversation {
+        turns: vec![
+            Turn {
+                role: Role::User,
+                blocks: vec![Block::Text("fix it".into())],
+            },
+            Turn {
+                role: Role::Assistant,
+                blocks: vec![
+                    Block::Permission {
+                        id: "p1".into(),
+                        title: "Allow cargo test?".into(),
+                        description: Some("runs the suite".into()),
+                        options: vec![
+                            PermissionOption::new("a", "Allow once", PermissionKind::AllowOnce),
+                            PermissionOption::new("r", "Reject", PermissionKind::RejectOnce),
+                        ],
+                        status: PermissionStatus::Pending,
+                    },
+                    Block::Edit {
+                        path: "src/lib.rs".into(),
+                        status: EditStatus::Proposed,
+                    },
+                ],
+            },
+        ],
+        queued: vec!["and then?".into()],
+        error: Some("boom\nsecond".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        render_conversation(&conv),
+        "you:\nfix it\n\nopencode:\n  \u{25cc} Allow cargo test? [pending]\n    runs the suite\n    1: Allow once\n    2: Reject\n  \u{270e} src/lib.rs [proposed]\n\nyou (queued):\nand then?\n\n! boom\n  second\n\n"
     );
 }

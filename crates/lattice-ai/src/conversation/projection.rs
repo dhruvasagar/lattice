@@ -149,6 +149,7 @@ pub fn project_conversation_with(
         };
         s.push(who);
         s.line(":");
+        label_guard(&mut s, opts.markdown);
         for block in &turn.blocks {
             match block {
                 Block::Text(text) => push_text(&mut s, text, opts.markdown),
@@ -248,6 +249,7 @@ pub fn project_conversation_with(
     // sit after the turns so the history above them never shifts.
     for text in &conv.queued {
         s.line("you (queued):");
+        label_guard(&mut s, opts.markdown);
         push_text(&mut s, text, opts.markdown);
         s.end_line();
     }
@@ -259,6 +261,20 @@ pub fn project_conversation_with(
         s.end_line();
     }
     (s.out, folds)
+}
+
+/// In markdown form a blank line after a speaker label, so a first line of
+/// `---` or `===` cannot turn the label into a setext heading.
+fn label_guard(s: &mut Sink, markdown: bool) {
+    if markdown {
+        s.line("");
+    }
+}
+
+/// `text` on one line: newlines become spaces, so a title or origin cannot
+/// break the head line open.
+fn one_line(text: &str) -> String {
+    text.replace(['\r', '\n'], " ")
 }
 
 /// A fold needs an interior: a 1-line region is a `z*` no-op.
@@ -330,10 +346,10 @@ fn push_markdown_tool(
 ) {
     s.push("\u{25b8} ");
     if let Some(origin) = origin {
-        s.push(origin);
+        s.push(&one_line(origin));
         s.push(" \u{b7} ");
     }
-    s.push(title);
+    s.push(&one_line(title));
     s.push(" [");
     s.push(status_tag(status));
     s.line("]");
@@ -346,12 +362,20 @@ fn push_markdown_tool(
 }
 
 /// The language of a tool's output: by the tool's kind where that says
-/// something, then `json` if it parses, else `text`.
+/// something, then `json` if it opens like an object or array, else `text`.
+/// No parse: this runs for every tool output on every projection, and a
+/// 100 KB body is not worth decoding to pick a highlighting language.
 fn output_language(kind: ToolKind, body: &str) -> &'static str {
     match kind {
         ToolKind::Edit => "diff",
         ToolKind::Execute => "bash",
-        _ if serde_json::from_str::<serde_json::Value>(body).is_ok() => "json",
+        _ if matches!(
+            body.bytes().find(|b| !b.is_ascii_whitespace()),
+            Some(b'{' | b'[')
+        ) =>
+        {
+            "json"
+        }
         _ => "text",
     }
 }

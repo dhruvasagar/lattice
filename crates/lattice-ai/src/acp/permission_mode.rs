@@ -7,7 +7,7 @@
 //! [`ConversationStore`] and owner-writes the projection; `<CR>` on an option
 //! line resolves it (the file-tree / oil `entry_at_line` model), `Esc`/`q`
 //! defer. Resolution routes through
-//! [`ConversationStore::resolve_permission`](crate::acp::conversation::ConversationStore::resolve_permission)
+//! [`ConversationStore::resolve_permission`](crate::conversation::ConversationStore::resolve_permission)
 //! by the agent's `option_id` (PU-B.2a).
 //!
 //! v1 uses `<CR>`-by-cursor as the selector. The `1`–`9` digit accelerators the
@@ -19,7 +19,6 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use agent_client_protocol::schema::v1::PermissionOptionId;
 use lattice_grammar::effect::Effect;
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
@@ -27,7 +26,7 @@ use lattice_mode::{
     keymap_entry,
 };
 
-use crate::acp::conversation::{ConversationStore, PendingPermissionView};
+use crate::conversation::{ConversationStore, PendingPermissionView};
 
 /// The synthetic buffer name the popup menu is projected into. `:ai-permission`
 /// and the (PU-B.3) auto-opener both name it in `Effect::OpenPopup`.
@@ -44,7 +43,7 @@ const FIRST_OPTION_LINE: u32 = 2;
 #[derive(Default)]
 struct MenuState {
     request_id: Option<String>,
-    option_ids: Vec<PermissionOptionId>,
+    option_ids: Vec<String>,
 }
 
 /// Service handle for `ServiceRegistry` lookup (the `Arc<T>` alias convention,
@@ -280,7 +279,7 @@ fn select_at_cursor_handler(menu: Arc<Mutex<MenuState>>) -> ActionHandler {
             (id, guard.option_ids.get(index)?.clone())
         };
         let store = ctx.services.get::<ConversationStore>()?;
-        store.resolve_permission(&id, option_id);
+        store.resolve_permission(&id, &option_id);
         // A choice was made — close the menu.
         Some(Effect::DismissPopup)
     })
@@ -377,7 +376,7 @@ async fn full_replace(handle: &std::sync::Arc<dyn lattice_runtime::Document>, te
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::{PermissionOption, PermissionOptionKind};
+    use crate::conversation::{PermissionKind, PermissionOption};
     use lattice_agent::SessionKey;
 
     fn store_with_pending(ids: &[&str]) -> ConversationStore {
@@ -395,7 +394,7 @@ mod tests {
                 vec![PermissionOption::new(
                     "allow-once",
                     "Allow once",
-                    PermissionOptionKind::AllowOnce,
+                    PermissionKind::AllowOnce,
                 )],
                 tx,
             );
@@ -440,7 +439,7 @@ mod tests {
         let coord = PermissionMenuCoordinator::new();
         // perm-1's menu is open, then resolved → perm-1 no longer pending.
         coord.set_open(true);
-        store.resolve_permission("perm-1", PermissionOptionId::new("allow-once"));
+        store.resolve_permission("perm-1", "allow-once");
         coord.set_open(false); // guard Drop on dismiss
         assert!(
             matches!(
@@ -464,8 +463,8 @@ mod tests {
             title: "Allow `cargo test`?".to_string(),
             description: None,
             options: vec![
-                PermissionOption::new("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
-                PermissionOption::new("reject-once", "Reject", PermissionOptionKind::RejectOnce),
+                PermissionOption::new("allow-once", "Allow once", PermissionKind::AllowOnce),
+                PermissionOption::new("reject-once", "Reject", PermissionKind::RejectOnce),
             ],
         }
     }

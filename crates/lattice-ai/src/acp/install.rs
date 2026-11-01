@@ -12,9 +12,9 @@ use lattice_agent::AiLogger;
 use lattice_mode::SubsystemBoot;
 
 use crate::acp::commands::register_ai_ex_commands;
-use crate::acp::conversation::ConversationStore;
 use crate::acp::conversation_mode::AiConversationMode;
 use crate::acp::handle::AiClientHandle;
+use crate::conversation::ConversationStore;
 
 /// Wire the ACP (Agent Client Protocol) transport into the editor at boot. The
 /// `logger` is the port-level `AiLogger` the supervisor streams *trace* records
@@ -100,11 +100,11 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
     // streamed agent response repaints (and the prompt-focus tick callback runs)
     // without needing a keystroke. Sequenced after the edit — via this event,
     // not `ConversationUpdated` — so the wake never paints stale content.
-    boot.wake_on_event::<crate::acp::conversation::ConversationProjected>();
+    boot.wake_on_event::<crate::conversation::ConversationProjected>();
 
     // PU-B.3: also wake on `ConversationUpdated` (fired by the supervisor's
     // `push_permission_request`) so the auto-open tick callback runs the instant
     // a permission goes pending — even when the `*ai:opencode*` buffer isn't
     // focused, so its `ConversationProjected` drain isn't the one waking us.
-    boot.wake_on_event::<crate::acp::conversation::ConversationUpdated>();
+    boot.wake_on_event::<crate::conversation::ConversationUpdated>();
 }

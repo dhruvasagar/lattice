@@ -1,195 +1,80 @@
-//! Structured conversation model for the ACP agent UI (AU‑1).
+//! ACP adapter for the neutral conversation model (AU‑1, LL.1).
 //!
 //! The ACP supervisor receives structured `SessionUpdate`s (message chunks,
-//! thought chunks, tool calls, tool-call updates). AU‑1 stops flattening the
-//! *conversation* ones to text `AiLogger` records and instead folds them into a
-//! [`Conversation`] — a turn/block tree the `ai-conversation` mode (AU‑2)
-//! projects into the `*ai:opencode*` buffer. Trace sources (`Client` /
-//! `Lifecycle`) still flow to `AiLogger`; this completes the conversation/trace
-//! split.
+//! thought chunks, tool calls, tool-call updates). This module folds the
+//! *conversation* ones into the protocol-neutral
+//! [`Conversation`](crate::conversation::Conversation) and maps ACP's tool and
+//! permission types onto the neutral ones; nothing under `crate::conversation`
+//! names the protocol. Trace sources (`Client` / `Lifecycle`) still flow to
+//! `AiLogger`.
 //!
-//! [`Conversation::apply`] is pure and unit-testable (no I/O, no locks).
-//! [`ConversationStore`] wraps it with a shared mutex + a [`ConversationUpdated`]
-//! bus publish so the mode can live-tail.
+//! [`ApplySessionUpdate::apply_update`] on a `Conversation` is pure and unit-testable
+//! (no I/O, no locks); on a [`ConversationStore`] it also publishes.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-use agent_client_protocol::schema::v1::{
-    ContentBlock, PermissionOption, PermissionOptionId, PermissionOptionKind, SessionUpdate,
-    ToolCallStatus, ToolKind,
-};
-use std::fmt;
-use tokio::sync::oneshot;
+use agent_client_protocol::schema::v1 as acp;
+use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate};
 
 use lattice_agent::SessionKey;
 
-/// Who produced a turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    User,
-    Assistant,
-}
+use crate::conversation::{
+    Conversation, ConversationStore, Cost, PermissionKind, PermissionOption, Role, ToolKind,
+    ToolStatus, UsageSnapshot,
+};
 
-/// Execution state of a tool call, mapped from ACP's `ToolCallStatus`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolStatus {
-    Pending,
-    Running,
-    Ok,
-    Err,
-}
-
-impl ToolStatus {
-    fn from_acp(status: ToolCallStatus) -> Self {
-        match status {
-            ToolCallStatus::Pending => ToolStatus::Pending,
-            ToolCallStatus::InProgress => ToolStatus::Running,
-            ToolCallStatus::Completed => ToolStatus::Ok,
-            ToolCallStatus::Failed => ToolStatus::Err,
-            // `ToolCallStatus` is `#[non_exhaustive]`.
-            _ => ToolStatus::Pending,
-        }
+/// Map ACP's tool-call status onto the neutral one.
+pub fn tool_status_from_acp(status: acp::ToolCallStatus) -> ToolStatus {
+    match status {
+        acp::ToolCallStatus::Pending => ToolStatus::Pending,
+        acp::ToolCallStatus::InProgress => ToolStatus::Running,
+        acp::ToolCallStatus::Completed => ToolStatus::Ok,
+        acp::ToolCallStatus::Failed => ToolStatus::Err,
+        // `ToolCallStatus` is `#[non_exhaustive]`.
+        _ => ToolStatus::Pending,
     }
 }
 
-/// Review state of an agent-proposed file edit. AU‑4 drives the transitions and
-/// attaches the `review_diff` session; AU‑1 only defines the shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditStatus {
-    Proposed,
-    Accepted,
-    Rejected,
-}
-
-/// AUX‑1: status of an inline permission request shown in the conversation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PermissionStatus {
-    Pending,
-    Allowed,
-    Denied,
-}
-
-/// PU-B.2b: a pending permission request projected for the popup menu.
-/// `ai-permission-mode`'s `on_activate` reads [`ConversationStore::
-/// oldest_pending_permission`] and renders `title`, optional `description`, and
-/// one line per `options` entry (wire order); the select handler maps the chosen
-/// line back to `options[i].option_id`.
-#[derive(Debug, Clone)]
-pub struct PendingPermissionView {
-    pub id: String,
-    pub title: String,
-    pub description: Option<String>,
-    pub options: Vec<PermissionOption>,
-}
-
-/// AUX‑3: global processing status of the current agent session — shown in the
-/// conversation buffer's headerline.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum SessionStatus {
-    /// No active turn: the agent is not processing anything.
-    #[default]
-    Idle,
-    /// The agent is streaming a text/thought response.
-    Thinking,
-    /// The agent is executing a tool call.
-    Executing {
-        /// Human-readable tool name (e.g. "edit parse.rs").
-        tool: String,
-    },
-    /// The agent is awaiting the user's decision on a permission request.
-    AwaitingPermission,
-}
-
-impl fmt::Display for SessionStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SessionStatus::Idle => write!(f, "Ready"),
-            SessionStatus::Thinking => write!(f, "Thinking\u{2026}"),
-            SessionStatus::Executing { tool } => write!(f, "Working: {tool}"),
-            SessionStatus::AwaitingPermission => write!(f, "Awaiting your approval\u{2026}"),
-        }
+/// Map ACP's tool kind onto the neutral one. ACP distinguishes more kinds than
+/// a projection needs: deleting and moving are edits, fetching is a search.
+pub fn tool_kind_from_acp(kind: acp::ToolKind) -> ToolKind {
+    match kind {
+        acp::ToolKind::Read => ToolKind::Read,
+        acp::ToolKind::Search | acp::ToolKind::Fetch => ToolKind::Search,
+        acp::ToolKind::Edit | acp::ToolKind::Delete | acp::ToolKind::Move => ToolKind::Edit,
+        acp::ToolKind::Execute => ToolKind::Execute,
+        // Think, SwitchMode, Other, and any future `#[non_exhaustive]` kind.
+        _ => ToolKind::Other,
     }
 }
 
-/// AUX‑2: token usage snapshot from a `UsageUpdate` notification.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Cost {
-    pub amount: f64,
-    pub currency: String,
+/// Map an ACP permission option onto the neutral one.
+pub fn permission_option_from_acp(option: &acp::PermissionOption) -> PermissionOption {
+    let kind = match option.kind {
+        acp::PermissionOptionKind::AllowOnce => PermissionKind::AllowOnce,
+        acp::PermissionOptionKind::AllowAlways => PermissionKind::AllowAlways,
+        acp::PermissionOptionKind::RejectOnce => PermissionKind::RejectOnce,
+        acp::PermissionOptionKind::RejectAlways => PermissionKind::RejectAlways,
+        // `PermissionOptionKind` is `#[non_exhaustive]`; fail closed.
+        _ => PermissionKind::Other,
+    };
+    PermissionOption::new(option.option_id.0.to_string(), option.name.clone(), kind)
 }
 
-/// AUX‑2: latest token and cost snapshot from the ACP `usage_update`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UsageSnapshot {
-    pub used: u64,
-    pub size: u64,
-    pub cost: Option<Cost>,
+/// TCF: pretty-print a raw tool JSON payload for the expanded view. Falls back
+/// to the compact `Display` form if pretty-printing somehow fails.
+fn pretty_json(value: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
-/// One renderable unit within a turn.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Block {
-    /// Streamed message text.
-    Text(String),
-    /// Streamed reasoning / thinking. TCF: the projection prefixes each line
-    /// with `│`, and a multi-line block is folded **closed by default** via
-    /// [`ReasoningFoldSource`](crate::acp::tool_fold::ReasoningFoldSource) — the
-    /// fold keeps the head line visible and hides the rest until `za`. (Before
-    /// TCF this comment claimed folding the projection did not do.)
-    Reasoning(String),
-    /// A tool invocation and its live status.
-    ///
-    /// TCF: `kind`, `input` and `output` are the detail an expanded tool call
-    /// shows. `input`/`output` are the agent's raw JSON, pretty-printed at
-    /// ingest (stored as `String`, not `serde_json::Value`, so `Block` stays
-    /// `Eq`). Detail commonly arrives on a later `ToolCallUpdate`, not the
-    /// initial call, so it is merged in as it lands.
-    ToolCall {
-        id: String,
-        title: String,
-        status: ToolStatus,
-        kind: ToolKind,
-        input: Option<String>,
-        output: Option<String>,
-    },
-    /// An agent-proposed file edit (AU‑4 wires the diff review).
-    Edit { path: String, status: EditStatus },
-    /// AUX‑1: an inline permission request awaiting or reflecting user action.
-    Permission {
-        id: String,
-        title: String,
-        description: Option<String>,
-        options: Vec<PermissionOption>,
-        status: PermissionStatus,
-    },
+/// Fold ACP `SessionUpdate`s into the neutral model.
+pub trait ApplySessionUpdate {
+    /// Fold one ACP `SessionUpdate` into the model. Non-conversation updates
+    /// (plans, mode changes, ...) are ignored; `SessionUpdate` and
+    /// `ContentBlock` are `#[non_exhaustive]`, so a catch-all closes each match.
+    fn apply_update(&mut self, update: &SessionUpdate);
 }
 
-/// One turn: a role and its ordered blocks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Turn {
-    pub role: Role,
-    pub blocks: Vec<Block>,
-}
-
-/// The full conversation as a turn/block tree. Streaming *extends* the last
-/// block; earlier turns are never rewritten.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Conversation {
-    pub turns: Vec<Turn>,
-    /// AUX‑2: latest token usage snapshot from `usage_update` notifications.
-    pub usage: Option<UsageSnapshot>,
-    /// AUX‑3: global processing status derived by the supervisor from the active
-    /// turn's state. Set via [`ConversationStore::set_status`].
-    pub status: SessionStatus,
-}
-
-impl Conversation {
-    /// Fold one ACP `SessionUpdate` into the model. Pure: no I/O, no locks.
-    /// Non-conversation updates (plans, mode changes, ...) are ignored;
-    /// `SessionUpdate` and `ContentBlock` are `#[non_exhaustive]`, so a
-    /// catch-all closes each match.
-    pub fn apply(&mut self, update: &SessionUpdate) {
+impl ApplySessionUpdate for Conversation {
+    fn apply_update(&mut self, update: &SessionUpdate) {
         match update {
             SessionUpdate::UserMessageChunk(chunk) => {
                 if let ContentBlock::Text(t) = &chunk.content {
@@ -209,9 +94,10 @@ impl Conversation {
             SessionUpdate::ToolCall(tc) => {
                 self.push_tool_call(
                     tc.tool_call_id.0.to_string(),
+                    None,
                     tc.title.clone(),
-                    ToolStatus::from_acp(tc.status),
-                    tc.kind,
+                    tool_status_from_acp(tc.status),
+                    tool_kind_from_acp(tc.kind),
                     tc.raw_input.as_ref().map(pretty_json),
                     tc.raw_output.as_ref().map(pretty_json),
                 );
@@ -219,8 +105,8 @@ impl Conversation {
             SessionUpdate::ToolCallUpdate(u) => {
                 self.merge_tool_update(
                     u.tool_call_id.0.as_ref(),
-                    u.fields.status.map(ToolStatus::from_acp),
-                    u.fields.kind,
+                    u.fields.status.map(tool_status_from_acp),
+                    u.fields.kind.map(tool_kind_from_acp),
                     u.fields.raw_input.as_ref().map(pretty_json),
                     u.fields.raw_output.as_ref().map(pretty_json),
                 );
@@ -239,386 +125,17 @@ impl Conversation {
             _ => {}
         }
     }
-
-    /// AU‑3: append a complete user prompt as a new `User` turn. Each Enter is
-    /// a distinct turn (the terminal-REPL model), so — unlike chunk-streamed
-    /// agent output — this always opens a fresh turn rather than extending.
-    pub fn push_user_text(&mut self, text: &str) {
-        self.turns.push(Turn {
-            role: Role::User,
-            blocks: vec![Block::Text(text.to_string())],
-        });
-    }
-
-    /// Append `text` to the last block if it is `Text` in a turn of `role`;
-    /// otherwise open a new block / turn as needed.
-    fn extend_text(&mut self, role: Role, text: &str) {
-        match self.turns.last_mut() {
-            Some(turn) if turn.role == role => match turn.blocks.last_mut() {
-                Some(Block::Text(s)) => s.push_str(text),
-                _ => turn.blocks.push(Block::Text(text.to_string())),
-            },
-            _ => self.turns.push(Turn {
-                role,
-                blocks: vec![Block::Text(text.to_string())],
-            }),
-        }
-    }
-
-    /// Append `text` to the last `Reasoning` block (assistant turn), opening one
-    /// as needed.
-    fn extend_reasoning(&mut self, text: &str) {
-        match self.turns.last_mut() {
-            Some(turn) if turn.role == Role::Assistant => match turn.blocks.last_mut() {
-                Some(Block::Reasoning(s)) => s.push_str(text),
-                _ => turn.blocks.push(Block::Reasoning(text.to_string())),
-            },
-            _ => self.turns.push(Turn {
-                role: Role::Assistant,
-                blocks: vec![Block::Reasoning(text.to_string())],
-            }),
-        }
-    }
-
-    /// Push a new `ToolCall` block onto the current (or a fresh) assistant turn.
-    #[allow(clippy::too_many_arguments)]
-    fn push_tool_call(
-        &mut self,
-        id: String,
-        title: String,
-        status: ToolStatus,
-        kind: ToolKind,
-        input: Option<String>,
-        output: Option<String>,
-    ) {
-        let block = Block::ToolCall {
-            id,
-            title,
-            status,
-            kind,
-            input,
-            output,
-        };
-        match self.turns.last_mut() {
-            Some(turn) if turn.role == Role::Assistant => turn.blocks.push(block),
-            _ => self.turns.push(Turn {
-                role: Role::Assistant,
-                blocks: vec![block],
-            }),
-        }
-    }
-
-    /// AUX‑1: push a `Permission` block onto the current (or a fresh) assistant turn.
-    fn push_permission_block(
-        &mut self,
-        id: String,
-        title: String,
-        description: Option<String>,
-        options: Vec<PermissionOption>,
-    ) {
-        let block = Block::Permission {
-            id,
-            title,
-            description,
-            options,
-            status: PermissionStatus::Pending,
-        };
-        match self.turns.last_mut() {
-            Some(turn) if turn.role == Role::Assistant => turn.blocks.push(block),
-            _ => self.turns.push(Turn {
-                role: Role::Assistant,
-                blocks: vec![block],
-            }),
-        }
-    }
-
-    /// PU-B.2: kind of the option `option_id` within the `Permission` block
-    /// `id` (searched newest-first), or `None` if the block or option is gone.
-    /// Used by `resolve_permission` to derive the inline block status from the
-    /// agent's actual option rather than a fixed 4-way bucket.
-    fn permission_option_kind(
-        &self,
-        id: &str,
-        option_id: &PermissionOptionId,
-    ) -> Option<PermissionOptionKind> {
-        for turn in self.turns.iter().rev() {
-            for block in turn.blocks.iter().rev() {
-                if let Block::Permission {
-                    id: bid, options, ..
-                } = block
-                    && bid == id
-                {
-                    return options
-                        .iter()
-                        .find(|o| &o.option_id == option_id)
-                        .map(|o| o.kind);
-                }
-            }
-        }
-        None
-    }
-
-    /// AUX‑1: update the status of the `Permission` block with `id`.
-    fn update_permission_status(&mut self, id: &str, new_status: PermissionStatus) {
-        for turn in self.turns.iter_mut().rev() {
-            for block in turn.blocks.iter_mut().rev() {
-                if let Block::Permission {
-                    id: bid, status, ..
-                } = block
-                    && bid == id
-                {
-                    *status = new_status;
-                    return;
-                }
-            }
-        }
-    }
-
-    /// TCF: merge a `ToolCallUpdate` into the tool-call block with `id`
-    /// (searched newest-first). Each `Some` field overwrites; `None` leaves the
-    /// existing value — detail (input/output/kind) commonly arrives on an
-    /// update after the initial call, so this accumulates rather than replaces.
-    fn merge_tool_update(
-        &mut self,
-        id: &str,
-        new_status: Option<ToolStatus>,
-        new_kind: Option<ToolKind>,
-        new_input: Option<String>,
-        new_output: Option<String>,
-    ) {
-        for turn in self.turns.iter_mut().rev() {
-            for block in turn.blocks.iter_mut().rev() {
-                if let Block::ToolCall {
-                    id: bid,
-                    status,
-                    kind,
-                    input,
-                    output,
-                    ..
-                } = block
-                    && bid == id
-                {
-                    if let Some(s) = new_status {
-                        *status = s;
-                    }
-                    if let Some(k) = new_kind {
-                        *kind = k;
-                    }
-                    if new_input.is_some() {
-                        *input = new_input;
-                    }
-                    if new_output.is_some() {
-                        *output = new_output;
-                    }
-                    return;
-                }
-            }
-        }
-    }
 }
 
-/// TCF: pretty-print a raw tool JSON payload for the expanded view. Falls back
-/// to the compact `Display` form if pretty-printing somehow fails.
-fn pretty_json(value: &serde_json::Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
-}
-
-/// Fired after the [`ConversationStore`] mutates. The `ai-conversation` mode
-/// subscribes to it and re-projects (mirrors `AiLogPushed`).
-#[derive(Debug, Clone)]
-pub struct ConversationUpdated {
-    pub session: SessionKey,
-}
-
-lattice_protocol::register_event!(
-    ConversationUpdated,
-    "ai.conversation-updated",
-    "Fired after the ACP agent conversation model changes; drives live refresh \
-     of the *ai:<provider>* conversation buffer.",
-    "lattice-ai",
-);
-
-/// Fired by the `ai-conversation` mode's drain AFTER a re-projection edit has
-/// LANDED in the buffer. Boot wakes the editor actor on this (via
-/// `wake_on_event`) so a streamed agent response repaints WITHOUT a keystroke,
-/// and the per-tick prompt-focus callback runs.
-///
-/// Distinct from [`ConversationUpdated`], which the supervisor fires when the
-/// *model* changes — that is BEFORE the drain re-projects the buffer, so waking
-/// on it would repaint stale content. Sequencing the wake after the owner-write
-/// edit (this event) is what makes the last streamed chunk paint reliably.
-#[derive(Debug, Clone, Default)]
-pub struct ConversationProjected;
-
-lattice_protocol::register_event!(
-    ConversationProjected,
-    "ai.conversation-projected",
-    "Fired after the *ai:<provider>* conversation buffer is re-projected; wakes \
-     the render loop so streamed agent responses repaint without a keystroke.",
-    "lattice-ai",
-);
-
-/// Shared, mutable conversation state plus a bus publisher. The supervisor holds
-/// one clone and calls [`ConversationStore::apply`]; the `ai-conversation` mode
-/// reads [`ConversationStore::snapshot`] on each `ConversationUpdated`.
-#[derive(Clone)]
-pub struct ConversationStore {
-    inner: Arc<Mutex<Conversation>>,
-    publish: Arc<dyn Fn(ConversationUpdated) + Send + Sync>,
-    /// AUX‑1: pending permission request responders keyed by tool-call id.
-    /// PU-B.2: the oneshot carries the agent's chosen `PermissionOptionId`
-    /// (wire order, any arity), not the fixed 4-way `PermissionOutcome` — the
-    /// menu resolves by the option the agent actually offered.
-    pending_permissions:
-        Arc<Mutex<HashMap<String, (SessionKey, oneshot::Sender<PermissionOptionId>)>>>,
-}
-
-impl ConversationStore {
-    /// Build a store whose mutations publish `ConversationUpdated` via `publish`.
-    pub fn new(publish: Arc<dyn Fn(ConversationUpdated) + Send + Sync>) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(Conversation::default())),
-            publish,
-            pending_permissions: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
+/// Fold ACP `SessionUpdate`s into a shared [`ConversationStore`] and publish.
+pub trait ApplySessionUpdateToStore {
     /// Fold `update` into the conversation for `session`, then publish.
-    pub fn apply(&self, session: &SessionKey, update: &SessionUpdate) {
-        {
-            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
-            conv.apply(update);
-        }
-        (self.publish)(ConversationUpdated {
-            session: session.clone(),
-        });
-    }
+    fn apply_update(&self, session: &SessionKey, update: &SessionUpdate);
+}
 
-    /// AU‑3: fold a locally-composed user prompt into the conversation as a
-    /// `User` turn, then publish. ACP agents don't echo the user's prompt back,
-    /// so the supervisor calls this when it sends a prompt to make the user's
-    /// turn appear in the transcript immediately.
-    pub fn push_user_text(&self, session: &SessionKey, text: &str) {
-        {
-            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
-            conv.push_user_text(text);
-        }
-        (self.publish)(ConversationUpdated {
-            session: session.clone(),
-        });
-    }
-
-    /// AUX‑1: push a permission block and register its oneshot responder. The
-    /// supervisor calls this when `classify_permission` returns `AskUser`; the
-    /// receiver is awaited in [`handle_permission`](supervisor::handle_permission).
-    pub fn push_permission_request(
-        &self,
-        session: &SessionKey,
-        id: String,
-        title: String,
-        description: Option<String>,
-        options: Vec<PermissionOption>,
-        responder: oneshot::Sender<PermissionOptionId>,
-    ) {
-        {
-            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
-            conv.push_permission_block(id.clone(), title, description, options);
-            self.pending_permissions
-                .lock()
-                .expect("pending_permissions mutex poisoned")
-                .insert(id, (session.clone(), responder));
-        }
-        (self.publish)(ConversationUpdated {
-            session: session.clone(),
-        });
-    }
-
-    /// PU-B.2: resolve a pending permission request by the agent's chosen
-    /// `option_id`. Derives the inline block status from that option's `kind`,
-    /// updates the block, and sends the `option_id` through the oneshot the
-    /// supervisor is parked on (which answers ACP with `Selected(option_id)`),
-    /// then publishes. No-op when `id` is unknown (already resolved, deferred
-    /// and re-resolved, or never registered).
-    pub fn resolve_permission(&self, id: &str, option_id: PermissionOptionId) {
-        let session = {
-            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
-            // Fail closed: an option whose kind we can't read (missing block, or
-            // a future `#[non_exhaustive]` kind) marks the request Denied rather
-            // than leaving it Pending or optimistically Allowed.
-            let status = match conv.permission_option_kind(id, &option_id) {
-                Some(PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways) => {
-                    PermissionStatus::Allowed
-                }
-                _ => PermissionStatus::Denied,
-            };
-            conv.update_permission_status(id, status);
-            let mut pending = self
-                .pending_permissions
-                .lock()
-                .expect("pending_permissions mutex poisoned");
-            let (session, sender) = match pending.remove(id) {
-                Some(entry) => entry,
-                None => return, // already resolved — no-op
-            };
-            let _ = sender.send(option_id);
-            session
-        };
-        (self.publish)(ConversationUpdated { session });
-    }
-
-    /// PU-B.2b: the oldest still-`Pending` permission request, projected for
-    /// the popup menu (`ai-permission-mode` reads it in `on_activate`). Turns
-    /// and blocks are in wire order, so the first `Pending` block is the oldest.
-    pub fn oldest_pending_permission(&self) -> Option<PendingPermissionView> {
-        self.oldest_pending_permission_where(|_| true)
-    }
-
-    /// PU-B.3: the oldest `Pending` request whose id satisfies `keep`. The
-    /// auto-open tick callback passes `|id| !deferred(id)` so an `Esc`-deferred
-    /// request is skipped (the queue advances past it) without re-opening it.
-    pub fn oldest_pending_permission_where(
-        &self,
-        keep: impl Fn(&str) -> bool,
-    ) -> Option<PendingPermissionView> {
-        let conv = self.inner.lock().expect("conversation mutex poisoned");
-        conv.turns
-            .iter()
-            .flat_map(|t| t.blocks.iter())
-            .find_map(|b| match b {
-                Block::Permission {
-                    id,
-                    title,
-                    description,
-                    options,
-                    status: PermissionStatus::Pending,
-                } if keep(id) => Some(PendingPermissionView {
-                    id: id.clone(),
-                    title: title.clone(),
-                    description: description.clone(),
-                    options: options.clone(),
-                }),
-                _ => None,
-            })
-    }
-
-    /// AUX‑3: set the global processing status and publish a
-    /// `ConversationUpdated` so the headerline re-renders.
-    pub fn set_status(&self, session: &SessionKey, status: SessionStatus) {
-        {
-            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
-            conv.status = status;
-        }
-        (self.publish)(ConversationUpdated {
-            session: session.clone(),
-        });
-    }
-
-    /// Cheap-ish clone of the current conversation for projection.
-    pub fn snapshot(&self) -> Conversation {
-        self.inner
-            .lock()
-            .expect("conversation mutex poisoned")
-            .clone()
+impl ApplySessionUpdateToStore for ConversationStore {
+    fn apply_update(&self, session: &SessionKey, update: &SessionUpdate) {
+        self.mutate(session, |conv| conv.apply_update(update));
     }
 }
 
@@ -626,8 +143,9 @@ impl ConversationStore {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+    use crate::conversation::{Block, SessionStatus};
     use agent_client_protocol::schema::v1::{
-        ContentChunk, PermissionOptionKind, TextContent, ToolCall as AcpToolCall, ToolCallUpdate,
+        ContentChunk, TextContent, ToolCall as AcpToolCall, ToolCallStatus, ToolCallUpdate,
         ToolCallUpdateFields,
     };
 
@@ -635,57 +153,29 @@ mod tests {
         ContentChunk::new(ContentBlock::Text(TextContent::new(text)))
     }
 
+    fn update(used: u64, size: u64, cost: Option<(f64, &str)>) -> SessionUpdate {
+        let mut u = agent_client_protocol::schema::v1::UsageUpdate::new(used, size);
+        if let Some((amt, cur)) = cost {
+            u = u.cost(agent_client_protocol::schema::v1::Cost::new(amt, cur));
+        }
+        SessionUpdate::UsageUpdate(u)
+    }
+
     #[test]
     fn agent_text_chunks_extend_one_block() {
         let mut c = Conversation::default();
-        c.apply(&SessionUpdate::AgentMessageChunk(text_chunk("hi")));
-        c.apply(&SessionUpdate::AgentMessageChunk(text_chunk(" there")));
+        c.apply_update(&SessionUpdate::AgentMessageChunk(text_chunk("hi")));
+        c.apply_update(&SessionUpdate::AgentMessageChunk(text_chunk(" there")));
         assert_eq!(c.turns.len(), 1);
         assert_eq!(c.turns[0].role, Role::Assistant);
         assert_eq!(c.turns[0].blocks, vec![Block::Text("hi there".to_string())]);
     }
 
-    /// AU‑3: a user prompt lands as its own `User` turn (the REPL model:
-    /// each Enter is distinct, never merged into agent output).
-    #[test]
-    fn push_user_text_appends_a_user_turn() {
-        let mut c = Conversation::default();
-        c.apply(&SessionUpdate::AgentMessageChunk(text_chunk("hello")));
-        c.push_user_text("refactor parse_args");
-        assert_eq!(c.turns.len(), 2);
-        assert_eq!(c.turns[1].role, Role::User);
-        assert_eq!(
-            c.turns[1].blocks,
-            vec![Block::Text("refactor parse_args".to_string())]
-        );
-        // Two consecutive prompts are two distinct turns, not merged.
-        c.push_user_text("again");
-        assert_eq!(c.turns.len(), 3);
-        assert_eq!(c.turns[2].role, Role::User);
-    }
-
-    /// AU‑3: `ConversationStore::push_user_text` mutates the shared store and
-    /// publishes a `ConversationUpdated` so the mode's drain re-projects.
-    #[test]
-    fn store_push_user_text_mutates_and_publishes() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let published = Arc::new(AtomicUsize::new(0));
-        let p = published.clone();
-        let store = ConversationStore::new(Arc::new(move |_ev| {
-            p.fetch_add(1, Ordering::SeqCst);
-        }));
-        store.push_user_text(&SessionKey::new("opencode", 1), "hi");
-        assert_eq!(published.load(Ordering::SeqCst), 1, "one publish");
-        let snap = store.snapshot();
-        assert_eq!(snap.turns.len(), 1);
-        assert_eq!(snap.turns[0].role, Role::User);
-    }
-
     #[test]
     fn thought_chunks_extend_a_reasoning_block() {
         let mut c = Conversation::default();
-        c.apply(&SessionUpdate::AgentThoughtChunk(text_chunk("think")));
-        c.apply(&SessionUpdate::AgentThoughtChunk(text_chunk("ing")));
+        c.apply_update(&SessionUpdate::AgentThoughtChunk(text_chunk("think")));
+        c.apply_update(&SessionUpdate::AgentThoughtChunk(text_chunk("ing")));
         assert_eq!(
             c.turns[0].blocks,
             vec![Block::Reasoning("thinking".to_string())]
@@ -697,7 +187,7 @@ mod tests {
         let mut c = Conversation::default();
         let mut tc = AcpToolCall::new("tc-1", "edit parse.rs");
         tc.status = ToolCallStatus::InProgress;
-        c.apply(&SessionUpdate::ToolCall(tc));
+        c.apply_update(&SessionUpdate::ToolCall(tc));
         assert_eq!(c.turns.len(), 1);
         match &c.turns[0].blocks[0] {
             Block::ToolCall { id, status, .. } => {
@@ -711,7 +201,7 @@ mod tests {
             "tc-1",
             ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
         );
-        c.apply(&SessionUpdate::ToolCallUpdate(update));
+        c.apply_update(&SessionUpdate::ToolCallUpdate(update));
         // Same block, updated status -- not a second block.
         assert_eq!(c.turns[0].blocks.len(), 1);
         match &c.turns[0].blocks[0] {
@@ -728,7 +218,7 @@ mod tests {
         let mut c = Conversation::default();
         let mut tc = AcpToolCall::new("tc-1", "bash");
         tc.raw_input = Some(serde_json::json!({ "cmd": "echo hello" }));
-        c.apply(&SessionUpdate::ToolCall(tc));
+        c.apply_update(&SessionUpdate::ToolCall(tc));
         match &c.turns[0].blocks[0] {
             Block::ToolCall { input, output, .. } => {
                 let input = input.as_ref().expect("input captured on the initial call");
@@ -744,7 +234,7 @@ mod tests {
             "tc-1",
             ToolCallUpdateFields::new().raw_output(serde_json::json!("hello\n")),
         );
-        c.apply(&SessionUpdate::ToolCallUpdate(update));
+        c.apply_update(&SessionUpdate::ToolCallUpdate(update));
         match &c.turns[0].blocks[0] {
             Block::ToolCall { input, output, .. } => {
                 assert!(input.is_some(), "input survives the update merge");
@@ -758,231 +248,18 @@ mod tests {
     #[test]
     fn text_after_tool_call_opens_a_new_text_block_same_turn() {
         let mut c = Conversation::default();
-        c.apply(&SessionUpdate::AgentMessageChunk(text_chunk("before")));
-        c.apply(&SessionUpdate::ToolCall(AcpToolCall::new("t", "run")));
-        c.apply(&SessionUpdate::AgentMessageChunk(text_chunk("after")));
+        c.apply_update(&SessionUpdate::AgentMessageChunk(text_chunk("before")));
+        c.apply_update(&SessionUpdate::ToolCall(AcpToolCall::new("t", "run")));
+        c.apply_update(&SessionUpdate::AgentMessageChunk(text_chunk("after")));
         assert_eq!(c.turns.len(), 1, "all assistant activity is one turn");
         assert_eq!(c.turns[0].blocks.len(), 3);
         assert_eq!(c.turns[0].blocks[2], Block::Text("after".to_string()));
     }
 
-    // ── AUX‑1: permission block tests ──
-
-    fn test_permission_option(
-        id: &'static str,
-        name: &'static str,
-        kind: PermissionOptionKind,
-    ) -> PermissionOption {
-        PermissionOption::new(id, name, kind)
-    }
-
-    #[test]
-    fn permission_block_created_in_assistant_turn() {
-        let mut c = Conversation::default();
-        c.apply(&SessionUpdate::AgentMessageChunk(text_chunk("working")));
-        c.push_permission_block(
-            "perm-1".to_string(),
-            "Allow agent to run cargo test?".to_string(),
-            None,
-            vec![test_permission_option(
-                "a1",
-                "Allow once",
-                PermissionOptionKind::AllowOnce,
-            )],
-        );
-        assert_eq!(c.turns.len(), 1);
-        assert_eq!(c.turns[0].role, Role::Assistant);
-        assert_eq!(c.turns[0].blocks.len(), 2);
-        match &c.turns[0].blocks[1] {
-            Block::Permission {
-                id,
-                title,
-                status,
-                options,
-                ..
-            } => {
-                assert_eq!(id, "perm-1");
-                assert_eq!(title, "Allow agent to run cargo test?");
-                assert_eq!(*status, PermissionStatus::Pending);
-                assert_eq!(options.len(), 1);
-            }
-            other => panic!("expected Permission block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn permission_block_opens_fresh_assistant_turn_when_no_previous() {
-        let mut c = Conversation::default();
-        c.push_permission_block("perm-1".to_string(), "Allow?".to_string(), None, vec![]);
-        assert_eq!(c.turns.len(), 1);
-        assert_eq!(c.turns[0].role, Role::Assistant);
-    }
-
-    #[test]
-    fn permission_block_updated_by_id() {
-        let mut c = Conversation::default();
-        c.push_permission_block("perm-1".to_string(), "Allow?".to_string(), None, vec![]);
-        c.update_permission_status("perm-1", PermissionStatus::Allowed);
-        match &c.turns[0].blocks[0] {
-            Block::Permission { status, .. } => assert_eq!(*status, PermissionStatus::Allowed),
-            other => panic!("expected Permission, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn store_push_permission_request_creates_block_and_registers_responder() {
-        let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let p = published.clone();
-        let store = ConversationStore::new(Arc::new(move |_ev| {
-            p.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }));
-        let session = SessionKey::new("opencode", 1);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-
-        store.push_permission_request(
-            &session,
-            "perm-1".to_string(),
-            "Allow?".to_string(),
-            None,
-            vec![],
-            tx,
-        );
-
-        // One publish on push
-        assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 1);
-        // Block exists in snapshot
-        let snap = store.snapshot();
-        assert_eq!(snap.turns.len(), 1);
-        assert!(matches!(
-            &snap.turns[0].blocks[0],
-            Block::Permission { id, status: PermissionStatus::Pending, .. } if id == "perm-1"
-        ));
-        // Responder is registered — dropping rx won't hang the test
-        drop(rx);
-    }
-
-    #[test]
-    fn store_resolve_permission_sends_outcome_and_publishes() {
-        let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let p = published.clone();
-        let store = ConversationStore::new(Arc::new(move |_ev| {
-            p.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }));
-        let session = SessionKey::new("opencode", 1);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-
-        // PU-B.2: resolve by the agent's actual option; the block status derives
-        // from that option's kind (AllowOnce → Allowed).
-        let opt = test_permission_option("a1", "Allow once", PermissionOptionKind::AllowOnce);
-        let chosen = opt.option_id.clone();
-        store.push_permission_request(
-            &session,
-            "perm-1".to_string(),
-            "Allow?".to_string(),
-            None,
-            vec![opt],
-            tx,
-        );
-
-        // Reset publish count — the push already fired once
-        published.store(0, std::sync::atomic::Ordering::SeqCst);
-
-        store.resolve_permission("perm-1", chosen.clone());
-
-        // Block updated
-        let snap = store.snapshot();
-        match &snap.turns[0].blocks[0] {
-            Block::Permission { status, .. } => assert_eq!(*status, PermissionStatus::Allowed),
-            other => panic!("expected Permission, got {other:?}"),
-        }
-        // Oneshot delivered the chosen option id
-        assert_eq!(
-            rx.blocking_recv(),
-            Ok(chosen),
-            "responder must receive the chosen option id",
-        );
-        // Publish fired
-        assert_eq!(
-            published.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "resolve must publish",
-        );
-    }
-
-    #[test]
-    fn store_resolve_permission_noop_for_unknown_id() {
-        let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let p = published.clone();
-        let store = ConversationStore::new(Arc::new(move |_ev| {
-            p.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }));
-
-        // No pending permission with this id → no-op, no publish
-        let opt = test_permission_option("a1", "Allow once", PermissionOptionKind::AllowOnce);
-        store.resolve_permission("nonexistent", opt.option_id);
-        assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn oldest_pending_permission_returns_the_first_in_wire_order() {
-        let store = ConversationStore::new(Arc::new(|_| {}));
-        let session = SessionKey::new("opencode", 1);
-        let (tx1, _rx1) = tokio::sync::oneshot::channel();
-        let (tx2, _rx2) = tokio::sync::oneshot::channel();
-        store.push_permission_request(
-            &session,
-            "perm-1".to_string(),
-            "First?".to_string(),
-            None,
-            vec![test_permission_option(
-                "a",
-                "Allow",
-                PermissionOptionKind::AllowOnce,
-            )],
-            tx1,
-        );
-        store.push_permission_request(
-            &session,
-            "perm-2".to_string(),
-            "Second?".to_string(),
-            None,
-            vec![test_permission_option(
-                "b",
-                "Allow",
-                PermissionOptionKind::AllowOnce,
-            )],
-            tx2,
-        );
-
-        let oldest = store
-            .oldest_pending_permission()
-            .expect("a pending request exists");
-        assert_eq!(oldest.id, "perm-1", "oldest = first in wire order");
-        assert_eq!(oldest.title, "First?");
-        assert_eq!(oldest.options.len(), 1);
-
-        // Resolving the first surfaces the second as the new oldest.
-        store.resolve_permission("perm-1", oldest.options[0].option_id.clone());
-        assert_eq!(
-            store.oldest_pending_permission().map(|v| v.id),
-            Some("perm-2".to_string()),
-        );
-    }
-
-    // ── AUX‑2: usage update tests ──
-
-    fn update(used: u64, size: u64, cost: Option<(f64, &str)>) -> SessionUpdate {
-        let mut u = agent_client_protocol::schema::v1::UsageUpdate::new(used, size);
-        if let Some((amt, cur)) = cost {
-            u = u.cost(agent_client_protocol::schema::v1::Cost::new(amt, cur));
-        }
-        SessionUpdate::UsageUpdate(u)
-    }
-
     #[test]
     fn usage_update_stored() {
         let mut c = Conversation::default();
-        c.apply(&update(53000, 200000, Some((0.045, "USD"))));
+        c.apply_update(&update(53000, 200000, Some((0.045, "USD"))));
         assert_eq!(
             c.usage,
             Some(UsageSnapshot {
@@ -999,10 +276,10 @@ mod tests {
     #[test]
     fn usage_update_overwrites() {
         let mut c = Conversation::default();
-        c.apply(&update(1000, 200000, None));
+        c.apply_update(&update(1000, 200000, None));
         assert!(c.usage.as_ref().unwrap().cost.is_none());
         // Second update overwrites
-        c.apply(&update(53000, 200000, Some((0.045, "USD"))));
+        c.apply_update(&update(53000, 200000, Some((0.045, "USD"))));
         assert_eq!(c.usage.unwrap().used, 53000);
     }
 
@@ -1020,7 +297,7 @@ mod tests {
         let update: SessionUpdate =
             serde_json::from_value(raw).expect("opencode usage_update should deserialize");
         let mut c = Conversation::default();
-        c.apply(&update);
+        c.apply_update(&update);
         let usage = c
             .usage
             .expect("usage should be populated from the wire payload");
@@ -1032,50 +309,74 @@ mod tests {
     #[test]
     fn usage_update_no_cost() {
         let mut c = Conversation::default();
-        c.apply(&update(53000, 200000, None));
+        c.apply_update(&update(53000, 200000, None));
         assert_eq!(c.usage.as_ref().unwrap().used, 53000);
         assert_eq!(c.usage.as_ref().unwrap().size, 200000);
         assert!(c.usage.as_ref().unwrap().cost.is_none());
     }
 
-    // ── AUX‑3: status tests ──
-
     #[test]
-    fn status_idle_default() {
-        let c = Conversation::default();
-        assert_eq!(c.status, SessionStatus::Idle);
+    fn tool_kinds_map_onto_the_neutral_set() {
+        use acp::ToolKind as K;
+        assert_eq!(tool_kind_from_acp(K::Read), ToolKind::Read);
+        assert_eq!(tool_kind_from_acp(K::Search), ToolKind::Search);
+        assert_eq!(tool_kind_from_acp(K::Fetch), ToolKind::Search);
+        assert_eq!(tool_kind_from_acp(K::Edit), ToolKind::Edit);
+        assert_eq!(tool_kind_from_acp(K::Delete), ToolKind::Edit);
+        assert_eq!(tool_kind_from_acp(K::Move), ToolKind::Edit);
+        assert_eq!(tool_kind_from_acp(K::Execute), ToolKind::Execute);
+        assert_eq!(tool_kind_from_acp(K::Think), ToolKind::Other);
+        assert_eq!(tool_kind_from_acp(K::Other), ToolKind::Other);
     }
 
     #[test]
-    fn set_status_updates_and_publishes() {
+    fn permission_options_map_every_kind_and_keep_wire_ids() {
+        use acp::PermissionOptionKind as K;
+        for (acp_kind, want) in [
+            (K::AllowOnce, PermissionKind::AllowOnce),
+            (K::AllowAlways, PermissionKind::AllowAlways),
+            (K::RejectOnce, PermissionKind::RejectOnce),
+            (K::RejectAlways, PermissionKind::RejectAlways),
+        ] {
+            let got =
+                permission_option_from_acp(&acp::PermissionOption::new("id-1", "Name", acp_kind));
+            assert_eq!(got.option_id, "id-1", "wire id survives the mapping");
+            assert_eq!(got.name, "Name");
+            assert_eq!(got.kind, want);
+        }
+    }
+
+    /// ACP never sets `origin`; the adapter must not invent one.
+    #[test]
+    fn acp_tool_calls_carry_no_origin() {
+        let mut c = Conversation::default();
+        c.apply_update(&SessionUpdate::ToolCall(AcpToolCall::new("t", "run")));
+        match &c.turns[0].blocks[0] {
+            Block::ToolCall { origin, .. } => assert!(origin.is_none()),
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    /// The store path publishes once per folded update.
+    #[test]
+    fn store_apply_update_folds_and_publishes() {
+        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let published = Arc::new(AtomicUsize::new(0));
         let p = published.clone();
         let store = ConversationStore::new(Arc::new(move |_ev| {
             p.fetch_add(1, Ordering::SeqCst);
         }));
-        let session = SessionKey::new("opencode", 1);
-
-        store.set_status(&session, SessionStatus::Thinking);
+        store.apply_update(
+            &SessionKey::new("opencode", 1),
+            &SessionUpdate::AgentMessageChunk(text_chunk("hi")),
+        );
         assert_eq!(published.load(Ordering::SeqCst), 1);
-        assert_eq!(store.snapshot().status, SessionStatus::Thinking);
-
-        store.set_status(&session, SessionStatus::Idle);
-        assert_eq!(store.snapshot().status, SessionStatus::Idle);
+        assert_eq!(store.snapshot().turns.len(), 1);
     }
 
     #[test]
-    fn status_display_formats() {
-        assert_eq!(SessionStatus::Idle.to_string(), "Ready");
-        assert!(SessionStatus::Thinking.to_string().contains("Thinking"));
-        let exec = SessionStatus::Executing {
-            tool: "edit".into(),
-        };
-        assert_eq!(exec.to_string(), "Working: edit");
-        assert!(
-            SessionStatus::AwaitingPermission
-                .to_string()
-                .contains("Awaiting")
-        );
+    fn status_type_is_reachable_from_the_adapter_tests() {
+        assert_eq!(Conversation::default().status, SessionStatus::Idle);
     }
 }

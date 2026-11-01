@@ -42,8 +42,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use lattice_core::{BufferId, Fold, FoldSource, ProviderId};
 
-use crate::acp::conversation::ConversationStore;
-use crate::acp::conversation_mode::project_conversation;
+use crate::conversation::ConversationStore;
+use crate::conversation::projection::project_conversation;
 
 /// Namespace for the per-buffer tool-call fold provider id. OR'd with the
 /// buffer's id (low 32 bits) so the source is distinct in the registry —
@@ -171,7 +171,7 @@ impl FoldSource for ReasoningFoldSource {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use crate::acp::conversation::{Block, Conversation, Role, ToolStatus, Turn};
+    use crate::conversation::{Block, Conversation, Role, ToolStatus, Turn};
     use std::sync::Arc;
 
     /// A detailed tool call in an assistant turn preceded by `preamble` lines of
@@ -184,6 +184,7 @@ mod tests {
                     Block::Text(preamble.to_string()),
                     Block::ToolCall {
                         id: "tc-1".to_string(),
+                        origin: None,
                         title: "bash".to_string(),
                         status: ToolStatus::Ok,
                         kind: Default::default(),
@@ -229,17 +230,21 @@ mod tests {
     /// on the tool-call id.
     #[test]
     fn tool_source_emits_one_closed_fold_for_a_detailed_tool_call() {
-        // Drive the store through the wire path so `compute_folds` reads it.
-        use agent_client_protocol::schema::v1::{SessionUpdate, ToolCall as AcpToolCall};
+        // Drive the store through its mutate path so `compute_folds` reads it.
+        use crate::conversation::ToolKind;
         use lattice_agent::SessionKey;
         let store = ConversationStore::new(Arc::new(|_| {}));
-        let mut tc = AcpToolCall::new("tc-1", "bash");
-        tc.raw_input = Some(serde_json::json!({ "cmd": "echo hi" }));
-        tc.raw_output = Some(serde_json::json!("hi\n"));
-        store.apply(
-            &SessionKey::new("opencode", 1),
-            &SessionUpdate::ToolCall(tc),
-        );
+        store.mutate(&SessionKey::new("opencode", 1), |c| {
+            c.push_tool_call(
+                "tc-1".into(),
+                None,
+                "bash".into(),
+                ToolStatus::Ok,
+                ToolKind::Execute,
+                Some("{\n  \"cmd\": \"echo hi\"\n}".into()),
+                Some("\"hi\\n\"".into()),
+            );
+        });
 
         let tool = ToolCallFoldSource::new(store.clone(), BufferId(1));
         let folds = tool.compute_folds();
@@ -260,13 +265,20 @@ mod tests {
     /// region, which the `z*` grammar treats as a no-op.
     #[test]
     fn tool_source_skips_a_tool_call_without_detail() {
-        use agent_client_protocol::schema::v1::{SessionUpdate, ToolCall as AcpToolCall};
+        use crate::conversation::ToolKind;
         use lattice_agent::SessionKey;
         let store = ConversationStore::new(Arc::new(|_| {}));
-        store.apply(
-            &SessionKey::new("opencode", 1),
-            &SessionUpdate::ToolCall(AcpToolCall::new("tc-1", "think")),
-        );
+        store.mutate(&SessionKey::new("opencode", 1), |c| {
+            c.push_tool_call(
+                "tc-1".into(),
+                None,
+                "think".into(),
+                ToolStatus::Pending,
+                ToolKind::Other,
+                None,
+                None,
+            );
+        });
         let tool = ToolCallFoldSource::new(store, BufferId(1));
         assert!(tool.compute_folds().is_empty());
     }

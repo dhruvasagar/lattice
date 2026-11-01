@@ -21,13 +21,12 @@ pub mod permission_mode;
 pub mod providers;
 pub mod session;
 pub mod supervisor;
-pub mod tool_fold;
 
-pub use commands::register_ai_ex_commands;
-pub use connection::{Connection, SessionId};
-pub use conversation::{
+pub use crate::conversation::{
     Block, Conversation, ConversationStore, ConversationUpdated, Cost, EditStatus,
     PendingPermissionView, PermissionStatus, Role, SessionStatus, ToolStatus, Turn, UsageSnapshot,
 };
+pub use commands::register_ai_ex_commands;
+pub use connection::{Connection, SessionId};
 pub use error::{AiError, Result};
 pub use handle::{AiClientHandle, AiState};

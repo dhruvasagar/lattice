@@ -60,7 +60,10 @@ pub enum Outcome {
 
 /// Build the shared client: a connect timeout and no total timeout.
 pub fn build_client() -> Result<reqwest::Client, String> {
+    // No redirects: a custom auth header (`x-api-key`) would be forwarded to a
+    // cross-origin target. A 3xx becomes a named failure instead.
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .map_err(|e| format!("could not create the HTTP client: {e}"))
@@ -143,6 +146,19 @@ fn json_message(text: &str) -> Option<String> {
     found.as_str().map(str::to_string)
 }
 
+/// Just the host[:port] of a `Location` value, never its path or query (which
+/// may carry secrets).
+fn redirect_host(location: &str) -> String {
+    let rest = location.split_once("://").map_or(location, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    if host.is_empty() || !location.contains("://") {
+        "another location on the same host".into()
+    } else {
+        host.to_string()
+    }
+}
+
 fn status_label(code: u16) -> &'static str {
     match code {
         400 => "bad request",
@@ -188,6 +204,18 @@ fn is_event_stream(resp: &reqwest::Response) -> bool {
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.to_ascii_lowercase().starts_with("text/event-stream"))
+}
+
+/// Scrub every string an error event carries before the sink can render it.
+fn scrub_error(err: ProviderError, key: &ApiKey) -> ProviderError {
+    match err {
+        ProviderError::Api { kind, message } => ProviderError::Api {
+            kind: scrub(&kind, key),
+            message: scrub(&message, key),
+        },
+        ProviderError::InvalidRequest(m) => ProviderError::InvalidRequest(scrub(&m, key)),
+        other => other,
+    }
 }
 
 fn event_error_text(err: &ProviderError, key: &ApiKey) -> String {
@@ -242,6 +270,20 @@ pub async fn run(
     };
 
     let code = resp.status().as_u16();
+    if resp.status().is_redirection() {
+        let host = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(redirect_host)
+            .unwrap_or_else(|| "an unknown location".into());
+        return Outcome::Failed(scrub(
+            &format!(
+                "redirected (HTTP {code}) to {host}; redirects are not followed so the key is never sent there"
+            ),
+            key,
+        ));
+    }
     if !resp.status().is_success() {
         let body = tokio::select! {
             biased;
@@ -303,6 +345,13 @@ pub async fn run(
             events.last(),
             Some(StreamEvent::Done(_) | StreamEvent::Error(_))
         );
+        let events: Vec<StreamEvent> = events
+            .into_iter()
+            .map(|ev| match ev {
+                StreamEvent::Error(e) => StreamEvent::Error(scrub_error(e, key)),
+                other => other,
+            })
+            .collect();
         let failure = events.iter().find_map(|ev| match ev {
             StreamEvent::Error(e) => Some(event_error_text(e, key)),
             _ => None,

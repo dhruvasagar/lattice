@@ -89,14 +89,68 @@ async fn a_proxy_html_page_quoting_the_header_is_scrubbed_and_bounded() {
 #[tokio::test]
 async fn an_event_stream_error_carrying_the_key_is_scrubbed() {
     let addr = serve(|_, mut s| async move {
-        let ev = serde_json::json!({"error": {"message": format!("key {KEY} is revoked"), "type": "auth"}});
+        let ev = serde_json::json!({"error": {"message": format!("key {KEY} is revoked"), "type": format!("auth-{KEY}")}});
         let _ = s
             .write_all(format!("{SSE_HEAD}data: {ev}\n\n").as_bytes())
             .await;
     })
     .await;
-    let msg = run_to_failure(addr).await;
+    let reg = registry();
+    let rec = Recorder::default();
+    let id = reg.start_with_key(
+        target(),
+        request(),
+        provider_for(addr),
+        key(),
+        Box::new(rec.clone()),
+    );
+    let msg = failed_message(wait_terminal(&reg, id, Duration::from_secs(5)).await);
     assert_clean(&msg);
+    // What the sink (and so the UI) received is clean too.
+    let seen = format!("{:?}", rec.events.lock().unwrap());
+    assert!(
+        seen.contains("revoked"),
+        "the error still reached the sink: {seen}"
+    );
+    assert_clean(&seen);
+}
+
+#[tokio::test]
+async fn a_redirect_is_not_followed_and_never_receives_the_key() {
+    let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let h2 = hits.clone();
+    let target_addr = serve(move |req, _s| {
+        let h2 = h2.clone();
+        async move { h2.lock().unwrap().push(req) }
+    })
+    .await;
+    let redirector = serve(move |_, mut s| async move {
+        let raw = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://{target_addr}/steal?k=1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let _ = s.write_all(raw.as_bytes()).await;
+    })
+    .await;
+    let reg = registry();
+    let id = reg.start_with_key(
+        target(),
+        request(),
+        provider_for(redirector),
+        key(),
+        Box::new(Recorder::default()),
+    );
+    let msg = failed_message(wait_terminal(&reg, id, Duration::from_secs(5)).await);
+    assert!(
+        msg.contains("redirected") && msg.contains(&target_addr.to_string()),
+        "{msg}"
+    );
+    assert!(!msg.contains("steal"), "path not echoed: {msg}");
+    assert_clean(&msg);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        hits.lock().unwrap().is_empty(),
+        "redirect target was contacted"
+    );
 }
 
 #[tokio::test]

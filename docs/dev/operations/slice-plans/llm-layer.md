@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 📝 LL.1–LL.24 planned. Nothing built.**
+**Status: ✅ LL.1–LL.6 built (first usable version); 📝 LL.7–LL.24 planned.**
 
 **Goal:** direct model access from any buffer, with a REPL chat, per-session overrides,
 reviewed tools, and MCP behind one tool interface.
@@ -74,7 +74,7 @@ Claude Code server.
 
 ## Foundations
 
-### LL.1 — Protocol-neutral conversation model 📝
+### LL.1 — Protocol-neutral conversation model ✅
 
 **Why:** the design shares one conversation mode between ACP and LLM sessions, and
 `conversation.rs` is built on ACP's types. Behaviour-preserving.
@@ -104,7 +104,7 @@ nothing from `agent_client_protocol` (a grep test, as the repo's other boundary 
 **Done when:** `:opencode-acp` behaves identically, and a build with `llm` and without `acp`
 compiles the module (from LL.3).
 
-### LL.2 — Per-buffer editable tail 📝
+### LL.2 — Per-buffer editable tail ✅
 
 **Why:** `AiConversationMode` keeps one process-wide anchor, so a second conversation buffer
 would corrupt the first's prompt.
@@ -123,7 +123,7 @@ stale entry.
 
 ## Core harness
 
-### LL.3 — Provider adapters 📝
+### LL.3 — Provider adapters ✅
 
 **Why:** wire formats tested with no socket. Starts the `llm` feature.
 
@@ -150,7 +150,7 @@ usage; `a_character_split_across_chunks_decodes.rs` feeds every fixture split at
 asserts identical events (**review focus 1**); truncated stream yields `Error`, never a panic;
 unknown event types are skipped; Ollama-style OpenAI-compatible responses without `usage`.
 
-### LL.4 — Transport and request lifecycle 📝
+### LL.4 — Transport and request lifecycle ✅
 
 **Why:** real network, cancellation, and the lifecycle every surface displays.
 
@@ -178,7 +178,7 @@ started from a `current_thread` runtime. Also throughput plus runtime-responsive
 
 **Bench:** decode throughput in `benches/`.
 
-### LL.5 — `:llm` chat buffer 📝
+### LL.5 — `:llm` chat buffer ✅
 
 **Why:** the first end-to-end path.
 
@@ -197,7 +197,7 @@ text arrives above; the buffer does not block `:qa`.
 
 **TUI/GPUI:** no new effects expected; verify both render it.
 
-### LL.6 — Markdown transcript and folded blocks 📝
+### LL.6 — Markdown transcript and folded blocks ✅
 
 **Why:** highlighting and the block display. **First usable version.**
 
@@ -215,6 +215,14 @@ that a query compiled; a fence inside tool output; an expanded block stays expan
 containing `#` headings (design §11).
 
 **Bench:** sustained streaming beside typing against the keystroke ratchet.
+
+**Landed:** `ProjectionOptions` (markdown, per-type `FoldDisplay`) is a parameter of the shared
+projection and fold sources; `:opencode-acp` passes the default and is unchanged. The chat declares
+`target_language() = "markdown"` (grammar only: `markdown-mode` is not activated, so its `<CR>`
+link chord stays out). Fold values are read from `[llm.fold]` in `lattice.toml` until LL.7.
+`benches/llm_projection.rs` covers projection of a growing reply (about 68 µs for a 2000-line
+reply). No existing keystroke-ratchet bench was easy to extend with a streaming producer, so the
+ratchet comparison is not done here; the projection runs on the drain task, not the UI thread.
 
 ## Settings
 

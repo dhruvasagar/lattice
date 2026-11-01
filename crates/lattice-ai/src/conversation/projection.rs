@@ -4,17 +4,108 @@
 //! produces into its buffer, and the fold sources in `tool_fold` read the spans.
 
 use crate::conversation::model::{
-    Block, Conversation, EditStatus, PermissionStatus, Role, ToolStatus,
+    Block, Conversation, EditStatus, PermissionStatus, Role, ToolKind, ToolStatus,
 };
 use crate::conversation::tool_fold::{
     ConversationFold, ConversationFoldKind, reasoning_fold_identity, tool_fold_identity,
 };
 
+/// How a foldable block (reasoning, a tool call) is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FoldDisplay {
+    /// In the projection, folded to its head line until opened. The default.
+    #[default]
+    Closed,
+    /// In the projection and unfolded.
+    Open,
+    /// Left out of the projection. The store keeps the block, so changing this
+    /// back brings it back.
+    Hidden,
+}
+
+impl FoldDisplay {
+    /// Parse a config value (`closed`, `open`, `hidden`).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "closed" => Some(Self::Closed),
+            "open" => Some(Self::Open),
+            "hidden" => Some(Self::Hidden),
+            _ => None,
+        }
+    }
+}
+
+/// What differs between the conversations this projection serves. The default
+/// is `:opencode-acp`'s display (plain indented blocks, folds closed); the
+/// native LLM chat turns the markdown form on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProjectionOptions {
+    /// Keep the text valid markdown at every moment: close an unclosed fence,
+    /// and render a tool call as a head line over fenced bodies.
+    pub markdown: bool,
+    pub reasoning: FoldDisplay,
+    pub tools: FoldDisplay,
+}
+
+/// Where a buffer's [`ProjectionOptions`] come from, read on every projection so
+/// a changed setting applies to the next one.
+#[derive(Clone)]
+pub struct ProjectionSource(std::sync::Arc<dyn Fn() -> ProjectionOptions + Send + Sync>);
+
+impl ProjectionSource {
+    pub fn new(f: impl Fn() -> ProjectionOptions + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(f))
+    }
+
+    pub fn fixed(options: ProjectionOptions) -> Self {
+        Self::new(move || options)
+    }
+
+    pub fn get(&self) -> ProjectionOptions {
+        (self.0)()
+    }
+}
+
+impl Default for ProjectionSource {
+    fn default() -> Self {
+        Self::fixed(ProjectionOptions::default())
+    }
+}
+
 /// Render the whole conversation to plain text. Pure; the projection diffs this
 /// against the buffer to compute a minimal edit. Thin wrapper over
 /// [`project_conversation`] — the text half.
 pub fn render_conversation(conv: &Conversation) -> String {
-    project_conversation(conv).0
+    render_conversation_with(conv, &ProjectionOptions::default())
+}
+
+/// [`render_conversation`] under explicit options.
+pub fn render_conversation_with(conv: &Conversation, opts: &ProjectionOptions) -> String {
+    project_conversation_with(conv, opts).0
+}
+
+/// Output written so far and the line the next push lands on, kept together so
+/// a fold's line range can never drift from the text.
+struct Sink {
+    out: String,
+    line: u32,
+}
+
+impl Sink {
+    fn push(&mut self, s: &str) {
+        self.out.push_str(s);
+    }
+
+    /// End the current line.
+    fn end_line(&mut self) {
+        self.out.push('\n');
+        self.line += 1;
+    }
+
+    fn line(&mut self, s: &str) {
+        self.push(s);
+        self.end_line();
+    }
 }
 
 /// TCF: project the conversation to `(transcript_text, fold_spans)` in a single
@@ -33,96 +124,93 @@ pub fn render_conversation(conv: &Conversation) -> String {
 /// buffer's line numbers: the transcript occupies buffer lines `0..N` and the
 /// prompt marker is appended after it, so it never shifts a transcript line.
 pub fn project_conversation(conv: &Conversation) -> (String, Vec<ConversationFold>) {
-    let mut out = String::new();
+    project_conversation_with(conv, &ProjectionOptions::default())
+}
+
+/// [`project_conversation`] under explicit options.
+pub fn project_conversation_with(
+    conv: &Conversation,
+    opts: &ProjectionOptions,
+) -> (String, Vec<ConversationFold>) {
+    let mut s = Sink {
+        out: String::new(),
+        line: 0,
+    };
     let mut folds: Vec<ConversationFold> = Vec::new();
-    // Current line index == number of `\n` pushed so far. Bumped on every line
-    // written, so `line` names the row the NEXT push lands on.
-    let mut line: u32 = 0;
     // Reasoning blocks carry no wire id; their fold identity is keyed on this
     // document-order ordinal, incremented for every reasoning block regardless
-    // of whether it is foldable so a given block's ordinal stays stable.
+    // of whether it is foldable or shown, so a given block's ordinal stays
+    // stable.
     let mut reasoning_ordinal: usize = 0;
     for turn in &conv.turns {
         let who = match turn.role {
             Role::User => "you",
             Role::Assistant => conv.assistant_label(),
         };
-        out.push_str(who);
-        out.push_str(":\n");
-        line += 1;
+        s.push(who);
+        s.line(":");
         for block in &turn.blocks {
             match block {
-                Block::Text(s) => {
-                    for l in s.split('\n') {
-                        out.push_str(l);
-                        out.push('\n');
-                        line += 1;
-                    }
-                }
-                Block::Reasoning(s) => {
-                    let start = line;
-                    for l in s.split('\n') {
-                        out.push_str("  \u{2502} ");
-                        out.push_str(l);
-                        out.push('\n');
-                        line += 1;
-                    }
-                    let end = line - 1;
-                    if end > start {
-                        folds.push(ConversationFold {
-                            start_line: start,
-                            end_line: end,
-                            identity: reasoning_fold_identity(reasoning_ordinal),
-                            kind: ConversationFoldKind::Reasoning,
-                        });
-                    }
+                Block::Text(text) => push_text(&mut s, text, opts.markdown),
+                Block::Reasoning(text) => {
+                    let ordinal = reasoning_ordinal;
                     reasoning_ordinal += 1;
+                    if opts.reasoning == FoldDisplay::Hidden {
+                        continue;
+                    }
+                    let start = s.line;
+                    for l in text.split('\n') {
+                        s.push("  \u{2502} ");
+                        s.line(l);
+                    }
+                    push_fold(
+                        &mut folds,
+                        start,
+                        s.line - 1,
+                        reasoning_fold_identity(ordinal),
+                        ConversationFoldKind::Reasoning,
+                    );
                 }
                 Block::ToolCall {
                     id,
+                    origin,
                     title,
                     status,
+                    kind,
                     input,
                     output,
-                    ..
                 } => {
-                    let start = line;
-                    out.push_str("  \u{25b8} ");
-                    out.push_str(title);
-                    out.push_str(" [");
-                    out.push_str(status_tag(status));
-                    out.push_str("]\n");
-                    line += 1;
-                    for (label, body) in [("input", input), ("output", output)] {
-                        let Some(body) = body else { continue };
-                        out.push_str("    ");
-                        out.push_str(label);
-                        out.push_str(":\n");
-                        line += 1;
-                        for l in body.split('\n') {
-                            out.push_str("      ");
-                            out.push_str(l);
-                            out.push('\n');
-                            line += 1;
-                        }
+                    if opts.tools == FoldDisplay::Hidden {
+                        continue;
                     }
-                    let end = line - 1;
-                    if end > start {
-                        folds.push(ConversationFold {
-                            start_line: start,
-                            end_line: end,
-                            identity: tool_fold_identity(id),
-                            kind: ConversationFoldKind::ToolCall,
-                        });
+                    let start = s.line;
+                    if opts.markdown {
+                        push_markdown_tool(
+                            &mut s,
+                            origin.as_deref(),
+                            title,
+                            status,
+                            *kind,
+                            input.as_deref(),
+                            output.as_deref(),
+                        );
+                    } else {
+                        push_indented_tool(&mut s, title, status, input, output);
                     }
+                    push_fold(
+                        &mut folds,
+                        start,
+                        s.line - 1,
+                        tool_fold_identity(id),
+                        ConversationFoldKind::ToolCall,
+                    );
                 }
                 Block::Edit { path, status } => {
-                    out.push_str("  \u{270e} ");
-                    out.push_str(path);
-                    out.push_str(" [");
-                    out.push_str(edit_tag(status));
-                    out.push_str("]\n");
-                    line += 1;
+                    s.push("  \u{270e} ");
+                    s.push(path);
+                    s.push(" [");
+                    s.push(edit_tag(status));
+                    s.line("]");
                 }
                 Block::Permission {
                     title,
@@ -131,18 +219,15 @@ pub fn project_conversation(conv: &Conversation) -> (String, Vec<ConversationFol
                     status,
                     ..
                 } => {
-                    out.push_str("  ");
-                    out.push_str(permission_prefix(status));
-                    out.push_str(title);
-                    out.push_str(" [");
-                    out.push_str(permission_tag(status));
-                    out.push_str("]\n");
-                    line += 1;
+                    s.push("  ");
+                    s.push(permission_prefix(status));
+                    s.push(title);
+                    s.push(" [");
+                    s.push(permission_tag(status));
+                    s.line("]");
                     if let Some(desc) = description {
-                        out.push_str("    ");
-                        out.push_str(desc);
-                        out.push('\n');
-                        line += 1;
+                        s.push("    ");
+                        s.line(desc);
                     }
                     if status == &PermissionStatus::Pending {
                         // PU-B.2: the inline block is a record, not the
@@ -151,35 +236,182 @@ pub fn project_conversation(conv: &Conversation) -> (String, Vec<ConversationFol
                         // without the old `(a)/(A)/(r)/(R)` key hints, which named
                         // chords that were never bound.
                         for (i, opt) in options.iter().enumerate() {
-                            out.push_str(&format!("    {}: {}\n", i + 1, opt.name));
-                            line += 1;
+                            s.line(&format!("    {}: {}", i + 1, opt.name));
                         }
                     }
                 }
             }
         }
-        out.push('\n');
-        line += 1;
+        s.end_line();
     }
     // Prompts waiting behind a streaming reply, then the last failure. Both
     // sit after the turns so the history above them never shifts.
     for text in &conv.queued {
-        out.push_str("you (queued):\n");
-        for l in text.split('\n') {
-            out.push_str(l);
-            out.push('\n');
-        }
-        out.push('\n');
+        s.line("you (queued):");
+        push_text(&mut s, text, opts.markdown);
+        s.end_line();
     }
     if let Some(err) = &conv.error {
         for (i, l) in err.split('\n').enumerate() {
-            out.push_str(if i == 0 { "! " } else { "  " });
-            out.push_str(l);
-            out.push('\n');
+            s.push(if i == 0 { "! " } else { "  " });
+            s.line(l);
         }
-        out.push('\n');
+        s.end_line();
     }
-    (out, folds)
+    (s.out, folds)
+}
+
+/// A fold needs an interior: a 1-line region is a `z*` no-op.
+fn push_fold(
+    folds: &mut Vec<ConversationFold>,
+    start: u32,
+    end: u32,
+    identity: u64,
+    kind: ConversationFoldKind,
+) {
+    if end > start {
+        folds.push(ConversationFold {
+            start_line: start,
+            end_line: end,
+            identity,
+            kind,
+        });
+    }
+}
+
+/// Text lines, and in markdown form a closing fence when the text leaves one
+/// open, so a half-received code block cannot colour what follows it (the next
+/// block, and the prompt) as code.
+fn push_text(s: &mut Sink, text: &str, markdown: bool) {
+    for l in text.split('\n') {
+        s.line(l);
+    }
+    if markdown && let Some(close) = unclosed_fence(text) {
+        s.line(&close);
+    }
+}
+
+/// The ACP form: a `▸` head with indented `input:` / `output:` detail rows.
+fn push_indented_tool(
+    s: &mut Sink,
+    title: &str,
+    status: &ToolStatus,
+    input: &Option<String>,
+    output: &Option<String>,
+) {
+    s.push("  \u{25b8} ");
+    s.push(title);
+    s.push(" [");
+    s.push(status_tag(status));
+    s.line("]");
+    for (label, body) in [("input", input), ("output", output)] {
+        let Some(body) = body else { continue };
+        s.push("    ");
+        s.push(label);
+        s.line(":");
+        for l in body.split('\n') {
+            s.push("      ");
+            s.line(l);
+        }
+    }
+}
+
+/// The markdown form: a head line outside any fence, so a folded block still
+/// reads as a sentence, over fenced bodies that take their highlighting from
+/// the grammar's injections.
+fn push_markdown_tool(
+    s: &mut Sink,
+    origin: Option<&str>,
+    title: &str,
+    status: &ToolStatus,
+    kind: ToolKind,
+    input: Option<&str>,
+    output: Option<&str>,
+) {
+    s.push("\u{25b8} ");
+    if let Some(origin) = origin {
+        s.push(origin);
+        s.push(" \u{b7} ");
+    }
+    s.push(title);
+    s.push(" [");
+    s.push(status_tag(status));
+    s.line("]");
+    if let Some(body) = input {
+        push_fenced(s, "json", body);
+    }
+    if let Some(body) = output {
+        push_fenced(s, output_language(kind, body), body);
+    }
+}
+
+/// The language of a tool's output: by the tool's kind where that says
+/// something, then `json` if it parses, else `text`.
+fn output_language(kind: ToolKind, body: &str) -> &'static str {
+    match kind {
+        ToolKind::Edit => "diff",
+        ToolKind::Execute => "bash",
+        _ if serde_json::from_str::<serde_json::Value>(body).is_ok() => "json",
+        _ => "text",
+    }
+}
+
+/// `body` in a fence longer than any backtick run it contains, so its content
+/// can never close the fence early.
+fn push_fenced(s: &mut Sink, lang: &str, body: &str) {
+    let fence = "`".repeat(longest_backtick_run(body).max(2) + 1);
+    s.push(&fence);
+    s.line(lang);
+    for l in body.split('\n') {
+        s.line(l);
+    }
+    s.line(&fence);
+}
+
+fn longest_backtick_run(s: &str) -> usize {
+    let mut best = 0;
+    let mut cur = 0;
+    for c in s.chars() {
+        if c == '`' {
+            cur += 1;
+            best = best.max(cur);
+        } else {
+            cur = 0;
+        }
+    }
+    best
+}
+
+/// The closing line for a fence `text` leaves open, if any (CommonMark: an
+/// opener is 3+ backticks or tildes under at most 3 spaces of indent; a closer
+/// is the same character, at least as long, with nothing after it).
+fn unclosed_fence(text: &str) -> Option<String> {
+    let mut open: Option<(char, usize)> = None;
+    for line in text.split('\n') {
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        if indent > 3 {
+            continue;
+        }
+        let rest = &line[indent..];
+        let Some(ch) = rest.chars().next().filter(|c| *c == '`' || *c == '~') else {
+            continue;
+        };
+        let run = rest.chars().take_while(|c| *c == ch).count();
+        if run < 3 {
+            continue;
+        }
+        let after = &rest[run..];
+        match open {
+            Some((och, olen)) if och == ch && run >= olen && after.trim().is_empty() => {
+                open = None;
+            }
+            Some(_) => {}
+            // A backtick opener's info string may not contain a backtick.
+            None if ch == '`' && after.contains('`') => {}
+            None => open = Some((ch, run)),
+        }
+    }
+    open.map(|(ch, len)| ch.to_string().repeat(len))
 }
 
 fn status_tag(status: &ToolStatus) -> &'static str {

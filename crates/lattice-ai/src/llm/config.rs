@@ -31,6 +31,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::conversation::{FoldDisplay, ProjectionOptions};
+
 use super::{AnthropicProvider, ApiKey, OpenAiProvider, Provider};
 
 const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
@@ -82,6 +84,10 @@ pub struct LlmConfig {
     providers: BTreeMap<String, ProviderConfig>,
     default_provider: Option<String>,
     default_model: Option<String>,
+    /// `llm.fold.reasoning` and `llm.fold.tools`: how each block type is shown.
+    /// LL.7 moves these onto layered settings.
+    pub fold_reasoning: FoldDisplay,
+    pub fold_tools: FoldDisplay,
     /// Problems found while reading, for the log. A bad provider is skipped,
     /// not fatal: one typo must not take the others down.
     pub warnings: Vec<String>,
@@ -132,6 +138,22 @@ impl LlmConfig {
         };
         cfg.default_provider = str_of(llm, "default_provider");
         cfg.default_model = str_of(llm, "default_model");
+        if let Some(fold) = llm.get("fold").and_then(toml::Value::as_table) {
+            for (key, slot) in [
+                ("reasoning", &mut cfg.fold_reasoning),
+                ("tools", &mut cfg.fold_tools),
+            ] {
+                let Some(raw) = str_of(fold, key) else {
+                    continue;
+                };
+                match FoldDisplay::parse(&raw) {
+                    Some(d) => *slot = d,
+                    None => cfg.warnings.push(format!(
+                        "llm: llm.fold.{key} must be closed, open or hidden, not `{raw}`"
+                    )),
+                }
+            }
+        }
         if let Some(providers) = llm.get("providers").and_then(toml::Value::as_table) {
             for (name, value) in providers {
                 match value.as_table() {
@@ -148,6 +170,16 @@ impl LlmConfig {
             }
         }
         cfg
+    }
+
+    /// The projection options a chat transcript uses: markdown on, folds as
+    /// configured.
+    pub fn projection_options(&self) -> ProjectionOptions {
+        ProjectionOptions {
+            markdown: true,
+            reasoning: self.fold_reasoning,
+            tools: self.fold_tools,
+        }
     }
 
     pub fn provider_names(&self) -> impl Iterator<Item = &str> {

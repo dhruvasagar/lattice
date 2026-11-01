@@ -162,6 +162,15 @@ impl LlmChats {
         *self.config.write().unwrap_or_else(|e| e.into_inner()) = config;
     }
 
+    /// How chat transcripts are projected right now. Read per projection, so a
+    /// changed fold setting applies to the next one.
+    pub fn projection_options(&self) -> crate::conversation::ProjectionOptions {
+        self.config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .projection_options()
+    }
+
     fn reg(&self) -> MutexGuard<'_, Registry> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }

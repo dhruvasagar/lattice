@@ -99,6 +99,50 @@ prompt.
 Closing the buffer (`gq`, `:bd`) cancels the reply in flight. An unsaved
 chat does not block `:qa`.
 
+## Markdown and folded blocks
+
+The transcript is markdown and is highlighted as such, with fenced code
+highlighted in its own language. It stays valid markdown while a reply
+streams: a code block that has not finished arriving is closed for you, so
+it never colours the rest of the transcript or the prompt as code.
+
+Reasoning and tool calls are **blocks**. A tool call is a head line that
+stays visible when the block is folded, then its input and output in
+fenced bodies:
+
+````
+▸ github · search_issues [ok]
+```json
+{ "query": "fold overlap" }
+```
+```json
+{ "total_count": 3 }
+```
+````
+
+The label before the `·` says who ran the tool (a server name); it is
+absent for built-in tools. Output is shown as `diff` for edits and `bash`
+for commands, otherwise as `json` if it parses and `text` if not. A fence
+is always longer than any fence inside the output.
+
+`za` on a head line opens or closes that block, and `zM` / `zR` close or
+open every fold. A block you opened stays open as the reply keeps
+streaming. Set how each kind is shown in `lattice.toml` (read at startup):
+
+```toml
+[llm.fold]
+reasoning = "closed"   # closed | open | hidden
+tools = "closed"
+```
+
+- `closed` (the default) shows the head line and hides the body.
+- `open` shows the whole block.
+- `hidden` leaves the block out of the transcript. It is not deleted:
+  setting it back to `closed` or `open` shows those blocks again.
+
+`<CR>` sends the prompt in this buffer. It does not follow markdown links,
+as it does in a markdown file.
+
 ## See also
 
 - [`ai-conversation-mode`](help:ai-conversation-mode) — the agent

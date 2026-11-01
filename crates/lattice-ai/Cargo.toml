@@ -73,5 +73,10 @@ name = "llm_decode"
 harness = false
 required-features = ["llm"]
 
+[[bench]]
+name = "llm_projection"
+harness = false
+required-features = ["llm"]
+
 [lints]
 workspace = true

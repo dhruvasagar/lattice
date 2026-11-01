@@ -43,7 +43,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use lattice_core::{BufferId, Fold, FoldSource, ProviderId};
 
 use crate::conversation::ConversationStore;
-use crate::conversation::projection::project_conversation;
+use crate::conversation::projection::{FoldDisplay, ProjectionSource, project_conversation_with};
 
 /// Namespace for the per-buffer tool-call fold provider id. OR'd with the
 /// buffer's id (low 32 bits) so the source is distinct in the registry —
@@ -98,19 +98,29 @@ pub fn reasoning_fold_identity(ordinal: usize) -> u64 {
     h.finish()
 }
 
-/// Snapshot the store, project it, and return the `closed`-by-default folds of
-/// `want` kind. Shared by both sources — the layout pass is the single source
-/// of truth for line ranges.
-fn folds_of_kind(store: &ConversationStore, want: ConversationFoldKind) -> Vec<Fold> {
+/// Snapshot the store, project it, and return the folds of `want` kind, closed
+/// unless the options say `open`. Shared by both sources — the layout pass is
+/// the single source of truth for line ranges. A `hidden` kind has no spans in
+/// the projection, so it yields no folds.
+fn folds_of_kind(
+    store: &ConversationStore,
+    options: &ProjectionSource,
+    want: ConversationFoldKind,
+) -> Vec<Fold> {
     let conv = store.snapshot();
-    let (_text, spans) = project_conversation(&conv);
+    let opts = options.get();
+    let shown = match want {
+        ConversationFoldKind::ToolCall => opts.tools,
+        ConversationFoldKind::Reasoning => opts.reasoning,
+    };
+    let (_text, spans) = project_conversation_with(&conv, &opts);
     spans
         .into_iter()
         .filter(|s| s.kind == want)
         .map(|s| Fold {
             start_line: s.start_line,
             end_line: s.end_line,
-            closed: true,
+            closed: shown != FoldDisplay::Open,
             identity: Some(s.identity),
         })
         .collect()
@@ -120,6 +130,7 @@ fn folds_of_kind(store: &ConversationStore, want: ConversationFoldKind) -> Vec<F
 pub struct ToolCallFoldSource {
     id: ProviderId,
     store: ConversationStore,
+    options: ProjectionSource,
 }
 
 impl ToolCallFoldSource {
@@ -129,7 +140,14 @@ impl ToolCallFoldSource {
         Self {
             id: ProviderId(TOOL_FOLD_NAMESPACE | buffer_id.0 as u64),
             store,
+            options: ProjectionSource::default(),
         }
+    }
+
+    /// Read the display options from `options` on every recompute.
+    pub fn with_options(mut self, options: ProjectionSource) -> Self {
+        self.options = options;
+        self
     }
 }
 
@@ -138,7 +156,7 @@ impl FoldSource for ToolCallFoldSource {
         self.id
     }
     fn compute_folds(&self) -> Vec<Fold> {
-        folds_of_kind(&self.store, ConversationFoldKind::ToolCall)
+        folds_of_kind(&self.store, &self.options, ConversationFoldKind::ToolCall)
     }
 }
 
@@ -146,6 +164,7 @@ impl FoldSource for ToolCallFoldSource {
 pub struct ReasoningFoldSource {
     id: ProviderId,
     store: ConversationStore,
+    options: ProjectionSource,
 }
 
 impl ReasoningFoldSource {
@@ -154,7 +173,14 @@ impl ReasoningFoldSource {
         Self {
             id: ProviderId(REASONING_FOLD_NAMESPACE | buffer_id.0 as u64),
             store,
+            options: ProjectionSource::default(),
         }
+    }
+
+    /// Read the display options from `options` on every recompute.
+    pub fn with_options(mut self, options: ProjectionSource) -> Self {
+        self.options = options;
+        self
     }
 }
 
@@ -163,7 +189,7 @@ impl FoldSource for ReasoningFoldSource {
         self.id
     }
     fn compute_folds(&self) -> Vec<Fold> {
-        folds_of_kind(&self.store, ConversationFoldKind::Reasoning)
+        folds_of_kind(&self.store, &self.options, ConversationFoldKind::Reasoning)
     }
 }
 
@@ -171,6 +197,7 @@ impl FoldSource for ReasoningFoldSource {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+    use crate::conversation::projection::project_conversation;
     use crate::conversation::{Block, Conversation, Role, ToolStatus, Turn};
     use std::sync::Arc;
 

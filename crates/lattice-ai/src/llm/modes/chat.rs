@@ -31,7 +31,7 @@ use crate::conversation::transcript::{
     self, PromptAnchors, TranscriptBinding, TranscriptGuard, editable_tail_runner, humanize,
     newline_handler, read_prompt,
 };
-use crate::conversation::{ConversationStore, SessionStatus};
+use crate::conversation::{ConversationStore, ProjectionSource, SessionStatus};
 use crate::llm::chat::{ChatSession, LlmChatsHandle};
 
 /// Registered with the host so a key reaches [`ChatHeaderline`] even before the
@@ -81,6 +81,13 @@ impl Mode for LlmChatMode {
 
     fn kind(&self) -> ModeKind {
         ModeKind::Major
+    }
+
+    /// The transcript is markdown. This binds the grammar only: `markdown-mode`
+    /// itself is not activated, so its link-following chords stay out of a
+    /// buffer whose `<CR>` sends.
+    fn target_language(&self) -> Option<&str> {
+        Some("markdown")
     }
 
     fn options(&self) -> OptionOverrideSet {
@@ -168,6 +175,10 @@ impl Mode for LlmChatMode {
                 headerline_version: self.headerline_version.clone(),
                 only_session: Some(session.key.clone()),
                 runtime,
+                projection: ProjectionSource::new({
+                    let chats = self.chats.clone();
+                    move || chats.projection_options()
+                }),
             })
             .await;
             Ok(Some(LlmChatGuard {

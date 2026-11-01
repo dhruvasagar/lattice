@@ -246,6 +246,7 @@ impl Mode for AiConversationMode {
                 headerline_version: hl_version,
                 only_session: None,
                 runtime,
+                projection: Default::default(),
             })
             .await;
             Ok(Some(guard))

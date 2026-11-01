@@ -386,7 +386,7 @@ async fn an_opened_block_stays_open_after_the_transcript_grows() {
     assert!(!editor.line_inside_closed_fold(head + 2), "za opened it");
 
     session.store.mutate(&session.key, |c| {
-        c.extend_text(Role::Assistant, "streamed after the block");
+        c.extend_text(Role::Assistant, "\n\nstreamed after the block");
     });
     assert!(
         settle_woken(&mut editor, |e| text_of(e, id).contains("streamed after")).await,

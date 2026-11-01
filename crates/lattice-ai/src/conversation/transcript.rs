@@ -157,11 +157,15 @@ pub fn suffix_replace(old: &str, new: &str) -> Option<LineSuffixReplace> {
     }
     let old_lines: Vec<&str> = old.split('\n').collect();
     let new_lines: Vec<&str> = new.split('\n').collect();
+    // Capped below the old line count: when the old text is a strict line-prefix
+    // of the new (appended text opening with a newline), the last old line is
+    // still the edit's end line, so the replacement must start there.
     let common = old_lines
         .iter()
         .zip(new_lines.iter())
         .take_while(|(a, b)| a == b)
-        .count();
+        .count()
+        .min(old_lines.len() - 1);
     Some(LineSuffixReplace {
         first_diff_line: common,
         old_line_count: old_lines.len(),
@@ -206,7 +210,8 @@ pub async fn full_replace(handle: &Arc<dyn lattice_runtime::Document>, text: &st
 /// drain owns the prompt's lifecycle, so there is no separate clear edit to race
 /// this re-projection. Otherwise the edit ends at the prompt-line start, leaving
 /// the user's in-progress prompt intact while a reply streams.
-/// Returns `true` when an edit was applied.
+/// Returns `true` when the buffer now matches `new` (applied, or already equal);
+/// `false` when the edit failed, so the caller keeps `last` and retries.
 async fn reproject(
     handle: &Arc<dyn lattice_runtime::Document>,
     last: &str,
@@ -214,7 +219,7 @@ async fn reproject(
     clear_prompt: bool,
 ) -> bool {
     let Some(rep) = suffix_replace(last, new) else {
-        return false; // transcript text unchanged
+        return true; // transcript text unchanged
     };
     let (end, replacement) = if clear_prompt {
         let snap = handle.snapshot();
@@ -232,8 +237,13 @@ async fn reproject(
         lattice_protocol::position::Position::new(end.0, end.1),
     );
     let edit = lattice_protocol::edit::Edit::replace(range, replacement);
-    let _ = handle.apply_edit_batch(vec![edit]).await;
-    true
+    match handle.apply_edit_batch(vec![edit]).await {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("transcript re-projection edit failed, will retry: {e:?}");
+            false
+        }
+    }
 }
 
 /// Join the prompt lines (`anchor..=last`) into the text to send: strip the
@@ -469,7 +479,7 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
             // and land on the wrong, now-read-only line. On other updates the
             // user's in-progress prompt is left untouched.
             let clear_prompt = submissions > last_submissions;
-            reproject(&handle, &last, &new, clear_prompt).await;
+            let landed = reproject(&handle, &last, &new, clear_prompt).await;
             headerline_version.fetch_add(1, Ordering::Release);
 
             // Wake the editor actor now that the edit has LANDED, so the update
@@ -480,8 +490,10 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
             // reads status, usage and queue length, none of which appear in the
             // transcript, and gating on text froze it at "Ready" once.
             projected_bus.publish_typed(ConversationProjected);
-            last = new;
-            last_submissions = submissions;
+            if landed {
+                last = new;
+                last_submissions = submissions;
+            }
         }
     });
 
@@ -499,6 +511,22 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    #[test]
+    fn suffix_replace_handles_a_strict_line_prefix() {
+        // New text appended after the old trailing blank line, opening with a newline.
+        let r = suffix_replace("a\n\n", "a\n\n\nb\n\n").unwrap();
+        assert_eq!(r.old_line_count, 3);
+        assert!(r.first_diff_line < r.old_line_count, "{r:?}");
+        assert_eq!(r.first_diff_line, 2);
+        assert_eq!(r.replacement, "\nb\n\n");
+        let old: Vec<&str> = "a\n\n".split('\n').collect();
+        let rebuilt = [&old[..r.first_diff_line], &[r.replacement.as_str()]]
+            .concat()
+            .join("\n");
+        assert_eq!(rebuilt, "a\n\n\nb\n\n");
+        assert_eq!(suffix_replace("x", "x"), None);
+    }
 
     #[test]
     fn prompt_anchor_line_is_transcript_line_count() {

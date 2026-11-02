@@ -32,7 +32,7 @@ provenance (a plugin cannot forge either, §6).
 - [`ex-command-spec`](types.md#record-ex-command-spec) from [`types`](types.md)
 - [`action-spec`](types.md#record-action-spec) from [`types`](types.md)
 
-## Functions (5)
+## Functions (6)
 
 ### `register-action`
 
@@ -71,6 +71,34 @@ for (name, doc, cb) in [
 ] {
     grammar::register_action(name, doc, &spec(), cb);
 }
+```
+
+### `register-completion-values`
+
+```wit
+register-completion-values: func(source: string, values: list<string>)
+```
+
+Publish a named list of values, for `<Tab>` on an ex-command argument:
+an `arg-spec` whose `completion` is `source` completes from `values`.
+The host holds the list and matches it natively, so `<Tab>` never calls
+the guest. It lasts as long as the plugin stays loaded; a plugin whose
+values change at runtime is not served by this. Name it after the plugin
+(`gen:<plugin>-<what>`): a source name a builtin or another plugin
+already holds is refused with a warning.
+
+**Example — Give an ex-command's argument its `<Tab>` candidates, published once at load** · [`plugins/lighthouse/src/lib.rs`](../../../../plugins/lighthouse/src/lib.rs)
+
+```rust
+let (registry, _) = registry();
+lattice::plugin_host::grammar::register_completion_values(
+    SERVERS_SOURCE,
+    &registry
+        .names()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>(),
+);
 ```
 
 ### `register-ex-command`

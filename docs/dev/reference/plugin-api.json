@@ -1224,6 +1224,35 @@
           ]
         },
         {
+          "name": "register-completion-values",
+          "display_name": "register-completion-values",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "source",
+              "type": "string"
+            },
+            {
+              "name": "values",
+              "type": "list<string>"
+            }
+          ],
+          "result": null,
+          "signature": "register-completion-values: func(source: string, values: list<string>)",
+          "doc": "Publish a named list of values, for `<Tab>` on an ex-command argument:\nan `arg-spec` whose `completion` is `source` completes from `values`.\nThe host holds the list and matches it natively, so `<Tab>` never calls\nthe guest. It lasts as long as the plugin stays loaded; a plugin whose\nvalues change at runtime is not served by this. Name it after the plugin\n(`gen:<plugin>-<what>`): a source name a builtin or another plugin\nalready holds is refused with a warning.",
+          "examples": [
+            {
+              "id": "lighthouse:grammar.register-completion-values",
+              "caption": "Give an ex-command's argument its `<Tab>` candidates, published once at load",
+              "source": "plugins/lighthouse/src/lib.rs",
+              "language": "rust",
+              "code": "let (registry, _) = registry();\nlattice::plugin_host::grammar::register_completion_values(\n    SERVERS_SOURCE,\n    &registry\n        .names()\n        .into_iter()\n        .map(str::to_string)\n        .collect::<Vec<_>>(),\n);"
+            }
+          ]
+        },
+        {
           "name": "register-ex-command",
           "display_name": "register-ex-command",
           "kind": "freestanding",
@@ -8631,7 +8660,7 @@
             {
               "name": "completion",
               "type": "option<string>",
-              "doc": "A registered COMPLETION source (`gen:files`, ...) — inline\ncandidates as the user types this argument."
+              "doc": "A registered COMPLETION source (`gen:files`, ...) — inline\ncandidates as the user types this argument. A builtin's name, or a\nlist published with `grammar.register-completion-values`."
             },
             {
               "name": "picker",

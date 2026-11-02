@@ -2330,6 +2330,11 @@ impl crate::grammar_host::bindings::lattice::plugin_host::grammar::Host for Plug
             apply_callback,
         );
     }
+
+    fn register_completion_values(&mut self, source: String, values: Vec<String>) {
+        self.grammar_contributions
+            .record_completion_values(source, values);
+    }
 }
 
 /// Host impl of the `buffer` `document` resource (AP.0.1). A grammar action

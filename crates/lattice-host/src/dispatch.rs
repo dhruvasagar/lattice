@@ -12563,16 +12563,22 @@ impl Editor {
                 return Err(CompletionComputeError::NoCompletionAtCursor);
             }
         };
-        let Some(generator) = self.completion_registry.generator_by_name(source_name) else {
+        // A builtin generator, or a value list a plugin published.
+        let pipeline = if let Some(generator) =
+            self.completion_registry.generator_by_name(source_name)
+        {
+            lattice_completion::CompletionPipeline::for_generator(
+                &self.completion_registry,
+                generator.id,
+            )
+        } else if let Some(values) = reg.completion_values(source_name) {
+            lattice_completion::CompletionPipeline::for_values(&self.completion_registry, values)
+        } else {
             return Err(CompletionComputeError::MissingSource(
                 source_name.to_string(),
             ));
         };
-        let generator_id = generator.id;
-        let Some(pipeline) = lattice_completion::CompletionPipeline::for_generator(
-            &self.completion_registry,
-            generator_id,
-        ) else {
+        let Some(pipeline) = pipeline else {
             return Err(CompletionComputeError::PipelineUnconfigured);
         };
         let snap = self.document.snapshot();
@@ -12731,7 +12737,10 @@ impl Editor {
             .args_schema
             .first()
             .and_then(|a| a.completion.as_deref())
-            .is_some_and(|source| self.completion_registry.generator_by_name(source).is_some());
+            .is_some_and(|source| {
+                self.completion_registry.generator_by_name(source).is_some()
+                    || reg.completion_values(source).is_some()
+            });
         drop(reg);
         if !has_completable_arg {
             return false;
@@ -56571,6 +56580,60 @@ mod tests {
             "the accepted candidate is spliced into the buffer, got {:?}",
             editor.command_line()
         );
+    }
+
+    /// A plugin's published list reaches `<Tab>` on its command's argument:
+    /// stepping from the command name into the slot, then narrowing.
+    #[test]
+    fn command_line_completes_an_argument_from_a_plugin_value_list() {
+        use lattice_grammar::args::{ArgKind, ArgSpec};
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        let mut next = (**editor.registry.load()).clone();
+        let spec = lattice_grammar::ExCommandSpec {
+            latency_class: lattice_grammar::LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: std::sync::Arc::new(|_, _| Ok(lattice_grammar::Args::None)),
+            apply: std::sync::Arc::new(|_| Ok(lattice_grammar::Effect::None)),
+            args_schema: vec![
+                ArgSpec::required("server", ArgKind::String, "a server")
+                    .with_completion("gen:test-values"),
+            ],
+            surface_form: lattice_grammar::SurfaceForm::Keyword,
+        };
+        next.register_plugin_ex_command(7, "test-install", "", spec);
+        next.register_plugin_completion_values(
+            7,
+            "gen:test-values",
+            vec!["gopls".to_string(), "rust-analyzer".to_string()],
+        );
+        editor.registry.store(std::sync::Arc::new(next));
+        let tab = crate::chord::KeyChord::special(crate::chord::SpecialKey::Tab);
+
+        editor.dispatch(Action::EnterCommandLine);
+        cl_type(&mut editor, "test-install");
+        cl_chord(&mut editor, tab);
+        assert_eq!(
+            editor.command_line(),
+            "test-install ",
+            "<Tab> steps into the slot"
+        );
+        let offered: Vec<String> = editor
+            .completion_state
+            .as_ref()
+            .expect("the slot's values open")
+            .candidates
+            .iter()
+            .map(|c| c.raw.text.clone())
+            .collect();
+        assert_eq!(offered, ["gopls", "rust-analyzer"]);
+
+        // The command name is complete and the popup open; narrowing and
+        // <Tab> again inserts the one match.
+        editor.completion_state = None;
+        cl_type(&mut editor, "rust");
+        cl_chord(&mut editor, tab);
+        assert_eq!(editor.command_line(), "test-install rust-analyzer");
     }
 
     #[test]

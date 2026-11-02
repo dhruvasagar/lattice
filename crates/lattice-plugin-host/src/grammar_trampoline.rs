@@ -666,6 +666,7 @@ pub struct GrammarContributionSet {
     text_objects: Vec<(String, String, TextObjectSpec)>,
     actions: Vec<(String, String, ActionSpec)>,
     ex_commands: Vec<(String, String, ExCommandSpec)>,
+    completion_values: Vec<(String, Vec<String>)>,
 }
 
 impl GrammarContributionSet {
@@ -682,6 +683,7 @@ impl GrammarContributionSet {
             + self.text_objects.len()
             + self.actions.len()
             + self.ex_commands.len()
+            + self.completion_values.len()
     }
 
     /// True when the plugin registered no grammar.
@@ -720,6 +722,9 @@ impl GrammarContributionSet {
         }
         for (name, doc, spec) in self.ex_commands {
             registry.register_plugin_ex_command(id, &name, &doc, spec);
+        }
+        for (name, values) in self.completion_values {
+            registry.register_plugin_completion_values(id, &name, values);
         }
         chords
     }
@@ -883,6 +888,7 @@ impl PluginHost {
             text_objects: Vec::new(),
             actions: Vec::new(),
             ex_commands: Vec::new(),
+            completion_values: Vec::new(),
         };
         for contribution in recorded {
             match contribution {
@@ -954,6 +960,9 @@ impl PluginHost {
                         tree_sitter_granted,
                     )?,
                 )),
+                RecordedContribution::CompletionValues { name, values } => {
+                    set.completion_values.push((name, values));
+                }
             }
         }
         Ok(set)

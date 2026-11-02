@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+- **`:lsp-install <Tab>` lists the servers lighthouse can install.** Plugins
+  can now give an ex-command argument its completions, with the new
+  `grammar.register-completion-values` call.
+
 ### Fixed
 - **The split divider keeps its own colour.** In the terminal, the divider
   between side-by-side panes picked up the dimming and syntax styling of the

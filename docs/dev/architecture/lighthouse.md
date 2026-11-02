@@ -451,6 +451,33 @@ The effect write-gate (`EffectAuthorizer`, which vets file-writing *effects* a
 grammar action returns) is deliberately not widened: it has no caller that
 needs it, and a reach nobody uses is only surface.
 
+### 3.7 `:lsp-install <Tab>` — `register-completion-values`
+
+`<Tab>` on an argument resolves a named source, and every source was a host
+generator: a plugin could name one but not supply one. The server names live in
+lighthouse's registry, so the host could not offer them.
+
+`grammar.register-completion-values(source, values)` publishes a list once, at
+load. The list sits in the `CommandRegistry` beside the plugin's commands, not in
+the `CompletionRegistry`: the command registry is the one a plugin load can reach
+(the editor owns the other outright), and `unregister_plugin` already reverses
+entries by provenance. A builtin generator of the same name wins; a name another
+plugin holds is refused with a warning. Matching and ranking are the slot's
+ordinary native pipeline.
+
+**Protects paramount #1 and #2:** `<Tab>` never calls the guest, and any plugin
+can use the seam. **Costs:** the list is fixed until the plugin reloads, so a
+server added to the overlay is accepted by `:lsp-install` at once but offered only
+after a reload. That is also why `:lsp-uninstall` and `:lsp-update` do not use it:
+they act on what is installed, which changes during a session, and offering a
+server they would refuse is worse than offering nothing.
+
+Rejected: a guest callback on `<Tab>` (dynamic, but a WASM crossing on the input
+path and an ABI break for every grammar plugin); a host generator reading
+`registry.toml` (the host would learn one plugin's private format, which fails
+the mode-ownership acid test). Adding a function needs no package bump
+(`releasing.md`), and no bench: nothing is added to a path that runs per keystroke.
+
 ## 4. The bundled server registry
 
 A `registry.toml` compiled into the plugin: per server, per platform

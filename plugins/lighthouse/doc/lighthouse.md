@@ -18,7 +18,7 @@ command returns at once; the work is reported, live, in a buffer named
 | | |
 |---|---|
 | `:lsp-servers` | List every server lighthouse knows, and what state each is in. |
-| `:lsp-install <server>` | Install a server. Run it again to reinstall. |
+| `:lsp-install <server>` | Install a server; `<Tab>` lists the ones it knows. Run it again to reinstall. |
 | `:lsp-update <server>` | Move an installed server to the version lighthouse pins. |
 | `:lsp-update-all` | Do that for every installed server that is behind. |
 | `:lsp-uninstall <server>` | Remove a server and stop using it. |

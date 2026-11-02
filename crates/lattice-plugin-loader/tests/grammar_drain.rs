@@ -245,6 +245,18 @@ impl lattice_mode::OperatorChordWirer for RecordingWirer {
         ));
         Ok(())
     }
+
+    // The native seam is not exercised by the plugin loader.
+    fn bind_in(
+        &self,
+        _layer: lattice_keymap::KeymapLayer,
+        _source: lattice_grammar::SourceLocation,
+        _prefix: &[lattice_protocol::chord::KeyChord],
+        _op: lattice_grammar::registry::OperatorId,
+        _doubled: Option<lattice_protocol::chord::KeyChord>,
+        _post_motion_char: bool,
+    ) {
+    }
 }
 
 /// Write a manifest that declares the capability and the default mode a chord

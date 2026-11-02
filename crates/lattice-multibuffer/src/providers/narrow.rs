@@ -269,6 +269,9 @@ pub fn register_narrow_operator(registry: &mut CommandRegistry) -> lattice_gramm
          `zn` — a focused, editable view of that region. `znn` narrows the \
          current line; `znip` a paragraph; `znaf` a function. `:widen` restores.",
         OperatorSpec {
+            // Opens an EDITABLE view of the region, so a read-only source must
+            // not be narrowed into a writable one.
+            mutates: true,
             repeatable: false,
             blockwise_per_row: false,
             post_motion_char: false,

@@ -369,6 +369,11 @@ fn build_operator_spec(
     let guest = guest.clone();
     Ok(OperatorSpec {
         repeatable: spec.repeatable,
+        // The WIT `operator-spec` carries no mutability bit, and a guest
+        // operator's `apply` can return edits. Unknown must mean "mutates":
+        // the read-only refusal is the safe default, and a plugin that wants a
+        // read-only buffer to run its operator needs a WIT field to say so.
+        mutates: true,
         args_schema,
         blockwise_per_row: spec.blockwise_per_row,
         post_motion_char: spec.post_motion_char,

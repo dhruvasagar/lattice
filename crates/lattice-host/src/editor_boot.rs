@@ -2044,6 +2044,9 @@ impl Editor {
                 syntax_textobject_ids,
                 syntax_motion_ids,
             ));
+        // LL.9: the same wirer is the seam `SubsystemBoot::bind_operator`
+        // writes through; flush what the installs above queued.
+        boot.set_operator_binder(chord_wirer.clone());
         boot.register_service::<lattice_mode::OperatorChordWirerHandle>(chord_wirer);
         // WK.6: the other half of which-key's install. Must follow the two
         // registrations above: the gate handler resolves the keymap (to fold

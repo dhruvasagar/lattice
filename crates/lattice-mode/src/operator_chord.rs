@@ -48,6 +48,23 @@ pub trait OperatorChordWirer: Send + Sync {
         plugin_name: &str,
         post_motion_char: bool,
     ) -> Result<(), String>;
+
+    /// LL.9: bind `prefix` to `op` in an arbitrary keymap `layer`, with the
+    /// same full operator-pending surface as [`wire`](Self::wire).
+    ///
+    /// The native peer of `wire`: a subsystem's own operator (`ask`) is bound
+    /// from `install(boot)` through
+    /// [`SubsystemBoot::bind_operator`](crate::SubsystemBoot::bind_operator),
+    /// which lands here. `doubled` is the trailing key of the linewise form.
+    fn bind_in(
+        &self,
+        layer: lattice_keymap::KeymapLayer,
+        source: lattice_grammar::SourceLocation,
+        prefix: &[lattice_protocol::chord::KeyChord],
+        op: lattice_grammar::registry::OperatorId,
+        doubled: Option<lattice_protocol::chord::KeyChord>,
+        post_motion_char: bool,
+    );
 }
 
 /// The shared handle. Registered by the host under THIS alias, and looked up

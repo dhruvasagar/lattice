@@ -446,6 +446,12 @@ type OperatorFn =
 /// [`OperatorContext`], and returns whatever `apply` returns unchanged.
 #[derive(Clone)]
 pub struct OperatorSpec {
+    /// Whether the operator writes the buffer it runs on. Read by
+    /// `Editor::run_read_only_motion`: a read-only buffer refuses a mutating
+    /// operator and hands a non-mutating one (yank, a future ask) to the normal
+    /// document path. **Required, with no default**, so an operator cannot
+    /// slip past the refusal by leaving it unset; unknown means `true`.
+    pub mutates: bool,
     /// Declared dot-repeatability. Currently informational: nothing reads it
     /// yet (`.` repeat is decided host-side).
     pub repeatable: bool,
@@ -476,6 +482,7 @@ impl std::fmt::Debug for OperatorSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OperatorSpec")
             .field("repeatable", &self.repeatable)
+            .field("mutates", &self.mutates)
             .field("blockwise_per_row", &self.blockwise_per_row)
             .finish_non_exhaustive()
     }
@@ -1745,6 +1752,24 @@ impl CommandRegistry {
         }
     }
 
+    /// Whether the operator `id` writes its buffer ([`OperatorSpec::mutates`]),
+    /// or `None` when `id` is not a registered operator.
+    pub fn operator_mutates(&self, id: CommandId) -> Option<bool> {
+        match self.by_id.get(&id).map(|e| &e.registration) {
+            Some(CommandRegistration::Operator(spec)) => Some(spec.mutates),
+            _ => None,
+        }
+    }
+
+    /// [`OperatorSpec::post_motion_char`] for operator `id`; `false` when `id`
+    /// is not a registered operator.
+    pub fn operator_post_motion_char(&self, id: CommandId) -> bool {
+        match self.by_id.get(&id).map(|e| &e.registration) {
+            Some(CommandRegistration::Operator(spec)) => spec.post_motion_char,
+            _ => false,
+        }
+    }
+
     /// VM.3g-1: what this command does to the goal column. Anything that is NOT
     /// a motion — an operator, an action, an ex-command — answers
     /// `SetFromTarget`, which is what vim does after an edit, an Insert exit or
@@ -2065,6 +2090,7 @@ mod tests {
             "",
             OperatorSpec {
                 repeatable: false,
+                mutates: true,
                 apply: Arc::new(|_| Ok(crate::effect::Effect::None)),
                 args_schema: vec![],
                 blockwise_per_row: false,

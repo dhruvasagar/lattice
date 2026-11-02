@@ -46,12 +46,17 @@ use std::any::Any;
 
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::effect::Effect;
+use lattice_grammar::registry::OperatorId;
+use lattice_keymap::KeymapLayer;
 use lattice_mode::idle_gate::{IdleGateHandle, IdleGateHandler, IdleGateRegistryHandle};
 use lattice_mode::inbound::{InboundBus, make_inbound, make_inbound_raw};
 use lattice_mode::tick_callback::{
     TickCallback, TickCallbackRegistration, TickCallbackRegistryHandle,
 };
-use lattice_mode::{BufferStoreHandle, ModeRegistry, ServiceRegistry, SubsystemBoot};
+use lattice_mode::{
+    BufferStoreHandle, ModeRegistry, OperatorChordWirerHandle, ServiceRegistry, SubsystemBoot,
+};
+use lattice_protocol::chord::KeyChord;
 use lattice_protocol::event_registry::Event as TypedEvent;
 use lattice_runtime::EventBus;
 use tokio::runtime::Handle;
@@ -119,6 +124,21 @@ pub struct BootContext {
     command_registry: Option<CommandRegistry>,
     mode_registry: Option<ModeRegistry>,
     service_registry: Option<ServiceRegistry>,
+    /// LL.9 — the operator binder, set once the keymap exists
+    /// ([`set_operator_binder`](Self::set_operator_binder)).
+    operator_binder: Option<OperatorChordWirerHandle>,
+    /// LL.9 — `bind_operator` calls made before the binder existed (every
+    /// install runs ahead of the keymap), flushed in order by
+    /// `set_operator_binder`.
+    pending_operator_bindings: Vec<PendingOperatorBinding>,
+}
+
+/// One `bind_operator` request awaiting the keymap.
+struct PendingOperatorBinding {
+    layer: KeymapLayer,
+    prefix: Vec<KeyChord>,
+    op: OperatorId,
+    post_motion_char: bool,
 }
 
 impl BootContext {
@@ -149,6 +169,8 @@ impl BootContext {
             command_registry: Some(command_registry),
             mode_registry: Some(mode_registry),
             service_registry: Some(service_registry),
+            operator_binder: None,
+            pending_operator_bindings: Vec::new(),
         }
     }
 
@@ -212,6 +234,29 @@ impl BootContext {
                 .take()
                 .expect("mode registry already frozen"),
         ))
+    }
+
+    /// LL.9 — hand over the binder that writes operator chords into the live
+    /// keymap, and flush every [`SubsystemBoot::bind_operator`] made before it
+    /// existed. Called by `editor_boot` as soon as the keymap handle does;
+    /// later `bind_operator` calls bind immediately.
+    pub fn set_operator_binder(&mut self, binder: OperatorChordWirerHandle) {
+        for p in std::mem::take(&mut self.pending_operator_bindings) {
+            Self::bind_now(&binder, &p);
+        }
+        self.operator_binder = Some(binder);
+    }
+
+    fn bind_now(binder: &OperatorChordWirerHandle, p: &PendingOperatorBinding) {
+        // The linewise form repeats the prefix's last key (`gaa`, `yy`).
+        binder.bind_in(
+            p.layer,
+            lattice_grammar::SourceLocation::synthetic("subsystem-operator"),
+            &p.prefix,
+            p.op,
+            p.prefix.last().cloned(),
+            p.post_motion_char,
+        );
     }
 
     /// Freeze the service registry into its shared `Arc` and take it out.
@@ -299,6 +344,35 @@ impl SubsystemBoot for BootContext {
 
     fn idle_gate(&mut self, name: &'static str, handler: IdleGateHandler) -> IdleGateHandle {
         self.idle_gates.register(name, handler)
+    }
+
+    fn bind_operator(&mut self, layer: KeymapLayer, prefix: &str, op: OperatorId) {
+        let prefix = match lattice_protocol::parse_chord_sequence(prefix) {
+            Ok(p) if !p.is_empty() => p,
+            outcome => {
+                tracing::error!(
+                    prefix,
+                    ?outcome,
+                    "bind_operator: chord does not parse, operator left unbound"
+                );
+                return;
+            }
+        };
+        let post_motion_char = self
+            .command_registry
+            .as_ref()
+            .expect("command registry already frozen (bind_operator after freeze_command_registry)")
+            .operator_post_motion_char(op.0);
+        let pending = PendingOperatorBinding {
+            layer,
+            prefix,
+            op,
+            post_motion_char,
+        };
+        match &self.operator_binder {
+            Some(binder) => Self::bind_now(binder, &pending),
+            None => self.pending_operator_bindings.push(pending),
+        }
     }
 
     fn event_bus(&self) -> &Arc<EventBus> {
@@ -494,5 +568,110 @@ mod tests {
             woke.is_ok(),
             "publishing a subscribed event must wake the editor"
         );
+    }
+
+    // ── LL.9: bind_operator ───────────────────────────────────────────────
+
+    type Bound = Vec<(KeymapLayer, Vec<KeyChord>, Option<KeyChord>, bool)>;
+
+    #[derive(Default)]
+    struct RecordingBinder(Mutex<Bound>);
+
+    impl lattice_mode::OperatorChordWirer for RecordingBinder {
+        fn wire(
+            &self,
+            _: OperatorId,
+            _: &str,
+            _: Option<char>,
+            _: lattice_mode::ModeId,
+            _: u32,
+            _: &str,
+            _: bool,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn bind_in(
+            &self,
+            layer: KeymapLayer,
+            _: lattice_grammar::SourceLocation,
+            prefix: &[KeyChord],
+            _: OperatorId,
+            doubled: Option<KeyChord>,
+            post_motion_char: bool,
+        ) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((layer, prefix.to_vec(), doubled, post_motion_char));
+        }
+    }
+
+    fn probe_op(boot: &mut BootContext, post_motion_char: bool) -> OperatorId {
+        use lattice_grammar::registry::OperatorSpec;
+        boot.commands_mut().register_operator(
+            "operator:ll9-boot-probe",
+            "",
+            OperatorSpec {
+                repeatable: false,
+                mutates: false,
+                args_schema: vec![],
+                blockwise_per_row: false,
+                post_motion_char,
+                apply: Arc::new(|_| Ok(Effect::None)),
+            },
+        )
+    }
+
+    fn layer() -> KeymapLayer {
+        KeymapLayer::MinorMode(lattice_mode::ModeId::new("ll9-boot-mode"))
+    }
+
+    /// Every install runs before the keymap exists, so a bind made then must
+    /// be held and flushed, in order, with the operator's own
+    /// `post_motion_char` and the prefix's last key as the doubled form.
+    #[tokio::test]
+    async fn bind_operator_before_the_binder_is_held_then_flushed() {
+        let mut boot = ctx();
+        let op = probe_op(&mut boot, true);
+        boot.bind_operator(layer(), "gX", op);
+        boot.bind_operator(layer(), "<Space>a", op);
+
+        let binder = Arc::new(RecordingBinder::default());
+        assert!(binder.0.lock().unwrap().is_empty(), "nothing bound yet");
+        boot.set_operator_binder(binder.clone());
+
+        let bound = binder.0.lock().unwrap();
+        assert_eq!(bound.len(), 2, "both flushed");
+        assert_eq!(bound[0].1, vec![KeyChord::char('g'), KeyChord::char('X')]);
+        assert_eq!(bound[0].2, Some(KeyChord::char('X')), "doubled = last key");
+        assert!(bound[0].3, "post_motion_char read off the operator");
+        assert_eq!(bound[0].0, layer());
+        assert_eq!(bound[1].1.len(), 2, "`<Space>a` parses to two chords");
+    }
+
+    #[tokio::test]
+    async fn bind_operator_after_the_binder_binds_immediately() {
+        let mut boot = ctx();
+        let op = probe_op(&mut boot, false);
+        let binder = Arc::new(RecordingBinder::default());
+        boot.set_operator_binder(binder.clone());
+        boot.bind_operator(layer(), "gX", op);
+        let bound = binder.0.lock().unwrap();
+        assert_eq!(bound.len(), 1);
+        assert!(!bound[0].3);
+    }
+
+    /// A chord that does not parse is logged and skipped, not a failed boot
+    /// and not a half-bound prefix.
+    #[tokio::test]
+    async fn bind_operator_with_an_unparseable_chord_binds_nothing() {
+        let mut boot = ctx();
+        let op = probe_op(&mut boot, false);
+        let binder = Arc::new(RecordingBinder::default());
+        boot.set_operator_binder(binder.clone());
+        boot.bind_operator(layer(), "<NotAKey", op);
+        boot.bind_operator(layer(), "", op);
+        assert!(binder.0.lock().unwrap().is_empty());
     }
 }

@@ -145,6 +145,23 @@ pub trait SubsystemBoot {
     /// the smell this replaces — see `idle_gate`'s module docs.
     fn idle_gate(&mut self, name: &'static str, handler: IdleGateHandler) -> IdleGateHandle;
 
+    /// Bind an operator registered through [`commands_mut`](Self::commands_mut)
+    /// to `prefix` in keymap `layer`, with the full operator-pending surface:
+    /// motion targets, text objects, the doubled linewise form (the prefix's
+    /// last key repeated: `ga` gives `gaa`), counts and Visual.
+    ///
+    /// Bind into the subsystem's own `KeymapLayer::MinorMode`, never
+    /// `Builtin`: a chord at `Builtin` fires in every buffer. The host holds
+    /// the binding until the keymap exists, so this may be called from any
+    /// install. A `prefix` that does not parse is logged and skipped, not a
+    /// failed boot.
+    fn bind_operator(
+        &mut self,
+        layer: lattice_keymap::KeymapLayer,
+        prefix: &str,
+        op: lattice_grammar::registry::OperatorId,
+    );
+
     /// The typed event bus (subscribe / publish).
     fn event_bus(&self) -> &Arc<EventBus>;
 

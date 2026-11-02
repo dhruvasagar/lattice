@@ -157,6 +157,7 @@ mod mode;
 mod motion_composition;
 mod motions;
 mod oil;
+mod operator_seam;
 mod operators;
 mod options;
 pub(crate) mod picker;

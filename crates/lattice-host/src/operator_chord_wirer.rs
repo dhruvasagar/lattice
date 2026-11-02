@@ -89,4 +89,28 @@ impl lattice_mode::OperatorChordWirer for HostOperatorChordWirer {
         );
         Ok(())
     }
+
+    fn bind_in(
+        &self,
+        layer: KeymapLayer,
+        source: lattice_grammar::SourceLocation,
+        prefix: &[lattice_protocol::chord::KeyChord],
+        op: lattice_grammar::registry::OperatorId,
+        doubled: Option<lattice_protocol::chord::KeyChord>,
+        post_motion_char: bool,
+    ) {
+        let prefix: Vec<ChordPattern> = prefix.iter().cloned().map(ChordPattern::Literal).collect();
+        crate::keymap_normal::register_operator_bindings_in(
+            layer,
+            source,
+            &self.keymap,
+            &prefix,
+            op,
+            doubled.map(ChordPattern::Literal),
+            &self.builtins,
+            &self.syntax_textobjects,
+            &self.syntax_motions,
+            post_motion_char,
+        );
+    }
 }

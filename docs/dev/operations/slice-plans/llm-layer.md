@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: ✅ LL.1–LL.8 built (first usable version); 📝 LL.9–LL.24 planned.**
+**Status: ✅ LL.1–LL.9 built (first usable version); 📝 LL.10–LL.24 planned.**
 
 **Goal:** direct model access from any buffer, with a REPL chat, per-session overrides,
 reviewed tools, and MCP behind one tool interface.
@@ -293,7 +293,7 @@ It returns with that writer, built on it, off-thread, and never writing keys.
 
 ## Any buffer
 
-### LL.9 — Operator seams 📝
+### LL.9 — Operator seams ✅
 
 **Why:** ask needs to be a non-mutating operator bound from outside `lattice-host`.
 
@@ -307,6 +307,12 @@ check), `crates/lattice-mode/src/subsystem_boot.rs`, `crates/lattice-host/src/bo
 **Tests:** `y` still works and `d`, `c` still refuse on a read-only buffer; a non-mutating test
 operator runs there; an operator bound through the seam composes with motions, text objects, counts
 and Visual; it lives only where its minor is active.
+
+**Built:** `OperatorSpec::mutates` is a required field (no default) set on every operator; a plugin
+operator's is `true` because the WIT `operator-spec` has no such bit. `bind_operator` queues until
+`editor_boot` hands `BootContext` the keymap binder, then binds immediately; the binder is the existing
+`OperatorChordWirer` service, extended with `bind_in(layer, ..)`. The linewise form repeats the
+prefix's last key. `fold` and `g/` are now `mutates = false`, so a read-only buffer runs them.
 
 ### LL.10 — Ask and send 📝
 

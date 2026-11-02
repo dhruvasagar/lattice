@@ -173,6 +173,8 @@ pub fn register_snippet_wrap(registry: &mut CommandRegistry) -> OperatorId {
          and the text becomes its `$TM_SELECTED_TEXT`. `gSip` wraps a paragraph; \
          `gS` in Visual wraps the selection.",
         OperatorSpec {
+            // The chosen snippet replaces the wrapped text.
+            mutates: true,
             // A picker answers it, so `.` has nothing to replay.
             repeatable: false,
             blockwise_per_row: false,

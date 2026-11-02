@@ -446,7 +446,8 @@ type OperatorFn =
 /// [`OperatorContext`], and returns whatever `apply` returns unchanged.
 #[derive(Clone)]
 pub struct OperatorSpec {
-    /// Whether the operator writes the buffer it runs on. Read by
+    /// Whether a read-only buffer refuses the operator: it writes the buffer it
+    /// runs on, or its body only works against the main document. Read by
     /// `Editor::run_read_only_motion`: a read-only buffer refuses a mutating
     /// operator and hands a non-mutating one (yank, a future ask) to the normal
     /// document path. **Required, with no default**, so an operator cannot

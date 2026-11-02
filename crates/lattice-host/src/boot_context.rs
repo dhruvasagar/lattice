@@ -358,11 +358,13 @@ impl SubsystemBoot for BootContext {
                 return;
             }
         };
-        let post_motion_char = self
-            .command_registry
-            .as_ref()
-            .expect("command registry already frozen (bind_operator after freeze_command_registry)")
-            .operator_post_motion_char(op.0);
+        // A bind after the freeze is a programming error, but not worth a panic
+        // at boot: log it and leave the operator unbound, as a bad chord does.
+        let Some(registry) = self.command_registry.as_ref() else {
+            tracing::error!(prefix = ?prefix, "bind_operator: called after the command registry froze, operator left unbound");
+            return;
+        };
+        let post_motion_char = registry.operator_post_motion_char(op.0);
         let pending = PendingOperatorBinding {
             layer,
             prefix,

@@ -450,7 +450,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         OperatorSpec {
             // Vim's `.` doesn't repeat fold creation.
             repeatable: false,
-            mutates: false,
+            // Writes no text, but stays refused on a read-only buffer: its body
+            // acts on the main document, not on a help or tree view.
+            mutates: true,
             apply: Arc::new(operator_create_fold),
             args_schema: vec![],
             // A fold is whole lines, so a blockwise selection is one range.
@@ -527,7 +529,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Project-search for the text spanned by the motion / text object (Lattice's `g/`).",
         OperatorSpec {
             repeatable: false,
-            mutates: false,
+            // Writes no text, but stays refused on a read-only buffer: its body
+            // reads the main document, not a help or tree view.
+            mutates: true,
             apply: Arc::new(operator_search),
             args_schema: vec![],
             blockwise_per_row: false,
@@ -3963,6 +3967,8 @@ mod tests {
         let b = populate(&mut registry);
         for (name, id, mutates) in [
             ("yank", b.yank, false),
+            ("create-fold", b.create_fold, true),
+            ("search", b.search, true),
             ("delete", b.delete, true),
             ("change", b.change, true),
             ("indent-right", b.indent_right, true),

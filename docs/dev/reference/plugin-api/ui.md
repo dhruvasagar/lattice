@@ -39,8 +39,9 @@ action's `emit-segment` finds no context and is a warn + drop. Same shape as
 ## Uses
 
 - [`ui-zone`](types.md#enum-ui-zone) from [`types`](types.md)
+- [`ui-notification`](types.md#record-ui-notification) from [`types`](types.md)
 
-## Functions (3)
+## Functions (4)
 
 ### `clear-segment`
 
@@ -75,6 +76,32 @@ first; that is the slice which earns the role parameter.
 
 ```rust
 ui::emit_segment("clock", "\u{25f7} 0:14");
+```
+
+### `notify`
+
+```wit
+notify: func(note: ui-notification)
+```
+
+Write one line to `*messages*`, attributed to this plugin.
+
+For work that finishes away from any command, such as a background scan,
+where there is no returned effect to carry an `echo`. A grammar action
+already has that effect, so `notify` from the grammar seam is a warn + drop
+like `emit-segment`: the keystroke path stays free of it.
+
+A line below the editor's log level is filtered like any other record, so
+use `info` or above for something the user should see. This is for an
+outcome, not progress: every call is a line someone has to read past.
+
+**Example — Report the outcome of background work in `*messages*`, from an async seam** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+ui::notify(&lattice::plugin_host::types::UiNotification {
+    level: lattice::plugin_host::types::EchoLevel::Info,
+    message: "multiseam: options registered".to_string(),
+});
 ```
 
 ### `register-segment`

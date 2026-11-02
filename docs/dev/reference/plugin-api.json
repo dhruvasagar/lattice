@@ -10766,6 +10766,31 @@
           ]
         },
         {
+          "name": "notify",
+          "display_name": "notify",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "note",
+              "type": "ui-notification"
+            }
+          ],
+          "result": null,
+          "signature": "notify: func(note: ui-notification)",
+          "doc": "Write one line to `*messages*`, attributed to this plugin.\n\nFor work that finishes away from any command, such as a background scan,\nwhere there is no returned effect to carry an `echo`. A grammar action\nalready has that effect, so `notify` from the grammar seam is a warn + drop\nlike `emit-segment`: the keystroke path stays free of it.\n\nA line below the editor's log level is filtered like any other record, so\nuse `info` or above for something the user should see. This is for an\noutcome, not progress: every call is a line someone has to read past.",
+          "examples": [
+            {
+              "id": "multiseam-guest:ui.notify",
+              "caption": "Report the outcome of background work in `*messages*`, from an async seam",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "ui::notify(&lattice::plugin_host::types::UiNotification {\n    level: lattice::plugin_host::types::EchoLevel::Info,\n    message: \"multiseam: options registered\".to_string(),\n});"
+            }
+          ]
+        },
+        {
           "name": "register-segment",
           "display_name": "register-segment",
           "kind": "freestanding",
@@ -10805,6 +10830,11 @@
           "name": "ui-zone",
           "from": "types",
           "original": "ui-zone"
+        },
+        {
+          "name": "ui-notification",
+          "from": "types",
+          "original": "ui-notification"
         }
       ]
     }

@@ -24,9 +24,9 @@
 //! producer against a real consumer showed it conflated the descriptor's zone
 //! with the content's text (see the note in `types.wit`).
 //!
-//! `ui-notification` is still mirror-only and still has no producer — a plugin
-//! notifies via `effect.echo` — so the smoke test below keeps sizing it for the
-//! freeze.
+//! `ui-notification` has a producer too, `ui.notify`, which logs it rather than
+//! converting it, so nothing here converts for it either. The smoke test below
+//! keeps sizing it for the freeze.
 //!
 //! [`ui_host`]: crate::ui_host
 

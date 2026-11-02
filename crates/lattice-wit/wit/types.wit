@@ -2315,9 +2315,9 @@ interface types {
     // more than one role either. It returns when a plugin registers its own
     // theme element (TC.4) and can be styled coherently.
     //
-    // Notifications remain a mirror with no producer — `effect.echo` still
-    // carries them. Sprites (§5.6.7) have no native struct yet, so mirroring one
-    // would violate exercised-trait-first.
+    // Notifications are produced by `ui.notify`, for async work with no effect to
+    // return; a grammar action still uses `effect.echo`. Sprites (§5.6.7) have no
+    // native struct yet, so mirroring one would violate exercised-trait-first.
 
     /// A modeline zone (mirrors `lattice_mode::modeline::Zone`).
     enum ui-zone { left, center, right }

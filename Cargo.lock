@@ -5801,6 +5801,7 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "tracing",
+ "tracing-subscriber",
  "tree-sitter",
  "ureq",
  "wasmtime 46.0.1",

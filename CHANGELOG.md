@@ -6,6 +6,9 @@
 - **`:lsp-install <Tab>` lists the servers lighthouse can install.** Plugins
   can now give an ex-command argument its completions, with the new
   `grammar.register-completion-values` call.
+- **Plugins can write to `*messages*` from background work.** The new
+  `ui.notify` call reports an outcome when there is no command to echo it, such
+  as a scan finishing.
 
 ### Fixed
 - **The split divider keeps its own colour.** In the terminal, the divider

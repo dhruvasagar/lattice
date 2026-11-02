@@ -2044,6 +2044,10 @@ impl crate::lattice::plugin_host::ui::Host for PluginState {
             ui_host::clear_segment(ctx, id);
         }
     }
+
+    fn notify(&mut self, note: crate::lattice::plugin_host::types::UiNotification) {
+        ui_host::notify(self.ui.as_ref(), self.plugin_name.as_deref(), note);
+    }
 }
 
 /// Host impl of the `plugin-manager` guest→host seam (PM.7).

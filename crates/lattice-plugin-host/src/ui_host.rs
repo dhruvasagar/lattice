@@ -37,7 +37,7 @@ use lattice_mode::modeline::{
 use lattice_runtime::EventBus;
 use std::sync::Arc;
 
-use crate::lattice::plugin_host::types::UiZone;
+use crate::lattice::plugin_host::types::{EchoLevel, UiNotification, UiZone};
 
 /// The role every plugin span carries.
 ///
@@ -137,6 +137,31 @@ pub(crate) fn clear_segment(ctx: &UiCtx, id: String) {
     emit_segment(ctx, id, String::new());
 }
 
+/// The `notify` body: one line in `*messages*`, attributed to the plugin.
+///
+/// A `tracing` event because that is what `*messages*` is: `MessagesLayer` turns
+/// every event into a record and publishes it, so the buffer updates with no
+/// keystroke and the line is filtered by `--log-level` like any other.
+///
+/// `ctx` is `None` on the sync grammar store. It isn't otherwise needed here, but
+/// it is how the `ui` seam tells where it was called from, and a grammar action
+/// has `effect.echo` for this.
+pub(crate) fn notify(ctx: Option<&UiCtx>, plugin: Option<&str>, note: UiNotification) {
+    let plugin = plugin.unwrap_or("unknown");
+    if ctx.is_none() {
+        tracing::warn!(plugin, "notify dropped: not available on this seam");
+        return;
+    }
+    let message = note.message;
+    match note.level {
+        EchoLevel::Trace => tracing::trace!(plugin, "{message}"),
+        EchoLevel::Debug => tracing::debug!(plugin, "{message}"),
+        EchoLevel::Info => tracing::info!(plugin, "{message}"),
+        EchoLevel::Warn => tracing::warn!(plugin, "{message}"),
+        EchoLevel::Error => tracing::error!(plugin, "{message}"),
+    }
+}
+
 fn zone_from_wit(z: UiZone) -> Zone {
     match z {
         UiZone::Left => Zone::Left,
@@ -226,5 +251,64 @@ mod tests {
         clear_segment(&c, "org.clock".into());
         let update = rx.try_recv().unwrap();
         assert!(update.content.is_empty());
+    }
+
+    /// What `f` puts in `*messages*`, through the real layer.
+    fn messages_from(f: impl FnOnce()) -> Vec<(lattice_grammar::EchoLevel, String)> {
+        use lattice_runtime::messages::MessagesRing;
+        use lattice_runtime::messages_subscriber::MessagesLayer;
+        use std::sync::Mutex;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let ring = Arc::new(Mutex::new(MessagesRing::with_capacity(8)));
+        let layer = MessagesLayer::new(Arc::clone(&ring), Arc::new(EventBus::new()));
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), f);
+        let ring = ring.lock().unwrap();
+        ring.records()
+            .iter()
+            .map(|r| (r.level, r.text.clone()))
+            .collect()
+    }
+
+    fn note(level: EchoLevel) -> UiNotification {
+        UiNotification {
+            level,
+            message: "indexed 12 notes".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_notification_reaches_messages_at_its_level_and_names_the_plugin() {
+        let (c, _bus) = ctx();
+        let lines = messages_from(|| {
+            notify(Some(&c), Some("org"), note(EchoLevel::Info));
+            notify(Some(&c), Some("org"), note(EchoLevel::Warn));
+        });
+        assert_eq!(
+            lines,
+            vec![
+                (
+                    lattice_grammar::EchoLevel::Info,
+                    "indexed 12 notes plugin=org".to_string()
+                ),
+                (
+                    lattice_grammar::EchoLevel::Warn,
+                    "indexed 12 notes plugin=org".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// The sync grammar store has no `UiCtx`. The drop has to be visible, or a
+    /// plugin author would see a call that succeeds and prints nothing.
+    #[test]
+    fn a_notification_from_the_grammar_seam_is_dropped_with_a_warning() {
+        let lines = messages_from(|| notify(None, Some("org"), note(EchoLevel::Info)));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            !lines[0].1.contains("indexed 12 notes"),
+            "the note itself must not reach *messages*: {lines:?}"
+        );
+        assert!(lines[0].1.contains("notify dropped"), "{lines:?}");
     }
 }

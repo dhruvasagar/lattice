@@ -27,6 +27,9 @@ lattice-core = { path = "../lattice-core" }
 lattice-diff = { path = "../lattice-diff" }
 lattice-config = { path = "../lattice-config" }
 lattice-cells = { path = "../lattice-cells" }
+# llm: `:llm-menu` is a `TransientSpec`, the one menu mechanism (magit, org). Picker
+# depends on neither this crate nor anything that does.
+lattice-picker = { path = "../lattice-picker" }
 lattice-agent = { path = "../lattice-agent" }
 # acp: the Agent Client Protocol schema + JSON-RPC types the connection speaks.
 agent-client-protocol = { version = "1.2.0", optional = true }

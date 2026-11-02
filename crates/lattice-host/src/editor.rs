@@ -2523,6 +2523,65 @@ impl Editor {
             == Some(id)
     }
 
+    /// Resolve the action a bare `:w` runs in `buffer_id`, by walking the
+    /// active modes (minors most-recently-activated first, then major) for the
+    /// first [`lattice_mode::Mode::write_action`] declared.
+    ///
+    /// The same walk as [`Self::resolve_refresh_action`], and for the same
+    /// reason: `:w` means one verb ("submit this") across every buffer that is a
+    /// form rather than a file, while the body stays each mode's own. `None`
+    /// when no active mode declares one, and `:w` writes the file as always.
+    pub fn resolve_write_action(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> Option<lattice_protocol::ids::CommandId> {
+        let modes = self.active_modes.get(&buffer_id)?;
+        let registry = self.mode_registry.load();
+        let action = modes
+            .minors()
+            .iter()
+            .rev()
+            .copied()
+            .chain(modes.major())
+            .filter_map(|id| registry.get(id))
+            .find_map(|mode| mode.write_action())?;
+        let cmd_reg = self
+            .services
+            .get::<lattice_grammar::CommandRegistryHandle>()?;
+        let id = cmd_reg.load().id_by_name(action);
+        if id.is_none() {
+            tracing::debug!(
+                action,
+                "write_action names an unregistered command; `:w` will write the file"
+            );
+        }
+        id
+    }
+
+    /// Run the active buffer's write action, if its modes declare one, and
+    /// return the effect it asks for. The outer `None` means no mode claims
+    /// `:w` here, so the caller writes the file; `Some(Effect::None)` means a
+    /// mode claimed it and has nothing further to apply.
+    pub fn run_write_action(&mut self) -> Option<lattice_grammar::Effect> {
+        let buffer_id = self.document_buffer_id;
+        let command = self.resolve_write_action(buffer_id)?;
+        let handler = self
+            .services
+            .get::<lattice_mode::ActionHandlerRegistryHandle>()?
+            .lookup(command)?;
+        let ctx = lattice_mode::ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(buffer_id.0 as u64),
+            cursor: self.cursor,
+            selection: None,
+            services: &self.services,
+            events: &self.event_bus,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+            buffer_locals: None,
+        };
+        Some(handler(&ctx).unwrap_or(lattice_grammar::Effect::None))
+    }
+
     /// OA.4b: resolve the fold-toggle action for `buffer_id` by walking the
     /// active modes (minors most-recently-activated first, then major) and
     /// returning the `CommandId` of the first

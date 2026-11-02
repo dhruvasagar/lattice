@@ -336,6 +336,7 @@ docs = [
   "ai-conversation-mode",
   "llm",
   "llm-chat-mode",
+  "llm-system-mode",
   "ai-permission-mode",
   "ai-log-mode",
   "pi-mode",

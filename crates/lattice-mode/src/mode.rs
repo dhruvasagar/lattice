@@ -729,6 +729,23 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
+    /// Which of this mode's own actions `:w` runs in place of writing a file,
+    /// or `None` (the default) when `:w` means what it always does.
+    ///
+    /// For a buffer whose text is a form to submit, not a file to keep: a
+    /// system prompt being edited, a commit message. `:w` then means "apply
+    /// this", and nothing may touch the disk. Like
+    /// [`refresh_action`](Self::refresh_action) this declares a **target, not a
+    /// body**: the handler stays in [`action_handlers`](Self::action_handlers),
+    /// and the host learns nothing about what any particular buffer submits.
+    ///
+    /// Only a bare `:w` is claimed. `:w <path>` still writes a copy, as in vim.
+    /// The host resolves it with `Editor::resolve_write_action`, walking active
+    /// modes the way `refresh_action` does.
+    fn write_action(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Which of this mode's actions `<Tab>` fires, and the declaration that
     /// pulls in
     /// [`foldable-view-mode`](crate::foldable_view_mode::FoldableViewMode) —
@@ -918,6 +935,8 @@ pub trait DynMode: Send + Sync + 'static {
     fn invocation_runner(&self) -> Option<ModeId>;
     /// Forwards to [`Mode::refresh_action`].
     fn refresh_action(&self) -> Option<&'static str>;
+    /// Forwards to [`Mode::write_action`].
+    fn write_action(&self) -> Option<&'static str>;
     /// Forwards to [`Mode::fold_toggle_action`].
     fn fold_toggle_action(&self) -> Option<&'static str>;
     /// Forwards to [`Mode::refresh_on_open`].
@@ -988,6 +1007,9 @@ impl<M: Mode> DynMode for M {
     }
     fn refresh_action(&self) -> Option<&'static str> {
         <M as Mode>::refresh_action(self)
+    }
+    fn write_action(&self) -> Option<&'static str> {
+        <M as Mode>::write_action(self)
     }
     fn fold_toggle_action(&self) -> Option<&'static str> {
         <M as Mode>::fold_toggle_action(self)

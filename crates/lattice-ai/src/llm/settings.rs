@@ -477,6 +477,11 @@ pub enum Trust {
 pub struct RequestOverrides {
     /// A profile named for this request only.
     pub profile: Option<String>,
+    /// The profile came from text that may have been pasted (an `@profile`
+    /// cookie), whoever speaks for the rest of the request. The profile then
+    /// applies through the restricted path while `values` (a menu choice or a
+    /// command argument, the user's own) keep their full trust.
+    pub pasted_profile: bool,
     pub values: RawSet,
 }
 
@@ -654,7 +659,7 @@ pub fn resolve(
         let origin = OptionOrigin::Profile { name: name.clone() };
         // A profile named by pasted text is still pasted text: it may narrow
         // tools but not widen them, whatever the profile itself carries.
-        if trust == Trust::Pasted && req.profile.is_some() {
+        if (trust == Trust::Pasted || req.pasted_profile) && req.profile.is_some() {
             let entries = set
                 .iter()
                 .filter_map(|(k, v)| k.file_key().map(|n| (n.to_string(), v.clone())));

@@ -174,6 +174,7 @@ same surface).
 |   — agent process log      | [`ai-log-mode`](help:ai-log-mode) | ✅      |
 | LLM chat                   | [`llm-chat-mode`](help:llm-chat-mode) | ✅      |
 |   — settings and profiles  | [`llm`](help:llm)                        | ✅      |
+|   — system prompt          | [`llm-system-mode`](help:llm-system-mode) | ✅      |
 | Languages                  | [`languages`](help:languages)            | ✅      |
 | Plain text (fallback)      | [`text-mode`](help:text-mode) | ✅      |
 | Rust                       | [`rust-mode`](help:rust-mode) | ✅      |

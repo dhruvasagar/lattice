@@ -32,7 +32,13 @@ use crate::conversation::transcript::{
     newline_handler, read_prompt,
 };
 use crate::conversation::{ConversationStore, ProjectionSource, SessionStatus};
-use crate::llm::chat::{ChatSession, LlmChatsHandle};
+use crate::llm::chat::{ChatSession, LlmChatsHandle, SendPlan};
+use crate::llm::menu;
+use crate::llm::settings::RequestOverrides;
+use lattice_grammar::args::{ArgValue, Args};
+
+/// The yes half of the confirm shown when `@profile` would widen tools.
+const ACTION_SEND_WIDENED: &str = "action:llm-chat-send-widened";
 
 /// Registered with the host so a key reaches [`ChatHeaderline`] even before the
 /// buffer has content.
@@ -122,7 +128,10 @@ impl Mode for LlmChatMode {
     }
 
     fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
-        vec![
+        // The menu's handler bodies are contributed here, by the mode that owns
+        // the chat; they act on whatever buffer the menu was opened over.
+        let mut handlers = menu::handlers(&self.chats);
+        handlers.extend([
             ActionHandlerContribution {
                 action_name: "action:llm-chat-send",
                 handler: send_handler(self.chats.clone(), self.anchors.clone()),
@@ -139,7 +148,21 @@ impl Mode for LlmChatMode {
                 action_name: "action:llm-chat-close",
                 handler: Arc::new(|_| Some(Effect::KillBuffer)),
             },
-        ]
+            ActionHandlerContribution {
+                action_name: ACTION_SEND_WIDENED,
+                handler: send_widened_handler(self.chats.clone()),
+            },
+            ActionHandlerContribution {
+                action_name: "action:llm-chat-menu",
+                handler: Arc::new(|_| {
+                    Some(Effect::OpenTransient {
+                        source: menu::MENU_SOURCE.to_string(),
+                        args: Args::None,
+                    })
+                }),
+            },
+        ]);
+        handlers
     }
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
@@ -217,6 +240,16 @@ fn keymap_entries() -> &'static [KeymapEntry] {
                 doc: "llm-chat: close the chat",
                 cmd: "action:llm-chat-close"
             },
+            keymap_entry! {
+                mode: Normal, chord: "<M-m>",
+                doc: "llm-chat: open the settings menu",
+                cmd: "action:llm-chat-menu"
+            },
+            keymap_entry! {
+                mode: Insert, chord: "<M-m>",
+                doc: "llm-chat: open the settings menu",
+                cmd: "action:llm-chat-menu"
+            },
         ]
     })
 }
@@ -228,9 +261,63 @@ fn keymap_entries() -> &'static [KeymapEntry] {
 /// sends nothing.
 fn send_handler(chats: LlmChatsHandle, anchors: PromptAnchors) -> ActionHandler {
     Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
-        let session = chats.for_buffer(lattice_core::BufferId(ctx.buffer_id.0 as u32))?;
+        let buffer = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+        let session = chats.for_buffer(buffer)?;
         let prompt = read_prompt(ctx, &anchors)?;
-        chats.submit(&session, prompt);
+        // The whole prompt here is what the user typed, so it is what is scanned.
+        match chats.plan_send(buffer, &prompt) {
+            SendPlan::Plain => {
+                chats.submit(&session, prompt);
+                None
+            }
+            SendPlan::Profile(profile) => {
+                chats.submit_with(
+                    &session,
+                    prompt,
+                    RequestOverrides {
+                        profile: Some(profile),
+                        pasted_profile: true,
+                        ..RequestOverrides::default()
+                    },
+                );
+                None
+            }
+            // Nothing is sent and the prompt stays in the buffer, so a no
+            // loses nothing; only a yes sends it.
+            SendPlan::NeedsConfirm(profile) => Some(Effect::Confirm {
+                prompt: format!(
+                    "@{profile} enables tools this session does not have. Send this one request with it?"
+                ),
+                yes_action: ACTION_SEND_WIDENED.to_string(),
+                args: Args::List(vec![ArgValue::String(profile), ArgValue::String(prompt)]),
+            }),
+        }
+    })
+}
+
+/// The yes half of the widening confirm. The profile and the prompt travel in
+/// the confirm's args, so the thing confirmed is the thing sent.
+fn send_widened_handler(chats: LlmChatsHandle) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let Args::List(items) = &ctx.args else {
+            return None;
+        };
+        let text = |v: Option<&ArgValue>| match v {
+            Some(ArgValue::String(s) | ArgValue::Raw(s)) => Some(s.clone()),
+            _ => None,
+        };
+        let (profile, prompt) = (text(items.first())?, text(items.get(1))?);
+        let session = chats.for_buffer(lattice_core::BufferId(ctx.buffer_id.0 as u32))?;
+        chats.submit_with(
+            &session,
+            prompt,
+            RequestOverrides {
+                profile: Some(profile),
+                // The user said yes: full trust, for this request only.
+                pasted_profile: false,
+                ..RequestOverrides::default()
+            },
+        );
         None
     })
 }
@@ -259,15 +346,39 @@ pub fn register_actions(registry: &mut lattice_grammar::CommandRegistry) {
             "llm-chat: interrupt the reply.",
         ),
         ("action:llm-chat-close", "llm-chat: close the chat."),
+        ("action:llm-chat-menu", "llm-chat: open the settings menu."),
+        (
+            ACTION_SEND_WIDENED,
+            "llm-chat: send the confirmed prompt with the profile that widens tools.",
+        ),
     ] {
         registry.register_action(
             name,
             doc,
             ActionSpec {
                 apply: Arc::new(|_| Ok(Effect::None)),
-                args_schema: vec![],
+                // A confirm's args travel through the dialog's transient state,
+                // keyed by the schema: a value with no slot is dropped. The
+                // widening confirm carries two, so it declares two.
+                args_schema: if name == ACTION_SEND_WIDENED {
+                    ["profile", "prompt"].map(string_slot).to_vec()
+                } else {
+                    vec![]
+                },
             },
         );
+    }
+}
+
+fn string_slot(name: &'static str) -> lattice_grammar::ArgSpec {
+    lattice_grammar::ArgSpec {
+        name: name.into(),
+        kind: lattice_grammar::ArgKind::String,
+        doc: "carried by the confirm that asked".into(),
+        prompt: "".into(),
+        default: lattice_grammar::ArgDefault::None,
+        completion: None,
+        picker: None,
     }
 }
 

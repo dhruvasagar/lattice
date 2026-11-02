@@ -63,6 +63,38 @@ struct TurnState {
     busy: bool,
     request: Option<RequestId>,
     interrupted: bool,
+    /// What the turn in flight was asked with: the request-layer overrides of
+    /// the prompt that started it (a command argument, an `@profile`, a menu
+    /// choice for the next request). Read once, when the request starts.
+    current: RequestOverrides,
+    /// The same for each queued prompt, in step with `Conversation::queued`:
+    /// both are pushed and popped under the turn lock, so a queued prompt
+    /// keeps its own overrides and the next one never inherits them.
+    pending: VecDeque<RequestOverrides>,
+}
+
+/// What a typed prompt asks of the request, decided from its `@profile` cookie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendPlan {
+    /// No cookie: send with the session's own settings.
+    Plain,
+    /// A known profile that does not widen tools. It applies to this request
+    /// through the restricted path, as pasted text may.
+    Profile(String),
+    /// A known profile that would enable tools the session does not have. The
+    /// user is asked first; only a yes applies it, with full trust, to this
+    /// request alone.
+    NeedsConfirm(String),
+}
+
+/// Where a `:llm-menu` change goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuScope {
+    /// The buffer's session: every request from it until cleared.
+    #[default]
+    Session,
+    /// The next request only.
+    NextRequest,
 }
 
 pub struct ChatSession {
@@ -156,10 +188,17 @@ pub struct LlmChats {
     /// The fold values each chat buffer was last re-projected under, so a change
     /// at ANY layer (a global `:set` leaves the session values untouched) is seen.
     folds_seen: RwLock<HashMap<BufferId, (FoldDisplay, FoldDisplay)>>,
+    /// `:llm-menu` choices made for the next request only, per buffer. Taken by
+    /// the next submission, so they never reach a second request.
+    next_request: RwLock<HashMap<BufferId, RawSet>>,
+    /// Which scope `:llm-menu` writes to, per buffer. It stays where the user
+    /// left it: switching it is a mode, not a one-shot.
+    menu_scope: RwLock<HashMap<BufferId, MenuScope>>,
     /// Where `.lattice/llm.toml` is looked for. `None` finds the project root
     /// from the working directory when a request starts.
     project_root: RwLock<Option<std::path::PathBuf>>,
     next_chat: AtomicU32,
+    next_system: AtomicU32,
     next_bind: AtomicU64,
     inner: Mutex<Registry>,
 }
@@ -179,8 +218,11 @@ impl LlmChats {
             registry: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
             folds_seen: RwLock::new(HashMap::new()),
+            next_request: RwLock::new(HashMap::new()),
+            menu_scope: RwLock::new(HashMap::new()),
             project_root: RwLock::new(None),
             next_chat: AtomicU32::new(1),
+            next_system: AtomicU32::new(1),
             next_bind: AtomicU64::new(1),
             inner: Mutex::new(Registry::default()),
         }
@@ -373,6 +415,96 @@ impl LlmChats {
         keys
     }
 
+    /// A fresh number for a `:llm-system` buffer's name.
+    pub fn next_system_open(&self) -> u32 {
+        self.next_system.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The scope `:llm-menu` currently writes to for `buffer`.
+    pub fn menu_scope(&self, buffer: BufferId) -> MenuScope {
+        self.menu_scope
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&buffer)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Flip the menu's scope for `buffer` and return the new one.
+    pub fn toggle_menu_scope(&self, buffer: BufferId) -> MenuScope {
+        let mut map = self.menu_scope.write().unwrap_or_else(|e| e.into_inner());
+        let now = match map.get(&buffer).copied().unwrap_or_default() {
+            MenuScope::Session => MenuScope::NextRequest,
+            MenuScope::NextRequest => MenuScope::Session,
+        };
+        map.insert(buffer, now);
+        now
+    }
+
+    /// The menu choices waiting for `buffer`'s next request.
+    pub fn next_request(&self, buffer: BufferId) -> RawSet {
+        self.next_request
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&buffer)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Set (or, with empty text, unset) one choice for `buffer`'s next request.
+    pub fn set_next_request(&self, buffer: BufferId, key: SettingKey, text: &str) {
+        let mut map = self.next_request.write().unwrap_or_else(|e| e.into_inner());
+        let set = map.entry(buffer).or_default();
+        if text.trim().is_empty() {
+            set.remove(&key);
+        } else {
+            set.insert(key, text.to_string());
+        }
+        if set.is_empty() {
+            map.remove(&buffer);
+        }
+    }
+
+    /// Drop the pending next-request choices, returning the keys they held.
+    pub fn clear_next_request(&self, buffer: BufferId) -> Vec<SettingKey> {
+        self.next_request
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&buffer)
+            .map(|s| s.into_keys().collect())
+            .unwrap_or_default()
+    }
+
+    /// Decide what `typed` asks for. `typed` is ONLY what the user typed: an
+    /// operator's selected source and anything pasted are not passed in, so a
+    /// file that contains `@coding` cannot select a profile.
+    pub fn plan_send(&self, buffer: BufferId, typed: &str) -> SendPlan {
+        match super::prompt_cookie::find(typed, &self.profile_names()) {
+            None => SendPlan::Plain,
+            Some(p) if self.profile_widens_tools(buffer, &p) => SendPlan::NeedsConfirm(p),
+            Some(p) => SendPlan::Profile(p),
+        }
+    }
+
+    /// True when `profile`, applied from pasted text on top of what `buffer`
+    /// has now, would ask for tools the session does not already have. Pure
+    /// resolution, no file read, so it is safe on the editor thread; the project
+    /// layer comes after the profile in the fold and can only narrow, so leaving
+    /// it out cannot hide a widening.
+    pub fn profile_widens_tools(&self, buffer: BufferId, profile: &str) -> bool {
+        let layers = self.layers_for(buffer, self.session_overrides(buffer));
+        let req = RequestOverrides {
+            profile: Some(profile.to_string()),
+            pasted_profile: true,
+            ..RequestOverrides::default()
+        };
+        resolve(&layers, buffer, &req, Trust::User).is_ok_and(|r| {
+            r.refused
+                .iter()
+                .any(|f| f.source == "a prompt" && f.key == "tools")
+        })
+    }
+
     fn reg(&self) -> MutexGuard<'_, Registry> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -496,10 +628,39 @@ impl LlmChats {
     /// Idle with prompts still queued (a failure held them) the new prompt joins
     /// the back of the queue and the front is sent, so the queue resumes in order.
     pub fn submit(self: &Arc<Self>, session: &Arc<ChatSession>, text: String) {
+        self.submit_with(session, text, RequestOverrides::default());
+    }
+
+    /// [`submit`](Self::submit) with the request-layer overrides this prompt
+    /// carries (a command argument, an `@profile`). They apply to this prompt's
+    /// request only. Whatever `:llm-menu` set for the next request is taken here
+    /// and sits under `overrides`, so an explicit argument wins over a menu choice.
+    pub fn submit_with(
+        self: &Arc<Self>,
+        session: &Arc<ChatSession>,
+        text: String,
+        mut overrides: RequestOverrides,
+    ) {
+        let buffer = self.buffer_of(session).unwrap_or(BufferId(0));
+        let mut values = self
+            .next_request
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&buffer)
+            .unwrap_or_default();
+        values.extend(std::mem::take(&mut overrides.values));
+        // A profile is not a value in the fold: the request names it separately.
+        if let Some(p) = values.remove(&SettingKey::Profile)
+            && overrides.profile.is_none()
+        {
+            overrides.profile = Some(p);
+        }
+        overrides.values = values;
         let send_now = {
             let mut turn = session.turn();
             let busy = turn.busy;
             let mut started = false;
+            turn.pending.push_back(overrides);
             session.store.mutate(&session.key, |c| {
                 c.queued.push(text);
                 if !busy {
@@ -513,6 +674,7 @@ impl LlmChats {
             if started {
                 turn.busy = true;
                 turn.interrupted = false;
+                turn.current = turn.pending.pop_front().unwrap_or_default();
             }
             started
         };
@@ -544,14 +706,14 @@ impl LlmChats {
         let buffer = self.buffer_of(session).unwrap_or(BufferId(0));
         let layers = self.layers_for(buffer, self.overrides_of(Some(session), buffer));
         let history = history::messages(&session.store.snapshot());
+        let request = session.turn().current.clone();
         let default_provider = self.default_provider();
         let chats = self.clone();
         let session = session.clone();
         self.runtime.spawn(async move {
             let mut layers = layers;
             layers.project = chats.read_project(&session).await;
-            let resolved = match resolve(&layers, buffer, &RequestOverrides::default(), Trust::User)
-            {
+            let resolved = match resolve(&layers, buffer, &request, Trust::User) {
                 Ok(r) => r,
                 Err(e) => {
                     chats.end_turn(&session, Some(e.to_string()));
@@ -794,6 +956,11 @@ impl LlmChats {
             turn.request = None;
             turn.interrupted = false;
             turn.busy = started;
+            turn.current = if started {
+                turn.pending.pop_front().unwrap_or_default()
+            } else {
+                RequestOverrides::default()
+            };
             started
         };
         if started_next {

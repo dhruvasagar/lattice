@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: ✅ LL.1–LL.7 built (first usable version); 📝 LL.8–LL.24 planned.**
+**Status: ✅ LL.1–LL.8 built (first usable version); 📝 LL.9–LL.24 planned.**
 
 **Goal:** direct model access from any buffer, with a REPL chat, per-session overrides,
 reviewed tools, and MCP behind one tool interface.
@@ -258,7 +258,7 @@ read a `ProjectionFrame` the drain publishes with the text, so text and folds sh
 table. Open: the notice is a log line, not a transcript row; a buffer's mirrored overrides are not
 dropped when a non-chat buffer closes (sparse, a few bytes).
 
-### LL.8 — Overriding on the go 📝
+### LL.8 — Overriding on the go ✅
 
 **Files:** `src/llm/menu.rs` (a `TransientSpec` of `Flag`/`Argument` rows), `src/llm/commands.rs`
 (`:llm-menu`, `:llm-system`, argument parsing), `src/llm/prompt_cookie.rs`,
@@ -269,6 +269,20 @@ session scope persists, next-request scope does not; a menu change during a stre
 turn; `model=` argument for one request only; `@writer` in the last turn only; `@unknown` left as text;
 `@coding` raising tools asks first; selected source containing `@coding` is not scanned;
 `:llm-system` `:w` applies, and `:q!` discards.
+
+**Landed:** `menu.rs` (`:llm-menu`, a `TransientSpec` of action rows: each shows value and origin, `=`
+flips the scope and reopens the menu, `x` clears; bound to `<M-m>` in a chat; handler bodies contributed
+by `llm-chat-mode`), `prompt_cookie.rs`, `modes/system.rs` (`llm-system-mode`), `parse_request_args`.
+`LlmChats::submit_with` carries per-prompt `RequestOverrides` (kept in step with the queue);
+`plan_send` decides a typed `@profile` (`Plain` / `Profile` through the restricted path /
+`NeedsConfirm` through `Effect::Confirm`, whose yes half applies at full trust for that request);
+`RequestOverrides::pasted_profile` lets a cookie profile be restricted while menu and argument values
+keep user trust. Two generic seams: `Mode::write_action` (a mode claims a bare `:w`; the host walks
+active modes as it does for `refresh_action`) and `lattice-ai` depending on `lattice-picker` for
+`TransientSpec`. Not built: the menu's `P` (save as profile; needs a config writer), `:llm-system` with
+a `'<,'>` range (marks are not handed to ex-commands, line addresses work), a project-layer origin in
+the menu (the file is read off-thread, the menu is built on the editor thread), `:llm-ask model=...`
+wiring (the parser and `submit_with` are here; the command is LL.10).
 
 ## Any buffer
 

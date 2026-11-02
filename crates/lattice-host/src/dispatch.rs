@@ -4524,7 +4524,17 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         // peer-applied effects are discarded. `do_write` does the save + LSP
         // didSave fan-out host-side and returns no renderer signals; the
         // keystroke `:w` path is unchanged (the peers now no-op SaveBuffer).
-        Effect::SaveBuffer { path } => editor.do_write(path),
+        Effect::SaveBuffer { path } => {
+            // A mode that owns `:w` (a form to submit, not a file to keep)
+            // runs its action instead and nothing reaches the disk. Only a
+            // bare `:w` is claimed; `:w <path>` still writes a copy.
+            match path.is_none().then(|| editor.run_write_action()).flatten() {
+                Some(effect) => {
+                    apply_effect_host(editor, effect, out);
+                }
+                None => editor.do_write(path),
+            }
+        }
         Effect::BufferDelete { force } => {
             // 5.5.F.4.4: `:bd[elete]` -- close the active buffer. The
             // host-side path handles successor selection, LSP detach,

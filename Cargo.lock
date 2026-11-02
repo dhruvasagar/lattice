@@ -5409,6 +5409,7 @@ dependencies = [
  "lattice-grammar",
  "lattice-lsp",
  "lattice-mode",
+ "lattice-picker",
  "lattice-protocol",
  "lattice-runtime",
  "linkme",

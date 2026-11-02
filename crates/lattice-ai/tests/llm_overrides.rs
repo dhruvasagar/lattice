@@ -173,6 +173,49 @@ fn row<'a>(
 // The menu
 // ---------------------------------------------------------------------------
 
+/// The project layer is read off-thread and cached, so the menu (built on the
+/// editor thread) can show it: value and origin both.
+#[tokio::test]
+async fn the_menu_shows_a_project_models_value_and_origin() {
+    let root = std::env::temp_dir().join(format!("lattice-ll8-menu-proj-{}", std::process::id()));
+    std::fs::create_dir_all(root.join(".lattice")).unwrap();
+    std::fs::write(
+        root.join(".lattice/llm.toml"),
+        "model = \"mock/project-model\"\n",
+    )
+    .unwrap();
+    let (addr, _seen) = recording_server(Duration::ZERO).await;
+    let chats = chats_with(config(addr, ""));
+    chats.set_project_root(root.clone());
+    let ids = menu_ids();
+
+    // Starting a chat refreshes the cache, off the calling thread.
+    let session = chats.create();
+    let buffer = bind(&chats, &session, 57);
+    until("project layer cached", || {
+        let spec = menu::build(&chats, &ids, Some(buffer), "x");
+        row(&spec, "model").description.contains("project-model")
+    })
+    .await;
+    let spec = menu::build(&chats, &ids, Some(buffer), "x");
+    let model = row(&spec, "model");
+    assert!(
+        model.description.contains("(project)"),
+        "origin is the project: {}",
+        model.description
+    );
+
+    // A session value still beats it, and says so.
+    chats.on_buffer_options(buffer, &local_model("mock/local"));
+    let spec = menu::build(&chats, &ids, Some(buffer), "x");
+    assert!(
+        !row(&spec, "model").description.contains("(project)"),
+        "{}",
+        row(&spec, "model").description
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[tokio::test]
 async fn the_menu_shows_each_value_with_its_origin_and_names_the_session() {
     let (addr, _seen) = recording_server(Duration::ZERO).await;
@@ -517,6 +560,45 @@ async fn at_profile_in_the_typed_text_applies_to_that_request_only() {
     );
 }
 
+/// `@writer` in a prompt is an explicit request for that one turn, so it beats
+/// a session `llm.model`; the turn after falls back to the session's value.
+#[tokio::test]
+async fn at_profile_beats_a_session_model_for_that_turn_only() {
+    let (addr, seen) = recording_server(Duration::ZERO).await;
+    let chats = chats_with(config(addr, PROFILES));
+    let session = chats.create();
+    let buffer = bind(&chats, &session, 56);
+    chats.on_buffer_options(buffer, &local_model("mock/session-model"));
+
+    let typed = "@writer tighten this";
+    let SendPlan::Profile(p) = chats.plan_send(buffer, typed) else {
+        panic!("expected a profile plan");
+    };
+    chats.submit_with(
+        &session,
+        typed.into(),
+        RequestOverrides {
+            profile: Some(p),
+            pasted_profile: true,
+            ..RequestOverrides::default()
+        },
+    );
+    until("turn", || !session.is_busy()).await;
+    say(&chats, &session, "and now?").await;
+
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen[0].contains("\"model\":\"writer-model\""),
+        "the profile named in the prompt wins: {}",
+        seen[0]
+    );
+    assert!(
+        seen[1].contains("\"model\":\"session-model\""),
+        "the next turn is back on the session: {}",
+        seen[1]
+    );
+}
+
 #[tokio::test]
 async fn an_unknown_cookie_is_left_in_the_text_and_sent() {
     let (addr, seen) = recording_server(Duration::ZERO).await;
@@ -626,14 +708,85 @@ async fn a_pasted_profile_that_does_not_widen_cannot_raise_tools() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_system_buffer_name_carries_its_target() {
-    use lattice_ai::llm::commands::system_buffer_name;
-    let name = system_buffer_name(BufferId(9), 3);
+fn the_system_buffer_name_carries_its_target_and_scope() {
+    use lattice_ai::llm::commands::{system_buffer_name, system_scope};
+    let name = system_buffer_name(BufferId(9), 3, MenuScope::Session);
     assert_eq!(system_target(&name), Some(BufferId(9)));
+    assert_eq!(system_scope(&name), Some(MenuScope::Session));
+    let next = system_buffer_name(BufferId(9), 3, MenuScope::NextRequest);
+    assert_eq!(system_target(&next), Some(BufferId(9)));
+    assert_eq!(system_scope(&next), Some(MenuScope::NextRequest));
     assert_eq!(system_target("*llm:1*"), None);
+    assert_eq!(system_scope("*llm:1*"), None);
     assert_ne!(
-        system_buffer_name(BufferId(9), 4),
+        system_buffer_name(BufferId(9), 4, MenuScope::Session),
         name,
         "each open is fresh"
+    );
+}
+
+/// The menu's `s` row opens the form in the scope the menu was in, and `:w`
+/// from that form goes where the label said.
+#[tokio::test]
+async fn the_system_row_applies_in_the_scope_it_was_opened_in() {
+    use lattice_ai::llm::commands::system_scope;
+    use lattice_ai::llm::modes::system::apply_text;
+    let (addr, _seen) = recording_server(Duration::ZERO).await;
+    let chats = chats_with(config(addr, ""));
+    let session = chats.create();
+    let buffer = bind(&chats, &session, 58);
+    let handlers = {
+        let chats = chats.clone();
+        move || menu::handlers(&chats)
+    };
+    let open = |scope_label: &str| {
+        let Some(Effect::OpenSyntheticBuffer { name, .. }) = fire(
+            &handlers,
+            menu::ACTION_EDIT,
+            buffer,
+            Args::String("llm.system".into()),
+            None,
+        ) else {
+            panic!("{scope_label}: the row opens a form");
+        };
+        name
+    };
+
+    // Session scope (the default).
+    let name = open("session");
+    assert_eq!(system_scope(&name), Some(MenuScope::Session));
+    let Effect::Many(parts) = apply_text(&chats, &name, "Be brief.", buffer) else {
+        panic!("expected a batch");
+    };
+    assert!(
+        parts.iter().any(|e| matches!(
+            e, Effect::SetLocalOption { spec } if spec == "llm.system=Be brief."
+        )),
+        "session scope sets the buffer-local option"
+    );
+    assert!(chats.next_request(buffer).is_empty());
+
+    // Next-request scope: held for one request, no :setlocal.
+    chats.toggle_menu_scope(buffer);
+    let name = open("next request");
+    assert_eq!(system_scope(&name), Some(MenuScope::NextRequest));
+    let Effect::Many(parts) = apply_text(&chats, &name, "Be terse.", buffer) else {
+        panic!("expected a batch");
+    };
+    assert!(
+        !parts
+            .iter()
+            .any(|e| matches!(e, Effect::SetLocalOption { .. })),
+        "next-request scope must not touch the session"
+    );
+    assert!(parts.iter().any(|e| matches!(
+        e, Effect::Echo { text, .. } if text.contains("next request")
+    )));
+    assert_eq!(
+        chats
+            .next_request(buffer)
+            .get(&SettingKey::System)
+            .map(String::as_str),
+        Some("Be terse.")
     );
 }

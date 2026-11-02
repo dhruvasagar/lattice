@@ -197,6 +197,10 @@ pub struct LlmChats {
     /// Where `.lattice/llm.toml` is looked for. `None` finds the project root
     /// from the working directory when a request starts.
     project_root: RwLock<Option<std::path::PathBuf>>,
+    /// The project layer as last read, for the menu: it is built on the editor
+    /// thread, where no file may be read. Refreshed off-thread at chat start and
+    /// by every request. `Arc` so a refresh task can write it.
+    project_cache: Arc<RwLock<Option<ProjectLayer>>>,
     next_chat: AtomicU32,
     next_system: AtomicU32,
     next_bind: AtomicU64,
@@ -221,6 +225,7 @@ impl LlmChats {
             next_request: RwLock::new(HashMap::new()),
             menu_scope: RwLock::new(HashMap::new()),
             project_root: RwLock::new(None),
+            project_cache: Arc::new(RwLock::new(None)),
             next_chat: AtomicU32::new(1),
             next_system: AtomicU32::new(1),
             next_bind: AtomicU64::new(1),
@@ -281,14 +286,20 @@ impl LlmChats {
             .filter(|v| !v.trim().is_empty())
     }
 
-    /// Everything but the project layer (which is a file, read off-thread).
+    /// Everything but a freshly read project layer: the project layer is the
+    /// cached one (a file, read off-thread), which a request replaces with its
+    /// own read.
     fn layers_for(&self, buffer: BufferId, session: RawSet) -> Layers {
         let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
         Layers {
             global: self.global_layer(),
             profiles: cfg.profiles.clone(),
             default_profile: cfg.default_profile.clone(),
-            project: None,
+            project: self
+                .project_cache
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
             sessions: [(buffer, session)].into_iter().collect(),
         }
     }
@@ -396,8 +407,8 @@ impl LlmChats {
         .map(|c| c.model)
     }
 
-    /// Resolve a buffer's settings as a request from it would see them, without
-    /// the project layer. For introspection and tests.
+    /// Resolve a buffer's settings as a request from it would see them, with the
+    /// project layer as last cached. For the menu, introspection and tests.
     pub fn resolve_for(&self, buffer: BufferId) -> Result<Resolved, SettingsError> {
         let layers = self.layers_for(buffer, self.session_overrides(buffer));
         resolve(&layers, buffer, &RequestOverrides::default(), Trust::User)
@@ -535,6 +546,7 @@ impl LlmChats {
             }
             seed.insert(SettingKey::Profile, p.to_string());
         }
+        self.refresh_project();
         let provisional = self.provisional(BufferId(0), seed.clone());
         store.mutate(&key, |c| {
             c.assistant_label = Some(provisional.clone().unwrap_or_else(|_| "model".to_string()));
@@ -834,42 +846,44 @@ impl LlmChats {
         });
     }
 
-    /// Read `.lattice/llm.toml` from the project root. Absent is no project
-    /// layer; unreadable or malformed is reported once and treated as absent,
-    /// since a broken file in a repository must not stop the chat.
+    /// Read `.lattice/llm.toml` for a request, report what could not be read once,
+    /// and keep the result for the menu. Absent is no project layer; unreadable
+    /// or malformed is treated as absent, since a broken file in a repository
+    /// must not stop the chat.
     async fn read_project(&self, session: &ChatSession) -> Option<ProjectLayer> {
-        let root = self
-            .project_root
+        let root = self.configured_root();
+        let (layer, problem) = load_project(root).await;
+        if let Some((key, text)) = problem
+            && session.first_report(key)
+        {
+            tracing::warn!(target: "lattice::llm", "{text}");
+        }
+        *self
+            .project_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = layer.clone();
+        layer
+    }
+
+    fn configured_root(&self) -> Option<std::path::PathBuf> {
+        self.project_root
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let root = match root {
-            Some(r) => r,
-            None => tokio::task::spawn_blocking(lattice_core::project::root_from_cwd)
-                .await
-                .ok()
-                .flatten()?,
-        };
-        let path = root.join(".lattice").join("llm.toml");
-        let text = match tokio::fs::read_to_string(&path).await {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(e) => {
-                if session.first_report(format!("read\u{0}{}", path.display())) {
-                    tracing::warn!(target: "lattice::llm", "llm: cannot read {}: {}", path.display(), e.kind());
-                }
-                return None;
+            .clone()
+    }
+
+    /// Refresh the cached project layer on the runtime, without waiting. A
+    /// problem is logged at debug: the request that follows reports it once.
+    fn refresh_project(&self) {
+        let root = self.configured_root();
+        let cache = self.project_cache.clone();
+        self.runtime.spawn(async move {
+            let (layer, problem) = load_project(root).await;
+            if let Some((_, text)) = problem {
+                tracing::debug!(target: "lattice::llm", "{text}");
             }
-        };
-        match ProjectLayer::parse(".lattice/llm.toml", &text) {
-            Ok(layer) => Some(layer),
-            Err(e) => {
-                if session.first_report(format!("parse\u{0}{}", path.display())) {
-                    tracing::warn!(target: "lattice::llm", "llm: {e}");
-                }
-                None
-            }
-        }
+            *cache.write().unwrap_or_else(|e| e.into_inner()) = layer;
+        });
     }
 
     fn register_request(self: &Arc<Self>, id: RequestId, session: &Arc<ChatSession>) {
@@ -1046,6 +1060,46 @@ impl Sink for ChatSink {
             | StreamEvent::ToolCallEnd { .. } => {}
         });
         SinkFlow::Continue
+    }
+}
+
+/// Read `.lattice/llm.toml` under `root` (or the project root of the working
+/// directory) on the blocking pool. The second value is a problem worth
+/// reporting: `(dedup key, message)`.
+async fn load_project(
+    root: Option<std::path::PathBuf>,
+) -> (Option<ProjectLayer>, Option<(String, String)>) {
+    let root = match root {
+        Some(r) => r,
+        None => match tokio::task::spawn_blocking(lattice_core::project::root_from_cwd)
+            .await
+            .ok()
+            .flatten()
+        {
+            Some(r) => r,
+            None => return (None, None),
+        },
+    };
+    let path = root.join(".lattice").join("llm.toml");
+    let text = match tokio::fs::read_to_string(&path).await {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (None, None),
+        Err(e) => {
+            return (
+                None,
+                Some((
+                    format!("read\u{0}{}", path.display()),
+                    format!("llm: cannot read {}: {}", path.display(), e.kind()),
+                )),
+            );
+        }
+    };
+    match ProjectLayer::parse(".lattice/llm.toml", &text) {
+        Ok(layer) => (Some(layer), None),
+        Err(e) => (
+            None,
+            Some((format!("parse\u{0}{}", path.display()), format!("llm: {e}"))),
+        ),
     }
 }
 

@@ -331,7 +331,7 @@ fn edit_handler(chats: LlmChatsHandle) -> ActionHandler {
         let key = arg_key(&ctx.args)?;
         let buffer = BufferId(ctx.buffer_id.0 as u32);
         if key == SettingKey::System {
-            return Some(open_system(&chats, buffer, None));
+            return Some(open_system(&chats, buffer, None, chats.menu_scope(buffer)));
         }
         let scope = chats.menu_scope(buffer);
         Some(Effect::OpenPrompt {

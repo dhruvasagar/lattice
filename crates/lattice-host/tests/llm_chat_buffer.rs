@@ -443,3 +443,72 @@ async fn the_chat_buffer_does_not_block_quit_all() {
         editor.last_message.as_ref().map(|m| &m.text)
     );
 }
+
+// ---------------------------------------------------------------------------
+// LL.8: the menu, driven by keys
+// ---------------------------------------------------------------------------
+
+/// Apply the effects a peer applies after a chord: the ones the host leaves to
+/// the renderer, here for a menu and a prompt. Everything else was applied host
+/// side already.
+fn apply_peer_effects(editor: &mut Editor, out: DispatchOutcome) {
+    for effect in out.effects {
+        match effect {
+            lattice_grammar::Effect::OpenTransient { source, args } => {
+                let _ = editor.open_named_transient(source, args);
+            }
+            lattice_grammar::Effect::OpenPrompt {
+                prompt,
+                initial,
+                on_submit_action,
+                buffer_name,
+            } => {
+                let _ = editor.open_prompt_line(prompt, initial, on_submit_action, buffer_name);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn press_applying(editor: &mut Editor, keys: &str) {
+    for c in parse_chord_sequence(keys).unwrap() {
+        let mut partial: Vec<KeyChord> = Vec::new();
+        let (_, out) = editor.dispatch_chord_with_outcome(c, &mut partial);
+        apply_peer_effects(editor, out);
+    }
+}
+
+/// `<M-m>` opens the menu, `m` asks for a model, a typed value and `<CR>` set
+/// it for the session: the whole chain a user takes, through `dispatch_chord`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_menu_sets_the_model_from_the_keyboard() {
+    use lattice_ai::llm::options::LlmModel;
+    let addr = serve(Duration::ZERO);
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    chats(&editor).set_config(config_for(addr));
+    let id = open_chat(&mut editor);
+    assert!(settle(&mut editor, |e| text_of(e, id) == "> ").await);
+    assert_eq!(editor.resolved_option::<LlmModel>(id).as_str(), "");
+
+    press_applying(&mut editor, "<M-m>");
+    assert!(
+        editor
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.transient.is_some()),
+        "`<M-m>` opens the LLM menu"
+    );
+    press_applying(&mut editor, "m");
+    assert!(
+        matches!(editor.modal, lattice_grammar::ModalState::Prompt),
+        "the model row asks for a value"
+    );
+    press_applying(&mut editor, "mock/other");
+    press_applying(&mut editor, "<CR>");
+
+    assert_eq!(
+        editor.resolved_option::<LlmModel>(id).as_str(),
+        "mock/other",
+        "the typed value became the session's model"
+    );
+}

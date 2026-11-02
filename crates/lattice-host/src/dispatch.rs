@@ -238,8 +238,9 @@ pub fn choose_indent_source(fresh: bool) -> IndentSource {
 /// `lattice_grammar::Effect::Many` already aggregates inner effects.
 #[derive(Debug, Default)]
 pub struct DispatchOutcome {
-    /// CD.3c: a `WriteToFile` in the effects being applied did not land.
-    /// Transient: [`apply_effect_host`] clears it as soon as it has stopped
+    /// CD.3c: a `WriteToFile` in the effects being applied did not land, or a
+    /// claimed `:w` closed its own buffer: either way the rest of the batch is
+    /// not applied. Transient: [`apply_effect_host`] clears it as soon as it has stopped
     /// the batch, so it never reaches a caller.
     pub write_failed: bool,
     /// Host-to-renderer side-effects. Empty for the vast majority
@@ -4530,7 +4531,15 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // bare `:w` is claimed; `:w <path>` still writes a copy.
             match path.is_none().then(|| editor.run_write_action()).flatten() {
                 Some(effect) => {
+                    // A claimed write that closes its own buffer ends the
+                    // sequence it was in: a `:wq` / `:x` quit that followed
+                    // would be spent on whichever buffer the close left
+                    // focused, not on the form that was submitted.
+                    let closes = effect_closes_buffer(&effect);
                     apply_effect_host(editor, effect, out);
+                    if closes {
+                        out.write_failed = true;
+                    }
                 }
                 None => editor.do_write(path),
             }
@@ -45730,6 +45739,15 @@ pub fn folding_range_to_fold(r: lattice_lsp::lsp_types::FoldingRange) -> lattice
 ///
 /// Only a failed *write* stops a batch. A failed `ApplyEdit` does not — those
 /// are independent edits, and XF.0's tests pin that a list keeps going past one.
+/// Does `effect` close the buffer it was run in? Looks through `Many`.
+fn effect_closes_buffer(effect: &lattice_grammar::Effect) -> bool {
+    match effect {
+        lattice_grammar::Effect::BufferDelete { .. } => true,
+        lattice_grammar::Effect::Many(parts) => parts.iter().any(effect_closes_buffer),
+        _ => false,
+    }
+}
+
 fn apply_effect_host(
     editor: &mut Editor,
     effect: lattice_grammar::Effect,

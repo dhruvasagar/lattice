@@ -14,8 +14,12 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
 
 fn open_system_buffer(editor: &mut Editor) -> lattice_core::BufferId {
+    open_system_line(editor, "llm-system")
+}
+
+fn open_system_line(editor: &mut Editor, line: &str) -> lattice_core::BufferId {
     let mut out = DispatchOutcome::default();
-    editor.execute_ex_line("llm-system", &mut out);
+    editor.execute_ex_line(line, &mut out);
     let mut opened = false;
     for effect in out.effects {
         if let lattice_grammar::Effect::OpenSyntheticBuffer {
@@ -109,4 +113,81 @@ async fn w_with_a_path_still_writes_a_copy_and_does_not_apply() {
     let _ = std::fs::remove_file(&path);
     assert_eq!(editor.resolved_option::<LlmSystem>(origin).as_str(), "");
     assert!(editor.buffers.contains(system), "a copy is not an apply");
+}
+
+/// `:wq` / `:x` are `Many[SaveBuffer, QuitEditor{Pane}]`. The write action
+/// closes the form, so a quit that followed would be spent on the user's own
+/// buffer. The write ends the sequence: the quit is spent on the form.
+async fn write_and_quit_keeps_the_target(line: &str) {
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    let origin = editor.active_pane_buffer_id();
+    let system = open_system_buffer(&mut editor);
+    editor
+        .apply_edit_blocking(Edit::insert(Position::new(0, 0), "Be brief."))
+        .unwrap();
+    let mut out = DispatchOutcome::default();
+    editor.execute_ex_line(line, &mut out);
+    assert!(
+        !out.effects
+            .iter()
+            .any(|e| matches!(e, lattice_grammar::Effect::QuitEditor { .. })),
+        "`:{line}` must not quit once the form has closed itself"
+    );
+    assert_eq!(editor.active_pane_buffer_id(), origin);
+    assert!(!editor.buffers.contains(system));
+    assert_eq!(
+        editor.resolved_option::<LlmSystem>(origin).as_str(),
+        "Be brief."
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wq_applies_and_keeps_the_target_pane() {
+    write_and_quit_keeps_the_target("wq").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn x_applies_and_keeps_the_target_pane() {
+    write_and_quit_keeps_the_target("x").await;
+}
+
+/// `:'<,'>llm-system` from an actual Visual selection seeds the form with the
+/// selected lines. The host resolves `Range::Selection` to lines from the last
+/// Visual selection, as it does for `:'<,'>narrow`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_visual_selection_seeds_the_system_prompt() {
+    use lattice_host::chord::KeyChord;
+    let mut editor = Editor::boot(CoreDocument::from_text("zero\none\ntwo\nthree\n"));
+    let mut partial = Vec::new();
+    for c in "jVj".chars() {
+        let _ = editor.dispatch_chord(KeyChord::char(c), &mut partial);
+    }
+    let _ = editor.dispatch_chord(
+        KeyChord::special(lattice_protocol::chord::SpecialKey::Esc),
+        &mut partial,
+    );
+    let system = open_system_line(&mut editor, "'<,'>llm-system");
+    assert_eq!(
+        editor
+            .buffers
+            .name_of(system)
+            .map(|n| n.starts_with("*llm-system:")),
+        Some(true),
+        "the selection opened the form instead of erroring"
+    );
+    let text = editor.document.snapshot().buffer.as_string();
+    assert_eq!(text.trim_end(), "one\ntwo");
+}
+
+/// A buffer in `llm-system-mode` whose name does not say what it edits has
+/// nowhere to apply to. `:w` says so, rather than doing nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn w_in_a_form_with_an_unparsable_name_says_why() {
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    editor.open_synthetic_buffer_seeded("*not-a-form*", "llm-system-mode", Some("x"), None, None);
+    let mut out = DispatchOutcome::default();
+    editor.execute_ex_line("w", &mut out);
+    let msg = editor.last_message.clone().expect("`:w` said something");
+    assert_eq!(format!("{:?}", msg.level), "Error", "{}", msg.text);
+    assert!(msg.text.contains("llm"), "{}", msg.text);
 }

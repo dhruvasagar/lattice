@@ -49,7 +49,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         .register(LlmChatMode::new(chats.clone()))
         .expect("llm-chat-mode register");
     boot.modes_mut()
-        .register(LlmSystemMode)
+        .register(LlmSystemMode::new(chats.clone()))
         .expect("llm-system-mode register");
     register_actions(boot.commands_mut());
     super::menu::register_actions(boot.commands_mut());

@@ -657,6 +657,22 @@ impl Editor {
         }
         boot.register_service::<lattice_core::ProjectResolverHandle>(project_resolver);
 
+        // TR.1: the transient-menu registry — a `lattice-picker` mechanism the
+        // EDITOR owns, registered before any install that populates it.
+        // `lattice_ai::install` registers `llm-menu` into it, so it must precede
+        // that install too: registered after, the AI install found no service,
+        // built a private registry nobody reads, and `<M-m>` said "unknown source".
+        //
+        // It used to be constructed and registered by `lattice-magit::install`
+        // below, which made every transient menu in the editor conditional on
+        // magit having loaded. Magit was only the first user; a
+        // plugin-contributed menu (TR.2) would otherwise work or not depending
+        // on whether an unrelated feature crate happened to be present, with
+        // nothing at the point of failure to explain it. Magit now registers
+        // its sources into the service it looks up here.
+        boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(
+            std::sync::Arc::new(lattice_picker::TransientSourceRegistry::new()),
+        );
         lattice_ai::install(&mut boot);
         // NOTIF.1a: the notification store + the inbound bus expiry
         // rides on. Installed early because it owns no modes and no
@@ -729,19 +745,6 @@ impl Editor {
         // MG.1: Magit — git porcelain as a core plugin. Registers
         // `magit-core-mode` (minor), `magit-status-mode` (major),
         // and the `:magit-status` ex-command. See magit.md §5.
-        // TR.1: the transient-menu registry — a `lattice-picker` mechanism the
-        // EDITOR owns, registered before any install that populates it.
-        //
-        // It used to be constructed and registered by `lattice-magit::install`
-        // below, which made every transient menu in the editor conditional on
-        // magit having loaded. Magit was only the first user; a
-        // plugin-contributed menu (TR.2) would otherwise work or not depending
-        // on whether an unrelated feature crate happened to be present, with
-        // nothing at the point of failure to explain it. Magit now registers
-        // its sources into the service it looks up here.
-        boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(
-            std::sync::Arc::new(lattice_picker::TransientSourceRegistry::new()),
-        );
         lattice_magit::install(&mut boot);
         // LSP (BC.8a — last + largest, sub-sliced BC.8a–e): registers the LSP
         // modes (`lsp-completion-mode` reads the supervisor handle via

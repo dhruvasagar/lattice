@@ -279,10 +279,17 @@ by `llm-chat-mode`), `prompt_cookie.rs`, `modes/system.rs` (`llm-system-mode`), 
 `RequestOverrides::pasted_profile` lets a cookie profile be restricted while menu and argument values
 keep user trust. Two generic seams: `Mode::write_action` (a mode claims a bare `:w`; the host walks
 active modes as it does for `refresh_action`) and `lattice-ai` depending on `lattice-picker` for
-`TransientSpec`. Not built: the menu's `P` (save as profile; needs a config writer), `:llm-system` with
-a `'<,'>` range (marks are not handed to ex-commands, line addresses work), a project-layer origin in
-the menu (the file is read off-thread, the menu is built on the editor thread), `:llm-ask model=...`
-wiring (the parser and `submit_with` are here; the command is LL.10).
+`TransientSpec`. Review round 1 closed: `:wq` / `:x` end at the claimed write
+(`effect_closes_buffer`), a Visual selection reaches ranged ex-commands as lines (`resolve_ex_range`),
+the menu shows the project layer from an off-thread cache (refreshed at chat start and by each
+request), the `s` row's form applies in the scope the menu was in (the name carries `:next`), a
+request's `@profile` sits at the request layer above session overrides, and `:w` in a form it cannot
+place echoes an error. Not built: `:llm-ask model=...` wiring (the parser and `submit_with` are here;
+the command is LL.10).
+
+⛔ **Deferred: the menu's `P` (save as profile).** It needs a user-TOML writer, and none exists:
+`lattice-config`'s loader is read-only and names `:customize` write-back (on `toml_edit`) as post-1.0.
+It returns with that writer, built on it, off-thread, and never writing keys.
 
 ## Any buffer
 

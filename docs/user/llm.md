@@ -78,7 +78,8 @@ and names the session the next request would use. `=` switches changes between t
 **session** and the **next request only**, and stays switched; `x` clears. For one
 request, put `key=value` words first (`model=local/qwen temperature=0 ...`).
 `@writer` in the text you type, with a known profile name, applies that profile to that
-request. If it would enable tools you do not have, you are asked first. `@unknown`
+request, and its values win over your session overrides for that turn (a request is the last
+word), though it still cannot widen your tools without asking. `@unknown`
 is just text. `:llm-system` edits the system prompt ([`llm-system-mode`](help:llm-system-mode)).
 
 ## Keys

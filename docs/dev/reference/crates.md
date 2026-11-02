@@ -53,7 +53,7 @@ Why a crate exists at all is a design rule, not an accident of history: a new cr
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
 | [`lattice-mode`](https://dhruvasagar.github.io/lattice/api/lattice_mode/) | The mode system's foundation: the `Mode` trait, the mode registry, the per-buffer set of active modes, and the typed lifecycle events — plus the generic host seams a mode uses to own its whole surface (action handlers, services, inbound wakes, buffer creation) and the foundation modes that have no other owning crate. | `lattice-cells`, `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-keymap`, `lattice-protocol`, `lattice-runtime`, `lattice-theme` | `lattice-agent`, `lattice-ai`, `lattice-cli`, `lattice-compilation`, `lattice-dashboard`, `lattice-diff`, `lattice-help`, `lattice-host`, `lattice-listing`, `lattice-lsp`, `lattice-magit`, `lattice-multibuffer`, `lattice-notify`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-plugin-manager`, `lattice-plugin-trace`, `lattice-snippet`, `lattice-syntax`, `lattice-terminal`, `lattice-ui-gpui`, `lattice-ui-tui` |
-| [`lattice-picker`](https://dhruvasagar.github.io/lattice/api/lattice_picker/) | Vertico-style picker (DESIGN.md §5.9.7, §5.9.10). | `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-protocol` | `lattice-host`, `lattice-magit`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-snippet`, `lattice-ui-gpui`, `lattice-ui-tui` |
+| [`lattice-picker`](https://dhruvasagar.github.io/lattice/api/lattice_picker/) | Vertico-style picker (DESIGN.md §5.9.7, §5.9.10). | `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-protocol` | `lattice-ai`, `lattice-host`, `lattice-magit`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-snippet`, `lattice-ui-gpui`, `lattice-ui-tui` |
 
 ## Layer 6
 
@@ -90,7 +90,7 @@ Why a crate exists at all is a design rule, not an accident of history: a new cr
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
-| [`lattice-ai`](https://dhruvasagar.github.io/lattice/api/lattice_ai/) | `lattice-ai` — lattice's AI coding-agent integration layer. | `lattice-agent`, `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-diff`, `lattice-grammar`, `lattice-lsp`, `lattice-mode`, `lattice-protocol`, `lattice-runtime` | `lattice-host` |
+| [`lattice-ai`](https://dhruvasagar.github.io/lattice/api/lattice_ai/) | `lattice-ai` — lattice's AI coding-agent integration layer. | `lattice-agent`, `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-diff`, `lattice-grammar`, `lattice-lsp`, `lattice-mode`, `lattice-picker`, `lattice-protocol`, `lattice-runtime` | `lattice-host` |
 | [`lattice-plugin-trace`](https://dhruvasagar.github.io/lattice/api/lattice_plugin_trace/) | The buffer-backed plugin boundary-trace views: `plugin-trace-mode` and the `:plugin-trace` ex-command (PO.4). | `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-protocol`, `lattice-runtime`, `lattice-theme` | `lattice-host`, `lattice-plugin-manager` |
 
 ## Layer 10

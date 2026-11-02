@@ -13,19 +13,26 @@ use std::sync::Arc;
 use lattice_core::BufferId;
 use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_mode::{
-    ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, LifecycleFuture,
-    Mode, ModeContext, ModeId, ModeKind,
+    ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
+    LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
 };
 
-use crate::llm::commands::system_target;
+use crate::llm::chat::{LlmChats, LlmChatsHandle, MenuScope};
+use crate::llm::commands::{system_scope, system_target};
 use crate::llm::settings::{SettingKey, validate};
 
 /// The action `:w` runs in a system-prompt buffer.
 pub const ACTION_APPLY: &str = "action:llm-system-apply";
 
-pub struct LlmSystemMode;
+pub struct LlmSystemMode {
+    chats: LlmChatsHandle,
+}
 
 impl LlmSystemMode {
+    pub fn new(chats: LlmChatsHandle) -> Self {
+        Self { chats }
+    }
+
     pub fn mode_id() -> ModeId {
         ModeId::new("llm-system-mode")
     }
@@ -53,7 +60,7 @@ impl Mode for LlmSystemMode {
     fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
         vec![ActionHandlerContribution {
             action_name: ACTION_APPLY,
-            handler: Arc::new(apply),
+            handler: apply_handler(self.chats.clone()),
         }]
     }
 
@@ -90,32 +97,87 @@ pub fn apply_effects(text: &str, target: BufferId) -> Effect {
             "llm: system prompt applied to the session".to_string(),
         )
     };
-    Effect::Many(vec![
-        Effect::BufferDelete { force: true },
-        Effect::FocusBuffer(target.0),
-        Effect::SetLocalOption { spec },
-        Effect::Echo {
-            level: EchoLevel::Info,
-            text: said,
-        },
-    ])
+    close_and_say(target, &said, Some(spec))
 }
 
-fn apply(ctx: &ActionContext<'_>) -> Option<Effect> {
-    let store = ctx.services.get::<BufferStoreHandle>()?;
-    let me = BufferId(ctx.buffer_id.0 as u32);
-    // A buffer that is not one `:llm-system` made applies to nothing.
-    let target = system_target(&store.name_for(me)?)?;
-    if !store.contains_buffer(target) {
-        // The session this was written for is gone. Keep the form open: the
-        // text is the user's work, and there is nowhere to apply it.
-        return Some(Effect::Echo {
-            level: EchoLevel::Error,
-            text: "llm: the buffer this system prompt was opened from is closed".to_string(),
-        });
+/// Close the form, focus `target`, optionally set an option there, then say what
+/// happened. In that order, and with `target` named: see [`apply_effects`].
+fn close_and_say(target: BufferId, said: &str, spec: Option<String>) -> Effect {
+    let mut parts = vec![
+        Effect::BufferDelete { force: true },
+        Effect::FocusBuffer(target.0),
+    ];
+    parts.extend(spec.map(|spec| Effect::SetLocalOption { spec }));
+    parts.push(Effect::Echo {
+        level: EchoLevel::Info,
+        text: said.to_string(),
+    });
+    Effect::Many(parts)
+}
+
+fn error(text: &str) -> Effect {
+    Effect::Echo {
+        level: EchoLevel::Error,
+        text: text.to_string(),
     }
-    let text = store.handle_for(me)?.snapshot().buffer.as_string();
-    Some(apply_effects(&text, target))
+}
+
+/// The effects of `:w` in the form named `name`, holding `text`, for `target`:
+/// to the session, or held for the next request, as the form was opened.
+pub fn apply_text(chats: &LlmChats, name: &str, text: &str, target: BufferId) -> Effect {
+    match system_scope(name).unwrap_or_default() {
+        MenuScope::Session => apply_effects(text, target),
+        MenuScope::NextRequest => {
+            let text = text.trim();
+            if let Err(e) = validate(SettingKey::System, text) {
+                return error(&format!("llm: {e}"));
+            }
+            chats.set_next_request(target, SettingKey::System, text);
+            close_and_say(
+                target,
+                if text.is_empty() {
+                    "llm: system prompt cleared for the next request"
+                } else {
+                    "llm: system prompt applied to the next request only"
+                },
+                None,
+            )
+        }
+    }
+}
+
+fn apply_handler(chats: LlmChatsHandle) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| {
+        // `:w` here is a submit. A form it cannot place gets an answer, not a
+        // silent no-op: the text is the user's work and stays open.
+        let Some(store) = ctx.services.get::<BufferStoreHandle>() else {
+            return Some(error(
+                "llm: cannot apply the system prompt (no buffer store)",
+            ));
+        };
+        let me = BufferId(ctx.buffer_id.0 as u32);
+        let Some(name) = store.name_for(me) else {
+            return Some(error("llm: this buffer is not a system prompt form"));
+        };
+        let Some(target) = system_target(&name) else {
+            return Some(error(&format!(
+                "llm: `{name}` does not say which session its system prompt is for; \
+                 open it with :llm-system"
+            )));
+        };
+        if !store.contains_buffer(target) {
+            // The session this was written for is gone. Keep the form open: the
+            // text is the user's work, and there is nowhere to apply it.
+            return Some(error(
+                "llm: the buffer this system prompt was opened from is closed",
+            ));
+        }
+        let Some(handle) = store.handle_for(me) else {
+            return Some(error("llm: cannot read this system prompt form"));
+        };
+        let text = handle.snapshot().buffer.as_string();
+        Some(apply_text(&chats, &name, &text, target))
+    })
 }
 
 #[cfg(test)]

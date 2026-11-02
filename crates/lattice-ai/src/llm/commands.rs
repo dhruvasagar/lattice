@@ -26,7 +26,7 @@ use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_grammar::registry::{CommandRegistry, ExCommandSpec, SurfaceForm};
 
-use super::chat::{LlmChats, LlmChatsHandle};
+use super::chat::{LlmChats, LlmChatsHandle, MenuScope};
 use super::menu::MENU_SOURCE;
 use super::modes::chat::LlmChatMode;
 use super::modes::system::LlmSystemMode;
@@ -173,23 +173,49 @@ pub fn parse_request_args(text: &str) -> Result<(RawSet, String), String> {
 
 /// The synthetic name of the buffer `:llm-system` opens for `target`. The
 /// counter makes every open a fresh buffer, so a discarded edit (`:q!`) is not
-/// what the next open shows.
-pub fn system_buffer_name(target: BufferId, open: u32) -> String {
-    format!("*llm-system:{}:{open}*", target.0)
+/// what the next open shows. A form opened for the next request only says so
+/// (`...:next*`): the scope is read back from the name when `:w` applies it.
+pub fn system_buffer_name(target: BufferId, open: u32, scope: MenuScope) -> String {
+    match scope {
+        MenuScope::Session => format!("*llm-system:{}:{open}*", target.0),
+        MenuScope::NextRequest => format!("*llm-system:{}:{open}:next*", target.0),
+    }
+}
+
+fn system_parts(name: &str) -> Option<(BufferId, MenuScope)> {
+    let inner = name.strip_prefix("*llm-system:")?.strip_suffix('*')?;
+    let mut parts = inner.split(':');
+    let buffer = BufferId(parts.next()?.parse().ok()?);
+    let _open: u32 = parts.next()?.parse().ok()?;
+    let scope = match parts.next() {
+        None => MenuScope::Session,
+        Some("next") => MenuScope::NextRequest,
+        Some(_) => return None,
+    };
+    parts.next().is_none().then_some((buffer, scope))
 }
 
 /// The buffer a `*llm-system:...*` buffer edits the system prompt of.
 pub fn system_target(name: &str) -> Option<BufferId> {
-    let inner = name.strip_prefix("*llm-system:")?.strip_suffix('*')?;
-    let (buffer, _open) = inner.split_once(':')?;
-    buffer.parse().ok().map(BufferId)
+    system_parts(name).map(|(b, _)| b)
+}
+
+/// The scope a `*llm-system:...*` buffer was opened in.
+pub fn system_scope(name: &str) -> Option<MenuScope> {
+    system_parts(name).map(|(_, s)| s)
 }
 
 /// Open the system prompt of `buffer`'s session in an ordinary buffer. `text`
 /// seeds it (a range's lines); without it the prompt in force does, or nothing.
-/// A prompt that names a file shows the path: the buffer edits text, and reading
-/// the file is not something to do on the editor thread.
-pub fn open_system(chats: &LlmChats, buffer: BufferId, text: Option<String>) -> Effect {
+/// `scope` is where `:w` will apply it. A prompt that names a file shows the
+/// path: the buffer edits text, and reading the file is not something to do on
+/// the editor thread.
+pub fn open_system(
+    chats: &LlmChats,
+    buffer: BufferId,
+    text: Option<String>,
+    scope: MenuScope,
+) -> Effect {
     let content = text.unwrap_or_else(|| {
         chats
             .resolve_for(buffer)
@@ -198,7 +224,7 @@ pub fn open_system(chats: &LlmChats, buffer: BufferId, text: Option<String>) -> 
             .unwrap_or_default()
     });
     Effect::OpenSyntheticBuffer {
-        name: system_buffer_name(buffer, chats.next_system_open()),
+        name: system_buffer_name(buffer, chats.next_system_open(), scope),
         mode_id: LlmSystemMode::mode_id().as_str().to_string(),
         content: Some(content),
         cursor: None,
@@ -206,8 +232,8 @@ pub fn open_system(chats: &LlmChats, buffer: BufferId, text: Option<String>) -> 
     }
 }
 
-/// The lines a `:'<,'>llm-system` range names, joined. Line addresses only:
-/// marks are not available to a command that is handed no mark table.
+/// The lines a `:'<,'>llm-system` range names, joined. The host has already
+/// made a Visual selection into line addresses, so only lines arrive here.
 fn range_text(ctx: &lattice_grammar::registry::ExCommandContext) -> Result<Option<String>, String> {
     use lattice_grammar::range::{RangeEnv, resolve_lines};
     let Some(range) = &ctx.range else {
@@ -230,10 +256,7 @@ fn range_text(ctx: &lattice_grammar::registry::ExCommandContext) -> Result<Optio
                 .collect::<Vec<_>>()
                 .join("\n"),
         )),
-        None => Err(
-            "llm: give :llm-system a line range (the selection's marks are not available here)"
-                .to_string(),
-        ),
+        None => Err("llm: give :llm-system a line range or select text first".to_string()),
     }
 }
 
@@ -328,7 +351,12 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
             accepts_range: true,
             parse_args: Arc::new(parse_rest_as_text),
             apply: Arc::new(move |ctx| match range_text(ctx) {
-                Ok(text) => Ok(open_system(&system, ctx.buffer_id, text)),
+                Ok(text) => Ok(open_system(
+                    &system,
+                    ctx.buffer_id,
+                    text,
+                    MenuScope::Session,
+                )),
                 Err(e) => Ok(echo(EchoLevel::Error, e)),
             }),
             args_schema: vec![],

@@ -629,45 +629,41 @@ pub fn resolve(
     let session = layers.sessions.get(&buffer).unwrap_or(&empty);
 
     // The profile is chosen before the layers are folded: a request's, else the
-    // session's, else the global default.
-    let profile_name = req
-        .profile
-        .clone()
-        .or_else(|| session.get(&SettingKey::Profile).cloned())
+    // session's, else the global default. A profile named by the request is an
+    // explicit ask for this turn, so it applies at the request layer (5), above
+    // the session's own overrides; the base profile (2) is then not applied, as
+    // the request's replaces it.
+    let base_profile = session
+        .get(&SettingKey::Profile)
+        .cloned()
         .or_else(|| layers.global.get(&SettingKey::Profile).cloned())
         .or_else(|| layers.default_profile.clone())
         .filter(|p| !p.trim().is_empty());
-    let profile_set = match &profile_name {
+    let request_profile = req.profile.clone().filter(|p| !p.trim().is_empty());
+    let profile_name = request_profile.clone().or(base_profile.clone());
+    let lookup = |name: &String| {
+        layers
+            .profiles
+            .get(name)
+            .ok_or_else(|| SettingsError::UnknownProfile {
+                name: name.clone(),
+                known: layers.profiles.keys().cloned().collect(),
+            })
+    };
+    let request_profile_set = match &request_profile {
         None => None,
-        Some(name) => {
-            Some(
-                layers
-                    .profiles
-                    .get(name)
-                    .ok_or_else(|| SettingsError::UnknownProfile {
-                        name: name.clone(),
-                        known: layers.profiles.keys().cloned().collect(),
-                    })?,
-            )
-        }
+        Some(name) => Some(lookup(name)?),
+    };
+    let base_profile_set = match (&request_profile, &base_profile) {
+        (None, Some(name)) => Some(lookup(name)?),
+        _ => None,
     };
 
     // 1. global config
     acc.apply(&layers.global, OptionOrigin::GlobalConfig);
     // 2. profile
-    if let (Some(name), Some(set)) = (&profile_name, profile_set) {
-        let origin = OptionOrigin::Profile { name: name.clone() };
-        // A profile named by pasted text is still pasted text: it may narrow
-        // tools but not widen them, whatever the profile itself carries.
-        if (trust == Trust::Pasted || req.pasted_profile) && req.profile.is_some() {
-            let entries = set
-                .iter()
-                .filter_map(|(k, v)| k.file_key().map(|n| (n.to_string(), v.clone())));
-            let kept = apply_restricted(entries, "a prompt", &mut acc.tools, &mut refused);
-            acc.apply(&kept, origin);
-        } else {
-            acc.apply(set, origin);
-        }
+    if let (Some(name), Some(set)) = (&base_profile, base_profile_set) {
+        acc.apply(set, OptionOrigin::Profile { name: name.clone() });
     }
     // 3. project, through the trust table
     if let Some(project) = &layers.project {
@@ -681,7 +677,21 @@ pub fn resolve(
     }
     // 4. session
     acc.apply(session, OptionOrigin::BufferLocal);
-    // 5. request
+    // 5. request: the profile it names, then its own values.
+    if let (Some(name), Some(set)) = (&request_profile, request_profile_set) {
+        let origin = OptionOrigin::Profile { name: name.clone() };
+        // A profile named by pasted text is still pasted text: it may narrow
+        // tools but not widen them, whatever the profile itself carries.
+        if trust == Trust::Pasted || req.pasted_profile {
+            let entries = set
+                .iter()
+                .filter_map(|(k, v)| k.file_key().map(|n| (n.to_string(), v.clone())));
+            let kept = apply_restricted(entries, "a prompt", &mut acc.tools, &mut refused);
+            acc.apply(&kept, origin);
+        } else {
+            acc.apply(set, origin);
+        }
+    }
     let request_set: RawSet = match trust {
         Trust::User => req.values.clone(),
         Trust::Pasted => {
@@ -832,6 +842,71 @@ mod tests {
 
     fn origin(r: &Resolved, k: SettingKey) -> OptionOrigin {
         r.origins[&k].clone()
+    }
+
+    /// A profile named for one request is an explicit request for that turn: its
+    /// values sit above the session's own overrides, restricted or not.
+    #[test]
+    fn a_profile_named_for_the_request_beats_session_overrides() {
+        let mut l = layers();
+        l.sessions
+            .insert(BUF, set(&[(SettingKey::Model, "s-model")]));
+        let req = RequestOverrides {
+            profile: Some("writer".into()),
+            ..Default::default()
+        };
+        for pasted in [false, true] {
+            let req = RequestOverrides {
+                pasted_profile: pasted,
+                ..req.clone()
+            };
+            let r = run(&l, &req, Trust::User);
+            assert_eq!(
+                r.values.model.as_deref(),
+                Some("p-model"),
+                "pasted={pasted}"
+            );
+            assert_eq!(
+                origin(&r, SettingKey::Model),
+                OptionOrigin::Profile {
+                    name: "writer".into()
+                }
+            );
+        }
+        // Without it the session still wins over the same profile held as the base.
+        l.default_profile = Some("writer".into());
+        let r = run(&l, &RequestOverrides::default(), Trust::User);
+        assert_eq!(r.values.model.as_deref(), Some("s-model"));
+    }
+
+    /// The request layer is still the user's last word: a menu or argument value
+    /// beats the profile named in the same request.
+    #[test]
+    fn request_values_beat_the_request_profile() {
+        let req = RequestOverrides {
+            profile: Some("writer".into()),
+            values: set(&[(SettingKey::Model, "arg-model")]),
+            ..Default::default()
+        };
+        let r = run(&layers(), &req, Trust::User);
+        assert_eq!(r.values.model.as_deref(), Some("arg-model"));
+    }
+
+    #[test]
+    fn a_request_profile_under_pasted_trust_still_cannot_widen_tools() {
+        let mut l = layers();
+        l.profiles.insert(
+            "wide".into(),
+            set(&[(SettingKey::Model, "w"), (SettingKey::Tools, "exec")]),
+        );
+        let req = RequestOverrides {
+            profile: Some("wide".into()),
+            pasted_profile: true,
+            ..Default::default()
+        };
+        let r = run(&l, &req, Trust::User);
+        assert_eq!(r.values.model.as_deref(), Some("w"));
+        assert!(r.values.tools.is_empty(), "{:?}", r.values.tools);
     }
 
     #[test]

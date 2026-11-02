@@ -435,8 +435,10 @@ carves off the HTTP dependency, as `acp` and `mcp` do theirs.
 The acid test holds: no new `Editor::` methods and no new host `Action` variants. The
 expected exceptions are all generic: the document actor's write operation (§9), a
 per-buffer `editable_tail`, owner-write adoption beyond editable tails, a language binding
-for a non-language major, `OperatorSpec::mutates`, operator binding on `SubsystemBoot`, and
-the `OptionOrigin` variants.
+for a non-language major, `OperatorSpec::mutates`, operator binding on `SubsystemBoot`, the
+`OptionOrigin` variants, and `Mode::write_action` (a form buffer such as `:llm-system` is
+submitted, not saved, so a mode must be able to claim a bare `:w` the way it claims `gr`
+through `refresh_action`, rather than the host knowing system prompts).
 
 ## 11. Open questions
 

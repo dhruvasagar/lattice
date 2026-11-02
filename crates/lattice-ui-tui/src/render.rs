@@ -3658,6 +3658,12 @@ fn draw_pane_separators(frame: &mut Frame, rects: &[(usize, crate::pane::PaneRec
                 width: 1,
                 height: 1,
             };
+            // The column is the left pane's last one, already painted with
+            // that pane's text. A styled span only patches a cell: whatever
+            // the style leaves unset (the background, every modifier) stays
+            // as the pane drew it, so the dim and the syntax of the text
+            // underneath showed through the divider. Reset it first.
+            frame.render_widget(Clear, r);
             let para = Paragraph::new(Line::from(Span::styled(glyph.to_string(), style)));
             frame.render_widget(para, r);
         }
@@ -14402,6 +14408,66 @@ mod hover_popup_dimming_tests {
             FrameView::for_buffer(&a, a.active_buffer_id()).dim_inactive,
             "the document keeps the user's setting"
         );
+    }
+}
+
+#[cfg(test)]
+mod pane_separator_paint_tests {
+    //! The divider between side-by-side panes is drawn over the left pane's
+    //! last column, so it must not keep anything of the text it replaced.
+
+    use super::*;
+    use crate::app::App;
+    use lattice_core::Document;
+    use lattice_host::action::Action;
+    use lattice_host::pane::PaneDirection;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Modifier};
+
+    #[test]
+    fn the_divider_takes_nothing_from_the_dimmed_pane_beside_it() {
+        // Every line runs past the divider, so the left pane has painted the
+        // divider's column on every row before the divider is drawn over it.
+        let text = format!("fn main() {{ {} }}\n", "let x = 1; ".repeat(30)).repeat(30);
+        let mut a = App::new(Document::from_text(&text));
+        a.set_viewport_height(24);
+        a.editor.terminal_width = Some(80);
+        a.apply(Action::SplitPaneVertical);
+        // Focus on the right, so the pane underneath the divider is dimmed.
+        a.apply(Action::NavigatePane(PaneDirection::Right));
+        a.mutate_editor_with(|e| e.publish_render_state());
+
+        let (w, h) = (80u16, 24u16);
+        let snap = a.ad().snapshot.clone();
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &a, &snap);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+
+        let glyph = a.theme.pane_separator_vertical.to_string();
+        let col = (0..w)
+            .max_by_key(|&x| (0..h).filter(|&y| buf[(x, y)].symbol() == glyph).count())
+            .unwrap();
+        let cells: Vec<_> = (0..h)
+            .map(|y| &buf[(col, y)])
+            .filter(|c| c.symbol() == glyph)
+            .collect();
+        assert!(
+            cells.len() > 10,
+            "the divider is drawn; found {}",
+            cells.len()
+        );
+
+        let expected_fg = a.theme.pane_separator.fg.unwrap_or(Color::Reset);
+        for cell in cells {
+            assert_eq!(cell.modifier, Modifier::empty(), "modifiers bled through");
+            assert_eq!(cell.bg, Color::Reset, "the background bled through");
+            assert_eq!(cell.fg, expected_fg, "the divider keeps its own colour");
+        }
     }
 }
 

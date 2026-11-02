@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **The split divider keeps its own colour.** In the terminal, the divider
+  between side-by-side panes picked up the dimming and syntax styling of the
+  left pane's text underneath it. It now looks the same whatever that pane
+  shows and whichever pane has focus.
+
 ## 0.9.13 — 2026-10-29
 
 ### Fixed

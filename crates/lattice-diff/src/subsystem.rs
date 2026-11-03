@@ -338,6 +338,36 @@ pub struct DiffDescriptor {
     pub participants: Vec<BufferId>,
 }
 
+/// 3W.2: which participant a three-way session resolves INTO, and so what
+/// the conflict chords (`d2o`, `d3o`, `dB`, ...) take from where.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConflictLayout {
+    /// `[base, local, remote]`, from `:diffsplit <base> <remote>`: the
+    /// cursor's buffer is ours, and resolutions land in it, so keep-ours
+    /// has nothing to apply.
+    #[default]
+    Merge,
+    /// `[working, ours, theirs]`: a git conflict being resolved. Slot 0 is
+    /// the working file with the markers and the one resolutions land in;
+    /// ours and theirs are git's stage-2 and stage-3 copies, read-only.
+    /// Both are diffed against the working file, so each marker block is
+    /// one `Conflict` hunk and `d2o`/`d3o` replace it whole.
+    Resolve,
+}
+
+/// 3W.2: a three-way session's sides as the conflict chords need them,
+/// read through its [`ConflictLayout`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConflictSides {
+    /// Ours is whichever buffer the cursor is in.
+    Merge { theirs: BufferId },
+    Resolve {
+        working: BufferId,
+        ours: BufferId,
+        theirs: BufferId,
+    },
+}
+
 impl DiffDescriptor {
     /// D.8.c (2026-05-31): the session's arity — the source
     /// of truth for how many participants this session has.
@@ -696,11 +726,11 @@ fn target_required_echo(cmd: &str, available_targets: &[BufferId]) -> lattice_gr
 
 /// CR.6: the current-side (slot 1) start rows of every hunk, in order —
 /// the navigation order `]c`/`[c` walk.
-fn hunk_starts(index: &HunkIndex) -> Vec<u32> {
+fn hunk_starts(index: &HunkIndex, slot: usize) -> Vec<u32> {
     index
         .hunks
         .iter()
-        .filter_map(|h| h.ranges.get(1).map(|r| r.start))
+        .filter_map(|h| h.ranges.get(slot).map(|r| r.start))
         .collect()
 }
 
@@ -961,6 +991,10 @@ pub struct DiffSession {
     /// notification (the default — most interactive flows
     /// don't bind one).
     completion: Mutex<Option<oneshot::Sender<DiffOutcome>>>,
+    /// 3W.2: how a three-way session's slots read. Set once at creation
+    /// by the caller that knows (a git conflict opens as `Resolve`);
+    /// `Merge` otherwise.
+    conflict_layout: Mutex<ConflictLayout>,
 }
 
 impl DiffSession {
@@ -979,7 +1013,24 @@ impl DiffSession {
             slot_line_counts: ArcSwap::from_pointee(Vec::new()),
             pane_group_id: Mutex::new(None),
             completion: Mutex::new(None),
+            conflict_layout: Mutex::new(ConflictLayout::Merge),
         }
+    }
+
+    /// 3W.2: declare how this session's slots read. Call once at
+    /// creation, before the conflict chords can run.
+    pub fn set_conflict_layout(&self, layout: ConflictLayout) {
+        *self
+            .conflict_layout
+            .lock()
+            .expect("DiffSession conflict_layout mutex poisoned") = layout;
+    }
+
+    pub fn conflict_layout(&self) -> ConflictLayout {
+        *self
+            .conflict_layout
+            .lock()
+            .expect("DiffSession conflict_layout mutex poisoned")
     }
 
     /// D.4.d.3.a (2026-05-30): bind a `PaneGroup` to this
@@ -1732,10 +1783,15 @@ impl DiffSubsystem {
     /// `Nothing`, as does an unknown / self `theirs`, or a
     /// session/descriptor miss. The whole-line ranges are
     /// newline-terminated, so the splice is a clean line concatenation.
+    ///
+    /// 3W.2: `ours` names where ours' lines come from — the active buffer
+    /// itself in a `Merge` session, git's stage-2 pane in a `Resolve` one,
+    /// where the active range holds the markers and must not be kept.
     pub fn compute_keep_both_edit(
         &self,
         active_buffer_id: BufferId,
         cursor_row: u32,
+        ours: BufferId,
         theirs: BufferId,
     ) -> DiffGetOutcome {
         let Some(session) = self.lookup_session_for(active_buffer_id) else {
@@ -1748,10 +1804,13 @@ impl DiffSubsystem {
         let Some(active_pane) = pane_index_of(&descriptor, active_buffer_id) else {
             return DiffGetOutcome::Nothing;
         };
+        let Some(ours_pane) = pane_index_of(&descriptor, ours) else {
+            return DiffGetOutcome::Nothing;
+        };
         let Some(theirs_pane) = pane_index_of(&descriptor, theirs) else {
             return DiffGetOutcome::Nothing;
         };
-        if theirs_pane == active_pane {
+        if theirs_pane == active_pane || theirs_pane == ours_pane {
             return DiffGetOutcome::Nothing;
         }
         let hunks = session.current_hunks();
@@ -1766,16 +1825,19 @@ impl DiffSubsystem {
         let Some(active_range) = hunk.ranges.get(active_pane).copied() else {
             return DiffGetOutcome::Nothing;
         };
+        let Some(ours_range) = hunk.ranges.get(ours_pane).copied() else {
+            return DiffGetOutcome::Nothing;
+        };
         let Some(theirs_range) = hunk.ranges.get(theirs_pane).copied() else {
             return DiffGetOutcome::Nothing;
         };
-        let Some(active_rope) = snapshot_for_pane(&descriptor, active_pane) else {
+        let Some(ours_rope) = snapshot_for_pane(&descriptor, ours_pane) else {
             return DiffGetOutcome::Nothing;
         };
         let Some(theirs_rope) = snapshot_for_pane(&descriptor, theirs_pane) else {
             return DiffGetOutcome::Nothing;
         };
-        let mut text = slice_line_range(&active_rope, active_range);
+        let mut text = slice_line_range(&ours_rope, ours_range);
         text.push_str(&slice_line_range(&theirs_rope, theirs_range));
         let edit = lattice_protocol::edit::Edit::replace(
             lattice_protocol::position::Range::new(
@@ -1988,17 +2050,50 @@ impl DiffSubsystem {
     /// participant. `None` for a non-three-way session (no distinct theirs
     /// to resolve against).
     fn conflict_theirs(&self, active_buffer: BufferId) -> Option<BufferId> {
+        match self.conflict_sides(active_buffer)? {
+            ConflictSides::Merge { theirs } | ConflictSides::Resolve { theirs, .. } => Some(theirs),
+        }
+    }
+
+    /// 3W.2: where ours and theirs are for the three-way session on
+    /// `active_buffer`, by the session's [`ConflictLayout`]. `None` for a
+    /// session that is not three-way.
+    fn conflict_sides(&self, active_buffer: BufferId) -> Option<ConflictSides> {
         let session = self.lookup_session_for(active_buffer)?;
         let descriptor = self.lookup_descriptor(session.buffer_id())?;
-        if descriptor.participants.len() < 3 {
+        let p = &descriptor.participants;
+        if p.len() < 3 {
             return None;
         }
-        descriptor
-            .participants
-            .iter()
-            .enumerate()
-            .find(|(i, b)| *i != 0 && **b != active_buffer)
-            .map(|(_, b)| *b)
+        match session.conflict_layout() {
+            ConflictLayout::Merge => p
+                .iter()
+                .enumerate()
+                .find(|(i, b)| *i != 0 && **b != active_buffer)
+                .map(|(_, b)| ConflictSides::Merge { theirs: *b }),
+            ConflictLayout::Resolve => Some(ConflictSides::Resolve {
+                working: p[0],
+                ours: p[1],
+                theirs: p[2],
+            }),
+        }
+    }
+
+    /// 3W.2: the echo for a resolution chord pressed in one of git's
+    /// copies. Resolving edits the working file; the copies are what it
+    /// takes from. Silent off a conflict, like every other chord here.
+    fn resolve_in_working_echo(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+    ) -> Option<lattice_grammar::Effect> {
+        self.conflict_hunk_under_cursor(active_buffer, cursor_row)
+            .then(|| lattice_grammar::Effect::Echo {
+                level: lattice_grammar::EchoLevel::Info,
+                text: "this pane is git's copy of one side; resolve in the working file \
+                       with d2o (ours), d3o (theirs) or dB (both)"
+                    .to_string(),
+            })
     }
 
     /// CR.3: is there a `Conflict` hunk under `cursor_row` on the active
@@ -2024,11 +2119,23 @@ impl DiffSubsystem {
     /// command (Dhruva 2026-06-24: full fugitive set, degenerate →
     /// informative echo, not a silent no-op). Echoes over a conflict
     /// region; `None` off-hunk (silent, like the other chords).
+    ///
+    /// 3W.2: in a `Resolve` session ours is git's stage-2 copy, a pane of
+    /// its own, so keep-ours pulls it into the working file like keep-theirs.
     pub fn diff_keep_ours_effect(
         &self,
         active_buffer: BufferId,
         cursor_row: u32,
     ) -> Option<lattice_grammar::Effect> {
+        if let Some(ConflictSides::Resolve { working, ours, .. }) =
+            self.conflict_sides(active_buffer)
+        {
+            return if active_buffer == working {
+                self.diff_get_effect(active_buffer, cursor_row, Some(ours))
+            } else {
+                self.resolve_in_working_echo(active_buffer, cursor_row)
+            };
+        }
         self.conflict_hunk_under_cursor(active_buffer, cursor_row)
             .then(|| lattice_grammar::Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
@@ -2046,6 +2153,11 @@ impl DiffSubsystem {
         active_buffer: BufferId,
         cursor_row: u32,
     ) -> Option<lattice_grammar::Effect> {
+        if let Some(ConflictSides::Resolve { working, .. }) = self.conflict_sides(active_buffer)
+            && active_buffer != working
+        {
+            return self.resolve_in_working_echo(active_buffer, cursor_row);
+        }
         let theirs = self.conflict_theirs(active_buffer)?;
         self.diff_get_effect(active_buffer, cursor_row, Some(theirs))
     }
@@ -2058,6 +2170,10 @@ impl DiffSubsystem {
         active_buffer: BufferId,
         cursor_row: u32,
     ) -> Option<lattice_grammar::Effect> {
+        // 3W.2: git's copies are read-only, so there is nowhere to put to.
+        if let Some(ConflictSides::Resolve { .. }) = self.conflict_sides(active_buffer) {
+            return self.resolve_in_working_echo(active_buffer, cursor_row);
+        }
         self.conflict_hunk_under_cursor(active_buffer, cursor_row)
             .then(|| lattice_grammar::Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
@@ -2073,6 +2189,9 @@ impl DiffSubsystem {
         active_buffer: BufferId,
         cursor_row: u32,
     ) -> Option<lattice_grammar::Effect> {
+        if let Some(ConflictSides::Resolve { .. }) = self.conflict_sides(active_buffer) {
+            return self.resolve_in_working_echo(active_buffer, cursor_row);
+        }
         let theirs = self.conflict_theirs(active_buffer)?;
         self.diff_put_effect(active_buffer, cursor_row, Some(theirs))
     }
@@ -2086,8 +2205,22 @@ impl DiffSubsystem {
         active_buffer: BufferId,
         cursor_row: u32,
     ) -> Option<lattice_grammar::Effect> {
-        let theirs = self.conflict_theirs(active_buffer)?;
-        match self.compute_keep_both_edit(active_buffer, cursor_row, theirs) {
+        // 3W.2: in `Merge` ours is the cursor's own buffer; in `Resolve`
+        // it is git's stage-2 pane, and only the working file is edited.
+        let (ours, theirs) = match self.conflict_sides(active_buffer)? {
+            ConflictSides::Merge { theirs } => (active_buffer, theirs),
+            ConflictSides::Resolve {
+                working,
+                ours,
+                theirs,
+            } => {
+                if active_buffer != working {
+                    return self.resolve_in_working_echo(active_buffer, cursor_row);
+                }
+                (ours, theirs)
+            }
+        };
+        match self.compute_keep_both_edit(active_buffer, cursor_row, ours, theirs) {
             DiffGetOutcome::Edit {
                 edit,
                 post_cursor_row,
@@ -2104,8 +2237,21 @@ impl DiffSubsystem {
         }
     }
 
+    /// 3W.2: the slot whose rows `]c`/`[c` walk — the cursor's own pane,
+    /// since a jump lands in that buffer. Slot 1 when the buffer is not a
+    /// source (an inline `:diff`'s baseline is not a buffer).
+    ///
+    /// Always reading slot 1 was right only while the cursor sat there: in
+    /// a `Resolve` session it sits in slot 0, and the rows of ours' copy
+    /// would have landed it on the wrong lines.
+    fn nav_slot(&self, session: &DiffSession, active_buffer: BufferId) -> usize {
+        self.lookup_descriptor(session.buffer_id())
+            .and_then(|d| pane_index_of(&d, active_buffer))
+            .unwrap_or(1)
+    }
+
     /// CR.6 `]c` / `:hunk-next`: move the cursor to the next hunk start
-    /// (slot 1, wraps to the first) — the mode-owned replacement for the
+    /// (the cursor pane's slot, wraps to the first) — the mode-owned replacement for the
     /// host's `do_next_hunk`. Returns a generic `Effect::SelectionChange`
     /// (the host owns the cursor write), or an info `Echo` ("no diff
     /// session" / "no hunks") preserving the former host messages for the
@@ -2120,7 +2266,7 @@ impl DiffSubsystem {
             return Some(hunk_nav_echo("no diff session"));
         };
         let hunks = session.current_hunks();
-        let rows = hunk_starts(&hunks);
+        let rows = hunk_starts(&hunks, self.nav_slot(&session, active_buffer));
         if rows.is_empty() {
             return Some(hunk_nav_echo("no hunks"));
         }
@@ -2144,7 +2290,7 @@ impl DiffSubsystem {
             return Some(hunk_nav_echo("no diff session"));
         };
         let hunks = session.current_hunks();
-        let rows = hunk_starts(&hunks);
+        let rows = hunk_starts(&hunks, self.nav_slot(&session, active_buffer));
         if rows.is_empty() {
             return Some(hunk_nav_echo("no hunks"));
         }
@@ -5144,7 +5290,7 @@ mod tests {
                 refine: Default::default(),
             }],
         );
-        match sub.compute_keep_both_edit(local, 0, remote) {
+        match sub.compute_keep_both_edit(local, 0, local, remote) {
             DiffGetOutcome::Edit {
                 target_buffer_id,
                 edit,
@@ -5182,7 +5328,7 @@ mod tests {
             }],
         );
         assert!(matches!(
-            sub.compute_keep_both_edit(local, 0, remote),
+            sub.compute_keep_both_edit(local, 0, local, remote),
             DiffGetOutcome::Nothing
         ));
     }
@@ -5201,9 +5347,132 @@ mod tests {
             }],
         );
         assert!(matches!(
-            sub.compute_keep_both_edit(local, 0, bid(99)),
+            sub.compute_keep_both_edit(local, 0, local, bid(99)),
             DiffGetOutcome::Nothing
         ));
+    }
+
+    // ── 3W.2: a git conflict being resolved ([working, ours, theirs]) ──
+
+    const WORKING: BufferId = BufferId(1);
+    const OURS: BufferId = BufferId(2);
+    const THEIRS: BufferId = BufferId(3);
+
+    /// A working file as `git merge` leaves it: one change of theirs
+    /// merged cleanly at row 2, and a marker block at rows 4..9. Ours
+    /// lacks the clean change, so slot 1's rows differ from slot 0's,
+    /// which is what makes a `]c` that reads the wrong slot visible.
+    /// Hunks come from a real recompute, not hand-written ranges.
+    fn resolve_fixture() -> DiffSubsystem {
+        let working = "a\nb\nclean\nc\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\nd\n";
+        let ours = "a\nb\nc\nours\nd\n";
+        let theirs = "a\nb\nclean\nc\ntheirs\nd\n";
+        let provider = Arc::new(MockProvider::default());
+        provider.set(WORKING, Rope::from(working));
+        provider.set(OURS, Rope::from(ours));
+        provider.set(THEIRS, Rope::from(theirs));
+        let dyn_provider: Arc<dyn BufferTextProvider> = provider;
+        let sub = DiffSubsystem::new();
+        let desc = three_way_descriptor(&dyn_provider, WORKING, OURS, THEIRS);
+        let session = sub.register_with_sources(WORKING, DiffAlgorithm::Histogram, desc);
+        session.set_conflict_layout(ConflictLayout::Resolve);
+        session
+            .recompute_blocking(&[Rope::from(working), Rope::from(ours), Rope::from(theirs)])
+            .expect("publishes");
+        sub
+    }
+
+    /// The edit `effect` applies to the working file, and its text.
+    fn applied(effect: Option<lattice_grammar::Effect>) -> (BufferId, u32, u32, String) {
+        match effect {
+            Some(lattice_grammar::Effect::ApplyEdit { target, edit, .. }) => {
+                let lattice_protocol::edit::EditKind::Replace { text } = edit.kind;
+                (target, edit.range.start.line, edit.range.end.line, text)
+            }
+            other => panic!("expected ApplyEdit, got {other:?}"),
+        }
+    }
+
+    fn echo_text(effect: Option<lattice_grammar::Effect>) -> String {
+        match effect {
+            Some(lattice_grammar::Effect::Echo { text, .. }) => text,
+            other => panic!("expected Echo, got {other:?}"),
+        }
+    }
+
+    /// `d2o` in a `Resolve` session takes ours from git's stage-2 pane and
+    /// replaces the whole marker block with it. In `Merge` it is an echo,
+    /// because there the working buffer already is ours.
+    #[test]
+    fn resolve_keep_ours_replaces_the_marker_block_with_ours() {
+        let sub = resolve_fixture();
+        assert_eq!(
+            applied(sub.diff_keep_ours_effect(WORKING, 5)),
+            (WORKING, 4, 9, "ours\n".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_keep_theirs_replaces_the_marker_block_with_theirs() {
+        let sub = resolve_fixture();
+        assert_eq!(
+            applied(sub.diff_keep_theirs_effect(WORKING, 4)),
+            (WORKING, 4, 9, "theirs\n".to_string())
+        );
+    }
+
+    /// `dB` splices ours then theirs from their own panes. Taking ours
+    /// from the working range, as `Merge` does, would keep the markers.
+    #[test]
+    fn resolve_keep_both_splices_the_two_copies_without_markers() {
+        let sub = resolve_fixture();
+        assert_eq!(
+            applied(sub.diff_keep_both_effect(WORKING, 6)),
+            (WORKING, 4, 9, "ours\ntheirs\n".to_string())
+        );
+    }
+
+    /// Git's copies are read-only and resolving edits the working file,
+    /// so a resolution chord in a copy says where to go instead.
+    #[test]
+    fn resolve_chords_in_a_copy_point_at_the_working_file() {
+        let sub = resolve_fixture();
+        for effect in [
+            sub.diff_keep_ours_effect(OURS, 3),
+            sub.diff_keep_theirs_effect(OURS, 3),
+            sub.diff_keep_both_effect(THEIRS, 4),
+            sub.diff_put_ours_effect(WORKING, 4),
+            sub.diff_put_theirs_effect(WORKING, 4),
+        ] {
+            assert!(
+                echo_text(effect).contains("resolve in the working file"),
+                "every chord must name where resolving happens"
+            );
+        }
+    }
+
+    /// Off a conflict the chords stay silent, as everywhere else.
+    #[test]
+    fn resolve_chords_off_a_conflict_are_silent() {
+        let sub = resolve_fixture();
+        assert!(sub.diff_put_ours_effect(WORKING, 0).is_none());
+        assert!(sub.diff_keep_ours_effect(OURS, 0).is_none());
+    }
+
+    /// `]c` walks the rows of the pane the cursor is in. The working
+    /// file's block starts at row 4; reading ours' slot would wrap to the
+    /// clean change at row 2 instead.
+    #[test]
+    fn hunk_navigation_walks_the_cursor_panes_own_rows() {
+        let sub = resolve_fixture();
+        let to_row = |e: Option<lattice_grammar::Effect>| match e {
+            Some(lattice_grammar::Effect::CursorMove(p)) => p.line,
+            other => panic!("expected CursorMove, got {other:?}"),
+        };
+        assert_eq!(to_row(sub.diff_next_hunk_effect(WORKING, 3)), 4);
+        assert_eq!(to_row(sub.diff_prev_hunk_effect(WORKING, 4)), 2);
+        // In ours' pane the block is its row 3.
+        assert_eq!(to_row(sub.diff_next_hunk_effect(OURS, 2)), 3);
     }
 
     /// CR.3 `d3o`: keep-theirs pulls REMOTE into the active (local)

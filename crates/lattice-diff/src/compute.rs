@@ -622,6 +622,38 @@ mod tests {
         assert_eq!(idx.hunks[0].kind, HunkKind::Conflict);
     }
 
+    /// 3W.2: a conflict being resolved puts the WORKING file in slot 0,
+    /// with ours (stage 2) and theirs (stage 3) diffed against it. The
+    /// resolvers rely on a marker block being exactly one `Conflict`
+    /// hunk, so one `d2o`/`d3o` replaces the whole block, markers
+    /// included. It holds because every marker line is missing from BOTH
+    /// stages, so each side's changes overlap the other's across the
+    /// block, for every algorithm.
+    #[test]
+    fn a_marker_block_against_its_stages_is_one_conflict() {
+        let working =
+            Rope::from("keep\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\nkeep too\n");
+        let ours = Rope::from("keep\nours\nkeep too\n");
+        let theirs = Rope::from("keep\ntheirs\nkeep too\n");
+        for alg in [
+            DiffAlgorithm::Histogram,
+            DiffAlgorithm::Myers,
+            DiffAlgorithm::MyersMinimal,
+        ] {
+            let idx = three_way(&working, &ours, &theirs, alg);
+            assert_eq!(idx.len(), 1, "{alg:?}: one hunk per block: {:?}", idx.hunks);
+            let h = &idx.hunks[0];
+            assert_eq!(h.kind, HunkKind::Conflict, "{alg:?}");
+            assert_eq!(
+                h.ranges[0],
+                LineRange::new(1, 6),
+                "{alg:?}: the whole block"
+            );
+            assert_eq!(h.ranges[1], LineRange::new(1, 2), "{alg:?}: ours' line");
+            assert_eq!(h.ranges[2], LineRange::new(1, 2), "{alg:?}: theirs' line");
+        }
+    }
+
     #[test]
     fn three_way_no_changes_no_hunks() {
         let base = Rope::from("a\nb\nc\n");

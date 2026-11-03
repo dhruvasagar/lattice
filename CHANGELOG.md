@@ -15,6 +15,10 @@
   between side-by-side panes picked up the dimming and syntax styling of the
   left pane's text underneath it. It now looks the same whatever that pane
   shows and whichever pane has focus.
+- **`]c` and `[c` jump to hunks in the pane you are in.** In a side-by-side
+  diff they always moved by the right-hand pane's line numbers, so from the
+  left pane they landed on the wrong lines wherever the two sides' lengths
+  differed.
 
 ## 0.9.13 — 2026-10-29
 

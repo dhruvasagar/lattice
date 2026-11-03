@@ -104,6 +104,23 @@ abstractions).
   sits on `local` (= ours), so `d2o`/`d2p` are degenerate self-targets that
   echo rather than edit (decided with Dhruva). The decomposition (separating
   conflict resolution from 2-way diffing) is the win.
+- **Two conflict layouts (3W.2, 2026-11-03).** That model is a session's
+  `ConflictLayout::Merge`: `[base, local, remote]`, where the cursor's buffer
+  is ours. A git conflict mid-resolution does not fit it, because the working
+  file is not ours but ours *and* theirs between conflict markers, while git
+  keeps the two sides as index stages 2 and 3. `ConflictLayout::Resolve` is
+  `[working, ours, theirs]`, the vim-fugitive `:Gdiffsplit!` arrangement:
+  ours and theirs are read-only copies diffed against the working file, the
+  edits land in the working file, and `d2o`/`d3o`/`dB` take from the copies.
+  No engine change is needed for this. Every marker line is missing from
+  *both* copies, so each side's changes overlap the other's across the block,
+  and the existing three-way merge yields exactly one `Conflict` hunk per
+  block. That is why one `d2o` replaces the whole block, markers included
+  (pinned by `a_marker_block_against_its_stages_is_one_conflict`). The layout
+  lives on the `DiffSession` beside its algorithm and is set by the opener;
+  the engine never sees it. `]c`/`[c` walk the cursor pane's own slot, which
+  the slot-0 cursor of `Resolve` requires and which fixed the left pane of an
+  ordinary side-by-side diff too.
 
 > **UX (higher court):** no runtime-UX change — the move is structural; the same
 > gutter signs, modeline element, overlay/filler rows, and `do`/`dp` chords

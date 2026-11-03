@@ -34,9 +34,11 @@
 
 pub mod global_mode;
 pub mod modes;
+pub mod source;
 
 pub use global_mode::{OilGlobalMode, register_oil_global_mode};
 pub use modes::{OilDir, OilMode, register_oil_modes};
+pub use source::{FsSource, OilSource, OilSourceLocal, source_or_fs};
 
 use std::path::Path;
 
@@ -75,6 +77,11 @@ impl OilSnapshot {
         Ok(Self {
             entries: read_dir_entries(dir)?,
         })
+    }
+
+    /// A snapshot of entries an [`OilSource`] listed.
+    pub fn from_entries(entries: Vec<OilEntry>) -> Self {
+        Self { entries }
     }
 
     /// Re-read `dir`, replacing the snapshot.
@@ -190,11 +197,11 @@ fn read_dir_entries(dir: &Path) -> std::io::Result<Vec<OilEntry>> {
 /// Bare is load-bearing — `:w` diffs this against the snapshot to
 /// derive renames, so anything decorative in here would be read as a
 /// filename. Icons are virtual text for exactly this reason.
-/// The modeline label of an oil buffer listing `dir`.
+/// The modeline label of a filesystem oil buffer listing `dir`.
 ///
 /// GD.7b: oil names its own buffers; see the file tree's peer.
 pub fn modeline_label(dir: &Path) -> String {
-    format!("[oil] {}", dir.display())
+    source::source_label_for(&FsSource, dir)
 }
 
 pub fn render_to_text(entries: &[OilEntry]) -> String {

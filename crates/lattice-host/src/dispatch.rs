@@ -25793,9 +25793,18 @@ impl Editor {
     /// so `:files` / `:search` from an oil buffer resolve against the
     /// directory it is listing rather than the process working directory. One
     /// chokepoint writes both, which is what stops them drifting apart.
+    ///
+    /// The label is the buffer's source's, so set the source first
+    /// ([`Self::open_oil_listing`] does).
     pub fn set_oil_dir(&mut self, buffer_id: BufferId, dir: std::path::PathBuf) {
         self.set_buffer_scope_dir(buffer_id, dir.clone());
-        self.set_buffer_label(buffer_id, Some(lattice_listing::oil::modeline_label(&dir)));
+        let source = self.oil_source_for(buffer_id);
+        self.set_buffer_label(
+            buffer_id,
+            Some(lattice_listing::oil::source::source_label_for(
+                &*source, &dir,
+            )),
+        );
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
@@ -26275,13 +26284,33 @@ impl Editor {
             .map(|d| d.0.clone())
     }
 
-    /// Find a registered oil buffer whose `OilDir` matches `dir`.
-    /// Used by `do_open_oil`'s dedup path.
+    /// Find a registered filesystem oil buffer whose `OilDir` matches
+    /// `dir`. Used by `do_open_oil`'s dedup path.
     pub fn oil_with_dir(&self, dir: &std::path::Path) -> Option<BufferId> {
-        self.buffers
-            .oil_ids()
-            .into_iter()
-            .find(|&id| self.oil_dir_for(id).as_deref() == Some(dir))
+        self.oil_listing(lattice_listing::oil::FsSource::ID, dir)
+    }
+
+    /// The oil buffer listing `dir` from the source with id `source_id`.
+    /// A directory open from two sources is two buffers: the working tree
+    /// and a revision are different listings of the same path.
+    pub fn oil_listing(&self, source_id: &str, dir: &std::path::Path) -> Option<BufferId> {
+        self.buffers.oil_ids().into_iter().find(|&id| {
+            self.oil_dir_for(id).as_deref() == Some(dir)
+                && self.oil_source_for(id).id() == source_id
+        })
+    }
+
+    /// The source oil buffer `buffer_id` lists from — the filesystem for
+    /// a buffer opened without one.
+    pub fn oil_source_for(
+        &self,
+        buffer_id: BufferId,
+    ) -> std::sync::Arc<dyn lattice_listing::oil::OilSource> {
+        lattice_listing::oil::source_or_fs(
+            self.buffer_locals
+                .get(&buffer_id)
+                .and_then(|l| l.get::<lattice_listing::oil::OilSourceLocal>()),
+        )
     }
 
     /// `:Oil [dir]` -- open an oil buffer rooted at `dir` (or the
@@ -26318,24 +26347,38 @@ impl Editor {
             },
         };
         let dir = normalize_user_path_with_cwd(&dir, self.current_dir.as_deref());
-        if let Some(existing_id) = self.oil_with_dir(&dir) {
+        self.open_oil_listing(
+            std::sync::Arc::new(lattice_listing::oil::FsSource),
+            dir,
+            came_from,
+        )
+    }
+
+    /// Open oil on `dir` as `source` lists it, landing on the entry named
+    /// `focus`. The one open path: `:Oil` and `-` from a file come here
+    /// with the filesystem, a provider's `-` with its own source. A
+    /// listing of `dir` already open from the same source is switched to,
+    /// not duplicated.
+    pub fn open_oil_listing(
+        &mut self,
+        source: std::sync::Arc<dyn lattice_listing::oil::OilSource>,
+        dir: std::path::PathBuf,
+        focus: Option<String>,
+    ) -> Vec<RendererSignal> {
+        let came_from = focus;
+        let shown = source.display(&dir);
+        if let Some(existing_id) = self.oil_listing(source.id(), &dir) {
             self.activate_oil(existing_id);
             if let Some(name) = &came_from {
                 self.focus_oil_entry(name);
             }
-            self.set_message(
-                EchoLevel::Info,
-                format!("oil: {} (already open)", dir.display()),
-            );
+            self.set_message(EchoLevel::Info, format!("oil: {shown} (already open)"));
             return Vec::new();
         }
-        let oil = match lattice_listing::oil::OilSnapshot::open(&dir) {
-            Ok(o) => o,
+        let oil = match source.list(&dir) {
+            Ok(entries) => lattice_listing::oil::OilSnapshot::from_entries(entries),
             Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("oil open error: {}: {e}", dir.display()),
-                );
+                self.set_message(EchoLevel::Error, format!("oil open error: {shown}: {e}"));
                 return Vec::new();
             }
         };
@@ -26351,6 +26394,10 @@ impl Editor {
             crate::buffers::BufferFlags::default(),
             crate::buffer_registry::ListingKind::Oil,
         );
+        self.buffer_locals
+            .entry(new_id)
+            .or_default()
+            .insert(lattice_listing::oil::OilSourceLocal(source));
         self.set_oil_dir(new_id, dir.clone());
         self.write_oil_listing(new_id, oil);
         let signals = self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
@@ -26365,7 +26412,7 @@ impl Editor {
         if let Some(name) = &came_from {
             self.focus_oil_entry(name);
         }
-        self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
+        self.set_message(EchoLevel::Info, format!("oil: {shown}"));
         signals
     }
 
@@ -26389,12 +26436,14 @@ impl Editor {
         dir: std::path::PathBuf,
         focus: Option<String>,
     ) -> Vec<RendererSignal> {
-        let mut snapshot = self.oil_snapshot_for(view).unwrap_or_default();
-        match snapshot.reload(&dir) {
+        // The buffer's own source: a listing at a revision re-lists at
+        // that revision.
+        match self.oil_source_for(view).list(&dir) {
             Err(e) => {
                 self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
             }
-            Ok(()) => {
+            Ok(entries) => {
+                let snapshot = lattice_listing::oil::OilSnapshot::from_entries(entries);
                 self.set_oil_dir(view, dir);
                 self.write_oil_listing(view, snapshot);
                 self.cursor = lattice_protocol::Position::ZERO;

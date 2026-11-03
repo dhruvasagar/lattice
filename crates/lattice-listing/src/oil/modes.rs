@@ -148,7 +148,7 @@ impl Mode for OilMode {
 pub(crate) fn oil_parent_directory(ctx: &ActionContext<'_>) -> Option<Effect> {
     let dir = ctx.buffer_local::<OilDir>()?.0.clone();
     let source = oil_source(ctx);
-    // OR.4: the top of a tree says so. A revision's tree tops out at the
+    // LS.4: the top of a tree says so. A revision's tree tops out at the
     // repository root, well above `/`, and a `-` that silently did
     // nothing there would read as a broken key.
     let Some(parent) = source.parent(&dir) else {

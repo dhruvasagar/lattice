@@ -1512,7 +1512,7 @@ impl GpuiApp {
             | Effect::DiffOpen
             // DB.2: host-applied via handle_effect; peer no-op.
             | Effect::OpenDashboard
-            // OR.4: host-applied via handle_effect; peer no-op.
+            // LS.4: host-applied via handle_effect; peer no-op.
             | Effect::OpenOilSource { .. }
             | Effect::InTarget { .. }
             | Effect::DiffOff { .. }

@@ -1,4 +1,4 @@
-//! OR.4b: oil at a revision — fugitive's `:Gedit <rev>:<dir>/`.
+//! LS.4b: oil at a revision — fugitive's `:Gedit <rev>:<dir>/`.
 //!
 //! `-` in `*magit:file:<repo>:<rev>:<path>*` lists `<path>`'s directory
 //! *as `<rev>` has it*, on `<path>`. Inside that listing `<CR>` on a

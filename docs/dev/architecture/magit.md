@@ -386,6 +386,22 @@ touches the actor thread. An unrecognised extension or a missing
 grammar leaves the buffer plain — what it was before — rather than
 failing it.
 
+**`-` explores the revision (LS.4b).** `-` in a blob buffer lists the
+file's directory *as that revision has it*, on the file — vim-fugitive's
+`:Gedit <rev>:<dir>/`. Inside that listing `<CR>` on a directory and
+`-` stay at the revision, `<CR>` on a file opens this same blob buffer
+for it, and `<C-s>` / `<C-v>` / `<C-t>` open in a split, vsplit or tab.
+Commits, stashes and `staged` (the index) all list; a conflict stage has
+no tree behind it, so `-` from `[ours]` / `[theirs]` / `[base]` lists the
+working directory on disk instead, where the conflict is being resolved.
+The listing is oil, read-only: oil owns the chord, the listing and the
+walk, and magit supplies the two things only it knows through oil's
+source seam (`directory-listing-mode.md` §11) — `MagitOilOrigins`
+answers "where is this buffer" by name, `GitTreeSource` lists a tree
+through `lattice_vcs::Tree` (in-process gix; 0.32 ms a listing,
+`benchmarks.md` LS.3). magit binds no `-` itself: its majors sit under
+`oil-global-mode`, which would shadow it.
+
 **This is not MG.22's parser wrinkle**, which stays open. There a
 *minor* wants to supply a **diff** parser for content whose language is
 not the buffer's identity. Here the content IS the file and its name

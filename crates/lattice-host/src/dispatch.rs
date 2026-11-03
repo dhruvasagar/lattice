@@ -3793,7 +3793,7 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         Effect::OpenDashboard => {
             out.renderer_signals.extend(editor.do_open_dashboard());
         }
-        // OR.4: a listing from a registered source, and "do this in a new
+        // LS.4: a listing from a registered source, and "do this in a new
         // pane". Both host-applied so a `Many` that opens and then acts
         // runs in order, as `OpenSyntheticBuffer` does.
         Effect::OpenOilSource { source, dir, focus } => {
@@ -26366,7 +26366,7 @@ impl Editor {
         )
     }
 
-    /// OR.4: [`Effect::OpenOilSource`]'s applier — resolve `source_id`
+    /// LS.4: [`Effect::OpenOilSource`]'s applier — resolve `source_id`
     /// through the registered providers and open the listing. An id no
     /// provider claims is an error, never the filesystem: a fallback
     /// would show the working tree under a label that says otherwise.
@@ -26440,7 +26440,7 @@ impl Editor {
         self.set_oil_dir(new_id, dir.clone());
         self.write_oil_listing(new_id, oil);
         let mut signals = self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
-        // OR.2: a listing that cannot be written refuses edits the way every
+        // LS.2: a listing that cannot be written refuses edits the way every
         // other read-only buffer does. `read-only-mode` carries both halves —
         // the `ReadOnly` option that stops typing and the invocation runner
         // that refuses operators — and its runner outranks oil-mode's, so
@@ -31603,7 +31603,7 @@ impl Editor {
                 );
                 return;
             };
-            // OR.2: `apply` writes to the disk, so a listing from any other
+            // LS.2: `apply` writes to the disk, so a listing from any other
             // tree must never reach it — even with edits pending.
             if let Some(why) = self.oil_source_for(oil_id).read_only() {
                 let why = format!("oil: {why}");

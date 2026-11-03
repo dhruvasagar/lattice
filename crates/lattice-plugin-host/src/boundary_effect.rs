@@ -1011,7 +1011,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                         (host-only oil re-list)"
                 .to_string());
         }
-        // OR.4: a listing source is registered natively (magit's git
+        // LS.4: a listing source is registered natively (magit's git
         // trees); a plugin naming one is a deliberate future WIT addition.
         NativeEffect::OpenOilSource { .. } => {
             return Err("Effect::OpenOilSource has no WIT mirror yet \

@@ -71,7 +71,7 @@ target rather than just a slower number.
 
 ---
 
-## OR.3 — listing a directory at a revision, per keystroke (2026-11-03)
+## LS.3 — listing a directory at a revision, per keystroke (2026-11-03)
 
 `-` from a file at a revision opens oil on its directory *at that
 revision*, and every `<CR>` into a directory re-lists. Bench:

@@ -287,7 +287,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
              will resolve against the working directory"
         );
     }
-    // OR.4b: `-` from a file at a revision lists its directory at that
+    // LS.4b: `-` from a file at a revision lists its directory at that
     // revision. Oil asks by buffer name, the same key `RepoScopes` holds.
     if let Some(oil_sources) = boot.service::<lattice_listing::oil::OilSourceRegistryHandle>() {
         let provider: Arc<dyn lattice_listing::oil::OilSourceProvider> =

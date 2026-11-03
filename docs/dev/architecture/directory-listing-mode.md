@@ -5,6 +5,9 @@
 > in the slice plan
 > (`docs/dev/operations/slice-plans/archive/directory-listing-mode.md`).
 >
+> §11 (listing sources, LS.1–LS.4b) landed 2026-11-03; its sequencing
+> is in `docs/dev/operations/slice-plans/archive/oil-sources.md`.
+>
 > Opened 2026-08-13 out of CV.5, where the same off-by-`scroll` bug was
 > found in four hand-written paint paths — oil and the file tree, in each
 > renderer.
@@ -383,3 +386,137 @@ per-frame cost changes shape and must be visible:
 Both go in `docs/dev/operations/benchmarks.md`. Element resolution is a
 `ResolvedTheme::get` (indexed read) per row, so the per-row cost should
 not regress; the bench exists to prove it rather than assume it.
+
+## 11. Listing sources
+
+Oil is a view of *a* directory tree. The filesystem is the default one;
+a directory at a git revision is the other worth having — vim-fugitive's
+`:Gedit <rev>:<dir>/`, where `-` from a file at a revision lists its
+directory *at that revision* and the walk from there stays there.
+
+### The contract
+
+`lattice_listing::oil::OilSource` names the places a tree can differ
+from the disk, and nothing else:
+
+| Method | Filesystem (`FsSource`) | A revision (magit's `GitTreeSource`) |
+|---|---|---|
+| `list(dir)` | `read_dir`, dirs first | `lattice_vcs::Tree`, same order |
+| `display(dir)` | the path | `a1b2c3d:src/` — git's `<rev>:<path>` |
+| `read_only()` | `None` | `Some(reason)` |
+| `parent(dir)` | `dir.parent()` | `None` at the repository root |
+| `open_entry(path, is_dir, target)` | `OpenBufferAt` / `OpenInTarget` | the file at the revision (`magit-file-revision-mode`) |
+| `id()` | `"fs"` | revision + repository |
+
+Directories are **absolute paths for every source**: a revision's tree
+is addressed by the path its directory would have in the working tree.
+That keeps the parts of oil that only move between directories —
+joining an entry onto the listed directory, stepping to its parent,
+landing on the child you came from — one code path across sources.
+
+### Per buffer, so the walk needs no carrying
+
+The source is a buffer-local, `OilSourceLocal`; absent means the
+filesystem, which is every listing that predates the seam. `<CR>` into a
+directory and `-` to the parent are `OilNavigate` on the same buffer,
+and the host's re-list asks *that buffer's* source — so a listing at a
+revision stays at it with nothing threaded through the effects.
+`Editor::open_oil_listing(source, dir, focus)` is the one open path;
+`do_open_oil` resolves a user's path and calls it with `FsSource`. A
+listing is reused only when source **and** directory match, so a
+revision's `src/` never switches to the working tree's.
+
+### Read-only takes two gates
+
+A source that reports `read_only()` gets `read-only-mode` on its buffer
+at open — the established gate, carrying both the `ReadOnly` option
+(typing) and the invocation runner that refuses operators while motions
+and yanks pass; its runner outranks oil-mode's. `:w` is refused
+separately in `do_write`, because oil's write applies renames to the
+disk and returns before the generic read-only gate. Under a revision's
+listing the directory named *is* the working tree's path, so a write
+that slipped through would rename real files.
+
+### Where `-` goes from a buffer oil did not make
+
+`-` is oil's chord everywhere (`oil-global-mode`, §2's minor-mode
+reasoning). What oil cannot know is where a buffer *another subsystem*
+made lives. It asks, by name — the key a provider and oil share for a
+buffer opened by `OpenSyntheticBuffer`, the `BufferScopeSource` shape:
+
+```rust
+trait OilSourceProvider {
+	fn origin_for(&self, buffer_name: &str) -> Option<OilOrigin>; // source id, dir, focus
+	fn source(&self, id: &str) -> Option<Arc<dyn OilSource>>;
+}
+```
+
+Two questions rather than one because the answer travels as an
+`Effect` — data, not an `Arc<dyn OilSource>` — so the source is named by
+id and resolved again when the host opens the listing. The registry
+(`OilSourceRegistryHandle`) is published in boot Phase B, ahead of every
+`install`. An id no provider claims is an error, never a fallback to the
+filesystem, which would show the working tree under a label naming a
+revision.
+
+Two host-applied effects, no WIT mirror yet:
+
+- `OpenOilSource { source, dir, focus }` — open the listing.
+- `InTarget { target, effect }` — make and focus a split / vsplit / tab,
+  then apply `effect` there. `OpenInTarget` did this for a path only, so
+  `<C-v>` on a file in a revision's listing would have opened the
+  working-tree copy.
+
+`-` at the top of a tree says so (`oil: a1b2c3d:/ is the top`) rather
+than doing nothing; a revision's tree tops out well above `/`, where
+silence reads as a broken key.
+
+### Alternatives rejected
+
+- **Bind `-` on magit's file-revision major.** Protects mode ownership
+  on paper, but a major's layer sits *under* every minor, and
+  `oil-global-mode` is a Universal minor binding `-`: the major's `-`
+  could never fire. Ordering the two minors would be a race nobody can
+  see. The provider seam keeps `-` meaning one thing everywhere and lets
+  the owner of the buffer answer the one question oil cannot.
+- **A separate `magit-tree-mode` listing.** A second listing major with
+  its own `<CR>` / `-` / split chords and icons is the copied-keymap
+  failure (`prefer-minor-modes-over-duplication`): every oil chord would
+  need a twin, and the first one forgotten would be silent.
+- **A per-buffer value on the revision copy.** The original plan. A
+  mode cannot write buffer-locals from an action handler, and the
+  copy's name already carries revision and path — so the provider reads
+  the name.
+- **Off-thread listing through the inbound bus.** Oil's open and
+  re-list are synchronous on the editor actor, like the `read_dir` they
+  replace; making one source asynchronous would make the listing open
+  empty and fill a frame later. Measured instead: gix in-process is
+  0.32 ms with the repository open per call (`benchmarks.md`, LS.3),
+  against 2.66 ms for a `git ls-tree` spawn — one keystroke that
+  replaces the whole pane, well inside a frame.
+
+**Paramount goals.** #1: no new work per frame, and a listing costs one
+sub-millisecond read per keystroke that opens or re-lists. #2: any
+subsystem — and, once mirrored in WIT, any plugin — can supply a tree
+(an archive, a remote, a jj revision) without touching oil. #3: the
+same `-` / `<CR>` / `<C-v>` grammar walks every tree. #4: nothing
+blocks beyond that one read.
+
+### Test contract
+
+- `crates/lattice-host/tests/oil_lists_from_its_source.rs` — an
+  in-memory source at paths that do not exist on disk, so any fallback
+  to the filesystem fails: list, re-list, reuse keyed on source, a
+  source that cannot list, read-only refusing `x` (with a writable
+  control) and `:w` (pointed at a real directory), `-` from a
+  provider's buffer, `-` at the top, `<C-v>` through `InTarget`, an
+  unclaimed id.
+- `crates/lattice-vcs/tests/integration.rs` — `Tree` against
+  `git ls-tree` at two differing revisions, a subdirectory, a stash and
+  the index.
+- `crates/lattice-magit/src/oil_tree.rs` — the git source and the
+  provider, including a conflict stage (no tree: `-` lists the working
+  directory).
+- `dash_from_a_file_at_a_revision_explores_that_revision`
+  (`lattice-ui-tui`) — the whole walk through real keys, in a repository
+  whose `HEAD~1` holds files neither `HEAD` nor the disk has.

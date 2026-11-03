@@ -2953,7 +2953,7 @@ mod tests {
         // and the snapshot `:w` diffs the buffer's text against (which
         // moved off the deleted `OilBuffer` struct). Asserted by name
         // rather than by count, so a future local has to be named here
-        // rather than just bumping a number. OR.1 added the third: the
+        // rather than just bumping a number. LS.1 added the third: the
         // source the listing comes from (the filesystem here).
         let mut oil_names: Vec<&str> = oil_descriptors.iter().map(|d| d.name).collect();
         oil_names.sort_unstable();

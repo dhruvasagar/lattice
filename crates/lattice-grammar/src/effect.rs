@@ -1077,7 +1077,7 @@ pub enum Effect {
         /// Directory to list.
         dir: Option<PathBuf>,
     },
-    /// OR.4: open oil on `dir` as a registered listing source lists it —
+    /// LS.4: open oil on `dir` as a registered listing source lists it —
     /// a directory at a git revision, say — landing on the entry `focus`.
     ///
     /// `source` is an id a registered `OilSourceProvider` resolves
@@ -1094,7 +1094,7 @@ pub enum Effect {
         /// Entry to put the cursor on; `None` = first row.
         focus: Option<String>,
     },
-    /// OR.4: apply `effect` in a new split, vsplit or tab — the pane
+    /// LS.4: apply `effect` in a new split, vsplit or tab — the pane
     /// `target` names is made and focused first.
     ///
     /// [`Effect::OpenInTarget`] does this for a path; this is the same

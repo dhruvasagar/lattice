@@ -1329,7 +1329,7 @@ impl App {
             // DB.2: host-applied via handle_effect (like DiffOpen); the
             // peer has nothing to do.
             Effect::OpenDashboard => {}
-            // OR.4: host-applied in `handle_effect`, like the dashboard.
+            // LS.4: host-applied in `handle_effect`, like the dashboard.
             Effect::OpenOilSource { .. } | Effect::InTarget { .. } => {}
             Effect::ToggleLspTrace { server_id } => self.do_toggle_lsp_trace(&server_id),
             Effect::OpenLspTraceLog { server_id } => {

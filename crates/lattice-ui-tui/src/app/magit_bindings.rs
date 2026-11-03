@@ -1675,7 +1675,7 @@ mod compose_buffers {
         );
     }
 
-    /// OR.4b, end to end and through real keys: `-` in a file at a
+    /// LS.4b, end to end and through real keys: `-` in a file at a
     /// revision lists its directory *at that revision*, and the walk from
     /// there stays at it. `HEAD~1` holds `old.txt` and `src/gone.rs`, which
     /// `HEAD` and the working tree do not, so a listing or a file that came

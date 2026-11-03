@@ -7493,6 +7493,18 @@ package is the component alone and PRL.6 is superseded.
 Design: [`../architecture/plugin-manifest.md`](../architecture/plugin-manifest.md).
 Slice plan: [`slice-plans/plugin-manifest.md`](slice-plans/plugin-manifest.md).
 
+## Oil listing sources (LS, 2026-11-03 — ✅ LS.1–LS.5)
+
+Oil lists from an `OilSource`, the filesystem by default, carried per
+buffer so the walk stays where it started. magit supplies a read-only git
+tree: `-` from a file at a revision lists its directory at that revision,
+vim-fugitive style, and `<CR>` / `-` / `<C-v>` stay there. Another
+subsystem answers "where does this buffer live" through
+`OilSourceRegistry`, by buffer name. The commits are labelled `OR.n`,
+which collides with org-roam's prefix; they were renamed to `LS` in LS.5.
+Design: [`../architecture/directory-listing-mode.md`](../architecture/directory-listing-mode.md) §11.
+Slice plan: [`slice-plans/archive/oil-sources.md`](slice-plans/archive/oil-sources.md).
+
 ---
 
 ## Conventions for updating this doc

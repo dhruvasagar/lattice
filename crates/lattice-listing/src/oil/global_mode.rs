@@ -72,7 +72,7 @@ fn navigate_up(ctx: &ActionContext<'_>) -> Option<Effect> {
     if ctx.buffer_local::<FileTreeEntries>().is_some() {
         return file_tree_row_directory(ctx);
     }
-    // OR.4: a buffer a subsystem placed in a tree of its own — magit's
+    // LS.4: a buffer a subsystem placed in a tree of its own — magit's
     // file at a revision is in its directory *at that revision*. Asked
     // before the filesystem fallback, which would list the working tree.
     if let Some(origin) = provider_origin(ctx) {

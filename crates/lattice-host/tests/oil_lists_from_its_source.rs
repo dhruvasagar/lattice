@@ -1,4 +1,4 @@
-//! OR.1: an oil buffer lists, re-lists and names itself from the source
+//! LS.1: an oil buffer lists, re-lists and names itself from the source
 //! it was opened with, and a listing from one source is never mistaken
 //! for another's listing of the same directory.
 //!
@@ -192,7 +192,7 @@ fn a_source_that_cannot_list_opens_nothing() {
     assert_eq!(editor.active_pane_buffer_id(), before);
 }
 
-/// OR.2. `x` is the control: it must edit a writable listing, or the
+/// LS.2. `x` is the control: it must edit a writable listing, or the
 /// read-only assertion below would pass against a key that never reached
 /// the buffer. (`x` rather than `dd` for the reason
 /// `read_only_mode_gates_edits` gives: the operator path is the one the
@@ -244,7 +244,7 @@ fn a_read_only_listing_refuses_to_write() {
     assert!(!root.join("top.txt").exists());
 }
 
-// ─── OR.4: `-` from a buffer a provider made, and `<C-v>` on an entry ──
+// ─── LS.4: `-` from a buffer a provider made, and `<C-v>` on an entry ──
 
 fn mem_buffer_name(path: &Path) -> String {
     format!("*mem:{}*", path.display())

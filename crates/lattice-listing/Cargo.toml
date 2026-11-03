@@ -29,7 +29,7 @@ lattice-grammar = { path = "../lattice-grammar" }
 lattice-theme = { path = "../lattice-theme" }
 # DL.3b: `Style::Element` on the icon inlays.
 lattice-cells = { path = "../lattice-cells" }
-# OR.4: `OilSourceRegistryHandle` is swapped in place as providers
+# LS.4: `OilSourceRegistryHandle` is swapped in place as providers
 # register at boot, the `BufferScopeSourceRegistryHandle` shape.
 arc-swap = { workspace = true }
 

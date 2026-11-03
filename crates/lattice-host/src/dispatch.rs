@@ -26394,13 +26394,26 @@ impl Editor {
             crate::buffers::BufferFlags::default(),
             crate::buffer_registry::ListingKind::Oil,
         );
+        let read_only = source.read_only().is_some();
         self.buffer_locals
             .entry(new_id)
             .or_default()
             .insert(lattice_listing::oil::OilSourceLocal(source));
         self.set_oil_dir(new_id, dir.clone());
         self.write_oil_listing(new_id, oil);
-        let signals = self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
+        let mut signals = self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
+        // OR.2: a listing that cannot be written refuses edits the way every
+        // other read-only buffer does. `read-only-mode` carries both halves —
+        // the `ReadOnly` option that stops typing and the invocation runner
+        // that refuses operators — and its runner outranks oil-mode's, so
+        // motions and yanks still work and `dd` says why it did nothing.
+        // `:w` is refused separately, in `do_write`, because oil's write
+        // never reaches the generic read-only gate.
+        if read_only {
+            signals.extend(
+                self.activate_mode_by_id(new_id, lattice_mode::modes::ReadOnlyMode::mode_id()),
+            );
+        }
         self.activate_document(new_id);
         self.cursor = lattice_protocol::Position::ZERO;
         self.scroll = 0;
@@ -31552,6 +31565,13 @@ impl Editor {
                 );
                 return;
             };
+            // OR.2: `apply` writes to the disk, so a listing from any other
+            // tree must never reach it — even with edits pending.
+            if let Some(why) = self.oil_source_for(oil_id).read_only() {
+                let why = format!("oil: {why}");
+                self.set_message(EchoLevel::Error, why);
+                return;
+            }
             let dir_display = dir.display().to_string();
             // DL.5: the diff reads the user's text from the Document
             // and the baseline from the snapshot local. Both re-read

@@ -1111,6 +1111,7 @@ impl App {
             | Effect::DiffOff { .. }
             | Effect::Diffthis
             | Effect::Diffsplit { .. }
+            | Effect::DiffResolve { .. }
             | Effect::DiffGetCmd { .. }
             | Effect::DiffPutCmd { .. }
             | Effect::DiffAccept
@@ -1658,6 +1659,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffResolve { .. }
         | Effect::DiffGetCmd { .. }
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
@@ -1822,6 +1824,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffResolve { .. }
         | Effect::DiffGetCmd { .. }
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept

@@ -1582,6 +1582,22 @@ pub enum Effect {
         /// The "other side" for a three-way merge; `None` = two-way.
         remote: Option<std::path::PathBuf>,
     },
+    /// Open a git conflict for resolution: ours | working | theirs.
+    ///
+    /// The working file sits between git's read-only copies of the two
+    /// sides and is diffed against both as a `Resolve` session, so
+    /// `d2o` / `d3o` / `dB` take from a copy into the working file. Unlike
+    /// [`Self::Diffsplit`] the copies are buffers, not files: `ours` and
+    /// `theirs` name buffers the emitter has already opened. The cursor
+    /// lands in the working file.
+    DiffResolve {
+        /// The buffer holding our side (git's stage 2).
+        ours: String,
+        /// The conflicted file, markers and all.
+        working: std::path::PathBuf,
+        /// The buffer holding their side (git's stage 3).
+        theirs: String,
+    },
     /// `:diffget [<bufnr>]` -- pull the hunk under the cursor
     /// from the named (or auto-resolved) buffer side. D.6.d.
     /// `target` is the optional buffer number passed by the

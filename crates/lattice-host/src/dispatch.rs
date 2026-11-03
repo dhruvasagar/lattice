@@ -4395,6 +4395,14 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // Cursor lands in the first new pane (vim parity).
             editor.do_diffsplit(path, remote);
         }
+        Effect::DiffResolve {
+            ours,
+            working,
+            theirs,
+        } => {
+            // 3W.3: a git conflict laid out ours | working | theirs.
+            editor.do_diff_resolve(&ours, working, &theirs);
+        }
         Effect::DiffGetCmd { target } => {
             // D.6.d / CR.1: `:diffget [<bufnr>]` — pull the hunk under
             // the cursor from the named (or auto-resolved) buffer side.
@@ -6273,6 +6281,7 @@ impl Editor {
     fn register_pane_group_diff(
         &mut self,
         members: Vec<crate::pane_group::PaneGroupMember>,
+        layout: crate::diff::subsystem::ConflictLayout,
     ) -> Result<(), String> {
         let arity = members.len();
         if !(2..=3).contains(&arity) {
@@ -6288,7 +6297,15 @@ impl Editor {
                 }
             }
         }
-        let primary = members[1].buffer;
+        // The session is keyed under the side the conflict chords run
+        // from: slot 1 (local) in a merge, slot 0 (the working file) when
+        // resolving. `sync_diff_conflict_activation` looks the session up
+        // by the focused buffer's key, so the wrong key would leave
+        // `diff-conflict-mode` off in the one pane that resolves.
+        let primary = match layout {
+            crate::diff::subsystem::ConflictLayout::Merge => members[1].buffer,
+            crate::diff::subsystem::ConflictLayout::Resolve => members[0].buffer,
+        };
         for m in &members {
             if self.diff_subsystem.lookup_session_for(m.buffer).is_some() {
                 return Err(format!(
@@ -6329,6 +6346,7 @@ impl Editor {
             lattice_diff::DiffAlgorithm::Histogram,
             descriptor,
         );
+        session.set_conflict_layout(layout);
 
         let mapper: std::sync::Arc<dyn crate::pane_group::RowMapper> = if arity == 2 {
             std::sync::Arc::new(crate::diff::pane_group::HunkRowMapper::new(
@@ -6516,7 +6534,10 @@ impl Editor {
                 let baseline = active_member;
                 let baseline_buf = baseline.buffer;
                 let new_current_buf = new_current.buffer;
-                if let Err(msg) = self.register_pane_group_diff(vec![baseline, new_current]) {
+                if let Err(msg) = self.register_pane_group_diff(
+                    vec![baseline, new_current],
+                    crate::diff::subsystem::ConflictLayout::Merge,
+                ) {
                     self.set_message(EchoLevel::Error, format!("diffsplit: {msg}"));
                     return;
                 }
@@ -6554,7 +6575,10 @@ impl Editor {
                 let base_buf = base.buffer;
                 let local_buf = local.buffer;
                 let remote_buf = remote_member.buffer;
-                if let Err(msg) = self.register_pane_group_diff(vec![base, local, remote_member]) {
+                if let Err(msg) = self.register_pane_group_diff(
+                    vec![base, local, remote_member],
+                    crate::diff::subsystem::ConflictLayout::Merge,
+                ) {
                     self.set_message(EchoLevel::Error, format!("diffsplit: {msg}"));
                     return;
                 }
@@ -6568,6 +6592,92 @@ impl Editor {
                 );
             }
         }
+    }
+
+    /// 3W.3: lay a git conflict out as ours | working | theirs and diff it
+    /// as a `Resolve` session — the working file between git's copies of
+    /// the two sides, the vim-fugitive `:Gdiffsplit!` arrangement.
+    ///
+    /// `ours` and `theirs` name buffers the emitter has already opened (the
+    /// copies have no file, so [`Self::do_diffsplit`]'s path-based opening
+    /// cannot reach them). Ours takes the current pane, the working file
+    /// and theirs open in vsplits to its right, and the cursor ends in the
+    /// working file, the only side resolving edits.
+    ///
+    /// Every failure leaves the layout as it was: a missing copy is refused
+    /// before any split, and a split that cannot open is closed again.
+    pub fn do_diff_resolve(&mut self, ours: &str, working: std::path::PathBuf, theirs: &str) {
+        use lattice_core::ui::pane::SplitOrientation;
+
+        let (Some(ours_id), Some(theirs_id)) =
+            (self.buffers.by_name(ours), self.buffers.by_name(theirs))
+        else {
+            self.set_message(
+                EchoLevel::Error,
+                "conflict: git's copies of the two sides are not open",
+            );
+            return;
+        };
+        if let Some(busy) = [ours_id, theirs_id]
+            .into_iter()
+            .find(|b| self.diff_subsystem.lookup_session_for(*b).is_some())
+        {
+            self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "conflict: buffer {} is already in a diff session; use :diffoff first",
+                    busy.0
+                ),
+            );
+            return;
+        }
+
+        let member_of_active = |this: &Self| {
+            let leaf = this.pane_tree.active();
+            crate::pane_group::PaneGroupMember {
+                pane: leaf.id,
+                buffer: leaf.buffer_id,
+            }
+        };
+
+        self.activate_buffer(ours_id);
+        let ours_member = member_of_active(self);
+
+        let working_pane = self.pane_tree.split_active(SplitOrientation::Vertical);
+        self.pane_tree.set_active(working_pane);
+        match self.do_edit(Some(working), false) {
+            DoEditOutcome::Opened(_) | DoEditOutcome::Activated(_) | DoEditOutcome::Reloaded(_) => {
+            }
+            DoEditOutcome::Failed | DoEditOutcome::Directory(_) | DoEditOutcome::NoFileName => {
+                // `do_edit` has already said why.
+                self.pane_tree.close_active();
+                return;
+            }
+        }
+        let working_member = member_of_active(self);
+
+        let theirs_pane = self.pane_tree.split_active(SplitOrientation::Vertical);
+        self.pane_tree.set_active(theirs_pane);
+        self.activate_buffer(theirs_id);
+        let theirs_member = member_of_active(self);
+
+        if let Err(msg) = self.register_pane_group_diff(
+            vec![working_member, ours_member, theirs_member],
+            crate::diff::subsystem::ConflictLayout::Resolve,
+        ) {
+            // Close theirs, then the working file, leaving ours where the
+            // trigger was.
+            self.pane_tree.close_active();
+            self.pane_tree.set_active(working_pane);
+            self.pane_tree.close_active();
+            self.set_message(EchoLevel::Error, format!("conflict: {msg}"));
+            return;
+        }
+        self.activate_pane(working_pane);
+        self.set_message(
+            EchoLevel::Info,
+            "conflict: ours | working | theirs — d2o ours, d3o theirs, dB both, ]c next",
+        );
     }
 
     /// I4 (Claude Code IDE peer, `openDiff`): drain host-drained programmatic
@@ -7181,7 +7291,10 @@ impl Editor {
             pane: right_pane,
             buffer: right_id,
         };
-        if let Err(msg) = self.register_pane_group_diff(vec![left_member, right_member]) {
+        if let Err(msg) = self.register_pane_group_diff(
+            vec![left_member, right_member],
+            crate::diff::subsystem::ConflictLayout::Merge,
+        ) {
             // Roll BOTH new panes back, refocus the claude pane so the user isn't
             // stranded in a half-open diff, drop the throwaway buffers, and drop
             // `response` → the producer's await rejects.
@@ -44801,6 +44914,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffResolve { .. }
         | Effect::DiffGetCmd { .. }
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
@@ -44965,6 +45079,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffResolve { .. }
         | Effect::DiffGetCmd { .. }
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
@@ -55404,6 +55519,134 @@ mod tests {
         );
         assert!(editor.diff_subsystem.is_empty());
         assert!(editor.pane_groups.is_empty());
+    }
+
+    // ── 3W.3: a git conflict opened for resolution ─────────────
+
+    const CONFLICTED: &str = "keep\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\nkeep too\n";
+
+    /// An editor with git's two copies open as named buffers, the way
+    /// magit opens them before emitting `Effect::DiffResolve`.
+    fn editor_with_copies() -> (crate::editor::Editor, TempFilePath) {
+        let working = write_temp(CONFLICTED, "3w3-working");
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.create_inmemory_document("keep\nours\nkeep too\n", None, Some("ours-copy".into()));
+        editor.create_inmemory_document(
+            "keep\ntheirs\nkeep too\n",
+            None,
+            Some("theirs-copy".into()),
+        );
+        (editor, working)
+    }
+
+    fn text_of(editor: &crate::editor::Editor, id: BufferId) -> String {
+        editor
+            .buffers
+            .document_handle(id)
+            .expect("handle")
+            .snapshot()
+            .buffer
+            .to_rope()
+            .to_string()
+    }
+
+    /// The layout is ours | working | theirs, the session is a `Resolve`
+    /// keyed under the working file, and the cursor is in the working
+    /// file — the one pane where resolving edits.
+    #[tokio::test]
+    async fn diff_resolve_lays_out_ours_working_theirs_and_focuses_working() {
+        let (mut editor, working) = editor_with_copies();
+        let panes_before = editor.pane_tree.leaves().len();
+
+        editor.handle_effect(Effect::DiffResolve {
+            ours: "ours-copy".into(),
+            working: working.0.clone(),
+            theirs: "theirs-copy".into(),
+        });
+
+        let ours = editor.buffers.by_name("ours-copy").unwrap();
+        let theirs = editor.buffers.by_name("theirs-copy").unwrap();
+        let working_buf = editor.document_buffer_id;
+        assert_eq!(
+            text_of(&editor, working_buf),
+            CONFLICTED,
+            "focus is the working file"
+        );
+        assert_eq!(editor.pane_tree.leaves().len(), panes_before + 2);
+        let order: Vec<BufferId> = editor
+            .pane_tree
+            .leaves()
+            .iter()
+            .map(|l| l.buffer_id)
+            .collect();
+        assert_eq!(
+            order,
+            vec![ours, working_buf, theirs],
+            "ours | working | theirs"
+        );
+
+        let session = editor
+            .diff_subsystem
+            .lookup(working_buf)
+            .expect("the session is keyed under the working file");
+        assert_eq!(
+            session.conflict_layout(),
+            crate::diff::subsystem::ConflictLayout::Resolve
+        );
+        let participants = editor
+            .diff_subsystem
+            .session_participants(working_buf)
+            .unwrap();
+        assert_eq!(participants, vec![working_buf, ours, theirs]);
+    }
+
+    /// End to end through the opened session: the real engine's hunks,
+    /// then `d2o` replaces the whole marker block with ours.
+    #[tokio::test]
+    async fn diff_resolve_keep_ours_clears_the_markers() {
+        let (mut editor, working) = editor_with_copies();
+        editor.handle_effect(Effect::DiffResolve {
+            ours: "ours-copy".into(),
+            working: working.0.clone(),
+            theirs: "theirs-copy".into(),
+        });
+        let working_buf = editor.document_buffer_id;
+        let session = editor.diff_subsystem.lookup(working_buf).unwrap();
+        let ropes: Vec<ropey::Rope> = editor
+            .diff_subsystem
+            .session_participants(working_buf)
+            .unwrap()
+            .into_iter()
+            .map(|b| ropey::Rope::from(text_of(&editor, b)))
+            .collect();
+        session.recompute_blocking(&ropes).expect("publishes");
+
+        let effect = editor
+            .diff_subsystem
+            .diff_keep_ours_effect(working_buf, 2)
+            .expect("a conflict under the cursor");
+        // `ApplyEdit` is deferred to a follow-up action (CR.0), which the
+        // dispatch loop runs; run it the same way.
+        let out = editor.handle_effect(effect);
+        for action in out.next_actions {
+            editor.dispatch(action);
+        }
+        assert_eq!(text_of(&editor, working_buf), "keep\nours\nkeep too\n");
+    }
+
+    /// A copy that is not open is refused before any split, so the layout
+    /// is left exactly as it was.
+    #[tokio::test]
+    async fn diff_resolve_without_its_copies_changes_nothing() {
+        let (mut editor, working) = editor_with_copies();
+        let panes_before = editor.pane_tree.leaves().len();
+        editor.handle_effect(Effect::DiffResolve {
+            ours: "ours-copy".into(),
+            working: working.0.clone(),
+            theirs: "never-opened".into(),
+        });
+        assert_eq!(editor.pane_tree.leaves().len(), panes_before);
+        assert!(editor.diff_subsystem.is_empty());
     }
 
     // ──────────────────────────────────────────────────────

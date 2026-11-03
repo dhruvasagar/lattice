@@ -1515,6 +1515,7 @@ impl GpuiApp {
             | Effect::DiffOff { .. }
             | Effect::Diffthis
             | Effect::Diffsplit { .. }
+            | Effect::DiffResolve { .. }
             | Effect::DiffGetCmd { .. }
             | Effect::DiffPutCmd { .. }
             | Effect::DiffAccept

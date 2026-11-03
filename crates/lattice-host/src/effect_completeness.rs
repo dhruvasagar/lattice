@@ -153,6 +153,7 @@ pub fn effect_is_host_complete(effect: &Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffResolve { .. }
         | Effect::DiffGetCmd { .. }
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept

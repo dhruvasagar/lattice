@@ -984,6 +984,15 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                         when a plugin needs it)"
                 .to_string());
         }
+        // 3W.3: native-only, like `OpenSyntheticBufferAt` — magit is the
+        // only emitter. It names buffers the emitter opened, and a plugin
+        // that wants to lay out a conflict is a deliberate WIT addition.
+        NativeEffect::DiffResolve { .. } => {
+            return Err("Effect::DiffResolve has no WIT mirror yet \
+                        (native emitters only; add a payload to wit/types.wit \
+                        when a plugin needs to open a conflict for resolution)"
+                .to_string());
+        }
         // LM.0: host/peer-only by intent. Opening in a split/vsplit/tab is
         // pane geometry the host owns; a plugin that wants it is a deliberate
         // future WIT addition, not a silent drop. Loud like the other

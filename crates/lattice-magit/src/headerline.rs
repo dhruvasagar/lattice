@@ -779,6 +779,13 @@ pub(crate) fn file_revision_fields(git_ref: &str, path: &Path) -> Vec<Field> {
     let mut fields = vec![Field::label(path.display().to_string()), Field::label("@")];
     if git_ref == "staged" {
         fields.push(Field::git_ref("index"));
+    } else if let Some(stage) = crate::magit_file_revision_mode::ConflictStage::from_token(git_ref)
+    {
+        fields.push(Field::git_ref(format!(
+            "{} (stage {})",
+            stage.label(),
+            stage.number()
+        )));
     } else {
         fields.push(Field::sha(git_ref.to_string()));
     }
@@ -1328,6 +1335,14 @@ mod tests {
         assert_eq!(
             rendered(file_revision_fields("staged", Path::new("src/main.rs"))),
             "src/main.rs  @  index"
+        );
+    }
+
+    #[test]
+    fn file_revision_row_names_a_conflict_stage_by_side() {
+        assert_eq!(
+            rendered(file_revision_fields("[theirs]", Path::new("src/main.rs"))),
+            "src/main.rs  @  theirs (stage 3)"
         );
     }
 

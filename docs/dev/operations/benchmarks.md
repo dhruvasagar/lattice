@@ -71,6 +71,32 @@ target rather than just a slower number.
 
 ---
 
+## OR.3 — listing a directory at a revision, per keystroke (2026-11-03)
+
+`-` from a file at a revision opens oil on its directory *at that
+revision*, and every `<CR>` into a directory re-lists. Bench:
+`crates/lattice-vcs/benches/tree.rs`, against this repository's own tree
+(a root of ~20 entries; `crates/` of ~50).
+
+| Listing | Time |
+|---|---|
+| root at `HEAD`, repository open | 54.8 µs |
+| `crates/` at `HEAD`, repository open | 73.7 µs |
+| root at `HEAD`, `Repository::discover` per call | 319 µs |
+| root of the index (`staged`) | 228 µs |
+
+Read through gix in-process rather than by spawning `git ls-tree`, which
+measured 2.66 ms a call on this box — eight times the in-process cost
+with the open included. magit's source opens the repository per listing
+(the third row) rather than caching a handle: 0.32 ms is ~4% of a
+120 Hz frame for a keystroke that replaces the whole pane anyway, and a
+cached `gix::Repository` is not `Sync`, so holding one would mean a lock
+for a saving nobody can see. Same order as the filesystem listing
+beside it (PC.9: ~55 µs for a one-directory read). The index row walks
+every staged path, so it grows with the repository rather than with the
+directory; revisit if a large monorepo makes `-` from a staged copy
+noticeable.
+
 ## SI.12 — mode range highlights on the publish path (2026-10-24)
 
 A live snippet's placeholders are tinted through a mode range-highlight

@@ -41,3 +41,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "tree"
+harness = false

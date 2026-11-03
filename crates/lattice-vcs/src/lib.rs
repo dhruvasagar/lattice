@@ -33,6 +33,7 @@ mod remote;
 mod repository;
 mod stash;
 mod submodule;
+mod tree;
 mod working_tree;
 
 pub use bisect::{Bisect, BisectState, BisectStep, parse_bisect_step, parse_bisect_vars};
@@ -48,4 +49,5 @@ pub use remote::{Remote, RemoteEntry, parse_remote_v};
 pub use repository::Repository;
 pub use stash::Stash;
 pub use submodule::{Submodule, SubmoduleEntry, SubmoduleState, parse_submodule_status};
+pub use tree::{Tree, TreeEntry};
 pub use working_tree::{PathChange, PathStatus, UnmergedKind, WorkingTree};

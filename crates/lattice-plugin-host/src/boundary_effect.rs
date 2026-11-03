@@ -1011,6 +1011,18 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                         (host-only oil re-list)"
                 .to_string());
         }
+        // OR.4: a listing source is registered natively (magit's git
+        // trees); a plugin naming one is a deliberate future WIT addition.
+        NativeEffect::OpenOilSource { .. } => {
+            return Err("Effect::OpenOilSource has no WIT mirror yet \
+                        (host-only oil listing from a registered source)"
+                .to_string());
+        }
+        NativeEffect::InTarget { .. } => {
+            return Err("Effect::InTarget has no WIT mirror yet \
+                        (host-only pane targeting, like OpenInTarget)"
+                .to_string());
+        }
         NativeEffect::FileTreeToggle { .. } => {
             return Err("Effect::FileTreeToggle has no WIT mirror yet \
                         (host-only file-tree expand/collapse)"

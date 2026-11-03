@@ -1329,6 +1329,8 @@ impl App {
             // DB.2: host-applied via handle_effect (like DiffOpen); the
             // peer has nothing to do.
             Effect::OpenDashboard => {}
+            // OR.4: host-applied in `handle_effect`, like the dashboard.
+            Effect::OpenOilSource { .. } | Effect::InTarget { .. } => {}
             Effect::ToggleLspTrace { server_id } => self.do_toggle_lsp_trace(&server_id),
             Effect::OpenLspTraceLog { server_id } => {
                 self.do_open_lsp_trace_log(server_id.as_deref())
@@ -1652,6 +1654,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::AppAction(_)
         | Effect::RecordJump
         | Effect::OpenDashboard
+        | Effect::OpenOilSource { .. }
+        | Effect::InTarget { .. }
         | Effect::ChangeDir(_)
         | Effect::PrintWorkingDir
         | Effect::PrintProjectRoot => false,
@@ -1817,6 +1821,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::AppAction(_)
         | Effect::RecordJump
         | Effect::OpenDashboard
+        | Effect::OpenOilSource { .. }
+        | Effect::InTarget { .. }
         | Effect::ChangeDir(_)
         | Effect::PrintWorkingDir
         | Effect::PrintProjectRoot => false,

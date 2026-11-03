@@ -72,9 +72,28 @@ fn navigate_up(ctx: &ActionContext<'_>) -> Option<Effect> {
     if ctx.buffer_local::<FileTreeEntries>().is_some() {
         return file_tree_row_directory(ctx);
     }
+    // OR.4: a buffer a subsystem placed in a tree of its own — magit's
+    // file at a revision is in its directory *at that revision*. Asked
+    // before the filesystem fallback, which would list the working tree.
+    if let Some(origin) = provider_origin(ctx) {
+        return Some(Effect::OpenOilSource {
+            source: origin.source,
+            dir: origin.dir,
+            focus: origin.focus,
+        });
+    }
     // Anything else: no directory given means "the current file's", and
     // the host's applier lands the cursor on that file.
     Some(Effect::OpenOil { dir: None })
+}
+
+/// Where the registered providers say `-` goes from this buffer, by its
+/// name. `None` for a buffer no provider made, which is most of them.
+fn provider_origin(ctx: &ActionContext<'_>) -> Option<super::OilOrigin> {
+    let registry = ctx.services.get::<super::OilSourceRegistryHandle>()?;
+    let store = ctx.services.get::<lattice_mode::BufferStoreHandle>()?;
+    let name = store.name_for(lattice_core::BufferId(ctx.buffer_id.0 as u32))?;
+    registry.load().origin_for(&name)
 }
 
 impl Mode for OilGlobalMode {

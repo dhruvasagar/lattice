@@ -17,7 +17,9 @@ use lattice_core::ui::pane::OpenTarget;
 use lattice_grammar::Effect;
 use lattice_host::chord::KeyChord;
 use lattice_host::editor::Editor;
-use lattice_listing::oil::{OilEntry, OilSource};
+use lattice_listing::oil::{
+    OilEntry, OilOrigin, OilSource, OilSourceProvider, OilSourceRegistryHandle,
+};
 
 /// A tree held in memory, at paths that do not exist on disk — so a
 /// listing that came from the filesystem instead would fail, not pass.
@@ -26,6 +28,9 @@ struct MemSource {
     tree: HashMap<PathBuf, Vec<OilEntry>>,
     read_only: bool,
 }
+
+/// The tree's root, where `-` stops.
+const TOP: &str = "/nowhere/at/all";
 
 impl OilSource for MemSource {
     fn id(&self) -> &str {
@@ -43,8 +48,26 @@ impl OilSource for MemSource {
     fn display(&self, dir: &Path) -> String {
         format!("mem:{}", dir.display())
     }
-    fn open_entry(&self, _path: &Path, _is_dir: bool, _target: Option<OpenTarget>) -> Effect {
-        Effect::None
+    fn parent(&self, dir: &Path) -> Option<PathBuf> {
+        (dir != Path::new(TOP)).then(|| dir.parent().map(Path::to_path_buf))?
+    }
+    /// A file opens as a synthetic buffer named for it, in `target` when
+    /// one is given — the shape a source whose files are not on disk has.
+    fn open_entry(&self, path: &Path, _is_dir: bool, target: Option<OpenTarget>) -> Effect {
+        let open = Effect::OpenSyntheticBuffer {
+            name: mem_buffer_name(path),
+            mode_id: "plugin-output-mode".to_string(),
+            content: Some(format!("{} from mem\n", path.display())),
+            cursor: None,
+            activate_minor: None,
+        };
+        match target {
+            None => open,
+            Some(target) => Effect::InTarget {
+                target,
+                effect: Box::new(open),
+            },
+        }
     }
 }
 
@@ -84,6 +107,16 @@ fn press(editor: &mut Editor, keys: &str) {
     for c in keys.chars() {
         let _ = editor.dispatch_chord(KeyChord::char(c), &mut partial);
     }
+}
+
+/// Apply the minor modes a buffer's major queued for it — `oil-global-mode`,
+/// which owns `-`, is a Universal minor. In the app the tail of the keystroke
+/// that opened the buffer drains this queue (`run_tick_pending`); a bare
+/// `Editor` has no tail, so the test runs that step itself. It is a queue
+/// already filled when the buffer opened, not an async result being waited
+/// on.
+fn activate_queued_minors(editor: &mut Editor) {
+    let _ = editor.run_tick_pending();
 }
 
 fn echo(editor: &Editor) -> String {
@@ -209,4 +242,104 @@ fn a_read_only_listing_refuses_to_write() {
         "a refused write must not touch the directory"
     );
     assert!(!root.join("top.txt").exists());
+}
+
+// ─── OR.4: `-` from a buffer a provider made, and `<C-v>` on an entry ──
+
+fn mem_buffer_name(path: &Path) -> String {
+    format!("*mem:{}*", path.display())
+}
+
+/// Claims the `*mem:<path>*` buffers: `-` from one lists `<path>`'s
+/// directory from the mem tree, on `<path>`.
+#[derive(Debug)]
+struct MemProvider;
+
+impl OilSourceProvider for MemProvider {
+    fn origin_for(&self, buffer_name: &str) -> Option<OilOrigin> {
+        let path = Path::new(buffer_name.strip_prefix("*mem:")?.strip_suffix('*')?);
+        Some(OilOrigin {
+            source: "mem".into(),
+            dir: path.parent()?.to_path_buf(),
+            focus: path.file_name().map(|n| n.to_string_lossy().into_owned()),
+        })
+    }
+    fn source(&self, id: &str) -> Option<Arc<dyn OilSource>> {
+        (id == "mem").then(|| mem_tree(Path::new(TOP)) as Arc<dyn OilSource>)
+    }
+}
+
+fn boot_with_provider() -> Editor {
+    let editor = boot();
+    let registry = editor
+        .services
+        .get::<OilSourceRegistryHandle>()
+        .expect("the host publishes the oil source registry");
+    registry.rcu(|current| {
+        let mut next = (**current).clone();
+        next.register(Arc::new(MemProvider));
+        next
+    });
+    editor
+}
+
+#[test]
+fn dash_from_a_providers_buffer_lists_its_directory_from_its_source() {
+    let mut editor = boot_with_provider();
+    let file = Path::new(TOP).join("top.txt");
+    editor.open_synthetic_buffer(&mem_buffer_name(&file), "plugin-output-mode");
+    activate_queued_minors(&mut editor);
+
+    press(&mut editor, "-");
+
+    let view = editor.active_pane_buffer_id();
+    assert_eq!(editor.oil_source_for(view).id(), "mem");
+    assert_eq!(listing_text(&editor), "sub\ntop.txt");
+    assert_eq!(editor.cursor.line, 1, "lands on the file `-` came from");
+}
+
+#[test]
+fn dash_at_the_top_of_a_sources_tree_says_so() {
+    let mut editor = boot();
+    let root = PathBuf::from(TOP);
+    editor.open_oil_listing(mem_tree(&root), root.clone(), None);
+    activate_queued_minors(&mut editor);
+    let view = editor.active_pane_buffer_id();
+
+    press(&mut editor, "-");
+
+    assert_eq!(editor.active_pane_buffer_id(), view);
+    assert_eq!(listing_text(&editor), "sub\ntop.txt");
+    assert_eq!(echo(&editor), format!("oil: mem:{TOP} is the top"));
+}
+
+#[test]
+fn an_entry_opened_in_a_split_is_the_sources_buffer() {
+    let mut editor = boot();
+    let root = PathBuf::from(TOP);
+    editor.open_oil_listing(mem_tree(&root), root.clone(), None);
+    press(&mut editor, "j");
+    let mut partial = Vec::new();
+    let _ = editor.dispatch_chord(KeyChord::ctrl('v'), &mut partial);
+
+    assert_eq!(editor.pane_tree.len(), 2, "`<C-v>` splits");
+    assert_eq!(
+        editor.document.snapshot().buffer.as_string(),
+        format!("{} from mem\n", root.join("top.txt").display()),
+        "the new pane shows what the source opened, not the path on disk"
+    );
+}
+
+#[test]
+fn a_source_nobody_provides_is_an_error_not_the_filesystem() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut editor = boot();
+    let before = editor.active_pane_buffer_id();
+    let _ = editor.handle_effect(Effect::OpenOilSource {
+        source: "unclaimed".into(),
+        dir: dir.path().to_path_buf(),
+        focus: None,
+    });
+    assert_eq!(editor.active_pane_buffer_id(), before);
+    assert_eq!(echo(&editor), "oil: no listing source `unclaimed`");
 }

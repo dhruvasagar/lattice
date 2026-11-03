@@ -125,6 +125,81 @@ impl BufferLocal for OilSourceLocal {
     }
 }
 
+/// Where `-` takes a buffer that is not a file: a directory, the source to
+/// list it from, and the entry to land on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OilOrigin {
+    /// The [`OilSource::id`] to list from, resolved by
+    /// [`OilSourceRegistry::source`].
+    pub source: String,
+    /// The directory, absolute.
+    pub dir: PathBuf,
+    /// The entry the buffer *is*, to land on.
+    pub focus: Option<String>,
+}
+
+/// A subsystem whose buffers have a place in a tree oil can list —
+/// magit's `*magit:file:<rev>:<path>*` is `<path>`'s directory at
+/// `<rev>`.
+///
+/// ## Why by buffer name, and two questions rather than one
+///
+/// `-` is oil's chord, live in every buffer (`oil-global-mode`), and its
+/// handler is oil's. What oil cannot know is where a buffer it did not
+/// make lives, so it asks — by name, the one thing a provider and oil
+/// both have for a buffer the provider opened by `OpenSyntheticBuffer`
+/// (the [`BufferScopeSource`](lattice_mode::BufferScopeSource) shape). The
+/// answer travels as an [`Effect`], which carries data, not an
+/// `Arc<dyn OilSource>`; so the source is named by id there and resolved
+/// again when the host opens the listing.
+pub trait OilSourceProvider: Send + Sync + fmt::Debug {
+    /// Where `-` goes from the buffer named `buffer_name`, if this
+    /// provider made it. Most names are not this provider's: `None`.
+    fn origin_for(&self, buffer_name: &str) -> Option<OilOrigin>;
+
+    /// The source with id `id`, if this provider makes such sources.
+    fn source(&self, id: &str) -> Option<Arc<dyn OilSource>>;
+}
+
+/// The registered [`OilSourceProvider`]s. Asked in registration order;
+/// the first answer wins, as for the scope sources.
+#[derive(Debug, Default, Clone)]
+pub struct OilSourceRegistry {
+    providers: Vec<Arc<dyn OilSourceProvider>>,
+}
+
+impl OilSourceRegistry {
+    /// An empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a provider.
+    pub fn register(&mut self, provider: Arc<dyn OilSourceProvider>) {
+        self.providers.push(provider);
+    }
+
+    /// Where `-` goes from the buffer named `buffer_name`.
+    pub fn origin_for(&self, buffer_name: &str) -> Option<OilOrigin> {
+        self.providers
+            .iter()
+            .find_map(|p| p.origin_for(buffer_name))
+    }
+
+    /// The source with id `id`. The filesystem is always known.
+    pub fn source(&self, id: &str) -> Option<Arc<dyn OilSource>> {
+        if id == FsSource::ID {
+            return Some(Arc::new(FsSource));
+        }
+        self.providers.iter().find_map(|p| p.source(id))
+    }
+}
+
+/// The registry service. Register **and** look up with this exact alias
+/// (the `ServiceRegistry` `TypeId` rule). Published by the host ahead of
+/// every subsystem `install`, so a provider can always register.
+pub type OilSourceRegistryHandle = Arc<arc_swap::ArcSwap<OilSourceRegistry>>;
+
 /// The modeline label of an oil buffer listing `dir` from `source`.
 pub fn source_label_for(source: &dyn OilSource, dir: &Path) -> String {
     format!("[oil] {}", source.display(dir))

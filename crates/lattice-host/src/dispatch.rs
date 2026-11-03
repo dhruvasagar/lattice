@@ -3793,6 +3793,18 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         Effect::OpenDashboard => {
             out.renderer_signals.extend(editor.do_open_dashboard());
         }
+        // OR.4: a listing from a registered source, and "do this in a new
+        // pane". Both host-applied so a `Many` that opens and then acts
+        // runs in order, as `OpenSyntheticBuffer` does.
+        Effect::OpenOilSource { source, dir, focus } => {
+            out.renderer_signals
+                .extend(editor.open_oil_from_source(&source, dir, focus));
+        }
+        Effect::InTarget { target, effect } => {
+            out.renderer_signals
+                .extend(editor.prepare_open_target_pane(target));
+            handle_effect(editor, *effect, out);
+        }
         // 3W.4: host-applied, so a `Many` that opens a synthetic buffer and
         // then acts on it (magit's `dv`: open the index copy, then
         // `Diffsplit` against it) runs in order. Both peers applied these,
@@ -26354,6 +26366,32 @@ impl Editor {
         )
     }
 
+    /// OR.4: [`Effect::OpenOilSource`]'s applier — resolve `source_id`
+    /// through the registered providers and open the listing. An id no
+    /// provider claims is an error, never the filesystem: a fallback
+    /// would show the working tree under a label that says otherwise.
+    pub fn open_oil_from_source(
+        &mut self,
+        source_id: &str,
+        dir: std::path::PathBuf,
+        focus: Option<String>,
+    ) -> Vec<RendererSignal> {
+        let source = self
+            .services
+            .get::<lattice_listing::oil::OilSourceRegistryHandle>()
+            .and_then(|registry| registry.load().source(source_id));
+        match source {
+            Some(source) => self.open_oil_listing(source, dir, focus),
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("oil: no listing source `{source_id}`"),
+                );
+                Vec::new()
+            }
+        }
+    }
+
     /// Open oil on `dir` as `source` lists it, landing on the entry named
     /// `focus`. The one open path: `:Oil` and `-` from a file come here
     /// with the filesystem, a provider's `-` with its own source. A
@@ -44978,6 +45016,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
+        | Effect::OpenOilSource { .. }
+        | Effect::InTarget { .. }
         // LM.2: in-place re-list / toggle — like OpenOil, navigation, not a
         // user edit-mutation or yank.
         | Effect::OilNavigate { .. }
@@ -45143,6 +45183,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
+        | Effect::OpenOilSource { .. }
+        | Effect::InTarget { .. }
         // LM.2: in-place re-list / toggle — like OpenOil, navigation, not a
         // user edit-mutation or yank.
         | Effect::OilNavigate { .. }

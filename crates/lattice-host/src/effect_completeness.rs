@@ -93,6 +93,8 @@ pub fn effect_is_host_complete(effect: &Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
+        | Effect::OpenOilSource { .. }
+        | Effect::InTarget { .. }
         | Effect::DescribeOption { .. }
         | Effect::DescribeElement { .. }
         | Effect::ListOptions

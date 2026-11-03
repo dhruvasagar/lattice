@@ -140,14 +140,23 @@ impl Mode for OilMode {
 }
 
 /// `-` in an oil buffer: re-list to the parent, landing the cursor on the
-/// directory stepped out of (oil.nvim's round-trip). `None` at the
-/// filesystem root, or on a buffer with no oil state.
+/// directory stepped out of (oil.nvim's round-trip). At the top of the
+/// source's tree it says so; `None` on a buffer with no oil state.
 ///
 /// The body is oil's; the chord is `oil-global-mode`'s, which calls this
 /// for buffers carrying an [`OilDir`].
 pub(crate) fn oil_parent_directory(ctx: &ActionContext<'_>) -> Option<Effect> {
     let dir = ctx.buffer_local::<OilDir>()?.0.clone();
-    let parent = oil_source(ctx).parent(&dir)?;
+    let source = oil_source(ctx);
+    // OR.4: the top of a tree says so. A revision's tree tops out at the
+    // repository root, well above `/`, and a `-` that silently did
+    // nothing there would read as a broken key.
+    let Some(parent) = source.parent(&dir) else {
+        return Some(Effect::Echo {
+            level: lattice_grammar::EchoLevel::Info,
+            text: format!("oil: {} is the top", source.display(&dir)),
+        });
+    };
     let view = lattice_core::BufferId(ctx.buffer_id.0 as u32);
     let focus = dir.file_name().map(|n| n.to_string_lossy().into_owned());
     Some(Effect::OilNavigate {

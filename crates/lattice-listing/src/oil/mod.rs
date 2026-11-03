@@ -38,7 +38,10 @@ pub mod source;
 
 pub use global_mode::{OilGlobalMode, register_oil_global_mode};
 pub use modes::{OilDir, OilMode, register_oil_modes};
-pub use source::{FsSource, OilSource, OilSourceLocal, source_or_fs};
+pub use source::{
+    FsSource, OilOrigin, OilSource, OilSourceLocal, OilSourceProvider, OilSourceRegistry,
+    OilSourceRegistryHandle, source_or_fs,
+};
 
 use std::path::Path;
 

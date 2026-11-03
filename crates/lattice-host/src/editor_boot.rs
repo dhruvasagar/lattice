@@ -605,6 +605,13 @@ impl Editor {
             arc_swap::ArcSwap::from_pointee(lattice_mode::BufferScopeSourceRegistry::new()),
         );
         boot.register_service::<lattice_mode::BufferScopeSourceRegistryHandle>(scope_sources);
+        // OR.4: where `-` goes from a buffer that is not a file — magit's
+        // file at a revision is in its directory at that revision. Phase B
+        // for the same reason: providers register from their `install`.
+        let oil_sources: lattice_listing::oil::OilSourceRegistryHandle = Arc::new(
+            arc_swap::ArcSwap::from_pointee(lattice_listing::oil::OilSourceRegistry::new()),
+        );
+        boot.register_service::<lattice_listing::oil::OilSourceRegistryHandle>(oil_sources);
         // PR.2: the project resolver — "which project does this buffer
         // belong to", the one answer terminal / compilation / search /
         // the file picker all root from.

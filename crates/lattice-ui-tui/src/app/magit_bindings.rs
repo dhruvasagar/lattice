@@ -1675,6 +1675,115 @@ mod compose_buffers {
         );
     }
 
+    /// OR.4b, end to end and through real keys: `-` in a file at a
+    /// revision lists its directory *at that revision*, and the walk from
+    /// there stays at it. `HEAD~1` holds `old.txt` and `src/gone.rs`, which
+    /// `HEAD` and the working tree do not, so a listing or a file that came
+    /// from either instead fails here.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dash_from_a_file_at_a_revision_explores_that_revision() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let repo = scratch_repo("oil-at-revision-repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        for (file, text) in [
+            ("src/a.rs", "a\n"),
+            ("src/gone.rs", "g\n"),
+            ("old.txt", "old\n"),
+        ] {
+            std::fs::write(repo.join(file), text).unwrap();
+        }
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-q", "-m", "two"]);
+        std::fs::remove_file(repo.join("src/gone.rs")).unwrap();
+        std::fs::remove_file(repo.join("old.txt")).unwrap();
+        std::fs::write(repo.join("src/new.rs"), "n\n").unwrap();
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-q", "-m", "three"]);
+
+        let mut app = app_with_path("a\n", 30, repo.join("src/a.rs"));
+        app.apply(crate::app::Action::EnterCommandLine);
+        press_chars(&mut app, "magit-status");
+        app.apply(crate::app::Action::CommandLineSubmit);
+        assert!(settle_mode(&mut app, "magit-status-mode").await);
+        let status = app.editor.active_pane_buffer_id();
+        let status_name = app.editor.buffers.name_of(status).unwrap_or_default();
+        let label = status_name
+            .strip_prefix("*magit:status:")
+            .and_then(|r| r.strip_suffix('*'))
+            .unwrap_or_else(|| panic!("a status buffer name: {status_name:?}"))
+            .to_string();
+
+        // The file at the revision, opened the way magit's own producers
+        // open it.
+        let blob = |rev: &str, path: &str| format!("*magit:file:{label}:{rev}:{path}*");
+        let out = app
+            .editor
+            .handle_effect(lattice_grammar::Effect::OpenSyntheticBuffer {
+                name: blob("HEAD~1", "src/a.rs"),
+                mode_id: "magit-file-revision-mode".to_string(),
+                content: None,
+                cursor: None,
+                activate_minor: None,
+            });
+        for s in out.renderer_signals {
+            app.handle_renderer_signal(s);
+        }
+        // `-` is `oil-global-mode`'s, a Universal minor that lands after the
+        // buffer's major does: wait for the key to exist before pressing it.
+        assert!(settle_mode(&mut app, "oil-global-mode").await);
+
+        let text = |a: &crate::app::App| a.editor.document.snapshot().buffer.as_string();
+        let echo = |a: &crate::app::App| {
+            a.editor
+                .last_message
+                .as_ref()
+                .map(|m| m.text.clone())
+                .unwrap_or_default()
+        };
+
+        press_chars(&mut app, "-");
+        let listing = app.editor.active_pane_buffer_id();
+        assert_eq!(text(&app), "a.rs\ngone.rs", "src/ at HEAD~1, not on disk");
+        assert_eq!(app.editor.cursor.line, 0, "on the file `-` came from");
+        assert_eq!(echo(&app), "oil: HEAD~1:src/");
+
+        press_chars(&mut app, "-");
+        assert_eq!(
+            app.editor.active_pane_buffer_id(),
+            listing,
+            "re-listed in place"
+        );
+        assert_eq!(text(&app), "src\nf.txt\nold.txt");
+        assert_eq!(app.editor.cursor.line, 0, "on the directory stepped out of");
+
+        press_chars(&mut app, "-");
+        assert_eq!(echo(&app), "oil: HEAD~1:/ is the top");
+
+        // `<CR>` on a file opens it at the revision: `old.txt` exists
+        // nowhere else.
+        press_chars(&mut app, "jj");
+        press(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let opened = app.editor.active_pane_buffer_id();
+        assert_eq!(
+            app.editor.buffers.name_of(opened).as_deref(),
+            Some(blob("HEAD~1", "old.txt").as_str())
+        );
+        assert!(
+            settle(&mut app, |a| text(a) == "old\n").await,
+            "the file's content at HEAD~1; got {:?}",
+            text(&app)
+        );
+
+        // And back: the listing is reused, on the file, and refuses edits.
+        assert!(settle_mode(&mut app, "oil-global-mode").await);
+        press_chars(&mut app, "-");
+        assert_eq!(app.editor.active_pane_buffer_id(), listing);
+        assert_eq!(app.editor.cursor.line, 2, "on old.txt");
+        press_chars(&mut app, "x");
+        assert_eq!(text(&app), "src\nf.txt\nold.txt");
+        assert!(echo(&app).contains("read-only"), "{:?}", echo(&app));
+    }
+
     /// `:magit-commit` from a file in `repo`; the compose buffer's name once
     /// it is seeded. Refuses a buffer not scoped to `repo`, so no test can
     /// commit into the checkout the suite runs in.

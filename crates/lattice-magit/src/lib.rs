@@ -19,6 +19,7 @@ mod conflict_diff;
 mod git_config;
 mod git_report;
 mod hunk_fold_source;
+mod oil_tree;
 // MG.18d: `pub` because `MagitView::refresh_restoring` (a public
 // trait) names `HunkRestore` in its signature.
 pub mod cursor_restore;
@@ -284,6 +285,22 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         tracing::debug!(
             "no buffer-scope registry at magit install; `:files` in a magit buffer \
              will resolve against the working directory"
+        );
+    }
+    // OR.4b: `-` from a file at a revision lists its directory at that
+    // revision. Oil asks by buffer name, the same key `RepoScopes` holds.
+    if let Some(oil_sources) = boot.service::<lattice_listing::oil::OilSourceRegistryHandle>() {
+        let provider: Arc<dyn lattice_listing::oil::OilSourceProvider> =
+            Arc::new(oil_tree::MagitOilOrigins::new(repo_scopes.clone()));
+        oil_sources.rcu(|current| {
+            let mut next = (**current).clone();
+            next.register(provider.clone());
+            Arc::new(next)
+        });
+    } else {
+        tracing::debug!(
+            "no oil source registry at magit install; `-` from a file at a revision \
+             will list the working tree"
         );
     }
     // The store handle exists on `boot` from Phase A; the *service*

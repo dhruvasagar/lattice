@@ -14,6 +14,13 @@
   `:Gdiffsplit!` does, and `d2o`, `d3o` or `dB` in the working file takes a
   side, or both, in place of the conflict markers. A file only one side
   changed or deleted opens as a two-pane diff against the side that has it.
+- **`-` from a file at a revision lists its directory at that revision.** In
+  a magit file view (a file opened from a commit, a stash or the index), `-`
+  opens oil on the file's directory as that revision has it, as vim-fugitive
+  does. `<CR>` on a directory and `-` stay at the revision, `<CR>` on a file
+  opens that file at the revision, and `<C-s>`/`<C-v>`/`<C-t>` open it in a
+  split, vsplit or tab. The listing is read-only. `-` at the top of any oil
+  listing now says so instead of doing nothing.
 
 ### Fixed
 - **The split divider keeps its own colour.** In the terminal, the divider

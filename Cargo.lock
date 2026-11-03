@@ -5641,6 +5641,7 @@ dependencies = [
  "lattice-diff",
  "lattice-grammar",
  "lattice-keymap",
+ "lattice-listing",
  "lattice-mode",
  "lattice-multibuffer",
  "lattice-picker",

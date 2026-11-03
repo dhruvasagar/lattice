@@ -1318,37 +1318,9 @@ impl App {
             Effect::PrevDiagnostic => self.do_prev_diagnostic(),
             Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),
             Effect::OpenAiLog { session } => self.do_open_ai_log(session.as_deref()),
-            Effect::OpenSyntheticBuffer {
-                name,
-                mode_id,
-                content,
-                cursor,
-                activate_minor,
-            } => {
-                // OC.7a: the seeded form. `None` throughout is the
-                // pre-OC.7a call, so native emitters are unaffected.
-                self.open_synthetic_buffer_seeded(
-                    &name,
-                    &mode_id,
-                    content.as_deref(),
-                    cursor,
-                    activate_minor.as_deref(),
-                )
-            }
-            // MG.50: the synthetic peer of `OpenBufferAt`, and the same
-            // two writes in the same order — open, THEN position against
-            // the now-active buffer. Splitting them into two effects
-            // would place the caret against whatever was active before.
-            Effect::OpenSyntheticBufferAt {
-                name,
-                mode_id,
-                position,
-            } => {
-                self.open_synthetic_buffer(&name, &mode_id);
-                self.mutate_editor_with(move |e| {
-                    e.set_cursor_clamped(position);
-                });
-            }
+            // 3W.4: host-applied in `handle_effect`, so a `Many` that opens
+            // a synthetic buffer and then acts on it runs in order.
+            Effect::OpenSyntheticBuffer { .. } | Effect::OpenSyntheticBufferAt { .. } => {}
             // PI.2b: dump the plugin-API catalog into a savable buffer.
             Effect::ExportPluginApi { format } => {
                 self.mutate_editor(move |e| e.do_export_plugin_api(format.as_deref()))

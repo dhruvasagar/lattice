@@ -3793,6 +3793,36 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         Effect::OpenDashboard => {
             out.renderer_signals.extend(editor.do_open_dashboard());
         }
+        // 3W.4: host-applied, so a `Many` that opens a synthetic buffer and
+        // then acts on it (magit's `dv`: open the index copy, then
+        // `Diffsplit` against it) runs in order. Both peers applied these,
+        // and a `Many`'s host half runs before any peer arm, so the
+        // `Diffsplit` ran first against whatever pane was active — `dv`
+        // from magit-status diffed nothing.
+        Effect::OpenSyntheticBuffer {
+            name,
+            mode_id,
+            content,
+            cursor,
+            activate_minor,
+        } => {
+            editor.open_synthetic_buffer_seeded(
+                &name,
+                &mode_id,
+                content.as_deref(),
+                cursor,
+                activate_minor.as_deref(),
+            );
+        }
+        // MG.50: open, THEN position against the now-active buffer.
+        Effect::OpenSyntheticBufferAt {
+            name,
+            mode_id,
+            position,
+        } => {
+            editor.open_synthetic_buffer(&name, &mode_id);
+            editor.set_cursor_clamped(position);
+        }
         Effect::RecordJump => {
             // M.10.3 (2026-06-03): record the current cursor +
             // active buffer onto the position-history ring as an
@@ -19980,8 +20010,7 @@ impl Editor {
     }
 
     /// WK.10: absorb the effects an OFF-KEYSTROKE drain's renderer tail
-    /// would drop — the popup pair, and opening a synthetic buffer —
-    /// host-side.
+    /// would drop — the popup pair — host-side.
     ///
     /// `apply_effect_host` deliberately routes `OpenPopup` / `DismissPopup`
     /// to `out.effects` for a renderer to drain. Off a keystroke there is no
@@ -19998,12 +20027,10 @@ impl Editor {
     /// them is how the second one got missed; a third off-keystroke drain
     /// calls this and inherits the fix.
     ///
-    /// `OpenSyntheticBuffer` has the same hazard and the same remedy: both
-    /// peers apply it by calling [`Self::open_synthetic_buffer_seeded`],
-    /// so the host can call it with nothing lost. A producer that opens a
-    /// buffer when its work lands — a pull stopped before its merge commit
-    /// opening the commit buffer — was otherwise a no-op until a key went
-    /// through a peer that never received it either.
+    /// `OpenSyntheticBuffer` had the same hazard and was absorbed here too,
+    /// until 3W.4 moved it into `handle_effect` for every path: a `Many`
+    /// that opens a buffer and then acts on it must open it first, and the
+    /// renderer tail runs after the whole `Many`.
     ///
     /// Anything else keeps the old routing — back onto the tail, in case a
     /// peer is in a position to drain it.
@@ -20024,19 +20051,6 @@ impl Editor {
                 lattice_grammar::Effect::DismissPopupNamed { name } => {
                     self.dismiss_popup_named(&name);
                 }
-                lattice_grammar::Effect::OpenSyntheticBuffer {
-                    name,
-                    mode_id,
-                    content,
-                    cursor,
-                    activate_minor,
-                } => self.open_synthetic_buffer_seeded(
-                    &name,
-                    &mode_id,
-                    content.as_deref(),
-                    cursor,
-                    activate_minor.as_deref(),
-                ),
                 other => out.effects.push(other),
             }
         }
@@ -55654,6 +55668,42 @@ mod tests {
         });
         assert_eq!(editor.pane_tree.leaves().len(), panes_before);
         assert!(editor.diff_subsystem.is_empty());
+    }
+
+    /// A `Many` that opens buffers and then names them runs in order, the
+    /// way a chord's effects are applied (`apply_effect_host`). The opens
+    /// were renderer-applied, so they ran after the whole `Many` and the
+    /// layout found neither copy.
+    #[tokio::test]
+    async fn a_many_opens_its_buffers_before_the_effect_that_names_them() {
+        let working = write_temp(CONFLICTED, "3w4-many");
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let open = |name: &str, text: &str| Effect::OpenSyntheticBuffer {
+            name: name.into(),
+            mode_id: "plugin-output-mode".into(),
+            content: Some(text.into()),
+            cursor: None,
+            activate_minor: None,
+        };
+        let mut out = DispatchOutcome::default();
+        apply_effect_host(
+            &mut editor,
+            Effect::Many(vec![
+                open("theirs-copy", "keep\ntheirs\nkeep too\n"),
+                open("ours-copy", "keep\nours\nkeep too\n"),
+                Effect::DiffResolve {
+                    ours: "ours-copy".into(),
+                    working: working.0.clone(),
+                    theirs: "theirs-copy".into(),
+                },
+            ]),
+            &mut out,
+        );
+        let participants = editor
+            .diff_subsystem
+            .session_participants(editor.document_buffer_id)
+            .expect("the layout found both copies");
+        assert_eq!(participants.len(), 3);
     }
 
     // ──────────────────────────────────────────────────────

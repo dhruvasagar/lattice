@@ -5358,11 +5358,18 @@ impl Editor {
             .diff_subsystem
             .session_participants(session_key)
             .unwrap_or_default();
-        self.diff_subsystem.mode_bridge().note_conflict_state(
+        let queued = self.diff_subsystem.mode_bridge().note_conflict_state(
             session_key,
             &participants,
             has_conflicts,
         );
+        // The activation drains on the next tick. Off the keystroke path
+        // (a recompute landing) nothing else brings one, so the mode, and
+        // `d2o` / `d3o` with it, would wait for the user's next key. Wake
+        // the actor; its re-publish finds no transition and stops there.
+        if queued {
+            self.async_landed.notify_one();
+        }
     }
 
     /// D.3.a.1 / D.4.d.3.a / D.6.g / **D.8.f (2026-05-31)** —

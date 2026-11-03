@@ -19,6 +19,9 @@
   diff they always moved by the right-hand pane's line numbers, so from the
   left pane they landed on the wrong lines wherever the two sides' lengths
   differed.
+- **A diff's signs and conflict keys appear as soon as it is computed.** A
+  side-by-side diff could leave its gutter signs, line colours and the
+  `d2o` / `d3o` conflict keys waiting for the next key press.
 
 ## 0.9.13 — 2026-10-29
 

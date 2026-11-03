@@ -833,12 +833,17 @@ impl DiffModeBridge {
     /// two conflict sessions stays active until the last clears); on
     /// `true → false` it queues a Deactivate for each whose conflict
     /// refcount hits zero.
+    ///
+    /// Returns whether the session's conflict state changed, which is when
+    /// anything can have been queued. The queue drains on the host's next
+    /// tick, so a caller off the keystroke path must wake the host when
+    /// this is true, or the mode waits for the user's next key.
     pub fn note_conflict_state(
         &self,
         session_key: BufferId,
         participants: &[BufferId],
         has_conflicts: bool,
-    ) {
+    ) -> bool {
         let mut state = self.state.lock().expect("DiffModeBridge mutex poisoned");
         let currently = state.conflict_sessions.contains_key(&session_key);
         if has_conflicts && !currently {
@@ -854,7 +859,10 @@ impl DiffModeBridge {
             for b in parts {
                 Self::dec_conflict(&mut state, session_key, b);
             }
+        } else {
+            return false;
         }
+        true
     }
 
     fn inc_conflict(state: &mut BridgeState, session_key: BufferId, buffer: BufferId) {
@@ -1047,7 +1055,10 @@ mod tests {
     #[test]
     fn conflict_state_activates_and_deactivates_per_transition() {
         let bridge = DiffModeBridge::new();
-        bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], true);
+        assert!(
+            bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], true),
+            "a transition says so, so the host can wake to drain it"
+        );
         let changes = bridge.drain_pending();
         assert_eq!(changes.len(), 2);
         assert!(
@@ -1055,11 +1066,12 @@ mod tests {
                 .iter()
                 .all(|c| c.kind == DiffModeKind::Conflict && c.action == DiffModeAction::Activate)
         );
-        // Idempotent: still conflict-bearing → nothing queued.
-        bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], true);
+        // Idempotent: still conflict-bearing → nothing queued, and no
+        // reason to wake.
+        assert!(!bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], true));
         assert!(bridge.drain_pending().is_empty());
         // Cleared → one Deactivate per participant.
-        bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], false);
+        assert!(bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], false));
         let changes = bridge.drain_pending();
         assert_eq!(changes.len(), 2);
         assert!(

@@ -1209,6 +1209,19 @@ impl DiffSession {
     /// `took` flag captures whichever decision the *winning*
     /// closure invocation made.
     pub fn try_publish_if_newer(&self, idx: Arc<HunkIndex>) -> bool {
+        let took = self.take_if_newer(idx);
+        // D.3.a.1: fire publish_notify on a successful take so
+        // the diff-overlay wake forwarder reacts immediately
+        // to the hunk republish.
+        if took {
+            self.publish_notify.notify_one();
+        }
+        took
+    }
+
+    /// [`Self::try_publish_if_newer`] without the wake, for a publisher
+    /// with more to store before anyone is woken to read it.
+    fn take_if_newer(&self, idx: Arc<HunkIndex>) -> bool {
         let new_rev = idx.revision;
         let mut took = false;
         self.hunks.rcu(|current| {
@@ -1220,12 +1233,6 @@ impl DiffSession {
                 Arc::clone(current)
             }
         });
-        // D.3.a.1: fire publish_notify on a successful take so
-        // the diff-overlay wake forwarder reacts immediately
-        // to the hunk republish.
-        if took {
-            self.publish_notify.notify_one();
-        }
         took
     }
 
@@ -1274,7 +1281,7 @@ impl DiffSession {
             algorithm: self.algorithm,
             revision,
         });
-        if self.try_publish_if_newer(Arc::clone(&idx)) {
+        if self.take_if_newer(Arc::clone(&idx)) {
             // D-fix.3a (2026-06-26): publish the current-side sign map in
             // lockstep with the hunks, here at the single recompute choke
             // point, so EVERY session gets line tints + gutter signs — inline
@@ -1297,6 +1304,12 @@ impl DiffSession {
             // trailing phantom line; the fold source's `>= 2`-line floor
             // + per-hunk context window absorb that off-by-one at EOF.
             self.publish_slot_line_counts(sources.iter().map(|r| r.len_lines() as u32).collect());
+            // Wake readers only now. Woken on the hunks alone, the render
+            // that answers could read the previous sign map, and nothing
+            // would wake it again: the gutter, the line tints and
+            // `diff-conflict-mode` (which reads the sign map) then waited
+            // for the user's next key.
+            self.publish_notify.notify_one();
             Some(idx)
         } else {
             None

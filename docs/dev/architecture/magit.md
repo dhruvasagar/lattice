@@ -101,6 +101,7 @@ can host serious, production-grade functionality.
 │    refs/heads/*). Fires RepositoryEvent on event bus.        │
 │    Auto-registers DiffSession(GitBaseline(HEAD, path)) on    │
 │    DocumentOpened — gutter signs appear immediately.         │
+│    Steps aside while an explicit diff holds the buffer.      │
 │    Option git.auto-head-diff (default true).                 │
 │    CORE — stays in host (same category as LSP/diff).         │
 └────────────────────────┬─────────────────────────────────────┘
@@ -114,6 +115,17 @@ can host serious, production-grade functionality.
 │    Zero lattice-* dependencies. Leaf crate.                  │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+**The HEAD diff yields to an explicit one.** A buffer is in at most one
+diff session, and the HEAD session holds every tracked file from the
+moment it opens. So an explicit diff (`:diffsplit`, `:diff`, magit's `dv`,
+a conflict opened for resolution) takes the buffer over: the subsystem
+drops its session and keeps what it needs to re-arm it (workdir and
+path), and the explicit diff's teardown hands the buffer back. A file
+the explicit diff itself opens is recorded as stepped aside without ever
+registering, since registering would replace that session's descriptor.
+Before this, every explicit diff of a tracked file was refused as
+"already in a diff session".
 
 ### 3.1 Why `lattice-vcs` and `lattice-magit` are separate crates
 

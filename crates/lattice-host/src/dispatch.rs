@@ -4867,13 +4867,15 @@ impl Editor {
             return;
         };
         let path = path.to_path_buf();
-        if self.diff_subsystem.lookup(buffer_id).is_some() {
+        if self.holds_explicit_diff(buffer_id) {
             self.set_message(
                 EchoLevel::Info,
                 format!("Diff session already open for buffer {}", buffer_id.0),
             );
             return;
         }
+        // Its diff against HEAD steps aside; teardown hands it back.
+        self.yield_head_diff(buffer_id);
         let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
             std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
                 self.buffers.clone(),
@@ -5897,6 +5899,37 @@ impl Editor {
         // watcher buckets, descriptor, secondary index, and
         // debouncer in one shot.
         self.diff_subsystem.drop_session(primary);
+        // Hand each file's diff against HEAD back, now the explicit
+        // diff no longer holds it.
+        self.reclaim_head_diffs(&watch);
+    }
+
+    /// Step `buffer`'s diff against HEAD (the gutter signs, VCS.2) aside
+    /// for an explicit diff. False when it has none.
+    fn yield_head_diff(&self, buffer: lattice_core::BufferId) -> bool {
+        self.vcs_subscription_guard
+            .as_ref()
+            .is_some_and(|g| g.subsystem().yield_buffer(buffer, &self.diff_subsystem))
+    }
+
+    /// Re-arm the diff against HEAD of every buffer in `buffers` that
+    /// stepped aside and is no longer in a diff.
+    fn reclaim_head_diffs(&self, buffers: &[lattice_core::BufferId]) {
+        if let Some(g) = self.vcs_subscription_guard.as_ref() {
+            for b in buffers {
+                g.subsystem().reclaim(*b, &self.diff_subsystem);
+            }
+        }
+    }
+
+    /// `buffer` is in a diff the user opened: any session but its own diff
+    /// against HEAD, which an explicit diff takes over.
+    fn holds_explicit_diff(&self, buffer: lattice_core::BufferId) -> bool {
+        self.diff_subsystem.lookup_session_for(buffer).is_some()
+            && !self
+                .vcs_subscription_guard
+                .as_ref()
+                .is_some_and(|g| g.subsystem().holds_head_diff(buffer))
     }
 
     /// D.8.e (2026-05-31): `:diffthis` — per-buffer toggle on
@@ -6343,13 +6376,23 @@ impl Editor {
             crate::diff::subsystem::ConflictLayout::Merge => members[1].buffer,
             crate::diff::subsystem::ConflictLayout::Resolve => members[0].buffer,
         };
-        for m in &members {
-            if self.diff_subsystem.lookup_session_for(m.buffer).is_some() {
-                return Err(format!(
-                    "buffer {} already participates in a diff session",
-                    m.buffer.0
-                ));
-            }
+        // A file's diff against HEAD (the gutter signs) steps aside for the
+        // explicit diff, and is handed back on every failure below.
+        let yielded: Vec<lattice_core::BufferId> = members
+            .iter()
+            .map(|m| m.buffer)
+            .filter(|b| self.yield_head_diff(*b))
+            .collect();
+        if let Some(busy) = members
+            .iter()
+            .find(|m| self.diff_subsystem.lookup_session_for(m.buffer).is_some())
+        {
+            let msg = format!(
+                "buffer {} already participates in a diff session",
+                busy.buffer.0
+            );
+            self.reclaim_head_diffs(&yielded);
+            return Err(msg);
         }
 
         let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
@@ -6399,14 +6442,17 @@ impl Editor {
                 2,
             ))
         };
-        let pane_group_id = self
-            .add_pane_group(members.clone(), mapper)
-            .inspect_err(|_e| {
-                // Roll back the session if pane-group
-                // registration fails — otherwise we'd leave
-                // a session with no UI binding.
+        let pane_group_id = match self.add_pane_group(members.clone(), mapper) {
+            Ok(id) => id,
+            Err(e) => {
+                // Roll back the session if pane-group registration
+                // fails — otherwise we'd leave a session with no UI
+                // binding.
                 self.diff_subsystem.drop_session(primary);
-            })?;
+                self.reclaim_head_diffs(&yielded);
+                return Err(e);
+            }
+        };
         session.bind_pane_group(pane_group_id);
 
         // Filler provider per slot. Side encoding stays the
@@ -6516,11 +6562,7 @@ impl Editor {
         // diff session — defence-in-depth so the user gets
         // a clear error before any split / open work
         // happens.
-        if self
-            .diff_subsystem
-            .lookup_session_for(active_member.buffer)
-            .is_some()
-        {
+        if self.holds_explicit_diff(active_member.buffer) {
             self.set_message(
                 EchoLevel::Error,
                 format!(

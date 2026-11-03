@@ -22,6 +22,12 @@
 - **A diff's signs and conflict keys appear as soon as it is computed.** A
   side-by-side diff could leave its gutter signs, line colours and the
   `d2o` / `d3o` conflict keys waiting for the next key press.
+- **`:diffsplit`, `:diff` and magit's `dv` work on files in a git
+  repository.** Each refused such a file as "already has an active diff
+  session", because the file's gutter signs against HEAD held it. The diff
+  you open now takes over, and the signs come back after `:diffoff`.
+- **Gutter signs appear on every file you open in a repository.** A file
+  opened once other buffers existed could get none.
 
 ## 0.9.13 — 2026-10-29
 

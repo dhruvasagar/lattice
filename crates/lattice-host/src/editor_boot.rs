@@ -1785,16 +1785,7 @@ impl Editor {
         let vcs_subsystem = std::sync::Arc::new(crate::vcs::VcsSubsystem::new());
         let vcs_subscription_guard = {
             let _enter = runtime_handle.enter();
-            let resolver: std::sync::Arc<dyn crate::diff::subsystem::DocumentBufferResolver> =
-                std::sync::Arc::new(crate::diff::subsystem::BufferRegistryDocumentResolver::new(
-                    buffers.clone(),
-                ));
-            vcs_subsystem.bind(
-                event_bus.clone(),
-                diff_subsystem.clone(),
-                config.clone(),
-                resolver,
-            )
+            vcs_subsystem.bind(event_bus.clone(), diff_subsystem.clone(), config.clone())
         };
 
         // M.7: pre-create shared fold registry so `FoldOverlayServiceImpl`

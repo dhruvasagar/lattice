@@ -1357,6 +1357,70 @@ mod compose_buffers {
         repo
     }
 
+    /// `:diffsplit` on a file in a repository. The file's diff against
+    /// HEAD (its gutter signs) held the buffer from the moment it opened,
+    /// so every explicit diff of a tracked file was refused with "already
+    /// has an active diff session". The explicit diff now takes the buffer
+    /// over, and `:diffoff` hands it back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn diffsplit_takes_over_a_tracked_files_gutter_and_diffoff_restores_it() {
+        let repo = scratch_repo("diffsplit-tracked-repo");
+        std::fs::write(repo.join("f.txt"), "changed\n").unwrap();
+        std::fs::write(repo.join("other.txt"), "base\n").unwrap();
+        // Opened with `:e` after boot, the way a user opens a file.
+        let mut app = app_with("", 30);
+        app.apply(crate::app::Action::EnterCommandLine);
+        press_chars(&mut app, &format!("e {}", repo.join("f.txt").display()));
+        app.apply(crate::app::Action::CommandLineSubmit);
+        let file = app.editor.document_buffer_id;
+        let head_diff = |a: &crate::app::App| {
+            a.editor
+                .vcs_subscription_guard
+                .as_ref()
+                .is_some_and(|g| g.subsystem().holds_head_diff(file))
+        };
+        assert!(
+            settle(&mut app, head_diff).await,
+            "precondition: f.txt is diffed against HEAD"
+        );
+
+        app.apply(crate::app::Action::EnterCommandLine);
+        press_chars(
+            &mut app,
+            &format!("diffsplit {}", repo.join("other.txt").display()),
+        );
+        app.apply(crate::app::Action::CommandLineSubmit);
+        assert_eq!(
+            app.editor.pane_tree.leaves().len(),
+            2,
+            "the split opened; last message: {:?}",
+            app.editor.last_message
+        );
+        assert!(!head_diff(&app), "the explicit diff holds the file");
+        let session = app
+            .editor
+            .diff_subsystem
+            .lookup_session_for(file)
+            .expect("f.txt is in the explicit diff");
+        assert_eq!(
+            app.editor
+                .diff_subsystem
+                .session_participants(session.buffer_id())
+                .map(|p| p.len()),
+            Some(2)
+        );
+
+        app.editor.activate_buffer(file);
+        app.apply(crate::app::Action::EnterCommandLine);
+        press_chars(&mut app, "diffoff");
+        app.apply(crate::app::Action::CommandLineSubmit);
+        assert!(head_diff(&app), "`:diffoff` hands the gutter back");
+        assert!(
+            app.editor.diff_subsystem.lookup(file).is_some(),
+            "and its session is registered again"
+        );
+    }
+
     /// `:magit-commit` from a file in `repo`; the compose buffer's name once
     /// it is seeded. Refuses a buffer not scoped to `repo`, so no test can
     /// commit into the checkout the suite runs in.

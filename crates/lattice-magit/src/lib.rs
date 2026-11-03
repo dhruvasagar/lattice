@@ -15,6 +15,7 @@ pub mod buffer_state;
 mod cherry_move;
 mod conclude;
 mod confirm;
+mod conflict_diff;
 mod git_config;
 mod git_report;
 mod hunk_fold_source;

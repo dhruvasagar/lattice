@@ -200,8 +200,8 @@ branch status line, not a per-commit list:
 
 | Section | Content | Data source |
 |---|---|---|
-| Staged changes | Files with changes in the index — paths + status only. Diffs loaded on demand via `=`. | `WorkingTree::statuses(repo)` filtered to `Modified`/`Added`/`Conflicted` (staged) |
-| Unstaged changes | Files with working-tree changes — paths + status only. Diffs loaded on demand via `=`. | `WorkingTree::statuses(repo)` filtered to `Modified`/`Deleted`/`Unmerged`/`Conflicted` (unstaged) |
+| Staged changes | Files with changes in the index — paths + status only. Diffs loaded on demand via `=`. | `PathChange::staged` of `WorkingTree::statuses(repo)` |
+| Unstaged changes | Files with working-tree changes, and every conflicted path — paths + status only. Diffs loaded on demand via `=`. | `PathChange::unstaged` of `WorkingTree::statuses(repo)`, which also carries `Unmerged(kind)` |
 | Untracked files | Untracked files, listed | `WorkingTree::statuses(repo)` filtered to `Untracked` |
 | Stashes | List of stashes with messages | `Stash::list(repo)` via gix |
 | Unmerged into &lt;upstream&gt; | Commits this branch has that its upstream does not — the unpushed list. Named for the tracked ref (`origin/main`). | `git log @{upstream}..HEAD` (CLI) |
@@ -225,9 +225,35 @@ The unpushed list is **not** capped the way recent commits are: "how
 much have I not pushed" is a number the reader wants exactly right, and
 truncating it would make the header's own count a lie.
 
-A `Conflicted` path appears in BOTH the Staged and Unstaged sections
-simultaneously — real double-listing, not a bug (see §7.2's `entry_key`
-note on why this matters for expansion state).
+A conflicted path is listed **once**, under Unstaged changes, labelled in
+git's own words: `both modified`, `added by us`, `deleted by them` and the
+rest of `UnmergedKind`. An unmerged path has no index-vs-HEAD axis to list
+under Staged; `PathChange` carries it as a whole-path state on the unstaged
+side. A path *can* still appear in both sections, when it is partly staged
+and further modified (see §7.2's `entry_key` note on why that matters for
+expansion state).
+
+**Diffing a conflicted file opens it for resolution** (3W.4). `dd` and `dv`
+on a conflicted row, or inside its `diff --cc`, open the vim-fugitive
+`:Gdiffsplit!` view rather than git's combined diff: ours | working |
+theirs, git's two copies (stages 2 and 3, opened as
+`magit-file-revision-mode` buffers under the `[ours]` / `[theirs]`
+pseudo-refs) either side of the working file, diffed as a `Resolve`
+session (`diff-extraction.md` §4) so `d2o` / `d3o` / `dB` resolve a
+marker block in place. Which copies exist is read off the row's label, not
+asked of git again:
+
+| Label | Opens |
+|---|---|
+| `both modified`, `both added` | ours \| working \| theirs |
+| `added by us`, `deleted by them` | working against ours, two panes |
+| `added by them`, `deleted by us` | working against theirs, two panes |
+| `both deleted` | an echo: there is nothing to diff |
+
+The one-sided cases are two panes because the missing side *is* the
+conflict (one branch has the file, the other deleted it), not a gap to
+fill with an empty pane. `=` keeps showing the combined diff inline: it
+is the overview, the resolution view is the work.
 
 **Section rendering:** Each section has a header line (bold, with section name
 and item count) followed by its body. Sections are fold regions anchored at the
@@ -929,7 +955,7 @@ pub struct StatusBufferState {
 ```
 
 Keyed by `entry_key()`, which includes `staged` for `File` entries — a
-`Conflicted` path appears in BOTH the Staged and Unstaged sections at once
+partly-staged path appears in BOTH the Staged and Unstaged sections at once
 (§4.1), as two distinct buffer rows that can be independently expanded;
 collapsing that distinction into a path-only key would let expanding one
 row's diff make `toggle_expand` treat the *other* row as already-expanded

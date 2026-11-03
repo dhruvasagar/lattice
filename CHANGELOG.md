@@ -9,6 +9,11 @@
 - **Plugins can write to `*messages*` from background work.** The new
   `ui.notify` call reports an outcome when there is no command to echo it, such
   as a scan finishing.
+- **Diffing a conflicted file in magit opens it for resolution.** `dd` or
+  `dv` on a conflicted row shows ours | working | theirs, as vim-fugitive's
+  `:Gdiffsplit!` does, and `d2o`, `d3o` or `dB` in the working file takes a
+  side, or both, in place of the conflict markers. A file only one side
+  changed or deleted opens as a two-pane diff against the side that has it.
 
 ### Fixed
 - **The split divider keeps its own colour.** In the terminal, the divider
@@ -28,6 +33,8 @@
   you open now takes over, and the signs come back after `:diffoff`.
 - **Gutter signs appear on every file you open in a repository.** A file
   opened once other buffers existed could get none.
+- **`dv` in magit status works on a file's row.** It only worked inside an
+  expanded diff, and on the row itself did nothing.
 
 ## 0.9.13 — 2026-10-29
 

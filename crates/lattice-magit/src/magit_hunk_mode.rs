@@ -249,10 +249,16 @@ fn diff_side_by_side(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_gr
     let store = ctx.services.get::<lattice_mode::BufferStoreHandle>()?;
     let handle = store.handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32))?;
     let snap = handle.snapshot();
-    let path = crate::hunk::path_at_cursor(
-        |i| u32::try_from(i).ok().and_then(|l| snap.buffer.line(l)),
-        ctx.cursor.line as usize,
-    )?;
+    // A magit-status file row names its own path; anywhere else the path
+    // is the diff's. The row is asked first: scanning up for a
+    // `diff --git` header from a row below an expanded diff would find
+    // the other file's.
+    let path = status_row_path(ctx).or_else(|| {
+        crate::hunk::path_at_cursor(
+            |i| u32::try_from(i).ok().and_then(|l| snap.buffer.line(l)),
+            ctx.cursor.line as usize,
+        )
+    })?;
 
     // Which version is "the other side" depends on what this buffer's
     // diff was taken against — the same question `s` / `u` / `x` ask,
@@ -265,11 +271,34 @@ fn diff_side_by_side(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_gr
     // *Showing* two versions has no such ambiguity — the question is
     // "which version", not "which tree do I write to" — so `None`
     // resolves to HEAD rather than declining.
-    let git_ref = baseline_ref(view.diff_source(ctx.cursor), || {
-        view.commit_at_cursor(ctx.cursor)
-    })?;
-
+    let source = view.diff_source(ctx.cursor);
     let workdir = view.workdir()?;
+    let label =
+        crate::repo_scope::label_of_buffer(&store, lattice_core::BufferId(ctx.buffer_id.0 as u32));
+
+    // 3W.4: a conflicted file has no index copy (stage 0) to diff
+    // against; it opens for resolution instead. A commit's or the
+    // index's diff cannot be a conflict, and a merge commit's `diff --cc`
+    // must not read as one.
+    use crate::buffer_state::DiffSource;
+    if !matches!(
+        source,
+        Some(DiffSource::Committed) | Some(DiffSource::Staged)
+    ) {
+        let lines: Vec<String> = (0..snap.buffer.content_line_count())
+            .filter_map(|l| snap.buffer.line(l))
+            .collect();
+        if let Some(kind) =
+            crate::conflict_diff::conflict_of(lines.iter().map(String::as_str), &path)
+        {
+            return Some(crate::conflict_diff::conflict_diff_effect(
+                &label, &workdir, &path, kind,
+            ));
+        }
+    }
+
+    let git_ref = baseline_ref(source, || view.commit_at_cursor(ctx.cursor))?;
+
     let absolute = workdir.join(&path);
     // A file the commit deleted, or one not yet written, has no
     // working-tree side to put in the right-hand pane. Saying so beats
@@ -284,12 +313,17 @@ fn diff_side_by_side(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_gr
         });
     }
 
-    Some(side_by_side_effects(
-        &crate::repo_scope::label_of_buffer(&store, lattice_core::BufferId(ctx.buffer_id.0 as u32)),
-        &git_ref,
-        &path,
-        absolute,
-    ))
+    Some(side_by_side_effects(&label, &git_ref, &path, absolute))
+}
+
+/// The path a magit-status file row lists, when the cursor is on one.
+fn status_row_path(ctx: &lattice_mode::ActionContext<'_>) -> Option<std::path::PathBuf> {
+    let state = crate::actions::status_state(ctx)?;
+    let g = state.lock().ok()?;
+    match crate::actions::classify_line(&g, ctx.cursor.line)? {
+        crate::actions::StatusLine::File { path, .. } => Some(path),
+        _ => None,
+    }
 }
 
 /// Which version is the left-hand side.

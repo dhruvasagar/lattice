@@ -1130,6 +1130,23 @@ fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution
             let StatusLine::File { path, staged, .. } = classify_line(&g, ctx.cursor.line)? else {
                 return None;
             };
+            // 3W.4: a conflicted file opens for resolution instead of as
+            // git's combined diff. Only an unstaged row can be one: git
+            // lists an unmerged path on that axis alone.
+            if !staged {
+                let snap = g.store.handle_for(g.buffer_id)?.snapshot();
+                let lines: Vec<String> = (0..snap.buffer.content_line_count())
+                    .filter_map(|l| snap.buffer.line(l))
+                    .collect();
+                if let Some(kind) =
+                    crate::conflict_diff::conflict_of(lines.iter().map(String::as_str), &path)
+                {
+                    let label = crate::repo_scope::label_of_buffer(&g.store, g.buffer_id);
+                    return Some(crate::conflict_diff::conflict_diff_effect(
+                        &label, &g.workdir, &path, kind,
+                    ));
+                }
+            }
             // MR.3b: the scope and the path are this view's `rest`;
             // the repository in front of them comes from the buffer this
             // fired in, which is the status buffer of the repo being

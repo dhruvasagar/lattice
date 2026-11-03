@@ -1357,6 +1357,145 @@ mod compose_buffers {
         repo
     }
 
+    /// A merge of `side` into `main` stopped on a conflict in `f.txt`, and
+    /// left unresolved: the working file holds git's markers.
+    fn conflicted_merge(name: &str) -> std::path::PathBuf {
+        let repo = scratch_repo(name);
+        git_in(&repo, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repo.join("f.txt"), "side\n").unwrap();
+        git_in(&repo, &["commit", "-q", "-am", "on side"]);
+        git_in(&repo, &["checkout", "-q", "main"]);
+        std::fs::write(repo.join("f.txt"), "main\n").unwrap();
+        git_in(&repo, &["commit", "-q", "-am", "on main"]);
+        git_in(&repo, &["merge", "side"]);
+        let working = std::fs::read_to_string(repo.join("f.txt")).unwrap();
+        assert!(working.contains("<<<<<<<"), "precondition: {working:?}");
+        repo
+    }
+
+    /// 3W.4, end to end: `dd` on a conflicted row in magit-status opens
+    /// ours | working | theirs with git's own copies, and `d2o` in the
+    /// working file replaces the marker block with ours. Both steps go
+    /// through real keys, a real `git merge` and real async loads, so a
+    /// copy that never fills, or conflict mode that never turns on in the
+    /// working pane, fails here.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dd_on_a_conflicted_file_opens_it_for_resolution() {
+        let repo = conflicted_merge("resolve-conflict-repo");
+        let marked = std::fs::read_to_string(repo.join("f.txt")).unwrap();
+        let mut app = app_with_path(&marked, 30, repo.join("f.txt"));
+        app.apply(crate::app::Action::EnterCommandLine);
+        press_chars(&mut app, "magit-status");
+        app.apply(crate::app::Action::CommandLineSubmit);
+        assert!(settle_mode(&mut app, "magit-status-mode").await);
+
+        let lines_of = |app: &crate::app::App, id: lattice_core::BufferId| -> Vec<String> {
+            let Some(h) = app.editor.buffers.document_handle(id) else {
+                return vec![];
+            };
+            let snap = h.snapshot();
+            (0..snap.buffer.content_line_count())
+                .map(|l| snap.buffer.line(l).unwrap_or_default())
+                .collect()
+        };
+        let status = app.editor.active_pane_buffer_id();
+        assert!(
+            settle(&mut app, |a| lines_of(a, status)
+                .iter()
+                .any(|l| l.starts_with("  both modified")))
+            .await,
+            "precondition: the conflicted row is listed"
+        );
+        let row = lines_of(&app, status)
+            .iter()
+            .position(|l| l.starts_with("  both modified"))
+            .unwrap() as u32;
+        app.editor.cursor = lattice_protocol::position::Position::new(row, 0);
+        app.editor.snapshot_active_pane();
+
+        press_chars(&mut app, "dd");
+
+        let order = |a: &crate::app::App| -> Vec<String> {
+            a.editor
+                .pane_tree
+                .leaves()
+                .iter()
+                .map(|l| a.editor.buffers.name_of(l.buffer_id).unwrap_or_default())
+                .collect()
+        };
+        let panes = order(&app);
+        assert_eq!(
+            panes.len(),
+            3,
+            "three panes: {panes:?}; last message: {:?}",
+            app.editor.last_message
+        );
+        assert!(panes[0].contains("[ours]"), "{panes:?}");
+        assert!(panes[2].contains("[theirs]"), "{panes:?}");
+        let working = app.editor.document_buffer_id;
+        assert_eq!(
+            app.editor.pane_tree.active().buffer_id,
+            working,
+            "the cursor is in the working file"
+        );
+
+        // The copies fill asynchronously and the diff recomputes as they
+        // land; conflict mode turns on once a conflict is published. No
+        // key is pressed: each step is the editor actor's own wake arm
+        // (`async_landed` → tick → publish render state), so a recompute
+        // that wakes nothing fails here.
+        let conflict_mode = lattice_mode::ModeId::new("diff-conflict-mode");
+        let conflict_on = |a: &crate::app::App| {
+            a.editor
+                .active_modes
+                .get(&working)
+                .is_some_and(|m| m.is_active(conflict_mode))
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !conflict_on(&app) && std::time::Instant::now() < deadline {
+            let woken = app.editor.async_landed.clone();
+            // No wake means nothing would have run in the editor either:
+            // stop rather than tick on the timeout, which would pass a
+            // result that never woke anything.
+            if tokio::time::timeout(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+                woken.notified(),
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+            for s in app.editor.run_tick_pending() {
+                app.handle_renderer_signal(s);
+            }
+            app.editor.publish_render_state();
+        }
+        assert!(
+            conflict_on(&app),
+            "diff-conflict-mode is on in the working pane; copies: {:?} / {:?}; hunks {:?}",
+            lines_of(&app, app.editor.buffers.by_name(&panes[0]).unwrap()),
+            lines_of(&app, app.editor.buffers.by_name(&panes[2]).unwrap()),
+            app.editor
+                .diff_subsystem
+                .lookup(working)
+                .map(|s| s.current_hunks()),
+        );
+
+        let block = lines_of(&app, working)
+            .iter()
+            .position(|l| l.starts_with("<<<<<<<"))
+            .unwrap() as u32;
+        app.editor.cursor = lattice_protocol::position::Position::new(block, 0);
+        app.editor.snapshot_active_pane();
+        press_chars(&mut app, "d2o");
+        assert_eq!(
+            lines_of(&app, working),
+            vec!["main".to_string()],
+            "d2o keeps ours and drops the markers"
+        );
+    }
+
     /// `:diffsplit` on a file in a repository. The file's diff against
     /// HEAD (its gutter signs) held the buffer from the moment it opened,
     /// so every explicit diff of a tracked file was refused with "already
@@ -1418,6 +1557,121 @@ mod compose_buffers {
         assert!(
             app.editor.diff_subsystem.lookup(file).is_some(),
             "and its session is registered again"
+        );
+    }
+
+    /// `dv` on a conflicted row opens the same resolution view as `dd`:
+    /// both are "diff this file", and a conflicted file has no index copy
+    /// for `dv`'s usual two panes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dv_on_a_conflicted_file_opens_it_for_resolution_too() {
+        let repo = conflicted_merge("resolve-conflict-dv-repo");
+        let marked = std::fs::read_to_string(repo.join("f.txt")).unwrap();
+        let mut app = app_with_path(&marked, 30, repo.join("f.txt"));
+        app.apply(crate::app::Action::EnterCommandLine);
+        press_chars(&mut app, "magit-status");
+        app.apply(crate::app::Action::CommandLineSubmit);
+        assert!(settle_mode(&mut app, "magit-status-mode").await);
+        let status = app.editor.active_pane_buffer_id();
+        let row_of = |a: &crate::app::App| {
+            let h = a.editor.buffers.document_handle(status)?;
+            let snap = h.snapshot();
+            (0..snap.buffer.content_line_count()).find(|l| {
+                snap.buffer
+                    .line(*l)
+                    .is_some_and(|t| t.starts_with("  both modified"))
+            })
+        };
+        assert!(
+            settle(&mut app, |a| row_of(a).is_some()).await,
+            "precondition: the conflicted row is listed"
+        );
+        app.editor.cursor = lattice_protocol::position::Position::new(row_of(&app).unwrap(), 0);
+        app.editor.snapshot_active_pane();
+
+        press_chars(&mut app, "dv");
+        let panes: Vec<String> = app
+            .editor
+            .pane_tree
+            .leaves()
+            .iter()
+            .map(|l| app.editor.buffers.name_of(l.buffer_id).unwrap_or_default())
+            .collect();
+        assert_eq!(panes.len(), 3, "{panes:?}; {:?}", app.editor.last_message);
+        assert!(panes[0].contains("[ours]") && panes[2].contains("[theirs]"));
+    }
+
+    /// `dv` on a status row diffs that row's file. `dv` read its path
+    /// only off a `diff --git` header, so on an unexpanded row, where the
+    /// cursor almost always is, it did nothing at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dv_on_a_status_row_diffs_that_file() {
+        let repo = scratch_repo("dv-tracked-repo");
+        std::fs::write(repo.join("f.txt"), "changed\n").unwrap();
+        // Opened with `:e` after boot, the way a user opens a file, so the
+        // test is about that file's diff against HEAD and not about the
+        // boot document's.
+        let mut app = app_with("", 30);
+        app.apply(crate::app::Action::EnterCommandLine);
+        press_chars(&mut app, &format!("e {}", repo.join("f.txt").display()));
+        app.apply(crate::app::Action::CommandLineSubmit);
+        let file = app.editor.document_buffer_id;
+        assert_eq!(
+            app.editor.document.path(),
+            Some(repo.join("f.txt")),
+            "precondition: f.txt is open"
+        );
+        let head_diff = |a: &crate::app::App| {
+            a.editor
+                .vcs_subscription_guard
+                .as_ref()
+                .is_some_and(|g| g.subsystem().holds_head_diff(file))
+        };
+        assert!(
+            settle(&mut app, head_diff).await,
+            "precondition: the file is diffed against HEAD"
+        );
+
+        app.apply(crate::app::Action::EnterCommandLine);
+        press_chars(&mut app, "magit-status");
+        app.apply(crate::app::Action::CommandLineSubmit);
+        assert!(settle_mode(&mut app, "magit-status-mode").await);
+        let status = app.editor.active_pane_buffer_id();
+        let row_of = |a: &crate::app::App| {
+            let h = a.editor.buffers.document_handle(status)?;
+            let snap = h.snapshot();
+            (0..snap.buffer.content_line_count()).find(|l| {
+                snap.buffer
+                    .line(*l)
+                    .is_some_and(|t| t.starts_with("  modified") && t.ends_with("f.txt"))
+            })
+        };
+        assert!(
+            settle(&mut app, |a| row_of(a).is_some()).await,
+            "precondition: f.txt is listed"
+        );
+        app.editor.cursor = lattice_protocol::position::Position::new(row_of(&app).unwrap(), 0);
+        app.editor.snapshot_active_pane();
+
+        press_chars(&mut app, "dv");
+        assert_eq!(
+            app.editor.pane_tree.leaves().len(),
+            2,
+            "the two-pane diff opened; last message: {:?}",
+            app.editor.last_message
+        );
+        assert!(!head_diff(&app), "the explicit diff holds the file");
+        let session = app
+            .editor
+            .diff_subsystem
+            .lookup_session_for(file)
+            .expect("the file is in the explicit diff");
+        assert_eq!(
+            app.editor
+                .diff_subsystem
+                .session_participants(session.buffer_id())
+                .map(|p| p.len()),
+            Some(2)
         );
     }
 

@@ -23,6 +23,8 @@
   opens that file at the revision, and `<C-s>`/`<C-v>`/`<C-t>` open it in a
   split, vsplit or tab. The listing is read-only. `-` at the top of any oil
   listing now says so instead of doing nothing.
+- **`:redraw` redraws the screen, as `<C-l>` does.** `:redr[aw][!]` runs the
+  same redraw as the key, so the vim spelling works from the command line.
 
 ### Changed
 

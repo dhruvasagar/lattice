@@ -3002,6 +3002,27 @@ mod tests {
         assert!(msg.text.contains("redraw"), "user-visible echo: {msg:?}");
     }
 
+    /// `:redraw` typed on the `:` line reaches the same redraw `<C-l>`
+    /// does. The ex-command hands back its effect through the ex-command
+    /// drain rather than a chord's dispatch, so this goes through the real
+    /// command line: a parse-only test would pass on a drain that dropped
+    /// the effect's follow-up action on the floor.
+    #[test]
+    fn redraw_ex_command_redraws_like_ctrl_l() {
+        for cmd in ["redraw", "redraw!", "redr"] {
+            let mut a = app_with("fn main() {}\n", 10);
+            a.editor.pending_redraw = false;
+            a.editor.last_message = None;
+            crate::app::test_helpers::submit_ex(&mut a, cmd);
+            assert!(
+                a.editor.pending_redraw,
+                "`:{cmd}` must clear the terminal next frame, as `<C-l>` does"
+            );
+            let msg = a.editor.last_message.as_ref().expect("info echo");
+            assert!(msg.text.contains("redraw"), "`:{cmd}` echo: {msg:?}");
+        }
+    }
+
     #[test]
     fn second_hover_request_focuses_into_popup() {
         // First K opens the popup (State A: cursor in doc); second

@@ -363,6 +363,26 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // `:redr[aw][!]` -- vim's ex spelling of `<C-l>`, emitting the SAME
+    // `AppEffect::RedrawScreen` carrier the chord's `action:redraw-screen`
+    // does, so the two cannot drift. The bang is accepted for vim muscle
+    // memory and means nothing extra: vim's `!` clears the screen first,
+    // and lattice's redraw always does. Reached by name -- no
+    // `ExBuiltins` field, mirroring `:only`.
+    let _redraw = registry.register_ex_command(
+        "ex:redraw",
+        "Redraw the screen from a clean slate, re-deriving every visible \
+         pane (`:redr[aw][!]`, the same as `<C-l>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: true,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::RedrawScreen))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     // ZP.2: `:zoom-pane` -- the non-destructive counterpart of
     // `:only`. Dashed + namespaced per the ex-command naming rule:
     // the bare `:zoom` slot stays free for a future font/UI scale
@@ -3449,6 +3469,8 @@ mod tests {
             // ZP.2: `:zoom-pane` is the same shape — a pane op that
             // emits its carrier, not an editing command.
             ("ex:zoom-pane", AppEffect::ToggleZoomPane),
+            // `:redraw` is `<C-l>`'s carrier, not a redraw of its own.
+            ("ex:redraw", AppEffect::RedrawScreen),
         ] {
             let id = registry
                 .id_by_name(name)

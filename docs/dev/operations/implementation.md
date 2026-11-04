@@ -7482,7 +7482,7 @@ release; signing (PRL.10) and a plugin index (PRL.11) deferred.
 Design: [`../architecture/plugin-distribution.md`](../architecture/plugin-distribution.md).
 Slice plan: [`slice-plans/plugin-distribution.md`](slice-plans/plugin-distribution.md).
 
-## Plugin manifest (PMF, 2026-10-17 — ✅ PMF.1–PMF.16)
+## Plugin manifest (PMF, 2026-10-17 — ✅ PMF.1–PMF.17)
 
 A plugin becomes one file: its manifest is a `lattice-manifest` custom section
 inside the component (spike passed), with `plugin.toml` still accepted. A

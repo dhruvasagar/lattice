@@ -274,6 +274,8 @@ pub use schema::{ConfigSchema, ConfigValue, ScalarKind, SchemaError, SchemaField
 pub use origin::OptionOrigin;
 pub use overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use parse::{ParsedSet, parse_set};
-pub use registry::{ConfigError, ConfigRegistry, EventPublisher, HeldSource, plugin_option_groups};
+pub use registry::{
+    ConfigError, ConfigRegistry, EventPublisher, HeldSource, HeldValue, plugin_option_groups,
+};
 pub use resolved::ResolvedOptions;
 pub use resolver::Resolver;

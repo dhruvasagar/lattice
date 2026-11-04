@@ -213,6 +213,37 @@ The loader already has the machinery: it distinguishes a *structural namespace*
 a delimited string for list-typed options. A composite option replaces that join
 with a real conversion.
 
+### 3.1 Before the plugin has declared it (PMF.17)
+
+A plugin's options do not exist when either home is read: `lattice.toml` is
+read at boot, `init.rs` loads first among plugins. A value set for one is
+**held** in `ConfigRegistry` and applied when the option registers, and again
+when it registers anew after a reload (PMF.15/16). A held value keeps the shape
+its home wrote it in (`HeldValue::Text` / `HeldValue::Tree`), because only the
+option can say what a list or a table means, and flattening it to text first
+would lose the structure its schema checks. Validation therefore lands at
+registration rather than at read time, with the same path in the report
+(`org.capture-templates[2].target.file: expected string, got integer`) as a
+`warn!`, which reaches `*messages*`. A misfit leaves the default and never
+blocks the registration.
+
+One TOML shape is ambiguous until then: a table under a plugin's namespace
+(`[org.agenda]`) may be one record option's value or a namespace of options.
+It is held both ways, as a tree at its own name and leaf by leaf, and
+`unclaimed_held` counts either as claimed by whichever the plugin declares: a
+registered option under the name (a namespace) or above it (a field of a
+record). A list has one reading and is held whole.
+
+**Paramount goals.** #2: a plugin's structured options are first-class in the
+user's static config, the same as a core option's; holding was text-only, so
+`[[org.capture-templates]]` was refused at boot while the same value worked from
+`init.rs`. #1: nothing per keystroke or frame; a held tree is converted once at
+boot and applied once at registration.
+
+**Rejected:** re-reading `lattice.toml` after plugins load. It would work at
+boot, but a plugin that reloads would lose the value (holding is what survives
+a reload), and each pass would repeat every warning.
+
 ## 4. Where validation lands
 
 One place: the host, against the declared schema, on every path in.

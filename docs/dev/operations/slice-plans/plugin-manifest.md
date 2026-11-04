@@ -30,13 +30,14 @@ Branch `plugin-manifest`, merged by PR; targets **0.9.10**.
 | PMF.14 | `require` reconciles instead of loading: at boot it installs and the user-root scan is the one loader; after boot (`:reload-config`) it loads what is new, reloads what was rebuilt, and is a no-op otherwise. | lattice | ✅ |
 | PMF.15 | `init.rs` may set a plugin's option before the plugin registers it: held, applied at registration (and re-registration), seen by the grant — no reload for a grant-bearing option set up front. | lattice | ✅ |
 | PMF.16 | The held values move into `ConfigRegistry`, tagged by source, and `lattice.toml` holds a plugin's options too: applied at registration, `init.rs` over `lattice.toml`, each source cleared on its own re-read. | lattice | ✅ |
+| PMF.17 | A held value keeps its shape: a list or a table for a plugin's option (`[[org.capture-templates]]`, `agenda-files = [...]`) is held from `lattice.toml` and from `init.rs`'s `set-option-value`, and checked against the plugin's schema when the option registers. | lattice | ✅ |
 
 ## Sequencing
 
 	PMF.1 ──► PMF.2 ──────────────────────────────┐
 	PMF.3 ──► PMF.4 ──► PMF.5 ──► PMF.6 ──► PMF.7 ─┴─► PMF.8
 	PMF.1 ──► PMF.10 ──► PMF.11 ──► PMF.12 ──► PMF.8
-	PMF.4 ──► PMF.13 ──► PMF.14 ──► PMF.15 ──► PMF.16
+	PMF.4 ──► PMF.13 ──► PMF.14 ──► PMF.15 ──► PMF.16 ──► PMF.17
 	PMF.9 (docs only, any time after the design is accepted)
 
 PMF.1 and PMF.3 are independent: one is where the manifest comes from, the
@@ -298,7 +299,8 @@ that is here, and still warns at once; an undotted unknown name too. A held
 name no plugin claims is reported after the boot scan, with its source.
 
 Not held: a structured value (an array of tables) for a plugin option that
-is not registered yet; `[plugin.<id>]` structural sections are untouched.
+is not registered yet, which PMF.17 then holds; `[plugin.<id>]` structural
+sections are untouched.
 
 **Tests:** in `lattice-config`'s loader — a `[org]` value held, applied at
 registration and re-registration; a typo in a registered namespace still
@@ -306,6 +308,37 @@ warns; an undotted unknown still warns; `init.rs` over `lattice.toml`, each
 cleared alone; unclaimed names listed with their source. In
 `lattice-plugin-host`, a `lattice.toml` value is in the first grant and
 `init.rs` overrides it.
+
+## PMF.17 — a held value keeps its shape
+
+PMF.16 held text only, so for a plugin that had not loaded, a list or a table
+in `lattice.toml` reached the array path. It warned "list / inline-table values
+aren't applicable to scalar options" and was dropped. That covered every
+structured option org has, `capture-templates`, `agenda-files` and
+`todo-keywords` among them. `init.rs`'s `set-option-value` refused the same
+values as an unknown option, so they could be set only from a
+`pre-plugin-loaded` handler, while `:help init` said a plugin's options could
+be set anywhere.
+
+Held values become `HeldValue::Text` / `HeldValue::Tree`. The loader holds a
+list whole, and a table whole and also leaf by leaf, under a namespace nothing
+has registered. It also holds a registered composite option's value, as it
+does a scalar's, so a reload gets it back. `try_register` applies a tree whole:
+validated against a composite option's schema, joined for a list-of-scalars
+option, refused otherwise, and always as a `warn!` naming the field. `init.rs`'s
+`set-option-value` holds a tree the way `set-option` holds text. `held_value`
+answers text only, because a grant follows a path. `unclaimed_held` counts a
+table as claimed by a registered option above or below its name. Design:
+`typed-configuration.md` §3.1.
+
+**Tests:** in `lattice-config`'s loader: an array of tables and a string list
+held and applied at registration and re-registration with nothing unclaimed; a
+misfit leaves the default; a table claimed as a namespace (a float inside is
+not an error) and as a record value; a list for a registered scalar still
+warns. In `lattice-plugin-host`, `init.rs` sets a structured option before its
+plugin registers it, and another plugin still cannot. Checked once against the
+real org component in its integration harness: a `lattice.toml` with a capture
+template and two lists reached org's options with nothing unclaimed.
 
 ## PMF.9 — distribution follows
 

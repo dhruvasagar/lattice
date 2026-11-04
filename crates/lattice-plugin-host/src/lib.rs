@@ -3270,16 +3270,32 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             );
             return false;
         }
-        let Some(opt) = registry.lookup(&target) else {
-            tracing::warn!(option = %target, "set-option-value failed: unknown option");
-            return false;
-        };
         let value = match crate::boundary_config::value_from_wit(&value) {
             Ok(v) => v,
             Err(error) => {
                 tracing::warn!(option = %target, %error, "set-option-value: malformed value");
                 return false;
             }
+        };
+        // `set-option`'s rule for a value with structure: what `init.rs` sets is
+        // held, so a plugin that declares the option later — `init.rs` loads
+        // before every user plugin — or again after a reload starts with it.
+        // It is checked against the plugin's schema when the option registers.
+        // Only `init.rs`: another plugin naming an option that does not exist
+        // is still refused below.
+        if self.is_config_authority() {
+            registry.hold_tree(&target, value.clone(), lattice_config::HeldSource::Init);
+            if registry.lookup(&target).is_none() {
+                tracing::debug!(
+                    option = %target,
+                    "set-option-value held until the plugin that owns it registers it"
+                );
+                return true;
+            }
+        }
+        let Some(opt) = registry.lookup(&target) else {
+            tracing::warn!(option = %target, "set-option-value failed: unknown option");
+            return false;
         };
         match opt.set_value(&value) {
             Ok(()) => true,
@@ -5200,6 +5216,58 @@ mod held_options_tests {
             Some("~/notes"),
             "not back to the default"
         );
+    }
+
+    /// A list `init.rs` sets for a plugin that has not loaded waits for it,
+    /// as a string does: `set-option-value` used to refuse it as an unknown
+    /// option, so a plugin's structured options could only be set from its
+    /// `pre-plugin-loaded` handler.
+    #[test]
+    fn init_rs_can_set_a_structured_option_before_its_plugin_registers_it() {
+        use crate::config_host::bindings::lattice::plugin_host::config::{ConfigValue, ValueNode};
+        let rig = rig();
+        let mut init = store(&rig, "init");
+        let files = ConfigValue {
+            nodes: vec![
+                ValueNode::List(vec![1, 2]),
+                ValueNode::String("~/a".into()),
+                ValueNode::String("~/b".into()),
+            ],
+            root: 0,
+        };
+        assert!(
+            init.data_mut()
+                .set_option_value("org.agenda-files".into(), files),
+            "accepted, though nothing has registered it yet"
+        );
+        assert!(
+            rig.config.lookup("org.agenda-files").is_none(),
+            "held, not invented"
+        );
+
+        crate::config_host::register_structured_option(
+            &rig.config,
+            "org.agenda-files",
+            lattice_config::ConfigSchema::list(lattice_config::ConfigSchema::string()),
+            lattice_config::ConfigValue::List(Vec::new()),
+            "doc",
+        )
+        .unwrap();
+        assert_eq!(
+            rig.config.lookup("org.agenda-files").unwrap().get_value(),
+            lattice_config::ConfigValue::List(vec![
+                lattice_config::ConfigValue::Str("~/a".into()),
+                lattice_config::ConfigValue::Str("~/b".into()),
+            ])
+        );
+
+        // Another plugin naming an option that does not exist is still refused.
+        let mut other = store(&rig, "other");
+        let empty = ConfigValue {
+            nodes: vec![ValueNode::List(Vec::new())],
+            root: 0,
+        };
+        assert!(!other.data_mut().set_option_value("org.nope".into(), empty));
     }
 
     #[test]

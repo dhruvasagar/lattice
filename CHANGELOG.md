@@ -44,6 +44,16 @@
   opened once other buffers existed could get none.
 - **`dv` in magit status works on a file's row.** It only worked inside an
   expanded diff, and on the row itself did nothing.
+- **A plugin's lists and tables can go in `lattice.toml`.** Only single values
+  were kept for a plugin that had not loaded yet. A list or a table, such as
+  org's `[[org.capture-templates]]` or `agenda-files = ["~/a", "~/b"]`, was
+  reported as "not applicable to scalar options" at startup and ignored. It is
+  now kept until the plugin declares the option, and checked against what the
+  plugin expects: a mismatch is reported in `*messages*` with the field that
+  failed (`org.capture-templates[2].target.file: expected string`) and leaves
+  the default. `init.rs` can likewise set such an option with
+  `set_option_value` before the plugin loads, rather than from its
+  `pre-plugin-loaded` handler.
 - **magit's `dv` diffs the file against its committed version.** It set up
   the diff before opening the version it compares against, so the working
   file was diffed against whichever pane was active, usually the magit

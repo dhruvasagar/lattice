@@ -343,6 +343,10 @@ fn register_options() {
 }
 ```
 
+A list or a record (org's capture templates) works the same way, with
+`set_option_value`: see [setting a structured
+option](../dev/guides/plugin-patterns.md#setting-a-structured-option-from-init-rs).
+
 Full names (`org.directory`): a bare `directory` would mean an option of
 `init`'s own. A name no plugin ends up declaring — usually a typo — is reported
 in `*messages*` once every plugin has loaded. (This is `init.rs` only: another

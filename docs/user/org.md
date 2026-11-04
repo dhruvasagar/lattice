@@ -100,17 +100,17 @@ rest of the editor rather than like a list of strings.
 
 ## Configuration
 
-Every option is namespaced `org.*` and settable with `:set` like any other:
+Every option is namespaced `org.*`. Set them in `lattice.toml` (any shape, see
+[options](help:options#plugin-options)), in `init.rs`, or for the session with
+`:set`:
 
-```
-:set org.agenda-files=~/org
-:set org.todo-keywords=sequence: TODO NEXT(n) WAITING(w@/!) | DONE(d!) CANCELLED(c@/!)
-:set org.habit-stats=false
+```toml
+[org]
+directory = "~/notes"
+agenda-files = ["~/notes"]
 ```
 
-`:options org.` lists them all with their current values and documentation,
-which is more reliable than any table repeated here — the plugin registers them
-at load, so `:options` is generated from the version you actually have.
+`:options org.` lists them all with their current values and documentation.
 
 ## The full reference
 

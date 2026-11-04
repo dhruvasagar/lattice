@@ -3145,8 +3145,6 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-discard-batch-execute",
         "Discard every file in the confirmed selection",
     );
-    reg("action:magit-commit", "Open the commit buffer");
-    reg("action:magit-commit-amend", "Amend the previous commit");
     reg("action:magit-toggle-diff", "Toggle inline diff at cursor");
     reg(
         "action:magit-diff-file",

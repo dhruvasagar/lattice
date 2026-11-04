@@ -24,6 +24,13 @@
   split, vsplit or tab. The listing is read-only. `-` at the top of any oil
   listing now says so instead of doing nothing.
 
+### Changed
+
+- **magit's `cc` and `ca` in the status buffer are `C-c g c` and `C-c g a`.**
+  They ran the same code under their own action names, `magit-commit` and
+  `magit-commit-amend`. Those names are gone, so a binding to either now
+  names `magit-global-commit` or `magit-global-amend`.
+
 ### Fixed
 - **The split divider keeps its own colour.** In the terminal, the divider
   between side-by-side panes picked up the dimming and syntax styling of the

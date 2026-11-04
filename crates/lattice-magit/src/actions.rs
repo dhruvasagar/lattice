@@ -1047,37 +1047,10 @@ fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution
         };
     }
 
-    // ── commit (cc) ───────────────────────────────────
-    {
-        handler!("action:magit-commit", move |ctx: &ActionContext<'_>| {
-            // The same body as `C-c g c`: the compose buffer is named for,
-            // and records, the status buffer's repository. A fixed
-            // `*magit:commit*` carried no repository, so the commit
-            // buffer resolved against the editor's cwd — an empty staged
-            // diff, and a `C-c C-c` with nothing to commit.
-            let _ = status_state(ctx)?;
-            Some(crate::magit_global_mode::open_repo_view_from_action(
-                ctx,
-                "commit",
-                "magit-commit-mode",
-            ))
-        });
-    }
-
-    // ── commit amend (ca) ─────────────────────────────
-    {
-        handler!("action:magit-commit-amend", move |ctx: &ActionContext<
-            '_,
-        >| {
-            // Shares `C-c g a`'s body, for the same reason as `cc`.
-            let _ = status_state(ctx)?;
-            Some(crate::magit_global_mode::open_repo_view_from_action(
-                ctx,
-                "amend",
-                "magit-commit-mode",
-            ))
-        });
-    }
+    // `cc` / `ca` bind `C-c g c` / `C-c g a`'s own actions
+    // (`action:magit-global-commit` / `-amend`): one operation, one id.
+    // They had status-only twins wrapping the same body, which is a
+    // second name for a key to be bound to and a second place to drift.
 
     // ── stage patch (p) ───────────────────────────────
     // `git add -p` is genuinely interactive — it reads its own

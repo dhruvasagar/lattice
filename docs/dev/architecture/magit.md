@@ -2138,8 +2138,8 @@ preserved.
 | `x` | Discard file at cursor (file-level, not hunk) | `magit-discard` | `x` is vim's delete character. No-op on read-only. `x` is easier to type than `X` (no shift); the read-only buffer makes the override safe. |
 | `=` | Toggle inline diff at cursor (file entries only) | `magit-toggle-diff` | `=` is vim's format/indent operator. Fugitive convention. |
 | `d` | Open the file at cursor's diff in a dedicated `magit-diff-mode` buffer, scoped to the section's baseline (§6.3) | `magit-diff-file` | `d` is vim's delete-operator prefix (`dd`, `dw`, ...) but has no meaning standalone; no-op on read-only, so safe to override. |
-| `cc` | Commit — open `*magit:commit*` | `magit-commit` | `cc` = change-line (suppressed in read-only). Fugitive convention. |
-| `ca` | Amend previous commit | `magit-commit-amend` | `ca` = change-around (suppressed in read-only). |
+| `cc` | Commit — open the repository's commit buffer | `magit-global-commit` (`C-c g c`'s own action) | `cc` = change-line (suppressed in read-only). Fugitive convention. |
+| `ca` | Amend previous commit | `magit-global-amend` | `ca` = change-around (suppressed in read-only). |
 | `p` | Attempt `git add -p` — shows an error explaining it's unsupported (genuinely interactive over stdin; running it would hang the actor waiting on a child also waiting on stdin) | `magit-stage-patch` | `p` is vim's paste. No-op on read-only. Fugitive convention. |
 | `<CR>` | Context-aware open/visit at cursor | `magit-visit` | See §12.3. |
 

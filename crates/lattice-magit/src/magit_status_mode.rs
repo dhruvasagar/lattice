@@ -37,8 +37,8 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
             // In an editable buffer Visual `s` would be substitute and
             // `x` delete; a magit buffer is read-only, so both slots are
             // free and the muscle memory transfers from Normal mode.
-            keymap_entry! { mode: Normal, chord: "cc", doc: "Open commit buffer", cmd: "action:magit-commit" },
-            keymap_entry! { mode: Normal, chord: "ca", doc: "Amend previous commit", cmd: "action:magit-commit-amend" },
+            keymap_entry! { mode: Normal, chord: "cc", doc: "Open commit buffer", cmd: "action:magit-global-commit" },
+            keymap_entry! { mode: Normal, chord: "ca", doc: "Amend previous commit", cmd: "action:magit-global-amend" },
             keymap_entry! { mode: Normal, chord: "=", doc: "Toggle inline diff at cursor", cmd: "action:magit-toggle-diff" },
             // MG.49c: `dd`, not bare `d`.
             //

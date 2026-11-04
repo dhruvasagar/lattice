@@ -2020,6 +2020,84 @@ mod compose_buffers {
         );
     }
 
+    /// CC.2 through the keys people press. `C-c g F p`, from a file and
+    /// from the status buffer, runs the same pull as `:magit-pull`: a
+    /// diverged pull opens the commit buffer on git's merge message in
+    /// front, with no key pressed after the chord. The status buffer has
+    /// no pull key of its own (`F` stays vim's find-back), so this is the
+    /// one path from both.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_diverged_pull_from_either_transient_opens_the_commit_buffer() {
+        use crate::app::Action;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for (surface, from_status) in [("from a file", false), ("from status", true)] {
+            let upstream = scratch_repo("pullkey-upstream-repo");
+            let work = unique_tempdir().join("pullkey-work-repo");
+            let cloned = std::process::Command::new("git")
+                .args(["clone", "-q"])
+                .arg(&upstream)
+                .arg(&work)
+                .output()
+                .expect("git runs");
+            assert!(cloned.status.success(), "precondition: clone");
+            for args in [
+                &["config", "user.email", "t@example.com"][..],
+                &["config", "user.name", "t"],
+                &["config", "commit.gpgsign", "false"],
+                &["config", "pull.rebase", "false"],
+            ] {
+                git_in(&work, args);
+            }
+            std::fs::write(upstream.join("g.txt"), "g\n").unwrap();
+            git_in(&upstream, &["add", "g.txt"]);
+            git_in(&upstream, &["commit", "-q", "-m", "upstream g"]);
+            std::fs::write(work.join("h.txt"), "h\n").unwrap();
+            git_in(&work, &["add", "h.txt"]);
+            git_in(&work, &["commit", "-q", "-m", "local h"]);
+
+            let mut app = app_with_path("h\n", 20, work.join("h.txt"));
+            if from_status {
+                app.apply(Action::EnterCommandLine);
+                press_chars(&mut app, "magit-status");
+                app.apply(Action::CommandLineSubmit);
+                assert!(
+                    settle_mode(&mut app, "magit-status-mode").await,
+                    "precondition: status open"
+                );
+                // `C-c g` is `magit-global-mode`'s, a Universal minor that
+                // activates on the new buffer a beat after its major.
+                assert!(
+                    settle_mode(&mut app, "magit-global-mode").await,
+                    "precondition: `C-c g` is live in the status buffer"
+                );
+            }
+            press(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            );
+            press_chars(&mut app, "gFp");
+
+            let front = |a: &crate::app::App| {
+                a.editor
+                    .buffers
+                    .name_of(a.editor.active_pane_buffer_id())
+                    .filter(|n| n.contains("commit") && n.contains("pullkey-work-repo"))
+            };
+            assert!(
+                settle_woken(&mut app, |a| front(a)
+                    .and_then(|n| commit_text(a, &n))
+                    .is_some_and(|t| t.starts_with("Merge branch")))
+                .await,
+                "{surface}: no commit buffer on git's merge message in front; \
+                 front is {:?}, MERGE_HEAD {}",
+                app.editor
+                    .buffers
+                    .name_of(app.editor.active_pane_buffer_id()),
+                work.join(".git/MERGE_HEAD").exists()
+            );
+        }
+    }
+
     /// CC.3: `:magit-rebase-continue` on a resolved conflict stop used to
     /// commit git's prepared message unseen (`GIT_EDITOR=true`). It opens
     /// the commit buffer on it instead — off-keystroke, so this waits on the

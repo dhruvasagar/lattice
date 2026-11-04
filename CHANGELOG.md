@@ -5,10 +5,12 @@
 ### Added
 - **`:lsp-install <Tab>` lists the servers lighthouse can install.** Plugins
   can now give an ex-command argument its completions, with the new
-  `grammar.register-completion-values` call.
+  `grammar.register-completion-values` call (plugin API crates 0.4.1).
 - **Plugins can write to `*messages*` from background work.** The new
-  `ui.notify` call reports an outcome when there is no command to echo it, such
-  as a scan finishing.
+  `ui.notify` call (plugin API crates 0.4.1) reports an outcome when there is
+  no command to echo it, such as a scan finishing. Both calls are new
+  functions in the same `@0.4.0` interface, so existing plugins keep loading
+  unchanged; a plugin that uses them moves its pin to `0.4.1`.
 - **Diffing a conflicted file in magit opens it for resolution.** `dd` or
   `dv` on a conflicted row shows ours | working | theirs, as vim-fugitive's
   `:Gdiffsplit!` does, and `d2o`, `d3o` or `dB` in the working file takes a
@@ -42,6 +44,10 @@
   opened once other buffers existed could get none.
 - **`dv` in magit status works on a file's row.** It only worked inside an
   expanded diff, and on the row itself did nothing.
+- **magit's `dv` diffs the file against its committed version.** It set up
+  the diff before opening the version it compares against, so the working
+  file was diffed against whichever pane was active, usually the magit
+  buffer `dv` was pressed in.
 
 ## 0.9.13 — 2026-10-29
 

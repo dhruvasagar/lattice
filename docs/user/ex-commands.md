@@ -59,6 +59,7 @@ shows full metadata.
 | `:vsplit`/`:vsp` | Vertical split                         |
 | `:close` / `:cl` | Close active pane                      |
 | `:only` / `:on`  | Close every pane except the active one |
+| `:redraw`/`:redr`| Redraw the screen (same as `<C-l>`)    |
 
 `<C-w>`-prefixed chords (`<C-w>s`, `<C-w>v`, `<C-w>q`, ...) are
 the keymap equivalents.

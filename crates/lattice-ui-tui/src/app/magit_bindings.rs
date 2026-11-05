@@ -1496,6 +1496,79 @@ mod compose_buffers {
         );
     }
 
+    /// The diff watches git's copies, and it learns they changed only from
+    /// `DocumentChanged`. The copies are filled by their mode through the
+    /// document handle, which publishes nothing on its own, so the mode
+    /// has to. When it did not, the diff saw the copies only if its first
+    /// compute (debounced from when `dd` laid out the panes) ran after
+    /// `git show` returned: the test above passed or failed on the
+    /// runner's speed, and failed on Windows. This one does not depend on
+    /// timing: it waits for the event itself.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn filling_a_conflict_copy_tells_the_diff_it_changed() {
+        let repo = conflicted_merge("announce-copy-repo");
+        let marked = std::fs::read_to_string(repo.join("f.txt")).unwrap();
+        let mut app = app_with_path(&marked, 30, repo.join("f.txt"));
+        app.apply(crate::app::Action::EnterCommandLine);
+        press_chars(&mut app, "magit-status");
+        app.apply(crate::app::Action::CommandLineSubmit);
+        assert!(settle_mode(&mut app, "magit-status-mode").await);
+
+        let lines_of = |app: &crate::app::App, id: lattice_core::BufferId| -> Vec<String> {
+            let Some(h) = app.editor.buffers.document_handle(id) else {
+                return vec![];
+            };
+            let snap = h.snapshot();
+            (0..snap.buffer.content_line_count())
+                .map(|l| snap.buffer.line(l).unwrap_or_default())
+                .collect()
+        };
+        let status = app.editor.active_pane_buffer_id();
+        assert!(
+            settle(&mut app, |a| lines_of(a, status)
+                .iter()
+                .any(|l| l.starts_with("  both modified")))
+            .await,
+            "precondition: the conflicted row is listed"
+        );
+        let row = lines_of(&app, status)
+            .iter()
+            .position(|l| l.starts_with("  both modified"))
+            .unwrap() as u32;
+        app.editor.cursor = lattice_protocol::position::Position::new(row, 0);
+        app.editor.snapshot_active_pane();
+
+        let mut events = subscribe_all_events(&app);
+        press_chars(&mut app, "dd");
+        let ours = app.editor.pane_tree.leaves()[0].buffer_id;
+        let ours_doc = app
+            .editor
+            .buffers
+            .document_handle(ours)
+            .expect("ours is a document")
+            .snapshot()
+            .id;
+
+        let announced = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(event) = events.recv().await {
+                if matches!(
+                    event,
+                    lattice_protocol::Event::DocumentChanged { id, .. } if id == ours_doc
+                ) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+        assert!(
+            announced,
+            "filling ours publishes DocumentChanged; ours holds {:?}",
+            lines_of(&app, ours)
+        );
+    }
+
     /// `:diffsplit` on a file in a repository. The file's diff against
     /// HEAD (its gutter signs) held the buffer from the moment it opened,
     /// so every explicit diff of a tracked file was refused with "already

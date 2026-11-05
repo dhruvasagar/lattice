@@ -71,6 +71,10 @@
   the diff before opening the version it compares against, so the working
   file was diffed against whichever pane was active, usually the magit
   buffer `dv` was pressed in.
+- **magit's `dd` and `dv` always see git's copy of the file.** The diff could
+  be computed before git had returned the copy and then never again, so on a
+  slow machine a conflicted file opened as one hunk against two empty sides,
+  with no conflict found and `d2o` / `d3o` doing nothing.
 
 ## 0.9.13 — 2026-10-29
 

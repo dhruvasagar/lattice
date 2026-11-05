@@ -268,7 +268,9 @@ impl Mode for MagitFileRevisionMode {
             })
             .await
             .unwrap_or_else(|_| (String::new(), None));
-            crate::buffer_io::replace_buffer_text(&handle, text).await;
+            // Announced, because a diff may be watching this copy: `dd` /
+            // `dv` open it and lay the diff out before `git show` returns.
+            crate::buffer_io::replace_buffer_text_announced(&handle, text, ctx.events()).await;
             if let Some(ph) = ctx.service::<lattice_mode::PendingSyntheticHighlights>() {
                 match spans {
                     // An unrecognised extension or a missing grammar

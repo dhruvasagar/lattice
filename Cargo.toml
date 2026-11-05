@@ -60,10 +60,13 @@ repository = "https://github.com/dhruvasagar/lattice"
 # `char`s there would misalign every table containing a ✓, ─, ↑ or CJK
 # — which is exactly the bug the alignment pass exists to fix.
 unicode-width = "0.2"
-# Pure-Rust deflate. Already in the tree transitively (flate2, zstd);
-# a direct edge adds no new distinct dependency. Used to compress the
-# embedded user docs — see docs/dev/operations/embedded-docs-budget.md.
-miniz_oxide = "0.8"
+# zstd compresses the embedded user docs against a shared dictionary
+# trained at build time (see docs/dev/operations/embedded-docs-budget.md).
+# wasmtime's cache already links it with default features off, so
+# `default-features = false` here adds no code to the binary. The build
+# script turns on `zdict_builder` for its own use, which resolver 2
+# keeps out of the runtime build.
+zstd = { version = "0.13", default-features = false }
 # Core
 ropey = "1.6"
 thiserror = "2.0"

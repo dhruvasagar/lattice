@@ -5510,7 +5510,7 @@ dependencies = [
  "lattice-mode",
  "lattice-protocol",
  "lattice-syntax",
- "miniz_oxide",
+ "zstd",
 ]
 
 [[package]]

@@ -23,21 +23,68 @@
 //! All four run on the dispatch path of an explicit user action, not
 //! per-keystroke or per-frame, so the bar is "imperceptible within a
 //! command", not the frame budget.
+//!
+//! The shared-dictionary scheme (2026-11-05) adds two:
+//!
+//! - `help_dictionary_prepare_ns` — preparing the shared zstd
+//!   dictionary for decoding. Paid once per process, on the first
+//!   `:help` of the session, never at boot.
+//! - `help_topic_first_open_median_ns` — first open of the median-sized
+//!   topic. The dictionary pays off most on small topics, and most
+//!   topics are small, so the largest-topic number alone undersells it.
+//!
+//! The first-open benches pick their topics by size at run time rather
+//! than by name: the largest topic changed from `modal-editing` to
+//! `magit-transient` without anyone noticing, and a name pinned here
+//! would have kept measuring the wrong case.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use lattice_help::topics::builtin_topics;
+use lattice_help::topics::{HelpTopicBody, HelpTopicRegistry, builtin_topics, embedded_dictionary};
+
+/// Builtin topic names ordered by decompressed size, smallest first.
+fn by_size(r: &HelpTopicRegistry) -> Vec<String> {
+    let mut sized: Vec<(usize, String)> = r
+        .names()
+        .filter_map(|n| match &r.lookup(n)?.body {
+            HelpTopicBody::Compressed { raw_len, .. } => Some((*raw_len, n.to_string())),
+            _ => None,
+        })
+        .collect();
+    sized.sort();
+    sized.into_iter().map(|(_, n)| n).collect()
+}
 
 fn bench_topics(c: &mut Criterion) {
     c.bench_function("help_registry_boot_ns", |b| {
         b.iter(|| black_box(builtin_topics().len()));
     });
 
-    // `modal-editing` is the largest topic — the worst first-open case.
+    c.bench_function("help_dictionary_prepare_ns", |b| {
+        b.iter(|| black_box(zstd::dict::DecoderDictionary::copy(embedded_dictionary())));
+    });
+
+    let sizes = by_size(&builtin_topics());
+    let largest = sizes.last().expect("at least one builtin topic").clone();
+    let median = sizes[sizes.len() / 2].clone();
+
+    // The worst first-open case.
     c.bench_function("help_topic_first_open_ns", |b| {
         b.iter_batched(
             builtin_topics,
             |r| {
-                let t = r.lookup("modal-editing").expect("modal-editing topic");
+                let t = r.lookup(&largest).expect("largest topic");
+                black_box(t.body.render().len())
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    // The typical first-open case.
+    c.bench_function("help_topic_first_open_median_ns", |b| {
+        b.iter_batched(
+            builtin_topics,
+            |r| {
+                let t = r.lookup(&median).expect("median topic");
                 black_box(t.body.render().len())
             },
             criterion::BatchSize::SmallInput,
@@ -45,14 +92,10 @@ fn bench_topics(c: &mut Criterion) {
     });
 
     let warm = builtin_topics();
-    let _ = warm
-        .lookup("modal-editing")
-        .expect("modal-editing topic")
-        .body
-        .render();
+    let _ = warm.lookup(&largest).expect("largest topic").body.render();
     c.bench_function("help_topic_cached_open_ns", |b| {
         b.iter(|| {
-            let t = warm.lookup("modal-editing").expect("modal-editing topic");
+            let t = warm.lookup(&largest).expect("largest topic");
             black_box(t.body.render().len())
         });
     });
@@ -63,16 +106,14 @@ fn bench_topics(c: &mut Criterion) {
     let handle = builtin_topics().into_handle();
     let _ = handle
         .load()
-        .lookup("modal-editing")
-        .expect("modal-editing topic")
+        .lookup(&largest)
+        .expect("largest topic")
         .body
         .render();
     c.bench_function("help_registry_handle_read_ns", |b| {
         b.iter(|| {
             let snapshot = handle.load();
-            let t = snapshot
-                .lookup("modal-editing")
-                .expect("modal-editing topic");
+            let t = snapshot.lookup(&largest).expect("largest topic");
             black_box(t.body.render().len())
         });
     });

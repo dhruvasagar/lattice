@@ -32,6 +32,10 @@
   They ran the same code under their own action names, `magit-commit` and
   `magit-commit-amend`. Those names are gone, so a binding to either now
   names `magit-global-commit` or `magit-global-amend`.
+- **The built-in `:help` pages take less space in the binary.** They are now
+  compressed together against one shared dictionary instead of each on its
+  own, which leaves room for the docs to keep growing. `:help` opens as
+  quickly as before.
 
 ### Fixed
 - **The split divider keeps its own colour.** In the terminal, the divider

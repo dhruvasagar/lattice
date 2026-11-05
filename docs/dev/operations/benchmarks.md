@@ -633,8 +633,15 @@ incremental edit.
 ⚠️ **Measured on the Apple Silicon box**, like the MG.14 rows below and
 unlike everything further down. Not comparable to the Ryzen numbers.
 
-User docs are embedded deflate-compressed and inflated on first open
-into a `OnceLock` cache (495 KB raw → 197 KB embedded, 2.5×). The
+User docs were embedded deflate-compressed and inflated on first open
+into a `OnceLock` cache (495 KB raw → 197 KB embedded, 2.5×). Since
+2026-11-05 they are zstd-compressed against one shared, build-trained
+dictionary instead (952 KB raw → 316 KB, 3.0×); decode got faster at
+every topic size — see the deflate-vs-dictionary table in
+[`embedded-docs-budget.md`](embedded-docs-budget.md). The rows below
+predate the switch and are due a re-run on the Apple Silicon box,
+which now also records `help_dictionary_prepare_ns` and
+`help_topic_first_open_median_ns`. The
 laziness is the part worth guarding: boot must not decompress anything,
 or every session pays for docs most users never open.
 
@@ -644,7 +651,7 @@ Run: `cargo bench -p lattice-help --bench topics`.
 | Bench | Median | Floor / Target | What it measures |
 |---|---|---|---|
 | `help_registry_boot_ns` | ~17.8 µs (73 topics) → **~39.4 µs (137 topics)** | 18 µs / 50 µs | `builtin_topics()` on the editor-boot path, for every session. Decompresses nothing — one name/summary `String` pair per topic and the map build. If this starts scaling with doc *volume*, laziness has regressed. **See the 2026-08-22 note below: the growth is in topic COUNT, which is expected, and headroom is now thin.** |
-| `help_topic_first_open_ns` | ~66.6 µs | 67 µs / 250 µs | Inflate + cache fill for the largest topic (`modal-editing`, ~26 KB). The one-time cost per topic per session, on an explicit `:help`. |
+| `help_topic_first_open_ns` | ~66.6 µs | 67 µs / 250 µs | Inflate + cache fill for the largest topic (`modal-editing`, ~26 KB, when measured; the bench now picks the largest at run time — `magit-transient`, ~51 KB, as of 2026-11-05). The one-time cost per topic per session, on an explicit `:help`. |
 | `help_topic_cached_open_ns` | ~562 ns → ~597 ns | 570 ns / 2 µs | Every later open of the same topic: a clone of the cached string. |
 | `help_registry_handle_read_ns` (CR.1) | ~608 ns | — / 2 µs | The same cached open, taken through the `ArcSwap` handle the registry now lives behind: `.load()` + lookup + render. **The delta against the row above IS the RCU wrapper** — ~10 ns, inside run-to-run noise. Making the registry runtime-writable so plugins can ship `:help` pages costs the existing read path nothing. |
 

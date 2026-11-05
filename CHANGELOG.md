@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.14 — 2026-11-06
 
 ### Added
 - **`:lsp-install <Tab>` lists the servers lighthouse can install.** Plugins

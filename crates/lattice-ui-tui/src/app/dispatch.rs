@@ -1946,23 +1946,33 @@ mod tests {
     /// than drop it (which is how four features shipped dead). This is the
     /// other half — the peer picking the queue up beside the tick's signals,
     /// through the same arms a keystroke's effects go through.
+    ///
+    /// The effect queued here has to be one the TUI's arms still own.
+    /// `OpenSyntheticBuffer` used to be, and this test queued it; since
+    /// `9475063d` the host's `handle_effect` opens synthetic buffers itself
+    /// (so a `Many` that opens one and then acts on it runs in order), and
+    /// the TUI's arm is a deliberate no-op. A queued copy of one has already
+    /// been opened by the time it is queued, so it was testing a state
+    /// production no longer produces. `OpenBuffer` is still renderer-owned
+    /// (`do_edit`), as the host's peer-conformance scenario uses too.
     #[test]
     fn a_queued_renderer_effect_is_applied_on_the_next_drain() {
+        let dir = crate::app::test_helpers::fresh_path_workspace("queued-effect");
+        let path = dir.join("queued.txt");
+        std::fs::write(&path, "from an off-renderer path\n").expect("temp file writes");
+
         let mut a = app_with("scratch\n", 10);
-        a.editor
-            .pending_renderer_effects
-            .push(Effect::OpenSyntheticBuffer {
-                name: "*queued-by-a-picker*".to_string(),
-                mode_id: "help-mode".to_string(),
-                content: Some("from an off-renderer path\n".to_string()),
-                cursor: None,
-                activate_minor: None,
-            });
+        a.editor.pending_renderer_effects.push(Effect::OpenBuffer {
+            path: Some(path.clone()),
+            force: false,
+        });
 
         a.drain_async_pending();
 
-        assert!(
-            a.editor.buffers.by_name("*queued-by-a-picker*").is_some(),
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            a.editor.document.text(),
+            "from an off-renderer path\n",
             "the queued effect reached the TUI's own arms"
         );
         assert!(

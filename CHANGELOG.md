@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Search results can be narrowed.** In `:search` results, and in any other
+  multibuffer view, `:multibuffer-keep /pat/` shows only the results whose
+  line or file path matches, `:multibuffer-reject /pat/` hides them, and
+  `:multibuffer-clear-filters` brings everything back. These are vim's
+  `:Cfilter` and `:Cfilter!`. Filters stack, apply to results still
+  streaming in, and survive `gr`, and the header says which are active. They
+  never edit a file, unlike `:v/pat/d`, which in an editable results view
+  deletes the lines from your files.
+
 ## 0.9.14 — 2026-11-06
 
 ### Added

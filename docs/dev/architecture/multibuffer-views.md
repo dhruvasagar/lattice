@@ -1388,6 +1388,55 @@ to wrong source coordinates. The equivalence is pinned by a
 test (`streamed append == batch build`) before the
 optimisation lands.
 
+### 3.9 Excerpt filters (MF.1, 2026-11-06)
+
+`:multibuffer-keep /pat/` and `:multibuffer-reject /pat/` narrow the
+excerpts a view shows; `:multibuffer-clear-filters` restores them. The
+convention is Vim's `:Cfilter` / `:Cfilter!` and Emacs's `keep-lines` /
+`flush-lines`: an excerpt matches when its file path (relative to the
+working directory) or any line it shows matches.
+
+**A filter is a property of the view, not a pass over its contents.**
+`MultibufferState` carries `filter: Option<FilterState>` — the filters
+plus `all`, every excerpt the provider supplied, in provider order.
+`state.excerpts` stays what it always was, the visible list, so every
+reader (composition, `RowTranslation`, folds, headers, motions) is
+untouched. Only the four mutation sites learn about `all`:
+
+| Site | With a filter active |
+|---|---|
+| `append_excerpts` | push to `all`; show it only if every filter admits it |
+| `replace_excerpts` | `all` becomes the new list; the filters stay |
+| `expand_excerpt_at` | mirror the new range onto `all` by `ExcerptId` |
+| `slide_anchors_for_source` | slide `all` too — a hidden excerpt is still anchored |
+
+That placement is what makes three properties fall out rather than be
+written per provider: results streamed after the filter are filtered;
+`gr` comes back narrowed; clearing restores excerpts as they are *now*.
+A filter applied as a one-off pass in the command handler would have
+been true only of the moment it was typed — the search is usually still
+running.
+
+**Rejected: a hidden-id set over one list.** Keeping every excerpt in
+`excerpts` and skipping hidden ids would have touched every reader of
+the list instead of four writers, and a reader that forgot the skip
+would show hidden rows — a silent failure where the chosen shape fails
+loudly (a writer that forgets `all` loses an excerpt on clear, which the
+restore tests catch).
+
+**Status.** The headerline row appends the filter note (`reject /tests\//
+· 61 of 87 shown`) after the provider's status, or shows it alone on an
+idle view — the provider owns `HeaderlineStatus` and rewrites it every
+batch, so the note lives beside it (`filter_note`) rather than in it.
+
+**Ownership.** The ex-commands validate the pattern and hand it to
+`action:multibuffer-keep` / `-reject` / `-clear-filters` as
+`Effect::InvokeCommand`; `MultibufferMode::action_handlers` holds the
+bodies, global and stateless (they read the view from the context). No
+host surface. The pattern dialect is `:g`'s (fancy-regex,
+case-sensitive). A filter never edits a source — the reason not to use
+`:v/pat/d`, which in an editable view deletes the lines from the files.
+
 ## 4. Edit propagation
 
 The mechanism that turns "edit at multibuffer row M" into

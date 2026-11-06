@@ -57,6 +57,9 @@ edit-propagation work identically in all of them.
 | `]E` / `[E`                  | Jump to the next / previous **file boundary** (excerpt whose source file differs) |
 | `:multibuffer-expand [n]`    | Grow the excerpt under the cursor by `n` source lines (default `5`) |
 | `:multibuffer-contract [n]`  | Shrink the excerpt under the cursor by `n` source lines (default `5`) |
+| `:multibuffer-keep /pat/`    | Show only the excerpts whose text or file path matches `pat` — see [Filtering](#filtering) |
+| `:multibuffer-reject /pat/`  | Hide the excerpts whose text or file path matches `pat`        |
+| `:multibuffer-clear-filters` | Drop every filter and show every excerpt again                  |
 | *(edit normally)*            | Edits propagate to the source file                              |
 | `:w`                         | Saves through to the underlying source file(s)                  |
 | `:ls` / `:b N`               | A multibuffer is a listed buffer like any other                 |
@@ -130,6 +133,43 @@ line). `:multibuffer-expand` grows the excerpt under the cursor by
 `:multibuffer-contract` shrinks it. Expansion clips to the source
 file's bounds (you can't expand past line 0 or past EOF), and a
 contract that would invert the range is a no-op.
+
+## Filtering
+
+`:multibuffer-keep` and `:multibuffer-reject` narrow what a view shows
+without touching a single file — Vim's `:Cfilter` / `:Cfilter!` for the
+quickfix list, Emacs's `keep-lines` / `flush-lines` for an occur buffer.
+
+```
+:search TODO
+:multibuffer-reject /tests\//      " drop every hit under a tests/ directory
+:multibuffer-keep /parse|lex/      " of what is left, keep the parser's
+:multibuffer-clear-filters         " everything back
+```
+
+- **What matches.** An excerpt matches when its file path **or** any
+  line it shows matches the pattern. The path is the one relative to
+  the working directory, so `:multibuffer-keep src` means `src/…` in
+  this project, not "everything", when the project itself lives under
+  `~/src`.
+- **The pattern** is a regex in the same dialect as
+  [`:g`](help:ex-commands): case-sensitive, `(?i)` to fold case. Write
+  it `/pat/` or bare; a bad pattern is refused on the `:` line and
+  nothing changes.
+- **Filters stack.** Each one narrows what the previous ones left.
+- **They stay.** Results that arrive after you filter — a search still
+  streaming — are filtered too, and `gr` re-runs the view with the
+  filters still applied. The headerline lists them with a count
+  (`reject /tests\// · 61 of 87 shown`), so a narrowed view never
+  passes for a complete one.
+- **Clearing restores** every excerpt as it is now — one you expanded
+  while it was hidden comes back expanded.
+- **Files are never edited.** This is the difference from `:g` / `:v`:
+  a multibuffer is editable, so `:v/pat/d` really does delete those
+  lines from your files.
+
+The per-file `· N matches` badge on a header counts the file's hits
+from the search, not how many are left after filtering.
 
 ---
 

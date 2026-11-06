@@ -46426,7 +46426,12 @@ impl Editor {
                     services: &self.services,
                     events: &self.event_bus,
                     prompt_value: None,
-                    args: lattice_grammar::Args::None,
+                    // The invocation's own args: `Args::None` for a chord
+                    // press, the typed args for `Effect::InvokeCommand`
+                    // (CD.3d — `:multibuffer-keep /pat/` hands its pattern
+                    // over this way). Hard-coding `None` here dropped them,
+                    // so an action reached by name never saw its arguments.
+                    args: inv.args.clone(),
                     // LM.1: the chord-dispatch path — a mode handler (oil /
                     // file-tree navigation) reads its buffer's locals here to
                     // resolve the entry under the cursor.

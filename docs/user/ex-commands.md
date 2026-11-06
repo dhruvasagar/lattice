@@ -84,6 +84,10 @@ the keymap equivalents.
 | `:noh` / `:nohlsearch`           | Clear hlsearch overlay                           |
 | `:g/pat/CMD`                     | Run `:CMD` on every line matching `pat`          |
 | `:v/pat/CMD`                     | Run `:CMD` on every line *not* matching `pat`    |
+| `:search QUERY`                  | Project-wide search into a results view ([more](help:project-search-mode)) |
+| `:multibuffer-keep /pat/`        | In a results view: show only results matching `pat` ([filtering](help:multibuffer-mode#filtering)) |
+| `:multibuffer-reject /pat/`      | In a results view: hide results matching `pat`   |
+| `:multibuffer-clear-filters`     | In a results view: show every result again       |
 
 ### Options / customize
 

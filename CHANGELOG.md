@@ -12,6 +12,15 @@
   never edit a file, unlike `:v/pat/d`, which in an editable results view
   deletes the lines from your files.
 
+### Fixed
+- **Semantic colours no longer land on the wrong characters.** A request to
+  the language server made right after a keystroke reached it before the
+  edit did, so the server answered for the text as it was. Semantic tokens
+  were the visible case: keyword colours appeared inside comments and
+  stayed. Edits now reach the server before anything asked after them,
+  which also keeps hover, completion and code actions in step with what you
+  typed.
+
 ## 0.9.14 — 2026-11-06
 
 ### Added

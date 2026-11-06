@@ -807,6 +807,17 @@ The new path:
 - **Per-actor debounce.** Each actor coalesces on a 50 ms
   idle window via a pinned `tokio::time::sleep` inside its
   `select!`. No App-side timer; no supervisor-wide lock.
+- **Nothing overtakes a queued edit.** Before the actor puts
+  any request or other notification on the wire it flushes
+  the pending `didChange`s. The debounce coalesces
+  keystrokes; it must not reorder them against what follows.
+  The editor asks for semantic tokens, inlay hints and
+  completion on the tick right after a keystroke, so without
+  the flush every such request reached the server before the
+  edit and was answered for the old text — semantic colours
+  then landed on lines they no longer matched. Neovim flushes
+  before every request for the same reason; Helix does not
+  debounce. Pinned by `crates/lattice-lsp/tests/request_ordering.rs`.
 
 ### Subscription lifecycle
 

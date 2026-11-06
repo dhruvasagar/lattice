@@ -915,6 +915,16 @@ async fn actor_main<R, W>(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(ActorCmd::Request { method, params, reply }) => {
+                        // Edits recorded before this request go on the
+                        // wire before it, or the server answers for the
+                        // text as it was before them (see
+                        // `flush_before_send`).
+                        if flush_pending {
+                            flush_pending = false;
+                            if !flush_before_send(&mut docsync, &caps, &out_tx) {
+                                break 'main;
+                            }
+                        }
                         let id = RequestId::from_u64(next_id); next_id += 1;
                         pending.insert(id.clone(), reply);
                         let req = Request::new(id, method, params);
@@ -925,6 +935,15 @@ async fn actor_main<R, W>(
                         }
                     }
                     Some(ActorCmd::Notify { method, params }) => {
+                        // Same for notifications: a `didSave` ahead of
+                        // the edits it saved describes text the server
+                        // has not been sent.
+                        if flush_pending {
+                            flush_pending = false;
+                            if !flush_before_send(&mut docsync, &caps, &out_tx) {
+                                break 'main;
+                            }
+                        }
                         let n = Notification::new(method, params);
                         let _ = out_tx.send(Message::Notification(n));
                     }
@@ -2139,6 +2158,33 @@ fn build_initialize_params(
 /// caller drops their handle without explicit `shutdown`.
 /// `out_tx` is the channel to the `write_loop`; `child` is the
 /// process so we can `wait` on its exit.
+/// Send every queued `didChange` now, ahead of the message about to go
+/// out. Returns `false` when the writer is gone.
+///
+/// `didChange` is debounced so a burst of keystrokes is one notification;
+/// requests and other notifications are not, and the editor makes them
+/// on the tick right after a keystroke. Without this the request
+/// overtook the edit and the server answered for the old text — for
+/// semantic tokens, colours painted on lines they no longer matched,
+/// filed as current and never refetched. Neovim flushes before every
+/// request for the same reason.
+fn flush_before_send(
+    docsync: &mut crate::sync::DocSync,
+    caps: &Capabilities,
+    out_tx: &mpsc::UnboundedSender<Message>,
+) -> bool {
+    for (_uri, params) in docsync.take_flush_all_payloads(caps) {
+        let n = Notification::new(
+            "textDocument/didChange",
+            Some(serde_json::to_value(params).unwrap_or(Value::Null)),
+        );
+        if out_tx.send(Message::Notification(n)).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
 async fn perform_shutdown(
     out_tx: &mpsc::UnboundedSender<Message>,
     _in_rx: &mut mpsc::UnboundedReceiver<Message>,
